@@ -132,6 +132,10 @@ pub struct EventSubscription {
 )]
 pub enum ClientToServerMsg {
     AgentControl(yinz_types::agent::control::AgentRequest),
+    PluginRequest {
+        request_id: String,
+        request: yinz_types::cli::PluginRequest,
+    },
     DataRequest {
         request_id: String,
         request: yinz_types::cli::DataRequest,
@@ -245,6 +249,10 @@ pub enum ClientToServerMsg {
 )]
 pub enum ServerToClientMsg {
     AgentControl(yinz_types::agent::control::AgentResponse),
+    PluginResponse {
+        request_id: String,
+        result: Result<yinz_types::cli::PluginResponse, String>,
+    },
     DataResponse {
         request_id: String,
         result: Result<String, String>,

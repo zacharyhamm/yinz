@@ -368,6 +368,17 @@ pub(crate) fn route_thread_main(
                                 os_input.send_to_client(client_id, ServerToClientMsg::AgentControl(AgentResponse::new(AgentOutcome::StatusUnavailable))).context("reply to unavailable agent control")?;
                             }
                         },
+                        ClientToServerMsg::PluginRequest { request_id, request } => {
+                            let result = if let Some(senders) = &senders {
+                                let (reply, receiver) = std::sync::mpsc::channel();
+                                senders.send_to_plugin(PluginInstruction::PluginRequest { request, client_id, reply }).context("route CLI plugin request")?;
+                                receiver.recv_timeout(std::time::Duration::from_secs(30))
+                                    .unwrap_or_else(|_| Err("Plugin request outcome unknown; read before retrying a mutation".into()))
+                            } else {
+                                Err("Session is not ready for plugin requests".into())
+                            };
+                            os_input.send_to_client(client_id, ServerToClientMsg::PluginResponse { request_id, result }).context("reply to CLI plugin request")?;
+                        },
                         ClientToServerMsg::DataRequest { request_id, request } => {
                             let result = if let Some(senders) = &senders {
                                 let (reply, receiver) = std::sync::mpsc::channel();

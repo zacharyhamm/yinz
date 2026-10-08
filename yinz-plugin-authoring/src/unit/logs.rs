@@ -58,12 +58,16 @@ fn paths_aliases_and_missing_sources_resolve_without_loading() {
             "{name}"
         );
     }
-    assert!(
-        matches!(resolve_log_target("repo", None, &cwd, &aliases, &cwd).unwrap(), LogTarget::Repository(found) if found == repository.descriptor())
-    );
-    assert!(
-        matches!(resolve_log_target("builtin", None, &cwd, &aliases, &cwd).unwrap(), LogTarget::Builtin(found) if found == "agent")
-    );
+    for name in ["repo", &repository.descriptor()] {
+        assert!(
+            matches!(resolve_log_target(name, None, &cwd, &aliases, &cwd).unwrap(), LogTarget::Repository(found) if found == repository.descriptor())
+        );
+    }
+    for name in ["builtin", "yinz:agent"] {
+        assert!(
+            matches!(resolve_log_target(name, None, &cwd, &aliases, &cwd).unwrap(), LogTarget::Builtin(found) if found == "agent")
+        );
+    }
     assert!(
         matches!(resolve_log_target("nested/main", Some(&cwd), &cwd, &aliases, &cwd).unwrap(), LogTarget::Legacy(found) if found == path)
     );

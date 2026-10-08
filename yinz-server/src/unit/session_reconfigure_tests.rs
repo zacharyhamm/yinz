@@ -33,24 +33,28 @@ fn runtime_repository_aliases_resolve_before_replacing_configuration() {
     use yinz_types::input::layout::RunPluginLocation;
     let directory = tempfile::tempdir().unwrap();
     let mut configuration = SessionConfiguration::default();
-    let (resolved, changed) = configuration.reconfigure_runtime_config(
-        &CLIENT,
-        "plugins { panel repo=\"tools\"; }".into(),
-        Some(Path::new("/elsewhere/config.kdl")),
-        Some(directory.path()),
-    );
+    let (resolved, changed) = configuration
+        .reconfigure_runtime_config(
+            &CLIENT,
+            "plugins { panel repo=\"tools\"; }".into(),
+            Some(Path::new("/elsewhere/config.kdl")),
+            Some(directory.path()),
+        )
+        .unwrap();
     assert!(changed);
     let resolved = resolved.unwrap();
     let RunPluginLocation::Git(plugin) = &resolved.plugins.aliases["panel"].location else {
         panic!("Git alias")
     };
     assert_eq!(Path::new(&plugin.repo), directory.path().join("tools"));
-    let (again, changed) = configuration.reconfigure_runtime_config(
-        &CLIENT,
-        "plugins { panel repo=\"tools\"; }".into(),
-        None,
-        Some(directory.path()),
-    );
+    let (again, changed) = configuration
+        .reconfigure_runtime_config(
+            &CLIENT,
+            "plugins { panel repo=\"tools\"; }".into(),
+            None,
+            Some(directory.path()),
+        )
+        .unwrap();
     assert!(!changed);
     assert_eq!(again, Some(resolved.clone()));
     // Resolution also validates aliases inherited from the previous configuration.
@@ -62,15 +66,14 @@ fn runtime_repository_aliases_resolve_before_replacing_configuration() {
     };
     plugin.repo = "ext::invalid".into();
     configuration.set_client_runtime_configuration(CLIENT, invalid.clone());
-    assert_eq!(
-        configuration.reconfigure_runtime_config(
+    assert!(configuration
+        .reconfigure_runtime_config(
             &CLIENT,
             "mouse_mode false".into(),
             None,
             Some(directory.path())
-        ),
-        (None, false)
-    );
+        )
+        .is_err());
     assert_eq!(configuration.get_client_configuration(&CLIENT), invalid);
 }
 
@@ -163,6 +166,13 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
             },
             other => panic!("expected a plugin Reconfigure with the new shell, got {other:?}"),
         }
+        assert!(matches!(
+            plugin.next(),
+            Some(PluginInstruction::ReconcileBackgroundPlugins {
+                client_id: CLIENT,
+                ..
+            })
+        ));
         if was_written_to_disk {
             match plugin.next() {
                 Some(PluginInstruction::DetectPluginConfigChanges(plugins)) => {
@@ -204,12 +214,10 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
             let directory = tempfile::tempdir().unwrap();
             session.config_dir = Some(directory.path().to_path_buf());
             let fragment = "mouse_mode false".to_owned();
-            let (config, changed) = session.session_configuration.reconfigure_runtime_config(
-                &CLIENT,
-                fragment.clone(),
-                None,
-                Some(directory.path()),
-            );
+            let (config, changed) = session
+                .session_configuration
+                .reconfigure_runtime_config(&CLIENT, fragment.clone(), None, Some(directory.path()))
+                .unwrap();
             assert!(changed);
             let session = Arc::new(RwLock::new(Some(session)));
             update_new_saved_config(
@@ -218,7 +226,8 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
                 changed,
                 &session,
                 CLIENT,
-            );
+            )
+            .unwrap();
             assert!(screen_rx.try_iter().any(|(message, _)| matches!(
                 message,
                 ScreenInstruction::Reconfigure { client_id, .. } if client_id == CLIENT
@@ -229,4 +238,312 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
             )));
         }
     }
+}
+
+#[test]
+fn stale_client_rebinding_preserves_session_background_reconciliation() {
+    let mut configuration = SessionConfiguration::default();
+    let other = ClientId::new(2);
+    let saved = Config::from_kdl("load_plugins { \"file:/first.ts\"; }", None).unwrap();
+    configuration.set_saved_configuration(saved.clone());
+    configuration.set_client_runtime_configuration(CLIENT, saved.clone());
+    configuration.set_client_runtime_configuration(other, saved);
+    let (to_plugin, plugin_rx) = channels::unbounded();
+    let senders = ThreadSenders {
+        to_plugin: Some(SenderWithContext::new(to_plugin)),
+        should_silently_fail: true,
+        ..Default::default()
+    };
+    for (fragment, action) in [
+        ("load_plugins { \"file:/second.ts\"; }", Action::Quit),
+        ("load_plugins clear-defaults=true {}", Action::NoOp),
+    ] {
+        let (current, changed) = configuration
+            .reconfigure_runtime_config(&CLIENT, fragment.into(), None, None)
+            .unwrap();
+        assert!(changed);
+        let current = current.unwrap().background_plugins;
+        let (rebound, changed) = configuration.rebind_keys(
+            &other,
+            vec![(
+                InputMode::Normal,
+                KeyWithModifier::from_str("Ctrl g").unwrap(),
+                vec![action],
+            )],
+            vec![],
+        );
+        assert!(changed);
+        let rebound = rebound.unwrap();
+        assert_eq!(rebound.background_plugins, current);
+        senders.reconfigure_threads(vec![(other, rebound)], None, false);
+        let reconciliations: Vec<_> = plugin_rx
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::ReconcileBackgroundPlugins { plugins, client_id } => {
+                    Some((client_id, plugins))
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reconciliations, vec![(other, current)]);
+    }
+}
+
+#[test]
+fn background_declarations_are_session_wide_and_preserve_kdl_merge_rules() {
+    let mut configuration = SessionConfiguration::default();
+    let other = ClientId::new(2);
+    configuration.set_client_runtime_configuration(other, Config::default());
+    let apply = |configuration: &mut SessionConfiguration, client, fragment: &str| {
+        configuration
+            .reconfigure_runtime_config(&client, fragment.into(), None, None)
+            .unwrap();
+    };
+    apply(
+        &mut configuration,
+        CLIENT,
+        "load_plugins { \"file:/first.ts\"; }",
+    );
+    let first = configuration
+        .get_client_configuration(&other)
+        .background_plugins;
+    assert_eq!(first.len(), 1);
+    apply(&mut configuration, other, "mouse_mode false");
+    assert_eq!(
+        configuration
+            .get_client_configuration(&CLIENT)
+            .background_plugins,
+        first
+    );
+    apply(
+        &mut configuration,
+        other,
+        "load_plugins { \"file:/second.ts\"; }",
+    );
+    assert_eq!(
+        configuration
+            .get_client_configuration(&CLIENT)
+            .background_plugins
+            .len(),
+        2
+    );
+    apply(
+        &mut configuration,
+        CLIENT,
+        "load_plugins clear-defaults=true { \"file:/third.ts\"; }",
+    );
+    assert_eq!(
+        configuration
+            .get_client_configuration(&other)
+            .background_plugins
+            .len(),
+        1
+    );
+    assert!(configuration
+        .reconfigure_runtime_config(&CLIENT, "load_plugins {".into(), None, None)
+        .is_err());
+    for invalid in [
+        "load_plugins { missing-alias; }",
+        "load_plugins { \"yinz:missing-builtin\"; }",
+    ] {
+        let before = configuration.get_client_configuration(&CLIENT);
+        assert!(configuration
+            .reconfigure_runtime_config(&CLIENT, invalid.into(), None, None)
+            .is_err());
+        assert_eq!(configuration.get_client_configuration(&CLIENT), before);
+    }
+}
+
+#[test]
+fn unsaved_background_aliases_survive_attachment_and_staged_reconfiguration() {
+    let saved = Config::default();
+    let other = ClientId::new(2);
+    let mut configuration = SessionConfiguration::default();
+    configuration.set_saved_configuration(saved.clone());
+    configuration.set_client_runtime_configuration(CLIENT, saved.clone());
+    configuration
+        .reconfigure_runtime_config(
+            &CLIENT,
+            "plugins { background location=\"file:/unsaved.ts\"; }\nload_plugins { background; }"
+                .into(),
+            None,
+            None,
+        )
+        .unwrap();
+    configuration.set_client_runtime_configuration(other, saved);
+    let expected = configuration.get_client_configuration(&CLIENT);
+    for client in [other, CLIENT] {
+        let (updated, changed) = configuration
+            .reconfigure_runtime_config(&client, "mouse_mode false".into(), None, None)
+            .unwrap();
+        assert!(changed);
+        let updated = updated.unwrap();
+        assert_eq!(updated.background_plugins, expected.background_plugins);
+        assert_eq!(updated.plugins, expected.plugins);
+    }
+    // The all-client command stages successive updates on one cloned session.
+    for clients in [[CLIENT, other], [other, CLIENT]] {
+        let mut staged = configuration.clone();
+        for client in clients {
+            let (_, changed) = staged
+                .reconfigure_runtime_config(&client, "pane_frames false".into(), None, None)
+                .unwrap();
+            assert!(changed);
+        }
+        for client in clients {
+            assert_eq!(
+                staged.get_client_configuration(&client).background_plugins,
+                expected.background_plugins
+            );
+        }
+    }
+    for invalid in [
+        "plugins { background location=\"yinz:missing-builtin\"; }",
+        "load_plugins clear-defaults=true { missing-alias; }",
+    ] {
+        let before = [CLIENT, other].map(|id| configuration.get_client_configuration(&id));
+        assert!(configuration
+            .reconfigure_runtime_config(&other, invalid.into(), None, None)
+            .is_err());
+        assert_eq!(
+            [CLIENT, other].map(|id| configuration.get_client_configuration(&id)),
+            before
+        );
+    }
+}
+
+#[test]
+fn background_aliases_keep_overrides_when_rebinding_and_reset_on_saved_replacement() {
+    let saved = Config::from_kdl(
+        r#"
+            plugins {
+                background location="file:/saved.ts"
+                unrelated location="file:/saved-only.ts"
+            }
+            load_plugins { background; }
+        "#,
+        None,
+    )
+    .unwrap();
+    let other = ClientId::new(2);
+    let mut configuration = SessionConfiguration::default();
+    configuration.set_saved_configuration(saved.clone());
+    configuration.set_client_runtime_configuration(CLIENT, saved.clone());
+    configuration
+        .reconfigure_runtime_config(
+            &CLIENT,
+            r#"
+                plugins {
+                    background location="file:/unsaved.ts" {
+                        cwd "/alias cwd"
+                        inherited "alias value"
+                        override "alias value"
+                    }
+                    unrelated location="file:/first-client.ts"
+                }
+                load_plugins clear-defaults=true {
+                    background {
+                        cwd "/declaration cwd"
+                        override "declaration value"
+                    }
+                }
+            "#
+            .into(),
+            None,
+            None,
+        )
+        .unwrap();
+    // The attached client's saved alias is stale; its unrelated alias remains its own.
+    configuration.set_client_runtime_configuration(other, saved.clone());
+    let expected = configuration.get_client_configuration(&CLIENT);
+    for client in [CLIENT, other] {
+        let (rebound, changed) = configuration.rebind_keys(
+            &client,
+            vec![(
+                InputMode::Normal,
+                KeyWithModifier::from_str("Ctrl g").unwrap(),
+                vec![Action::Quit],
+            )],
+            vec![],
+        );
+        assert!(changed);
+        let rebound = rebound.unwrap();
+        let reloaded =
+            Config::from_kdl(&rebound.to_string(false).unwrap(), Some(saved.clone())).unwrap();
+        assert_eq!(reloaded.background_plugins, expected.background_plugins);
+        assert!(reloaded.background_plugins_cleared);
+        assert_eq!(
+            reloaded.plugins.aliases["background"],
+            expected.plugins.aliases["background"]
+        );
+        assert_eq!(
+            reloaded.plugins.aliases["unrelated"],
+            if client == CLIENT { &expected } else { &saved }
+                .plugins
+                .aliases["unrelated"]
+        );
+        let mut declaration = reloaded.background_plugins.first().unwrap().clone();
+        assert!(matches!(declaration, RunPluginOrAlias::Alias(_)));
+        declaration.populate_run_plugin_if_needed(&reloaded.plugins);
+        let run = declaration.get_run_plugin().unwrap();
+        assert_eq!(run.location.display(), "file:/unsaved.ts");
+        assert_eq!(run.initial_cwd, Some(PathBuf::from("/declaration cwd")));
+        assert_eq!(run.configuration.inner()["inherited"], "alias value");
+        assert_eq!(run.configuration.inner()["override"], "declaration value");
+    }
+    assert_eq!(configuration.change_saved_config(saved.clone()).len(), 2);
+    for client in [CLIENT, other] {
+        assert_eq!(configuration.get_client_configuration(&client), saved);
+    }
+    // Initialization also captures required aliases, even over a differing client config.
+    configuration.set_saved_configuration(expected.clone());
+    let current = configuration.get_client_configuration(&other);
+    assert_eq!(current.background_plugins, expected.background_plugins);
+    assert_eq!(
+        current.background_plugins_cleared,
+        expected.background_plugins_cleared
+    );
+    assert_eq!(
+        current.plugins.aliases["background"],
+        expected.plugins.aliases["background"]
+    );
+    assert_eq!(
+        current.plugins.aliases["unrelated"],
+        saved.plugins.aliases["unrelated"]
+    );
+}
+
+#[test]
+fn unsaved_background_clear_survives_attachment_keybinding_save_and_default_reload() {
+    let saved = Config::from_default_assets().unwrap();
+    assert!(!saved.background_plugins.is_empty());
+    let other = ClientId::new(2);
+    let mut configuration = SessionConfiguration::default();
+    configuration.set_saved_configuration(saved.clone());
+    configuration.set_client_runtime_configuration(CLIENT, saved.clone());
+    configuration
+        .reconfigure_runtime_config(
+            &CLIENT,
+            "load_plugins clear-defaults=true {}".into(),
+            None,
+            None,
+        )
+        .unwrap();
+    configuration.set_client_runtime_configuration(other, saved.clone());
+    let (rebound, changed) = configuration.rebind_keys(
+        &other,
+        vec![(
+            InputMode::Normal,
+            KeyWithModifier::from_str("Ctrl g").unwrap(),
+            vec![Action::Quit],
+        )],
+        vec![],
+    );
+    assert!(changed);
+    let rebound = rebound.unwrap();
+    assert!(rebound.background_plugins.is_empty());
+    assert!(rebound.background_plugins_cleared);
+    let reloaded = Config::from_kdl(&rebound.to_string(false).unwrap(), Some(saved)).unwrap();
+    assert!(reloaded.background_plugins_cleared);
+    assert!(reloaded.background_plugins.is_empty());
 }

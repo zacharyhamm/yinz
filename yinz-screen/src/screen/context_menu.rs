@@ -265,7 +265,7 @@ impl Screen {
     /// Nothing under a closed menu is dirty, so its cells would keep the menu's glyphs. Every tab,
     /// not just the active ones: a menu is anchored in session-surface coordinates and the tabs
     /// all share that surface, so the cells it painted are not necessarily this client's tab's.
-    fn force_render_under_context_menu(&mut self) {
+    pub(super) fn force_render_under_context_menu(&mut self) {
         for tab in self.tabs.values_mut() {
             tab.set_force_render();
         }

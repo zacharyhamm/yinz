@@ -105,6 +105,12 @@ fn content_width(item: &ContextMenuItem) -> usize {
     }
 }
 
+/// Available label width for rows without shortcuts, shared with callers that wrap labels.
+pub fn context_menu_text_width(items: &[ContextMenuItem], viewport: Viewport) -> usize {
+    let natural = items.iter().map(content_width).max().unwrap_or(0) + CHROME_COLS;
+    natural.min(MAX_COLS).min(viewport.cols).max(MIN_COLS) - CHROME_COLS
+}
+
 /// Truncate to `max` columns of display width, respecting wide characters.
 fn truncate_to_width(text: &str, max: usize) -> String {
     if text.width() <= max {
@@ -159,9 +165,8 @@ pub fn context_menu_layout(
     // One width for the whole menu - the widest row's content, chrome added, clamped to what the
     // viewport can hold. Clamping before truncation is what keeps a long label from forcing a menu
     // wider than the screen.
-    let natural = items.iter().map(content_width).max().unwrap_or(0) + CHROME_COLS;
-    let width = natural.min(MAX_COLS).min(viewport.cols).max(MIN_COLS);
-    let text_width = width.saturating_sub(CHROME_COLS);
+    let text_width = context_menu_text_width(items, viewport);
+    let width = text_width + CHROME_COLS;
 
     // How many rows there is room for, once the borders have taken theirs.
     let max_rows = viewport.rows.saturating_sub(BORDER_ROWS);

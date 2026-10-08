@@ -673,46 +673,68 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
         client_id: crate::ClientId::new(1),
     });
 
-    let mut plugin_ids_loaded = std::collections::HashSet::new();
-    let collect_loads_for = |plugin_ids_loaded: &mut std::collections::HashSet<u32>,
-                             want: usize| {
-        let deadline = std::time::Instant::now() + yinz_test_support::default_timeout();
-        while plugin_ids_loaded.len() < want && std::time::Instant::now() < deadline {
-            let Ok((instruction, _)) =
-                screen_receiver.recv_timeout(std::time::Duration::from_millis(200))
-            else {
-                continue;
-            };
-            if let ScreenInstruction::AddPlugin(_, _, _, _, _, _, plugin_id, ..) = instruction {
-                plugin_ids_loaded.insert(plugin_id.get());
-            }
-        }
-    };
-    // Wait for client 1's own load to land before client 2 asks, so client 2's request cannot be
-    // mistaken for the same in-flight load - it must see a plugin already registered.
-    collect_loads_for(&mut plugin_ids_loaded, 1);
-    assert_eq!(
-        plugin_ids_loaded.len(),
-        1,
-        "client 1's own first-ever request should load exactly one instance"
+    let log = Watched::new(vec![]);
+    let screen_thread = permissions_and_log_until_disconnect(
+        &log,
+        screen_receiver,
+        temp_folder.path().join("permissions.kdl"),
+        plugin_thread_sender.clone(),
+        ClientId::new(1),
+        PermissionStatus::Granted,
     );
-
-    let _ = plugin_thread_sender.send(PluginInstruction::RequestContextMenu {
-        context: Box::new(ContextMenuContext {
-            request_id: ContextMenuRequestId::new(2),
+    let query = || {
+        let (reply, receive) = std::sync::mpsc::channel();
+        plugin_thread_sender
+            .send(PluginInstruction::PluginRequest {
+                request: yinz_types::cli::PluginRequest {
+                    operation: yinz_types::cli::PluginOperation::List,
+                    target: None,
+                    configuration: None,
+                    fallback: None,
+                    candidates: vec![],
+                    caller: None,
+                },
+                client_id: ClientId::new(1),
+                reply,
+            })
+            .unwrap();
+        receive.recv_timeout(default_timeout()).unwrap().unwrap()
+    };
+    let initial = query();
+    assert_eq!(initial.plugins.len(), 1);
+    let id = initial.plugins[0].id;
+    plugin_thread_sender
+        .send(PluginInstruction::AddClient(ClientId::new(2)))
+        .unwrap();
+    plugin_thread_sender
+        .send(PluginInstruction::RequestContextMenu {
+            context: Box::new(ContextMenuContext {
+                request_id: ContextMenuRequestId::new(2),
+                client_id: ClientId::new(2),
+                ..Default::default()
+            }),
             client_id: ClientId::new(2),
-            ..Default::default()
-        }),
-        client_id: crate::ClientId::new(2),
-    });
-    collect_loads_for(&mut plugin_ids_loaded, 2);
+        })
+        .unwrap();
+    let deadline = std::time::Instant::now() + default_timeout();
+    loop {
+        let status = query();
+        assert_eq!(status.plugins.len(), 1, "hooks share one session identity");
+        assert_eq!(status.plugins[0].id, id);
+        if status.plugins[0].clients == [ClientId::new(1), ClientId::new(2)] {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{status:?}");
+        std::thread::yield_now();
+    }
     teardown();
-
+    screen_thread.join().unwrap();
     assert_eq!(
-        plugin_ids_loaded.len(),
-        2,
-        "client 2's request must load its own instance rather than being silently dropped \
-         against client 1's, got: {plugin_ids_loaded:?}"
+        log.lock()
+            .iter()
+            .filter(|event| matches!(event, ScreenInstruction::AddPlugin(..)))
+            .count(),
+        1
     );
 }
 

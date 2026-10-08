@@ -104,15 +104,12 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
                     .recv()
                     .expect("failed to receive event on channel");
                 match event {
-                    ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission) => {
-                        let _ =
-                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                plugin_id,
-                                Some(client_id),
-                                plugin_permission.permissions,
-                                PermissionStatus::Granted,
-                                Some(cache_path.clone()),
-                            ));
+                    ScreenInstruction::RequestPluginPermissions(_plugin_id, plugin_permission) => {
+                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
+                            request_id: plugin_permission.request_id,
+                            status: PermissionStatus::Granted,
+                            cache_path: Some(cache_path.clone()),
+                        });
                     },
                     ScreenInstruction::Exit => {
                         break;
@@ -321,15 +318,12 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
                     .recv()
                     .expect("failed to receive event on channel");
                 match event {
-                    ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission) => {
-                        let _ =
-                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                plugin_id,
-                                Some(client_id),
-                                plugin_permission.permissions,
-                                PermissionStatus::Granted,
-                                Some(cache_path.clone()),
-                            ));
+                    ScreenInstruction::RequestPluginPermissions(_plugin_id, plugin_permission) => {
+                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
+                            request_id: plugin_permission.request_id,
+                            status: PermissionStatus::Granted,
+                            cache_path: Some(cache_path.clone()),
+                        });
                     },
                     ScreenInstruction::Exit => {
                         break;

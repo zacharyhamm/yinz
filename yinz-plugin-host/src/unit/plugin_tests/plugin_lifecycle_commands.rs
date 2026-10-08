@@ -96,15 +96,13 @@ pub fn load_new_plugin_plugin_command() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
-        received_screen_instructions,
-        ScreenInstruction::RequestStateUpdateForPlugins, // happens on successful plugin (re)load
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -126,20 +124,24 @@ pub fn load_new_plugin_plugin_command() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('x')).with_alt_modifier()), // this triggers the enent in the fixture plugin
     )]));
-    screen_thread.join().unwrap(); // this might take a while if the cache is cold
+    wait_for_render_containing(&received_screen_instructions, "Key");
     teardown();
+    screen_thread.join().unwrap();
     let request_state_update_requests = received_screen_instructions
         .lock()
         .iter()
         .filter(|i| matches!(i, ScreenInstruction::RequestStateUpdateForPlugins))
         .count();
-    assert_eq!(request_state_update_requests, 2);
+    assert_eq!(
+        request_state_update_requests, 1,
+        "a background start reuses the loaded identity"
+    );
 }
 
 #[test]

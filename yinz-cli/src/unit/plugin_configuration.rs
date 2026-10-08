@@ -305,3 +305,43 @@ fn legacy_parser_and_pipe_arguments_remain_unchanged() {
         json!({"theme":"dark,contrast"})
     );
 }
+
+#[test]
+fn session_plugin_lifecycle_commands_parse_without_an_agent() {
+    use crate::args::Plugins;
+    for operation in ["start", "reload", "stop"] {
+        let parsed = parse(
+            &["plugins", operation, "plugin_10"],
+            &["--configuration-json", r#"{"shared":"true"}"#, "--json"],
+        )
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Plugins(
+                Plugins::Start { .. } | Plugins::Reload { .. } | Plugins::Stop { .. }
+            ))
+        ));
+    }
+    assert!(matches!(
+        parse(&["plugins", "list"], &[]).unwrap().command,
+        Some(Command::Plugins(Plugins::List { running: false, .. }))
+    ));
+    assert!(matches!(
+        parse(&["plugins", "list"], &["--running", "--json"])
+            .unwrap()
+            .command,
+        Some(Command::Plugins(Plugins::List {
+            running: true,
+            json: true
+        }))
+    ));
+    assert!(matches!(
+        parse(
+            &["plugins", "reload", "file:///tmp/palette.ts"],
+            &["--headless"]
+        )
+        .unwrap()
+        .command,
+        Some(Command::Plugins(Plugins::Reload { headless: true, .. }))
+    ));
+}

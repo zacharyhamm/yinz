@@ -1,4 +1,4 @@
-//! One request to the running project-store, with no stdin loop or mutation retries.
+//! Correlated requests to session services, with no stdin loop or mutation retries.
 use std::time::{Duration, Instant};
 use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
@@ -63,6 +63,46 @@ fn pipe_request(
             _ => None,
         },
     )
+}
+
+/// A server rejection, distinct from an unavailable connection or a timed-out reply.
+#[derive(Debug)]
+pub struct PluginRequestRejected(pub String);
+
+impl std::fmt::Display for PluginRequestRejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+impl std::error::Error for PluginRequestRejected {}
+
+pub fn plugin_request(
+    session: &SessionName,
+    request: yinz_types::cli::PluginRequest,
+) -> Result<yinz_types::cli::PluginResponse> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let value = exchange(
+        session,
+        Duration::from_secs(30),
+        ClientToServerMsg::PluginRequest {
+            request_id: request_id.clone(),
+            request,
+        },
+        |message| match message {
+            ServerToClientMsg::PluginResponse {
+                request_id: id,
+                result,
+            } if id == request_id => Some(
+                result
+                    .map_err(|error| anyhow::Error::new(PluginRequestRejected(error)))
+                    .and_then(|response| {
+                        serde_json::to_value(response).context("encode plugin response")
+                    }),
+            ),
+            _ => None,
+        },
+    )?;
+    serde_json::from_value(value).context("decode plugin response")
 }
 
 pub fn data_request(

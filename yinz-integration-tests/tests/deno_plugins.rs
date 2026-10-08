@@ -7,6 +7,78 @@ use std::io::{Read, Write};
 use yinz_cli::args::CliAction;
 use yinz_integration_tests::{LayoutInfo, TestRunner, TERMINAL_SIZE};
 
+fn lifecycle(
+    session: &yinz_integration_tests::TestSession,
+    operation: yinz_types::cli::PluginOperation,
+    plugin: &std::path::Path,
+    configuration: Option<std::collections::BTreeMap<String, String>>,
+) -> yinz_types::cli::PluginResponse {
+    yinz_client::store_client::plugin_request(
+        &session.session_name().into(),
+        yinz_types::cli::PluginRequest {
+            operation,
+            target: Some(plugin.display().to_string()),
+            configuration,
+            fallback: Some(yinz_types::input::layout::RunPlugin {
+                location: yinz_types::input::layout::RunPluginLocation::File(plugin.to_owned()),
+                ..Default::default()
+            }),
+            candidates: vec![],
+            caller: None,
+        },
+    )
+    .unwrap()
+}
+
+fn wait_for_plugin_state(
+    session: &yinz_integration_tests::TestSession,
+    plugin: &std::path::Path,
+    state: yinz_types::cli::PluginState,
+) -> yinz_types::cli::PluginStatus {
+    let deadline = std::time::Instant::now() + yinz_test_support::default_timeout();
+    loop {
+        // Each correlated IPC reply observes the plugin thread after its preceding work.
+        let response = lifecycle(
+            session,
+            yinz_types::cli::PluginOperation::Inspect,
+            plugin,
+            None,
+        );
+        if let Some(status) = response
+            .plugins
+            .first()
+            .filter(|status| status.state == state)
+        {
+            return status.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "waiting for {state:?}: {response:?}"
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn background_source(version: &str) -> String {
+    format!(
+        r#"
+export default {{
+  async load() {{
+    try {{
+      await yinz.waitForPermissions(['ReadApplicationState', 'RunActionsAsUser', 'ReadCliPipes']);
+      yinz.commandPalette.registerProvider({{id:'background',title:'Background',provideActions() {{
+        return [{{id:'unique',label:'zzbgpermissionaction {version}',run:()=>({{type:'text',title:'Done',text:'Approved'}})}}];
+      }}}});
+    }} catch (_) {{ console.log('BACKGROUND DENIED'); }}
+  }},
+  pipe(message) {{
+    if (message.source.Cli) yinz.command('CliPipeOutput', [message.source.Cli, '{version}']);
+  }}
+}};
+"#
+    )
+}
+
 #[test]
 fn launch_or_focus_retains_the_pane_after_symlink_reload_by_id_and_url() {
     for (by_id, floating, alias) in [(true, false, false), (false, true, true)] {
@@ -243,108 +315,226 @@ fn launch_or_focus_retains_plugin_directory_fallback_after_reload() {
 
 #[test]
 fn background_palette_permission_lifecycle() {
+    use yinz_types::cli::{PluginOperation as Op, PluginState};
     const TOGGLE: &[u8] = b"\x1b[112;7u";
     for shared in [false, true] {
-        for approve in [false, true] {
-            // A fresh URL per session keeps this fixture independent of saved grants.
-            let directory = tempfile::tempdir().unwrap();
-            let plugin = directory.path().join("background.ts");
-            fs::write(&plugin, r#"
-let state = 'WAITING';
-export default {
-  async load() {
-    try {
-      await yinz.waitForPermissions(['ReadApplicationState']);
-      yinz.commandPalette.registerProvider({id:'background',title:'Background',provideActions() {
-        return [{id:'unique',label:'zzbgpermissionaction granted',run:()=>({type:'text',title:'Done',text:'Approved'})}];
-      }});
-      state = 'BACKGROUND GRANTED';
-    } catch (_) {
-      state = 'BACKGROUND DENIED';
-    }
-    yinz.requestRender();
-  },
-  render() { return state; }
-};
-"#).unwrap();
-            let configuration = if shared { "shared true;" } else { "" };
-            let mut yinz = TestRunner::new(TERMINAL_SIZE)
-                .with_config_dir(directory.path().to_owned())
-                .with_config(&format!(
-                    "load_plugins clear-defaults=true {{ \"file:{}\" {{ {configuration} }}; }}",
-                    plugin.display(),
-                ))
-                .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
-                .start();
-            // No input or terminal output precedes this assertion.
-            yinz.wait_until("background startup permission prompt", |grid| {
-                grid.contains("Allow? (y/n)")
-            });
-            let terminal = yinz.expect_pty_spawn();
-            let other = yinz.attach_client(TERMINAL_SIZE);
-            other.wait_until("client attaching during permission sees prompt", |grid| {
-                grid.contains("Allow? (y/n)")
-            });
-            yinz.send_stdin(TOGGLE);
-            yinz.send_stdin(b"zzbgpermissionaction");
-            yinz.wait_until("no palette registration before approval", |grid| {
-                grid.contains("No matches")
-            });
-            yinz.send_stdin(TOGGLE);
-            yinz.wait_until("palette closes over permission prompt", |grid| {
-                grid.contains("Allow? (y/n)") && !grid.contains("No matches")
-            });
-            if approve {
-                other.send_stdin(b"y");
-            } else {
-                yinz.send_stdin(b"n");
+        let directory = tempfile::tempdir().unwrap();
+        let plugin = directory.path().join("background.ts");
+        fs::write(&plugin, background_source("first")).unwrap();
+        let configuration =
+            std::collections::BTreeMap::from([("shared".into(), shared.to_string())]);
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config_dir(directory.path().to_owned())
+            .with_config("load_plugins clear-defaults=true {}")
+            .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+            .start();
+        let terminal = yinz.expect_pty_spawn();
+        terminal.output(b"TERMINAL AVAILABLE\r\n");
+        yinz.wait_until("initial terminal", |grid| {
+            grid.contains("TERMINAL AVAILABLE")
+        });
+        let other = yinz.attach_client(TERMINAL_SIZE);
+        other.wait_until("peer terminal", |grid| grid.contains("TERMINAL AVAILABLE"));
+        let started = lifecycle(&yinz, Op::Start, &plugin, Some(configuration.clone()));
+        let id = started.plugins[0].id;
+        assert_eq!(lifecycle(&yinz, Op::Start, &plugin, None).plugins[0].id, id);
+        yinz.wait_until("on-demand permission modal", |grid| {
+            grid.contains("Plugin permissions")
+        });
+        assert!(!other.snapshot().contains("Plugin permissions"));
+        assert_eq!(
+            wait_for_plugin_state(&yinz, &plugin, PluginState::AwaitingPermission).id,
+            id
+        );
+        // Paste cannot activate the selected control. Enter defaults to Deny.
+        yinz.send_stdin(b"\x1b[200~\t\r\x1b[201~");
+        yinz.send_stdin(b"\r");
+        yinz.wait_until("denial restores terminal", |grid| {
+            grid.contains("TERMINAL AVAILABLE") && !grid.contains("Plugin permissions")
+        });
+        wait_for_plugin_state(&yinz, &plugin, PluginState::Running);
+        yinz.send_stdin(TOGGLE);
+        yinz.send_stdin(b"zzbgpermissionaction");
+        yinz.wait_until("denied provider is absent", |grid| {
+            grid.contains("No matches")
+        });
+        yinz.send_stdin(TOGGLE);
+        assert_eq!(
+            lifecycle(&yinz, Op::Reload, &plugin, None).plugins[0].id,
+            id
+        );
+        yinz.wait_until("reload allows retry", |grid| {
+            grid.contains("Plugin permissions")
+        });
+        yinz.send_stdin(b"\t\r");
+        yinz.wait_until("grant restores terminal", |grid| {
+            grid.contains("TERMINAL AVAILABLE") && !grid.contains("Plugin permissions")
+        });
+        let status = wait_for_plugin_state(&yinz, &plugin, PluginState::Running);
+        assert_eq!(status.shared, shared);
+        assert_eq!(status.clients.len(), if shared { 1 } else { 2 });
+
+        for version in ["first", "second"] {
+            if version == "second" {
+                fs::write(&plugin, background_source(version)).unwrap();
+                assert_eq!(
+                    lifecycle(&yinz, Op::Reload, &plugin, None).plugins[0].id,
+                    id
+                );
             }
-            terminal.output(b"TERMINAL AVAILABLE\r\n");
-            yinz.wait_until("answer restores terminal", |grid| {
-                grid.contains("TERMINAL AVAILABLE") && !grid.contains("Allow? (y/n)")
-            });
-            other.wait_until("answer clears peer prompt", |grid| {
-                grid.contains("TERMINAL AVAILABLE") && !grid.contains("Allow? (y/n)")
-            });
-            let (code, output) = yinz.run_cli_action_reporting(CliAction::ListPanes {
-                tab: false,
-                command: false,
-                state: true,
-                geometry: false,
-                all: true,
-                json: true,
-            });
-            assert_eq!(code, 0, "{output}");
-            let panes: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
-            let background = panes.iter().find(|pane| pane["is_plugin"] == true).unwrap();
-            assert_eq!(background["is_suppressed"], true, "{output}");
-            // Reveal only after checking restoration, to observe async load settlement on
-            // both grant and rejection without giving the fixture another permission.
-            assert_eq!(
-                yinz.run_cli_action(CliAction::FocusPaneId {
-                    pane_id: format!("plugin_{}", background["id"].as_u64().unwrap()),
-                }),
-                0
-            );
-            let marker = if approve {
-                "BACKGROUND GRANTED"
-            } else {
-                "BACKGROUND DENIED"
-            };
-            yinz.wait_until("permission promise settles", |grid| grid.contains(marker));
             yinz.send_stdin(TOGGLE);
             yinz.send_stdin(b"zzbgpermissionaction");
-            yinz.wait_until("palette reflects permission answer", |grid| {
-                if approve {
-                    grid.contains("zzbgpermissionaction granted")
-                } else {
-                    grid.contains("No matches")
-                }
+            let label = format!("zzbgpermissionaction {version}");
+            yinz.wait_until("exactly one current provider", |grid| {
+                grid.to_string().matches(&label).count() == 1
+                    && (version == "first" || !grid.contains("zzbgpermissionaction first"))
             });
-            other.quit();
-            yinz.quit();
+            yinz.send_stdin(TOGGLE);
+            let mut pipe =
+                yinz_cli::notes_todos::pipe_action("background-version", serde_json::Value::Null);
+            if let yinz_types::input::actions::Action::CliPipe {
+                plugin: target,
+                configuration: config,
+                ..
+            } = &mut pipe
+            {
+                *target = Some(format!("file:{}", plugin.display()));
+                *config = Some(configuration.clone());
+            }
+            let (code, output) = yinz.run_actions_reporting(vec![pipe]);
+            assert_eq!(code, 0, "{output}");
+            assert!(output.contains(version), "{output}");
         }
+        // A broken replacement stays inspectable and can recover with the same ID.
+        fs::write(&plugin, "export default {{{").unwrap();
+        lifecycle(&yinz, Op::Reload, &plugin, None);
+        assert!(wait_for_plugin_state(&yinz, &plugin, PluginState::Failed)
+            .latest_error
+            .is_some());
+        fs::write(&plugin, background_source("recovered")).unwrap();
+        assert_eq!(
+            lifecycle(&yinz, Op::Reload, &plugin, None).plugins[0].id,
+            id
+        );
+        wait_for_plugin_state(&yinz, &plugin, PluginState::Running);
+        let (code, output) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: true,
+            geometry: true,
+            all: true,
+            json: true,
+        });
+        assert_eq!(code, 0, "{output}");
+        let panes: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+        assert_eq!(
+            panes
+                .iter()
+                .filter(|pane| pane["is_plugin"] == false)
+                .count(),
+            1,
+            "{output}"
+        );
+        assert!(
+            panes
+                .iter()
+                .filter(|pane| pane["is_plugin"] == true)
+                .all(|pane| pane["is_suppressed"] == true),
+            "{output}"
+        );
+        // Source removal must not make the loaded identity unaddressable.
+        fs::remove_file(&plugin).unwrap();
+        assert_eq!(
+            lifecycle(&yinz, Op::Stop, &plugin, None).plugins[0].state,
+            PluginState::Stopped
+        );
+        assert!(lifecycle(&yinz, Op::Inspect, &plugin, None)
+            .plugins
+            .is_empty());
+        yinz.send_stdin(TOGGLE);
+        yinz.send_stdin(b"zzbgpermissionaction");
+        yinz.wait_until("stop unregisters provider", |grid| {
+            grid.contains("No matches")
+        });
+        yinz.send_stdin(TOGGLE);
+        yinz.send_stdin(b"terminal input");
+        terminal.wait_for_stdin("focus remains on terminal", |bytes| {
+            bytes.ends_with(b"terminal input")
+        });
+        other.quit();
+        yinz.quit();
     }
+}
+
+#[test]
+fn background_live_configuration_reconciles_and_preserves_explicit_launches() {
+    use yinz_types::cli::PluginOperation as Op;
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("configured.ts");
+    fs::write(&plugin, "export default {};").unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let _terminal = yinz.expect_pty_spawn();
+    let configure = |kdl: String| {
+        let (code, output) = yinz.run_cli_action_reporting(CliAction::Reconfigure {
+            kdl: Some(kdl),
+            file: None,
+            write: false,
+        });
+        assert_eq!(code, 0, "{output}");
+    };
+    let fragment = format!(
+        "load_plugins {{ \"file:{}\" {{ shared true; }}; }}",
+        plugin.display()
+    );
+    configure(fragment.clone());
+    let id = lifecycle(&yinz, Op::Inspect, &plugin, None).plugins[0].id;
+    configure(fragment.clone());
+    assert_eq!(
+        lifecycle(&yinz, Op::Inspect, &plugin, None).plugins[0].id,
+        id
+    );
+    lifecycle(&yinz, Op::Stop, &plugin, None);
+    configure(fragment.clone());
+    assert!(lifecycle(&yinz, Op::Inspect, &plugin, None)
+        .plugins
+        .is_empty());
+    configure("load_plugins clear-defaults=true {}".into());
+    configure(fragment.clone());
+    assert_ne!(
+        lifecycle(&yinz, Op::Inspect, &plugin, None).plugins[0].id,
+        id
+    );
+    configure("load_plugins clear-defaults=true {}".into());
+    assert!(lifecycle(&yinz, Op::Inspect, &plugin, None)
+        .plugins
+        .is_empty());
+    configure(fragment);
+    let id = lifecycle(&yinz, Op::Start, &plugin, None).plugins[0].id;
+    configure("load_plugins clear-defaults=true {}".into());
+    assert_eq!(
+        lifecycle(&yinz, Op::Inspect, &plugin, None).plugins[0].id,
+        id
+    );
+    assert!(
+        lifecycle(&yinz, Op::List, &plugin, None)
+            .plugins
+            .iter()
+            .any(|plugin| plugin.location == "yinz:agent-opencode"),
+        "configuration removal preserves the host-required provider"
+    );
+    std::fs::write(directory.path().join("config.d"), "not a directory").unwrap();
+    let (code, error) = yinz.run_cli_action_reporting(CliAction::Reconfigure {
+        kdl: Some("mouse_mode false".into()),
+        file: None,
+        write: true,
+    });
+    assert_ne!(code, 0, "persistence failure must reach the CLI: {error}");
+    assert!(!error.trim().is_empty());
+    yinz.quit();
 }
 
 #[test]
@@ -392,9 +582,9 @@ export default {
         )))
         .start();
     yinz.wait_until("late provider permission prompt", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("session starts without provider registration", |grid| {
         grid.contains("session ready before optional provider")
     });
@@ -448,9 +638,9 @@ export default definePlugin({
         )))
         .start();
     yinz.wait_until("worker command permission prompt", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("workers complete their real commands", |grid| {
         grid.contains("background commands verified")
     });
@@ -512,9 +702,9 @@ export default {
         )))
         .start();
     yinz.wait_until("worker pane permissions", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     let pane = yinz.expect_pty_spawn();
     for ready in ["first-ready", "second-ready", "third-ready"] {
         pane.wait_for_stdin(ready, |bytes| bytes.ends_with(ready.as_bytes()));
@@ -605,9 +795,9 @@ export default {{
         )))
         .start();
     yinz.wait_until("HTTP permission prompt", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until(
         "the guest observes real buffered and streamed bytes",
         |grid| grid.contains("buffered and streamed HTTP verified"),
@@ -690,13 +880,13 @@ layout {
         |grid| {
             grid.contains("wasm companion")
                 && grid.contains("JavaScript companion is alive")
-                && grid.contains("Allow? (y/n)")
+                && grid.contains("Plugin permissions")
         },
     );
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until(
         "the async load resumed after the permission grant",
-        |grid| grid.contains("first granted; awaiting key") && !grid.contains("Allow? (y/n)"),
+        |grid| grid.contains("first granted; awaiting key") && !grid.contains("Plugin permissions"),
     );
     yinz.send_stdin(b"a");
     yinz.wait_until(
@@ -718,7 +908,9 @@ layout {
     assert_eq!(code, 0, "{output}");
     yinz.wait_until(
         "reload imports the changed dependency and retains the permission grant",
-        |grid| grid.contains("second granted; awaiting key") && !grid.contains("Allow? (y/n)"),
+        |grid| {
+            grid.contains("second granted; awaiting key") && !grid.contains("Plugin permissions")
+        },
     );
     yinz.send_stdin(b"b");
     let grid = yinz.wait_until(
@@ -790,9 +982,9 @@ export default {{
     let terminal = sender.expect_pty_spawn();
     terminal.output(b"Deno cross-session output\r\n");
     sender.wait_until("Deno requests host surface permissions", |screen| {
-        screen.contains("Allow? (y/n)")
+        screen.contains("Plugin permissions")
     });
-    sender.send_stdin(b"y");
+    sender.send_stdin(b"\t\r");
     let result = sender.wait_until("Deno completes the host surface round trips", |screen| {
         screen.contains("host surfaces")
     });
@@ -850,9 +1042,9 @@ export default {{
         )))
         .start();
     yinz.wait_until("stream permission prompt", |screen| {
-        screen.contains("Allow? (y/n)")
+        screen.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("old stream remains in flight", |screen| {
         screen.contains("old stream pending")
     });
@@ -978,12 +1170,12 @@ export default {
     });
     assert_eq!(code, 0, "{output}");
     yinz.wait_until("authoring permission prompt", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
     // Failed initial loads are absent from the runtime map, so reload opens a new pane.
     let (code, output) = yinz.run_cli_action_reporting(CliAction::FocusNextPane);
     assert_eq!(code, 0, "{output}");
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until(
         "a healthy replacement renders in the same session",
         |grid| grid.contains("healthy after compilation failure"),
@@ -1069,9 +1261,9 @@ export default {
         )))
         .start();
     yinz.wait_until("sequence permissions", |screen| {
-        screen.contains("Allow? (y/n)")
+        screen.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     let pane = yinz.expect_pty_spawn();
     pane.wait_for_stdin("first command starts before its stdin", |bytes| {
         bytes.ends_with(b"first-ready")
@@ -1112,9 +1304,9 @@ export default {async load(){
         )))
         .start();
     yinz.wait_until("old sequence permissions", |screen| {
-        screen.contains("Allow? (y/n)")
+        screen.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     let pane = yinz.expect_pty_spawn();
     pane.wait_for_stdin("old step started", |bytes| bytes.ends_with(b"old-ready"));
     fs::write(
@@ -1223,10 +1415,10 @@ export default {{async load(){{
     });
     assert_eq!(code, 0, "{output}");
     yinz.wait_until("observer permission prompt", |screen| {
-        screen.contains("Allow? (y/n)")
+        screen.contains("Plugin permissions")
     });
     assert_eq!(yinz.run_cli_action(CliAction::FocusNextPane), 0);
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("observer registered before the exit", |screen| {
         screen.contains("observer ready")
     });
@@ -1303,9 +1495,9 @@ export default {
     let shell = yinz.expect_pty_spawn();
     shell.output(b"BASE SHELL");
     yinz.wait_until("composition permission prompt", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     let command = yinz.expect_pty_spawn();
     command.wait_for_command("multipane-command");
     command.output(b"LAUNCHED IN SLOT");
@@ -1385,7 +1577,7 @@ export default {
     assert_eq!(members[0]["multipane"], members[1]["multipane"]);
     yinz.send_stdin(b"p");
     yinz.wait_until("child permission prompt stays in its slot", |grid| {
-        grid.contains("SIBLING SURVIVED") && grid.contains("Allow? (y/n)")
+        grid.contains("SIBLING SURVIVED") && grid.contains("Plugin permissions")
     });
     assert_eq!(
         list()
@@ -1401,7 +1593,7 @@ export default {
     yinz.run_cli_action(CliAction::FocusPaneId {
         pane_id: format!("plugin_{}", child["id"]),
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("delayed child finishes in its slot", |grid| {
         grid.contains("SIBLING SURVIVED") && grid.contains("CHILD READY")
     });
@@ -1465,17 +1657,17 @@ layout {{
         )))
         .start();
     yinz.wait_until("Wasm requests its own permissions", |grid| {
-        grid.contains(" Wasm │") && grid.contains("Allow? (y/n)")
+        grid.contains(" Wasm │") && grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("native bar over Wasm content", |grid| {
         grid.contains(" Wasm │") && grid.contains("Received events")
     });
     yinz.run_cli_action(CliAction::NextPaneTab);
     yinz.wait_until("selected child requests its own permissions", |grid| {
-        grid.contains(" TypeScript │") && grid.contains("Allow? (y/n)")
+        grid.contains(" TypeScript │") && grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("TypeScript loaded in the selected slot", |grid| {
         grid.contains("TYPESCRIPT keys=0")
     });
@@ -1581,9 +1773,9 @@ export default definePlugin({{
         )))
         .start();
     yinz.wait_until("palette permission prompt", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("provider registered", |grid| grid.contains("palette ready"));
     yinz.send_stdin(TOGGLE);
     yinz.send_stdin(b"Rename pane");
@@ -1693,9 +1885,9 @@ export default {
     let terminal = yinz.expect_pty_spawn();
     terminal.output(b"terminal ready\r\n");
     yinz.wait_until("shared palette permission", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("shared provider ready", |grid| {
         grid.contains("original ready")
     });
@@ -1789,9 +1981,9 @@ export default definePlugin({{
             )))
             .start();
         yinz.wait_until("unload fixture permission prompt", |grid| {
-            grid.contains("Allow? (y/n)")
+            grid.contains("Plugin permissions")
         });
-        yinz.send_stdin(b"y");
+        yinz.send_stdin(b"\t\r");
         yinz.wait_until("unload fixture ready", |grid| {
             grid.contains("unload fixture ready")
         });
@@ -1885,9 +2077,9 @@ export default {
     let terminal = yinz.expect_pty_spawn();
     terminal.output(b"terminal ready\r\n");
     yinz.wait_until("static provider permission", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("static provider ready", |grid| {
         grid.contains("original ready")
     });
@@ -1946,5 +2138,50 @@ export default {
     other.wait_until("replacement executes for second client", |grid| {
         grid.contains("PDF options")
     });
+    yinz.quit();
+}
+
+#[test]
+fn background_startup_rejections_leave_lifecycle_commands_usable() {
+    use yinz_types::cli::{PluginOperation as Op, PluginState};
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("valid.ts");
+    fs::write(&plugin, "export default {};").unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config(&format!(
+            "load_plugins clear-defaults=true {{\n  \"unknown-alias\"\n  \"yinz:unknown-builtin\"\n  \"file:{}\"\n}}",
+            plugin.display()
+        ))
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let terminal = yinz.expect_pty_spawn();
+    terminal.output(b"STARTUP SURVIVED\r\n");
+    yinz.wait_until("terminal after rejected background entries", |grid| {
+        grid.contains("STARTUP SURVIVED")
+    });
+    let first = wait_for_plugin_state(&yinz, &plugin, PluginState::Running);
+    assert!(lifecycle(&yinz, Op::List, &plugin, None)
+        .plugins
+        .iter()
+        .any(|status| status.id == first.id));
+    assert_eq!(
+        lifecycle(&yinz, Op::Start, &plugin, None).plugins[0].id,
+        first.id
+    );
+    assert_eq!(
+        lifecycle(&yinz, Op::Reload, &plugin, None).plugins[0].id,
+        first.id
+    );
+    wait_for_plugin_state(&yinz, &plugin, PluginState::Running);
+    assert_eq!(
+        lifecycle(&yinz, Op::Stop, &plugin, None).plugins[0].state,
+        PluginState::Stopped
+    );
+    assert!(lifecycle(&yinz, Op::Inspect, &plugin, None)
+        .plugins
+        .is_empty());
+    lifecycle(&yinz, Op::Start, &plugin, None);
+    wait_for_plugin_state(&yinz, &plugin, PluginState::Running);
     yinz.quit();
 }

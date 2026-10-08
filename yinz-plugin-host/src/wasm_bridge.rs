@@ -275,8 +275,6 @@ impl LoadingContext {
             .cloned()
             .unwrap_or_else(|| wasm_bridge.default_keybinds.clone());
         let plugin_cwd = cwd.unwrap_or_else(|| wasm_bridge.yinz_cwd.clone());
-        if matches!(plugin_config.location, RunPluginLocation::Git(_))
-            && plugin_config.repository_root.is_none()
         {
             let mut plugin_map = wasm_bridge.plugin_map.lock().unwrap();
             let resolved_source_path = plugin_map
@@ -348,7 +346,20 @@ impl LoadingContext {
 pub type PluginCacheKey = (PathBuf, Option<PathBuf>);
 pub type PluginCache = Arc<Mutex<HashMap<PluginCacheKey, (Module, PathBuf)>>>;
 
+#[path = "background_plugins.rs"]
+mod background_plugins;
+#[path = "permission_requests.rs"]
+mod permission_requests;
+
 pub struct WasmBridge {
+    permission_requests: BTreeMap<u64, permission_requests::PendingPermission>,
+    next_permission_request: u64,
+    background_plugin_ids: HashSet<PluginId>,
+    independent_plugin_ids: HashSet<PluginId>,
+    configured_plugins: Vec<RunPlugin>,
+    resolved_plugin_locations: HashMap<RunPluginLocation, RunPluginLocation>,
+    latest_plugin_errors: HashMap<PluginId, String>,
+    plugin_callers: HashMap<PluginId, yinz_types::internal_ids::TerminalId>,
     temporary_root: Arc<OwnedDir>,
     temporary_cleanup_done: Option<std::sync::mpsc::Receiver<()>>,
     connected_clients: Arc<Mutex<Vec<ClientId>>>,
@@ -384,6 +395,7 @@ pub struct WasmBridge {
     /// move either check outside that lock.
     unloaded_while_loading: Arc<Mutex<HashSet<PluginId>>>,
     pending_plugin_reloads: HashSet<RunPlugin>,
+    pending_plugin_id_reloads: HashSet<PluginId>,
     /// One cancel token per plugin, shared with every instance's `PluginEnv::cancel`. Kept here
     /// so that `unload_plugin` can set it **without taking the plugin's lock** — an instance
     /// looping inside `update()` holds that lock on its executor thread, and the plugin thread
@@ -511,6 +523,7 @@ impl Drop for WasmBridge {
 
 impl WasmBridge {
     fn begin_plugin_load(&mut self, plugin_id: PluginId) -> u64 {
+        self.latest_plugin_errors.remove(&plugin_id);
         self.next_load_id += 1;
         self.load_ids.insert(plugin_id, self.next_load_id);
         self.next_load_id
@@ -559,6 +572,14 @@ impl WasmBridge {
             &engine,
         ));
         Ok(WasmBridge {
+            permission_requests: BTreeMap::new(),
+            next_permission_request: 0,
+            background_plugin_ids: HashSet::new(),
+            independent_plugin_ids: HashSet::new(),
+            configured_plugins: vec![],
+            resolved_plugin_locations: HashMap::new(),
+            latest_plugin_errors: HashMap::new(),
+            plugin_callers: HashMap::new(),
             temporary_root,
             temporary_cleanup_done,
             connected_clients,
@@ -581,6 +602,7 @@ impl WasmBridge {
             loading_plugins: HashSet::new(),
             unloaded_while_loading: Default::default(),
             pending_plugin_reloads: HashSet::new(),
+            pending_plugin_id_reloads: HashSet::new(),
             cancel_tokens: HashMap::new(),
             client_cancellations: Arc::default(),
             queues: Default::default(),
@@ -614,6 +636,10 @@ impl WasmBridge {
         client_id: Option<ClientId>,
     ) -> Result<(PluginId, ClientId)> {
         let _err_context = move || "failed to load plugin".to_string();
+        let run = run.clone();
+        if let Some(run) = &run {
+            self.remember_plugin_location(run);
+        }
 
         let client_id = client_id
             .and_then(|client_id| {
@@ -644,12 +670,16 @@ impl WasmBridge {
             })?;
 
         let plugin_id = PluginId::new(self.next_plugin_id);
+        self.independent_plugin_ids.insert(plugin_id);
         self.cached_events_for_pending_plugins
             .insert(plugin_id, vec![]);
 
         match run {
             Some(run) => {
-                let plugin_config = match PluginConfig::from_run_plugin(run) {
+                // Even resolution failures complete asynchronously. Keep their initial
+                // pipes pending until the failure instruction supplies the diagnostic.
+                self.loading_plugins.insert((plugin_id, run.clone()));
+                let plugin_config = match PluginConfig::from_run_plugin(&run) {
                     Some(plugin_config) => plugin_config,
                     None => {
                         self.next_plugin_id += 1;
@@ -674,7 +704,6 @@ impl WasmBridge {
 
                 self.cached_resizes_for_pending_plugins
                     .insert(plugin_id, (size.rows, size.cols));
-                self.loading_plugins.insert((plugin_id, run.clone()));
                 self.cancel_token(plugin_id);
 
                 // Clone for threaded contexts
@@ -835,6 +864,19 @@ impl WasmBridge {
             write_config_to_disk: false,
             plugin_id: Some(pid),
         });
+        self.cancel_permission_requests(pid, None);
+        self.background_plugin_ids.remove(&pid);
+        self.independent_plugin_ids.remove(&pid);
+        self.latest_plugin_errors.remove(&pid);
+        self.plugin_callers.remove(&pid);
+        self.pending_plugin_id_reloads.remove(&pid);
+        if let Some(run) = self
+            .run_plugin_of_loading_plugin_id(pid)
+            .cloned()
+            .or_else(|| self.run_plugin_of_plugin_id(pid))
+        {
+            self.pending_plugin_reloads.remove(&run);
+        }
         self.shared_plugin_ids.remove(&pid);
         self.load_ids.remove(&pid);
 
@@ -854,9 +896,19 @@ impl WasmBridge {
             if removed.is_empty() && still_loading {
                 self.unloaded_while_loading.lock().unwrap().insert(pid);
             }
+            self.loading_plugins.retain(|(p_id, _)| *p_id != pid);
+            // Keep resolved sources only while a running, loading, or retry identity owns
+            // them. Configured declarations alone must not pin a stopped symlink's target.
+            let retained_locations: HashSet<_> = plugin_map
+                .list_plugins()
+                .into_values()
+                .chain(self.loading_plugins.iter().map(|(_, run)| run.clone()))
+                .map(|run| self.normalize_plugin(run).location)
+                .collect();
+            self.resolved_plugin_locations
+                .retain(|_, location| retained_locations.contains(location));
             removed
         };
-        self.loading_plugins.retain(|(p_id, _)| *p_id != pid);
         self.cached_events_for_pending_plugins.remove(&pid);
         self.cached_resizes_for_pending_plugins.remove(&pid);
 
@@ -1082,6 +1134,8 @@ impl WasmBridge {
                 log::error!("{} {}", identity, line);
             }
         }
+        self.cancel_permission_requests(plugin_id, instance_id);
+        self.latest_plugin_errors.insert(plugin_id, error.clone());
         self.finish_pipe_requests();
         let recorded = self.queues.lock().unwrap().record_outcome(
             plugin_id,
@@ -1096,6 +1150,9 @@ impl WasmBridge {
                 self.loading_plugins.retain(|(id, _)| *id != plugin_id);
                 self.plugin_ids_waiting_for_permission_request
                     .remove(&plugin_id);
+                if self.pending_plugin_id_reloads.remove(&plugin_id) {
+                    self.reload_plugin_with_id(plugin_id)?;
+                }
                 if let Some(run_plugin) = run_plugin {
                     if self.pending_plugin_reloads.remove(&run_plugin) {
                         self.reload_plugin(&run_plugin)?;
@@ -1270,6 +1327,7 @@ impl WasmBridge {
             ));
     }
     pub fn reload_plugin_with_id(&mut self, plugin_id: PluginId) -> Result<()> {
+        self.cancel_permission_requests(plugin_id, None);
         self.senders
             .send_to_screen(ScreenInstruction::NotificationPolicyUnavailable {
                 plugin_id,
@@ -1504,8 +1562,13 @@ impl WasmBridge {
         Ok(())
     }
     pub fn reload_plugin(&mut self, run_plugin: &RunPlugin) -> Result<()> {
-        if self.plugin_is_currently_being_loaded(&run_plugin.location) {
-            self.pending_plugin_reloads.insert(run_plugin.clone());
+        self.remember_plugin_location(run_plugin);
+        if let Some(id) =
+            self.plugin_id_of_loading_plugin(&run_plugin.location, &run_plugin.configuration)
+        {
+            if let Some(loading) = self.run_plugin_of_loading_plugin_id(id) {
+                self.pending_plugin_reloads.insert(loading.clone());
+            }
             return Ok(());
         }
 
@@ -2455,11 +2518,12 @@ impl WasmBridge {
                 continue;
             }
             if !available.contains(id)
-                && self.plugin_ids_waiting_for_permission_request.contains(id)
-                && !self
-                    .loading_plugins
-                    .iter()
-                    .any(|(loading, _)| loading == id)
+                && (self.latest_plugin_errors.contains_key(id)
+                    || (self.plugin_ids_waiting_for_permission_request.contains(id)
+                        && !self
+                            .loading_plugins
+                            .iter()
+                            .any(|(loading, _)| loading == id)))
             {
                 continue;
             }
@@ -2574,7 +2638,7 @@ impl WasmBridge {
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
         let mut applied_plugin_paths = HashSet::new();
-        for plugin_id in plugin_ids {
+        for plugin_id in plugin_ids.iter().copied() {
             // The loader has returned, even if a live instance still needs permission.
             // Keeping it marked as loading would admit pipes after that instance fails.
             if let Some(run_plugin) = self.run_plugin_of_loading_plugin_id(plugin_id) {
@@ -2582,23 +2646,32 @@ impl WasmBridge {
             }
             self.loading_plugins
                 .retain(|(p_id, _run_plugin)| p_id != &plugin_id);
-            if !done_receiving_permissions
-                && self
-                    .plugin_ids_waiting_for_permission_request
-                    .contains(&plugin_id)
-                && self
-                    .plugin_map
-                    .lock()
-                    .unwrap()
-                    .pipe_instances()
-                    .iter()
-                    .any(|((id, _, _, _), _)| *id == plugin_id)
+            if self
+                .permission_requests
+                .values()
+                .any(|pending| pending.contains_plugin(plugin_id))
+                || (!done_receiving_permissions
+                    && self
+                        .plugin_ids_waiting_for_permission_request
+                        .contains(&plugin_id)
+                    && self
+                        .plugin_map
+                        .lock()
+                        .unwrap()
+                        .pipe_instances()
+                        .iter()
+                        .any(|((id, _, _, _), _)| *id == plugin_id))
             {
                 continue;
             }
             self.plugin_ids_waiting_for_permission_request
                 .remove(&plugin_id);
             self.apply_cached_events_and_resizes_for_plugin(plugin_id, shutdown_sender.clone())?;
+        }
+        for plugin_id in plugin_ids {
+            if self.pending_plugin_id_reloads.remove(&plugin_id) {
+                self.reload_plugin_with_id(plugin_id)?;
+            }
         }
         for run_plugin in applied_plugin_paths.drain() {
             if self.pending_plugin_reloads.remove(&run_plugin) {
@@ -3312,22 +3385,22 @@ impl WasmBridge {
         }
         Ok(())
     }
-    fn plugin_is_currently_being_loaded(&self, plugin_location: &RunPluginLocation) -> bool {
-        self.loading_plugins
-            .iter()
-            .find(|(_plugin_id, run_plugin)| &run_plugin.location == plugin_location)
-            .is_some()
-    }
     fn plugin_id_of_loading_plugin(
         &self,
         plugin_location: &RunPluginLocation,
         plugin_configuration: &PluginUserConfiguration,
     ) -> Option<PluginId> {
+        let location = self
+            .normalize_plugin(RunPlugin {
+                location: plugin_location.clone(),
+                ..Default::default()
+            })
+            .location;
         let wanted = plugin_configuration.without_caller_context();
         self.loading_plugins
             .iter()
             .find_map(|(plugin_id, run_plugin)| {
-                if &run_plugin.location == plugin_location
+                if self.normalize_plugin(run_plugin.clone()).location == location
                     && run_plugin.configuration.without_caller_context() == wanted
                 {
                     Some(*plugin_id)
@@ -3383,7 +3456,13 @@ impl WasmBridge {
         self.plugin_map
             .lock()
             .unwrap()
-            .all_plugin_ids_for_plugin_location(plugin_location, plugin_configuration)
+            .all_plugin_ids_for_plugin_location(plugin_location, plugin_configuration, |location| {
+                self.normalize_plugin(RunPlugin {
+                    location: location.clone(),
+                    ..Default::default()
+                })
+                .location
+            })
     }
     pub(crate) fn palette_note(&self, request: yinz_bus::command_palette::NoteRequest) {
         let data = self.data_access.clone();
@@ -3449,14 +3528,27 @@ impl WasmBridge {
         plugin_location: &RunPluginLocation,
         plugin_configuration: &PluginUserConfiguration,
     ) -> Vec<(PluginId, Option<ClientId>)> {
+        let normalized = self
+            .normalize_plugin(RunPlugin {
+                location: plugin_location.clone(),
+                ..Default::default()
+            })
+            .location;
+        let plugin_location = &normalized;
         let identities = self.plugin_map.lock().unwrap().clone_plugin_assets();
-        let mut destinations: Vec<_> = match identities.get(plugin_location) {
-            Some(at_this_location) => instances_of(at_this_location, plugin_configuration)
-                .iter()
-                .map(|(plugin, client)| (*plugin, Some(*client)))
-                .collect(),
-            None => vec![],
-        };
+        let mut destinations: Vec<_> = identities
+            .iter()
+            .filter(|(location, _)| {
+                self.normalize_plugin(RunPlugin {
+                    location: (*location).clone(),
+                    ..Default::default()
+                })
+                .location
+                    == *plugin_location
+            })
+            .flat_map(|(_, configurations)| instances_of(configurations, plugin_configuration))
+            .map(|(plugin, client)| (*plugin, Some(*client)))
+            .collect();
         // A restored layout can finish loading its bridge after the first CLI
         // request loaded one. This service has one recipient, unlike view plugins.
         if crate::host_bridge::is_workflow_bridge(plugin_location) {
@@ -3474,11 +3566,18 @@ impl WasmBridge {
         plugin_location: &RunPluginLocation,
         plugin_configuration: &PluginUserConfiguration,
     ) -> Vec<PluginId> {
+        let normalized = self
+            .normalize_plugin(RunPlugin {
+                location: plugin_location.clone(),
+                ..Default::default()
+            })
+            .location;
+        let plugin_location = &normalized;
         let wanted = plugin_configuration.without_caller_context();
         self.loading_plugins
             .iter()
             .filter(|(_, run_plugin)| {
-                &run_plugin.location == plugin_location
+                &self.normalize_plugin(run_plugin.clone()).location == plugin_location
                     && run_plugin.configuration.without_caller_context() == wanted
             })
             .map(|(plugin_id, _)| *plugin_id)
@@ -3571,7 +3670,7 @@ impl WasmBridge {
     }
     /// Grant `permissions` to the plugin at `plugin_url`, on top of whatever it already has.
     ///
-    /// The cache is keyed the way `cache_plugin_permissions` keys it - by the location's string
+    /// The cache is keyed the way `answer_permissions` keys it - by the location's string
     /// form - so the plugin's own later `request_permission` finds the grant and never prompts.
     /// An instance already running is told too, with the same event a prompt's answer sends,
     /// so it does not have to be reloaded to use what it was given.
@@ -3585,6 +3684,12 @@ impl WasmBridge {
         let location = yinz_runtime::plugin_location::parse_plugin_location(plugin_url, None)
             .map_err(|e| anyhow!("{}", e))
             .with_context(err_context)?;
+        let location = self
+            .normalize_plugin(RunPlugin {
+                location,
+                ..Default::default()
+            })
+            .location;
         let key = location.to_string();
 
         let mut permission_cache = PermissionCache::from_path_or_default(None);
@@ -3604,12 +3709,20 @@ impl WasmBridge {
             .filter_map(|(plugin_id, _client_id, running_plugin)| {
                 let mut running_plugin = running_plugin.lock().unwrap();
                 let env = running_plugin.env();
-                let is_it = env.plugin_config.location == location
-                    || env
-                        .resolved_source_path
-                        .as_ref()
-                        .is_some_and(|path| RunPluginLocation::File(path.clone()) == location);
-                if !is_it {
+                let loaded_location = match (&env.plugin_config.location, &env.resolved_source_path)
+                {
+                    (RunPluginLocation::File(_), Some(path)) => {
+                        RunPluginLocation::File(path.clone())
+                    },
+                    (location, _) => {
+                        self.normalize_plugin(RunPlugin {
+                            location: location.clone(),
+                            ..Default::default()
+                        })
+                        .location
+                    },
+                };
+                if loaded_location != location {
                     return None;
                 }
                 running_plugin
@@ -3618,76 +3731,27 @@ impl WasmBridge {
                 Some(plugin_id)
             })
             .collect();
-        let updates: Vec<_> = running
-            .into_iter()
-            .map(|plugin_id| {
-                (
-                    Some(plugin_id),
-                    None,
-                    Event::PermissionRequestResult(PermissionStatus::Granted),
-                )
+        let tokens: Vec<_> = self
+            .permission_requests
+            .iter()
+            .filter(|(_, pending)| {
+                running.iter().any(|id| pending.contains_plugin(*id))
+                    && pending
+                        .permissions
+                        .iter()
+                        .all(|permission| granted.contains(permission))
             })
+            .map(|(token, _)| *token)
             .collect();
-        if !updates.is_empty() {
-            self.update_plugins(updates, shutdown_sender)?;
+        for token in tokens {
+            self.answer_permissions(
+                token,
+                PermissionStatus::Granted,
+                None,
+                shutdown_sender.clone(),
+            )?;
         }
         Ok(())
-    }
-    pub fn cache_plugin_permissions(
-        &mut self,
-        plugin_id: PluginId,
-        _client_id: Option<ClientId>,
-        permissions: Vec<PermissionType>,
-        status: PermissionStatus,
-        cache_path: Option<PathBuf>,
-    ) -> Result<()> {
-        let err_context = || format!("Failed to write plugin permission {plugin_id}");
-
-        // Every instance of this plugin, not just the client who answered the prompt. The
-        // on-disk cache is keyed by plugin location alone and the cached-event replay drops
-        // the client id before fanning the grant out to everyone, so an instance belonging to
-        // a client who never saw the prompt gets told `Granted` while its own PluginEnv still
-        // has `permissions: None` — every gated call it makes is then silently dropped.
-        let running_plugins: Vec<_> = self
-            .plugin_map
-            .lock()
-            .unwrap()
-            .running_plugins()
-            .into_iter()
-            .filter(|(p_id, _c_id, _running_plugin)| *p_id == plugin_id)
-            .map(|(_p_id, _c_id, running_plugin)| running_plugin)
-            .collect();
-
-        if running_plugins.is_empty() {
-            return Err(anyhow!("Failed to get running plugin"));
-        }
-
-        let requested = permissions;
-        let permissions = if status == PermissionStatus::Granted {
-            requested.clone()
-        } else {
-            vec![]
-        };
-
-        let mut plugin_location = None;
-        for running_plugin in running_plugins {
-            let mut running_plugin = running_plugin.lock().unwrap();
-            running_plugin
-                .env_mut()
-                .set_permissions(HashSet::from_iter(permissions.clone()));
-            if let Some(workers) = &running_plugin.env().deno_workers {
-                workers.permission_answer(running_plugin.env(), &requested, status);
-            }
-            plugin_location
-                .get_or_insert_with(|| running_plugin.env().plugin_config.location.to_string());
-        }
-
-        let mut permission_cache = PermissionCache::from_path_or_default(cache_path);
-        if let Some(plugin_location) = plugin_location {
-            permission_cache.cache(plugin_location, permissions);
-        }
-
-        permission_cache.write_to_file().with_context(err_context)
     }
     pub fn cache_plugin_events(&mut self, plugin_id: PluginId) {
         self.plugin_ids_waiting_for_permission_request
@@ -3916,7 +3980,15 @@ impl WasmBridge {
             let new_config_for_location = new_plugins
                 .aliases
                 .values()
-                .find(|run_plugin| &run_plugin.location == plugin_location)
+                .find(|run_plugin| {
+                    self.normalize_plugin((*run_plugin).clone()).location
+                        == self
+                            .normalize_plugin(RunPlugin {
+                                location: plugin_location.clone(),
+                                ..Default::default()
+                            })
+                            .location
+                })
                 .map(|run_plugin| &run_plugin.configuration);
 
             if let Some(new_config) = new_config_for_location {

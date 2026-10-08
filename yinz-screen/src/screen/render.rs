@@ -30,6 +30,8 @@ impl Screen {
     }
 
     pub fn render(&mut self) -> Result<()> {
+        self.assign_permission_modals();
+        self.prepare_permission_modal_render();
         self.pane_subscriber_snapshots_dirty = true;
         self.schedule_render()
     }
@@ -158,6 +160,8 @@ impl Screen {
     }
 
     pub(crate) fn render_to_clients_traced(&mut self, trace_attach: bool) -> Result<()> {
+        self.assign_permission_modals();
+        self.prepare_permission_modal_render();
         // this method does the actual rendering and is triggered by a debounced BackgroundJob (see
         // the render method for more details)
         let err_context = "failed to render screen";
@@ -246,7 +250,12 @@ impl Screen {
                 self.synchronized_output_capabilities.clone(),
             );
 
-            output.set_input_overlay_clients(self.command_palettes.keys().copied());
+            output.set_input_overlay_clients(
+                self.command_palettes
+                    .keys()
+                    .copied()
+                    .chain(self.permission_modal_clients()),
+            );
 
             output.pane_change_client = self.followed_client_id.filter(|_| has_watchers);
 
@@ -375,6 +384,9 @@ impl Screen {
                 .collect();
             self.render_command_palettes(&mut output, palette_clients.into_iter(), false)
                 .context(err_context)?;
+
+            self.render_permission_modals(&mut output)
+                .context("render permission modal")?;
 
             let pane_render_report = output.drain_pane_render_report();
 

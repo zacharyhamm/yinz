@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use yinz_runtime::shared::make_terminal_title;
 use yinz_types::internal_ids::PluginId;
@@ -39,20 +39,6 @@ use {
     yinz_types::data::PaletteColor,
     yinz_types::input::layout::{Run, RunPluginLocation, RunPluginOrAlias},
 };
-use {
-    yinz_types::data::PermissionStatus, yinz_types::data::PermissionType,
-    yinz_types::data::PluginPermission,
-};
-
-macro_rules! style {
-    ($fg:expr) => {
-        ansi_term::Style::new().fg(match $fg {
-            PaletteColor::Rgb((r, g, b)) => ansi_term::Color::RGB(r, g, b),
-            PaletteColor::EightBit(color) => ansi_term::Color::Fixed(color),
-        })
-    };
-}
-
 macro_rules! get_or_create_grid {
     ($self:ident, $client_id:ident) => {{
         let rows = $self.get_content_rows();
@@ -140,7 +126,6 @@ pub struct PluginPane {
     last_loading_indication: Option<String>,
     invoked_with: Option<Run>,
     loading_indication: LoadingIndication,
-    requesting_permissions: Option<PluginPermission>,
     debug: bool,
     arrow_fonts: bool,
     styled_underlines: bool,
@@ -217,7 +202,6 @@ impl PluginPane {
             last_loading_indication: None,
             invoked_with,
             loading_indication,
-            requesting_permissions: None,
             debug,
             arrow_fonts,
             styled_underlines,
@@ -278,12 +262,7 @@ impl Pane for PluginPane {
     fn handle_plugin_bytes(&mut self, client_id: ClientId, bytes: VteBytes) {
         self.set_client_should_render(client_id, true);
 
-        let mut vte_bytes = bytes;
-        if let Some(plugin_permission) = &self.requesting_permissions {
-            vte_bytes = self
-                .display_request_permission_message(plugin_permission)
-                .into();
-        }
+        let vte_bytes = bytes;
 
         let grid = get_or_create_grid!(self, client_id);
 
@@ -405,40 +384,7 @@ impl Pane for PluginPane {
                 return None;
             }
         }
-        if let Some(requesting_permissions) = &self.requesting_permissions {
-            let permissions = requesting_permissions.permissions.clone();
-            if let Some(key_with_modifier) = key_with_modifier {
-                match key_with_modifier.bare_key {
-                    BareKey::Char('y') if key_with_modifier.has_no_modifiers() => {
-                        Some(AdjustedInput::PermissionRequestResult(
-                            permissions,
-                            PermissionStatus::Granted,
-                        ))
-                    },
-                    BareKey::Char('n') if key_with_modifier.has_no_modifiers() => {
-                        Some(AdjustedInput::PermissionRequestResult(
-                            permissions,
-                            PermissionStatus::Denied,
-                        ))
-                    },
-                    _ => None,
-                }
-            } else {
-                match raw_input_bytes.as_slice() {
-                    // Y or y
-                    &[89] | &[121] => Some(AdjustedInput::PermissionRequestResult(
-                        permissions,
-                        PermissionStatus::Granted,
-                    )),
-                    // N or n
-                    &[78] | &[110] => Some(AdjustedInput::PermissionRequestResult(
-                        permissions,
-                        PermissionStatus::Denied,
-                    )),
-                    _ => None,
-                }
-            }
-        } else if let Some(key_with_modifier) = key_with_modifier {
+        if let Some(key_with_modifier) = key_with_modifier {
             Some(AdjustedInput::WriteKeyToPlugin(key_with_modifier.clone()))
         } else if raw_input_bytes.as_slice() == BRACKETED_PASTE_BEGIN {
             self.text_being_pasted = Some(vec![]);
@@ -532,11 +478,6 @@ impl Pane for PluginPane {
     fn show_cursor(&mut self, client_id: ClientId, cursor_position: Option<(usize, usize)>) {
         self.cursor_visibility.insert(client_id, cursor_position);
         self.should_render.insert(client_id, true);
-    }
-    fn request_permissions_from_user(&mut self, permissions: Option<PluginPermission>) {
-        self.requesting_permissions = permissions;
-        self.handle_plugin_bytes_for_all_clients(Default::default()); // to trigger the render of
-                                                                      // the permission message
     }
     fn render(
         &mut self,
@@ -1368,56 +1309,6 @@ impl PluginPane {
         for client_id in client_ids {
             self.handle_plugin_bytes(client_id, bytes.clone());
         }
-    }
-    fn display_request_permission_message(&self, plugin_permission: &PluginPermission) -> String {
-        let bold_white = style!(self.style.colors.text_unselected.base).bold();
-        let cyan = style!(self.style.colors.text_unselected.emphasis_1).bold();
-        let orange = style!(self.style.colors.text_unselected.emphasis_0).bold();
-        let green = style!(self.style.colors.text_unselected.emphasis_2).bold();
-
-        let mut messages = String::new();
-        let permissions: BTreeSet<PermissionType> =
-            plugin_permission.permissions.clone().into_iter().collect();
-
-        let min_row_count = permissions.len() + 4;
-
-        if self.rows() >= min_row_count {
-            messages.push_str(&format!(
-                "{} {} {}\n",
-                bold_white.paint("Plugin"),
-                cyan.paint(&plugin_permission.name),
-                bold_white.paint("asks permission to:"),
-            ));
-            permissions.iter().enumerate().for_each(|(i, p)| {
-                messages.push_str(&format!(
-                    "\n\r{}. {}",
-                    bold_white.paint(format!("{}", i + 1)),
-                    orange.paint(p.display_name())
-                ));
-            });
-
-            messages.push_str(&format!(
-                "\n\n\r{} {}",
-                bold_white.paint("Allow?"),
-                green.paint("(y/n)"),
-            ));
-        } else {
-            messages.push_str(&format!(
-                "{} {}. {} {}",
-                bold_white.paint("This plugin asks permission to:"),
-                orange.paint(
-                    permissions
-                        .iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                bold_white.paint("Allow?"),
-                green.paint("(y/n)"),
-            ));
-        }
-
-        messages
     }
 }
 

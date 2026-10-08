@@ -1534,6 +1534,8 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             | PluginsCli::Update { .. }
             | PluginsCli::Status { .. }
             | PluginsCli::Reload { .. }
+            | PluginsCli::Start { .. }
+            | PluginsCli::Stop { .. }
             | PluginsCli::Check { .. }
     ) {
         yinz_config::config::Config::validate_plugin_overlays(opts.config_dir.as_deref())
@@ -1603,6 +1605,78 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
         if !report.passed() {
             anyhow::bail!("plugin tests failed");
         }
+        return Ok(());
+    }
+    use yinz_types::cli::PluginOperation;
+    let lifecycle = match &command {
+        PluginsCli::Start {
+            name,
+            configuration_json,
+            json,
+        } => Some((
+            PluginOperation::Start,
+            Some(name.as_str()),
+            configuration_json.as_deref(),
+            *json,
+        )),
+        PluginsCli::Reload {
+            name,
+            configuration_json,
+            json,
+            ..
+        } => Some((
+            PluginOperation::Reload,
+            Some(name.as_str()),
+            configuration_json.as_deref(),
+            *json,
+        )),
+        PluginsCli::Stop {
+            name,
+            configuration_json,
+            json,
+        } => Some((
+            PluginOperation::Stop,
+            Some(name.as_str()),
+            configuration_json.as_deref(),
+            *json,
+        )),
+        PluginsCli::List {
+            running: true,
+            json,
+        } => Some((PluginOperation::List, None, None, *json)),
+        _ => None,
+    };
+    if let Some((operation, target, configuration, json)) = lifecycle {
+        let (session, caller) =
+            resolve_session_for_command(opts.session.clone(), "manage plugins in");
+        let result = plugin_lifecycle_request(
+            operation,
+            target,
+            configuration,
+            config.as_ref(),
+            plugin_dir().ok().as_deref(),
+            caller,
+        )
+        .and_then(|request| yinz_client::store_client::plugin_request(&session, request));
+        if json {
+            match &result {
+                Ok(response) => println!("{}", serde_json::to_string(response)?),
+                Err(error) => println!("{}", serde_json::json!({"error": format!("{error:#}")})),
+            }
+        } else if let Ok(response) = &result {
+            for plugin in &response.plugins {
+                println!(
+                    "plugin_{} {} {} {}",
+                    plugin.id,
+                    serde_json::to_value(plugin.state)?
+                        .as_str()
+                        .unwrap_or_default(),
+                    plugin.location,
+                    serde_json::to_string(&plugin.configuration)?
+                );
+            }
+        }
+        result?;
         return Ok(());
     }
     let update_repositories = matches!(command, PluginsCli::Update { .. });
@@ -1701,7 +1775,7 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
         PluginsCli::Docs { section } => {
             let content = match section.as_str() {
                 "index" => "guide: plugin authoring guide\nsdk: TypeScript API declarations\ntesting: plugin test API\nrepositories: Git repository plugins",
-                "guide" => concat!("Author plugins with yinz:plugin and confined relative imports. Use plugins write, check --json, test --json, reload, then log. Read sdk for the full API. Permissions must be requested explicitly. An optional unload(): void | Promise<void> runs once on pane close, closeSelf(), reload (including hot reload), and normal session shutdown. Existing grants remain usable; await runCommand() or sleep() cleanup within two seconds. Errors are logged and timeout forces teardown. No new update/render/pipe calls start during unload; pending cancellable promises are cancelled afterwards. Cleanup is best effort, not guaranteed after a crash, interruption, SIGKILL, or the session shutdown deadline. Worker isolates do not run the pane unload hook.\n\nimport.meta.url identifies the current module. Filesystem modules use canonical, escaped file: URLs. For example:\n\nconst sibling = import.meta.resolve(\"./main.ts\");\n\nThis call synchronously resolves an existing sibling without evaluating it and throws TypeError if resolution fails. It follows import restrictions: supported extensions and canonical paths confined to the entrypoint directory, or the repository root for repository plugins. It is not a general asset-path resolver. The checker checks the call's types but does not execute it or validate its target. Metadata and resolution need no new permission. Launching a plugin still requires the chosen API's permission.\n\nPass filesystem results unchanged to plugin_url inputs. Do not decode them or use RunPluginLocation.File, which expects a path. Embedded modules use private yinz-builtin: URLs, which are not public plugin-launch URLs. A resolved repository sibling is a physical file in the loaded revision. Launching its URL creates a file-based plugin. It does not preserve the repository descriptor, stable repository permission/private-data identity, or repository-wide import root.\n\nComplete executable example:\n\n", include_str!("../example-plugins/clock.ts"), "\n\nBroader host API example:\n\n", include_str!("../example-plugins/capabilities.ts")),
+                "guide" => concat!(include_str!("../docs/PLUGINS.md"), "\n\nAuthor plugins with yinz:plugin and confined relative imports. Use plugins write, check --json, test --json, reload, then log. Read sdk for the full API. Permissions must be requested explicitly. An optional unload(): void | Promise<void> runs once on pane close, closeSelf(), explicit reload, and normal session shutdown. Existing grants remain usable; await runCommand() or sleep() cleanup within two seconds. Errors are logged and timeout forces teardown. No new update/render/pipe calls start during unload; pending cancellable promises are cancelled afterwards. Cleanup is best effort, not guaranteed after a crash, interruption, SIGKILL, or the session shutdown deadline. Worker isolates do not run the pane unload hook.\n\nimport.meta.url identifies the current module. Filesystem modules use canonical, escaped file: URLs. For example:\n\nconst sibling = import.meta.resolve(\"./main.ts\");\n\nThis call synchronously resolves an existing sibling without evaluating it and throws TypeError if resolution fails. It follows import restrictions: supported extensions and canonical paths confined to the entrypoint directory, or the repository root for repository plugins. It is not a general asset-path resolver. The checker checks the call's types but does not execute it or validate its target. Metadata and resolution need no new permission. Launching a plugin still requires the chosen API's permission.\n\nPass filesystem results unchanged to plugin_url inputs. Do not decode them or use RunPluginLocation.File, which expects a path. Embedded modules use private yinz-builtin: URLs, which are not public plugin-launch URLs. A resolved repository sibling is a physical file in the loaded revision. Launching its URL creates a file-based plugin. It does not preserve the repository descriptor, stable repository permission/private-data identity, or repository-wide import root.\n\nComplete executable example:\n\n", include_str!("../example-plugins/clock.ts"), "\n\nBroader host API example:\n\n", include_str!("../example-plugins/capabilities.ts")),
                 "repositories" => include_str!("../docs/GIT_PLUGINS.md"),
                 "sdk" => include_str!("../yinz-plugin-host/src/deno/sdk.d.ts"),
                 "testing" => include_str!("../yinz-plugin-host/src/deno/testing/testing.d.ts"),
@@ -1713,7 +1787,7 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             );
             Ok(())
         },
-        PluginsCli::List => {
+        PluginsCli::List { .. } => {
             fn sources(root: &Path, paths: &mut Vec<PathBuf>) -> anyhow::Result<()> {
                 if !root.exists() {
                     return Ok(());
@@ -1880,57 +1954,86 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             println!("{} is formatted", path.display());
             Ok(())
         },
-        PluginsCli::Reload { name, headless } => {
-            let url = if config
-                .as_ref()
-                .is_some_and(|config| config.plugins.aliases.contains_key(&name))
-            {
-                name
-            } else {
-                let path = match yinz_server::plugin_authoring::resolve_explicit_plugin_path(
-                    &name,
-                    &std::env::current_dir().context("resolve plugin working directory")?,
-                )? {
-                    Some(path) => path.canonicalize().context("resolve plugin reload path")?,
-                    None => yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
-                        .map_err(|e| anyhow::anyhow!(e))?,
-                };
-                if !path.is_file() {
-                    anyhow::bail!("{} is not there; write it first", path.display());
-                }
-                url::Url::from_file_path(&path)
-                    .map_err(|()| anyhow::anyhow!("encode plugin reload path {}", path.display()))?
-                    .to_string()
-            };
-            if headless {
-                let (session, caller) = resolve_session_for_command(
-                    opts.session.clone(),
-                    "reload a headless plugin in",
-                );
-                let action = yinz_cli::notes_todos::pipe_action(
-                    "agent_action",
-                    serde_json::json!({"op":"plugin_reload","args":{"url":url},"structured_reply":true}),
-                );
-                println!(
-                    "{}",
-                    yinz_client::store_client::request(&session, action, caller)?
-                );
-                return Ok(());
-            }
-            send_action_to_session(
-                yinz_cli::args::CliAction::StartOrReloadPlugin {
-                    url,
-                    configuration: None,
-                    configuration_json: None,
-                },
-                opts.session.clone(),
-                config,
-            );
-            Ok(())
+        PluginsCli::Start { .. } | PluginsCli::Reload { .. } | PluginsCli::Stop { .. } => {
+            unreachable!("lifecycle commands return above")
         },
-        PluginsCli::Log { name, lines } => {
+        PluginsCli::Log {
+            name,
+            lines,
+            configuration_json,
+            json,
+        } => {
+            let (requested, caller, target_error) = match yinz_process::pane_context::target(
+                opts.session.clone().map(SessionName::new),
+            ) {
+                Ok((requested, caller)) => (requested, caller, None),
+                Err(error) => (None, None, Some(format!("{error:#}"))),
+            };
+            let session = requested.or_else(|| {
+                if target_error.is_none() {
+                    match get_active_session() {
+                        ActiveSession::One(session) => Some(session),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            });
+            let status = if let Some(session) = session {
+                let request = plugin_lifecycle_request(
+                    PluginOperation::Inspect,
+                    Some(&name),
+                    configuration_json.as_deref(),
+                    config.as_ref(),
+                    plugin_dir().ok().as_deref(),
+                    caller,
+                )?;
+                match yinz_client::store_client::plugin_request(&session, request) {
+                    Err(error)
+                        if error.is::<yinz_client::store_client::PluginRequestRejected>() =>
+                    {
+                        if json {
+                            println!("{}", serde_json::json!({"error": format!("{error:#}")}));
+                        }
+                        return Err(error);
+                    },
+                    response => Some(response),
+                }
+            } else {
+                None
+            };
+            let runtime = match &status {
+                Some(Ok(response)) if response.plugins.is_empty() => "not loaded".to_owned(),
+                Some(Ok(response)) => response
+                    .plugins
+                    .iter()
+                    .map(|plugin| {
+                        format!(
+                            "plugin_{}: {}",
+                            plugin.id,
+                            serde_json::to_value(plugin.state)
+                                .unwrap_or_default()
+                                .as_str()
+                                .unwrap_or_default()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                Some(Err(error)) => format!("runtime status unknown: {error:#}"),
+                None => format!(
+                    "runtime status unknown: {}",
+                    target_error.as_deref().unwrap_or("no available session")
+                ),
+            };
+            let log_name = status
+                .as_ref()
+                .and_then(|status| status.as_ref().ok())
+                .and_then(|response| response.plugins.first())
+                .map(|plugin| plugin.location.as_str())
+                .unwrap_or(&name);
+
             let target = yinz_server::plugin_authoring::resolve_log_target(
-                &name,
+                log_name,
                 plugin_dir().ok().as_deref(),
                 &opts
                     .data_dir
@@ -1943,13 +2046,103 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                 &std::env::current_dir().context("resolve log working directory")?,
             )?;
             let log_file = yinz_runtime::consts::YINZ_TMP_LOG_FILE.clone();
-            print!(
-                "{}",
+            let output = if log_file.exists() {
                 yinz_server::plugin_authoring::log_target_tail(&log_file, &target, lines)?
-            );
+            } else {
+                String::new()
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"runtime":runtime,"historical":true,"output":output})
+                );
+            } else {
+                println!("{runtime}");
+                if output.is_empty() {
+                    println!("no log lines");
+                } else {
+                    println!("Historical log output:");
+                    print!("{output}");
+                }
+            }
             Ok(())
         },
     }
+}
+
+fn plugin_lifecycle_request(
+    operation: yinz_types::cli::PluginOperation,
+    target: Option<&str>,
+    configuration: Option<&str>,
+    config: Option<&yinz_config::config::Config>,
+    directory: Option<&Path>,
+    caller: Option<TerminalId>,
+) -> anyhow::Result<yinz_types::cli::PluginRequest> {
+    use anyhow::Context;
+    use yinz_types::input::layout::{RunPlugin, RunPluginLocation};
+    let cwd = std::env::current_dir().context("resolve plugin working directory")?;
+    let aliases = config
+        .map(|config| config.plugins.clone())
+        .unwrap_or_default();
+    let fallback = if let Some(target) = target.filter(|target| {
+        !target
+            .strip_prefix("plugin_")
+            .is_some_and(|id| id.parse::<u32>().is_ok())
+    }) {
+        Some(if let Some(run) = aliases.aliases.get(target) {
+            run.clone()
+        } else if let Some(path) =
+            yinz_server::plugin_authoring::resolve_explicit_plugin_path(target, &cwd)?
+        {
+            RunPlugin {
+                location: RunPluginLocation::File(path),
+                ..Default::default()
+            }
+        } else if target.contains(':') {
+            RunPlugin {
+                location: yinz_runtime::plugin_location::parse_plugin_location(
+                    target,
+                    Some(cwd.clone()),
+                )?,
+                ..Default::default()
+            }
+        } else {
+            let path = yinz_plugin_api::authoring::resolve_plugin_file(
+                directory.context("no plugin directory configured")?,
+                target,
+            )
+            .map_err(anyhow::Error::msg)?;
+            RunPlugin {
+                location: RunPluginLocation::File(path),
+                ..Default::default()
+            }
+        })
+    } else {
+        None
+    };
+    let mut candidates = vec![];
+    if let Some(config) = config {
+        for declaration in &config.background_plugins {
+            let mut declaration = declaration.clone();
+            declaration.populate_run_plugin_if_needed(&aliases);
+            candidates.push(
+                declaration
+                    .get_run_plugin()
+                    .context("unknown load_plugins alias")?,
+            );
+        }
+    }
+    Ok(yinz_types::cli::PluginRequest {
+        operation,
+        target: target.map(str::to_owned),
+        configuration: configuration
+            .map(serde_json::from_str)
+            .transpose()
+            .context("--configuration-json must be an object of string values")?,
+        fallback,
+        candidates,
+        caller,
+    })
 }
 
 /// What the source is going to do wrong at run time, on stderr, under whatever the command

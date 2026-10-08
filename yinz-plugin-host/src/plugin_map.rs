@@ -144,6 +144,17 @@ fn configuration_matches_for_reload(
 }
 
 impl PluginMap {
+    pub(crate) fn permission_instance(
+        &self,
+        plugin: PluginId,
+        instance: PluginInstanceId,
+    ) -> Option<(ClientId, Arc<Mutex<RunningPlugin>>)> {
+        self.instance_ids.iter().find_map(|(key, id)| {
+            (key.0 == plugin && *id == instance && !self.availability[key].load(Ordering::Acquire))
+                .then(|| (key.1, self.plugin_assets[key].0.clone()))
+        })
+    }
+
     pub fn pipe_instances(&mut self) -> Vec<(RunningPluginEntry, PluginInstanceId)> {
         self.running_plugins_and_subscriptions()
             .into_iter()
@@ -362,6 +373,7 @@ impl PluginMap {
         &self,
         plugin_location: &RunPluginLocation,
         plugin_configuration: &PluginUserConfiguration,
+        normalize: impl Fn(&RunPluginLocation) -> RunPluginLocation,
     ) -> Result<Vec<PluginId>> {
         let err_context = || format!("Failed to get plugin ids for location {plugin_location}");
         let plugin_ids: Vec<PluginId> = self
@@ -371,18 +383,25 @@ impl PluginMap {
                 let plugin_config = &metadata.config;
                 let running_plugin_location = &plugin_config.location;
                 let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
+                let loaded_location =
+                    match (running_plugin_location, &metadata.resolved_source_path) {
+                        (RunPluginLocation::File(_), Some(path)) => {
+                            RunPluginLocation::File(path.clone())
+                        },
+                        _ => normalize(running_plugin_location),
+                    };
                 let location_matches = running_plugin_location == plugin_location
                     // Match plugin-directory fallback and the declared path's current target,
                     // which can change when a symlink is retargeted after loading.
-                    || match plugin_location {
-                        RunPluginLocation::File(requested) => {
-                            let requested = requested.canonicalize().unwrap_or_else(|_| requested.clone());
+                    || match (normalize(plugin_location), loaded_location) {
+                        (RunPluginLocation::File(requested), RunPluginLocation::File(resolved)) => {
+                            let requested = requested.canonicalize().unwrap_or(requested);
                             let declared = matches!(running_plugin_location, RunPluginLocation::File(_))
                                 .then_some(&plugin_config.path);
-                            metadata.resolved_source_path.iter().chain(declared)
+                            std::iter::once(&resolved).chain(declared)
                                 .any(|path| requested == path.canonicalize().unwrap_or_else(|_| path.clone()))
                         },
-                        _ => false,
+                        (requested, resolved) => requested == resolved,
                     };
                 location_matches
                     && configuration_matches_for_reload(
@@ -1399,6 +1418,7 @@ mod tests {
                 map.all_plugin_ids_for_plugin_location(
                     &RunPluginLocation::File(resolved),
                     &PluginUserConfiguration::default(),
+                    Clone::clone,
                 )
                 .unwrap(),
                 vec![PluginId::new(id)]

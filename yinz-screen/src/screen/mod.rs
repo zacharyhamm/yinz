@@ -134,6 +134,7 @@ mod notification_browser;
 mod notification_policy;
 mod notifications;
 mod panes;
+mod permission_modal;
 mod plugin_state;
 mod plugins;
 mod render;
@@ -680,6 +681,9 @@ pub(crate) struct Screen {
     /// in `remove_client` alongside `notification_mouse_captures`. See `screen::context_menu`.
     context_menus: HashMap<ClientId, ContextMenuState>,
     command_palettes: HashMap<ClientId, command_palette::CommandPaletteState>,
+    permission_modals: Vec<permission_modal::PermissionModal>,
+    permission_last_client: Option<ClientId>,
+    permission_mouse_captures: HashSet<ClientId>,
     note_edit_palettes: HashMap<u64, (ClientId, command_palette::CommandPaletteState)>,
     command_palette_mouse_captures: HashSet<ClientId>,
     palette_providers: command_palette::plugins::Registry,
@@ -1368,6 +1372,9 @@ impl Screen {
             notification_mouse_captures: HashSet::new(),
             context_menus: HashMap::new(),
             command_palettes: HashMap::new(),
+            permission_modals: vec![],
+            permission_last_client: None,
+            permission_mouse_captures: HashSet::new(),
             note_edit_palettes: HashMap::new(),
             command_palette_mouse_captures: HashSet::new(),
             palette_providers: command_palette::plugins::Registry::default(),

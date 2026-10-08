@@ -30,6 +30,7 @@ Revision properties are invalid for local repositories.
 yinz plugins install my-panel
 yinz plugins status my-panel
 yinz plugins update my-panel
+yinz plugins start my-panel
 yinz plugins reload my-panel
 ```
 
@@ -45,6 +46,8 @@ Previous revisions remain on disk.
 Running plugins retain their loaded revision. This includes workers, delayed imports, and instances for newly attached clients.
 Reload the plugin explicitly to use the selected update. Configuration reload refreshes alias declarations for future launches.
 `plugins reload` resolves configured aliases first, then falls back to files in the authored plugin directory.
+Reload requires an existing identity. Use `plugins start` for an initial background launch.
+See [plugin lifecycle and permissions](PLUGINS.md) for identity selection, runtime status, and permission modals.
 
 ## Imports and identity
 

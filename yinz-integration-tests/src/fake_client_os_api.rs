@@ -23,6 +23,7 @@ fn server_message_name(msg: &ServerToClientMsg) -> String {
     match msg {
         ServerToClientMsg::AgentControl(_) => "AgentControl",
         ServerToClientMsg::DataResponse { .. } => "DataResponse",
+        ServerToClientMsg::PluginResponse { .. } => "PluginResponse",
         ServerToClientMsg::AgentReportAccepted { .. } => "AgentReportAccepted",
         ServerToClientMsg::KillSessionComplete { .. } => "KillSessionComplete",
         ServerToClientMsg::Render { .. } => "Render",

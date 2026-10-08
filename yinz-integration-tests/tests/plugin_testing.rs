@@ -329,3 +329,49 @@ test('real palette input',{grants:['ReadApplicationState']},async()=>{
             .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
+
+#[test]
+fn installed_headless_lifecycle_exercises_the_permission_modal() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("background.ts"),
+        r#"
+import z from 'yinz:plugin';
+export default {async load() {
+  await z.waitForPermissions(['ReadApplicationState']);
+  z.log('HEADLESS_READY');
+}};
+"#,
+    )
+    .unwrap();
+    let path = root.path().join("background.integration.test.ts");
+    std::fs::write(&path, r#"
+import {test,session,assert,assertEquals,assertThrows} from 'yinz:testing';
+test('headless start and stop',{grants:['ReadApplicationState']},async()=>{
+  session.start({autoGrantPermissions:false});
+  await session.waitForText('yinz-test>');
+  const terminal=session.panes.find(p=>!p.is_plugin && p.is_focused);
+  assert(terminal);
+  const first=session.loadPlugin('./background.ts',{headless:true,configuration:{shared:'true'}});
+  assert(first);
+  const id=first.plugins[0].id;
+  assertEquals(session.loadPlugin('./background.ts',{headless:true,configuration:{shared:'true'}})?.plugins[0].id,id);
+  await session.waitForText('Plugin permissions');
+  assertEquals(session.status('./background.ts').plugins[0].state,'awaiting_permission');
+  session.key('Tab'); session.key('Enter');
+  await session.waitFor('permission promise settles',()=>session.logs.includes('HEADLESS_READY'));
+  assertEquals(session.status('./background.ts').plugins[0].state,'running');
+  assertEquals(session.reload(`plugin_${id}`).plugins[0].id,id);
+  await session.waitFor('replacement available',()=>session.status(`plugin_${id}`).plugins[0].state==='running');
+  assertEquals(session.panes.find(p=>!p.is_plugin && p.is_focused)?.id,terminal.id);
+  assertEquals(session.panes.filter(p=>!p.is_plugin).length,1);
+  assertEquals(session.stop(`plugin_${id}`).plugins[0].state,'stopped');
+  assertEquals(session.status('./background.ts').plugins,[]);
+  assertThrows(()=>session.reload('./background.ts'),'not loaded; use plugins start');
+});
+"#).unwrap();
+    let report =
+        yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
+            .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}

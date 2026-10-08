@@ -100,10 +100,10 @@ fn plugin_handoff_survives_permissions_and_reuses_hidden_reader() {
         .id;
     choose(&finder, &selection, chosen);
     yinz.wait_until("reader asks for its own permissions", |g| {
-        g.contains("Allow? (y/n)")
+        g.contains("Plugin permissions")
     });
     assert_retired(&yinz, &finder, &selection);
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until(
         "reader receives exact raw path after permission grant",
         |g| g.contains(chosen) && g.contains("RECEIVED 1 width"),
@@ -262,9 +262,11 @@ fn reader_permission_denial_and_missing_source_leave_no_finder() {
     let mut yinz = session(&json, "");
     let (finder, selection) = open_finder(&yinz);
     choose(&finder, &selection, "/tmp/denied.pdf");
-    yinz.wait_until("reader permission prompt", |g| g.contains("Allow? (y/n)"));
+    yinz.wait_until("reader permission prompt", |g| {
+        g.contains("Plugin permissions")
+    });
     assert_retired(&yinz, &finder, &selection);
-    yinz.send_stdin(b"n");
+    yinz.send_stdin(b"\x1b");
     yinz.wait_until("receiver handles denial", |g| g.contains("DENIED"));
     yinz.quit();
 
@@ -309,9 +311,9 @@ fn alias_settings_narrow_reuse_and_lowest_matching_id_wins() {
         );
         if ids.is_empty() {
             yinz.wait_until("first reader permission prompt", |g| {
-                g.contains("Allow? (y/n)")
+                g.contains("Plugin permissions")
             });
-            yinz.send_stdin(b"y");
+            yinz.send_stdin(b"\t\r");
         }
         yinz.wait_until("new reader ready", |g| {
             g.contains(&format!("RECEIVED 0 {fit}"))

@@ -134,6 +134,8 @@ fn external_plugin_logs_are_isolated_through_cli_and_host() {
                 std::process::Command::new(std::env::var_os("YINZ_COMPILATION_WORKER").unwrap())
                     .current_dir(&cwd)
                     .env("TMPDIR", &cwd)
+                    .env("YINZ_SOCKET_DIR", cwd.join("no-sessions"))
+                    .env_remove("YINZ_SESSION_NAME")
                     .args([
                         "--config",
                         config.to_str().unwrap(),
@@ -142,6 +144,7 @@ fn external_plugin_logs_are_isolated_through_cli_and_host() {
                         &target,
                         "--lines",
                         "100",
+                        "--json",
                     ])
                     .output()
                     .unwrap();
@@ -150,7 +153,10 @@ fn external_plugin_logs_are_isolated_through_cli_and_host() {
                 "{}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert_eq!(String::from_utf8(output.stdout).unwrap(), api);
+            let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(reply["output"], api);
+            assert_eq!(reply["historical"], true);
+            assert!(reply["runtime"].as_str().unwrap().contains("unknown"));
         }
     }
 }
@@ -210,11 +216,13 @@ fn file_alias_fallback_logs_match_through_cli_and_host() {
             std::process::Command::new(std::env::var_os("YINZ_COMPILATION_WORKER").unwrap())
                 .current_dir(&cwd)
                 .env("TMPDIR", &cwd)
+                .env("YINZ_SOCKET_DIR", cwd.join("no-sessions"))
+                .env_remove("YINZ_SESSION_NAME")
                 .arg("--data-dir")
                 .arg(&data)
                 .arg("--config")
                 .arg(&config)
-                .args(["plugins", "log", alias])
+                .args(["plugins", "log", alias, "--json"])
                 .output()
                 .unwrap();
         assert!(
@@ -222,6 +230,9 @@ fn file_alias_fallback_logs_match_through_cli_and_host() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), api);
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["output"], api);
+        assert_eq!(reply["historical"], true);
+        assert!(reply["runtime"].as_str().unwrap().contains("unknown"));
     }
 }

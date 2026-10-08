@@ -101,6 +101,9 @@ impl Screen {
     }
 
     pub(crate) fn toggle_command_palette(&mut self, client_id: ClientId) {
+        if self.permission_modal_open(client_id) {
+            return;
+        }
         if self.close_command_palette(client_id) {
             return;
         }
@@ -217,7 +220,7 @@ impl Screen {
         }
     }
 
-    fn command_palette_surface(&self, client_id: ClientId) -> Option<Viewport> {
+    pub(super) fn command_palette_surface(&self, client_id: ClientId) -> Option<Viewport> {
         let tab_id = *self.active_tab_ids.get(&client_id)?;
         let mut surface = self.session_surface_for_tab(tab_id)?;
         if let Some(size) = self.client_sizes.get(&client_id) {
@@ -235,6 +238,9 @@ impl Screen {
         toggle: bool,
         client_id: ClientId,
     ) -> bool {
+        if self.permission_modal_input(key, client_id) {
+            return true;
+        }
         let Some(state) = self.command_palettes.get_mut(&client_id) else {
             return false;
         };

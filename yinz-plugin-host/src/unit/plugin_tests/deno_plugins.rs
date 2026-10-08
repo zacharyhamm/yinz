@@ -1237,13 +1237,22 @@ export default {
         .unwrap();
     harness
         .sender
-        .send(PluginInstruction::PermissionRequestResult(
-            PLUGIN,
-            Some(CLIENT),
-            vec![PermissionType::ChangeApplicationState],
-            PermissionStatus::Granted,
-            Some(harness.directory.path().join("permissions.kdl")),
-        ))
+        .send(PluginInstruction::PermissionAnswer {
+            request_id: harness
+                .log
+                .lock()
+                .iter()
+                .rev()
+                .find_map(|instruction| match instruction {
+                    ScreenInstruction::RequestPluginPermissions(_, request) => {
+                        Some(request.request_id)
+                    },
+                    _ => None,
+                })
+                .unwrap(),
+            status: PermissionStatus::Granted,
+            cache_path: Some(harness.directory.path().join("permissions.kdl")),
+        })
         .unwrap();
     harness.log.wait_until_described(
         "the attached clients see the single granted instance's queued key",
@@ -3979,15 +3988,24 @@ impl Harness {
             })
     }
 
-    fn answer_permissions(&self, permissions: Vec<PermissionType>, status: PermissionStatus) {
+    fn answer_permissions(&self, _permissions: Vec<PermissionType>, status: PermissionStatus) {
         self.sender
-            .send(PluginInstruction::PermissionRequestResult(
-                PLUGIN,
-                Some(CLIENT),
-                permissions,
+            .send(PluginInstruction::PermissionAnswer {
+                request_id: self
+                    .log
+                    .lock()
+                    .iter()
+                    .rev()
+                    .find_map(|instruction| match instruction {
+                        ScreenInstruction::RequestPluginPermissions(_, request) => {
+                            Some(request.request_id)
+                        },
+                        _ => None,
+                    })
+                    .unwrap(),
                 status,
-                Some(self.directory.path().join("permissions.kdl")),
-            ))
+                cache_path: Some(self.directory.path().join("permissions.kdl")),
+            })
             .unwrap();
     }
 }

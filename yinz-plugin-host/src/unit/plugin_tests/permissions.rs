@@ -197,14 +197,11 @@ pub fn granted_permission_request_result() {
                     .expect("failed to receive event on channel");
                 match event {
                     ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
-                        let _ =
-                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                crate::PluginId::new(0),
-                                Some(client_id),
-                                plugin_permission.permissions,
-                                PermissionStatus::Granted,
-                                Some(cache_path.clone()),
-                            ));
+                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
+                            request_id: plugin_permission.request_id,
+                            status: PermissionStatus::Granted,
+                            cache_path: Some(cache_path.clone()),
+                        });
                         break;
                     },
                     ScreenInstruction::Exit => {
@@ -293,14 +290,11 @@ pub fn denied_permission_request_result() {
                     .expect("failed to receive event on channel");
                 match event {
                     ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
-                        let _ =
-                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                crate::PluginId::new(0),
-                                Some(client_id),
-                                plugin_permission.permissions,
-                                PermissionStatus::Denied,
-                                Some(cache_path.clone()),
-                            ));
+                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
+                            request_id: plugin_permission.request_id,
+                            status: PermissionStatus::Denied,
+                            cache_path: Some(cache_path.clone()),
+                        });
                         break;
                     },
                     ScreenInstruction::Exit => {

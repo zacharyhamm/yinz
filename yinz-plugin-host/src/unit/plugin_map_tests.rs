@@ -47,7 +47,8 @@ fn reload_matches_symlinked_plugin_directory_and_missing_paths() {
             assert_eq!(
                 map.all_plugin_ids_for_plugin_location(
                     &location,
-                    &PluginUserConfiguration::default()
+                    &PluginUserConfiguration::default(),
+                    Clone::clone
                 )
                 .unwrap(),
                 vec![id]
@@ -58,7 +59,8 @@ fn reload_matches_symlinked_plugin_directory_and_missing_paths() {
                     &PluginUserConfiguration::new(std::collections::BTreeMap::from([(
                         "setting".into(),
                         "different".into()
-                    )]))
+                    )])),
+                    Clone::clone
                 )
                 .is_err());
         }
@@ -66,15 +68,20 @@ fn reload_matches_symlinked_plugin_directory_and_missing_paths() {
     std::fs::remove_file(&canonical).unwrap();
     for location in [run.location, RunPluginLocation::File(symlinked)] {
         assert_eq!(
-            map.all_plugin_ids_for_plugin_location(&location, &PluginUserConfiguration::default())
-                .unwrap(),
+            map.all_plugin_ids_for_plugin_location(
+                &location,
+                &PluginUserConfiguration::default(),
+                Clone::clone
+            )
+            .unwrap(),
             vec![id]
         );
     }
     assert!(map
         .all_plugin_ids_for_plugin_location(
             &RunPluginLocation::File(cwd.join("other.ts")),
-            &PluginUserConfiguration::default()
+            &PluginUserConfiguration::default(),
+            Clone::clone
         )
         .is_err());
 }

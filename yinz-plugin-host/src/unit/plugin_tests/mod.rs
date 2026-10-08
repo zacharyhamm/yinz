@@ -145,23 +145,19 @@ macro_rules! grant_permissions_and_log_actions_in_thread {
                         ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
                             if plugin_permission.permissions.contains($permission_type) {
                                 let _ = plugin_thread_sender.send(
-                                    PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId::new(0),
-                                        Some($client_id),
-                                        plugin_permission.permissions,
-                                        PermissionStatus::Granted,
-                                        Some(cache_path.clone()),
-                                    ),
+                                    PluginInstruction::PermissionAnswer {
+                                        request_id: plugin_permission.request_id,
+                                        status: PermissionStatus::Granted,
+                                        cache_path: Some(cache_path.clone()),
+                                    },
                                 );
                             } else {
                                 let _ = plugin_thread_sender.send(
-                                    PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId::new(0),
-                                        Some($client_id),
-                                        plugin_permission.permissions,
-                                        PermissionStatus::Denied,
-                                        Some(cache_path.clone()),
-                                    ),
+                                    PluginInstruction::PermissionAnswer {
+                                        request_id: plugin_permission.request_id,
+                                        status: PermissionStatus::Denied,
+                                        cache_path: Some(cache_path.clone()),
+                                    },
                                 );
                             }
                         },
@@ -209,7 +205,7 @@ fn permissions_and_log_until_disconnect(
     screen_receiver: Receiver<(ScreenInstruction, ErrorContext)>,
     cache_path: PathBuf,
     plugin_thread_sender: SenderWithContext<PluginInstruction>,
-    client_id: ClientId,
+    _client_id: ClientId,
     status: PermissionStatus,
 ) -> std::thread::JoinHandle<()> {
     let log = log.clone();
@@ -218,17 +214,14 @@ fn permissions_and_log_until_disconnect(
         .spawn(move || loop {
             match screen_receiver.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT) {
                 Ok((event, _err_ctx)) => {
-                    if let ScreenInstruction::RequestPluginPermissions(plugin_id, permission) =
+                    if let ScreenInstruction::RequestPluginPermissions(_plugin_id, permission) =
                         &event
                     {
-                        let _ =
-                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                *plugin_id,
-                                Some(client_id),
-                                permission.permissions.clone(),
-                                status,
-                                Some(cache_path.clone()),
-                            ));
+                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
+                            request_id: permission.request_id,
+                            status,
+                            cache_path: Some(cache_path.clone()),
+                        });
                     }
                     log.lock().push(event);
                 },
@@ -422,23 +415,19 @@ macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
                         ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
                             if plugin_permission.permissions.contains($permission_type) {
                                 let _ = plugin_thread_sender.send(
-                                    PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId::new(0),
-                                        Some($client_id),
-                                        plugin_permission.permissions,
-                                        PermissionStatus::Granted,
-                                        Some(cache_path.clone()),
-                                    ),
+                                    PluginInstruction::PermissionAnswer {
+                                        request_id: plugin_permission.request_id,
+                                        status: PermissionStatus::Granted,
+                                        cache_path: Some(cache_path.clone()),
+                                    },
                                 );
                             } else {
                                 let _ = plugin_thread_sender.send(
-                                    PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId::new(0),
-                                        Some($client_id),
-                                        plugin_permission.permissions,
-                                        PermissionStatus::Denied,
-                                        Some(cache_path.clone()),
-                                    ),
+                                    PluginInstruction::PermissionAnswer {
+                                        request_id: plugin_permission.request_id,
+                                        status: PermissionStatus::Denied,
+                                        cache_path: Some(cache_path.clone()),
+                                    },
                                 );
                             }
                         },
@@ -475,23 +464,19 @@ macro_rules! grant_permissions_and_log_actions_in_thread_struct_variant {
                         ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
                             if plugin_permission.permissions.contains($permission_type) {
                                 let _ = plugin_thread_sender.send(
-                                    PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId::new(0),
-                                        Some($client_id),
-                                        plugin_permission.permissions,
-                                        PermissionStatus::Granted,
-                                        Some(cache_path.clone()),
-                                    ),
+                                    PluginInstruction::PermissionAnswer {
+                                        request_id: plugin_permission.request_id,
+                                        status: PermissionStatus::Granted,
+                                        cache_path: Some(cache_path.clone()),
+                                    },
                                 );
                             } else {
                                 let _ = plugin_thread_sender.send(
-                                    PluginInstruction::PermissionRequestResult(
-                                        crate::PluginId::new(0),
-                                        Some($client_id),
-                                        plugin_permission.permissions,
-                                        PermissionStatus::Denied,
-                                        Some(cache_path.clone()),
-                                    ),
+                                    PluginInstruction::PermissionAnswer {
+                                        request_id: plugin_permission.request_id,
+                                        status: PermissionStatus::Denied,
+                                        cache_path: Some(cache_path.clone()),
+                                    },
                                 );
                             }
                         },

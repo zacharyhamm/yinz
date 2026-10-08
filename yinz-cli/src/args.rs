@@ -152,8 +152,31 @@ pub enum Plugins {
         #[clap(default_value = "index")]
         section: String,
     },
-    /// List source files in the configured plugin directory.
-    List,
+    /// List source files, or session plugin lifecycle records with --running.
+    List {
+        #[clap(long)]
+        running: bool,
+        #[clap(long, requires = "running")]
+        json: bool,
+    },
+    /// Start a plugin in the background, reusing an existing identity without changing focus.
+    Start {
+        name: String,
+        /// Select the exact configuration as a JSON object of string values.
+        #[clap(long)]
+        configuration_json: Option<String>,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Stop all client copies of a plugin identity and remove its registrations.
+    Stop {
+        name: String,
+        /// Select the exact configuration as a JSON object of string values.
+        #[clap(long)]
+        configuration_json: Option<String>,
+        #[clap(long)]
+        json: bool,
+    },
     /// Apply an exact-text edit JSON array, then format and check before writing.
     Edit {
         name: String,
@@ -205,18 +228,29 @@ pub enum Plugins {
         #[clap(long)]
         check: bool,
     },
-    /// Load or reload a plugin in the running session, opening it in a pane if it is not
-    /// running. Accepts a managed name, alias, absolute path, ./path, ../path or file: URL.
+    /// Reload an existing identity in place. Missing plugins require `plugins start`.
+    /// Accepts a managed name, alias, path, URL or plugin_N.
     Reload {
         name: String,
+        /// Compatibility spelling. All reloads preserve existing placement.
         #[clap(long)]
         headless: bool,
+        /// Select the exact configuration as a JSON object of string values.
+        #[clap(long)]
+        configuration_json: Option<String>,
+        #[clap(long)]
+        json: bool,
     },
-    /// Read logs by plugin name, configured alias, absolute path, ./path, ../path or file: URL.
+    /// Report runtime status and historical logs by name, alias, path, URL or plugin_N.
     Log {
         name: String,
         #[clap(short, long, default_value = "50")]
         lines: usize,
+        /// Select the exact configuration as a JSON object of string values.
+        #[clap(long)]
+        configuration_json: Option<String>,
+        #[clap(long)]
+        json: bool,
     },
     /// Where plugins are written and read from.
     Dir,

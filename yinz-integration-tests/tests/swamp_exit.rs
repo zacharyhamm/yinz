@@ -166,8 +166,8 @@ fn swamp_exit_with_status_bar(status_bar: bool) {
         0
     );
     original.exit(Some(0));
-    yinz.wait_until("hook permissions", |s| s.contains("Allow? (y/n)"));
-    yinz.send_stdin(b"y");
+    yinz.wait_until("hook permissions", |s| s.contains("Plugin permissions"));
+    yinz.send_stdin(b"\t\r");
     let overview = yinz.wait_until("workflow summary in exit pane", |s| {
         s.contains("Running: prepare") && s.contains("Cancel run") && s.contains(panel_title)
     });
@@ -447,9 +447,9 @@ fn close_workflow(stage: &str) {
     let original = yinz.expect_pty_spawn();
     let survivor = yinz.expect_pty_spawn();
     survivor.output(b"SURVIVING TERMINAL\r\n");
-    yinz.wait_until("bridge permissions", |s| s.contains("Allow? (y/n)"));
-    yinz.send_stdin(b"y");
-    yinz.wait_until("bridge ready", |s| !s.contains("Allow? (y/n)"));
+    yinz.wait_until("bridge permissions", |s| s.contains("Plugin permissions"));
+    yinz.send_stdin(b"\t\r");
+    yinz.wait_until("bridge ready", |s| !s.contains("Plugin permissions"));
     if stage == "delay" {
         advance(&yinz, "delay");
     }
@@ -467,8 +467,10 @@ fn close_workflow(stage: &str) {
         0
     );
     original.exit(Some(0));
-    yinz.wait_until("exit view permissions", |s| s.contains("Allow? (y/n)"));
-    yinz.send_stdin(b"y");
+    yinz.wait_until("exit view permissions", |s| {
+        s.contains("Plugin permissions")
+    });
+    yinz.send_stdin(b"\t\r");
     if stage == "delay" {
         yinz.wait_until("launch is in flight", |_| {
             fixture_state(&yinz)["waiting"] == true
@@ -669,9 +671,9 @@ fn running_exit_view_with_args(
         .start();
     let original = yinz.expect_pty_spawn();
     yinz.expect_pty_spawn().output(b"NEIGHBOR\r\n");
-    yinz.wait_until("bridge permissions", |s| s.contains("Allow? (y/n)"));
-    yinz.send_stdin(b"y");
-    yinz.wait_until("bridge ready", |s| !s.contains("Allow? (y/n)"));
+    yinz.wait_until("bridge permissions", |s| s.contains("Plugin permissions"));
+    yinz.send_stdin(b"\t\r");
+    yinz.wait_until("bridge ready", |s| !s.contains("Plugin permissions"));
     original.output(b"ORIGINAL SCROLLBACK\r\n");
     yinz.wait_until("original output", |s| s.contains("ORIGINAL SCROLLBACK"));
     assert_eq!(
@@ -692,8 +694,8 @@ fn running_exit_view_with_args(
         .filter(|p| !p.pane_info.is_plugin())
         .collect();
     original.exit(Some(0));
-    yinz.wait_until("hook permissions", |s| s.contains("Allow? (y/n)"));
-    yinz.send_stdin(b"y");
+    yinz.wait_until("hook permissions", |s| s.contains("Plugin permissions"));
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("exit view shows the active step", |s| {
         s.contains("Running: fixture") && s.contains("Cancel run")
     });
@@ -874,10 +876,10 @@ fn workflow_restart_delivers_no_prompt_on_repeated_restarts() {
         if cycle > 0 {
             original.exit(Some(0));
             yinz.wait_until("next workflow exit view", |s| {
-                s.contains("Allow? (y/n)") || s.contains("Restart agent")
+                s.contains("Plugin permissions") || s.contains("Restart agent")
             });
-            if yinz.snapshot().contains("Allow? (y/n)") {
-                yinz.send_stdin(b"y");
+            if yinz.snapshot().contains("Plugin permissions") {
+                yinz.send_stdin(b"\t\r");
             }
         }
         // On a repeated exit the view first attaches to the previous, cancelled run.
@@ -963,10 +965,10 @@ export default hook;
     for cycle in 0..2 {
         original.exit(Some(0));
         yinz.wait_until("exit panel or its permissions", |s| {
-            s.contains("Allow? (y/n)") || s.contains("Enter: restart")
+            s.contains("Plugin permissions") || s.contains("Enter: restart")
         });
-        if yinz.snapshot().contains("Allow? (y/n)") {
-            yinz.send_stdin(b"y");
+        if yinz.snapshot().contains("Plugin permissions") {
+            yinz.send_stdin(b"\t\r");
         }
         yinz.wait_until("exit panel ready", |s| s.contains("Enter: restart"));
         yinz.send_stdin(&keys::ENTER);

@@ -1557,7 +1557,7 @@ pub fn a_client_attaching_while_a_hook_waits_on_its_permission_does_not_lose_the
                 let (instruction, _err_ctx) =
                     recv_from_fake_screen(&screen_receiver, "the hook's rename", "1");
                 match instruction {
-                    ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission) => {
+                    ScreenInstruction::RequestPluginPermissions(_plugin_id, plugin_permission) => {
                         permission_requests += 1;
                         if permission_requests == 1 {
                             // A second client attaches while the hook is on its prompt: the
@@ -1567,14 +1567,11 @@ pub fn a_client_attaching_while_a_hook_waits_on_its_permission_does_not_lose_the
                             let _ = plugin_thread_sender
                                 .send(PluginInstruction::AddClient(crate::ClientId::new(2)));
                         }
-                        let _ =
-                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                plugin_id,
-                                Some(crate::ClientId::new(1)),
-                                plugin_permission.permissions,
-                                PermissionStatus::Granted,
-                                Some(cache_path.clone()),
-                            ));
+                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
+                            request_id: plugin_permission.request_id,
+                            status: PermissionStatus::Granted,
+                            cache_path: Some(cache_path.clone()),
+                        });
                     },
                     ScreenInstruction::RenameTabWithId(..) => {
                         log.lock().push(instruction);
@@ -1642,15 +1639,12 @@ pub fn a_firing_during_the_headless_hooks_load_reaches_the_loading_instance() {
             move || loop {
                 let (instruction, _err_ctx) = recv_from_fake_screen(&screen_receiver, renames, 2);
                 match instruction {
-                    ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission) => {
-                        let _ =
-                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                plugin_id,
-                                Some(client_id),
-                                plugin_permission.permissions,
-                                PermissionStatus::Granted,
-                                Some(cache_path.clone()),
-                            ));
+                    ScreenInstruction::RequestPluginPermissions(_plugin_id, plugin_permission) => {
+                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
+                            request_id: plugin_permission.request_id,
+                            status: PermissionStatus::Granted,
+                            cache_path: Some(cache_path.clone()),
+                        });
                     },
                     ScreenInstruction::RenameTabWithId(..) => {
                         renames += 1;

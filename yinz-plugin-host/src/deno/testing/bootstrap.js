@@ -165,7 +165,9 @@
       const result = call("session:rpc", {plugin, name, payload, timeoutMs});
       call("pending", ""); return result;
     },
-    reload(path) { call("session:reload", path); },
+    stop(path, options = {}) { return call("session:stop", {path, ...options}); },
+    status(path, options = {}) { return call("session:status", {path, ...options}); },
+    reload(path, options = {}) { return call("session:reload", {path, ...options}); },
     get screen() { return call("session:screen"); },
     get events() { return call("session:events"); },
     get panes() { return call("session:panes"); },

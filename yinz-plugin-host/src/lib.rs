@@ -83,7 +83,8 @@ use {
     yinz_types::data::PipeSource, yinz_types::input::command::TerminalAction,
     yinz_types::input::keybinds::Keybinds, yinz_types::input::layout::Layout,
     yinz_types::input::layout::Run, yinz_types::input::layout::RunPlugin,
-    yinz_types::input::layout::RunPluginOrAlias, yinz_types::input::plugins::PluginAliases,
+    yinz_types::input::layout::RunPluginLocation, yinz_types::input::layout::RunPluginOrAlias,
+    yinz_types::input::plugins::PluginAliases,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -149,14 +150,24 @@ pub fn plugin_thread_main(
         server_session.clone(),
     )?;
 
-    for run_plugin_or_alias in background_plugins {
-        load_background_plugin(
-            run_plugin_or_alias,
-            &mut wasm_bridge,
-            &bus,
-            &plugin_aliases,
-            initiating_client_id,
-        );
+    let host_required: Vec<_> = background_plugins
+        .iter()
+        .filter(|declaration| {
+            declaration
+                .get_run_plugin()
+                .is_some_and(|run| matches!(run.location, RunPluginLocation::Yinz(tag) if tag.to_string() == "agent-opencode"))
+        })
+        .cloned()
+        .collect();
+    wasm_bridge
+        .reconcile_background_plugins(background_plugins, initiating_client_id)
+        .context("reconcile startup background plugins")
+        .non_fatal();
+    for declaration in host_required {
+        wasm_bridge
+            .start_background_plugin(declaration.clone(), initiating_client_id, true)
+            .with_context(|| format!("start host-required plugin {declaration:?}"))
+            .non_fatal();
     }
     // A session starts once. The hook fires for its first client, below, not here: a plugin
     // loaded before any client is connected is loaded again for the first one that is
@@ -856,33 +867,29 @@ pub fn plugin_thread_main(
                         .send_to_screen(ScreenInstruction::ClearHintTextCache);
                 }
             },
-            PluginInstruction::PermissionRequestResult(
+            PluginInstruction::RequestPermissions {
                 plugin_id,
+                instance_id,
                 client_id,
                 permissions,
-                status,
-                cache_path,
-            ) => {
-                if let Err(e) = wasm_bridge.cache_plugin_permissions(
+            } => {
+                wasm_bridge.request_permissions(
                     plugin_id,
+                    instance_id,
                     client_id,
                     permissions,
+                    shutdown_send.clone(),
+                )?;
+            },
+            PluginInstruction::PermissionAnswer {
+                request_id,
+                status,
+                cache_path,
+            } => {
+                wasm_bridge.answer_permissions(
+                    request_id,
                     status,
                     cache_path,
-                ) {
-                    log::error!("{}", e);
-                }
-
-                let updates = vec![(
-                    Some(plugin_id),
-                    client_id,
-                    Event::PermissionRequestResult(status),
-                )];
-                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
-                let done_receiving_permissions = true;
-                wasm_bridge.apply_cached_events(
-                    vec![plugin_id],
-                    done_receiving_permissions,
                     shutdown_send.clone(),
                 )?;
             },
@@ -1006,6 +1013,21 @@ pub fn plugin_thread_main(
                         shutdown_send.clone(),
                     )?;
                 }
+            },
+            PluginInstruction::PluginRequest {
+                request,
+                client_id,
+                reply,
+            } => {
+                let result = wasm_bridge
+                    .plugin_request(request, client_id)
+                    .map_err(|error| format!("{error:#}"));
+                let _ = reply.send(result);
+            },
+            PluginInstruction::ReconcileBackgroundPlugins { plugins, client_id } => {
+                wasm_bridge
+                    .reconcile_background_plugins(plugins, client_id)
+                    .non_fatal();
             },
             PluginInstruction::DataRequest { request, reply } => {
                 let _ = reply.send(
@@ -1381,6 +1403,7 @@ pub fn plugin_thread_main(
                 wasm_bridge.send_pipe_outcomes(outcomes);
             },
             PluginInstruction::ReleasePluginInstancePipes(plugin_id, instance_id) => {
+                wasm_bridge.cancel_permission_requests(plugin_id, Some(instance_id));
                 let outcomes = wasm_bridge.release_plugin_instance_pipes(plugin_id, instance_id);
                 wasm_bridge.send_pipe_outcomes(outcomes);
             },
@@ -2093,39 +2116,16 @@ fn deliver_to_headless_hook(
 }
 
 fn load_background_plugin(
-    mut run_plugin_or_alias: RunPluginOrAlias,
+    run_plugin_or_alias: RunPluginOrAlias,
     wasm_bridge: &mut WasmBridge,
-    bus: &Bus<PluginInstruction>,
-    plugin_aliases: &PluginAliases,
+    _bus: &Bus<PluginInstruction>,
+    _plugin_aliases: &PluginAliases,
     client_id: ClientId,
 ) -> Option<(PluginId, ClientId)> {
-    run_plugin_or_alias.populate_run_plugin_if_needed(plugin_aliases);
-    let cwd = run_plugin_or_alias.get_initial_cwd();
-    let run_plugin = run_plugin_or_alias.get_run_plugin();
-    let size = Size::default();
-    let skip_cache = false;
-    match wasm_bridge.load_plugin(
-        &run_plugin,
-        None,
-        size,
-        cwd.clone(),
-        skip_cache,
-        Some(client_id),
-    ) {
-        Ok((plugin_id, client_id)) => {
-            drop(bus.senders.send_to_screen(add_suppressed_plugin_pane(
-                run_plugin_or_alias,
-                plugin_id,
-                cwd,
-                client_id,
-            )));
-            Some((plugin_id, client_id))
-        },
-        Err(e) => {
-            log::error!("Failed to load plugin: {e}");
-            None
-        },
-    }
+    wasm_bridge
+        .start_background_plugin(run_plugin_or_alias, client_id, true)
+        .map_err(|error| log::error!("Failed to start background plugin: {error:#}"))
+        .ok()
 }
 
 /// The screen-side half of a hook: a pane opened over `pane_id_to_replace`, which is

@@ -5343,59 +5343,50 @@ fn overlay_permission_prompts_restore_visibility_and_preserve_placement() {
                 let placement = tab.overlay_placement_for(pane_id).unwrap();
                 let geometry = tab.get_pane_with_id(pane_id).unwrap().position_and_size();
                 let permissions = vec![PermissionType::ReadApplicationState];
-                // Each answer starts a new request on the same pane; duplicate requests must
-                // also retain the original hidden-state marker.
-                for (key, expected) in [
-                    ('y', PermissionStatus::Granted),
-                    ('n', PermissionStatus::Denied),
-                ] {
-                    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+                let focus = tab.get_active_pane_id(CLIENT_1);
+                for granted in [true, false] {
                     for _ in 0..2 {
-                        tab.request_plugin_permissions(
+                        screen.open_permission_modal(
                             pid,
-                            Some(PluginPermission::new(
-                                "overlay".to_owned(),
-                                permissions.clone(),
-                            )),
+                            PluginPermission::new("overlay".into(), permissions.clone()),
                         );
                     }
-                    assert!(!tab.overlay_carry_for(pane_id).hidden);
-                    assert!(!tab.overlay_carry_for(pane_id).awaiting_placement);
-                    assert_eq!(tab.get_active_pane_id(CLIENT_1), Some(pane_id));
                     let frame = rendered_frame(&mut screen, size);
-                    assert!(frame.contains("Allow?"), "prompt must render: {frame}");
-
-                    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
-                    tab.write_to_active_terminal(&None, vec![key as u8], false, CLIENT_1, None)
-                        .unwrap();
-                    assert!(plugin_rx.try_iter().any(|(instruction, _)| matches!(
-                        instruction,
-                        PluginInstruction::PermissionRequestResult(id, Some(client), requested, status, None)
-                            if id == pid && client == CLIENT_1 && requested == permissions && status == expected
-                    )), "the focused prompt must receive the answer");
-                    assert!(tab.pane_is_overlay(pane_id));
-                    assert_eq!(tab.overlay_carry_for(pane_id).hidden, hidden);
-                    assert_eq!(tab.overlay_placement_for(pane_id).unwrap(), placement);
-                    let pane = tab.get_pane_with_id(pane_id).unwrap();
-                    assert_eq!(pane.position_and_size(), geometry);
-                    assert!(!pane.query_should_be_suppressed());
-                    if hidden {
-                        assert_ne!(tab.get_active_pane_id(CLIENT_1), Some(pane_id));
+                    assert!(frame.contains("Plugin permissions"), "{frame}");
+                    if granted {
+                        screen.permission_modal_input(
+                            &Some(yinz_types::keys::KeyWithModifier::new(
+                                yinz_types::keys::BareKey::Tab,
+                            )),
+                            CLIENT_1,
+                        );
                     }
-                    // Reveal once to check the prompt was cleared even when its pane was hidden.
-                    tab.show_overlay_pane(pane_id);
-                    let frame = rendered_frame(&mut screen, size);
-                    assert!(
-                        !frame.contains("Allow?"),
-                        "answered prompt must clear: {frame}"
+                    screen.permission_modal_input(
+                        &Some(yinz_types::keys::KeyWithModifier::new(
+                            yinz_types::keys::BareKey::Enter,
+                        )),
+                        CLIENT_1,
                     );
-                    if hidden {
-                        screen
-                            .tabs
-                            .get_mut(&TabId::new(0))
-                            .unwrap()
-                            .hide_overlay_pane(pane_id);
-                    }
+                    let expected = if granted {
+                        PermissionStatus::Granted
+                    } else {
+                        PermissionStatus::Denied
+                    };
+                    assert!(plugin_rx.try_iter().any(|(instruction, _)| matches!(instruction, PluginInstruction::PermissionAnswer { status, .. } if status == expected)));
+                    let tab = screen.tabs.get(&TabId::new(0)).unwrap();
+                    assert_eq!(tab.get_active_pane_id(CLIENT_1), focus);
+                    assert_eq!(tab.overlay_carry_for(pane_id).hidden, hidden);
+                    assert_eq!(
+                        tab.overlay_carry_for(pane_id).awaiting_placement,
+                        awaiting_placement
+                    );
+                    assert_eq!(tab.overlay_placement_for(pane_id).unwrap(), placement);
+                    assert_eq!(
+                        tab.get_pane_with_id(pane_id).unwrap().position_and_size(),
+                        geometry
+                    );
+                    let frame = rendered_frame(&mut screen, size);
+                    assert!(!frame.contains("Plugin permissions"), "{frame}");
                 }
             }
         }

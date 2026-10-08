@@ -1537,7 +1537,8 @@ pub fn screen_thread_main(
                 },
                 // Writes captured by the palette must not scroll the underlying pane either.
                 ScreenInstruction::ClearScroll(client_id)
-                    if screen.command_palettes.contains_key(&client_id) => {},
+                    if screen.command_palettes.contains_key(&client_id)
+                        || screen.permission_modal_open(client_id) => {},
                 ScreenInstruction::ClearScroll(client_id) => {
                     let was_scrolled = screen.active_pane_is_scrolled(client_id);
                     let mut scroll_was_cleared = was_scrolled;
@@ -3052,29 +3053,12 @@ pub fn screen_thread_main(
                     }
                 },
                 ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission) => {
-                    match screen.tab_containing_pane_mut(PaneId::Plugin(plugin_id)) {
-                        Some(tab) if tab.is_pending() => {
-                            // Applying the initial layout resets floating visibility and focus.
-                            pending.waiting_for_tab.push(
-                                ScreenInstruction::RequestPluginPermissions(
-                                    plugin_id,
-                                    plugin_permission,
-                                ),
-                            );
-                        },
-                        Some(tab) => {
-                            tab.request_plugin_permissions(plugin_id, Some(plugin_permission));
-                            screen.render()?;
-                        },
-                        None => pending
-                            .waiting_for_pane
-                            .entry(PaneId::Plugin(plugin_id))
-                            .or_default()
-                            .push(ScreenInstruction::RequestPluginPermissions(
-                                plugin_id,
-                                plugin_permission,
-                            )),
-                    }
+                    screen.open_permission_modal(plugin_id, plugin_permission);
+                    screen.render()?;
+                },
+                ScreenInstruction::CancelPluginPermission(token) => {
+                    screen.cancel_permission_modal(token);
+                    screen.render()?;
                 },
                 ScreenInstruction::WarpPane {
                     supports_companions,

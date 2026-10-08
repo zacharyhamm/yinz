@@ -4224,6 +4224,25 @@ fn test_client_messages() {
         options: Default::default(),
         event_types: vec!["PaneUpdate".to_owned(), "cwd_changed".to_owned()],
     });
+    test_client_roundtrip!(ClientToServerMsg::PluginRequest {
+        request_id: "lifecycle".into(),
+        request: yinz_types::cli::PluginRequest {
+            operation: yinz_types::cli::PluginOperation::Reload,
+            target: Some("plugin_10".into()),
+            configuration: Some(BTreeMap::from([("shared".into(), "true".into())])),
+            fallback: None,
+            candidates: vec![],
+            caller: Some(yinz_types::internal_ids::TerminalId::new(7)),
+        }
+    });
+    test_server_roundtrip!(ServerToClientMsg::PluginResponse {
+        request_id: "lifecycle".into(),
+        result: Ok(yinz_types::cli::PluginResponse { plugins: vec![] })
+    });
+    test_server_roundtrip!(ServerToClientMsg::PluginResponse {
+        request_id: "lifecycle".into(),
+        result: Err("not loaded; use plugins start".into())
+    });
     test_client_roundtrip!(ClientToServerMsg::DataRequest {
         request_id: "catalog".into(),
         request: yinz_types::cli::DataRequest::Catalog { namespace: None }

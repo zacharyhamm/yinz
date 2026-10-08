@@ -331,6 +331,7 @@ impl<'a> PluginLoader<'a> {
                 };
             for name in deno.worker_names()? {
                 let mut env = self.create_plugin_env(None, Arc::default(), Arc::default());
+                env.instance_id = deno.env().instance_id;
                 env.permissions = deno.env().permissions.clone();
                 env.permissions_requested = deno.env().permissions_requested.clone();
                 env.resolved_source_path = deno.env().resolved_source_path.clone();
