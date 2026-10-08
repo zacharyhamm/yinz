@@ -1,10 +1,9 @@
 use super::*;
 use yinz_bus::loading_indication::LoadingIndication;
-use yinz_types::data::{PermissionType, PluginPermission};
 use yinz_types::position::Position;
 
 #[test]
-fn joining_clients_see_plugin_errors_and_permission_prompts_without_plugin_bytes() {
+fn joining_clients_see_plugin_errors_without_plugin_bytes() {
     for (placement, suppressed) in [
         (NewPanePlacement::default(), false),
         (NewPanePlacement::Floating(None), false),
@@ -50,18 +49,6 @@ fn joining_clients_see_plugin_errors_and_permission_prompts_without_plugin_bytes
         assert!(pane
             .dump_screen(false, Some(joining))
             .contains("plugin failed to load"));
-        pane.request_permissions_from_user(Some(PluginPermission::new(
-            "test".into(),
-            vec![PermissionType::ReadApplicationState],
-        )));
-        tab.remove_client_pane_state(joining);
-        tab.remove_client(joining);
-        tab.add_client(joining, None).unwrap();
-        let pane = tab.get_pane_with_id_mut(plugin).unwrap();
-        let contents = pane.dump_screen(false, Some(joining));
-        assert!(contents.contains("Allow?"), "{contents:?}");
-
-        pane.request_permissions_from_user(None);
         pane.handle_plugin_bytes(joining, b"client-specific output".to_vec());
         tab.remove_client(joining); // Switching tabs retains the client's grid.
         tab.add_client(joining, None).unwrap();

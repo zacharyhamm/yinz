@@ -555,6 +555,7 @@ pub enum ScreenInstruction {
     RenamePane(PaneId, Vec<u8>, Option<NotificationEnd>),
     RenameActivePane(Vec<u8>, ClientId, Option<NotificationEnd>),
     RenameTab(TabNumber, Vec<u8>, Option<NotificationEnd>),
+    CancelPluginPermission(u64),
     RequestPluginPermissions(
         PluginId, // plugin_id
         PluginPermission,

@@ -266,6 +266,9 @@ impl ThreadSenders {
         config_dir: Option<&Path>,
         was_written_to_disk: bool,
     ) {
+        let background = config_changes
+            .first()
+            .map(|(client, config)| (*client, config.background_plugins.clone()));
         let mut new_plugin_config = None;
         for (client_id, new_config) in config_changes {
             new_plugin_config.get_or_insert_with(|| new_config.plugins.clone());
@@ -308,6 +311,14 @@ impl ThreadSenders {
             .non_fatal();
         }
 
+        if let Some((client_id, plugins)) = background {
+            self.send_to_plugin(PluginInstruction::ReconcileBackgroundPlugins {
+                plugins,
+                client_id,
+            })
+            .context("reconcile background plugins")
+            .non_fatal();
+        }
         if was_written_to_disk {
             if let Some(new_plugins) = new_plugin_config {
                 self.send_to_plugin(PluginInstruction::DetectPluginConfigChanges(new_plugins))

@@ -8,6 +8,7 @@ message ServerToClientMsg {
   oneof message {
     string agent_control_json = 23;
     DataResponseMsg data_response = 24;
+    DataResponseMsg plugin_response = 25;
     RenderMsg render = 1;
     UnblockInputThreadMsg unblock_input_thread = 2;
     ExitMsg exit = 3;

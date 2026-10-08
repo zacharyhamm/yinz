@@ -1138,6 +1138,86 @@ fn plugin_reload_explicit_targets_preserve_instance() {
 }
 
 #[test]
+fn plugin_logs_use_resolved_managed_source_after_deletion() {
+    let session = Session::with_setup(|dir| {
+        let managed = dir.join("managed #%");
+        std::fs::create_dir(&managed).unwrap();
+        std::fs::write(
+            managed.join("keys.ts"),
+            "export default { load() { console.log('MANAGED_KEYS_LOADED'); } };",
+        )
+        .unwrap();
+        let config = std::fs::read_to_string(dir.join("config.kdl")).unwrap();
+        std::fs::write(
+            dir.join("config.kdl"),
+            format!(
+                "user_plugin_dir \"{}\"\n{}",
+                managed.display(),
+                config
+                    .replace("plugins {", "plugins { selected location=\"file:keys.ts\";")
+                    .replace(
+                        "load_plugins clear-defaults=true {",
+                        "load_plugins clear-defaults=true { selected;"
+                    )
+            ),
+        )
+        .unwrap();
+    });
+    let source = session.0.path().join("managed #%/keys.ts");
+    let location = url::Url::from_file_path(source.canonicalize().unwrap())
+        .unwrap()
+        .to_string();
+    let status = success(session.run(&["plugins", "list", "--running", "--json"], None));
+    let plugin = status["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["location"].as_str().unwrap().ends_with("keys.ts"))
+        .unwrap();
+    assert_eq!(plugin["location"], location);
+    let id = format!("plugin_{}", plugin["id"].as_u64().unwrap());
+    let deadline = std::time::Instant::now() + yinz_test_support::default_timeout();
+    loop {
+        let log = success(session.run(&["plugins", "log", &id, "--json"], None));
+        if log["output"]
+            .as_str()
+            .unwrap()
+            .contains("MANAGED_KEYS_LOADED")
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "plugin did not log its load: {log}"
+        );
+    }
+    for deleted in [false, true] {
+        if deleted {
+            std::fs::remove_file(&source).unwrap();
+        }
+        for target in ["keys", "selected", id.as_str()] {
+            let log = success(session.run(&["plugins", "log", target, "--json"], None));
+            assert!(log["runtime"].as_str().unwrap().starts_with(&id), "{log}");
+            assert!(
+                log["output"]
+                    .as_str()
+                    .unwrap()
+                    .contains("MANAGED_KEYS_LOADED"),
+                "{log}"
+            );
+        }
+        let status = success(session.run(&["plugins", "list", "--running", "--json"], None));
+        let current = status["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|current| current["id"] == plugin["id"])
+            .unwrap();
+        assert_eq!(current["location"], location);
+    }
+}
+
+#[test]
 fn plugin_reload_headless_reserved_paths_preserve_instance() {
     fn write_source(path: &Path, version: usize) {
         std::fs::write(path, format!("import {{definePlugin}} from 'yinz:plugin'; export default definePlugin({{ load(config) {{ console.log('RELOAD_STATE ' + JSON.stringify({{ version: {version}, id: yinz.getPluginIds().plugin_id, greeting: config['greeting'] ?? '' }})); }} }});")).unwrap();
@@ -1198,23 +1278,30 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
     ];
     for (index, target) in targets.iter().enumerate() {
         write_source(&path, index + 1);
-        let reply = success(session.run(&["plugins", "reload", target, "--headless"], None));
-        assert_eq!(reply["reloaded"], json!([initial["id"]]), "{reply}");
-        assert_eq!(reply["dispatched"], true);
+        let reply =
+            success(session.run(&["plugins", "reload", target, "--headless", "--json"], None));
+        assert_eq!(reply["plugins"][0]["id"], initial["id"], "{reply}");
         let state = loaded(&session, "selected", index + 1);
         assert_eq!(state["id"], initial["id"]);
         assert_eq!(state["greeting"], "CONFIGURED");
     }
-    // An unmatched target still loads one headless instance, then reloads that instance.
+    // Missing reloads fail. Explicit start supplies the new background identity.
     let missing = session.0.path().join("new.ts");
     write_source(&missing, 100);
     let target = missing.to_str().unwrap();
-    let reply = success(session.run(&["plugins", "reload", target, "--headless"], None));
-    assert_eq!(reply["reloaded"], json!([]));
+    let missing_reply = session.run(&["plugins", "reload", target, "--headless", "--json"], None);
+    assert!(!missing_reply.status.success());
+    let missing_reply: Value = serde_json::from_slice(&missing_reply.stdout).unwrap();
+    assert!(missing_reply["error"]
+        .as_str()
+        .unwrap()
+        .contains("not loaded; use plugins start"));
+    let reply = success(session.run(&["plugins", "start", target, "--json"], None));
+    assert!(reply["plugins"][0]["background"].as_bool().unwrap());
     let original = loaded(&session, target, 100);
     write_source(&missing, 101);
-    let reply = success(session.run(&["plugins", "reload", target, "--headless"], None));
-    assert_eq!(reply["reloaded"], json!([original["id"]]));
+    let reply = success(session.run(&["plugins", "reload", target, "--headless", "--json"], None));
+    assert_eq!(reply["plugins"][0]["id"], original["id"]);
     assert_eq!(loaded(&session, target, 101)["id"], original["id"]);
     let panes = success(session.run(&["action", "list-panes", "--json"], None));
     assert_eq!(
@@ -1230,4 +1317,27 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
             .all(|pane| pane["is_suppressed"] == true),
         "headless reload opened a visible pane: {panes}"
     );
+    let duplicate = success(session.run(
+        &[
+            "plugins",
+            "start",
+            canonical.to_str().unwrap(),
+            "--configuration-json",
+            "{}",
+            "--json",
+        ],
+        None,
+    ));
+    let ambiguous = session.run(
+        &["plugins", "log", canonical.to_str().unwrap(), "--json"],
+        None,
+    );
+    assert!(!ambiguous.status.success());
+    let ambiguous: Value = serde_json::from_slice(&ambiguous.stdout).unwrap();
+    assert!(ambiguous["error"].as_str().unwrap().contains("ambiguous"));
+    let duplicate_id = format!("plugin_{}", duplicate["plugins"][0]["id"].as_u64().unwrap());
+    let stopped = success(session.run(&["plugins", "stop", &duplicate_id, "--json"], None));
+    assert_eq!(stopped["plugins"][0]["state"], "stopped");
+    let builtin = success(session.run(&["plugins", "log", "yinz:agent-opencode", "--json"], None));
+    assert!(builtin["runtime"].as_str().unwrap().starts_with("plugin_"));
 }

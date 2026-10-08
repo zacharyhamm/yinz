@@ -96,6 +96,30 @@ where
     }
 }
 
+// Resolve existing prefixes too, so deleted sources below symlinked directories still match.
+pub fn source_path(path: &std::path::Path, cwd: &std::path::Path) -> std::path::PathBuf {
+    let absolute = cwd.join(path);
+    if let Ok(path) = absolute.canonicalize() {
+        return path;
+    }
+    let mut normalized = std::path::PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            },
+            std::path::Component::CurDir => {},
+            other => {
+                normalized.push(other);
+                if let Ok(path) = normalized.canonicalize() {
+                    normalized = path;
+                }
+            },
+        }
+    }
+    normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

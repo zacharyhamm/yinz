@@ -25,7 +25,7 @@ use yinz_types::internal_ids::TabId;
 fn observe_screen(
     receiver: Receiver<(ScreenInstruction, ErrorContext)>,
     plugin_thread_sender: SenderWithContext<PluginInstruction>,
-    client_id: ClientId,
+    _client_id: ClientId,
     cache_path: PathBuf,
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> (Watched<Vec<ScreenInstruction>>, std::thread::JoinHandle<()>) {
@@ -45,15 +45,12 @@ fn observe_screen(
                     Err(_) => break,
                 };
                 match event {
-                    ScreenInstruction::RequestPluginPermissions(plugin_id, permissions) => {
-                        let _ =
-                            plugin_thread_sender.send(PluginInstruction::PermissionRequestResult(
-                                plugin_id,
-                                Some(client_id),
-                                permissions.permissions,
-                                PermissionStatus::Granted,
-                                Some(cache_path.clone()),
-                            ));
+                    ScreenInstruction::RequestPluginPermissions(_plugin_id, permissions) => {
+                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
+                            request_id: permissions.request_id,
+                            status: PermissionStatus::Granted,
+                            cache_path: Some(cache_path.clone()),
+                        });
                     },
                     other => log.lock().push(other),
                 }

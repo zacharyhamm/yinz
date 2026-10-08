@@ -80,7 +80,7 @@ fn assert_prompt(renders: &Watched<Vec<ServerInstruction>>) {
         renders,
         SIZE,
         "background permission prompt without input",
-        |frame| frame.contains("Allow? (y/n)"),
+        |frame| frame.contains("Plugin permissions"),
     );
 }
 
@@ -159,7 +159,7 @@ fn background_permission_clients_and_inactive_tab() {
     );
     assert_eq!(
         focused_pane(&mock, other),
-        (TabId::new(1), PaneId::Plugin(PLUGIN))
+        (TabId::new(1), PaneId::Terminal(TerminalId::new(1)))
     );
     mock.to_screen
         .send(ScreenInstruction::GoToTabWithId(
@@ -171,7 +171,7 @@ fn background_permission_clients_and_inactive_tab() {
     assert_prompt(&renders);
     assert_eq!(
         focused_pane(&mock, CLIENT),
-        (TabId::new(1), PaneId::Plugin(PLUGIN))
+        (TabId::new(1), PaneId::Terminal(TerminalId::new(1)))
     );
     let arriving = ClientId::new(3);
     mock.to_screen
@@ -184,7 +184,7 @@ fn background_permission_clients_and_inactive_tab() {
         .unwrap();
     assert_eq!(
         focused_pane(&mock, arriving),
-        (TabId::new(1), PaneId::Plugin(PLUGIN))
+        (TabId::new(1), PaneId::Terminal(TerminalId::new(1)))
     );
     mock.teardown(threads);
 }
@@ -218,7 +218,7 @@ fn background_permission_survives_initial_layout() {
             pane_info(&mock, PaneId::Plugin(PLUGIN))
                 .unwrap()
                 .is_suppressed,
-            "permission presentation must wait until the initial layout settles"
+            "permission presentation keeps the pane suppressed"
         );
         mock.to_screen
             .send(ScreenInstruction::ApplyLayout(
@@ -236,7 +236,7 @@ fn background_permission_survives_initial_layout() {
             ))
             .unwrap();
         assert_prompt(&renders);
-        assert_eq!(focused_pane(&mock, CLIENT).1, PaneId::Plugin(PLUGIN));
+        assert_ne!(focused_pane(&mock, CLIENT).1, PaneId::Plugin(PLUGIN));
         mock.teardown(threads);
     }
 }
@@ -248,7 +248,7 @@ fn background_permission_replays_on_pane_attachment() {
     assert!(pane_info(&mock, PaneId::Plugin(PLUGIN)).is_none());
     attach(&mock, TabId::new(0));
     assert_prompt(&renders);
-    assert_eq!(focused_pane(&mock, CLIENT).1, PaneId::Plugin(PLUGIN));
+    assert_ne!(focused_pane(&mock, CLIENT).1, PaneId::Plugin(PLUGIN));
     mock.teardown(threads);
 }
 
@@ -305,8 +305,8 @@ fn background_permission_restores_placement() {
     ));
     attach(&mock, TabId::new(0));
     for (key, expected) in [
-        (b'y', PermissionStatus::Granted),
-        (b'n', PermissionStatus::Denied),
+        (yinz_types::keys::BareKey::Enter, PermissionStatus::Granted),
+        (yinz_types::keys::BareKey::Esc, PermissionStatus::Denied),
     ] {
         let checkpoint = renders.lock().len();
         request(&mock);
@@ -315,23 +315,45 @@ fn background_permission_restores_placement() {
             SIZE,
             checkpoint,
             "fresh permission prompt",
-            |_, frame| frame.contains("Allow? (y/n)"),
+            |_, frame| frame.contains("Plugin permissions"),
         );
+        if expected == PermissionStatus::Granted {
+            mock.to_screen
+                .send(ScreenInstruction::WriteCharacter(
+                    Some(yinz_types::keys::KeyWithModifier::new(
+                        yinz_types::keys::BareKey::Tab,
+                    )),
+                    vec![],
+                    false,
+                    CLIENT,
+                    None,
+                ))
+                .unwrap();
+        }
         mock.to_screen
             .send(ScreenInstruction::WriteCharacter(
-                None,
-                vec![key],
+                Some(yinz_types::keys::KeyWithModifier::new(key)),
+                vec![],
                 false,
                 CLIENT,
                 None,
             ))
             .unwrap();
-        answers.wait_until("permission answer reaches host", yinz_test_support::default_timeout(), |events| {
-            events.iter().any(|event| matches!(event,
-                PluginInstruction::PermissionRequestResult(id, Some(client), permissions, status, None)
-                if *id == PLUGIN && *client == CLIENT && permissions == &[PermissionType::ReadApplicationState] && *status == expected
-            )).then_some(())
-        });
+        answers.wait_until(
+            "permission answer reaches host",
+            yinz_test_support::default_timeout(),
+            |events| {
+                events
+                    .iter()
+                    .any(|event| {
+                        matches!(event,
+                            PluginInstruction::PermissionAnswer { request_id: 0, status, .. }
+                            if *status == expected
+                        )
+                    })
+                    .then_some(())
+            },
+        );
         assert!(
             pane_info(&mock, PaneId::Plugin(PLUGIN))
                 .unwrap()
@@ -346,8 +368,363 @@ fn background_permission_restores_placement() {
             SIZE,
             checkpoint,
             "answered prompt clears",
-            |_, frame| !frame.contains("Allow? (y/n)"),
+            |_, frame| !frame.contains("Plugin permissions"),
         );
     }
     mock.teardown(threads);
+}
+
+#[test]
+fn permission_modals_queue_reassign_and_consume_paste_without_changing_mode() {
+    use yinz_types::keys::{BareKey, KeyWithModifier};
+    let mut screen = create_non_mirrored_screen(SIZE);
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let mut first = PluginPermission::new(
+        "first.ts".into(),
+        vec![PermissionType::ReadApplicationState],
+    );
+    first.request_id = 1;
+    screen.open_permission_modal(PLUGIN, first.clone());
+    assert!(
+        !screen.permission_modal_open(CLIENT),
+        "startup waits for an interactive client"
+    );
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.assign_permission_modals();
+    assert!(screen.permission_modal_open(CLIENT));
+    let focus = screen.get_active_pane_id(&CLIENT);
+    let mode = screen.get_client_input_mode(CLIENT);
+    let mut second = first.clone();
+    second.request_id = 2;
+    screen.open_permission_modal(PLUGIN, second);
+    screen.open_permission_modal(PLUGIN, first); // duplicate delivery is harmless
+    assert_eq!(screen.permission_modals.len(), 2);
+    assert!(screen.command_palette_handles_input(&None, b"y\nAllow\r", false, CLIENT));
+    assert_eq!(screen.permission_modals.len(), 2, "paste is not approval");
+    screen.permission_modal_input(&Some(KeyWithModifier::new(BareKey::Enter)), CLIENT);
+    assert!(rx.try_iter().any(|(event, _)| matches!(
+        event,
+        PluginInstruction::PermissionAnswer {
+            request_id: 1,
+            status: PermissionStatus::Denied,
+            ..
+        }
+    )));
+    assert!(screen.permission_modal_open(CLIENT));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), focus);
+    assert_eq!(screen.get_client_input_mode(CLIENT), mode);
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    screen.remove_client(CLIENT).unwrap();
+    screen.assign_permission_modals();
+    assert!(screen.permission_modal_open(other));
+    assert!(!screen.permission_modal_open(CLIENT));
+    screen.permission_modal_input(&Some(KeyWithModifier::new(BareKey::Tab)), other);
+    screen.permission_modal_input(&Some(KeyWithModifier::new(BareKey::Enter)), other);
+    assert!(rx.try_iter().any(|(event, _)| matches!(
+        event,
+        PluginInstruction::PermissionAnswer {
+            request_id: 2,
+            status: PermissionStatus::Granted,
+            ..
+        }
+    )));
+    assert!(screen.permission_modals.is_empty());
+}
+
+#[test]
+fn permission_modal_mouse_tracks_resizing_and_absorbs_release_after_cancellation() {
+    use yinz_types::mouse::MouseEvent;
+    use yinz_types::position::Position;
+    let mut screen = create_non_mirrored_screen(SIZE);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let focus = screen.get_active_pane_id(&CLIENT);
+    for (token, size) in [(1, SIZE), (2, Size { cols: 60, rows: 20 })] {
+        screen.resize_to_screen(size).unwrap();
+        let mut request = PluginPermission::new(
+            "mouse.ts".into(),
+            vec![PermissionType::ReadApplicationState],
+        );
+        request.request_id = token;
+        screen.open_permission_modal(PLUGIN, request);
+        screen.prepare_permission_modal_render();
+        // Two identity rows, one permission, and two controls, inside a one-cell border.
+        let allow = Position::new(((size.rows - 7) / 2 + 5) as i32, (size.cols / 2) as u16);
+        assert!(screen.permission_modal_mouse(&MouseEvent::new_left_press_event(allow), CLIENT));
+        if token == 1 {
+            screen.cancel_permission_modal(token);
+            assert!(
+                screen.permission_modal_mouse(&MouseEvent::new_left_release_event(allow), CLIENT)
+            );
+            assert!(
+                !screen.permission_modal_mouse(&MouseEvent::new_left_release_event(allow), CLIENT)
+            );
+        } else {
+            assert!(
+                screen.permission_modal_mouse(&MouseEvent::new_left_release_event(allow), CLIENT)
+            );
+        }
+        assert_eq!(screen.get_active_pane_id(&CLIENT), focus);
+    }
+    let answers: Vec<_> = rx
+        .try_iter()
+        .filter_map(|(event, _)| match event {
+            PluginInstruction::PermissionAnswer {
+                request_id, status, ..
+            } => Some((request_id, status)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answers, vec![(2, PermissionStatus::Granted)]);
+}
+
+#[test]
+fn permission_modal_scrolls_all_rows_and_only_activates_visible_controls() {
+    use yinz_types::keys::{BareKey, KeyWithModifier};
+    use yinz_types::mouse::MouseEvent;
+    use yinz_types::position::Position;
+    let size = Size {
+        rows: 10,
+        cols: 100,
+    };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.open_permission_modal(
+        PLUGIN,
+        PluginPermission::new(
+            "identity.ts".into(),
+            vec![
+                PermissionType::ReadApplicationState,
+                PermissionType::ChangeApplicationState,
+                PermissionType::OpenFiles,
+                PermissionType::RunCommands,
+                PermissionType::OpenTerminalsOrPlugins,
+                PermissionType::WriteToStdin,
+                PermissionType::WebAccess,
+                PermissionType::ReadCliPipes,
+                PermissionType::MessageAndLaunchOtherPlugins,
+                PermissionType::Reconfigure,
+            ],
+        ),
+    );
+    let layout = |screen: &Screen| {
+        screen.permission_modals[0].layout(screen.command_palette_surface(CLIENT).unwrap())
+    };
+    let key = |screen: &mut Screen, key| {
+        assert!(screen.permission_modal_input(&Some(KeyWithModifier::new(key)), CLIENT));
+    };
+    let initial = layout(&screen);
+    assert_eq!(initial.window_start, 0);
+    assert!(initial.rows.iter().any(|row| row.label == "identity.ts"));
+    assert!(initial.more_below);
+    key(&mut screen, BareKey::Enter);
+    assert!(
+        screen.permission_modal_open(CLIENT),
+        "hidden Deny is not activated"
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..14 {
+        seen.extend(layout(&screen).rows.iter().map(|row| row.item_index));
+        key(&mut screen, BareKey::Down);
+    }
+    assert_eq!(seen, (0..14).collect());
+    assert!(layout(&screen).more_above);
+    assert!(!layout(&screen).more_below);
+    key(&mut screen, BareKey::Up);
+    assert!(layout(&screen).more_below);
+    key(&mut screen, BareKey::Home);
+    assert_eq!(layout(&screen).window_start, 0);
+    key(&mut screen, BareKey::PageDown);
+    assert!(layout(&screen).row_of_item(13).is_some());
+    key(&mut screen, BareKey::PageUp);
+    assert_eq!(layout(&screen).window_start, 0);
+    key(&mut screen, BareKey::End);
+    let position = Position::new(layout(&screen).row_of_item(13).unwrap() as i32, 50);
+    screen.permission_modal_mouse(&MouseEvent::new_left_press_event(position), CLIENT);
+    screen.permission_modal_mouse(&MouseEvent::new_scroll_up_event(position), CLIENT);
+    screen.permission_modal_mouse(&MouseEvent::new_scroll_down_event(position), CLIENT);
+    screen.permission_modal_mouse(&MouseEvent::new_left_release_event(position), CLIENT);
+    assert!(
+        screen.permission_modal_open(CLIENT),
+        "scrolling invalidates the press even after returning"
+    );
+    seen.clear();
+    for _ in 0..14 {
+        seen.extend(layout(&screen).rows.iter().map(|row| row.item_index));
+        screen.permission_modal_mouse(&MouseEvent::new_scroll_up_event(position), CLIENT);
+    }
+    assert_eq!(seen, (0..14).collect());
+    key(&mut screen, BareKey::Tab);
+    assert!(
+        layout(&screen).row_of_item(13).is_some(),
+        "selecting Allow reveals it"
+    );
+    key(&mut screen, BareKey::Home);
+    key(&mut screen, BareKey::Enter);
+    assert!(
+        screen.permission_modal_open(CLIENT),
+        "hidden Allow is not activated"
+    );
+    key(&mut screen, BareKey::Right);
+    screen.resize_to_screen(SIZE).unwrap();
+    screen.prepare_permission_modal_render();
+    assert_eq!(
+        layout(&screen).window_start,
+        0,
+        "resize clamps the viewport"
+    );
+    let position = Position::new(layout(&screen).row_of_item(13).unwrap() as i32, 50);
+    screen.permission_modal_mouse(&MouseEvent::new_left_press_event(position), CLIENT);
+    screen.resize_to_screen(size).unwrap();
+    screen.prepare_permission_modal_render();
+    screen.permission_modal_mouse(&MouseEvent::new_left_release_event(position), CLIENT);
+    assert!(
+        screen.permission_modal_open(CLIENT),
+        "resize invalidates the press"
+    );
+    key(&mut screen, BareKey::Left);
+    assert!(layout(&screen).row_of_item(12).is_some());
+    key(&mut screen, BareKey::Enter);
+    let answers: Vec<_> = rx
+        .try_iter()
+        .filter_map(|(event, _)| match event {
+            PluginInstruction::PermissionAnswer { status, .. } => Some(status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answers, vec![PermissionStatus::Denied]);
+
+    screen.open_permission_modal(
+        PLUGIN,
+        PluginPermission::new("identity.ts".into(), vec![PermissionType::RunCommands; 10]),
+    );
+    key(&mut screen, BareKey::End);
+    let position = Position::new(layout(&screen).row_of_item(13).unwrap() as i32, 50);
+    screen.permission_modal_mouse(&MouseEvent::new_left_press_event(position), CLIENT);
+    screen.permission_modal_mouse(&MouseEvent::new_scroll_up_event(position), CLIENT);
+    key(&mut screen, BareKey::Esc);
+    assert!(
+        screen.permission_modal_mouse(&MouseEvent::new_left_release_event(position), CLIENT),
+        "a release after scrolling and denial cannot leak to the pane"
+    );
+}
+
+#[test]
+fn permission_identities_wrap_without_losing_suffixes_and_controls_follow_resize() {
+    use unicode_width::UnicodeWidthStr;
+    use yinz_types::keys::{BareKey, KeyWithModifier};
+    use yinz_types::mouse::MouseEvent;
+    use yinz_types::position::Position;
+
+    let prefix = "projects with spaces/界面/cafe\u{301}/".repeat(8);
+    let identities = [
+        format!("/plugins/{prefix}trusted.ts"),
+        format!("/plugins/{prefix}untrusted.ts"),
+        format!("git://plugin?repo=/repos/{prefix}&rev=main&path=trusted.ts"),
+        format!("git://plugin?repo=/repos/{prefix}&rev=main&path=untrusted.ts"),
+    ];
+    let narrow = Size { rows: 8, cols: 32 };
+    let wide = Size { rows: 8, cols: 100 };
+    let mut screen = create_non_mirrored_screen(narrow);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let layout = |screen: &Screen| {
+        screen.permission_modals[0].layout(screen.command_palette_surface(CLIENT).unwrap())
+    };
+    let key = |screen: &mut Screen, key| {
+        assert!(screen.permission_modal_input(&Some(KeyWithModifier::new(key)), CLIENT));
+    };
+    for (token, identity) in identities.into_iter().enumerate() {
+        let mut request =
+            PluginPermission::new(identity.clone(), vec![PermissionType::RunCommands]);
+        request.request_id = token as u64;
+        screen.open_permission_modal(PLUGIN, request);
+        let mut control_indices = vec![];
+        for size in [narrow, wide, narrow] {
+            screen.resize_to_screen(size).unwrap();
+            screen.prepare_permission_modal_render();
+            key(&mut screen, BareKey::Home);
+            key(&mut screen, BareKey::Enter);
+            assert!(
+                screen.permission_modal_open(CLIENT),
+                "hidden control cannot answer"
+            );
+            let mut seen = BTreeMap::new();
+            loop {
+                let current = layout(&screen);
+                for row in &current.rows {
+                    assert!(row.label.width() <= current.width - 4);
+                    seen.insert(row.item_index, row.clone());
+                }
+                if !current.more_below {
+                    break;
+                }
+                key(&mut screen, BareKey::Down);
+            }
+            let deny = seen.len() - 2;
+            let allow = seen.len() - 1;
+            control_indices.push(allow);
+            assert_eq!(seen[&deny].label, "Deny");
+            assert_eq!(seen[&allow].label, "Allow");
+            assert!(seen.values().take(deny).all(|row| row.disabled));
+            let recovered: String = seen
+                .range(1..deny - 1)
+                .map(|(_, row)| row.label.as_str())
+                .collect();
+            assert_eq!(recovered, identity, "complete identity at {size:?}");
+            key(&mut screen, BareKey::Tab);
+            key(&mut screen, BareKey::Right);
+            assert!(layout(&screen).row_of_item(allow).is_some());
+        }
+        assert!(
+            control_indices[0] > control_indices[1],
+            "wider rows rewrap the identity"
+        );
+        assert_eq!(control_indices[0], control_indices[2]);
+
+        let current = layout(&screen);
+        let allow_position = Position::new(
+            current.row_of_item(control_indices[2]).unwrap() as i32,
+            (current.x + 2) as u16,
+        );
+        screen.permission_modal_mouse(&MouseEvent::new_left_press_event(allow_position), CLIENT);
+        screen.resize_to_screen(wide).unwrap();
+        screen.prepare_permission_modal_render();
+        screen.resize_to_screen(narrow).unwrap();
+        screen.prepare_permission_modal_render();
+        key(&mut screen, BareKey::Right);
+        screen.permission_modal_mouse(&MouseEvent::new_left_release_event(allow_position), CLIENT);
+        assert!(
+            screen.permission_modal_open(CLIENT),
+            "resize invalidates a stale press"
+        );
+        if token % 2 == 0 {
+            key(&mut screen, BareKey::Enter);
+        } else {
+            let current = layout(&screen);
+            let position = Position::new(
+                current.row_of_item(control_indices[2]).unwrap() as i32,
+                (current.x + 2) as u16,
+            );
+            screen.permission_modal_mouse(&MouseEvent::new_left_press_event(position), CLIENT);
+            screen.permission_modal_mouse(&MouseEvent::new_left_release_event(position), CLIENT);
+        }
+        assert!(!screen.permission_modal_open(CLIENT));
+        let answers: Vec<_> = rx
+            .try_iter()
+            .filter_map(|(event, _)| match event {
+                PluginInstruction::PermissionAnswer {
+                    request_id, status, ..
+                } => Some((request_id, status)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answers, vec![(token as u64, PermissionStatus::Granted)]);
+    }
 }

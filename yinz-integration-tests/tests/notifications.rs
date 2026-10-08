@@ -710,9 +710,9 @@ export default {
         .with_layout(LayoutInfo::Stringified(format!("layout {{ pane {{ plugin location=\"file:{}\" {{ shared true; }}; }}; }}", observer.display())))
         .start();
     yinz.wait_until("observer's read-state permission", |grid| {
-        grid.contains("Allow? (y/n)")
+        grid.contains("Plugin permissions")
     });
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until("observer subscribed", |grid| {
         grid.contains("observer ready")
     });

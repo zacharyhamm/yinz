@@ -83,23 +83,19 @@ fn opening_ripple_placement_cache_and_clock_shutdown() {
     assert!(!hidden.contains("CONTENTS"));
     assert!(!screen.animations_are_live(start));
 
-    // Showing a permission prompt is not the plugin's first placement.
-    screen
-        .tabs
-        .get_mut(&TabId::new(0))
-        .unwrap()
-        .request_plugin_permissions(
-            PluginId::new(7),
-            Some(yinz_types::data::PluginPermission::new(
-                "agents".into(),
-                vec![yinz_types::data::PermissionType::ReadApplicationState],
-            )),
-        );
+    // A permission modal does not participate in pane placement or animation.
+    screen.open_permission_modal(
+        PluginId::new(7),
+        yinz_types::data::PluginPermission::new(
+            "agents".into(),
+            vec![yinz_types::data::PermissionType::ReadApplicationState],
+        ),
+    );
     let prompt = render_frame_into(&mut screen, &server_rx, ClientId::new(1), &mut grid);
-    assert!(prompt.contains("Allow?"));
+    assert!(prompt.contains("Plugin permissions"));
     assert!(!screen.animations_are_live(start));
+    screen.cancel_permission_modal(0);
     let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
-    tab.request_plugin_permissions(PluginId::new(7), None);
     tab.get_pane_with_id_mut(pane_id)
         .unwrap()
         .handle_plugin_bytes(ClientId::new(1), b"\x1b[2J\x1b[HCONTENTS".to_vec());

@@ -13,7 +13,9 @@ Follow the bundled SDK; plugins use confined relative imports and `yinz:plugin`.
 yinz plugins write clock.ts --file clock.ts
 yinz plugins check clock.ts --json
 yinz plugins test clock.ts --json
+yinz --session main plugins start clock.ts
 yinz --session main plugins reload clock.ts
+yinz --session main plugins list --running --json
 yinz plugins log clock.ts --lines 80
 ```
 
@@ -30,9 +32,18 @@ Each replacement must match exactly once unless `replace_all` is explicit.
 The batch is checked and formatted before writing. Missing or ambiguous matches,
 compiler errors, and stale source during checking leave the original intact.
 
-For background plugins, use `plugins reload NAME --headless`; this requires
-`agent-service`. Its JSON result reports dispatch. Inspect logs and exercise the
-plugin to verify that loading completed. `plugins check --json` emits structured
-diagnostics even on failure; always check process status. Use `plugins test --help`
-for unit/integration selection and bounded timeouts. A plugin reload can discard
-in-memory state; verify persisted data and subscriptions when relevant.
+Use `plugins start TARGET` to load a background plugin. Use `plugins reload TARGET`
+to reload an existing identity in place, or `plugins stop TARGET` to unload it.
+Targets accept names, aliases, paths, URLs, and `plugin_N`. Select an exact
+configuration with `--configuration-json '{"shared":"true"}'` when needed.
+No Agent plugin is required. `reload --headless` remains a compatibility spelling.
+Reloading a missing target fails with `not loaded; use plugins start`.
+
+Permission requests appear in a host-owned modal. Loading and permission requests
+preserve pane focus and background placement. Start and reload report scheduling.
+Use `plugins list --running --json` to inspect loading, pending permissions, or
+failure. `plugins log` reports runtime status and labels historical log output.
+
+`plugins check --json` emits structured diagnostics even on failure. Always check
+process status. Use `plugins test --help` for test selection and bounded timeouts.
+Reload discards in-memory state. Verify persisted data and subscriptions when relevant.

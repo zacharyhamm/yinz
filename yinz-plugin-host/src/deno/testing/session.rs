@@ -181,6 +181,9 @@ pub(super) struct Controller {
     rendered: bool,
     agent_requests: BTreeMap<u64, mpsc::Receiver<std::result::Result<Value, String>>>,
     next_agent_request: u64,
+    auto_grant_permissions: bool,
+    plugin_responses:
+        BTreeMap<String, std::result::Result<yinz_types::cli::PluginResponse, String>>,
 }
 impl Controller {
     pub fn new(root: PathBuf, grants: Vec<PermissionType>) -> Self {
@@ -211,6 +214,8 @@ impl Controller {
             rendered: false,
             agent_requests: BTreeMap::new(),
             next_agent_request: 0,
+            auto_grant_permissions: true,
+            plugin_responses: BTreeMap::new(),
         }
     }
     fn send(&mut self, message: ClientMsg) -> Result<()> {
@@ -227,6 +232,48 @@ impl Controller {
             is_cli_client: false,
         })
     }
+    fn plugin_lifecycle(
+        &mut self,
+        operation: yinz_types::cli::PluginOperation,
+        location: String,
+        configuration: Option<BTreeMap<String, String>>,
+    ) -> Result<Value> {
+        let fallback = if location.starts_with("plugin_") {
+            None
+        } else {
+            Some(
+                yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+                    &location, &None, None, None,
+                )
+                .map_err(anyhow::Error::msg)?
+                .get_run_plugin()
+                .context("test plugin location")?,
+            )
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        self.send(ClientMsg::PluginRequest {
+            request_id: id.clone(),
+            request: yinz_types::cli::PluginRequest {
+                operation,
+                target: Some(location),
+                configuration,
+                fallback,
+                candidates: vec![],
+                caller: None,
+            },
+        })?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            self.collect(true)?;
+            if let Some(result) = self.plugin_responses.remove(&id) {
+                return serde_json::to_value(result.map_err(anyhow::Error::msg)?)
+                    .context("test lifecycle response");
+            }
+            if Instant::now() >= deadline {
+                bail!("plugin lifecycle response timed out");
+            }
+        }
+    }
     fn collect(&mut self, wait: bool) -> Result<()> {
         let receiver = self
             .messages
@@ -239,6 +286,9 @@ impl Controller {
         };
         for message in first.into_iter().chain(receiver.try_iter()).take(1000) {
             match message {
+                ServerMsg::PluginResponse { request_id, result } => {
+                    self.plugin_responses.insert(request_id, result);
+                },
                 ServerMsg::Render { content } => {
                     self.parser.advance(&mut self.grid, content.as_bytes());
                     self.rendered = true;
@@ -272,6 +322,9 @@ impl Controller {
         Ok(url.to_string())
     }
     fn grant(&self, location: &str) -> Result<()> {
+        if !self.auto_grant_permissions {
+            return Ok(());
+        }
         let pid =
             fs::read_to_string(self.root.join("server.pid")).context("read owned server pid")?;
         let path = self
@@ -402,6 +455,7 @@ impl Controller {
                     .context("canonical fixture home")?));
             },
             "start" => {
+                self.auto_grant_permissions = arg["autoGrantPermissions"] != false;
                 if self.sender.is_some() {
                     bail!("one session per integration test");
                 }
@@ -529,25 +583,23 @@ impl Controller {
             "load" => {
                 let path = arg["path"].as_str().context("plugin path")?;
                 let location = self.location(path, loader)?;
-                self.grant(&location)?;
+                if arg["autoGrantPermissions"] != false {
+                    self.grant(&location)?;
+                }
                 let configuration: BTreeMap<String, String> =
                     serde_json::from_value(arg.get("configuration").cloned().unwrap_or(json!({})))
                         .context("plugin configuration")?;
+                if arg["headless"] == true {
+                    return self.plugin_lifecycle(
+                        yinz_types::cli::PluginOperation::Start,
+                        location,
+                        Some(configuration),
+                    );
+                }
                 let configuration = configuration
                     .iter()
                     .map(|(key, value)| format!("{} {};", quote(key), quote(value)))
                     .collect::<String>();
-                if arg["headless"] == true {
-                    self.action(Action::Reconfigure {
-                        config: format!(
-                            "load_plugins {{ {} {{ {} }}; }}",
-                            quote(&location),
-                            configuration
-                        ),
-                        write_to_disk: false,
-                    })?;
-                    return Ok(Value::Null);
-                }
                 let action = format!("LaunchPlugin {} {{ {} }}", quote(&location), configuration);
                 let doc: kdl::KdlDocument = action.parse().context("plugin load action")?;
                 for node in doc.nodes() {
@@ -557,13 +609,28 @@ impl Controller {
                     )?;
                 }
             },
-            "reload" => {
-                let location = self.location(arg.as_str().context("plugin path")?, loader)?;
-                let plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-                    &location, &None, None, None,
-                )
-                .map_err(|error| anyhow!(error))?;
-                self.action(Action::StartOrReloadPlugin { plugin })?;
+            "reload" | "stop" | "status" => {
+                let path = arg["path"]
+                    .as_str()
+                    .or_else(|| arg.as_str())
+                    .context("plugin path")?;
+                let location = if path.starts_with("plugin_") {
+                    path.to_owned()
+                } else {
+                    self.location(path, loader)?
+                };
+                let configuration = arg
+                    .get("configuration")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .context("plugin configuration")?;
+                let operation = match op {
+                    "reload" => yinz_types::cli::PluginOperation::Reload,
+                    "stop" => yinz_types::cli::PluginOperation::Stop,
+                    _ => yinz_types::cli::PluginOperation::Inspect,
+                };
+                return self.plugin_lifecycle(operation, location, configuration);
             },
             "key" => {
                 let key: yinz_types::keys::KeyWithModifier = arg

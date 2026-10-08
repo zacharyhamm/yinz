@@ -123,9 +123,9 @@ export default {{
     });
     yinz.send_stdin(b"\x1b[6;21;8t\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
     yinz.wait_until("Deno image plugin asks for permissions", |screen| {
-        screen.contains("Allow? (y/n)")
+        screen.contains("Plugin permissions")
     });
-    yinz.send_stdin(&keys::key('y'));
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until_raw_output("Deno image reaches the terminal", |bytes| {
         contains_bytes(bytes, b"\x1b_Ga=t,q=2,")
             && contains_bytes(bytes, b"\x1b_Ga=p,q=2,")

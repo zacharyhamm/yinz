@@ -1,5 +1,5 @@
 //! Source-aware log selection, shared by the CLI and plugin host.
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use yinz_config::plugins::{PluginConfig, PluginRuntime};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::input::{layout::RunPluginLocation, plugins::PluginAliases};
@@ -11,29 +11,7 @@ pub struct LogIdentity {
     builtin: Option<String>,
 }
 
-// Resolve existing prefixes too, so deleted sources below symlinked directories still match.
-fn source_path(path: &Path, cwd: &Path) -> PathBuf {
-    let absolute = cwd.join(path);
-    if let Ok(path) = absolute.canonicalize() {
-        return path;
-    }
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::ParentDir => {
-                normalized.pop();
-            },
-            Component::CurDir => {},
-            other => {
-                normalized.push(other);
-                if let Ok(path) = normalized.canonicalize() {
-                    normalized = path;
-                }
-            },
-        }
-    }
-    normalized
-}
+use yinz_runtime::common_path::source_path;
 
 // Preserve non-UTF-8 filesystem names as well as control characters without lossy collisions.
 fn path_identity(path: &Path) -> String {
@@ -129,6 +107,16 @@ pub fn resolve_log_target(
     }
     if let Some(path) = resolve_explicit_plugin_path(name, cwd)? {
         return Ok(LogTarget::File(source_path(&path, cwd)));
+    }
+    if name.contains(':') {
+        let location =
+            yinz_runtime::plugin_location::parse_plugin_location(name, Some(cwd.to_owned()))
+                .context("resolve plugin log URL")?;
+        return Ok(match location {
+            RunPluginLocation::File(path) => LogTarget::File(source_path(&path, cwd)),
+            RunPluginLocation::Git(repository) => LogTarget::Repository(repository.descriptor()),
+            RunPluginLocation::Yinz(tag) => LogTarget::Builtin(tag.to_string()),
+        });
     }
     let dir = dir.ok_or_else(|| {
         anyhow!("no plugin folder is configured; set `user_plugin_dir` in the Yinz config")

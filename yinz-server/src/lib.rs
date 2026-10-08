@@ -170,11 +170,41 @@ use {
 
 pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 
+#[derive(Debug, Clone)]
+struct BackgroundPluginConfiguration {
+    declarations: std::collections::BTreeSet<RunPluginOrAlias>,
+    cleared: bool,
+    aliases: PluginAliases,
+}
+
+impl BackgroundPluginConfiguration {
+    fn from_config(config: &Config) -> Self {
+        let aliases = config
+            .background_plugins
+            .iter()
+            .filter_map(|declaration| match declaration {
+                RunPluginOrAlias::Alias(alias) => config
+                    .plugins
+                    .aliases
+                    .get(&alias.name)
+                    .map(|plugin| (alias.name.clone(), plugin.clone())),
+                RunPluginOrAlias::RunPlugin(_) => None,
+            })
+            .collect();
+        Self {
+            declarations: config.background_plugins.clone(),
+            cleared: config.background_plugins_cleared,
+            aliases: PluginAliases::from_data(aliases),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionConfiguration {
     runtime_config: HashMap<ClientId, Config>, // if present, overrides the saved_config
     effective_keybinds: HashMap<ClientId, Keybinds>,
     plugin_default_keybinds: BTreeMap<PluginId, Keybinds>,
+    background_plugins: Option<BackgroundPluginConfiguration>,
     saved_config: Config, // the config as it is on disk (not guaranteed),
                           // when changed, this resets the runtime config to
                           // be identical to it and override any previous
@@ -183,6 +213,9 @@ pub(crate) struct SessionConfiguration {
 
 impl SessionConfiguration {
     pub fn change_saved_config(&mut self, new_saved_config: Config) -> Vec<(ClientId, Config)> {
+        self.background_plugins = Some(BackgroundPluginConfiguration::from_config(
+            &new_saved_config,
+        ));
         self.saved_config = new_saved_config.clone();
 
         let mut config_changes = vec![];
@@ -198,6 +231,7 @@ impl SessionConfiguration {
         config_changes
     }
     pub fn set_saved_configuration(&mut self, config: Config) {
+        self.background_plugins = Some(BackgroundPluginConfiguration::from_config(&config));
         self.saved_config = config;
         self.recompute_effective_keybinds();
     }
@@ -230,11 +264,17 @@ impl SessionConfiguration {
         Duration::from_millis((millis).get())
     }
     pub fn get_client_configuration(&self, client_id: &ClientId) -> Config {
-        self.runtime_config
+        let mut config = self
+            .runtime_config
             .get(client_id)
-            .or(Some(&self.saved_config))
-            .cloned()
-            .unwrap_or_default()
+            .unwrap_or(&self.saved_config)
+            .clone();
+        if let Some(background) = &self.background_plugins {
+            config.background_plugins = background.declarations.clone();
+            config.background_plugins_cleared = background.cleared;
+            config.plugins.merge(background.aliases.clone());
+        }
+        config
     }
     pub fn reconfigure_runtime_config(
         &mut self,
@@ -242,28 +282,25 @@ impl SessionConfiguration {
         stringified_config: String,
         config_file_path: Option<&Path>,
         config_dir: Option<&Path>,
-    ) -> (Option<Config>, bool) {
-        // bool is whether the config changed
-        let mut full_reconfigured_config = None;
-        let mut config_changed = false;
-        let current_client_configuration = self.get_client_configuration(client_id);
-        match Config::from_kdl(
-            &stringified_config,
-            Some(current_client_configuration.clone()),
-        )
-        .and_then(|config| config.resolve_plugin_repositories(config_file_path, config_dir))
-        {
-            Ok(new_config) => {
-                config_changed = current_client_configuration != new_config;
-                self.runtime_config.insert(*client_id, new_config);
-                self.recompute_effective_keybinds();
-                full_reconfigured_config = Some(self.get_client_configuration(client_id));
-            },
-            Err(e) => {
-                log::error!("Failed to reconfigure runtime config: {}", e);
-            },
+    ) -> Result<(Option<Config>, bool)> {
+        let current = self.get_client_configuration(client_id);
+        let new_config = Config::from_kdl(&stringified_config, Some(current.clone()))
+            .and_then(|config| config.resolve_plugin_repositories(config_file_path, config_dir))
+            .map_err(|error| anyhow!("{error}"))?;
+        for declaration in &new_config.background_plugins {
+            let mut declaration = declaration.clone();
+            declaration.populate_run_plugin_if_needed(&new_config.plugins);
+            let run = declaration
+                .get_run_plugin()
+                .with_context(|| format!("unknown load_plugins alias: {declaration:?}"))?;
+            yinz_config::plugins::PluginConfig::from_run_plugin(&run)
+                .with_context(|| format!("Failed to resolve plugin: {}", run.location))?;
         }
-        (full_reconfigured_config, config_changed)
+        let changed = current != new_config;
+        self.background_plugins = Some(BackgroundPluginConfiguration::from_config(&new_config));
+        self.runtime_config.insert(*client_id, new_config.clone());
+        self.recompute_effective_keybinds();
+        Ok((Some(new_config), changed))
     }
     pub fn rebind_keys(
         &mut self,
@@ -302,9 +339,6 @@ impl SessionConfiguration {
                         keys_in_mode.insert(key_with_modifier, actions);
                     }
                 }
-                if config_changed {
-                    full_reconfigured_config = Some(config.clone());
-                }
             },
             None => {
                 log::error!(
@@ -314,6 +348,7 @@ impl SessionConfiguration {
         }
         if config_changed {
             self.recompute_effective_keybinds();
+            full_reconfigured_config = Some(self.get_client_configuration(client_id));
         }
 
         (full_reconfigured_config, config_changed)
@@ -1829,17 +1864,22 @@ pub fn start_server_impl(
                 config,
                 write_config_to_disk,
             } => {
-                let Some((new_config, runtime_config_changed)) =
-                    with_session_mut(&session_data, |session| {
-                        session.session_configuration.reconfigure_runtime_config(
-                            &client_id,
-                            config.clone(),
-                            session.config_file_path.as_deref(),
-                            session.config_dir.as_deref(),
-                        )
-                    })
-                else {
+                let Some(result) = with_session_mut(&session_data, |session| {
+                    session.session_configuration.reconfigure_runtime_config(
+                        &client_id,
+                        config.clone(),
+                        session.config_file_path.as_deref(),
+                        session.config_dir.as_deref(),
+                    )
+                }) else {
                     continue;
+                };
+                let (new_config, runtime_config_changed) = match result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        log::error!("reconfigure: {error:#}");
+                        continue;
+                    },
                 };
                 let persistence = match write_config_to_disk {
                     true => ConfigPersistence::Fragment(config),
@@ -1851,27 +1891,33 @@ pub fn start_server_impl(
                     runtime_config_changed,
                     &session_data,
                     client_id,
-                );
+                )
+                .non_fatal();
             },
             ServerInstruction::ReconfigureAllClients {
                 config,
                 write_config_to_disk,
-                completion,
+                mut completion,
             } => {
-                // Every client the session is drawing for. A CLI client is in this list too,
-                // and harmlessly: it has no configuration of its own and is about to leave.
-                let client_ids: Vec<ClientId> = {
-                    let state = session_state.read().unwrap();
-                    state
-                        .client_ids()
-                        .into_iter()
-                        .filter(|client_id| !state.is_watcher(client_id))
-                        .collect()
-                };
-                let mut write_pending = write_config_to_disk;
-                for client_id in client_ids {
-                    let Some((new_config, runtime_config_changed)) =
-                        with_session_mut(&session_data, |session| {
+                let result = (|| -> Result<()> {
+                    let client_ids: Vec<ClientId> = {
+                        let state = session_state.read().unwrap();
+                        state
+                            .client_ids()
+                            .into_iter()
+                            .filter(|id| !state.is_watcher(id))
+                            .collect()
+                    };
+                    // Validate the whole change before mutating live configuration. Background
+                    // declarations are session-wide; notify the plugin thread once for the batch.
+                    let client_ids = if client_ids.is_empty() {
+                        vec![ClientId::new(0)]
+                    } else {
+                        client_ids
+                    };
+                    if write_config_to_disk {
+                        let client_id = client_ids[0];
+                        let (new_config, changed) = with_session_mut(&session_data, |session| {
                             session.session_configuration.reconfigure_runtime_config(
                                 &client_id,
                                 config.clone(),
@@ -1879,24 +1925,82 @@ pub fn start_server_impl(
                                 session.config_dir.as_deref(),
                             )
                         })
-                    else {
-                        break;
-                    };
-                    // Written once: a write propagates the saved config to every client itself.
-                    let write_now = std::mem::take(&mut write_pending) && new_config.is_some();
-                    let persistence = match write_now {
-                        true => ConfigPersistence::Fragment(config.clone()),
-                        false => ConfigPersistence::None,
-                    };
-                    update_new_saved_config(
-                        new_config,
-                        persistence,
-                        runtime_config_changed,
-                        &session_data,
-                        client_id,
-                    );
+                        .context("session is unavailable")??;
+                        update_new_saved_config(
+                            new_config,
+                            ConfigPersistence::Fragment(config.clone()),
+                            changed,
+                            &session_data,
+                            client_id,
+                        )?;
+                    } else {
+                        with_session_mut(&session_data, |session| -> Result<()> {
+                            let mut staged = session.session_configuration.clone();
+                            let mut changes = vec![];
+                            for client_id in client_ids {
+                                let (new_config, changed) = staged.reconfigure_runtime_config(
+                                    &client_id,
+                                    config.clone(),
+                                    session.config_file_path.as_deref(),
+                                    session.config_dir.as_deref(),
+                                )?;
+                                if let (Some(new_config), true) = (new_config, changed) {
+                                    changes.push((client_id, new_config));
+                                }
+                            }
+                            session.session_configuration = staged;
+                            session.propagate_configuration_changes(changes, false);
+                            Ok(())
+                        })
+                        .context("session is unavailable")??;
+                    }
+                    if config.contains("load_plugins") {
+                        let senders =
+                            with_session(&session_data, |session| session.senders.clone())
+                                .context("session is unavailable")?;
+                        let (reply, receiver) = std::sync::mpsc::channel();
+                        senders
+                            .send_to_plugin(PluginInstruction::PluginRequest {
+                                request: yinz_types::cli::PluginRequest {
+                                    operation: yinz_types::cli::PluginOperation::List,
+                                    target: None,
+                                    configuration: None,
+                                    fallback: None,
+                                    candidates: vec![],
+                                    caller: None,
+                                },
+                                client_id: ClientId::new(0),
+                                reply,
+                            })
+                            .context("query scheduled background plugins")?;
+                        let response = receiver
+                            .recv_timeout(Duration::from_secs(30))
+                            .context("background plugin scheduling timed out")?
+                            .map_err(|error| anyhow!("{error}"))?;
+                        if let Some(completion) = completion.as_mut() {
+                            completion.set_stdout_message(format!(
+                                "Scheduled plugin state: {}",
+                                response
+                                    .plugins
+                                    .iter()
+                                    .map(|plugin| format!(
+                                        "plugin_{} {:?}",
+                                        plugin.id, plugin.state
+                                    ))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        }
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    if let Some(completion) = completion.as_mut() {
+                        completion.set_exit_status(1);
+                        completion.set_error_message(format!("{error:#}"));
+                    }
+                    log::error!("reconfigure: {error:#}");
                 }
-                drop(completion);
             },
             ServerInstruction::ConfigWrittenToDisk(new_config) => {
                 with_session_mut(&session_data, |session| {
@@ -1958,7 +2062,8 @@ pub fn start_server_impl(
                     runtime_config_changed,
                     &session_data,
                     client_id,
-                );
+                )
+                .non_fatal();
             },
             ServerInstruction::TerminalPixelDimensions {
                 client_id,
@@ -2441,8 +2546,8 @@ fn init_session(
             );
             let builtin_plugins_dir = config_options.builtin_plugins_dir.clone();
             let mut background_plugins = config.background_plugins.clone();
-            // Agent support is a shared TypeScript plugin even when users replace UI defaults.
-            background_plugins.insert(yinz_types::input::layout::RunPluginOrAlias::RunPlugin(
+            // Agent support is a host requirement independent of configuration ownership.
+            background_plugins.insert(RunPluginOrAlias::RunPlugin(
                 yinz_types::input::layout::RunPlugin {
                     location: yinz_types::input::layout::RunPluginLocation::Yinz(
                         yinz_types::data::PluginTag::new("agent-opencode"),
@@ -2612,7 +2717,7 @@ fn update_new_saved_config(
     runtime_config_changed: bool,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
     client_id: ClientId,
-) {
+) -> Result<()> {
     if let Some(new_config) = new_config {
         let propagate_saved = |session: &mut SessionMetaData, config: Config| {
             let mut changes = session
@@ -2655,7 +2760,7 @@ fn update_new_saved_config(
                 },
                 Err((file_path, reason)) => {
                     with_session(session_data, |session| {
-                        session.report_config_write_failure(file_path, Some(reason))
+                        session.report_config_write_failure(file_path, Some(reason.clone()))
                     });
                     if runtime_config_changed {
                         with_session_mut(session_data, |session| {
@@ -2665,9 +2770,10 @@ fn update_new_saved_config(
                             )
                         });
                     }
+                    return Err(anyhow!("{reason}"));
                 },
             }
-            return;
+            return Ok(());
         }
         if matches!(persistence, ConfigPersistence::WholeConfig) {
             let add_comments = true;
@@ -2680,7 +2786,7 @@ fn update_new_saved_config(
                 with_session(session_data, |session| {
                     session.report_config_write_failure(None, Some(reason.to_owned()))
                 });
-                return;
+                return Err(anyhow!("{reason}"));
             };
             // Serialized first, on its own: a binding whose action has no config spelling
             // refuses the save here, with the mode, key and action in the reason, before
@@ -2708,8 +2814,9 @@ fn update_new_saved_config(
                         })
                         .non_fatal();
                     with_session(session_data, |session| {
-                        session.report_config_write_failure(path, Some(reason))
+                        session.report_config_write_failure(path, Some(reason.clone()))
                     });
+                    return Err(anyhow!("{reason}"));
                 },
             }
         } else if runtime_config_changed {
@@ -2722,6 +2829,7 @@ fn update_new_saved_config(
             });
         }
     }
+    Ok(())
 }
 
 /// What the CLI waiting on `pipe_name` is sent for a plugin's `output` to it: the output, or an

@@ -47,6 +47,15 @@ pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId::new(u32::MAX);
 
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
+    PluginRequest {
+        request: yinz_types::cli::PluginRequest,
+        client_id: ClientId,
+        reply: std::sync::mpsc::Sender<Result<yinz_types::cli::PluginResponse, String>>,
+    },
+    ReconcileBackgroundPlugins {
+        plugins: std::collections::BTreeSet<RunPluginOrAlias>,
+        client_id: ClientId,
+    },
     DataRequest {
         request: yinz_types::cli::DataRequest,
         reply: std::sync::mpsc::Sender<Result<String, String>>,
@@ -210,13 +219,17 @@ pub enum PluginInstruction {
         client_id: ClientId,
         event_types: Vec<String>,
     },
-    PermissionRequestResult(
-        PluginId,
-        Option<ClientId>,
-        Vec<PermissionType>,
-        PermissionStatus,
-        Option<PathBuf>,
-    ),
+    RequestPermissions {
+        plugin_id: PluginId,
+        instance_id: PluginInstanceId,
+        client_id: ClientId,
+        permissions: Vec<PermissionType>,
+    },
+    PermissionAnswer {
+        request_id: u64,
+        status: PermissionStatus,
+        cache_path: Option<PathBuf>,
+    },
     DumpLayout(SessionLayoutMetadata, ClientId, Option<NotificationEnd>),
     ListClientsMetadata(SessionLayoutMetadata, ClientId, Option<NotificationEnd>),
     DumpLayoutToPlugin {

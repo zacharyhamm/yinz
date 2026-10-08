@@ -1,7 +1,6 @@
 ---
 source: yinz-plugin-host/src/./unit/plugin_tests/permissions.rs
+assertion_line: 335
 expression: "format!(\"{:#?}\", permissions)"
 ---
-Some(
-    [],
-)
+None

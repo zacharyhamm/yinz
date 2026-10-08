@@ -81,14 +81,14 @@ export function loadPlugin(path: string, options?: {configuration?: Record<strin
  */
 export const session: {
   fixture(files?: Record<string,string>, commands?: Record<string,string>): string;
-  start(options?: {rows?: number; columns?: number; hooks?: Record<string,string>; backgroundPlugins?: (string | {path: string; configuration?: Record<string,string>})[]}): void;
+  start(options?: {autoGrantPermissions?: boolean; rows?: number; columns?: number; hooks?: Record<string,string>; backgroundPlugins?: (string | {path: string; configuration?: Record<string,string>})[]}): void;
   /** Dispatch a shipped yinz: Wasm/Deno builtin or a confined local script.
    * Wait for readiness with existing screen or log waits. Missing artifacts follow normal host loading errors.
    * Preserve literal filenames with escaped specifiers, also for reload/pipe/data:
    * const target = import.meta.resolve("./reader%20%23%3F%2523.ts"); // reader #?%23.ts
    * session.loadPlugin(target); session.reload(target);
    */
-  loadPlugin(path: string, options?: {configuration?: Record<string,string>; headless?: boolean}): void;
+  loadPlugin(path: string, options?: {configuration?: Record<string,string>; headless?: boolean; autoGrantPermissions?: boolean}): PluginLifecycle | null;
   key(key: string): void;
   text(text: string): void;
   mouse(event: import("yinz:plugin").MouseEvent): void;
@@ -100,7 +100,9 @@ export const session: {
   report(pane: import("yinz:plugin").PaneId, kind: string, hook: {hook_event_name: string; session_id: string; [key: string]: import("yinz:plugin").Json}): void;
   pipe(name: string, payload: string, options?: {plugin?: string; args?: Record<string,string>}): string;
   rpc(plugin: string, name: string, payload?: import("yinz:plugin").Json, timeoutMs?: number): Promise<import("yinz:plugin").Json>;
-  reload(path: string): void;
+  reload(path: string, options?: {configuration?: Record<string,string>}): PluginLifecycle;
+  stop(path: string, options?: {configuration?: Record<string,string>}): PluginLifecycle;
+  status(path: string, options?: {configuration?: Record<string,string>}): PluginLifecycle;
   readonly screen: string;
   readonly events: unknown[];
   readonly panes: import("yinz:plugin").PaneInfo[];
@@ -113,3 +115,7 @@ export const session: {
 };
 
 export function renderText(raw: string, rows?: number, columns?: number): string;
+
+export interface PluginLifecycle {
+  plugins: {id: number; location: string; configuration: Record<string,string>; background: boolean; shared: boolean; clients: number[]; state: "loading" | "awaiting_permission" | "running" | "failed" | "stopped"; pending_permissions: string[]; latest_error: string | null}[];
+}

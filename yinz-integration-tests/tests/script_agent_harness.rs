@@ -115,7 +115,7 @@ fn a_typescript_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit(
     // The first load: the permissions are asked for and nothing gated works until the user
     // answers - which the task waits for.
     yinz.wait_until("the harness asks for permissions", |grid_snapshot| {
-        grid_snapshot.contains("Allow? (y/n)")
+        grid_snapshot.contains("Plugin permissions")
     });
     let lines = wait_for_log_line("in force at load:");
     assert!(
@@ -124,7 +124,7 @@ fn a_typescript_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit(
     );
     let events = yinz.stream_events(&["pane_update"]);
     events.wait_for_event("PaneUpdate");
-    yinz.send_stdin(b"y");
+    yinz.send_stdin(b"\t\r");
 
     // Granted: the task spawns the agent. The pane carries the record the spawn path wrote.
     let agent_pty = yinz.expect_pty_spawn();

@@ -40,10 +40,12 @@ impl PermissionCache {
 
     /// Add these permissions to the grants present when the cache is saved.
     pub fn grant(&mut self, plugin_name: String, permissions: Vec<PermissionType>) {
-        extend_permissions(
-            self.granted.entry(plugin_name.clone()).or_default(),
-            &permissions,
-        );
+        let mut granted = self
+            .get_permissions(plugin_name.clone())
+            .cloned()
+            .unwrap_or_default();
+        extend_permissions(&mut granted, &permissions);
+        self.granted.insert(plugin_name.clone(), granted);
         let change = self
             .pending
             .entry(plugin_name)
@@ -53,7 +55,44 @@ impl PermissionCache {
     }
 
     pub fn get_permissions(&self, plugin_name: String) -> Option<&Vec<PermissionType>> {
-        self.granted.get(&plugin_name)
+        Self::permissions_in(&self.granted, &plugin_name)
+    }
+
+    fn permissions_in<'a>(
+        granted: &'a GrantedPermission,
+        plugin_name: &str,
+    ) -> Option<&'a Vec<PermissionType>> {
+        granted.get(plugin_name).or_else(|| {
+            #[cfg(target_family = "wasm")]
+            {
+                None
+            }
+            #[cfg(not(target_family = "wasm"))]
+            {
+                let cwd = std::env::current_dir().ok()?;
+                let normalize = |name: &str| {
+                    let location = yinz_runtime::plugin_location::parse_plugin_location(
+                        name,
+                        Some(cwd.clone()),
+                    )
+                    .ok();
+                    match location {
+                        Some(yinz_types::input::layout::RunPluginLocation::File(path)) => {
+                            Some(yinz_runtime::common_path::source_path(&path, &cwd))
+                        },
+                        None if !name.contains(':') => Some(
+                            yinz_runtime::common_path::source_path(Path::new(name), &cwd),
+                        ),
+                        _ => None,
+                    }
+                };
+                let wanted = normalize(plugin_name)?;
+                granted
+                    .iter()
+                    .find(|(key, _)| normalize(key).as_ref() == Some(&wanted))
+                    .map(|(_, grants)| grants)
+            }
+        })
     }
 
     pub fn check_permissions(
@@ -61,7 +100,7 @@ impl PermissionCache {
         plugin_name: String,
         permissions_to_check: &Vec<PermissionType>,
     ) -> bool {
-        if let Some(target) = self.granted.get(&plugin_name) {
+        if let Some(target) = self.get_permissions(plugin_name) {
             let mut all_granted = true;
             for permission in permissions_to_check {
                 if !target.contains(permission) {
@@ -118,16 +157,19 @@ impl PermissionCache {
             Err(error) => return Err(error),
         };
         for (plugin_name, change) in &self.pending {
-            match change {
-                PermissionChange::Replace(permissions) => {
-                    granted.insert(plugin_name.clone(), permissions.clone());
-                },
-                PermissionChange::Grant(permissions) => {
-                    extend_permissions(
-                        granted.entry(plugin_name.clone()).or_default(),
-                        permissions,
-                    );
-                },
+            if let PermissionChange::Replace(permissions) = change {
+                granted.insert(plugin_name.clone(), permissions.clone());
+            }
+        }
+        for (plugin_name, change) in &self.pending {
+            if let PermissionChange::Grant(permissions) = change {
+                // Migrate legacy grants from the locked disk snapshot after replacements,
+                // so neither concurrent nor same-write revocations can be undone.
+                let mut current = Self::permissions_in(&granted, plugin_name)
+                    .cloned()
+                    .unwrap_or_default();
+                extend_permissions(&mut current, permissions);
+                granted.insert(plugin_name.clone(), current);
             }
         }
         let parent = path

@@ -29,6 +29,9 @@ impl Screen {
         }
     }
     pub fn handle_mouse_event(&mut self, event: MouseEvent, client_id: ClientId) {
+        if self.permission_modal_mouse(&event, client_id) {
+            return;
+        }
         if self.notification_mouse_captures.contains(&client_id) {
             if event.event_type == MouseEventType::Release && event.left {
                 self.notification_mouse_captures.remove(&client_id);

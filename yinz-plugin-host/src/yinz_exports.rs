@@ -124,12 +124,11 @@ use {
     yinz_types::data::OpenTerminalResponse, yinz_types::data::OrphanedPane,
     yinz_types::data::OverlayPlacement, yinz_types::data::PaneFrameStyle,
     yinz_types::data::PaneScrollbackResponse, yinz_types::data::PermissionStatus,
-    yinz_types::data::PermissionType, yinz_types::data::PluginPermission,
-    yinz_types::data::RegexHighlight, yinz_types::data::RenameLayoutResponse,
-    yinz_types::data::SaveLayoutResponse, yinz_types::data::SessionConnection,
-    yinz_types::data::SpawnAgentResponse, yinz_types::data::TabMetadata,
-    yinz_types::data::WarpPaneResponse, yinz_types::data::WarpPlacement,
-    yinz_types::data::AGENT_PANE_CONTEXT,
+    yinz_types::data::PermissionType, yinz_types::data::RegexHighlight,
+    yinz_types::data::RenameLayoutResponse, yinz_types::data::SaveLayoutResponse,
+    yinz_types::data::SessionConnection, yinz_types::data::SpawnAgentResponse,
+    yinz_types::data::TabMetadata, yinz_types::data::WarpPaneResponse,
+    yinz_types::data::WarpPlacement, yinz_types::data::AGENT_PANE_CONTEXT,
 };
 
 use crate::PaneId;
@@ -1553,41 +1552,30 @@ fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Resu
     // [`permission_answer_pending`].
     env.permissions_requested
         .store(true, atomic::Ordering::SeqCst);
+    // Cached grants take effect synchronously; every answer still carries its runtime identity.
+    use yinz_types::input::layout::RunPluginLocation;
+    let location = match (&env.plugin_config.location, &env.resolved_source_path) {
+        (RunPluginLocation::File(_), Some(path)) => RunPluginLocation::File(
+            yinz_runtime::common_path::source_path(path, &env.plugin_cwd),
+        ),
+        (location, _) => location.clone(),
+    };
     if PermissionCache::from_path_or_default(None)
-        .check_permissions(env.plugin_config.location.to_string(), &permissions)
+        .check_permissions(location.to_string(), &permissions)
     {
-        // In force from this call on, not from the event's arrival: a grant the user gave long
-        // ago - or one agent made when it approved the plugin's source - has nothing left to
-        // ask, and a plugin asking in `load` may act in `load`. The event still follows, for
-        // the handler that waits on it and for the cache the bridge keeps in step.
         env.permissions
             .lock()
             .unwrap()
-            .replace(HashSet::from_iter(permissions.iter().copied()));
-        return env
-            .senders
-            .send_to_plugin(PluginInstruction::PermissionRequestResult(
-                env.plugin_id,
-                Some(env.client_id),
-                permissions.to_vec(),
-                PermissionStatus::Granted,
-                None,
-            ));
+            .get_or_insert_with(HashSet::new)
+            .extend(permissions.iter().copied());
     }
-
-    // we do this so that messages that have arrived while the user is seeing the permission screen
-    // will be cached and reapplied once the permission is granted
-    let _ = env
-        .senders
-        .send_to_plugin(PluginInstruction::CachePluginEvents {
-            plugin_id: env.plugin_id,
-        });
-
     env.senders
-        .send_to_screen(ScreenInstruction::RequestPluginPermissions(
-            env.plugin_id,
-            PluginPermission::new(env.plugin_config.location.to_string(), permissions),
-        ))
+        .send_to_plugin(PluginInstruction::RequestPermissions {
+            plugin_id: env.plugin_id,
+            instance_id: env.instance_id,
+            client_id: env.client_id,
+            permissions,
+        })
 }
 
 fn get_plugin_ids(env: &mut PluginEnv) {

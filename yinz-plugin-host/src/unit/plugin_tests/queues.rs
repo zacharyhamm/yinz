@@ -192,14 +192,12 @@ impl Harness {
                     };
                     match instruction {
                         ScreenInstruction::Exit => break,
-                        ScreenInstruction::RequestPluginPermissions(plugin_id, permission) => {
-                            let _ = to_plugin.send(PluginInstruction::PermissionRequestResult(
-                                plugin_id,
-                                Some(client_id),
-                                permission.permissions,
-                                answer,
-                                Some(cache_path.clone()),
-                            ));
+                        ScreenInstruction::RequestPluginPermissions(_plugin_id, permission) => {
+                            let _ = to_plugin.send(PluginInstruction::PermissionAnswer {
+                                request_id: permission.request_id,
+                                status: answer,
+                                cache_path: Some(cache_path.clone()),
+                            });
                         },
                         other => log.lock().push(other),
                     }

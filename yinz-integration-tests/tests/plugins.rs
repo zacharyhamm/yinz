@@ -1,8 +1,7 @@
 #![cfg(unix)]
 
-use insta::assert_snapshot;
 use yinz_cli::args::CliAction;
-use yinz_integration_tests::{normalized, TestRunner, TERMINAL_SIZE};
+use yinz_integration_tests::{TestRunner, TERMINAL_SIZE};
 
 fn load_background_plugin_config() -> String {
     let plugin_path = yinz_integration_tests::test_env::fixture_plugin_path();
@@ -22,16 +21,36 @@ fn load_plugins_in_background_on_startup() {
 
     let grid_snapshot =
         yinz.wait_until("background plugin requests permissions", |grid_snapshot| {
-            grid_snapshot.contains("Allow? (y/n)")
+            grid_snapshot.contains("Plugin permissions")
                 && grid_snapshot.tab_bar_appears()
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.contains("STAGGERED")
         });
-    assert_snapshot!(normalized(&grid_snapshot));
-    yinz.send_stdin(b"y");
+    assert!(grid_snapshot.contains("Deny"));
+    let (_, panes) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    let panes: Vec<serde_json::Value> = serde_json::from_str(&panes).unwrap();
+    let background = panes
+        .iter()
+        .find(|pane| pane["is_plugin"] == true && pane["id"] == 1)
+        .unwrap();
+    assert_eq!(background["is_suppressed"], true);
+    assert_eq!(
+        panes
+            .iter()
+            .filter(|pane| pane["is_plugin"] == false)
+            .count(),
+        1
+    );
+    yinz.send_stdin(b"\t\r");
     yinz.wait_until(
         "permission prompt dismissed after granting",
-        |grid_snapshot| !grid_snapshot.contains("Allow? (y/n)"),
+        |grid_snapshot| !grid_snapshot.contains("Plugin permissions"),
     );
     yinz.quit();
 }

@@ -3590,7 +3590,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="33, 34, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
+    #[prost(oneof="client_to_server_msg::Message", tags="33, 34, 36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 35, 11, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3602,6 +3602,8 @@ pub mod client_to_server_msg {
         AgentControlJson(::prost::alloc::string::String),
         #[prost(message, tag="34")]
         DataRequest(super::DataRequestMsg),
+        #[prost(message, tag="36")]
+        PluginRequest(super::DataRequestMsg),
         #[prost(message, tag="1")]
         DetachSession(super::DetachSessionMsg),
         #[prost(message, tag="2")]
@@ -3905,7 +3907,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="23, 24, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 20, 21, 22")]
+    #[prost(oneof="server_to_client_msg::Message", tags="23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 20, 21, 22")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -3917,6 +3919,8 @@ pub mod server_to_client_msg {
         AgentControlJson(::prost::alloc::string::String),
         #[prost(message, tag="24")]
         DataResponse(super::DataResponseMsg),
+        #[prost(message, tag="25")]
+        PluginResponse(super::DataResponseMsg),
         #[prost(message, tag="1")]
         Render(super::RenderMsg),
         #[prost(message, tag="2")]

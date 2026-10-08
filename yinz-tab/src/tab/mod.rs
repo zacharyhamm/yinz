@@ -40,8 +40,7 @@ use yinz_types::style::Style;
 use yinz_types::text::clean_string_from_control_and_linebreak;
 use {
     yinz_types::data::NewPanePlacement, yinz_types::data::OverlayPlacement,
-    yinz_types::data::PaneInfo, yinz_types::data::PluginPermission,
-    yinz_types::data::RegexHighlight, yinz_types::data::StyledText,
+    yinz_types::data::PaneInfo, yinz_types::data::RegexHighlight, yinz_types::data::StyledText,
 };
 
 use crate::background_jobs::BackgroundJob;
@@ -4846,27 +4845,6 @@ impl Tab {
                                 .with_context(err_context)?;
                         }
                     }
-                },
-                Some(AdjustedInput::PermissionRequestResult(permissions, status)) => {
-                    if active_pane.query_should_be_suppressed() {
-                        active_pane.set_should_be_suppressed(false);
-                        if self.pane_is_overlay(PaneId::Plugin(pid)) {
-                            self.hide_overlay_pane(PaneId::Plugin(pid));
-                        } else {
-                            self.suppress_pane(PaneId::Plugin(pid), client_id);
-                        }
-                    }
-                    self.request_plugin_permissions(pid, None);
-                    self.senders
-                        .send_to_plugin(PluginInstruction::PermissionRequestResult(
-                            pid,
-                            client_id,
-                            permissions,
-                            status,
-                            None,
-                        ))
-                        .with_context(err_context)?;
-                    should_update_ui = true;
                 },
                 Some(_) => {},
                 None => {},
@@ -9830,50 +9808,6 @@ impl Tab {
         };
         self.swap_layouts.set_is_tiled_damaged();
         placed
-    }
-    pub fn request_plugin_permissions(
-        &mut self,
-        pid: PluginId,
-        permissions: Option<PluginPermission>,
-    ) {
-        let pane_id = PaneId::Plugin(pid);
-        let in_tabs = self.pane_tabs_of(pane_id).is_some();
-        if in_tabs {
-            self.pane_tab_load_state(
-                pid,
-                if permissions.is_some() {
-                    yinz_types::pane_tabs::PaneTabLoadState::PermissionPending
-                } else {
-                    yinz_types::pane_tabs::PaneTabLoadState::Ready
-                },
-            )
-            .non_fatal();
-        }
-        if permissions.is_some() && !in_tabs {
-            // Permission is needed before a plugin can send its placement.
-            self.overlay_panes.finish_placement(pane_id);
-            if self.overlay_panes.is_hidden(&pane_id) {
-                if let Some(pane) = self.overlay_panes.get_pane_mut(pane_id) {
-                    pane.set_should_be_suppressed(true);
-                }
-                self.show_overlay_pane(pane_id);
-                self.overlay_panes.focus_pane_for_all_clients(pane_id);
-            }
-        }
-        // A suppressed pane asked for permissions cannot show the request, so it is focused
-        // as a floating pane for the moment, marked so that it is suppressed again once the user
-        // has answered
-        let should_focus_pane =
-            permissions.is_some() && !in_tabs && self.suppressed_panes.contains_key(&pane_id);
-        if let Some(plugin_pane) = self.get_pane_with_id_mut(pane_id) {
-            if should_focus_pane {
-                plugin_pane.set_should_be_suppressed(true);
-            }
-            plugin_pane.request_permissions_from_user(permissions);
-        }
-        if should_focus_pane {
-            self.focus_suppressed_pane_for_all_clients(pane_id);
-        }
     }
     /// Returns whether the pane accepted a command for PTY respawn.
     pub fn rerun_terminal_pane_with_id(

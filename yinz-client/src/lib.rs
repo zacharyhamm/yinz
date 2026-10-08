@@ -141,6 +141,7 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::SubscribedPaneClosed { .. } => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::AgentControl(_)
             | ServerToClientMsg::DataResponse { .. }
+            | ServerToClientMsg::PluginResponse { .. }
             | ServerToClientMsg::AgentReportAccepted { .. }
             | ServerToClientMsg::KillSessionComplete { .. } => {
                 ClientInstruction::UnblockInputThread

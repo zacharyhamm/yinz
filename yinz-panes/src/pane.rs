@@ -18,10 +18,7 @@ use std::time::Instant;
 use yinz_ipc::nested_session::NestedSessionMessage;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::AgentInfo;
-use yinz_types::data::{
-    InputMode, PaletteColor, PaneContents, PaneInfo, PermissionStatus, PermissionType,
-    PluginPermission, RegexHighlight,
-};
+use yinz_types::data::{InputMode, PaletteColor, PaneContents, PaneInfo, RegexHighlight};
 use yinz_types::geometry::Direction;
 use yinz_types::input::command::RunCommand;
 use yinz_types::input::layout::{Run, RunPluginLocation};
@@ -188,7 +185,6 @@ pub trait Pane {
     fn set_should_render_boundaries(&mut self, _should_render: bool) {}
     fn selectable(&self) -> bool;
     fn set_selectable(&mut self, selectable: bool);
-    fn request_permissions_from_user(&mut self, _permissions: Option<PluginPermission>) {}
     fn render(&mut self, client_id: Option<ClientId>) -> Result<Option<RenderedPane>>;
     /// Clients whose next Esc confirms input to this pane; only their frame shows the hint.
     fn set_pending_agent_escape_clients(&mut self, _clients: HashSet<ClientId>) {}
@@ -868,7 +864,6 @@ pub enum AdjustedInput {
     /// inside the pane can do this: the process is stopped, and a command pane
     /// has no shell above it to run `fg`.
     ResumeSuspendedProcessInThisPane,
-    PermissionRequestResult(Vec<PermissionType>, PermissionStatus),
     CloseThisPane,
     DropToShellInThisPane {
         working_dir: Option<PathBuf>,

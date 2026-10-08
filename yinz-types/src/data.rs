@@ -596,13 +596,22 @@ impl PermissionType {
 
 #[derive(Debug, Clone)]
 pub struct PluginPermission {
+    pub request_id: u64,
+    pub client_id: Option<crate::internal_ids::ClientId>,
+    pub caller: Option<crate::internal_ids::TerminalId>,
     pub name: String,
     pub permissions: Vec<PermissionType>,
 }
 
 impl PluginPermission {
     pub fn new(name: String, permissions: Vec<PermissionType>) -> Self {
-        PluginPermission { name, permissions }
+        PluginPermission {
+            name,
+            permissions,
+            request_id: 0,
+            client_id: None,
+            caller: None,
+        }
     }
 }
 

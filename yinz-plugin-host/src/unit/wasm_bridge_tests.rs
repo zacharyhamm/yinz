@@ -3038,8 +3038,12 @@ fn removing_an_instance_retains_latest_values_and_url_lookup_deduplicates_ids() 
     let id = PluginId::new(1);
     let mut map = test.bridge.plugin_map.lock().unwrap();
     assert_eq!(
-        map.all_plugin_ids_for_plugin_location(&location, &PluginUserConfiguration::default())
-            .unwrap(),
+        map.all_plugin_ids_for_plugin_location(
+            &location,
+            &PluginUserConfiguration::default(),
+            Clone::clone
+        )
+        .unwrap(),
         vec![id]
     );
     let destinations = &map.clone_plugin_assets()[&location][&PluginUserConfiguration::default()];
@@ -4436,4 +4440,1282 @@ fn plugin_url_query_uses_metadata_while_guest_is_locked() {
         .bridge
         .get_plugin_ids_for_url("file:/unsupported.lua")
         .is_err());
+}
+
+fn lifecycle_request(
+    operation: yinz_types::cli::PluginOperation,
+    run: &RunPlugin,
+) -> yinz_types::cli::PluginRequest {
+    yinz_types::cli::PluginRequest {
+        operation,
+        target: Some(run.location.to_string()),
+        configuration: None,
+        fallback: Some(run.clone()),
+        candidates: vec![],
+        caller: None,
+    }
+}
+
+#[test]
+fn deferred_lifecycle_reload_keeps_empty_configuration_exact() {
+    use yinz_types::cli::PluginOperation as Op;
+    for outcome in ["loaded", "failed", "stopped"] {
+        let mut test = TestBridge::new();
+        let client = ClientId::new(1);
+        let source = test._dirs[0].path().join("deferred.ts");
+        let good = "export default {};";
+        std::fs::write(&source, good).unwrap();
+        let run = RunPlugin {
+            location: RunPluginLocation::File(source.clone()),
+            ..Default::default()
+        };
+        let mut start = lifecycle_request(Op::Start, &run);
+        start.configuration = Some(BTreeMap::from([("setting".into(), "configured".into())]));
+        let sibling = test.bridge.plugin_request(start, client).unwrap().plugins[0].id;
+        test.finish_reload(sibling);
+        let sibling_instance = test.instance_id(sibling, client);
+        let sibling_load = test.bridge.load_ids[&sibling];
+        if outcome == "failed" {
+            std::fs::write(
+                &source,
+                "export default { load() { throw Error('load failed'); } };",
+            )
+            .unwrap();
+        }
+        let mut start = lifecycle_request(Op::Start, &run);
+        start.configuration = Some(BTreeMap::new());
+        let id = test.bridge.plugin_request(start, client).unwrap().plugins[0].id;
+        test.wait_for_executor(id);
+        let old_load = test.bridge.load_ids[&id];
+        // Hold completion notifications and the executor independently: the retry cannot
+        // finish while we check which generation was scheduled by those notifications.
+        let instructions: Vec<_> = test.receiver::<PluginInstruction>().try_iter().collect();
+        let release = test.hold_executor(id);
+        for _ in 0..2 {
+            let mut reload = lifecycle_request(Op::Reload, &run);
+            reload.configuration = Some(BTreeMap::new());
+            assert_eq!(
+                test.bridge.plugin_request(reload, client).unwrap().plugins[0].id,
+                id
+            );
+        }
+        assert_eq!(test.bridge.load_ids[&id], old_load);
+        assert!(test.bridge.pending_plugin_reloads.is_empty());
+        assert_eq!(test.bridge.pending_plugin_id_reloads, HashSet::from([id]));
+        if outcome == "stopped" {
+            let mut stop = lifecycle_request(Op::Stop, &run);
+            stop.target = Some(format!("plugin_{id}"));
+            test.bridge.plugin_request(stop, client).unwrap();
+            assert!(test.bridge.pending_plugin_id_reloads.is_empty());
+        }
+        std::fs::write(&source, good).unwrap();
+        let (shutdown, _) = tokio::sync::mpsc::channel(1);
+        let mut failed = false;
+        for (instruction, _) in instructions {
+            match instruction {
+                PluginInstruction::PluginFailed {
+                    plugin_id,
+                    load_id,
+                    deno_generation,
+                    instance_id,
+                    error,
+                    failed_to_load,
+                    ..
+                } => {
+                    assert_eq!(plugin_id, id);
+                    failed = true;
+                    test.bridge
+                        .queue_plugin_failed(
+                            plugin_id,
+                            load_id,
+                            deno_generation,
+                            instance_id,
+                            error,
+                            failed_to_load,
+                        )
+                        .unwrap();
+                },
+                PluginInstruction::ApplyCachedEvents {
+                    load_id,
+                    plugin_ids,
+                    done_receiving_permissions,
+                } => {
+                    test.bridge
+                        .apply_cached_events_for_load(
+                            load_id,
+                            plugin_ids,
+                            done_receiving_permissions,
+                            shutdown.clone(),
+                        )
+                        .unwrap();
+                },
+                _ => {},
+            }
+        }
+        assert_eq!(failed, outcome == "failed");
+        assert!(test.bridge.pending_plugin_id_reloads.is_empty());
+        assert_eq!(test.bridge.load_ids[&sibling], sibling_load);
+        assert_eq!(test.instance_id(sibling, client), sibling_instance);
+        release.send(()).unwrap();
+        if outcome == "stopped" {
+            assert!(!test.bridge.load_ids.contains_key(&id));
+            assert!(test.bridge.run_plugin_of_plugin_id(id).is_none());
+        } else {
+            let replacement_load = test.bridge.load_ids[&id];
+            assert_eq!(replacement_load, old_load + 1, "requests must coalesce");
+            test.finish_reload(id);
+            assert_eq!(test.bridge.load_ids[&id], replacement_load);
+            assert!(test.bridge.loading_plugins.is_empty());
+            assert!(test
+                .bridge
+                .plugin_map
+                .lock()
+                .unwrap()
+                .get_running_plugin(id, Some(client))
+                .is_some());
+            test.bridge.unload_plugin(id).unwrap();
+        }
+        test.bridge.unload_plugin(sibling).unwrap();
+    }
+}
+
+#[test]
+fn background_lifecycle_deduplicates_pending_and_selects_configuration_exactly() {
+    use yinz_types::cli::{PluginOperation as Op, PluginState};
+    let mut test = TestBridge::new();
+    let source = test._dirs[0].path().join("palette.ts");
+    std::fs::write(&source, "export default {};").unwrap();
+    let run = RunPlugin {
+        location: RunPluginLocation::File(source.clone()),
+        ..Default::default()
+    };
+    let client = ClientId::new(1);
+    let mut start = lifecycle_request(Op::Start, &run);
+    let mut shared = run.clone();
+    shared.configuration.insert("shared", "true");
+    start.candidates.push(shared.clone());
+    let first = test
+        .bridge
+        .plugin_request(start.clone(), client)
+        .unwrap()
+        .plugins
+        .remove(0);
+    assert!(first.shared);
+    assert_eq!(first.state, PluginState::Loading);
+    assert_eq!(
+        test.bridge.plugin_request(start, client).unwrap().plugins[0].id,
+        first.id
+    );
+    assert_eq!(test.bridge.next_plugin_id, 1);
+    test.finish_reload(first.id);
+    let mut second = lifecycle_request(Op::Start, &run);
+    second.configuration = Some(BTreeMap::new());
+    let second = test.bridge.plugin_request(second, client).unwrap().plugins[0].id;
+    assert_ne!(second, first.id);
+    let error = test
+        .bridge
+        .plugin_request(lifecycle_request(Op::Reload, &run), client)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("ambiguous") && error.contains("shared"),
+        "{error}"
+    );
+    let mut exact = lifecycle_request(Op::Reload, &run);
+    exact.configuration = Some(shared.configuration.into_inner());
+    assert_eq!(
+        test.bridge.plugin_request(exact, client).unwrap().plugins[0].id,
+        first.id
+    );
+    test.finish_reload(first.id);
+    std::fs::remove_file(source).unwrap();
+    let mut stop = lifecycle_request(Op::Stop, &run);
+    stop.target = Some(format!("plugin_{}", first.id));
+    assert_eq!(
+        test.bridge
+            .plugin_request(stop.clone(), client)
+            .unwrap()
+            .plugins[0]
+            .state,
+        PluginState::Stopped
+    );
+    stop.operation = Op::Reload;
+    assert!(test
+        .bridge
+        .plugin_request(stop, client)
+        .unwrap_err()
+        .to_string()
+        .contains("not loaded; use plugins start"));
+    test.bridge.unload_plugin(second).unwrap();
+}
+
+#[test]
+fn background_configuration_removal_respects_explicit_launches_and_stops() {
+    let mut test = TestBridge::new();
+    let source = test._dirs[0].path().join("configured.ts");
+    std::fs::write(&source, "export default {};").unwrap();
+    let run = RunPlugin {
+        location: RunPluginLocation::File(source),
+        ..Default::default()
+    };
+    let declarations = std::collections::BTreeSet::from([RunPluginOrAlias::RunPlugin(run.clone())]);
+    let client = ClientId::new(1);
+    test.bridge
+        .reconcile_background_plugins(declarations.clone(), client)
+        .unwrap();
+    let id = PluginId::new(0);
+    test.finish_reload(id);
+    test.bridge
+        .plugin_request(
+            lifecycle_request(yinz_types::cli::PluginOperation::Stop, &run),
+            client,
+        )
+        .unwrap();
+    test.bridge
+        .reconcile_background_plugins(declarations.clone(), client)
+        .unwrap();
+    assert_eq!(
+        test.bridge.next_plugin_id, 1,
+        "identical reconfiguration must not revive a stopped entry"
+    );
+    test.bridge
+        .reconcile_background_plugins(Default::default(), client)
+        .unwrap();
+    test.bridge
+        .reconcile_background_plugins(declarations, client)
+        .unwrap();
+    let id = test
+        .bridge
+        .plugin_request(
+            lifecycle_request(yinz_types::cli::PluginOperation::Start, &run),
+            client,
+        )
+        .unwrap()
+        .plugins[0]
+        .id;
+    test.bridge
+        .reconcile_background_plugins(Default::default(), client)
+        .unwrap();
+    assert!(
+        test.bridge.run_plugin_of_plugin_id(id).is_some(),
+        "explicit launch retains ownership"
+    );
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
+fn background_permission_answers_cannot_grant_replacements_or_stopped_instances() {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(1);
+    let client = ClientId::new(1);
+    let context = test.context(1, 1, "export default {};");
+    test.load(context).unwrap();
+    let instance = test.instance_id(id, client);
+    let (shutdown, _receiver) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .request_permissions(
+            id,
+            instance,
+            client,
+            vec![PermissionType::RunCommands],
+            shutdown.clone(),
+        )
+        .unwrap();
+    let token = *test.bridge.permission_requests.keys().next().unwrap();
+    test.bridge.reload_plugin_with_id(id).unwrap();
+    test.finish_reload(id);
+    let cache = test._dirs[0].path().join("permissions.kdl");
+    test.bridge
+        .answer_permissions(
+            token,
+            PermissionStatus::Granted,
+            Some(cache.clone()),
+            shutdown.clone(),
+        )
+        .unwrap();
+    assert!(!cache.exists());
+    let instance = test.instance_id(id, client);
+    test.bridge
+        .request_permissions(
+            id,
+            instance,
+            client,
+            vec![PermissionType::RunCommands],
+            shutdown.clone(),
+        )
+        .unwrap();
+    let token = *test.bridge.permission_requests.keys().next().unwrap();
+    test.bridge.unload_plugin(id).unwrap();
+    test.bridge
+        .answer_permissions(
+            token,
+            PermissionStatus::Granted,
+            Some(cache.clone()),
+            shutdown,
+        )
+        .unwrap();
+    assert!(!cache.exists());
+    assert!(test.bridge.permission_requests.is_empty());
+}
+
+#[test]
+fn background_identity_survives_url_spelling_and_deleted_symlinks() {
+    use yinz_types::cli::PluginOperation as Op;
+    let mut test = TestBridge::new();
+    let source = test._dirs[0].path().join("space #%.ts");
+    std::fs::write(&source, "export default {};").unwrap();
+    let link = test._dirs[0].path().join("linked.ts");
+    std::os::unix::fs::symlink(&source, &link).unwrap();
+    let run = RunPlugin {
+        location: RunPluginLocation::File(link.clone()),
+        ..Default::default()
+    };
+    let declarations = std::collections::BTreeSet::from([RunPluginOrAlias::RunPlugin(run.clone())]);
+    let client = ClientId::new(1);
+    test.bridge
+        .reconcile_background_plugins(declarations, client)
+        .unwrap();
+    let url = url::Url::from_file_path(&source).unwrap();
+    let encoded = yinz_runtime::plugin_location::run_plugin_from_url(url.as_str()).unwrap();
+    let first = test
+        .bridge
+        .plugin_request(lifecycle_request(Op::Start, &encoded), client)
+        .unwrap()
+        .plugins[0]
+        .id;
+    assert_eq!(test.bridge.next_plugin_id, 1);
+    test.bridge.reload_plugin(&encoded).unwrap();
+    test.finish_reload(first);
+    test.finish_reload(first);
+    assert!(test.bridge.pending_plugin_reloads.is_empty());
+    assert_eq!(
+        test.bridge.run_plugin_of_plugin_id(first).unwrap().location,
+        run.location
+    );
+    std::fs::remove_file(&link).unwrap();
+    std::fs::remove_file(&source).unwrap();
+    for (location, url) in [
+        (&run.location, url::Url::from_file_path(&link).unwrap()),
+        (&encoded.location, url),
+    ] {
+        assert_eq!(
+            test.bridge.get_plugin_ids_for_url(url.as_str()).unwrap(),
+            vec![first]
+        );
+        assert_eq!(
+            test.bridge
+                .all_plugin_and_client_ids_for_plugin_location(location, &run.configuration),
+            vec![(first, Some(client))]
+        );
+    }
+    assert_eq!(
+        test.bridge
+            .plugin_request(lifecycle_request(Op::Inspect, &run), client)
+            .unwrap()
+            .plugins[0]
+            .id,
+        first
+    );
+    test.bridge
+        .plugin_request(lifecycle_request(Op::Stop, &run), client)
+        .unwrap();
+    assert!(test
+        .bridge
+        .plugin_request(lifecycle_request(Op::Inspect, &encoded), client)
+        .unwrap()
+        .plugins
+        .is_empty());
+}
+
+#[test]
+fn background_identity_resolves_repointed_symlink_after_last_stop() {
+    use yinz_types::cli::{PluginOperation as Op, PluginState};
+    let mut test = TestBridge::new();
+    let first = test._dirs[0].path().join("a.ts");
+    let second = test._dirs[0].path().join("b.ts");
+    for source in [&first, &second] {
+        std::fs::write(source, "export default {};").unwrap();
+    }
+    let link = test._dirs[0].path().join("link.ts");
+    std::os::unix::fs::symlink(&first, &link).unwrap();
+    let run = RunPlugin {
+        location: RunPluginLocation::File(link.clone()),
+        ..Default::default()
+    };
+    let client = ClientId::new(1);
+    // A stopped configured declaration must not retain the old source identity.
+    test.bridge
+        .reconcile_background_plugins(
+            std::collections::BTreeSet::from([RunPluginOrAlias::RunPlugin(run.clone())]),
+            client,
+        )
+        .unwrap();
+    test.finish_reload(PluginId::new(0));
+    test.bridge
+        .plugin_request(lifecycle_request(Op::Stop, &run), client)
+        .unwrap();
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&second, &link).unwrap();
+    let status = test
+        .bridge
+        .plugin_request(lifecycle_request(Op::Start, &run), client)
+        .unwrap()
+        .plugins
+        .remove(0);
+    let canonical = second.canonicalize().unwrap();
+    let url = url::Url::from_file_path(&canonical).unwrap().to_string();
+    assert_eq!(status.location, url);
+    assert_eq!(status.state, PluginState::Loading);
+    test.finish_reload(status.id);
+    let status = test
+        .bridge
+        .plugin_request(lifecycle_request(Op::Inspect, &run), client)
+        .unwrap()
+        .plugins
+        .remove(0);
+    assert_eq!(status.location, url);
+    assert_eq!(status.state, PluginState::Running);
+
+    let instance = test.instance_id(status.id, client);
+    let (shutdown, _receiver) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .request_permissions(
+            status.id,
+            instance,
+            client,
+            vec![PermissionType::RunCommands],
+            shutdown,
+        )
+        .unwrap();
+    assert!(test
+        .receiver::<ScreenInstruction>()
+        .try_iter()
+        .any(|(instruction, _)| {
+            matches!(instruction, ScreenInstruction::RequestPluginPermissions(id, permission)
+            if id == status.id && permission.name == canonical.to_string_lossy())
+        }));
+    let resolved = RunPlugin {
+        location: RunPluginLocation::File(canonical),
+        ..Default::default()
+    };
+    let reloaded = test
+        .bridge
+        .plugin_request(lifecycle_request(Op::Reload, &resolved), client)
+        .unwrap();
+    assert_eq!(reloaded.plugins[0].id, status.id);
+    assert_eq!(reloaded.plugins[0].location, url);
+    test.finish_reload(status.id);
+    let stopped = test
+        .bridge
+        .plugin_request(lifecycle_request(Op::Stop, &resolved), client)
+        .unwrap();
+    assert_eq!(stopped.plugins[0].id, status.id);
+    assert_eq!(stopped.plugins[0].location, url);
+    assert_eq!(stopped.plugins[0].state, PluginState::Stopped);
+}
+
+#[test]
+fn background_identity_mapping_survives_other_retained_identities() {
+    use yinz_types::cli::PluginOperation as Op;
+    for state in ["running", "loading", "retry"] {
+        let mut test = TestBridge::new();
+        let source = test._dirs[0].path().join("source.ts");
+        std::fs::write(&source, "export default {};").unwrap();
+        let link = test._dirs[0].path().join("link.ts");
+        std::os::unix::fs::symlink(&source, &link).unwrap();
+        let run = RunPlugin {
+            location: RunPluginLocation::File(link.clone()),
+            ..Default::default()
+        };
+        let client = ClientId::new(1);
+        let first = test
+            .bridge
+            .plugin_request(lifecycle_request(Op::Start, &run), client)
+            .unwrap()
+            .plugins[0]
+            .id;
+        test.finish_reload(first);
+        let mut sibling = RunPlugin {
+            location: RunPluginLocation::File(source.canonicalize().unwrap()),
+            ..Default::default()
+        };
+        sibling.configuration.insert("setting", "sibling");
+        let second = PluginId::new(test.bridge.next_plugin_id);
+        if state == "loading" {
+            // Keep only the loading entry, before any runtime or retry metadata exists.
+            test.bridge
+                .loading_plugins
+                .insert((second, sibling.clone()));
+        } else {
+            let mut start = lifecycle_request(Op::Start, &sibling);
+            start.configuration = Some(sibling.configuration.clone().into_inner());
+            assert_eq!(
+                test.bridge.plugin_request(start, client).unwrap().plugins[0].id,
+                second
+            );
+            test.finish_reload(second);
+            if state == "retry" {
+                std::fs::write(
+                    &source,
+                    "export default { load() { throw Error('retry'); } };",
+                )
+                .unwrap();
+                test.bridge.reload_plugin_with_id(second).unwrap();
+                test.finish_reload(second);
+                let map = test.bridge.plugin_map.lock().unwrap();
+                assert!(map.get_running_plugin(second, None).is_none());
+                assert!(map.run_plugin_of_plugin_id(second).is_some());
+            }
+        }
+        std::fs::remove_file(&link).unwrap();
+        test.bridge.unload_plugin(first).unwrap();
+        assert_eq!(
+            test.bridge.normalize_plugin(run.clone()).location,
+            sibling.location,
+            "{state}"
+        );
+        test.bridge.unload_plugin(second).unwrap();
+        assert!(
+            !test
+                .bridge
+                .resolved_plugin_locations
+                .contains_key(&run.location),
+            "{state}"
+        );
+    }
+}
+
+#[test]
+fn background_permissions_coalesce_an_identity_and_retire_only_removed_instances() {
+    let mut test = TestBridge::new();
+    let first = test.context(1, 1, "export default {};");
+    let config = first.plugin_config.clone();
+    test.load(first).unwrap();
+    let mut second = test.context(2, 2, "export default {};");
+    second.plugin_config = config;
+    test.load(second).unwrap();
+    let (shutdown, _receiver) = tokio::sync::mpsc::channel(1);
+    for (id, client) in [
+        (PluginId::new(1), ClientId::new(1)),
+        (PluginId::new(2), ClientId::new(2)),
+    ] {
+        let instance = test.instance_id(id, client);
+        test.bridge
+            .request_permissions(
+                id,
+                instance,
+                client,
+                vec![PermissionType::RunCommands],
+                shutdown.clone(),
+            )
+            .unwrap();
+    }
+    assert_eq!(test.bridge.permission_requests.len(), 1);
+    let token = *test.bridge.permission_requests.keys().next().unwrap();
+    test.bridge.unload_plugin(PluginId::new(1)).unwrap();
+    assert_eq!(test.bridge.permission_requests.len(), 1);
+    test.bridge
+        .answer_permissions(
+            token,
+            PermissionStatus::Granted,
+            Some(test._dirs[0].path().join("permissions.kdl")),
+            shutdown,
+        )
+        .unwrap();
+    assert!(test.bridge.permission_requests.is_empty());
+    let map = test.bridge.plugin_map.lock().unwrap();
+    let runtime = map
+        .get_running_plugin(PluginId::new(2), Some(ClientId::new(2)))
+        .unwrap();
+    assert!(runtime
+        .lock()
+        .unwrap()
+        .env()
+        .permissions
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .contains(&PermissionType::RunCommands));
+}
+
+#[test]
+fn background_storage_keeps_configured_symlink_and_relative_namespaces_on_reload() {
+    use yinz_types::plugin_data::{AttrDef, EntityDef, FetchRequest, Mutation};
+    for relative in [false, true] {
+        let mut test = TestBridge::new();
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let source = dir.path().join("storage.ts");
+        std::fs::write(&source, r#"
+            let value = 'waiting';
+            export default {
+                update(event) {
+                    if (!event.PermissionRequestResult) return false;
+                    const def = {name: 'item', version: 1, attrs: [{name: 'text', kind: 'Text', indexed: false, full_text: false, unique: false, required: false, default: null}]};
+                    yinz.command('DataDefineEntity', {namespace: null, def, allow_destructive: false});
+                    const catalog = yinz.command('DataCatalog', {namespace: null});
+                    if (catalog.length !== 1) throw Error('private catalog lost its entity');
+                    const rows = yinz.command('DataFetch', {request: {namespace: null, entity: 'item', filter: null, search: null, sort: [], select: [], limit: 100, offset: 0, after_id: null}});
+                    value = rows.rows[0][rows.columns.indexOf('text')].Text + '!';
+                    yinz.command('DataApply', {namespace: null, mutations: [{Put: {entity: 'item', uid: 'row', values: [['text', {Text: value}]], expect_rev: null}}]});
+                    return true;
+                },
+                render() { return `size ${value};`; }
+            };
+        "#).unwrap();
+        let link = dir.path().join("legacy.ts");
+        std::os::unix::fs::symlink(&source, &link).unwrap();
+        let run = RunPlugin {
+            location: RunPluginLocation::File(if relative {
+                link.strip_prefix(&cwd).unwrap().to_path_buf()
+            } else {
+                link
+            }),
+            ..Default::default()
+        };
+        let owner = Url::from(&run.location).to_string();
+        let namespace = yinz_storage::plugin_data_store::private_namespace(&owner);
+        let store = test.bridge.data_access.plugin_data();
+        store
+            .define_entity(
+                &namespace,
+                &owner,
+                &EntityDef::new("item", 1).attr(AttrDef::text("text")),
+                false,
+            )
+            .unwrap();
+        store
+            .apply(
+                &namespace,
+                &[Mutation::put("item").uid("row").set("text", "seed").build()],
+            )
+            .unwrap();
+        let client = ClientId::new(1);
+        let (id, _) = test
+            .bridge
+            .load_plugin(
+                &Some(run.clone()),
+                None,
+                Size { rows: 5, cols: 40 },
+                None,
+                false,
+                Some(client),
+            )
+            .unwrap();
+        let (shutdown, _) = tokio::sync::mpsc::channel(1);
+        for expected in ["size seed!", "size seed!!"] {
+            test.finish_reload(id);
+            assert_eq!(
+                test.bridge.run_plugin_of_plugin_id(id).unwrap().location,
+                run.location
+            );
+            assert_eq!(
+                test.bridge
+                    .get_plugin_ids_for_url(&RunPluginLocation::File(source.clone()).display())
+                    .unwrap(),
+                vec![id]
+            );
+            let instance = test.instance_id(id, client);
+            test.bridge
+                .request_permissions(
+                    id,
+                    instance,
+                    client,
+                    vec![PermissionType::PluginData],
+                    shutdown.clone(),
+                )
+                .unwrap();
+            let token = *test.bridge.permission_requests.keys().next().unwrap();
+            test.bridge
+                .answer_permissions(
+                    token,
+                    PermissionStatus::Granted,
+                    Some(test._dirs[0].path().join("permissions.kdl")),
+                    shutdown.clone(),
+                )
+                .unwrap();
+            test.settle(id);
+            assert!(frames(&mut test, id).iter().any(|frame| frame == expected));
+            if expected == "size seed!" {
+                test.bridge.reload_plugin_with_id(id).unwrap();
+            }
+        }
+        let rows = test
+            .bridge
+            .data_access
+            .plugin_data()
+            .fetch(&namespace, &FetchRequest::entity("item"))
+            .unwrap();
+        assert_eq!(rows.rows.len(), 1);
+        let text = rows
+            .columns
+            .iter()
+            .position(|column| column == "text")
+            .unwrap();
+        assert_eq!(
+            rows.rows[0][text],
+            yinz_types::plugin_data::DataValue::Text("seed!!".into())
+        );
+        test.bridge.unload_plugin(id).unwrap();
+    }
+}
+
+#[test]
+fn background_permissions_preserve_each_requesting_client_including_cached_grants() {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(1);
+    let owner = ClientId::new(1);
+    let other = ClientId::new(2);
+    let mut context = test.context(
+        1,
+        1,
+        r#"
+        let clients = [];
+        export default {
+            update(event) {
+                if (event.PermissionRequestResult) clients.push(yinz.getPluginIds().client_id);
+                return true;
+            },
+            render() { return `size ${clients.join(',')};`; }
+        };
+    "#,
+    );
+    context
+        .plugin_config
+        .initial_userspace_configuration
+        .insert("shared", "true");
+    test.load(context).unwrap();
+    test.bridge.shared_plugin_ids.insert(id);
+    *test.bridge.connected_clients.lock().unwrap() = vec![owner, other];
+    let instance = test.instance_id(id, owner);
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    for client in [other, other, owner] {
+        test.bridge
+            .request_permissions(
+                id,
+                instance,
+                client,
+                vec![PermissionType::RunCommands],
+                shutdown.clone(),
+            )
+            .unwrap();
+    }
+    assert_eq!(test.bridge.permission_requests.len(), 1);
+    let token = *test.bridge.permission_requests.keys().next().unwrap();
+    // The default cache is isolated by the xtask test environment; this fixture has a unique URL.
+    test.bridge
+        .answer_permissions(token, PermissionStatus::Granted, None, shutdown.clone())
+        .unwrap();
+    test.settle(id);
+    let rendered = frames(&mut test, id);
+    assert!(
+        rendered
+            .iter()
+            .any(|frame| frame == "size 1,2" || frame == "size 2,1"),
+        "{rendered:?}"
+    );
+    test.receiver::<ScreenInstruction>()
+        .try_iter()
+        .for_each(drop);
+    test.bridge
+        .request_permissions(
+            id,
+            instance,
+            other,
+            vec![PermissionType::RunCommands],
+            shutdown,
+        )
+        .unwrap();
+    assert!(
+        test.bridge.permission_requests.is_empty(),
+        "grant should be cached"
+    );
+    test.settle(id);
+    let rendered = frames(&mut test, id);
+    assert!(
+        rendered
+            .iter()
+            .any(|frame| frame == "size 1,2,2" || frame == "size 2,1,2"),
+        "{rendered:?}"
+    );
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
+fn background_permission_cancellation_replays_in_order_and_rechecks_pending_requests() {
+    for another_request in [false, true] {
+        let mut test = TestBridge::new();
+        let id = PluginId::new(1);
+        let first = ClientId::new(1);
+        let second = ClientId::new(2);
+        *test.bridge.connected_clients.lock().unwrap() = vec![first, second];
+        let load_id = test.bridge.begin_plugin_load(id);
+        for client in [1, 2] {
+            let context = test.context(
+                1,
+                client,
+                r#"
+                let events = [];
+                export default {
+                    update(event) {
+                        if (event.ClientGridReset) events.push(event.ClientGridReset);
+                        return true;
+                    },
+                    pipe() { events.push('pipe'); return true; },
+                    render() { return `size ${events.join(',')};`; }
+                };
+            "#,
+            );
+            test.load(context).unwrap();
+        }
+        for (_, _, _, subscriptions) in test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .running_plugins_and_subscriptions()
+        {
+            subscriptions
+                .lock()
+                .unwrap()
+                .insert(EventType::ClientGridReset);
+        }
+        let (shutdown, _) = tokio::sync::mpsc::channel(1);
+        let instance = test.instance_id(id, first);
+        test.bridge
+            .request_permissions(
+                id,
+                instance,
+                first,
+                vec![PermissionType::RunCommands],
+                shutdown.clone(),
+            )
+            .unwrap();
+        test.bridge
+            .update_plugins(
+                vec![(Some(id), Some(second), Event::ClientGridReset(first))],
+                shutdown.clone(),
+            )
+            .unwrap();
+        test.pipe(id, "cached-permission-pipe");
+        test.bridge.remove_client(first);
+        test.settle(id);
+        let released = test.receiver::<PluginInstruction>().try_iter().any(|(event, _)| matches!(event, PluginInstruction::ReleasePluginInstancePipes(plugin, retired) if plugin == id && retired == instance));
+        assert!(released);
+        test.bridge.cancel_permission_requests(id, Some(instance));
+        let replay = test
+            .receiver::<PluginInstruction>()
+            .try_iter()
+            .find_map(|(event, _)| match event {
+                PluginInstruction::ApplyCachedEvents {
+                    load_id,
+                    plugin_ids,
+                    done_receiving_permissions,
+                } => Some((load_id, plugin_ids, done_receiving_permissions)),
+                _ => None,
+            })
+            .expect("cancelling the last recipient schedules replay");
+        assert_eq!(replay.0, load_id);
+        if another_request {
+            let instance = test.instance_id(id, second);
+            test.bridge
+                .request_permissions(
+                    id,
+                    instance,
+                    second,
+                    vec![PermissionType::ReadFiles],
+                    shutdown.clone(),
+                )
+                .unwrap();
+        }
+        test.bridge
+            .apply_cached_events_for_load(replay.0, replay.1, replay.2, shutdown.clone())
+            .unwrap();
+        if another_request {
+            assert_eq!(test.bridge.cached_events_for_pending_plugins[&id].len(), 2);
+            let token = *test.bridge.permission_requests.keys().next().unwrap();
+            test.bridge
+                .answer_permissions(token, PermissionStatus::Denied, None, shutdown.clone())
+                .unwrap();
+        }
+        test.bridge
+            .update_plugins(
+                vec![(Some(id), Some(second), Event::ClientGridReset(second))],
+                shutdown,
+            )
+            .unwrap();
+        test.settle(id);
+        assert!(frames(&mut test, id)
+            .iter()
+            .any(|frame| frame == "size 1,pipe,2"));
+        assert_eq!(test.pipe_acknowledgements(), vec!["cached-permission-pipe"]);
+        assert!(!test
+            .bridge
+            .cached_events_for_pending_plugins
+            .contains_key(&id));
+        test.bridge.unload_plugin(id).unwrap();
+    }
+}
+
+#[test]
+fn background_permission_callback_and_render_failures_retire_exact_instances_and_jobs() {
+    use yinz_types::cli::{PluginOperation, PluginState};
+    for render_failure in [false, true] {
+        for queued in [false, true] {
+            let mut test = TestBridge::new();
+            let id = PluginId::new(1);
+            let client = ClientId::new(1);
+            let source = if render_failure {
+                "let answered = false; export default { update() { answered = true; return true; }, render() { if (answered) throw Error('permission render failed'); return ''; } };"
+            } else {
+                "export default { update() { throw Error('permission callback failed'); } };"
+            };
+            let context = test.context(1, 1, source);
+            test.load(context).unwrap();
+            let context = test.context(1, 2, "export default {};");
+            test.load(context).unwrap();
+            let runtime = test
+                .bridge
+                .plugin_map
+                .lock()
+                .unwrap()
+                .get_running_plugin(id, Some(client))
+                .unwrap();
+            let generation = runtime.lock().unwrap().deno_generation();
+            let instance = test.instance_id(id, client);
+            if queued {
+                launch_job(&mut test.bridge, "permissions", id);
+            }
+            let (shutdown, _) = tokio::sync::mpsc::channel(1);
+            test.bridge
+                .request_permissions(
+                    id,
+                    instance,
+                    client,
+                    vec![PermissionType::RunCommands],
+                    shutdown.clone(),
+                )
+                .unwrap();
+            let token = *test.bridge.permission_requests.keys().next().unwrap();
+            test.receiver::<ScreenInstruction>()
+                .try_iter()
+                .for_each(drop);
+            test.bridge
+                .answer_permissions(token, PermissionStatus::Denied, None, shutdown)
+                .unwrap();
+            test.settle(id);
+            assert!(!test
+                .receiver::<ScreenInstruction>()
+                .try_iter()
+                .any(|(event, _)| matches!(event, ScreenInstruction::PluginBytes(_))));
+            let failure = test
+                .receiver::<PluginInstruction>()
+                .try_iter()
+                .find_map(|(event, _)| match event {
+                    PluginInstruction::PluginFailed {
+                        plugin_id,
+                        deno_generation,
+                        instance_id,
+                        error,
+                        failed_to_load,
+                        load_id,
+                        ..
+                    } => Some((
+                        plugin_id,
+                        deno_generation,
+                        instance_id,
+                        error,
+                        failed_to_load,
+                        load_id,
+                    )),
+                    _ => None,
+                })
+                .expect("permission failures must reach host cleanup");
+            assert_eq!(
+                (failure.0, failure.1, failure.2),
+                (id, generation, Some(instance))
+            );
+            assert!(failure.3.contains(if render_failure {
+                "permission render failed"
+            } else {
+                "permission callback failed"
+            }));
+            test.bridge
+                .queue_plugin_failed(
+                    failure.0, failure.5, failure.1, failure.2, failure.3, failure.4,
+                )
+                .unwrap();
+            if queued {
+                assert!(test
+                    .bridge
+                    .queues
+                    .lock()
+                    .unwrap()
+                    .queue_snapshot("permissions")
+                    .unwrap()
+                    .running
+                    .is_empty());
+                assert!(test.receiver::<PluginInstruction>().try_iter().any(|(event, _)| matches!(event, PluginInstruction::Update(events) if events.iter().any(|(_, _, event)| matches!(event, Event::QueueJobFinished { outcome: QueueJobOutcome::Failed, .. })))));
+            } else {
+                test.settle(id);
+                assert!(runtime.lock().unwrap().is_disposed());
+                assert!(!test
+                    .bridge
+                    .plugin_map
+                    .lock()
+                    .unwrap()
+                    .get_running_plugin(id, Some(ClientId::new(2)))
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .is_unavailable());
+                let run = test.bridge.run_plugin_of_plugin_id(id).unwrap();
+                let status = test
+                    .bridge
+                    .plugin_request(lifecycle_request(PluginOperation::Inspect, &run), client)
+                    .unwrap()
+                    .plugins
+                    .remove(0);
+                assert_eq!(status.state, PluginState::Failed);
+                assert!(status.latest_error.unwrap().contains("permission"));
+                test.bridge.unload_plugin(id).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn background_reload_tracks_repointed_source_per_plugin() {
+    use yinz_types::cli::PluginOperation as Op;
+    for by_id in [false, true] {
+        let mut test = TestBridge::new();
+        let a = test._dirs[0].path().join("a.ts");
+        let b = test._dirs[0].path().join("b.ts");
+        for (path, name) in [(&a, "a"), (&b, "b")] {
+            std::fs::write(
+                path,
+                format!("export default {{ render() {{ return 'size {name};'; }} }};"),
+            )
+            .unwrap();
+        }
+        let link = test._dirs[0].path().join("link.ts");
+        std::os::unix::fs::symlink(&a, &link).unwrap();
+        let run = RunPlugin {
+            location: RunPluginLocation::File(link.clone()),
+            ..Default::default()
+        };
+        let client = ClientId::new(1);
+        let id = test
+            .bridge
+            .plugin_request(lifecycle_request(Op::Start, &run), client)
+            .unwrap()
+            .plugins[0]
+            .id;
+        test.finish_reload(id);
+        let mut sibling = run.clone();
+        sibling.configuration.insert("setting", "sibling");
+        let mut start = lifecycle_request(Op::Start, &sibling);
+        start.configuration = Some(sibling.configuration.clone().into_inner());
+        let sibling_id = test.bridge.plugin_request(start, client).unwrap().plugins[0].id;
+        test.finish_reload(sibling_id);
+        let (shutdown, _) = tokio::sync::mpsc::channel(1);
+        test.bridge
+            .request_permissions(
+                id,
+                test.instance_id(id, client),
+                client,
+                vec![PermissionType::RunCommands],
+                shutdown.clone(),
+            )
+            .unwrap();
+        let token = *test.bridge.permission_requests.keys().next().unwrap();
+        let cache_path = test._dirs[0].path().join("permissions.kdl");
+        test.bridge
+            .answer_permissions(
+                token,
+                PermissionStatus::Granted,
+                Some(cache_path.clone()),
+                shutdown.clone(),
+            )
+            .unwrap();
+        test.settle(id);
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&b, &link).unwrap();
+        let mut reload = lifecycle_request(Op::Reload, &run);
+        reload.configuration = Some(BTreeMap::new());
+        if by_id {
+            reload.target = Some(format!("plugin_{id}"));
+        }
+        assert_eq!(
+            test.bridge.plugin_request(reload, client).unwrap().plugins[0].id,
+            id
+        );
+        test.finish_reload(id);
+        for (plugin, expected) in [(id, "size b"), (sibling_id, "size a")] {
+            test.bridge
+                .resize_plugin(plugin, 40, 5, shutdown.clone())
+                .unwrap();
+            test.settle(plugin);
+            assert!(frames(&mut test, plugin)
+                .iter()
+                .any(|frame| frame == expected));
+        }
+        let statuses = test
+            .bridge
+            .plugin_request(lifecycle_request(Op::List, &run), client)
+            .unwrap()
+            .plugins;
+        for (plugin, source) in [(id, &b), (sibling_id, &a)] {
+            assert_eq!(
+                statuses
+                    .iter()
+                    .find(|status| status.id == plugin)
+                    .unwrap()
+                    .location,
+                Url::from_file_path(source.canonicalize().unwrap())
+                    .unwrap()
+                    .to_string()
+            );
+            test.bridge
+                .request_permissions(
+                    plugin,
+                    test.instance_id(plugin, client),
+                    client,
+                    vec![PermissionType::RunCommands],
+                    shutdown.clone(),
+                )
+                .unwrap();
+        }
+        let prompts: Vec<_> = test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                ScreenInstruction::RequestPluginPermissions(plugin, permission) => {
+                    Some((plugin, permission.name))
+                },
+                _ => None,
+            })
+            .collect();
+        let b_key = b.canonicalize().unwrap().to_string_lossy().into_owned();
+        assert!(prompts.contains(&(id, b_key.clone())));
+        assert!(prompts.contains(&(
+            sibling_id,
+            a.canonicalize().unwrap().to_string_lossy().into_owned()
+        )));
+        let cache = PermissionCache::from_path_or_default(Some(cache_path));
+        assert!(cache.check_permissions(
+            a.canonicalize().unwrap().to_string_lossy().into_owned(),
+            &vec![PermissionType::RunCommands]
+        ));
+        assert!(!cache.check_permissions(b_key, &vec![PermissionType::RunCommands]));
+        assert_eq!(
+            test.bridge
+                .get_plugin_ids_for_url(Url::from_file_path(&a).unwrap().as_str())
+                .unwrap(),
+            vec![sibling_id]
+        );
+        test.bridge
+            .grant_permissions_to_location(
+                Url::from_file_path(&a).unwrap().as_str(),
+                vec![PermissionType::RunCommands],
+                shutdown.clone(),
+            )
+            .unwrap();
+        let runtime = test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin(id, Some(client))
+            .unwrap();
+        assert!(!runtime
+            .lock()
+            .unwrap()
+            .env()
+            .permissions
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|permissions| permissions.contains(&PermissionType::RunCommands)));
+        let resolved = RunPlugin {
+            location: RunPluginLocation::File(b),
+            ..Default::default()
+        };
+        assert_eq!(
+            test.bridge
+                .plugin_request(lifecycle_request(Op::Inspect, &resolved), client)
+                .unwrap()
+                .plugins[0]
+                .id,
+            id
+        );
+        test.bridge
+            .plugin_request(lifecycle_request(Op::Stop, &resolved), client)
+            .unwrap();
+        test.bridge.unload_plugin(sibling_id).unwrap();
+    }
+}
+
+#[test]
+fn background_reconciliation_isolates_rejections_and_retries_corrected_alias() {
+    use yinz_types::cli::PluginOperation as Op;
+    use yinz_types::input::layout::PluginAlias;
+    let mut test = TestBridge::new();
+    let source = test._dirs[0].path().join("valid.ts");
+    std::fs::write(&source, "export default {};").unwrap();
+    let valid = RunPlugin {
+        location: RunPluginLocation::File(source),
+        ..Default::default()
+    };
+    let rejected = RunPlugin {
+        location: RunPluginLocation::Yinz(PluginTag::new("unknown-builtin")),
+        ..Default::default()
+    };
+    let alias = RunPluginOrAlias::Alias(PluginAlias::new("correctable", &None, None));
+    test.bridge
+        .plugin_aliases
+        .lock()
+        .unwrap()
+        .aliases
+        .insert("correctable".into(), rejected.clone());
+    let declarations = std::collections::BTreeSet::from([
+        RunPluginOrAlias::Alias(PluginAlias::new("unknown-alias", &None, None)),
+        alias,
+        RunPluginOrAlias::RunPlugin(valid.clone()),
+    ]);
+    let client = ClientId::new(1);
+    test.bridge
+        .reconcile_background_plugins(declarations.clone(), client)
+        .unwrap();
+    test.finish_reload(PluginId::new(0));
+    assert_eq!(test.bridge.configured_plugins, vec![valid.clone()]);
+    assert!(test
+        .bridge
+        .plugin_request(lifecycle_request(Op::Start, &rejected), client)
+        .is_err());
+    let mut corrected = valid.clone();
+    corrected.configuration.insert("setting", "corrected");
+    test.bridge
+        .plugin_aliases
+        .lock()
+        .unwrap()
+        .aliases
+        .insert("correctable".into(), corrected);
+    test.bridge
+        .reconcile_background_plugins(declarations, client)
+        .unwrap();
+    test.finish_reload(PluginId::new(1));
+    assert_eq!(test.bridge.configured_plugins.len(), 2);
+    assert_eq!(
+        test.bridge
+            .plugin_request(lifecycle_request(Op::List, &valid), client)
+            .unwrap()
+            .plugins
+            .len(),
+        2
+    );
+    for id in [PluginId::new(0), PluginId::new(1)] {
+        test.bridge.unload_plugin(id).unwrap();
+    }
 }
