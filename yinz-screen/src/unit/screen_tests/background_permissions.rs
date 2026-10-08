@@ -482,6 +482,74 @@ fn permission_modal_mouse_tracks_resizing_and_absorbs_release_after_cancellation
 }
 
 #[test]
+fn permission_modal_navigation_hints_and_answers_match_selection() {
+    use yinz_types::keys::{BareKey, KeyWithModifier};
+
+    let mut screen = create_non_mirrored_screen(SIZE);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let assert_hints = |screen: &Screen, allow: bool| {
+        let layout =
+            screen.permission_modals[0].layout(screen.command_palette_surface(CLIENT).unwrap());
+        let deny = layout.rows.iter().find(|row| row.label == "Deny").unwrap();
+        let grant = layout.rows.iter().find(|row| row.label == "Allow").unwrap();
+        assert_eq!(
+            deny.shortcut.as_deref(),
+            Some(if allow { "Esc" } else { "Esc / Enter" })
+        );
+        assert_eq!(grant.shortcut.as_deref(), allow.then_some("Enter"));
+    };
+    for (navigate, answer, expected) in [
+        (false, BareKey::Enter, PermissionStatus::Denied),
+        (true, BareKey::Enter, PermissionStatus::Granted),
+        (true, BareKey::Esc, PermissionStatus::Denied),
+    ] {
+        screen.open_permission_modal(
+            PLUGIN,
+            PluginPermission::new("identity.ts".into(), vec![PermissionType::RunCommands]),
+        );
+        assert_hints(&screen, false);
+        if navigate {
+            for (key, allow) in [
+                (KeyWithModifier::new(BareKey::Up), false),
+                (KeyWithModifier::new(BareKey::Right), false),
+                (KeyWithModifier::new(BareKey::Down), true),
+                (KeyWithModifier::new(BareKey::Down), true),
+                (KeyWithModifier::new(BareKey::Left), true),
+                (KeyWithModifier::new(BareKey::Right), true),
+                (KeyWithModifier::new(BareKey::Up), false),
+                (KeyWithModifier::new(BareKey::Left), false),
+                (KeyWithModifier::new(BareKey::Tab), true),
+                (KeyWithModifier::new(BareKey::Tab), false),
+                (
+                    KeyWithModifier::new(BareKey::Tab).with_shift_modifier(),
+                    true,
+                ),
+                (
+                    KeyWithModifier::new(BareKey::Tab).with_shift_modifier(),
+                    false,
+                ),
+                (KeyWithModifier::new(BareKey::Down), true),
+            ] {
+                assert!(screen.permission_modal_input(&Some(key), CLIENT));
+                assert_hints(&screen, allow);
+            }
+        }
+        assert!(screen.permission_modal_input(&Some(KeyWithModifier::new(answer)), CLIENT));
+        assert!(!screen.permission_modal_open(CLIENT));
+        let answers: Vec<_> = rx
+            .try_iter()
+            .filter_map(|(event, _)| match event {
+                PluginInstruction::PermissionAnswer { status, .. } => Some(status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answers, vec![expected]);
+    }
+}
+
+#[test]
 fn permission_modal_scrolls_all_rows_and_only_activates_visible_controls() {
     use yinz_types::keys::{BareKey, KeyWithModifier};
     use yinz_types::mouse::MouseEvent;
@@ -530,12 +598,12 @@ fn permission_modal_scrolls_all_rows_and_only_activates_visible_controls() {
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..14 {
         seen.extend(layout(&screen).rows.iter().map(|row| row.item_index));
-        key(&mut screen, BareKey::Down);
+        key(&mut screen, BareKey::PageDown);
     }
     assert_eq!(seen, (0..14).collect());
     assert!(layout(&screen).more_above);
     assert!(!layout(&screen).more_below);
-    key(&mut screen, BareKey::Up);
+    key(&mut screen, BareKey::PageUp);
     assert!(layout(&screen).more_below);
     key(&mut screen, BareKey::Home);
     assert_eq!(layout(&screen).window_start, 0);
@@ -570,7 +638,7 @@ fn permission_modal_scrolls_all_rows_and_only_activates_visible_controls() {
         screen.permission_modal_open(CLIENT),
         "hidden Allow is not activated"
     );
-    key(&mut screen, BareKey::Right);
+    key(&mut screen, BareKey::Down);
     screen.resize_to_screen(SIZE).unwrap();
     screen.prepare_permission_modal_render();
     assert_eq!(
@@ -587,7 +655,7 @@ fn permission_modal_scrolls_all_rows_and_only_activates_visible_controls() {
         screen.permission_modal_open(CLIENT),
         "resize invalidates the press"
     );
-    key(&mut screen, BareKey::Left);
+    key(&mut screen, BareKey::Up);
     assert!(layout(&screen).row_of_item(12).is_some());
     key(&mut screen, BareKey::Enter);
     let answers: Vec<_> = rx
@@ -665,7 +733,7 @@ fn permission_identities_wrap_without_losing_suffixes_and_controls_follow_resize
                 if !current.more_below {
                     break;
                 }
-                key(&mut screen, BareKey::Down);
+                key(&mut screen, BareKey::PageDown);
             }
             let deny = seen.len() - 2;
             let allow = seen.len() - 1;
@@ -679,7 +747,7 @@ fn permission_identities_wrap_without_losing_suffixes_and_controls_follow_resize
                 .collect();
             assert_eq!(recovered, identity, "complete identity at {size:?}");
             key(&mut screen, BareKey::Tab);
-            key(&mut screen, BareKey::Right);
+            key(&mut screen, BareKey::Down);
             assert!(layout(&screen).row_of_item(allow).is_some());
         }
         assert!(
@@ -698,7 +766,7 @@ fn permission_identities_wrap_without_losing_suffixes_and_controls_follow_resize
         screen.prepare_permission_modal_render();
         screen.resize_to_screen(narrow).unwrap();
         screen.prepare_permission_modal_render();
-        key(&mut screen, BareKey::Right);
+        key(&mut screen, BareKey::Down);
         screen.permission_modal_mouse(&MouseEvent::new_left_release_event(allow_position), CLIENT);
         assert!(
             screen.permission_modal_open(CLIENT),

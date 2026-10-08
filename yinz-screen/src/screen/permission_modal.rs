@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthChar;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::{ContextMenuItem, PaneId, PermissionStatus, PluginPermission};
 use yinz_types::internal_ids::{ClientId, PluginId};
-use yinz_types::keys::{BareKey, KeyWithModifier};
+use yinz_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::Viewport;
 use yinz_types::position::Position;
@@ -49,8 +49,18 @@ impl PermissionModal {
                     ..Default::default()
                 }),
         );
-        items.push(ContextMenuItem::new("Deny", vec![]).with_shortcut("Esc"));
-        items.push(ContextMenuItem::new("Allow", vec![]).with_shortcut("Enter"));
+        items.push(
+            ContextMenuItem::new("Deny", vec![]).with_shortcut(if self.allow {
+                "Esc"
+            } else {
+                "Esc / Enter"
+            }),
+        );
+        let mut allow = ContextMenuItem::new("Allow", vec![]);
+        if self.allow {
+            allow = allow.with_shortcut("Enter");
+        }
+        items.push(allow);
         let width = context_menu_text_width(&items, viewport);
         let mut identity_rows = vec![];
         let mut label = String::new();
@@ -240,7 +250,10 @@ impl Screen {
             return false;
         };
         // None is paste or an explicit write. Text never grants permissions.
-        if let Some(key) = key.as_ref().filter(|key| key.key_modifiers.is_empty()) {
+        if let Some(key) = key.as_ref().filter(|key| {
+            key.key_modifiers.is_empty()
+                || (key.bare_key == BareKey::Tab && key.has_only_modifiers(&[KeyModifier::Shift]))
+        }) {
             let answer = match key.bare_key {
                 BareKey::Esc => Some(false),
                 BareKey::Enter => surface
@@ -251,10 +264,10 @@ impl Screen {
                             .is_some()
                     })
                     .map(|_| modal.allow),
-                BareKey::Tab | BareKey::Left | BareKey::Right => {
+                BareKey::Tab | BareKey::Up | BareKey::Down => {
                     modal.allow = match key.bare_key {
-                        BareKey::Left => false,
-                        BareKey::Right => true,
+                        BareKey::Up => false,
+                        BareKey::Down => true,
                         _ => !modal.allow,
                     };
                     if let Some(surface) = surface {
@@ -262,17 +275,10 @@ impl Screen {
                     }
                     None
                 },
-                BareKey::Up
-                | BareKey::Down
-                | BareKey::PageUp
-                | BareKey::PageDown
-                | BareKey::Home
-                | BareKey::End => {
+                BareKey::PageUp | BareKey::PageDown | BareKey::Home | BareKey::End => {
                     if let Some(surface) = surface {
                         let page = surface.rows.saturating_sub(2).max(1);
                         let scroll = match key.bare_key {
-                            BareKey::Up => modal.scroll.saturating_sub(1),
-                            BareKey::Down => modal.scroll + 1,
                             BareKey::PageUp => modal.scroll.saturating_sub(page),
                             BareKey::PageDown => modal.scroll + page,
                             BareKey::Home => 0,
