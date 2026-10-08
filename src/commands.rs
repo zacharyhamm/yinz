@@ -2091,6 +2091,8 @@ fn plugin_lifecycle_request(
     }) {
         Some(if let Some(run) = aliases.aliases.get(target) {
             run.clone()
+        } else if target.starts_with("file:") {
+            yinz_runtime::plugin_location::run_plugin_from_url_with_cwd(target, Some(cwd.clone()))?
         } else if let Some(path) =
             yinz_server::plugin_authoring::resolve_explicit_plugin_path(target, &cwd)?
         {
@@ -2167,6 +2169,10 @@ pub(crate) fn read_source(file: Option<&Path>) -> anyhow::Result<String> {
         },
     }
 }
+
+#[cfg(test)]
+#[path = "unit/plugin_lifecycle.rs"]
+mod plugin_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
