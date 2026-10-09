@@ -960,7 +960,18 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
     assert!(!yinz.snapshot().contains("Other project"));
     yinz.send_stdin(b"needle");
     yinz.wait_until("body search result", |grid| {
-        grid.contains("› Initial note") && grid.contains("> needle") && !grid.contains("Loading…")
+        grid.contains(&format!("› #{id} Initial note"))
+            && grid.contains("> needle")
+            && !grid.contains("Loading…")
+    });
+    request(NotesTodos::NoteEdit {
+        id,
+        title: Some("Current note".into()),
+        body: None,
+        body_file: None,
+        tags: vec![],
+        clear_tags: false,
+        expect_rev: original["rev"].as_i64(),
     });
     yinz.send_stdin(&keys::ENTER);
     let editor = yinz.expect_pty_spawn();
@@ -970,7 +981,7 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
     let path = payload.path;
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "# Initial note\n\nBody needle\n\nMarkdown paragraph\n"
+        "# Current note\n\nBody needle\n\nMarkdown paragraph\n"
     );
     assert_eq!(payload.cwd, path.parent().map(std::path::Path::to_path_buf));
     let expected_cols = size.cols.min(120).saturating_sub(2) as u16;
@@ -980,7 +991,9 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
     });
     editor.output(b"NOTE EDITOR READY\r\n");
     yinz.wait_until("editor replaces palette", |grid| {
-        grid.contains("NOTE EDITOR READY") && !grid.contains("Search project notes")
+        grid.contains("NOTE EDITOR READY")
+            && grid.contains(&format!("#{id} Current note"))
+            && !grid.contains("Search project notes")
     });
     let grid = yinz.snapshot();
     assert_eq!(
@@ -1009,7 +1022,7 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
     std::fs::rename(replacement, &path).unwrap();
     editor.exit(Some(0));
     yinz.wait_until("previous note search restored", |grid| {
-        grid.contains("> needle") && grid.contains("› Updated note")
+        grid.contains("> needle") && grid.contains(&format!("› #{id} Updated note"))
     });
     assert!(!path.exists());
     let after = request(NotesTodos::NoteGet { id });
@@ -1027,7 +1040,9 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
         let path = payload.path;
         editor.output(b"FAILURE TEST EDITOR READY\r\n");
         yinz.wait_until("failure test editor replaces search", |grid| {
-            grid.contains("FAILURE TEST EDITOR READY") && !grid.contains("Search project notes")
+            grid.contains("FAILURE TEST EDITOR READY")
+                && grid.contains(&format!("#{id} Updated note"))
+                && !grid.contains("Search project notes")
         });
         std::fs::write(
             &path,
@@ -1093,7 +1108,7 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
         });
         yinz.send_stdin(&keys::ctrl('p'));
         yinz.wait_until("edited note reselected", |grid| {
-            grid.contains("› Updated note")
+            grid.contains(&format!("› #{id} Updated note"))
         });
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

@@ -171,6 +171,7 @@ pub(crate) fn handle(request: NoteRequest, senders: &ThreadSenders, data: &DataA
                         client: request.client,
                         token: request.token,
                         revision: request.revision,
+                        pane_title: format!("#{} {}", original.id, original.title),
                         path: path.clone(),
                         exit,
                     }))

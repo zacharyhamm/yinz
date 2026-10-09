@@ -119,7 +119,7 @@ fn grouped_results_preserve_order_and_share_scrolled_click_geometry() {
                     assert!(lines[layout.options_y + row - layout.rect.y].contains(label));
                     assert!(matches!(
                         layout.result_rows.get(row + 1),
-                        Some(ResultRow::Entry(_))
+                        Some(ResultRow::Entry(_, _))
                     ));
                     palette.click(
                         &layout,
@@ -128,7 +128,7 @@ fn grouped_results_preserve_order_and_share_scrolled_click_geometry() {
                     assert_eq!(palette.selected, selected);
                 },
                 ResultRow::Status(_, _) => panic!("native entries have no plugin status"),
-                ResultRow::Entry(index) => {
+                ResultRow::Entry(index, _) => {
                     let kind = palette.entries[palette.matches[*index]].kind;
                     if let Some(label) = kind.parent_label() {
                         assert_eq!(parent, Some(label));
@@ -142,7 +142,7 @@ fn grouped_results_preserve_order_and_share_scrolled_click_geometry() {
         assert!(visible.contains(&selected));
         assert!(visible.windows(2).all(|pair| pair[1] == pair[0] + 1));
         for (row, result) in layout.result_rows.iter().enumerate() {
-            if let ResultRow::Entry(index) = result {
+            if let ResultRow::Entry(index, _) = result {
                 palette.click(
                     &layout,
                     Position::new((layout.options_y + row) as i32, layout.rect.x as u16 + 2),
@@ -181,7 +181,7 @@ fn headings_fit_small_surfaces_and_keep_the_selected_result_visible() {
                 }
                 if layout.options_rows > 0 {
                     assert!(layout.result_rows.iter().any(
-                        |row| matches!(row, ResultRow::Entry(index) if *index == palette.selected)
+                        |row| matches!(row, ResultRow::Entry(index, _) if *index == palette.selected)
                     ));
                 }
                 if let Some((x, y)) = palette.cursor(&layout) {
@@ -537,7 +537,7 @@ fn session_picker_groups_search_results_and_keeps_selection_on_refresh() {
                     assert_eq!(palette.selected, selected);
                 },
                 ResultRow::Status(_, _) => panic!("native entries have no plugin status"),
-                ResultRow::Entry(index) => {
+                ResultRow::Entry(index, _) => {
                     let expected =
                         if palette.entries[palette.matches[*index]].kind == EntryKind::Session {
                             "Live sessions"
@@ -786,7 +786,7 @@ fn provider_status_focus_shares_mouse_geometry_and_survives_view_history() {
             Position::new((layout.options_y + row) as i32, layout.rect.x as u16 + 2),
         );
         match result {
-            ResultRow::Entry(index) => {
+            ResultRow::Entry(index, _) => {
                 assert_eq!(
                     palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
                     Outcome::Activate(palette.entries[palette.matches[*index]].id.clone())
@@ -1152,7 +1152,7 @@ fn agent_info_refresh_and_mouse_selection_respect_regions() {
             .result_rows
             .iter()
             .position(|row| match row {
-                ResultRow::Entry(index) => palette.entries[palette.matches[*index]].id == id,
+                ResultRow::Entry(index, _) => palette.entries[palette.matches[*index]].id == id,
                 _ => false,
             })
             .unwrap();
@@ -1293,7 +1293,7 @@ fn static_palette_scores_interleave_with_native_and_preserve_ties_and_geometry()
         let indices: Vec<_> = rows
             .iter()
             .filter_map(|r| {
-                if let ResultRow::Entry(i) = r {
+                if let ResultRow::Entry(i, _) = r {
                     Some(*i)
                 } else {
                     None
@@ -1316,12 +1316,12 @@ fn static_palette_scores_interleave_with_native_and_preserve_ties_and_geometry()
                 assert!(layout
                     .result_rows
                     .iter()
-                    .any(|r| matches!(r, ResultRow::Entry(i) if *i == selected)));
+                    .any(|r| matches!(r, ResultRow::Entry(i, _) if *i == selected)));
                 let mut heading = None;
                 for (row, result) in layout.result_rows.iter().enumerate() {
                     match result {
                         ResultRow::Heading(title) => heading = Some(title.as_str()),
-                        ResultRow::Entry(index) => {
+                        ResultRow::Entry(index, _) => {
                             if let Some(section) = palette.entry_sections[palette.matches[*index]] {
                                 if layout.result_rows.len() > 1 {
                                     assert_eq!(
@@ -1407,4 +1407,327 @@ fn theme_picker_filters_selects_and_previews_with_mouse() {
     );
     key(&mut palette, BareKey::Esc);
     assert!(palette.is_root());
+}
+
+fn note_palette(labels: &[&str]) -> CommandPalette {
+    let mut palette = CommandPalette::default();
+    palette.push_view(42, "Search project notes".into());
+    palette.set_sections(vec![PluginSection {
+        title: "Project notes".into(),
+        semantic: true,
+        status: None,
+        entries: labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                let mut entry = entry(&index.to_string(), label, EntryKind::Plugin);
+                entry.description = "body snippet".into();
+                entry
+            })
+            .collect(),
+    }]);
+    palette
+}
+
+#[test]
+fn note_labels_wrap_twice_and_only_complete_titles_get_snippets() {
+    for (label, expected) in [
+        ("#1 Short", vec!["#1 Short — body snippet"]),
+        ("#2 Short title", vec!["#2 Short", "title — body snippet"]),
+        ("#3 abcdefghijklmnop", vec!["#3", "abcdefg…"]),
+        ("#4 日本語日本語", vec!["#4", "日本語…"]),
+        ("#5 e\u{301} caf", vec!["#5 e\u{301} caf — body snippet"]),
+        ("#6 [archived]", vec!["#6", "[archiv…"]),
+    ] {
+        let palette = note_palette(&[label]);
+        assert_eq!(palette.entry_lines(0, 10, 2), expected, "{label}");
+    }
+    let palette = note_palette(&["#1 Short title"]);
+    assert_eq!(palette.entry_lines(0, 10, 1), vec!["#1 Shor…"]);
+}
+
+#[test]
+fn wrapped_results_share_selection_clicks_and_scroll_geometry() {
+    let mut palette = note_palette(&[
+        "#1 Short",
+        "#2 A title that wraps onto two lines",
+        "#3 A much longer title that needs more than two lines and must be truncated",
+        "#4 日本語の長いタイトルとさらに続く文字列",
+        "#5 Last",
+    ]);
+    for cols in [3, 8, 24, 64] {
+        for rows in [4, 5, 6, 7, 8, 11] {
+            let surface = Viewport {
+                cols,
+                rows,
+                ..Default::default()
+            };
+            for selected in 0..5 {
+                palette.selected = selected;
+                let layout = palette.layout(surface);
+                assert!(layout.result_rows.len() <= layout.options_rows);
+                if layout.options_rows == 0 {
+                    continue;
+                }
+                assert!(layout
+                    .result_rows
+                    .iter()
+                    .any(|row| palette.row_selected(row)));
+                let lines = rendered_lines(&palette, &layout);
+                let chunks = palette.chunks(&layout, &Style::default());
+                let mut first_style = None;
+                for (row, result) in layout.result_rows.iter().enumerate() {
+                    if let ResultRow::Entry(index, line) = result {
+                        let y = layout.options_y + row;
+                        let painted = &lines[y - layout.rect.y];
+                        assert!(unicode_width::UnicodeWidthStr::width(painted.as_str()) <= cols);
+                        if *index == selected {
+                            let style = chunks[y - layout.rect.y].terminal_characters
+                                [layout.border]
+                                .styles
+                                .clone();
+                            if let Some(first) = first_style {
+                                assert_eq!(style, first);
+                            }
+                            first_style = Some(style);
+                        }
+                        if *line > 0 {
+                            assert!(
+                                matches!(layout.result_rows.get(row - 1), Some(ResultRow::Entry(previous, 0)) if previous == index)
+                            );
+                        }
+                        palette.click(
+                            &layout,
+                            Position::new(y as i32, (layout.rect.x + layout.border) as u16),
+                        );
+                        assert_eq!(palette.selected, *index);
+                        assert_eq!(
+                            palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                            Outcome::Activate(index.to_string())
+                        );
+                        if layout.options_rows == 1 && *index == 2 && cols > 3 {
+                            assert!(painted.contains('…'));
+                            assert!(!painted.contains("body snippet"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn page_navigation_counts_wrapped_rows() {
+    let mut palette = note_palette(&[
+        "#1 Long title here",
+        "#2 Long title here",
+        "#3 Long title here",
+        "#4 Long title here",
+    ]);
+    let surface = Viewport {
+        cols: 16,
+        rows: 9,
+        ..Default::default()
+    };
+    let layout = palette.layout(surface);
+    assert_eq!(layout.options_rows, 4);
+    key(&mut palette, BareKey::Down);
+    assert_eq!(palette.selected, 1);
+    key(&mut palette, BareKey::Up);
+    assert_eq!(palette.selected, 0);
+    key(&mut palette, BareKey::PageDown);
+    assert_eq!(palette.selected, 1);
+    key(&mut palette, BareKey::PageDown);
+    assert_eq!(palette.selected, 2);
+    key(&mut palette, BareKey::PageUp);
+    assert_eq!(palette.selected, 0);
+}
+
+#[test]
+fn all_result_kinds_wrap_in_root_and_picker_views() {
+    for kind in [
+        EntryKind::Command,
+        EntryKind::Plugin,
+        EntryKind::Pane,
+        EntryKind::Tab,
+        EntryKind::Session,
+        EntryKind::ExitedSession,
+        EntryKind::Project,
+        EntryKind::Theme,
+        EntryKind::Agent,
+        EntryKind::ControlAgent,
+        EntryKind::SetControlAgent,
+        EntryKind::WarpTabSession,
+        EntryKind::WarpPaneSession,
+        EntryKind::WarpTab,
+        EntryKind::WarpPane,
+    ] {
+        let mut palette = CommandPalette::default();
+        palette
+            .agent_metadata
+            .insert("result".into(), Default::default());
+        let result = entry(
+            "result",
+            "A long title with 日本語 that needs more than two rows of space",
+            kind,
+        );
+        if kind == EntryKind::Plugin {
+            palette.set_sections(vec![PluginSection {
+                title: "Provider".into(),
+                entries: vec![result],
+                semantic: true,
+                status: None,
+            }]);
+        } else {
+            palette.set_entries(vec![result]);
+        }
+        for picker in [None, Some(kind)] {
+            if kind == EntryKind::Plugin && picker.is_some() {
+                let sections = palette.sections.clone();
+                palette.push_view(1, "Provider".into());
+                palette.set_sections(sections);
+            } else {
+                palette.picker = picker;
+                palette.rematch();
+            }
+            if palette.matches.is_empty() {
+                assert!(picker.is_none(), "{kind:?}");
+                continue;
+            }
+            for rows in [7, 11] {
+                let layout = palette.layout(Viewport {
+                    cols: 24,
+                    rows,
+                    ..Default::default()
+                });
+                let result_rows: Vec<_> = layout
+                    .result_rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| matches!(row, ResultRow::Entry(_, _)))
+                    .collect();
+                let expected = if layout.options_rows == 2 && palette.entry_heading(0).is_some() {
+                    1
+                } else {
+                    2
+                };
+                assert_eq!(result_rows.len(), expected, "{kind:?}, {picker:?}, {rows}");
+                let lines = rendered_lines(&palette, &layout);
+                let (last_row, _) = result_rows.last().unwrap();
+                assert!(lines[layout.options_y + last_row - layout.rect.y].contains('…'));
+                palette.click(
+                    &layout,
+                    Position::new(
+                        (layout.options_y + last_row) as i32,
+                        (layout.rect.x + layout.border) as u16,
+                    ),
+                );
+                assert_eq!(
+                    palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                    Outcome::Activate("result".into())
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn wrapped_shortcuts_and_descriptions_share_the_available_columns() {
+    let mut palette = CommandPalette::default();
+    let mut result = entry(
+        "result",
+        "Alpha bravo charlie delta echo",
+        EntryKind::Command,
+    );
+    result.shortcut = "Ctrl n".into();
+    result.description = "body snippet".into();
+    palette.set_entries(vec![result]);
+    let layout = palette.layout(Viewport {
+        cols: 26,
+        rows: 11,
+        ..Default::default()
+    });
+    let lines = rendered_lines(&palette, &layout);
+    let first = layout.options_y - layout.rect.y;
+    assert!(lines[first].contains("› Alpha bravo"));
+    assert!(lines[first].contains("Ctrl n"));
+    assert!(lines[first + 1].contains("charlie delta…"));
+    assert!(!lines[first + 1].contains("Ctrl n"));
+    assert!(!lines.iter().any(|line| line.contains("body snippet")));
+    palette.entries[0].label = "Alpha bravo charlie".into();
+    assert_eq!(
+        palette.entry_lines(0, 24, 2),
+        vec!["Alpha bravo", "charlie — body snippet"]
+    );
+}
+
+#[test]
+fn page_navigation_moves_past_two_line_results_without_a_section_heading() {
+    let mut palette = CommandPalette::default();
+    palette.set_entries(
+        (0..3)
+            .map(|i| {
+                entry(
+                    &i.to_string(),
+                    "A long title that wraps",
+                    EntryKind::Command,
+                )
+            })
+            .collect(),
+    );
+    let surface = Viewport {
+        cols: 16,
+        rows: 7,
+        ..Default::default()
+    };
+    assert_eq!(palette.layout(surface).options_rows, 2);
+    for selected in [1, 2] {
+        key(&mut palette, BareKey::PageDown);
+        assert_eq!(palette.selected, selected);
+        let layout = palette.layout(surface);
+        assert_eq!(layout.result_rows.len(), 2);
+        assert!(layout
+            .result_rows
+            .iter()
+            .all(|row| palette.row_selected(row)));
+    }
+    key(&mut palette, BareKey::PageUp);
+    assert_eq!(palette.selected, 1);
+}
+
+#[test]
+fn wrapped_history_pages_stay_in_the_focused_region() {
+    let mut palette = CommandPalette {
+        metadata: Some("Run history".into()),
+        ..Default::default()
+    };
+    palette.set_sections(vec![PluginSection {
+        title: "Timeline".into(),
+        semantic: true,
+        status: None,
+        entries: std::iter::once(entry("resume", "Resume", EntryKind::Plugin))
+            .chain((0..5).map(|i| {
+                entry(
+                    &format!("event:{i}"),
+                    "A long event title that wraps onto two rows",
+                    EntryKind::Plugin,
+                )
+            }))
+            .collect(),
+    }]);
+    key(&mut palette, BareKey::Tab);
+    palette.layout(Viewport {
+        cols: 24,
+        rows: 13,
+        ..Default::default()
+    });
+    key(&mut palette, BareKey::PageDown);
+    assert_eq!(palette.selected_entry().unwrap().id, "event:1");
+    key(&mut palette, BareKey::PageUp);
+    assert_eq!(palette.selected_entry().unwrap().id, "event:0");
+    key(&mut palette, BareKey::Tab);
+    for direction in [BareKey::PageDown, BareKey::PageUp] {
+        key(&mut palette, direction);
+        assert_eq!(palette.selected_entry().unwrap().id, "resume");
+    }
 }

@@ -44,6 +44,7 @@ pub enum Instruction {
         token: u64,
         revision: u64,
         path: std::path::PathBuf,
+        pane_title: String,
         exit: NoteEditorCompletion,
     },
     NoteFinished {

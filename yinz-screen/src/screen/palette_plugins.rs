@@ -546,9 +546,10 @@ impl Screen {
                 token,
                 revision,
                 path,
+                pane_title,
                 exit,
             } => {
-                self.note_editor_ready(client, token, revision, path, exit);
+                self.note_editor_ready(client, token, revision, path, pane_title, exit);
                 true
             },
             Instruction::NoteFinished {

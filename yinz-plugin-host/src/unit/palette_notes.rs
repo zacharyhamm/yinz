@@ -204,14 +204,23 @@ fn worker_retains_changed_recovery_file_and_cleans_successful_edits() {
             action: NoteAction::Open(note.id),
             active: Arc::new(AtomicBool::new(true)),
         };
+        let current = notes::fetch_note(&backend, note.id).unwrap().unwrap();
         let active = request.active.clone();
         std::thread::scope(|scope| {
             scope.spawn(|| handle(request, &senders, &data));
-            let (ScreenInstruction::CommandPalette(Instruction::NoteReady { path, exit, .. }), _) =
-                rx.recv().unwrap()
+            let (
+                ScreenInstruction::CommandPalette(Instruction::NoteReady {
+                    path,
+                    pane_title,
+                    exit,
+                    ..
+                }),
+                _,
+            ) = rx.recv().unwrap()
             else {
                 panic!("expected ready");
             };
+            assert_eq!(pane_title, format!("#{} {}", current.id, current.title));
             if outcome == "invalid" {
                 fs::write(&path, "invalid changed contents").unwrap();
             } else if outcome != "unchanged" && outcome != "unconfirmed" {
