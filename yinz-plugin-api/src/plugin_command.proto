@@ -279,6 +279,9 @@ enum CommandName {
   SetProjectContext = 299;
   ResolveNotification = 300;
   GetPluginIdsForUrl = 301;
+  GetPluginInfo = 302;
+  Pick = 304;
+  GetPluginIdsForUrlWithConfiguration = 303;
 }
 
 message PluginCommand {
@@ -504,6 +507,9 @@ message PluginCommand {
     SwampRequestPayload swamp_request_payload = 228;
     SetPaneSubtitlePayload set_pane_subtitle_payload = 229;
     SetProjectContextPayload set_project_context_payload = 239;
+    GetPluginInfoPayload get_plugin_info_payload = 241;
+    string pick_payload = 245;
+    string get_plugin_ids_for_url_with_configuration_payload = 244;
   }
 }
 
@@ -2086,3 +2092,8 @@ message PaneTabsResponse { string json = 1; }
 
 // Provider definitions and registration errors use the shared serde contract.
 message AgentProvidersResponse { string json = 1; }
+
+message GetPluginInfoPayload { optional uint32 plugin_id = 1; }
+message GetPluginInfoResponse { string json = 1; }
+
+message PickResponse { string json = 1; }

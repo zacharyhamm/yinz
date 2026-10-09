@@ -1588,6 +1588,7 @@ dependencies = [
  "url",
  "yinz-test-support",
  "yinz-tile",
+ "yinz-types",
 ]
 
 [[package]]

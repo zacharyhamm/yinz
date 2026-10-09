@@ -105,6 +105,10 @@ impl EventOrPipeMessage {
 
 #[derive(Debug, Clone)]
 pub struct LoadingContext {
+    pub plugin_roles: crate::plugin_map::PluginRoles,
+    pub pick_request: Option<yinz_types::pick::PickRequest>,
+    pub pick_cancelled: Option<Arc<AtomicBool>>,
+    pub pick_opening: Option<Arc<AtomicBool>>,
     pub plugin_id: PluginId,
     pub client_id: ClientId,
     pub plugin_cwd: PathBuf,
@@ -301,6 +305,19 @@ impl LoadingContext {
         }
 
         Ok(LoadingContext {
+            plugin_roles: wasm_bridge.plugin_roles.clone(),
+            pick_opening: wasm_bridge
+                .picks
+                .get(&plugin_id)
+                .map(|pick| pick.opening.clone()),
+            pick_cancelled: wasm_bridge
+                .picks
+                .get(&plugin_id)
+                .map(|pick| pick.cancelled.clone()),
+            pick_request: wasm_bridge
+                .picks
+                .get(&plugin_id)
+                .map(|pick| pick.request.clone()),
             client_id,
             plugin_id,
             path_to_default_shell: wasm_bridge.path_to_default_shell.clone(),
@@ -357,11 +374,14 @@ pub type PluginCache = Arc<Mutex<HashMap<PluginCacheKey, (Module, PathBuf)>>>;
 mod background_plugins;
 #[path = "permission_requests.rs"]
 mod permission_requests;
+#[path = "picker.rs"]
+pub(crate) mod picker;
 
 pub struct WasmBridge {
+    picks: HashMap<PluginId, picker::PendingPick>,
     permission_requests: BTreeMap<u64, permission_requests::PendingPermission>,
     next_permission_request: u64,
-    background_plugin_ids: HashSet<PluginId>,
+    pub(crate) plugin_roles: crate::plugin_map::PluginRoles,
     independent_plugin_ids: HashSet<PluginId>,
     configured_plugins: Vec<RunPlugin>,
     resolved_plugin_locations: HashMap<RunPluginLocation, RunPluginLocation>,
@@ -581,7 +601,8 @@ impl WasmBridge {
         Ok(WasmBridge {
             permission_requests: BTreeMap::new(),
             next_permission_request: 0,
-            background_plugin_ids: HashSet::new(),
+            plugin_roles: Default::default(),
+            picks: HashMap::new(),
             independent_plugin_ids: HashSet::new(),
             configured_plugins: vec![],
             resolved_plugin_locations: HashMap::new(),
@@ -677,6 +698,11 @@ impl WasmBridge {
             })?;
 
         let plugin_id = PluginId::new(self.next_plugin_id);
+        self.plugin_roles
+            .lock()
+            .unwrap()
+            .entry(plugin_id)
+            .or_insert(false);
         self.independent_plugin_ids.insert(plugin_id);
         self.cached_events_for_pending_plugins
             .insert(plugin_id, vec![]);
@@ -835,6 +861,7 @@ impl WasmBridge {
         pid: PluginId,
         plugin_map_deadline: Option<Instant>,
     ) -> Result<()> {
+        self.cancel_plugin_picks(pid);
         let _ = self
             .senders
             .send_to_screen(ScreenInstruction::NotificationPolicyUnavailable {
@@ -872,7 +899,7 @@ impl WasmBridge {
             plugin_id: Some(pid),
         });
         self.cancel_permission_requests(pid, None);
-        self.background_plugin_ids.remove(&pid);
+        self.plugin_roles.lock().unwrap().remove(&pid);
         self.independent_plugin_ids.remove(&pid);
         self.latest_plugin_errors.remove(&pid);
         self.plugin_callers.remove(&pid);
@@ -1093,6 +1120,7 @@ impl WasmBridge {
         } else {
             self.pending_pipes.reject_cached(plugin_id, load_id, &error);
         }
+        self.cancel_plugin_picks(plugin_id);
         if !failed_to_load && !self.loading_plugins.iter().any(|(id, _)| *id == plugin_id) {
             let instances = self.plugin_map.lock().unwrap().pipe_instances();
             let shared = self.plugin_is_shared(&plugin_id);
@@ -1267,14 +1295,20 @@ impl WasmBridge {
         // attached now or later. Without this the loader would instantiate it once per client,
         // each copy running the same job. Set last so the enqueuer's configuration cannot undo it.
         run_plugin.configuration.insert("shared", "true".to_owned());
-        let (plugin_id, client_id) = self.load_plugin(
-            &Some(run_plugin.clone()),
-            None,
-            Size::default(),
-            job.cwd.clone(),
-            false,
-            Some(job.enqueuer.1),
-        )?;
+        let pending_id = PluginId::new(self.next_plugin_id);
+        self.plugin_roles.lock().unwrap().insert(pending_id, true);
+        let (plugin_id, client_id) = self
+            .load_plugin(
+                &Some(run_plugin.clone()),
+                None,
+                Size::default(),
+                job.cwd.clone(),
+                false,
+                Some(job.enqueuer.1),
+            )
+            .inspect_err(|_| {
+                self.plugin_roles.lock().unwrap().remove(&pending_id);
+            })?;
         let _ = self
             .senders
             .send_to_screen(super::add_suppressed_plugin_pane(
@@ -1334,6 +1368,11 @@ impl WasmBridge {
             ));
     }
     pub fn reload_plugin_with_id(&mut self, plugin_id: PluginId) -> Result<()> {
+        let picker = self.picks.contains_key(&plugin_id);
+        self.cancel_plugin_picks(plugin_id);
+        if picker {
+            return Ok(());
+        }
         self.cancel_permission_requests(plugin_id, None);
         self.senders
             .send_to_screen(ScreenInstruction::NotificationPolicyUnavailable {
@@ -2339,16 +2378,7 @@ impl WasmBridge {
         self.plugin_map
             .lock()
             .unwrap()
-            .running_plugins()
-            .iter()
-            .find_map(|(p_id, c_id, running_plugin)| {
-                if p_id == &plugin_id && c_id == &client_id {
-                    let plugin_cwd = running_plugin.lock().unwrap().env().plugin_cwd.clone();
-                    Some(plugin_cwd)
-                } else {
-                    None
-                }
-            })
+            .instance_cwd(plugin_id, Some(client_id))
     }
     pub fn change_plugin_host_dir(
         &mut self,
@@ -2439,6 +2469,11 @@ impl WasmBridge {
                     }
                     env.set_host_folder(new_host_dir.clone());
                     drop(plugin);
+                    plugin_map.lock().unwrap().set_instance_cwd(
+                        plugin_id,
+                        owner,
+                        new_host_dir.clone(),
+                    );
                     let _ = senders.send_to_pty(yinz_bus::pty::PtyInstruction::ReportPluginCwd(
                         plugin_id,
                         new_host_dir.clone(),
@@ -2873,6 +2908,7 @@ impl WasmBridge {
     }
 
     pub fn remove_client(&mut self, client_id: ClientId) {
+        self.cancel_client_picks(client_id);
         self.client_cancellations
             .lock()
             .unwrap()
@@ -3431,11 +3467,20 @@ impl WasmBridge {
             .map(|plugin_ids| !plugin_ids.is_empty())
             .unwrap_or(false)
     }
+    #[cfg(test)]
     pub(crate) fn get_plugin_ids_for_url(&self, url: &str) -> Result<Vec<PluginId>, String> {
+        self.get_plugin_ids_for_url_with_configuration(url, None)
+    }
+
+    pub(crate) fn get_plugin_ids_for_url_with_configuration(
+        &self,
+        url: &str,
+        configuration: Option<BTreeMap<String, String>>,
+    ) -> Result<Vec<PluginId>, String> {
         let aliases = self.plugin_aliases.lock().map_err(|e| e.to_string())?;
         let plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
             url,
-            &None,
+            &configuration,
             Some(&aliases),
             None,
         )?
@@ -3803,6 +3848,10 @@ impl WasmBridge {
                         return Ok(vec![]);
                     }
                     let headless = crate::host_bridge::is_workflow_bridge(&run_plugin.location);
+                    let pending_id = PluginId::new(self.next_plugin_id);
+                    if headless {
+                        self.plugin_roles.lock().unwrap().insert(pending_id, true);
+                    }
                     match self.load_plugin(
                         &Some(run_plugin),
                         None,
@@ -3846,7 +3895,10 @@ impl WasmBridge {
                             )));
                             Ok(vec![(plugin_id, Some(client_id))])
                         },
-                        Err(error) => Err(error).context("Failed to load plugin"),
+                        Err(error) => {
+                            self.plugin_roles.lock().unwrap().remove(&pending_id);
+                            Err(error).context("Failed to load plugin")
+                        },
                     }
                 } else {
                     Ok(all_plugin_ids)
@@ -4148,6 +4200,7 @@ pub(crate) fn check_event_permission(
         // What an agent said and was asked is session state, and more of it than the manifest
         // carries: a plugin that may read the panes may read this.
         EventType::AgentEvent => PermissionType::ReadApplicationState,
+        EventType::PickResult => PermissionType::MessageAndLaunchOtherPlugins,
         EventType::AgentProvidersChanged => PermissionType::RunCommands,
         // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
         // need nothing more than the permission it enqueued with.

@@ -33,6 +33,9 @@ export type PaletteTestCommand =
   | {type: "reply"; scope: PaletteTestScope; result: {Ok: PaletteTestReply} | {Err: string}}
   | {type: "close"; scope: PaletteTestScope};
 export interface PluginHarness {
+  readonly pickRequests: { request_id: string; options: import("yinz:plugin").PickOptions }[];
+  completePick(requestId: string, result: string | null): Promise<void>;
+  failPick(requestId: string, message: string): Promise<void>;
   stub(command: string, reply: unknown): void;
   event(event: Event): Promise<void>;
   pipe(message: Partial<PipeMessage> & {name: string}): Promise<void>;

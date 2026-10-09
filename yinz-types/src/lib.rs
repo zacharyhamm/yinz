@@ -58,3 +58,5 @@ pub mod session_manifest;
 pub mod authoring;
 
 pub mod secrets;
+
+pub mod pick;

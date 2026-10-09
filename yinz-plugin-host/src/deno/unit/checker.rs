@@ -1258,3 +1258,19 @@ fn palette_provider_types_require_exactly_one_source() {
       const badArray: PaletteAction = {...action,aliases:'reader'};
     "#).unwrap();
 }
+
+#[test]
+fn sdk_picker_and_instance_info_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("picker.ts"), r#"
+import z, {type CancellablePromise, type PluginInfo} from 'yinz:plugin';
+const self: PluginInfo = z.getPluginInfo();
+const other: PluginInfo | null = z.getPluginInfo(2);
+const request: CancellablePromise<string | null> = z.pick({kind:'file', roots:['/tmp'], extensions:['pdf'], hidden:true, recursive:false, timeoutMs:50});
+request.cancel();
+// @ts-expect-error kind is required
+z.pick({roots:['/tmp']});
+// @ts-expect-error extensions must be strings
+z.pick({kind:'file',extensions:[7]});
+"#).unwrap();
+}

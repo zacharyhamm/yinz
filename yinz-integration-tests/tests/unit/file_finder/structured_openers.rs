@@ -349,3 +349,91 @@ fn alias_settings_narrow_reuse_and_lowest_matching_id_wins() {
     }
     yinz.quit();
 }
+
+#[test]
+fn background_handoff_never_renders_the_destination_and_keeps_palette_registration() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("background.ts");
+    std::fs::write(&source, r#"
+import z from 'yinz:plugin';
+let terminal = 0;
+export default {
+  async load() {
+    if (!z.getPluginInfo().background) throw new Error('background provenance missing during load');
+    await z.waitForPermissions(['ReadApplicationState','ChangeApplicationState']);
+    if (z.getPluginInfo(4294967295) !== null) throw new Error('missing instance must return null');
+    const pane = z.host.getFocusedPaneInfo().pane_id;
+    if ('Terminal' in pane) terminal = pane.Terminal;
+    z.commandPalette.registerProvider({id:'handoff',title:'Handoff',actions:[{id:'alive',label:'Background handoff still registered',run(){}}]});
+    z.host.renameTerminalPane([terminal,'BACKGROUND READY']);
+  },
+  pipe(message) {
+    if (!z.getPluginInfo().background) throw new Error('background provenance changed');
+    z.host.renameTerminalPane([terminal,'BACKGROUND DELIVERED ' + message.payload]);
+  },
+  render() { return 'BACKGROUND DESTINATION MUST NEVER APPEAR'; }
+};
+"#).unwrap();
+    let url = url::Url::from_file_path(source).unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!(
+            r##"
+plugins {{
+ reader location="{url}"
+ file-finder location="yinz:file-finder" {{ openers_json r#"{{"pdf":{{"plugin":"reader"}}}}"#; }}
+}}
+load_plugins clear-defaults=true {{ "reader"; }}
+"##
+        ))
+        .start();
+    yinz.expect_pty_spawn().output(PROMPT);
+    yinz.wait_until("background reader permissions", |grid| {
+        grid.contains("Plugin permissions")
+    });
+    yinz.send_stdin(b"\t\r");
+    yinz.wait_until("background reader initialized", |grid| {
+        grid.contains("BACKGROUND READY")
+    });
+    let before = panes(&yinz)
+        .into_iter()
+        .find(|pane| is_reader(pane, url.as_str()))
+        .unwrap();
+    let (finder, selection) = open_finder(&yinz);
+    choose(&finder, &selection, "/tmp/paper.pdf");
+    yinz.wait_until("background reader receives path", |grid| {
+        grid.contains("BACKGROUND DELIVERED")
+    });
+    assert_retired(&yinz, &finder, &selection);
+    let after = panes(&yinz)
+        .into_iter()
+        .find(|pane| is_reader(pane, url.as_str()))
+        .unwrap();
+    assert_eq!(before.pane_info.id, after.pane_info.id);
+    assert!(after.pane_info.is_suppressed);
+    assert!(!String::from_utf8_lossy(&yinz.raw_bytes())
+        .contains("BACKGROUND DESTINATION MUST NEVER APPEAR"));
+    yinz.send_stdin(b"\x1b[112;7u");
+    yinz.send_stdin(b"Background handoff still registered");
+    yinz.wait_until("registration survives handoff", |grid| {
+        grid.contains("Background handoff still registered")
+    });
+    yinz.quit();
+}
+
+#[test]
+fn message_only_missing_reader_fails_without_a_cold_launch() {
+    let root = tempfile::tempdir().unwrap();
+    let url = receiver(root.path());
+    let mut yinz = session(
+        r#"{"pdf":{"plugin":"reader","delivery":"message"}}"#,
+        &format!("reader location={url:?}"),
+    );
+    let (finder, selection) = open_finder(&yinz);
+    choose(&finder, &selection, "/tmp/paper.pdf");
+    yinz.wait_until("message-only failure is reported", |grid| {
+        grid.contains("message destination is not") && grid.contains("running")
+    });
+    assert_retired(&yinz, &finder, &selection);
+    assert!(panes(&yinz).iter().all(|pane| !is_reader(pane, &url)));
+    yinz.quit();
+}

@@ -38,6 +38,7 @@ export interface EventPayloads {
   QueueJobStarted: {queue: string; job_id: Integer; plugin_id: number; context: StringMap};
   QueueJobFinished: {queue: string; job_id: Integer; outcome: QueueJobOutcome; payload: string | null; context: StringMap};
   AgentProvidersChanged: AgentProvider[];
+  PickResult: { request_id: string; result: { Ok: string | null } | { Err: string } };
   QueueChanged: QueueSnapshot; Hook: {point: HookPoint; payload: HookPayload}; AgentEvent: AgentEvent;
   ModifiersHeld: {modifiers: KeyModifier[]; is_live: boolean};
 }
@@ -217,6 +218,9 @@ export interface Yinz {
   /** Requires Reconfigure. Replaces this plugin's previous defaults. Handlers run from the reserved keybinding pipe and re-render when they return true. */
   registerDefaultKeybindings(bindings: DefaultKeybinding[]): void;
   getPluginIds(): PluginIds;
+  pick(options: PickOptions): CancellablePromise<string | null>;
+  getPluginInfo(): PluginInfo;
+  getPluginInfo(pluginId: number): PluginInfo | null;
   /** Enable names-only tracing (default true), or disable it with false. */
   trace(enabled?: boolean): void;
   log(...values: unknown[]): void;
@@ -258,7 +262,7 @@ export interface CommandArgs {
   AgentControl: {id: string; request: string};
   SwampRequest: {directory: string; id: string; operation: string; payload: string};
   Subscribe: EventType[]; Unsubscribe: EventType[]; SetSelectable: boolean;
-  ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetPluginIdsForUrl: string; GetYinzVersion: undefined;
+  ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetPluginIdsForUrl: string; GetPluginInfo: number | null; Pick: PickCommand; GetPluginIdsForUrlWithConfiguration: { url: string; configuration: Record<string, string> }; GetYinzVersion: undefined;
   OpenFile: [FileToOpen, StringMap]; OpenFileFloating: [FileToOpen, FloatingPaneCoordinates | null, StringMap];
   OpenTerminal: FileToOpen; OpenTerminalFloating: [FileToOpen, FloatingPaneCoordinates | null];
   OpenCommandPane: [CommandToRun, StringMap]; OpenCommandPaneFloating: [CommandToRun, FloatingPaneCoordinates | null, StringMap];
@@ -385,7 +389,7 @@ export type CommandObject = {[K in CommandName]: {[P in K]: CommandArgs[K] exten
 export type OpaqueReplyCommand = never;
 export interface CommandReplies {
   CheckPlugin: PluginCheckReport;
-  GetPluginIds: PluginIds; GetPluginIdsForUrl: number[]; GetYinzVersion: string; GetUserPluginDir: string | null; GetLayoutDir: string | null;
+  GetPluginIds: PluginIds; GetPluginIdsForUrl: number[]; GetPluginInfo: PluginInfo | null; Pick: { options: PickOptions; cwd: string } | null; GetPluginIdsForUrlWithConfiguration: number[]; GetYinzVersion: string; GetUserPluginDir: string | null; GetLayoutDir: string | null;
   GetLocalUtcOffset: number; GetSessionEnvironmentVariables: StringMap; GetPluginAliasConfiguration: StringMap;
   GetFocusedPaneInfo: {tab_id: number; pane_id: PaneId}; GetPaneInfo: PaneInfo | null; GetTabInfo: TabInfo | null;
   GetPaneCwd: string | null; GetPanePid: number | null; GetPaneRunningCommand: string[] | null; GetPaneGitProbe: PaneGitProbe | null;
@@ -1077,3 +1081,15 @@ export interface CommandPalette {
     | { provideActions: PaletteActionSource; actions?: never }
   )): () => void;
 }
+
+export interface PluginInfo { pluginId: number; background: boolean; }
+
+export interface PickOptions {
+  kind: "directory" | "file";
+  roots?: string[];
+  extensions?: string[];
+  hidden?: boolean;
+  recursive?: boolean;
+  timeoutMs?: number;
+}
+export type PickCommand = { Start: { request_id: string; options: PickOptions } } | { Cancel: { request_id: string; timeout: boolean } } | "Request" | { Attach: { pane_id: number } } | { Complete: { result: { Ok: string | null } | { Err: string } } };

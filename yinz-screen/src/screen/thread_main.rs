@@ -1607,6 +1607,27 @@ pub fn screen_thread_main(
                     screen.render()?;
                     screen.log_and_report_session_state()?;
                 },
+                ScreenInstruction::RetirePicker {
+                    finder,
+                    pane,
+                    client,
+                } => {
+                    if let Some(pane) = pane {
+                        screen.close_pane_from_instruction(
+                            PaneId::Terminal(pane),
+                            Some(client),
+                            None,
+                            None,
+                            &mut pending,
+                        )?;
+                    }
+                    screen.render()?;
+                    screen
+                        .bus
+                        .senders
+                        .send_to_plugin(PluginInstruction::PickRetired(finder))
+                        .context("acknowledge picker retirement")?;
+                },
                 ScreenInstruction::ClosePane(
                     id,
                     client_id,

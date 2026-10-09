@@ -813,6 +813,12 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for Hook Event"),
             },
+            Ok(ProtobufEventType::PickResult) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::PickResultPayload(json)) => serde_json::from_str(&json)
+                    .map(Event::PickResult)
+                    .map_err(|_| "Malformed PickResult"),
+                _ => Err("Malformed PickResult payload"),
+            },
             Ok(ProtobufEventType::AgentProvidersChanged) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::AgentProvidersChangedPayload(json)) => {
                     serde_json::from_str(&json)
@@ -1648,6 +1654,12 @@ impl TryFrom<Event> for ProtobufEvent {
                     })),
                 })
             },
+            Event::PickResult(result) => Ok(ProtobufEvent {
+                name: ProtobufEventType::PickResult as i32,
+                payload: Some(event::Payload::PickResultPayload(
+                    serde_json::to_string(&result).map_err(|_| "Invalid PickResult")?,
+                )),
+            }),
             Event::AgentProvidersChanged(providers) => Ok(ProtobufEvent {
                 name: ProtobufEventType::AgentProvidersChanged as i32,
                 payload: Some(event::Payload::AgentProvidersChangedPayload(
@@ -2869,6 +2881,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::NotificationResolved => EventType::NotificationResolved,
             ProtobufEventType::Hook => EventType::Hook,
             ProtobufEventType::AgentEvent => EventType::AgentEvent,
+            ProtobufEventType::PickResult => EventType::PickResult,
             ProtobufEventType::AgentProvidersChanged => EventType::AgentProvidersChanged,
             ProtobufEventType::ModifiersHeld => EventType::ModifiersHeld,
         })
@@ -2940,6 +2953,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::NotificationResolved => ProtobufEventType::NotificationResolved,
             EventType::Hook => ProtobufEventType::Hook,
             EventType::AgentEvent => ProtobufEventType::AgentEvent,
+            EventType::PickResult => ProtobufEventType::PickResult,
             EventType::AgentProvidersChanged => ProtobufEventType::AgentProvidersChanged,
             EventType::ModifiersHeld => ProtobufEventType::ModifiersHeld,
         })

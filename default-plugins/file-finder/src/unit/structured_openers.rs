@@ -99,7 +99,6 @@ fn invalid_entries_abort_even_when_another_entry_matches() {
         r#"{"pdf":{"argv":["viewer",null]}}"#,
         r#"{"pdf":{"argv":["viewer","\u0000"]}}"#,
         r#"{"pdf":{"argv":["viewer"],"plugin":"reader"}}"#,
-        r#"{"pdf":{"plugin":"reader","config":{}}}"#,
         r#"{"pdf":{"plugin":""}}"#,
         r#"{"pdf":{"plugin":"reader","message":" "}}"#,
         r#"{"pdf":{"plugin":"reader","message":"\u0000"}}"#,
@@ -162,8 +161,31 @@ fn duplicate_keys_and_updated_configuration_use_latest_value() {
     assert_eq!(
         opener_for(&config, Path::new("/tmp/a.pdf")).unwrap(),
         Opener::Plugin {
-            destination: "reader".into(),
-            message: "open".into()
+            destination: Destination::Location {
+                url: "reader".into(),
+                config: BTreeMap::new()
+            },
+            message: "open".into(),
+            args: BTreeMap::new(),
+            delivery: Delivery::Auto
         }
     );
+}
+
+#[test]
+fn message_destinations_and_literal_arguments() {
+    assert_eq!(resolve(r#"{"default":{"plugin_id":7,"delivery":"message","args":{"path":"{}","quote":"'雪"}}}"#, &[], "/a").unwrap(), Opener::Plugin {
+        destination: Destination::Id(7), message: "open".into(), delivery: Delivery::Message,
+        args: BTreeMap::from([("path".into(), "{}".into()), ("quote".into(), "'雪".into())]),
+    });
+    for json in [
+        r#"{"default":{"plugin_id":7,"plugin":"reader"}}"#,
+        r#"{"default":{"plugin_id":7,"config":{}}}"#,
+        r#"{"default":{"plugin_id":7,"config":null}}"#,
+        r#"{"default":{"plugin_id":null,"plugin":"reader"}}"#,
+        r#"{"default":{"plugin":"reader","delivery":"focus"}}"#,
+        r#"{"default":{"plugin_id":-1}}"#,
+    ] {
+        assert!(resolve(json, &[], "/a").is_err(), "{json}");
+    }
 }

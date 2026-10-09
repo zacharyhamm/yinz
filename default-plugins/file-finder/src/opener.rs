@@ -33,9 +33,28 @@ pub enum Opener {
     /// Run a specific command, already resolved down to argv.
     Command { path: String, args: Vec<String> },
     Plugin {
-        destination: String,
+        destination: Destination,
         message: String,
+        args: BTreeMap<String, String>,
+        delivery: Delivery,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Destination {
+    Location {
+        url: String,
+        config: BTreeMap<String, String>,
+    },
+    Id(u32),
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Delivery {
+    #[default]
+    Auto,
+    Message,
 }
 
 /// Pick an opener for `file` out of the plugin's configuration map.
@@ -45,6 +64,14 @@ pub enum Opener {
 /// structured and legacy defaults, then the editor. Validate the entire structured
 /// map before choosing, so invalid configuration never silently runs a fallback.
 pub fn opener_for(config: &BTreeMap<String, String>, file: &Path) -> Result<Opener, String> {
+    opener_for_selection(config, file, file)
+}
+
+pub fn opener_for_selection(
+    config: &BTreeMap<String, String>,
+    extension_path: &Path,
+    file: &Path,
+) -> Result<Opener, String> {
     // Validate every entry, including entries unrelated to this selection.
     let mut structured = BTreeMap::new();
     if let Some(json) = config
@@ -66,6 +93,12 @@ pub fn opener_for(config: &BTreeMap<String, String>, file: &Path) -> Result<Open
                 }
                 if value.is_null() {
                     return Ok(Opener::YinzEditor);
+                }
+                if value.as_object().is_some_and(|entry| {
+                    entry.contains_key("plugin_id")
+                        && (entry.contains_key("plugin") || entry.contains_key("config"))
+                }) {
+                    return Err("plugin_id cannot be combined with plugin or config".into());
                 }
                 let entry: Structured = serde_json::from_value(value)
                     .map_err(|error| format!("expected argv or plugin/message fields: {error}"))?;
@@ -91,11 +124,31 @@ pub fn opener_for(config: &BTreeMap<String, String>, file: &Path) -> Result<Open
                             args,
                         })
                     },
-                    Structured::Plugin { plugin, message } => {
+                    Structured::Plugin {
+                        plugin,
+                        plugin_id,
+                        config,
+                        message,
+                        args,
+                        delivery,
+                    } => {
                         nonblank(&message, "message")?;
+                        let destination = match (plugin, plugin_id, config) {
+                            (Some(plugin), None, config) => Destination::Location {
+                                url: plugin_destination(&plugin)?,
+                                config: config.unwrap_or_default(),
+                            },
+                            (None, Some(id), None) => Destination::Id(id),
+                            _ => return Err(
+                                "expected plugin with optional config, or plugin_id without config"
+                                    .into(),
+                            ),
+                        };
                         Ok(Opener::Plugin {
-                            destination: plugin_destination(&plugin)?,
+                            destination,
                             message,
+                            args,
+                            delivery,
                         })
                     },
                 }
@@ -106,7 +159,7 @@ pub fn opener_for(config: &BTreeMap<String, String>, file: &Path) -> Result<Open
             );
         }
     }
-    let extension = file
+    let extension = extension_path
         .extension()
         .and_then(|ext| ext.to_str())
         .map(str::to_lowercase);
@@ -133,9 +186,15 @@ enum Structured {
         argv: Vec<String>,
     },
     Plugin {
-        plugin: String,
+        plugin: Option<String>,
+        plugin_id: Option<u32>,
+        config: Option<BTreeMap<String, String>>,
         #[serde(default = "default_message")]
         message: String,
+        #[serde(default)]
+        args: BTreeMap<String, String>,
+        #[serde(default)]
+        delivery: Delivery,
     },
 }
 

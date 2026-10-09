@@ -211,6 +211,11 @@ pub enum ScreenInstruction {
     SetSelectable(PaneId, bool),
     ShowPluginCursor(PluginId, ClientId, Option<(usize, usize)>),
     CloseSelf(PluginId, ClientId),
+    RetirePicker {
+        finder: PluginId,
+        pane: Option<yinz_types::internal_ids::TerminalId>,
+        client: ClientId,
+    },
     ClosePane(
         PaneId,
         Option<ClientId>,

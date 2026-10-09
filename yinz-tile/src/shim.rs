@@ -3600,6 +3600,41 @@ pub fn pane_tabs(
     serde_json::from_str(&response.json).map_err(|error| error.to_string())?
 }
 
+/// Inspect launch provenance. Inspecting another instance requires ReadApplicationState.
+pub fn get_plugin_info(
+    id: Option<PluginId>,
+) -> Result<Option<yinz_types::data::PluginInstanceInfo>, String> {
+    let response: yinz_plugin_api::plugin_command::ProtobufGetPluginInfoResponse =
+        call(PluginCommand::GetPluginInfo(id))?;
+    serde_json::from_str(&response.json).map_err(|error| format!("Malformed plugin info: {error}"))
+}
+
+/// Find instances using alias defaults overlaid with the supplied settings.
+pub fn get_plugin_ids_for_url_with_configuration(
+    url: &str,
+    configuration: BTreeMap<String, String>,
+) -> Result<Vec<PluginId>, String> {
+    let response: yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse =
+        call(PluginCommand::GetPluginIdsForUrlWithConfiguration {
+            url: url.into(),
+            configuration,
+        })?;
+    match response.error {
+        Some(error) => Err(error),
+        None => Ok(response.plugin_ids.into_iter().map(PluginId::new).collect()),
+    }
+}
+
+/// Host-owned picker driver protocol; only the assigned driver can attach or complete.
+pub fn pick(
+    command: yinz_types::pick::PickCommand,
+) -> Result<Option<yinz_types::pick::PickRequest>, String> {
+    let response: yinz_plugin_api::plugin_command::ProtobufPickResponse =
+        call(PluginCommand::Pick(command))?;
+    serde_json::from_str(&response.json)
+        .map_err(|error| format!("Malformed picker response: {error}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
