@@ -89,6 +89,8 @@ struct State {
     plugin_id: yinz_tile::prelude::PluginId,
     stage: Stage,
     pending_cwd: Option<PathBuf>,
+    listing: Option<yinz_types::pick::PickOptions>,
+    picker: bool,
 }
 
 register_plugin!(State);
@@ -117,7 +119,19 @@ impl YinzPlugin for State {
         ]);
 
         hide_self();
-        self.pending_cwd = Some(plugin_ids.initial_cwd.join(focused_cwd()));
+        match pick(yinz_types::pick::PickCommand::Request) {
+            Ok(Some(request)) => {
+                self.picker = true;
+                self.listing = Some(request.options);
+                self.pending_cwd = Some(request.cwd);
+            },
+            Ok(None) => self.pending_cwd = Some(plugin_ids.initial_cwd.join(focused_cwd())),
+            Err(error) => {
+                eprintln!("file-finder: {error}");
+                close_self();
+                return;
+            },
+        }
         // Opening must wait until /host actually maps to the filesystem root.
         change_host_folder(PathBuf::from("/"));
     }
@@ -131,10 +145,26 @@ impl YinzPlugin for State {
             },
             Event::FailedToChangeHostFolder(reason) if self.pending_cwd.take().is_some() => {
                 eprintln!("file-finder: failed to mount filesystem root: {reason:?}");
-                close_self();
+                if self.picker {
+                    self.complete_pick(Err("failed to mount filesystem root".into()));
+                } else {
+                    close_self();
+                }
             },
-            Event::CommandPaneExited(pane_id, _exit_code, _context) => {
-                self.handle_pane_exited(pane_id);
+            Event::CommandPaneExited(pane_id, exit_code, _context) => {
+                if self.listing.is_some()
+                    && self.stage == (Stage::Finding { pane_id })
+                    && exit_code != Some(0)
+                {
+                    let error = match exit_code {
+                        Some(10) => "listing failed",
+                        Some(11) => "fzf is not installed",
+                        _ => "fzf failed",
+                    };
+                    self.opening_failed(pane_id, error);
+                } else {
+                    self.handle_pane_exited(pane_id);
+                }
             },
             Event::EditPaneExited(pane_id, _exit_code, _context) => {
                 self.handle_pane_exited(pane_id);
@@ -150,7 +180,7 @@ impl YinzPlugin for State {
             Event::PaneUpdate(_) => {
                 self.bounce_focus_off_self();
             },
-            Event::PluginConfigurationChanged(configuration) => {
+            Event::PluginConfigurationChanged(configuration) if !self.picker => {
                 // A running plugin's KDL block is otherwise frozen at server start, so
                 // without this an opener fix needs a whole Yinz restart.
                 self.config = configuration;
@@ -174,12 +204,52 @@ impl State {
 
         let title = finder_title(project::label(Path::new(HOST_MOUNT), &cwd));
 
+        let script = if let Some(options) = &self.listing {
+            match script::build_structured(
+                &self.config,
+                options,
+                &cwd,
+                &self.out_path.to_string_lossy(),
+            ) {
+                Ok(script) => script,
+                Err(error) => {
+                    self.complete_pick(Err(error));
+                    return;
+                },
+            }
+        } else {
+            match self
+                .config
+                .get("listing_json")
+                .filter(|json| !json.trim().is_empty())
+            {
+                Some(json) => {
+                    let listing = serde_json::from_str::<yinz_types::pick::PickOptions>(json)
+                        .map_err(|error| format!("listing_json: {error}"));
+                    match listing.and_then(|options| {
+                        let script = script::build_structured(
+                            &self.config,
+                            &options,
+                            &cwd,
+                            &self.out_path.to_string_lossy(),
+                        )?;
+                        self.listing = Some(options);
+                        Ok(script)
+                    }) {
+                        Ok(script) => script,
+                        Err(error) => {
+                            notify(&error);
+                            self.finish();
+                            return;
+                        },
+                    }
+                },
+                None => script::build(&self.config, &self.out_path.to_string_lossy()),
+            }
+        };
         let command = CommandToRun {
             path: PathBuf::from("/bin/sh"),
-            args: vec![
-                "-c".to_owned(),
-                script::build(&self.config, &self.out_path.to_string_lossy()),
-            ],
+            args: vec!["-c".to_owned(), script],
             cwd: Some(project::host_path(Path::new(HOST_MOUNT), &cwd)),
             ..Default::default()
         };
@@ -196,7 +266,11 @@ impl State {
             _ => {
                 // Nothing was opened, so there is no pane to report the failure in.
                 eprintln!("file-finder: failed to open the finder pane");
-                close_self();
+                if self.picker {
+                    self.complete_pick(Err("failed to open finder pane".into()));
+                } else {
+                    close_self();
+                }
             },
         }
     }
@@ -217,19 +291,47 @@ impl State {
 
     /// fzf has exited: read what it chose and hand the pane over, or tidy up.
     fn handle_selection(&mut self, finder_pane_id: TerminalId) {
-        let contents = std::fs::read_to_string(self.host_out_path()).unwrap_or_default();
+        let contents = match std::fs::read_to_string(self.host_out_path()) {
+            Ok(contents) => contents,
+            Err(error) if self.listing.is_some() => {
+                self.opening_failed(
+                    finder_pane_id,
+                    &format!("cannot read picker output: {error}"),
+                );
+                return;
+            },
+            Err(_) => String::new(),
+        };
         let _ = std::fs::remove_file(self.host_out_path());
 
-        let selection = match script::parse_selection(&contents) {
+        let parsed = if self.listing.is_some() {
+            script::parse_structured_selection(&contents)
+        } else {
+            Ok(script::parse_selection(&contents))
+        };
+        let parsed = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.opening_failed(finder_pane_id, &error);
+                return;
+            },
+        };
+        let selection = match parsed {
             Some(selection) => PathBuf::from(selection),
             None => {
                 // Cancelled — Esc, an empty list, or fzf failing to start.
-                close_pane_with_id(PaneId::Terminal(finder_pane_id));
+                if !self.picker {
+                    close_pane_with_id(PaneId::Terminal(finder_pane_id));
+                }
                 self.finish();
                 return;
             },
         };
 
+        if self.picker {
+            self.complete_pick(Ok(Some(selection.to_string_lossy().into_owned())));
+            return;
+        }
         let cwd = selection
             .parent()
             .map(|path| project::host_path(Path::new(HOST_MOUNT), path));
@@ -237,7 +339,21 @@ impl State {
 
         // `close_replaced_pane: true` retires the held fzf pane for good; the new pane
         // inherits its floating slot and geometry.
-        let opener = match opener_for(&self.config, &selection) {
+        let opener_path = if self
+            .listing
+            .as_ref()
+            .is_some_and(|options| options.kind == yinz_types::pick::PickKind::Directory)
+        {
+            Path::new("/")
+        } else {
+            &selection
+        };
+        let resolved = if opener_path == selection {
+            opener_for(&self.config, &selection)
+        } else {
+            opener::opener_for_selection(&self.config, opener_path, &selection)
+        };
+        let opener = match resolved {
             Ok(opener) => opener,
             Err(error) => {
                 self.opening_failed(finder_pane_id, &error);
@@ -248,8 +364,17 @@ impl State {
             Opener::Plugin {
                 destination,
                 message,
+                args,
+                delivery,
             } => {
-                self.open_reader(finder_pane_id, &selection, &destination, &message);
+                self.open_reader(
+                    finder_pane_id,
+                    &selection,
+                    &destination,
+                    &message,
+                    args,
+                    delivery,
+                );
                 return;
             },
             Opener::YinzEditor => {
@@ -292,7 +417,17 @@ impl State {
         }
     }
 
+    fn complete_pick(&mut self, result: Result<Option<String>, String>) {
+        self.stage = Stage::Idle;
+        let _ = std::fs::remove_file(self.host_out_path());
+        let _ = pick(yinz_types::pick::PickCommand::Complete { result });
+    }
+
     fn opening_failed(&mut self, finder: TerminalId, error: &str) {
+        if self.picker {
+            self.complete_pick(Err(error.into()));
+            return;
+        }
         let error = format!("file-finder: {error}");
         eprintln!("{error}");
         notify(&error);
@@ -305,39 +440,64 @@ impl State {
         &mut self,
         finder: TerminalId,
         selection: &Path,
-        destination: &str,
+        destination: &opener::Destination,
         message: &str,
+        args: BTreeMap<String, String>,
+        delivery: opener::Delivery,
     ) {
-        let ids = match get_plugin_ids_for_url(destination) {
-            Ok(ids) => ids,
+        let ids = match destination {
+            opener::Destination::Id(id) => Ok(vec![yinz_tile::prelude::PluginId::new(*id)]),
+            opener::Destination::Location { url, config } => {
+                get_plugin_ids_for_url_with_configuration(url, config.clone())
+            },
+        };
+        let reader = match ids {
+            Ok(ids) => ids.into_iter().min(),
             Err(error) => {
                 self.opening_failed(finder, &format!("reader lookup failed: {error}"));
                 return;
             },
         };
+        let background = match reader {
+            Some(id) => match get_plugin_info(Some(id)) {
+                Ok(Some(info)) => info.background,
+                Ok(None) => {
+                    self.opening_failed(finder, "reader disappeared before handoff");
+                    return;
+                },
+                Err(error) => {
+                    self.opening_failed(finder, &error);
+                    return;
+                },
+            },
+            None if delivery == opener::Delivery::Message => {
+                self.opening_failed(finder, "message destination is not running");
+                return;
+            },
+            None => false,
+        };
         self.stage = Stage::Idle;
         // Retire the overlay before focusing the reader: overlay cleanup restores focus.
         close_pane_with_id(PaneId::Terminal(finder));
-        // ponytail: lookup/open is not atomic; host singleton support is needed if
-        // concurrent independent finders must never create duplicate readers.
-        let reader = match ids.into_iter().min() {
+        let reader = match reader {
             Some(id) => id,
             None => {
-                let configuration = BTreeMap::from([(
+                let opener::Destination::Location { url, config } = destination else {
+                    return;
+                };
+                let mut configuration = config.clone();
+                configuration.insert(
                     "caller_cwd".into(),
                     selection
                         .parent()
                         .unwrap_or(Path::new("/"))
                         .to_string_lossy()
                         .into_owned(),
-                )]);
-                match open_plugin_pane_floating(destination, configuration, None, BTreeMap::new()) {
+                );
+                match open_plugin_pane_floating(url, configuration, None, BTreeMap::new()) {
                     Some(PaneId::Plugin(id)) => id,
                     _ => {
-                        let error = format!("file-finder: failed to open reader {destination}");
-                        eprintln!("{error}");
-                        notify(&error);
-                        self.finish();
+                        self.opening_failed(finder, &format!("failed to open reader {url}"));
                         return;
                     },
                 }
@@ -346,9 +506,12 @@ impl State {
         pipe_message_to_plugin(
             MessageToPlugin::new(message)
                 .with_destination_plugin_id(reader)
+                .with_args(args)
                 .with_payload(selection.to_string_lossy()),
         );
-        focus_pane_with_id(PaneId::Plugin(reader), true, false);
+        if delivery == opener::Delivery::Auto && !background {
+            focus_pane_with_id(PaneId::Plugin(reader), true, false);
+        }
         self.finish();
     }
 
@@ -385,6 +548,10 @@ impl State {
 
     /// The flow is over: stop tracking a pane and shut down.
     fn finish(&mut self) {
+        if self.picker {
+            self.complete_pick(Ok(None));
+            return;
+        }
         self.stage = Stage::Idle;
         let _ = std::fs::remove_file(self.host_out_path());
         close_self();

@@ -5966,3 +5966,558 @@ fn background_reconciliation_isolates_rejections_and_retries_corrected_alias() {
         test.bridge.unload_plugin(id).unwrap();
     }
 }
+
+#[test]
+fn picker_cwd_tracks_each_instance_without_locking_the_guest() {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(99);
+    let first = ClientId::new(1);
+    let second = ClientId::new(2);
+    let missing = ClientId::new(3);
+    let original = tempdir().unwrap();
+    let other = tempdir().unwrap();
+    let moved = tempdir().unwrap();
+    for (client, cwd) in [(1, original.path()), (2, other.path())] {
+        let mut context = test.context(99, client, "export default {};");
+        context.plugin_cwd = cwd.to_owned();
+        test.load(context).unwrap();
+    }
+    let plugin = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, Some(first))
+        .unwrap();
+    {
+        let _guest = plugin.lock().unwrap();
+        assert_eq!(
+            test.bridge
+                .pick_cwd(Some(id), first, PathBuf::new())
+                .unwrap(),
+            original.path()
+        );
+        assert_eq!(
+            test.bridge
+                .pick_cwd(Some(id), second, PathBuf::new())
+                .unwrap(),
+            other.path()
+        );
+        assert!(test
+            .bridge
+            .pick_cwd(Some(id), missing, PathBuf::new())
+            .is_err());
+        assert_eq!(
+            test.bridge
+                .pick_cwd(None, missing, moved.path().to_owned())
+                .unwrap(),
+            moved.path()
+        );
+    }
+    test.bridge
+        .change_plugin_host_dir(moved.path().to_owned(), id, second, None)
+        .unwrap();
+    test.settle(id);
+    assert_eq!(
+        test.bridge
+            .pick_cwd(Some(id), second, PathBuf::new())
+            .unwrap(),
+        moved.path()
+    );
+    assert_eq!(
+        test.bridge
+            .pick_cwd(Some(id), first, PathBuf::new())
+            .unwrap(),
+        original.path()
+    );
+    test.bridge
+        .change_plugin_host_dir(moved.path().join("absent"), id, second, None)
+        .unwrap();
+    test.settle(id);
+    assert_eq!(
+        test.bridge
+            .pick_cwd(Some(id), second, PathBuf::new())
+            .unwrap(),
+        moved.path()
+    );
+    test.bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .remove_instance(id, first);
+    assert!(test
+        .bridge
+        .pick_cwd(Some(id), first, PathBuf::new())
+        .is_err());
+    test.bridge.shared_plugin_ids.insert(id);
+    assert_eq!(
+        test.bridge
+            .pick_cwd(Some(id), first, PathBuf::new())
+            .unwrap(),
+        moved.path()
+    );
+    {
+        let mut map = test.bridge.plugin_map.lock().unwrap();
+        assert!(map.rekey_client(id, second, missing));
+        assert!(map.instance_cwd(id, Some(second)).is_none());
+        assert_eq!(map.instance_cwd(id, Some(missing)).unwrap(), moved.path());
+    }
+    test.bridge
+        .change_plugin_host_dir(original.path().to_owned(), id, missing, None)
+        .unwrap();
+    test.settle(id);
+    assert_eq!(
+        test.bridge
+            .pick_cwd(Some(id), first, PathBuf::new())
+            .unwrap(),
+        original.path()
+    );
+    test.bridge.unload_plugin(id).unwrap();
+    assert!(test
+        .bridge
+        .pick_cwd(Some(id), missing, PathBuf::new())
+        .is_err());
+    test.settle(id);
+    assert!(test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .instance_cwd(id, None)
+        .is_none());
+}
+
+#[test]
+fn picker_ownership_busy_clients_and_startup_cancellation() {
+    use yinz_types::internal_ids::TerminalId;
+    use yinz_types::pick::{PickCommand as Pick, PickKind, PickOptions};
+    let mut test = TestBridge::new();
+    let first = ClientId::new(1);
+    let second = ClientId::new(2);
+    *test.bridge.connected_clients.lock().unwrap() = vec![first, second];
+    let caller = PluginId::new(99);
+    let context = test.context(99, 1, "export default {};");
+    test.load(context).unwrap();
+    let caller_instance = test.instance_id(caller, first);
+    let finder_instance = PluginInstanceId::default();
+    let start = |id: &str| Pick::Start {
+        request_id: id.into(),
+        options: PickOptions {
+            kind: PickKind::File,
+            roots: Some(vec!["/tmp".into()]),
+            extensions: Some(vec!["pdf".into()]),
+            hidden: None,
+            recursive: None,
+            timeout_ms: None,
+        },
+    };
+    let finder = PluginId::new(0);
+    test.bridge.plugin_executor.register_plugin(finder);
+    let release = test.hold_executor(finder);
+    test.bridge
+        .pick_command(
+            caller,
+            caller_instance,
+            Some(1),
+            first,
+            PathBuf::from("/tmp"),
+            start("one"),
+        )
+        .unwrap();
+    assert_eq!(
+        test.bridge.plugin_roles.lock().unwrap().get(&finder),
+        Some(&true)
+    );
+    assert!(test
+        .bridge
+        .pick_command(
+            caller,
+            caller_instance,
+            Some(1),
+            first,
+            PathBuf::from("/tmp"),
+            start("busy")
+        )
+        .unwrap_err()
+        .contains("busy"));
+    let request = test
+        .bridge
+        .pick_command(
+            finder,
+            finder_instance,
+            None,
+            first,
+            PathBuf::new(),
+            Pick::Request,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(request.options.extensions, Some(vec!["pdf".into()]));
+    assert!(test
+        .bridge
+        .pick_command(
+            finder,
+            PluginInstanceId::default(),
+            None,
+            first,
+            PathBuf::new(),
+            Pick::Complete {
+                result: Ok(Some("/tmp/wrong".into()))
+            }
+        )
+        .is_err());
+    test.bridge
+        .pick_command(
+            finder,
+            finder_instance,
+            None,
+            first,
+            PathBuf::new(),
+            Pick::Attach {
+                pane_id: TerminalId::new(12),
+            },
+        )
+        .unwrap();
+    test.receiver::<ScreenInstruction>()
+        .try_iter()
+        .for_each(drop);
+    test.bridge
+        .pick_command(
+            caller,
+            PluginInstanceId::default(),
+            Some(2),
+            first,
+            PathBuf::new(),
+            Pick::Cancel {
+                request_id: "one".into(),
+                timeout: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(test.receiver::<ScreenInstruction>().try_iter().count(), 0);
+    test.bridge
+        .pick_command(
+            finder,
+            finder_instance,
+            None,
+            first,
+            PathBuf::new(),
+            Pick::Complete {
+                result: Ok(Some("/tmp/a.pdf".into())),
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(test.receiver::<ScreenInstruction>().recv().unwrap().0, ScreenInstruction::RetirePicker { finder: id, pane: Some(_), client } if id == finder && client == first)
+    );
+    assert!(test
+        .bridge
+        .pick_command(
+            caller,
+            caller_instance,
+            Some(1),
+            first,
+            PathBuf::new(),
+            start("still busy")
+        )
+        .is_err());
+    test.bridge
+        .pick_command(
+            finder,
+            finder_instance,
+            None,
+            first,
+            PathBuf::new(),
+            Pick::Complete { result: Ok(None) },
+        )
+        .unwrap();
+    assert_eq!(test.receiver::<ScreenInstruction>().try_iter().count(), 0);
+    let other = PluginId::new(1);
+    test.bridge.plugin_executor.register_plugin(other);
+    let release_other = test.hold_executor(other);
+    test.bridge
+        .pick_command(
+            caller,
+            caller_instance,
+            Some(1),
+            second,
+            PathBuf::from("/tmp"),
+            start("two"),
+        )
+        .unwrap();
+    assert_eq!(test.bridge.picks.len(), 2);
+    test.bridge.picks[&other]
+        .opening
+        .store(true, Ordering::SeqCst);
+    test.bridge
+        .pick_command(
+            caller,
+            caller_instance,
+            Some(1),
+            second,
+            PathBuf::new(),
+            Pick::Cancel {
+                request_id: "two".into(),
+                timeout: true,
+            },
+        )
+        .unwrap();
+    assert!(test
+        .bridge
+        .pick_command(
+            other,
+            PluginInstanceId::default(),
+            None,
+            second,
+            PathBuf::new(),
+            Pick::Request
+        )
+        .is_err());
+    test.bridge.pick_retired(finder);
+    assert_eq!(test.bridge.picks.len(), 1);
+    test.bridge.unload_plugin(finder).unwrap();
+    test.receiver::<ScreenInstruction>()
+        .try_iter()
+        .for_each(drop);
+    test.bridge.unload_plugin(other).unwrap();
+    assert!(!test.receiver::<ScreenInstruction>().try_iter().any(|(instruction, _)| matches!(instruction, ScreenInstruction::RetirePicker { finder, .. } if finder == other)));
+    test.bridge
+        .pick_command(
+            other,
+            PluginInstanceId::default(),
+            None,
+            second,
+            PathBuf::new(),
+            Pick::Attach {
+                pane_id: TerminalId::new(16),
+            },
+        )
+        .unwrap();
+    assert!(test.receiver::<ScreenInstruction>().try_iter().any(|(instruction, _)| matches!(instruction, ScreenInstruction::RetirePicker { finder, pane: Some(_), .. } if finder == other)));
+    release.send(()).unwrap();
+    release_other.send(()).unwrap();
+    test.bridge.pick_retired(other);
+    assert!(test.bridge.picks.is_empty());
+    assert!(test
+        .bridge
+        .pick_command(
+            caller,
+            caller_instance,
+            None,
+            ClientId::new(3),
+            PathBuf::new(),
+            start("disconnected")
+        )
+        .is_err());
+}
+
+#[test]
+fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
+    use yinz_types::internal_ids::TerminalId;
+    use yinz_types::pick::{PickCommand as Pick, PickKind, PickOptions};
+    for (cause, stage) in [
+        ("caller unload", "attached"),
+        ("caller reload", "attached"),
+        ("finder reload", "attached"),
+        ("disconnect", "attached"),
+        ("shared disconnect", "attached"),
+        ("shared disconnect last client", "attached"),
+        ("shared disconnect", "loading"),
+        ("shared disconnect", "opening"),
+        ("shared disconnect", "failed open"),
+    ] {
+        let mut test = TestBridge::new();
+        let client = ClientId::new(1);
+        *test.bridge.connected_clients.lock().unwrap() = vec![client];
+        let caller = PluginId::new(99);
+        let mut context = test.context(99, 1, "export default {};");
+        let shared = cause.starts_with("shared");
+        if shared {
+            context
+                .plugin_config
+                .initial_userspace_configuration
+                .insert("shared", "true");
+            test.bridge.shared_plugin_ids.insert(caller);
+            if cause == "shared disconnect" {
+                test.bridge
+                    .connected_clients
+                    .lock()
+                    .unwrap()
+                    .push(ClientId::new(2));
+            }
+        }
+        test.load(context).unwrap();
+        let caller_instance = test.instance_id(caller, client);
+        let finder = PluginId::new(0);
+        test.bridge.plugin_executor.register_plugin(finder);
+        let release = test.hold_executor(finder);
+        test.bridge
+            .pick_command(
+                caller,
+                caller_instance,
+                Some(1),
+                client,
+                PathBuf::from("/tmp"),
+                Pick::Start {
+                    request_id: cause.into(),
+                    options: PickOptions {
+                        kind: PickKind::File,
+                        roots: None,
+                        extensions: None,
+                        hidden: None,
+                        recursive: None,
+                        timeout_ms: None,
+                    },
+                },
+            )
+            .unwrap();
+        let finder_instance = PluginInstanceId::default();
+        if stage == "attached" {
+            test.bridge
+                .pick_command(
+                    finder,
+                    finder_instance,
+                    None,
+                    client,
+                    PathBuf::new(),
+                    Pick::Attach {
+                        pane_id: TerminalId::new(12),
+                    },
+                )
+                .unwrap();
+        } else if stage != "loading" {
+            test.bridge.picks[&finder]
+                .opening
+                .store(true, Ordering::SeqCst);
+        }
+        test.receiver::<ScreenInstruction>()
+            .try_iter()
+            .for_each(drop);
+        test.receiver::<PluginInstruction>()
+            .try_iter()
+            .for_each(drop);
+        match cause {
+            "caller unload" => test.bridge.unload_plugin(caller).unwrap(),
+            "caller reload" => test.bridge.reload_plugin_with_id(caller).unwrap(),
+            "finder reload" => test.bridge.reload_plugin_with_id(finder).unwrap(),
+            "disconnect" | "shared disconnect" | "shared disconnect last client" => {
+                test.bridge.remove_client(client);
+                test.settle(caller);
+            },
+            _ => unreachable!(),
+        }
+        assert!(test.bridge.picks[&finder].cancelled.load(Ordering::SeqCst));
+        if stage == "opening" || stage == "failed open" {
+            assert!(!test.receiver::<ScreenInstruction>().try_iter().any(
+                |(instruction, _)| matches!(instruction, ScreenInstruction::RetirePicker { .. })
+            ));
+            assert!(!test.receiver::<PluginInstruction>().try_iter().any(
+                |(instruction, _)| matches!(
+                    instruction,
+                    PluginInstruction::DenoEvent(_, _, _, Event::PickResult(_))
+                )
+            ));
+            test.bridge
+                .pick_command(
+                    finder,
+                    finder_instance,
+                    None,
+                    client,
+                    PathBuf::new(),
+                    if stage == "opening" {
+                        Pick::Attach {
+                            pane_id: TerminalId::new(12),
+                        }
+                    } else {
+                        Pick::Complete {
+                            result: Err("failed to open picker terminal".into()),
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        let retirements: Vec<_> = test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                ScreenInstruction::RetirePicker {
+                    finder: id,
+                    pane,
+                    client: owner,
+                } => {
+                    assert_eq!(id, finder);
+                    assert_eq!(owner, client);
+                    Some(pane)
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            retirements,
+            vec![if stage == "attached" || stage == "opening" {
+                Some(TerminalId::new(12))
+            } else {
+                None
+            }],
+            "{cause} {stage}"
+        );
+        assert!(
+            !test
+                .receiver::<PluginInstruction>()
+                .try_iter()
+                .any(|(instruction, _)| matches!(
+                    instruction,
+                    PluginInstruction::DenoEvent(_, _, _, Event::PickResult(_))
+                )),
+            "{cause}"
+        );
+        if cause == "shared disconnect" {
+            assert_eq!(test.instance_id(caller, ClientId::new(2)), caller_instance);
+        }
+        test.bridge.pick_retired(finder);
+        test.bridge.pick_retired(finder);
+        let replies: Vec<_> = test
+            .receiver::<PluginInstruction>()
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::DenoEvent(id, owner, 1, Event::PickResult(result))
+                    if id == caller && owner == client =>
+                {
+                    Some(result)
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            replies.len(),
+            usize::from(cause == "finder reload" || shared),
+            "{cause}"
+        );
+        if let Some(reply) = replies.first() {
+            assert_eq!(reply.request_id, cause);
+            assert!(reply.result.is_err());
+            if shared {
+                assert_eq!(reply.result, Err("picker client disconnected".into()));
+            }
+        }
+        assert!(test.bridge.picks.is_empty());
+        let driver_closures = test.receiver::<ScreenInstruction>().try_iter().filter(|(instruction, _)|
+            matches!(instruction, ScreenInstruction::ClosePane(PaneId::Plugin(id), ..) if *id == finder)).count();
+        assert_eq!(driver_closures, 1, "{cause} {stage}");
+        let loading_cancel = test.bridge.cancel_token(finder);
+        test.bridge.unload_plugin(finder).unwrap();
+        assert!(loading_cancel.load(Ordering::Acquire));
+        assert!(!test
+            .bridge
+            .loading_plugins
+            .iter()
+            .any(|(id, _)| *id == finder));
+        assert!(!test
+            .bridge
+            .plugin_roles
+            .lock()
+            .unwrap()
+            .contains_key(&finder));
+        release.send(()).unwrap();
+    }
+}

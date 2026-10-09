@@ -93,6 +93,7 @@ enum EventType {
     PaneOutput = 61;
     PaneTabsUpdate = 62;
     AgentProvidersChanged = 63;
+    PickResult = 68;
     ClientGridReset = 64;
     NotificationReceived = 65;
     NotificationRequested = 66;
@@ -109,6 +110,7 @@ message Event {
   oneof payload {
     string pane_tabs_update_payload = 59;
     string agent_providers_changed_payload = 60;
+    string pick_result_payload = 65;
     ModeUpdatePayload mode_update_payload = 2;
     TabUpdatePayload tab_update_payload = 3;
     PaneUpdatePayload pane_update_payload = 4;

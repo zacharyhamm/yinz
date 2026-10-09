@@ -124,6 +124,10 @@ fn install_cancel_hook(store: &mut Store<PluginEnv>) {
 }
 
 pub struct PluginLoader<'a> {
+    plugin_roles: crate::plugin_map::PluginRoles,
+    pick_request: Option<yinz_types::pick::PickRequest>,
+    pick_cancelled: Option<Arc<AtomicBool>>,
+    pick_opening: Option<Arc<AtomicBool>>,
     skip_cache: bool,
     plugin_id: PluginId,
     client_id: ClientId,
@@ -178,6 +182,10 @@ impl<'a> PluginLoader<'a> {
             &loading_context.plugin_own_cache_dir,
         );
         Self {
+            plugin_roles: loading_context.plugin_roles,
+            pick_request: loading_context.pick_request,
+            pick_cancelled: loading_context.pick_cancelled,
+            pick_opening: loading_context.pick_opening,
             plugin_id: loading_context.plugin_id,
             client_id: loading_context.client_id,
             plugin_cwd: loading_context.plugin_cwd,
@@ -501,6 +509,17 @@ impl<'a> PluginLoader<'a> {
         stdout_pipe: Arc<Mutex<VecDeque<u8>>>,
     ) -> PluginEnv {
         PluginEnv {
+            background: self
+                .plugin_roles
+                .lock()
+                .unwrap()
+                .get(&self.plugin_id)
+                .copied()
+                .unwrap_or(false),
+            plugin_roles: self.plugin_roles.clone(),
+            pick_request: self.pick_request.clone(),
+            pick_cancelled: self.pick_cancelled.clone(),
+            pick_opening: self.pick_opening.clone(),
             response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
             instance_id: Default::default(),
@@ -690,6 +709,17 @@ impl<'a> PluginLoader<'a> {
         )?;
         let plugin_config = self.plugin_config.clone();
         let plugin_env = PluginEnv {
+            background: self
+                .plugin_roles
+                .lock()
+                .unwrap()
+                .get(&self.plugin_id)
+                .copied()
+                .unwrap_or(false),
+            plugin_roles: self.plugin_roles.clone(),
+            pick_request: self.pick_request.clone(),
+            pick_cancelled: self.pick_cancelled.clone(),
+            pick_opening: self.pick_opening.clone(),
             response_sink: ResponseSink::WasiStdin,
             plugin_id: self.plugin_id,
             instance_id: Default::default(),

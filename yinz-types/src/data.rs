@@ -374,6 +374,7 @@ pub enum Event {
     /// message above all. Needs `ReadApplicationState`.
     AgentEvent(crate::agent::AgentEvent),
     /// Complete provider registry snapshot, replayed to new subscribers.
+    PickResult(crate::pick::PickResult),
     AgentProvidersChanged(Vec<crate::agent::provider::AgentProvider>),
     /// Which modifier keys the client believes are held down right now, so a plugin can show
     /// something for as long as one is - the status bar swaps its `Alt + ...` hint in this way.
@@ -3191,6 +3192,12 @@ pub enum PluginCommand {
     GetPluginAliasConfiguration(String), // alias name
     /// Running plugin IDs matching a URL or alias through canonical source identity.
     GetPluginIdsForUrl(String),
+    GetPluginInfo(Option<crate::internal_ids::PluginId>),
+    Pick(crate::pick::PickCommand),
+    GetPluginIdsForUrlWithConfiguration {
+        url: String,
+        configuration: BTreeMap<String, String>,
+    },
     OpenCommandPaneInNewTab(CommandToRun, Context),
     OpenPluginPaneInNewTab {
         plugin_url: String,
@@ -3633,4 +3640,12 @@ pub struct ProjectPaneGroup {
     pub name: String,
     pub configuration_root: Option<String>,
     pub pane_ids: Vec<u32>,
+}
+
+/// Launch provenance, independent of the pane's current visibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInstanceInfo {
+    pub plugin_id: crate::internal_ids::PluginId,
+    pub background: bool,
 }

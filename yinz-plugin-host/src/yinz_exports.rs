@@ -644,7 +644,12 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 start_suppressed,
             ),
             PluginCommand::SetQuitNotice { notice, guard } => set_quit_notice(env, notice, guard),
-            PluginCommand::GetPluginIdsForUrl(url) => get_plugin_ids_for_url(env, url)?,
+            PluginCommand::Pick(command) => crate::wasm_bridge::picker::dispatch(env, command)?,
+            PluginCommand::GetPluginInfo(id) => get_plugin_info(env, id)?,
+            PluginCommand::GetPluginIdsForUrl(url) => get_plugin_ids_for_url(env, url, None)?,
+            PluginCommand::GetPluginIdsForUrlWithConfiguration { url, configuration } => {
+                get_plugin_ids_for_url(env, url, Some(configuration))?
+            },
             PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
             PluginCommand::ReadPluginLog { name, lines } => read_plugin_log(env, name, lines),
             PluginCommand::GetLayoutDir => get_layout_dir(env),
@@ -1364,7 +1369,8 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             // for compatibility with guests that unwrap decoding it.
             if crate::response::decode_response(kind, &[]).is_some() {
                 let response = match kind {
-                    CommandType::GetPluginIdsForUrl => {
+                    CommandType::GetPluginIdsForUrl
+                    | CommandType::GetPluginIdsForUrlWithConfiguration => {
                         yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse {
                             plugin_ids: vec![],
                             error: Some("Permission denied: ReadApplicationState".to_owned()),
@@ -4322,8 +4328,24 @@ fn open_command_pane_overlay(
     placement: OverlayPlacement,
     context: BTreeMap<String, String>,
 ) {
+    if let Some(opening) = &env.pick_opening {
+        opening.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    if env
+        .pick_cancelled
+        .as_ref()
+        .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::SeqCst))
+    {
+        crate::wasm_bridge::picker::attach_opened_pane(env, None).non_fatal();
+        let response = ProtobufOpenCommandPaneOverlayResponse::from(None);
+        wasi_write_object(env, &response.encode_to_vec())
+            .context("reject cancelled picker overlay")
+            .non_fatal();
+        return;
+    }
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
+        crate::wasm_bridge::picker::attach_opened_pane(env, None).non_fatal();
         return;
     };
     let action = Action::NewFloatingPane {
@@ -4337,6 +4359,7 @@ fn open_command_pane_overlay(
     let result = apply_action!(action, error_msg, env);
 
     let pane_id: OpenCommandPaneOverlayResponse = result.and_then(|r| r.affected_pane_id);
+    crate::wasm_bridge::picker::attach_opened_pane(env, pane_id).non_fatal();
     let response = ProtobufOpenCommandPaneOverlayResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_overlay response".to_string())
@@ -5723,12 +5746,34 @@ fn start_or_reload_plugin(env: &PluginEnv, url: &str) -> Result<()> {
     Ok(())
 }
 
-fn get_plugin_ids_for_url(env: &mut PluginEnv, url: String) -> Result<()> {
+fn get_plugin_info(env: &mut PluginEnv, id: Option<PluginId>) -> Result<()> {
+    let plugin_id = id.unwrap_or(env.plugin_id);
+    let background = if plugin_id == env.plugin_id {
+        Some(env.background)
+    } else {
+        env.plugin_roles.lock().unwrap().get(&plugin_id).copied()
+    };
+    let info = background.map(|background| yinz_types::data::PluginInstanceInfo {
+        plugin_id,
+        background,
+    });
+    let response = yinz_plugin_api::plugin_command::ProtobufGetPluginInfoResponse {
+        json: serde_json::to_string(&info).context("encode plugin info")?,
+    };
+    wasi_write_object(env, &response.encode_to_vec()).context("write plugin info")
+}
+
+fn get_plugin_ids_for_url(
+    env: &mut PluginEnv,
+    url: String,
+    configuration: Option<BTreeMap<String, String>>,
+) -> Result<()> {
     let (response_channel, response) = crossbeam::channel::bounded(1);
     let result = env
         .senders
         .send_to_plugin(PluginInstruction::GetPluginIdsForUrl {
             url,
+            configuration,
             response_channel,
         })
         .context("send plugin identity query")
@@ -9017,6 +9062,14 @@ pub(crate) fn check_command_permission(
     plugin_env: &PluginEnv,
     command: &PluginCommand,
 ) -> (PermissionStatus, Option<PermissionType>) {
+    if matches!(command, PluginCommand::Pick(command) if !matches!(command, yinz_types::pick::PickCommand::Start { .. }))
+    {
+        return (PermissionStatus::Granted, None);
+    }
+    if matches!(command, PluginCommand::GetPluginInfo(id) if id.is_none_or(|id| id == plugin_env.plugin_id))
+    {
+        return (PermissionStatus::Granted, None);
+    }
     if matches!(command, PluginCommand::SwampRequest { .. })
         && !plugin_env.plugin_config.is_builtin()
     {
@@ -9308,6 +9361,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::ParseLayout
         | CommandType::SaveSession
         | CommandType::CurrentSessionLastSavedTime
+        | CommandType::GetPluginInfo
         | CommandType::GetPaneInfo
         | CommandType::GetTabInfo
         | CommandType::GetSessionList
@@ -9356,13 +9410,15 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         },
         // Another plugin's configuration is session state, and is read the same way the
         // session list and the pane manifest are.
-        CommandType::GetPluginAliasConfiguration | CommandType::GetPluginIdsForUrl => {
-            PermissionType::ReadApplicationState
-        },
+        CommandType::GetPluginAliasConfiguration
+        | CommandType::GetPluginIdsForUrl
+        | CommandType::GetPluginIdsForUrlWithConfiguration => PermissionType::ReadApplicationState,
         CommandType::OpenCommandPaneInNewTab => PermissionType::RunCommands,
         CommandType::OpenEditorPaneInNewTab => PermissionType::OpenFiles,
         // Enqueueing is launching another plugin, just later.
-        CommandType::EnqueueQueueJob => PermissionType::MessageAndLaunchOtherPlugins,
+        CommandType::Pick | CommandType::EnqueueQueueJob => {
+            PermissionType::MessageAndLaunchOtherPlugins
+        },
         // Raising a queue's parallelism or killing someone else's job reaches past the caller's
         // own work, which is more than "may launch plugins" should grant.
         CommandType::ConfigureQueue | CommandType::CancelQueueJob => {
@@ -9388,6 +9444,27 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
 mod permission_tests {
     use super::*;
     use yinz_types::input::layout::RunPluginOrAlias;
+
+    #[test]
+    fn plugin_info_self_inspection_needs_no_permission() {
+        let env = crate::test_env::test_env();
+        for id in [None, Some(env.plugin_id)] {
+            assert_eq!(
+                check_command_permission(&env, &PluginCommand::GetPluginInfo(id)),
+                (PermissionStatus::Granted, None)
+            );
+        }
+        assert_eq!(
+            check_command_permission(
+                &env,
+                &PluginCommand::GetPluginInfo(Some(PluginId::new(env.plugin_id.get() + 1)))
+            ),
+            (
+                PermissionStatus::Denied,
+                Some(PermissionType::ReadApplicationState)
+            )
+        );
+    }
 
     #[test]
     fn plugin_url_query_denial_is_an_error_not_an_empty_match() {

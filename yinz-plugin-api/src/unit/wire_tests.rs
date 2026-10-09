@@ -162,3 +162,64 @@ fn client_grid_reset_roundtrips_and_rejects_malformed_payloads() {
         .is_err());
     }
 }
+
+#[test]
+fn picker_and_instance_info_commands_round_trip() {
+    use yinz_types::{
+        internal_ids::TerminalId,
+        pick::{PickCommand, PickKind, PickOptions, PickResult},
+    };
+    for command in [
+        PluginCommand::GetPluginInfo(None),
+        PluginCommand::GetPluginInfo(Some(PluginId::new(7))),
+        PluginCommand::GetPluginIdsForUrlWithConfiguration {
+            url: "reader".into(),
+            configuration: BTreeMap::from([("fit".into(), "width".into())]),
+        },
+        PluginCommand::Pick(PickCommand::Start {
+            request_id: "pick:1".into(),
+            options: PickOptions {
+                kind: PickKind::File,
+                roots: Some(vec!["/a\nb".into()]),
+                extensions: Some(vec!["PDF".into()]),
+                hidden: Some(true),
+                recursive: Some(false),
+                timeout_ms: Some(50),
+            },
+        }),
+        PluginCommand::Pick(PickCommand::Cancel {
+            request_id: "pick:1".into(),
+            timeout: true,
+        }),
+        PluginCommand::Pick(PickCommand::Attach {
+            pane_id: TerminalId::new(7),
+        }),
+        PluginCommand::Pick(PickCommand::Complete {
+            result: Ok(Some("/a\nb.pdf".into())),
+        }),
+        PluginCommand::Pick(PickCommand::Complete { result: Ok(None) }),
+        PluginCommand::Pick(PickCommand::Complete {
+            result: Err("listing failed".into()),
+        }),
+    ] {
+        let wire = ProtobufPluginCommand::try_from(command.clone()).unwrap();
+        let decoded = ProtobufPluginCommand::decode(wire.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(PluginCommand::try_from(decoded).unwrap(), command);
+    }
+    for result in [
+        Ok(Some("/a\nb.pdf".into())),
+        Ok(None),
+        Err("failure".into()),
+    ] {
+        let event = Event::PickResult(PickResult {
+            request_id: "pick:1".into(),
+            result,
+        });
+        let wire = ProtobufEvent::try_from(event.clone()).unwrap();
+        assert_eq!(
+            Event::try_from(ProtobufEvent::decode(wire.encode_to_vec().as_slice()).unwrap())
+                .unwrap(),
+            event
+        );
+    }
+}

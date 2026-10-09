@@ -1518,12 +1518,60 @@ pub fn plugin_thread_main(
                 // Store timestamp in WasmBridge (as Unix epoch for internal use)
                 *wasm_bridge.last_session_save_time.lock().unwrap() = Some(timestamp_millis);
             },
+            PluginInstruction::Pick {
+                plugin_id,
+                instance_id,
+                generation,
+                client_id,
+                cwd,
+                focused_plugin,
+                command,
+                response,
+            } => {
+                let started = match &command {
+                    yinz_types::pick::PickCommand::Start { request_id, .. } => {
+                        Some(request_id.clone())
+                    },
+                    _ => None,
+                };
+                let result = wasm_bridge
+                    .pick_cwd(focused_plugin, client_id, cwd)
+                    .and_then(|cwd| {
+                        wasm_bridge.pick_command(
+                            plugin_id,
+                            instance_id,
+                            generation,
+                            client_id,
+                            cwd,
+                            command,
+                        )
+                    });
+                if let (Some(request_id), Err(error)) = (started, &result) {
+                    bus.senders
+                        .send_to_plugin(PluginInstruction::for_plugin_event(
+                            plugin_id,
+                            client_id,
+                            generation,
+                            Event::PickResult(yinz_types::pick::PickResult {
+                                request_id,
+                                result: Err(error.clone()),
+                            }),
+                        ))
+                        .context("deliver picker start failure")
+                        .non_fatal();
+                }
+                let _ = response.send(result);
+            },
+            PluginInstruction::PickRetired(finder) => wasm_bridge.pick_retired(finder),
             PluginInstruction::GetPluginIdsForUrl {
                 url,
+                configuration,
                 response_channel,
             } => {
                 // The matcher reads cached metadata, never a guest runtime lock.
-                let _ = response_channel.send(wasm_bridge.get_plugin_ids_for_url(&url));
+                let _ = response_channel.send(
+                    wasm_bridge.get_plugin_ids_for_url_with_configuration(&url, configuration),
+                );
             },
             PluginInstruction::GetLastSessionSaveTime { response_channel } => {
                 let timestamp = *wasm_bridge.last_session_save_time.lock().unwrap();

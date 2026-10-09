@@ -141,7 +141,7 @@ export default {
 /// A job that reports as soon as it is loaded.
 const FINISHING_JOB: &str = r#"
 import yinz from 'yinz:plugin';
-export default {load(config) {yinz.command('FinishQueueJob', {success:true,payload:`hello from ${config.yinz_queue}/${config.yinz_queue_job_id} n=${config.n} by=${config.yinz_queue_enqueuer_plugin_id}`});}};
+export default {load(config) {if (!yinz.getPluginInfo().background) throw new Error('queue job must be background during load'); yinz.command('FinishQueueJob', {success:true,payload:`hello from ${config.yinz_queue}/${config.yinz_queue_job_id} n=${config.n} by=${config.yinz_queue_enqueuer_plugin_id}`});}};
 "#;
 
 /// A job that runs until told to stop, one way or another.

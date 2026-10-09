@@ -1669,6 +1669,14 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             notice: optional_strings(tc),
             guard: booleans(tc),
         },
+        CommandType::GetPluginIdsForUrlWithConfiguration => {
+            PluginCommand::GetPluginIdsForUrlWithConfiguration {
+                url: strings(tc),
+                configuration: BTreeMap::new(),
+            }
+        },
+        CommandType::Pick => PluginCommand::Pick(yinz_types::pick::PickCommand::Request),
+        CommandType::GetPluginInfo => PluginCommand::GetPluginInfo(None),
         CommandType::GetPluginIdsForUrl => PluginCommand::GetPluginIdsForUrl(strings(tc)),
         CommandType::ReloadPluginByUrl => PluginCommand::ReloadPluginByUrl(strings(tc)),
         CommandType::ReadPluginLog => PluginCommand::ReadPluginLog {

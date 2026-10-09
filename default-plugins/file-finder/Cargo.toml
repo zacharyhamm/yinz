@@ -11,6 +11,7 @@ workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true, features = ["std"] }
+yinz-types = { path = "../../yinz-types" }
 yinz-tile = { path = "../../yinz-tile" }
 
 [dev-dependencies]

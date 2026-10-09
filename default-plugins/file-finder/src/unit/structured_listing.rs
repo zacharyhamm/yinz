@@ -1,0 +1,124 @@
+use super::*;
+use std::{fs, process::Command};
+use yinz_types::pick::{PickKind, PickOptions};
+
+fn options(kind: PickKind) -> PickOptions {
+    PickOptions {
+        kind,
+        roots: None,
+        extensions: None,
+        hidden: None,
+        recursive: None,
+        timeout_ms: None,
+    }
+}
+
+#[test]
+fn structured_scripts_preserve_paths_and_obey_traversal_options() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root '雪$()[*?]\\\n");
+    fs::create_dir_all(root.join("Papers.pdf/nested")).unwrap();
+    fs::create_dir(root.join(".hidden")).unwrap();
+    for name in [
+        "upper.PDF",
+        "line\nbreak.pdf",
+        "quote'$.pdf",
+        "other.txt",
+        ".secret.pdf",
+        ".hidden/a.pdf",
+        "Papers.pdf/nested/a.pdf",
+    ] {
+        fs::write(root.join(name), "").unwrap();
+    }
+    std::os::unix::fs::symlink(root.join("Papers.pdf"), root.join("link")).unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    yinz_test_support::write_warm_script(
+        &bin.join("fzf"),
+        "#!/bin/sh\nfor arg do\n  [ \"$arg\" != '--expect=' ] || exit 2\ndone\ncat\n",
+    );
+    let out = temp.path().join("result");
+    let run = |options: &PickOptions| {
+        let config = BTreeMap::from([("file_command".into(), "exit 77".into())]);
+        let script = build_structured(&config, options, &root, out.to_str().unwrap()).unwrap();
+        let status = Command::new("/bin/sh")
+            .args(["-c", &script])
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let bytes = fs::read_to_string(&out).unwrap();
+        bytes
+            .split_terminator('\0')
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let mut files = options(PickKind::File);
+    files.extensions = Some(vec!["pdf".into()]);
+    let found = run(&files);
+    assert_eq!(found.len(), 4, "{found:?}");
+    assert!(found.iter().any(|path| path.ends_with("line\nbreak.pdf")));
+    assert!(!found.iter().any(|path| path.contains("/link/")));
+    files.recursive = Some(false);
+    assert_eq!(run(&files).len(), 3);
+    files.hidden = Some(true);
+    assert_eq!(run(&files).len(), 4);
+    let dirs = run(&options(PickKind::Directory));
+    assert_eq!(dirs.len(), 3);
+    assert!(dirs.contains(&root.canonicalize().unwrap().to_string_lossy().into_owned()));
+    let mut multiple = options(PickKind::Directory);
+    multiple.roots = Some(vec!["Papers.pdf".into(), ".hidden".into()]);
+    multiple.recursive = Some(false);
+    assert_eq!(run(&multiple).len(), 3);
+}
+
+#[test]
+fn structured_output_rejects_multiple_or_malformed_records() {
+    assert_eq!(
+        parse_structured_selection("/a\nb\0").unwrap(),
+        Some("/a\nb")
+    );
+    assert_eq!(parse_structured_selection("").unwrap(), None);
+    for value in ["/a", "relative\0", "/a\0/b\0", "\0"] {
+        assert!(parse_structured_selection(value).is_err());
+    }
+}
+
+#[test]
+fn listing_and_fzf_failures_are_not_cancellation() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let out = temp.path().join("selection");
+    let mut request = options(PickKind::File);
+    request.roots = Some(vec![temp
+        .path()
+        .join("missing")
+        .to_string_lossy()
+        .into_owned()]);
+    yinz_test_support::write_warm_script(&bin.join("fzf"), "#!/bin/sh\nexit 130\n");
+    let run = |request: &PickOptions, path: String| {
+        let script = build_structured(
+            &BTreeMap::new(),
+            request,
+            temp.path(),
+            out.to_str().unwrap(),
+        )
+        .unwrap();
+        Command::new("/bin/sh")
+            .args(["-c", &script])
+            .env("PATH", path)
+            .status()
+            .unwrap()
+            .code()
+    };
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    assert_eq!(run(&request, path.clone()), Some(10));
+    request.roots = None;
+    assert_eq!(run(&request, path.clone()), Some(0));
+    assert_eq!(fs::read(&out).unwrap(), Vec::<u8>::new());
+    yinz_test_support::write_warm_script(&bin.join("fzf"), "#!/bin/sh\nexit 2\n");
+    assert_eq!(run(&request, path), Some(12));
+    fs::remove_file(bin.join("fzf")).unwrap();
+    assert_eq!(run(&request, bin.to_string_lossy().into_owned()), Some(11));
+}

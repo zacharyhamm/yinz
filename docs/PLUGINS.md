@@ -105,3 +105,42 @@ Wait for lifecycle state, logs, or rendered content before asserting asynchronou
 
 The harness grants the test's declared permissions by default. Use `session.start({autoGrantPermissions: false})` to exercise the real permission modal.
 A single load can also opt out with `{headless: true, autoGrantPermissions: false}`.
+
+## Inspect launch provenance
+
+`z.getPluginInfo()` returns `{pluginId, background}` for the calling instance, including during `load()`.
+`z.getPluginInfo(id)` returns the same information for another instance, or `null` if it no longer exists.
+Inspection of another instance requires `ReadApplicationState`.
+
+The background flag records how the host launched the plugin. Hide, show, reload, and client attachment do not change it.
+Finder openers deliver to an existing background destination without a focus command.
+Existing pane readers still receive focus, including suppressed readers. A missing reader opens as a floating pane.
+Explicit show and focus commands remain available to background plugins.
+
+## Await a file or directory
+
+`z.pick(options)` requires `MessageAndLaunchOtherPlugins` and a connected acting client.
+It returns a cancellable promise containing an absolute path, or `null` after Escape, no match, or closing the picker.
+The host closes the picker overlay and restores focus before it delivers the result.
+
+Use `kind: "file"` or `kind: "directory"`. Optional fields are `roots`, `extensions`, `hidden`, `recursive`, and `timeoutMs`.
+Roots default to the initiating pane's working directory. Relative roots resolve against that directory.
+Hidden entries are excluded by default. Traversal is recursive by default and does not follow directory symlinks.
+Directory results include the roots themselves. Extensions match case-insensitively and contain no leading dots or glob syntax.
+An empty roots array and directory requests with extensions are errors.
+
+There is no default interaction deadline. `.cancel()` rejects with `AbortError`. An explicit deadline rejects with `TimeoutError`.
+Invalid options, missing fzf, listing failures, and invalid output reject with an error.
+One client can have one active picker. A concurrent request for that client rejects as busy.
+Disconnect, caller teardown, and driver failure release picker resources.
+
+Each request uses a fresh builtin finder driver. The `file-finder` alias must resolve to `yinz:file-finder`.
+Alias geometry and fzf settings apply. Request listing fields override alias `listing_json` fields, followed by builtin defaults.
+Arrays replace arrays. Structured invocations ignore `file_command`. Pick results bypass all opener settings.
+Persistent configuration remains unchanged.
+
+See [the folder-to-PDF example](../example-plugins/pick-pdf.ts) for a palette action that closes the palette and awaits two picks.
+The example obtains HOME from the session environment and sends the selected path to the configured reader.
+
+For SDK tests, use `harness.pickRequests`, `completePick(requestId, pathOrNull)`, and `failPick(requestId, message)`.
+These helpers deliver the normal result event. Use `advance()` to exercise deadlines.

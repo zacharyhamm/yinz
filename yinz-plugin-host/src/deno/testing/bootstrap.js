@@ -8,6 +8,10 @@
   function dispatchCommand(command, client, completion) {
     const name = typeof command === "string" ? command : Object.keys(command)[0];
     const result = dispatch(command, client, completion);
+    if (name === "Pick" && command.Pick.Cancel) {
+      const {request_id, timeout} = command.Pick.Cancel;
+      bridge("update", {PickResult: {request_id, result: {Err: timeout ? "TimeoutError" : "AbortError"}}}, client);
+    }
     return dynamic.has(name) ? {json: dynamic.get(name)(typeof command === "string" ? undefined : command[name], command)} : result;
   }
   function dispatchPermissions(immediate) {
@@ -131,6 +135,9 @@
         const text = bridge("render", [rows, columns], 1); return call("render", {text, rows, columns});
       },
       get commands() { return call("commands"); },
+      get pickRequests() { return call("commands").filter(command => command?.Pick?.Start).map(command => command.Pick.Start); },
+      async completePick(requestId, result) { bridge("update", {PickResult: {request_id: requestId, result: {Ok: result}}}, 1); await settle(); },
+      async failPick(requestId, message) { bridge("update", {PickResult: {request_id: requestId, result: {Err: message}}}, 1); await settle(); },
       get paletteCommands() { return call("commands").filter(command => command && Object.hasOwn(command, "CommandPalette")).map(command => command.CommandPalette); },
       get logs() { return call("logs"); },
       get renders() { return call("renders"); },

@@ -367,9 +367,8 @@ fn op_yinz_command<'s>(
         .get(&name)
         .cloned()
         .or_else(|| match name.as_str() {
-            "Subscribe" | "Unsubscribe" | "SetTimeout" | "SetSelectable" | "ShowCursor" => {
-                Some(Value::Null)
-            },
+            "Pick" | "Subscribe" | "Unsubscribe" | "SetTimeout" | "SetSelectable"
+            | "ShowCursor" => Some(Value::Null),
             _ => None,
         })
         .ok_or_else(|| {

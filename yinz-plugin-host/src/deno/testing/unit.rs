@@ -699,3 +699,77 @@ test('Rust protocol matches test declarations',()=>{{assertEquals(messages.lengt
     let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
     assert!(report.passed(), "{report:#?}");
 }
+
+#[test]
+fn awaited_picker_harness_uses_results_cancellation_and_deadlines() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("picker.ts"), r#"
+import z from 'yinz:plugin';
+let text = '', pending: ReturnType<typeof z.pick> | undefined;
+export default {
+  load() {},
+  async pipe(message: {name: string}) {
+    if (message.name === 'cancel') { pending?.cancel(); return; }
+    try {
+      pending = z.pick({kind:'directory', roots:['/home'], ...(message.name === 'timeout' ? {timeoutMs:10} : {})});
+      const folder = await pending;
+      if (folder === null) { text = 'cancelled'; return; }
+      text = 'folder:' + folder;
+      pending = z.pick({kind:'file', roots:[folder], extensions:['pdf']});
+      text = 'file:' + await pending;
+    } catch (error) { text = (error as Error).name + ':' + (error as Error).message; }
+  },
+  render() { return text; }
+};
+"#).unwrap();
+    let path = root.path().join("picker.test.ts");
+    std::fs::write(&path, r#"
+import {test,assert,assertEquals,loadPlugin} from 'yinz:testing';
+test('sequential results and stale replies', async()=>{
+  const p=await loadPlugin('./picker.ts');
+  await p.pipe({name:'start'});
+  assertEquals(p.pickRequests.length,1);
+  await p.completePick(p.pickRequests[0].request_id,'/home/Papers.pdf');
+  assertEquals(p.pickRequests.length,2);
+  assertEquals(p.pickRequests[1].options.roots,['/home/Papers.pdf']);
+  await p.completePick(p.pickRequests[0].request_id,'/stale');
+  await p.completePick(p.pickRequests[1].request_id,'/home/Papers.pdf/a.pdf');
+  assert((await p.render()).includes('file:/home/Papers.pdf/a.pdf'));
+});
+test('escape', async()=>{
+  const p=await loadPlugin('./picker.ts'); await p.pipe({name:'start'});
+  await p.completePick(p.pickRequests[0].request_id,null);
+  assert((await p.render()).includes('cancelled')); assertEquals(p.pickRequests.length,1);
+});
+test('failure', async()=>{
+  const p=await loadPlugin('./picker.ts'); await p.pipe({name:'start'});
+  await p.failPick(p.pickRequests[0].request_id,'fzf is not installed');
+  assert((await p.render()).includes('fzf is not installed'));
+});
+test('client disconnect settles the pending promise', async()=>{
+  const p=await loadPlugin('./picker.ts'); await p.pipe({name:'start'});
+  await p.failPick(p.pickRequests[0].request_id,'picker client disconnected');
+  assertEquals(await p.render(),'Error:picker client disconnected');
+  await p.pipe({name:'cancel'});
+  await p.completePick(p.pickRequests[0].request_id,'/stale');
+  assertEquals(await p.render(),'Error:picker client disconnected');
+  assertEquals(p.pickRequests.length,1);
+});
+test('escape at the second step', async()=>{
+  const p=await loadPlugin('./picker.ts'); await p.pipe({name:'start'});
+  await p.completePick(p.pickRequests[0].request_id,'/home/folder');
+  await p.completePick(p.pickRequests[1].request_id,null);
+  assert((await p.render()).includes('file:null')); assertEquals(p.pickRequests.length,2);
+});
+test('cancel', async()=>{
+  const p=await loadPlugin('./picker.ts'); await p.pipe({name:'start'}); await p.pipe({name:'cancel'});
+  assert((await p.render()).includes('AbortError'));
+});
+test('deadline', async()=>{
+  const p=await loadPlugin('./picker.ts'); await p.pipe({name:'timeout'}); await p.advance(10);
+  assert((await p.render()).includes('TimeoutError'));
+});
+"#).unwrap();
+    let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    assert!(report.passed(), "{report:#?}");
+}

@@ -46,6 +46,7 @@ pub enum ContextType {
     strum_macros::VariantNames,
 )]
 pub enum ScreenContext {
+    RetirePicker,
     PaneTabsAction,
     PaneTabs,
     PaneTabLoaded,
@@ -440,6 +441,8 @@ pub enum PtyContext {
     strum_macros::VariantNames,
 )]
 pub enum PluginContext {
+    Pick,
+    PickRetired,
     LoadPaneTab,
     ArrangePanesByProject,
     Load,

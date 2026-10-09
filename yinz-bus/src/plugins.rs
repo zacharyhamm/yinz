@@ -321,8 +321,20 @@ pub enum PluginInstruction {
     LayoutListUpdate(Vec<LayoutInfo>, Vec<LayoutWithError>),
     RequestStateUpdateForPlugin(PluginId),
     UpdateSessionSaveTime(u64), // u64 = milliseconds since UNIX epoch
+    Pick {
+        plugin_id: PluginId,
+        instance_id: PluginInstanceId,
+        generation: Option<u64>,
+        client_id: ClientId,
+        cwd: std::path::PathBuf,
+        focused_plugin: Option<PluginId>,
+        command: yinz_types::pick::PickCommand,
+        response: crossbeam::channel::Sender<Result<Option<yinz_types::pick::PickRequest>, String>>,
+    },
+    PickRetired(PluginId),
     GetPluginIdsForUrl {
         url: String,
+        configuration: Option<std::collections::BTreeMap<String, String>>,
         response_channel: crossbeam::channel::Sender<Result<Vec<PluginId>, String>>,
     },
     GetLastSessionSaveTime {

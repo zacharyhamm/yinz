@@ -199,14 +199,33 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 value(vars)
             })
         },
-        CommandType::GetPluginIdsForUrl => decode(bytes).and_then(
-            |response: yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse| {
-                match response.error {
-                    Some(error) => Err(anyhow!(error)),
-                    None => value(response.plugin_ids),
-                }
+        CommandType::Pick => {
+            decode(bytes).and_then(|r: yinz_plugin_api::plugin_command::ProtobufPickResponse| {
+                serde_json::from_str::<Result<Option<yinz_types::pick::PickRequest>, String>>(
+                    &r.json,
+                )
+                .context("decode picker response")?
+                .map_err(|error| anyhow!(error))
+                .and_then(value)
+            })
+        },
+        CommandType::GetPluginInfo => decode(bytes).and_then(
+            |r: yinz_plugin_api::plugin_command::ProtobufGetPluginInfoResponse| {
+                serde_json::from_str::<serde_json::Value>(&r.json)
+                    .context("decode plugin info")
+                    .and_then(value)
             },
         ),
+        CommandType::GetPluginIdsForUrl | CommandType::GetPluginIdsForUrlWithConfiguration => {
+            decode(bytes).and_then(
+                |response: yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse| {
+                    match response.error {
+                        Some(error) => Err(anyhow!(error)),
+                        None => value(response.plugin_ids),
+                    }
+                },
+            )
+        },
         CommandType::GetPluginAliasConfiguration => {
             decode(bytes).and_then(|r: ProtobufGetPluginAliasConfigurationResponse| {
                 let configuration: std::collections::BTreeMap<String, String> =

@@ -11,6 +11,11 @@ use yinz_types::internal_ids::TabId;
 
 pub(crate) fn test_env() -> PluginEnv {
     PluginEnv {
+        background: false,
+        plugin_roles: Default::default(),
+        pick_request: None,
+        pick_cancelled: None,
+        pick_opening: None,
         response_sink: ResponseSink::WasiStdin,
         plugin_id: crate::PluginId::new(1),
         instance_id: Default::default(),

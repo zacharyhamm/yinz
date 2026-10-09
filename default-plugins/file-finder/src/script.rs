@@ -110,6 +110,96 @@ pub fn parse_selection(contents: &str) -> Option<&str> {
     }
 }
 
+/// Structured traversal runs in the command process, with paths always shell-quoted.
+pub fn build_structured(
+    config: &BTreeMap<String, String>,
+    options: &yinz_types::pick::PickOptions,
+    cwd: &std::path::Path,
+    out_path: &str,
+) -> Result<String, String> {
+    use yinz_types::pick::PickKind;
+    options.validate()?;
+    let roots = options
+        .roots
+        .clone()
+        .unwrap_or_else(|| vec![cwd.to_string_lossy().into_owned()]);
+    let mut listings = vec![];
+    for root in roots {
+        let root = cwd.join(root);
+        let root = single_quote(&root.to_string_lossy());
+        let hidden = if options.hidden.unwrap_or(false) {
+            ""
+        } else {
+            r#"\( ! -path "$root_pattern" -name '.*' \) -prune -o "#
+        };
+        let recursive = options.recursive.unwrap_or(true);
+        // Prune every non-root entry after evaluating it in nonrecursive mode.
+        let kind = if options.kind == PickKind::Directory {
+            "d"
+        } else {
+            "f"
+        };
+        let suffixes = options
+            .extensions
+            .as_ref()
+            .filter(|exts| !exts.is_empty())
+            .map(|exts| {
+                format!(
+                    "\\( {} \\) ",
+                    exts.iter()
+                        .map(|ext| format!("-iname {}", single_quote(&format!("*.{ext}"))))
+                        .collect::<Vec<_>>()
+                        .join(" -o ")
+                )
+            })
+            .unwrap_or_default();
+        let select = format!("-type {kind} {suffixes}-print0");
+        let expression = if recursive {
+            select
+        } else {
+            format!(r#"\( -path "$root_pattern" -o -prune \) -a \( {select} \)"#)
+        };
+        listings.push(format!(
+            // The trailing slash preserves root newlines through command substitution.
+            r#"(cd -P {root} && root=$PWD && root_pattern=$(printf '%s/' "$root" | sed 's/[][\\*?]/\\&/g') && root_pattern=${{root_pattern%/}} && find "$root" {hidden}{expression})"#
+        ));
+    }
+    let listing = listings.join(" &&\n");
+    let out = single_quote(out_path);
+    let candidates = single_quote(&format!("{out_path}.candidates"));
+    let args = config.get(FZF_ARGS).map(String::as_str).unwrap_or("");
+    Ok(format!(
+        r#"set -u
+out={out}
+candidates={candidates}
+trap 'rm -f "$candidates"' EXIT
+: > "$out" || exit 10
+command -v fzf >/dev/null 2>&1 || exit 11
+{{ {listing}; }} > "$candidates" || exit 10
+fzf {args} --no-multi --read0 --print0 --no-print-query --no-expect < "$candidates" > "$out"
+status=$?
+case "$status" in
+  0) exit 0 ;;
+  1|130) : > "$out"; exit 0 ;;
+  *) : > "$out"; exit 12 ;;
+esac
+"#
+    ))
+}
+
+pub fn parse_structured_selection(contents: &str) -> Result<Option<&str>, String> {
+    if contents.is_empty() {
+        return Ok(None);
+    }
+    let selection = contents
+        .strip_suffix('\0')
+        .ok_or("finder output is not NUL-terminated")?;
+    if selection.contains('\0') || !std::path::Path::new(selection).is_absolute() {
+        return Err("finder must return exactly one absolute path".into());
+    }
+    Ok(Some(selection))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,3 +327,7 @@ mod tests {
 #[cfg(test)]
 #[path = "unit/listing.rs"]
 mod listing_tests;
+
+#[cfg(test)]
+#[path = "unit/structured_listing.rs"]
+mod structured_listing_tests;

@@ -821,6 +821,47 @@
       new_plugin_args: null, floating_pane_coordinates: null,
     });
   }
+  let pickCount = 0n;
+  function pick(options) {
+    let cancel = () => {};
+    const promise = cancellable(operation => {
+      record(options, "pick options");
+      if (options.kind !== "file" && options.kind !== "directory") throw new TypeError("pick kind must be file or directory");
+      for (const key of Object.keys(options)) if (!["kind", "roots", "extensions", "hidden", "recursive", "timeoutMs"].includes(key)) throw new TypeError("unknown pick option: " + key);
+      if (options.roots !== undefined && (!Array.isArray(options.roots) || !options.roots.length || options.roots.some(root => typeof root !== "string" || !root || root.includes("\0")))) throw new TypeError("roots must contain nonempty paths without NUL");
+      if (options.extensions !== undefined && (options.kind !== "file" || !Array.isArray(options.extensions) || options.extensions.some(ext => typeof ext !== "string" || !ext || ext.startsWith(".") || /[\0/\\*?\[\]]/.test(ext)))) throw new TypeError("extensions must be literal file suffixes without leading dots");
+      for (const key of ["hidden", "recursive"]) if (options[key] !== undefined && typeof options[key] !== "boolean") throw new TypeError(key + " must be boolean");
+      if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0)) throw new TypeError("timeoutMs must be a nonnegative integer");
+      const request_id = `${rpcPrefix}:pick:${++pickCount}`, origin = client;
+      let timer, release = () => {}, started = false, finished = false;
+      const off = on("PickResult", reply => {
+        if (reply.request_id !== request_id) return;
+        finished = true;
+        if (Object.hasOwn(reply.result, "Ok")) operation.resolve(reply.result.Ok);
+        else {
+          const error = new Error(reply.result.Err);
+          if (["AbortError", "TimeoutError"].includes(reply.result.Err)) error.name = reply.result.Err;
+          operation.reject(error);
+        }
+      });
+      const stop = timeout => {
+        if (!started || finished) return;
+        const previous = client; client = origin;
+        try { command("Pick", {Cancel: {request_id, timeout}}); } finally { client = previous; }
+      };
+      cancel = () => stop(false);
+      operation.cleanup = () => {
+        off(); release(); timer?.cancel();
+        stop(false);
+      };
+      release = retainEvent("PickResult");
+      command("Pick", {Start: {request_id, options}});
+      started = true;
+      if (options.timeoutMs !== undefined) timer = addTimer(options.timeoutMs, () => stop(true), operation.reject);
+    });
+    promise.cancel = () => cancel();
+    return promise;
+  }
   const rpc = Object.freeze({
     handle(name, handler) {
       if (typeof name !== "string" || !name) throw new TypeError("RPC name must be nonempty");
@@ -1011,7 +1052,7 @@
     sanitizeBytes: (value) => pure('Sanitize', decodeUtf8(bytes(value))),
   });
   // Every PluginCommand, first letter lowercased. The inventory is checked against the Rust enum.
-  const HOST_COMMANDS = "RegisterAgentProvider GetAgentProviders AgentControl PaneTabs CreateMultipane UpdateMultipane ReplaceMultipaneChild SwampRequest TestPlugin CancelPluginTest CheckPlugin Subscribe Unsubscribe SetSelectable ShowCursor GetPluginIds GetPluginIdsForUrl GetYinzVersion OpenFile OpenFileFloating OpenTerminal OpenTerminalFloating OpenCommandPane OpenCommandPaneFloating OpenCommandPaneOverlay SwitchTabTo SetTimeout ExecCmd PostMessageTo PostMessageToPlugin HideSelf ShowSelf SwitchToMode NewTabsWithLayout NewTab NewTabUnfocused NewTiledPaneInTab ToggleFloatingPanes NewPane GoToNextTab GoToPreviousTab Resize ResizeWithDirection FocusNextPane FocusPreviousPane FocusLastPane MoveFocus MoveFocusOrTab Detach EditScrollback Write WriteChars ToggleTab MovePane MovePaneWithDirection ClearScreen ScrollUp ScrollDown ScrollToTop ScrollToBottom PageScrollUp PageScrollDown ToggleFocusFullscreen ToggleFocusNoUiFullscreen TogglePaneFrames SetPaneFrameStyle TogglePaneEmbedOrEject UndoRenamePane CloseFocus ToggleActiveTabSync CloseFocusedTab UndoRenameTab QuitYinz PreviousSwapLayout NextSwapLayout GoToTabName FocusOrCreateTab GoToTab StartOrReloadPlugin CloseTerminalPane ClosePluginPane FocusTerminalPane FocusPluginPane RenameTerminalPane RenamePluginPane RenameTab ReportPanic RequestPluginPermissions SwitchSession DeleteDeadSession DeleteAllDeadSessions OpenTerminalInPlace OpenFileInPlace OpenCommandPaneInPlace SubscribePaneOutput RunCommand WebRequest CancelWebRequest RenameSession Notify UnblockCliPipeInput BlockCliPipeInput CliPipeOutput MessageToPlugin DisconnectOtherClients KillSessions ScanHostFolder WatchFilesystem FsRead FsList FsMetadata FsWrite FsRemove FsCreateDir FsRename GrantPluginPermissions DumpSessionLayout CloseSelf NewTabsWithLayoutInfo Reconfigure HidePaneWithId ShowPaneWithId OpenCommandPaneBackground RerunCommandPane RunCommandInPane ResizePaneIdWithDirection EditScrollbackForPaneWithId GetPaneScrollback WriteToPaneId WriteCharsToPaneId SendSigintToPaneId SendSigkillToPaneId GetPanePid GetPaneRunningCommand GetPaneCwd GetPaneGitProbe MovePaneWithPaneId MovePaneWithPaneIdInDirection ClearScreenForPaneId ScrollUpInPaneId ScrollDownInPaneId ScrollToTopInPaneId ScrollToBottomInPaneId PageScrollUpInPaneId PageScrollDownInPaneId TogglePaneIdFullscreen TogglePaneEmbedOrEjectForPaneId CloseTabWithIndex BreakPanesToNewTab BreakPanesToTabWithIndex SwitchTabToId GoToTabWithId CloseTabWithId RenameTabWithId ArrangeProjectPanes SetProjectContext SetTabProjects BreakPanesToTabWithId ReloadPlugin LoadNewPlugin RebindKeys RegisterDefaultKeybindings ListClients ChangeHostFolder SetFloatingPanePinned StackPanes ChangeFloatingPanesCoordinates ChangeOverlayCoordinates TogglePaneBorderless SetPaneBorderless OpenCommandPaneNearPlugin OpenCommandPaneInGitCheckoutNearPlugin OpenTerminalNearPlugin OpenTerminalFloatingNearPlugin OpenTerminalInPlaceOfPlugin OpenCommandPaneFloatingNearPlugin OpenCommandPaneInPlaceOfPlugin OpenFileNearPlugin OpenFileFloatingNearPlugin OpenFileInPlaceOfPlugin GroupAndUngroupPanes HighlightAndUnhighlightPanes SetRelatedPanes RevealPaneWithId CloseMultiplePanes FloatMultiplePanes EmbedMultiplePanes SetSelfMouseSelectionSupport InterceptKeyPresses ClearKeyPressesIntercepts ReplacePaneWithExistingPane RunAction CopyToClipboard OverrideLayout SaveLayout DeleteLayout RenameLayout EditLayout GenerateRandomName DumpLayout ParseLayout GetLayoutDir GetUserPluginDir GetFocusedPaneInfo SaveSession CurrentSessionLastSavedTime GetPaneInfo GetTabInfo GetSessionEnvironmentVariables GetPluginAliasConfiguration OpenCommandPaneInNewTab OpenPluginPaneInNewTab OpenEditorPaneInNewTab OpenCommandPaneInPlaceOfPaneId OpenTerminalPaneInPlaceOfPaneId OpenEditPaneInPlaceOfPaneId HideFloatingPanes ShowFloatingPanes SetPaneColor SetPaneRegexHighlights SetContextMenu ClearPaneHighlights OpenPluginPaneFloating GetSessionList KillSessionsAndReply DeleteDeadSessionAndReply DeleteAllDeadSessionsAndReply FocusHostSession ListNotifications ResolveNotification WarpPaneToSession WarpPaneFromSession WarpTabToSession WarpTabFromSession ListOrphanedPanes AdoptOrphanedPane DataDefineEntity DataApply DataFetch DataCount DataWatch DataUnwatch DataCatalog SetPaneTitlePrefix SetPaneSubtitle EnqueueQueueJob ConfigureQueue CancelQueueJob QueueStatus FinishQueueJob SetPaneAgent SetPaneAgentRun ProjectConfigRead ProjectConfigWrite SpawnAgent SetQuitNotice ReloadPluginByUrl ReadPluginLog GetLocalUtcOffset".split(" ");
+  const HOST_COMMANDS = "RegisterAgentProvider GetAgentProviders AgentControl PaneTabs CreateMultipane UpdateMultipane ReplaceMultipaneChild SwampRequest TestPlugin CancelPluginTest CheckPlugin Subscribe Unsubscribe SetSelectable ShowCursor GetPluginIds GetPluginInfo Pick GetPluginIdsForUrlWithConfiguration GetPluginIdsForUrl GetYinzVersion OpenFile OpenFileFloating OpenTerminal OpenTerminalFloating OpenCommandPane OpenCommandPaneFloating OpenCommandPaneOverlay SwitchTabTo SetTimeout ExecCmd PostMessageTo PostMessageToPlugin HideSelf ShowSelf SwitchToMode NewTabsWithLayout NewTab NewTabUnfocused NewTiledPaneInTab ToggleFloatingPanes NewPane GoToNextTab GoToPreviousTab Resize ResizeWithDirection FocusNextPane FocusPreviousPane FocusLastPane MoveFocus MoveFocusOrTab Detach EditScrollback Write WriteChars ToggleTab MovePane MovePaneWithDirection ClearScreen ScrollUp ScrollDown ScrollToTop ScrollToBottom PageScrollUp PageScrollDown ToggleFocusFullscreen ToggleFocusNoUiFullscreen TogglePaneFrames SetPaneFrameStyle TogglePaneEmbedOrEject UndoRenamePane CloseFocus ToggleActiveTabSync CloseFocusedTab UndoRenameTab QuitYinz PreviousSwapLayout NextSwapLayout GoToTabName FocusOrCreateTab GoToTab StartOrReloadPlugin CloseTerminalPane ClosePluginPane FocusTerminalPane FocusPluginPane RenameTerminalPane RenamePluginPane RenameTab ReportPanic RequestPluginPermissions SwitchSession DeleteDeadSession DeleteAllDeadSessions OpenTerminalInPlace OpenFileInPlace OpenCommandPaneInPlace SubscribePaneOutput RunCommand WebRequest CancelWebRequest RenameSession Notify UnblockCliPipeInput BlockCliPipeInput CliPipeOutput MessageToPlugin DisconnectOtherClients KillSessions ScanHostFolder WatchFilesystem FsRead FsList FsMetadata FsWrite FsRemove FsCreateDir FsRename GrantPluginPermissions DumpSessionLayout CloseSelf NewTabsWithLayoutInfo Reconfigure HidePaneWithId ShowPaneWithId OpenCommandPaneBackground RerunCommandPane RunCommandInPane ResizePaneIdWithDirection EditScrollbackForPaneWithId GetPaneScrollback WriteToPaneId WriteCharsToPaneId SendSigintToPaneId SendSigkillToPaneId GetPanePid GetPaneRunningCommand GetPaneCwd GetPaneGitProbe MovePaneWithPaneId MovePaneWithPaneIdInDirection ClearScreenForPaneId ScrollUpInPaneId ScrollDownInPaneId ScrollToTopInPaneId ScrollToBottomInPaneId PageScrollUpInPaneId PageScrollDownInPaneId TogglePaneIdFullscreen TogglePaneEmbedOrEjectForPaneId CloseTabWithIndex BreakPanesToNewTab BreakPanesToTabWithIndex SwitchTabToId GoToTabWithId CloseTabWithId RenameTabWithId ArrangeProjectPanes SetProjectContext SetTabProjects BreakPanesToTabWithId ReloadPlugin LoadNewPlugin RebindKeys RegisterDefaultKeybindings ListClients ChangeHostFolder SetFloatingPanePinned StackPanes ChangeFloatingPanesCoordinates ChangeOverlayCoordinates TogglePaneBorderless SetPaneBorderless OpenCommandPaneNearPlugin OpenCommandPaneInGitCheckoutNearPlugin OpenTerminalNearPlugin OpenTerminalFloatingNearPlugin OpenTerminalInPlaceOfPlugin OpenCommandPaneFloatingNearPlugin OpenCommandPaneInPlaceOfPlugin OpenFileNearPlugin OpenFileFloatingNearPlugin OpenFileInPlaceOfPlugin GroupAndUngroupPanes HighlightAndUnhighlightPanes SetRelatedPanes RevealPaneWithId CloseMultiplePanes FloatMultiplePanes EmbedMultiplePanes SetSelfMouseSelectionSupport InterceptKeyPresses ClearKeyPressesIntercepts ReplacePaneWithExistingPane RunAction CopyToClipboard OverrideLayout SaveLayout DeleteLayout RenameLayout EditLayout GenerateRandomName DumpLayout ParseLayout GetLayoutDir GetUserPluginDir GetFocusedPaneInfo SaveSession CurrentSessionLastSavedTime GetPaneInfo GetTabInfo GetSessionEnvironmentVariables GetPluginAliasConfiguration OpenCommandPaneInNewTab OpenPluginPaneInNewTab OpenEditorPaneInNewTab OpenCommandPaneInPlaceOfPaneId OpenTerminalPaneInPlaceOfPaneId OpenEditPaneInPlaceOfPaneId HideFloatingPanes ShowFloatingPanes SetPaneColor SetPaneRegexHighlights SetContextMenu ClearPaneHighlights OpenPluginPaneFloating GetSessionList KillSessionsAndReply DeleteDeadSessionAndReply DeleteAllDeadSessionsAndReply FocusHostSession ListNotifications ResolveNotification WarpPaneToSession WarpPaneFromSession WarpTabToSession WarpTabFromSession ListOrphanedPanes AdoptOrphanedPane DataDefineEntity DataApply DataFetch DataCount DataWatch DataUnwatch DataCatalog SetPaneTitlePrefix SetPaneSubtitle EnqueueQueueJob ConfigureQueue CancelQueueJob QueueStatus FinishQueueJob SetPaneAgent SetPaneAgentRun ProjectConfigRead ProjectConfigWrite SpawnAgent SetQuitNotice ReloadPluginByUrl ReadPluginLog GetLocalUtcOffset".split(" ");
   // Tuple commands that also accept one object of named arguments. Omitted fields become null,
   // which keeps the arity serde counts and reads as absent for an Option slot.
   const tupleFields = {
@@ -1614,6 +1655,8 @@
     registerDefaultKeybindings,
     waitForPipe,
     getPluginIds: () => command("GetPluginIds"),
+    pick,
+    getPluginInfo: (id) => command("GetPluginInfo", id ?? null),
     log: logLine,
     waitForEvent,
     waitForPermissions: (permissions) => new Promise((resolve, reject) => enqueuePermissions(permissions, resolve, reject)),

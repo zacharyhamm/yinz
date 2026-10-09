@@ -49,6 +49,7 @@ pub struct PluginMap {
     plugin_metadata: BTreeMap<PluginId, PluginMetadata>,
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
     instance_ids: HashMap<(PluginId, ClientId), PluginInstanceId>,
+    instance_cwds: HashMap<(PluginId, ClientId), PathBuf>,
     availability: HashMap<(PluginId, ClientId), Arc<AtomicBool>>,
     /// Each instance's [`ResizeSlot`], held here too so a resize can be asked of an instance
     /// without waiting for its guest lock.
@@ -146,6 +147,27 @@ fn configuration_matches_for_reload(
 }
 
 impl PluginMap {
+    pub(crate) fn instance_cwd(
+        &self,
+        plugin: PluginId,
+        client: Option<ClientId>,
+    ) -> Option<PathBuf> {
+        match client {
+            Some(client) => self.instance_cwds.get(&(plugin, client)),
+            None => self
+                .instance_cwds
+                .iter()
+                .find_map(|((id, _), cwd)| (*id == plugin).then_some(cwd)),
+        }
+        .cloned()
+    }
+
+    pub(crate) fn set_instance_cwd(&mut self, plugin: PluginId, client: ClientId, cwd: PathBuf) {
+        if let Some(current) = self.instance_cwds.get_mut(&(plugin, client)) {
+            *current = cwd;
+        }
+    }
+
     pub(crate) fn permission_instance(
         &self,
         plugin: PluginId,
@@ -208,6 +230,7 @@ impl PluginMap {
             }
         }
         self.instance_ids.retain(|(id, _), _| *id != plugin);
+        self.instance_cwds.retain(|(id, _), _| *id != plugin);
     }
     pub fn remove_plugins(&mut self, pid: PluginId) -> HashMap<(PluginId, ClientId), PluginAssets> {
         self.retire_instances(pid);
@@ -235,6 +258,7 @@ impl PluginMap {
         client_id: ClientId,
     ) -> Option<PluginAssets> {
         self.instance_ids.remove(&(plugin_id, client_id));
+        self.instance_cwds.remove(&(plugin_id, client_id));
         if let Some(unavailable) = self.availability.remove(&(plugin_id, client_id)) {
             unavailable.store(true, Ordering::Release);
         }
@@ -495,8 +519,7 @@ impl PluginMap {
         running_workers: HashMap<String, UnboundedSender<MessageToWorker>>,
     ) {
         {
-            // One guard for every field read here. Only identity set at construction is read, so
-            // a poisoned lock - a guest that panicked - still holds what is needed to file it.
+            // A poisoned guest still holds the identity and cwd needed to file it.
             let plugin = running_plugin
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
@@ -506,6 +529,8 @@ impl PluginMap {
                 .insert((plugin_id, client_id), plugin.instance_id);
             self.resize_slots
                 .insert((plugin_id, client_id), plugin.resize.clone());
+            self.instance_cwds
+                .insert((plugin_id, client_id), plugin.env().plugin_cwd.clone());
             self.plugin_metadata
                 .insert(plugin_id, PluginMetadata::from_running(&plugin));
             if let PluginBackend::Deno(deno) = &plugin.backend {
@@ -545,6 +570,9 @@ impl PluginMap {
                 }
                 if let Some(id) = self.instance_ids.remove(&(plugin_id, from)) {
                     self.instance_ids.insert((plugin_id, to), id);
+                }
+                if let Some(cwd) = self.instance_cwds.remove(&(plugin_id, from)) {
+                    self.instance_cwds.insert((plugin_id, to), cwd);
                 }
                 if let Some(slot) = self.resize_slots.remove(&(plugin_id, from)) {
                     self.resize_slots.insert((plugin_id, to), slot);
@@ -706,7 +734,14 @@ pub const CANCELLED_BY_HOST: &str = "plugin cancelled by the host";
 /// One registry per bridge/data provider; lock before registering, refreshing or removing watches.
 pub type DenoWatchGenerations = Arc<Mutex<HashMap<yinz_types::internal_ids::DataWatchId, u64>>>;
 
+pub type PluginRoles = Arc<Mutex<HashMap<PluginId, bool>>>;
+
 pub struct PluginEnv {
+    pub plugin_roles: PluginRoles,
+    pub background: bool,
+    pub pick_request: Option<yinz_types::pick::PickRequest>,
+    pub pick_cancelled: Option<Arc<AtomicBool>>,
+    pub pick_opening: Option<Arc<AtomicBool>>,
     pub plugin_id: PluginId,
     pub instance_id: PluginInstanceId,
     pub unavailable: Arc<AtomicBool>,

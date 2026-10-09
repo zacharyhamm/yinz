@@ -208,3 +208,6 @@ mod host_paths;
 
 #[path = "unit/file_finder/structured_openers.rs"]
 mod structured_openers;
+
+#[path = "unit/file_finder/pick.rs"]
+mod pick;

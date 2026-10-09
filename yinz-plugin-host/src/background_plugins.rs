@@ -135,18 +135,27 @@ impl WasmBridge {
         let (id, owner) = if let Some((id, _)) = existing {
             (id, self.get_first_client_id().unwrap_or(client))
         } else {
-            let (id, owner) = self.load_plugin(
+            // Record provenance before the executor can enter guest initialization.
+            let pending_id = PluginId::new(self.next_plugin_id);
+            self.plugin_roles.lock().unwrap().insert(pending_id, true);
+            let loaded = self.load_plugin(
                 &Some(run.clone()),
                 None,
                 Size::default(),
                 run.initial_cwd.clone(),
                 false,
                 Some(client),
-            )?;
+            );
+            let (id, owner) = match loaded {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    self.plugin_roles.lock().unwrap().remove(&pending_id);
+                    return Err(error);
+                },
+            };
             if !independent {
                 self.independent_plugin_ids.remove(&id);
             }
-            self.background_plugin_ids.insert(id);
             self.senders
                 .send_to_screen(crate::add_suppressed_plugin_pane(
                     RunPluginOrAlias::RunPlugin(run.clone()),
@@ -261,7 +270,13 @@ impl WasmBridge {
                 location => location.display(),
             },
             configuration: run.configuration.without_caller_context(),
-            background: self.background_plugin_ids.contains(&id),
+            background: self
+                .plugin_roles
+                .lock()
+                .unwrap()
+                .get(&id)
+                .copied()
+                .unwrap_or(false),
             shared: self.plugin_is_shared(&id),
             clients,
             state,

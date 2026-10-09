@@ -3,6 +3,10 @@ pub use super::generated_api::api::plugin_command::AgentProvidersResponse as Pro
 pub use super::generated_api::api::plugin_command::GetPluginIdsForUrlResponse as ProtobufGetPluginIdsForUrlResponse;
 pub use super::generated_api::api::plugin_command::MultipaneResponse as ProtobufMultipaneResponse;
 pub use super::generated_api::api::plugin_command::PaneTabsResponse as ProtobufPaneTabsResponse;
+pub use super::generated_api::api::plugin_command::PickResponse as ProtobufPickResponse;
+pub use super::generated_api::api::plugin_command::{
+    GetPluginInfoPayload, GetPluginInfoResponse as ProtobufGetPluginInfoResponse,
+};
 pub use super::generated_api::api::{
     action::{Action as ProtobufAction, PaneIdAndShouldFloat, SwitchToModePayload},
     event::{
@@ -2936,6 +2940,34 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for ParseLayout"),
             },
+            Some(CommandName::GetPluginIdsForUrlWithConfiguration) => match protobuf_plugin_command
+                .payload
+            {
+                Some(Payload::GetPluginIdsForUrlWithConfigurationPayload(json)) => {
+                    serde_json::from_str::<(String, std::collections::BTreeMap<String, String>)>(
+                        &json,
+                    )
+                    .map(|(url, configuration)| {
+                        PluginCommand::GetPluginIdsForUrlWithConfiguration { url, configuration }
+                    })
+                    .map_err(|_| "Malformed plugin lookup")
+                },
+                _ => Err("Mismatched payload for plugin lookup"),
+            },
+            Some(CommandName::Pick) => match protobuf_plugin_command.payload {
+                Some(Payload::PickPayload(json)) => serde_json::from_str(&json)
+                    .map(PluginCommand::Pick)
+                    .map_err(|_| "Malformed Pick command"),
+                _ => Err("Mismatched Pick payload"),
+            },
+            Some(CommandName::GetPluginInfo) => match protobuf_plugin_command.payload {
+                Some(Payload::GetPluginInfoPayload(payload)) => Ok(PluginCommand::GetPluginInfo(
+                    payload
+                        .plugin_id
+                        .map(yinz_types::internal_ids::PluginId::new),
+                )),
+                _ => Err("Mismatched payload for GetPluginInfo"),
+            },
             Some(CommandName::GetPluginIdsForUrl) => match protobuf_plugin_command.payload {
                 Some(Payload::GetPluginIdsForUrlPayload(url)) => {
                     Ok(PluginCommand::GetPluginIdsForUrl(url))
@@ -5400,6 +5432,27 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::ParseLayout as i32,
                 payload: Some(Payload::ParseLayoutPayload(ParseLayoutPayload {
                     layout_string,
+                })),
+            }),
+            PluginCommand::GetPluginIdsForUrlWithConfiguration { url, configuration } => {
+                Ok(ProtobufPluginCommand {
+                    name: CommandName::GetPluginIdsForUrlWithConfiguration as i32,
+                    payload: Some(Payload::GetPluginIdsForUrlWithConfigurationPayload(
+                        serde_json::to_string(&(url, configuration))
+                            .map_err(|_| "Invalid plugin lookup")?,
+                    )),
+                })
+            },
+            PluginCommand::Pick(command) => Ok(ProtobufPluginCommand {
+                name: CommandName::Pick as i32,
+                payload: Some(Payload::PickPayload(
+                    serde_json::to_string(&command).map_err(|_| "Invalid Pick command")?,
+                )),
+            }),
+            PluginCommand::GetPluginInfo(id) => Ok(ProtobufPluginCommand {
+                name: CommandName::GetPluginInfo as i32,
+                payload: Some(Payload::GetPluginInfoPayload(GetPluginInfoPayload {
+                    plugin_id: id.map(|id| id.get()),
                 })),
             }),
             PluginCommand::GetPluginIdsForUrl(url) => Ok(ProtobufPluginCommand {
@@ -8131,6 +8184,9 @@ mod tests {
                 | PluginCommand::GetTabInfo(_)
                 | PluginCommand::GetSessionEnvironmentVariables
                 | PluginCommand::GetPluginIdsForUrl(_)
+                | PluginCommand::GetPluginInfo(_)
+                | PluginCommand::Pick(_)
+                | PluginCommand::GetPluginIdsForUrlWithConfiguration { .. }
                 | PluginCommand::GetPluginAliasConfiguration(_)
                 | PluginCommand::OpenCommandPaneInNewTab(..)
                 | PluginCommand::OpenPluginPaneInNewTab { .. }
