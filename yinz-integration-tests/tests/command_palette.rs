@@ -1388,8 +1388,8 @@ fn theme_picker_preview_cancel_save_and_reload() {
     });
     let saved = std::fs::read_to_string(&managed).unwrap();
     assert!(saved.contains("theme \"dracula\""), "{saved}");
-    assert!(saved.contains("theme_dark \"dracula\""), "{saved}");
-    assert!(saved.contains("theme_light \"dracula\""), "{saved}");
+    assert!(!saved.contains("theme_dark"), "{saved}");
+    assert!(!saved.contains("theme_light"), "{saved}");
     yinz.quit();
 
     let mut reloaded = TestRunner::new(TERMINAL_SIZE)
@@ -1403,4 +1403,47 @@ fn theme_picker_preview_cancel_save_and_reload() {
         snapshot.contains("$") && snapshot.cell_foreground(0, 0) == preview.cell_foreground(0, 0)
     });
     reloaded.quit();
+}
+
+#[test]
+fn theme_picker_saving_active_light_theme_preserves_terminal_theme_queries() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = r#"
+        load_plugins clear-defaults=true {}
+        pane_animations false
+        theme "dayfox"
+        keybinds { normal { bind "Ctrl Alt p" { ToggleCommandPalette; }; }; }
+    "#;
+    for reload in [false, true] {
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config_dir(directory.path().to_owned())
+            .with_config(config)
+            .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+            .start();
+        let shell = yinz.expect_pty_spawn();
+        shell.output(PROMPT);
+        yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+        if !reload {
+            yinz.send_stdin(DO);
+            yinz.send_stdin(b"Change theme\r");
+            yinz.wait_until("theme picker ready", |snapshot| {
+                snapshot.contains("Enter Save")
+            });
+            yinz.send_stdin(b"dayfox");
+            yinz.wait_until("active light theme selected", |snapshot| {
+                snapshot.contains("> dayfox")
+            });
+            yinz.send_stdin(b"\r");
+            yinz.wait_until("saved picker closes", |snapshot| {
+                !snapshot.contains("Enter Save")
+                    && !snapshot.contains("Esc Close")
+                    && snapshot.contains("$")
+            });
+        }
+        shell.output(b"\x1b[?996n");
+        shell.wait_for_stdin("terminal theme query still reports light", |bytes| {
+            bytes.windows(9).any(|window| window == b"\x1b[?997;2n")
+        });
+        yinz.quit();
+    }
 }
