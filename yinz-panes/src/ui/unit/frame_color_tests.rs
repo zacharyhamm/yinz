@@ -158,6 +158,76 @@ fn hover_beats_related() {
     );
 }
 
+#[test]
+fn hover_uses_the_tab_button_color_without_changing_focus_or_group_colors() {
+    let mut style = default_style();
+    style.colors.ribbon_unselected.emphasis_1 = PaletteColor::Rgb((12, 34, 56));
+    style.colors.frame_selected.base = PaletteColor::Rgb((78, 90, 123));
+    style.colors.frame_highlight.base = PaletteColor::Rgb((145, 167, 189));
+    for mode in [InputMode::Normal, InputMode::Locked, InputMode::Pane] {
+        for (focused, grouped, expected) in [
+            (false, false, (style.colors.ribbon_unselected.emphasis_1, 4)),
+            (false, true, (style.colors.frame_highlight.emphasis_0, 6)),
+            (true, true, (style.colors.frame_highlight.emphasis_1, 8)),
+            (
+                true,
+                false,
+                (
+                    if matches!(mode, InputMode::Normal | InputMode::Locked) {
+                        style.colors.frame_selected.base
+                    } else {
+                        style.colors.frame_highlight.base
+                    },
+                    8,
+                ),
+            ),
+        ] {
+            assert_eq!(
+                frame_color(
+                    &style,
+                    FrameColorState {
+                        mouse_is_hovering_over_pane: true,
+                        pane_is_focused: focused,
+                        pane_is_in_group: grouped,
+                        ..state()
+                    },
+                    CLIENT,
+                    mode,
+                    false,
+                ),
+                Some(expected),
+            );
+        }
+    }
+}
+
+#[test]
+fn a_hovered_panes_override_fades_back_to_the_tab_button_color() {
+    let mut style = default_style();
+    style.colors.ribbon_unselected.emphasis_1 = PaletteColor::Rgb((12, 34, 56));
+    let override_color = PaletteColor::Rgb((210, 180, 150));
+    for strength in [0.0, 0.5, 1.0] {
+        assert_eq!(
+            color_of(
+                &style,
+                FrameColorState {
+                    mouse_is_hovering_over_pane: true,
+                    frame_color_override: Some((override_color, strength)),
+                    ..state()
+                },
+            ),
+            Some((
+                blend(
+                    style.colors.ribbon_unselected.emphasis_1,
+                    override_color,
+                    strength
+                ),
+                10,
+            )),
+        );
+    }
+}
+
 /// Where two panes share one boundary cell, `combine_symbols` settles it on the precedence
 /// alone - and with `>=`, so a tie goes to whichever pane's `add_rect` ran first, which is
 /// pane id order and means nothing to whoever is looking at the screen. No two states that
