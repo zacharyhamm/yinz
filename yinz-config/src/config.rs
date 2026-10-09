@@ -446,6 +446,25 @@ impl Config {
     /// defaults before anything is written, and the write is atomic, so the file on disk is
     /// always one the loader accepts.
     pub fn write_managed_fragment(overlay_dir: &Path, fragment: &str) -> Result<PathBuf, String> {
+        Self::write_managed_fragment_impl(overlay_dir, fragment, true, || Ok(()))
+    }
+
+    /// Try to write a managed fragment without waiting for another writer's file lock.
+    /// Check `guard` under the lock just before replacement; rejection leaves the file unchanged.
+    pub fn try_write_managed_fragment_guarded(
+        overlay_dir: &Path,
+        fragment: &str,
+        guard: impl FnOnce() -> Result<(), String>,
+    ) -> Result<PathBuf, String> {
+        Self::write_managed_fragment_impl(overlay_dir, fragment, false, guard)
+    }
+
+    fn write_managed_fragment_impl(
+        overlay_dir: &Path,
+        fragment: &str,
+        wait_for_lock: bool,
+        guard: impl FnOnce() -> Result<(), String>,
+    ) -> Result<PathBuf, String> {
         use kdl::KdlDocument;
         use std::io::Write;
         let path = overlay_dir.join(MANAGED_CONFIG_FILE_NAME);
@@ -461,8 +480,19 @@ impl Config {
             .truncate(false)
             .open(overlay_dir.join(format!(".{MANAGED_CONFIG_FILE_NAME}.lock")))
             .map_err(|e| format!("failed to open lock for {}: {e}", path.display()))?;
-        lock.lock()
-            .map_err(|e| format!("failed to lock {}: {e}", path.display()))?;
+        if wait_for_lock {
+            lock.lock()
+                .map_err(|e| format!("failed to lock {}: {e}", path.display()))?;
+        } else {
+            lock.try_lock().map_err(|e| match e {
+                std::fs::TryLockError::WouldBlock => {
+                    "Configuration is busy; try saving again".to_owned()
+                },
+                std::fs::TryLockError::Error(e) => {
+                    format!("failed to lock {}: {e}", path.display())
+                },
+            })?;
+        }
         let mut managed: KdlDocument = match std::fs::read_to_string(&path) {
             Ok(text) => text.parse().map_err(|e: kdl::KdlError| {
                 format!(
@@ -483,6 +513,7 @@ impl Config {
         tmp.write_all(text.as_bytes())
             .and_then(|_| tmp.as_file().sync_all())
             .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        guard()?;
         tmp.persist(&path)
             .map_err(|e| format!("failed to replace {}: {e}", path.display()))?;
         Ok(path)

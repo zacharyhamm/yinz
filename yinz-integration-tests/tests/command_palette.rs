@@ -1243,3 +1243,164 @@ fn command_palette_agent_history_event_back_focus_and_archive_resume() {
     });
     yinz.quit();
 }
+
+#[test]
+fn theme_picker_can_cancel_while_config_file_is_locked() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config(
+            r#"
+            load_plugins clear-defaults=true {}
+            pane_animations false
+            theme "nightfox"
+            pane_frame_style "full"
+            keybinds { normal { bind "Ctrl Alt p" { ToggleCommandPalette; }; }; }
+            "#,
+        )
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    let initial = yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    let frame = initial.cell_foreground(0, 0);
+    let overlay = directory.path().join("config.d");
+    std::fs::create_dir_all(&overlay).unwrap();
+    // Dropping the file releases the lock, including if an input assertion panics.
+    let lock = std::fs::File::create(overlay.join(".yinz-managed.kdl.lock")).unwrap();
+    lock.lock().unwrap();
+
+    yinz.send_stdin(DO);
+    yinz.send_stdin(b"Change theme");
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("theme picker ready", |snapshot| {
+        snapshot.contains("Enter Save")
+    });
+    yinz.send_stdin(b"dracula");
+    yinz.wait_until("theme selected", |snapshot| {
+        snapshot.contains("> dracula") && snapshot.cell_foreground(0, 0) != frame
+    });
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("contended save reports an error", |snapshot| {
+        snapshot.contains("Configuration is busy") && snapshot.contains("> dracula")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until(
+        "cancel restores the theme while the lock is held",
+        |snapshot| snapshot.contains("Esc Close") && snapshot.cell_foreground(0, 0) == frame,
+    );
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("palette closes while the lock is held", |snapshot| {
+        !snapshot.contains("Enter Save")
+            && !snapshot.contains("Esc Close")
+            && snapshot.contains("$")
+            && snapshot.cell_foreground(0, 0) == frame
+    });
+    yinz.send_stdin(b"\x1b[200~after cancellation\x1b[201~");
+    shell.wait_for_stdin(
+        "input reaches the shell while the config lock is held",
+        |bytes| bytes == b"after cancellation",
+    );
+    shell.output(b"\r\nRENDER WHILE LOCKED\r\n");
+    yinz.wait_until(
+        "terminal output renders while the lock is held",
+        |snapshot| snapshot.contains("RENDER WHILE LOCKED"),
+    );
+    assert!(!overlay.join("yinz-managed.kdl").exists());
+
+    yinz.send_stdin(DO);
+    yinz.send_stdin(b"Change theme\r");
+    yinz.wait_until("theme picker reopens", |snapshot| {
+        snapshot.contains("Enter Save")
+    });
+    yinz.send_stdin(b"dracula\r");
+    yinz.wait_until("second contended save reports an error", |snapshot| {
+        snapshot.contains("Configuration is busy") && snapshot.contains("> dracula")
+    });
+    drop(lock);
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("retry saves the theme and closes the picker", |snapshot| {
+        !snapshot.contains("> dracula")
+            && !snapshot.contains("Configuration is busy")
+            && !snapshot.contains("Enter Save")
+            && !snapshot.contains("Esc Close")
+            && snapshot.contains("RENDER WHILE LOCKED")
+            && snapshot.cell_foreground(0, 0) != frame
+    });
+    let saved = std::fs::read_to_string(overlay.join("yinz-managed.kdl")).unwrap();
+    assert!(saved.contains("theme \"dracula\""));
+    yinz.quit();
+}
+
+#[test]
+fn theme_picker_preview_cancel_save_and_reload() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = r#"
+        load_plugins clear-defaults=true {}
+        pane_animations false
+        theme "nightfox"
+        pane_frame_style "full"
+        keybinds { normal { bind "Ctrl Alt p" { ToggleCommandPalette; }; }; }
+    "#;
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config(config)
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    let initial = yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    let frame = initial.cell_foreground(0, 0);
+    let managed = directory.path().join("config.d/yinz-managed.kdl");
+    yinz.send_stdin(DO);
+    yinz.send_stdin(b"Change theme");
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("theme picker ready", |snapshot| {
+        snapshot.contains("Enter Save")
+    });
+    yinz.send_stdin(b"dracula");
+    let preview = yinz.wait_until("preview repaints existing pane frame", |snapshot| {
+        snapshot.contains("Enter Save")
+            && snapshot.contains("> dracula")
+            && snapshot.cell_foreground(0, 0) != frame
+    });
+    assert!(!managed.exists());
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("cancel restores frame", |snapshot| {
+        snapshot.contains("Esc Close") && snapshot.cell_foreground(0, 0) == frame
+    });
+    assert!(!managed.exists());
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("theme picker reopened", |snapshot| {
+        snapshot.contains("Enter Save")
+    });
+    yinz.send_stdin(b"dracula");
+    yinz.wait_until("theme selected again", |snapshot| {
+        snapshot.contains("> dracula")
+            && snapshot.cell_foreground(0, 0) == preview.cell_foreground(0, 0)
+    });
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("saved picker closes", |snapshot| {
+        !snapshot.contains("Enter Save")
+            && !snapshot.contains("Esc Close")
+            && snapshot.contains("$")
+            && snapshot.cell_foreground(0, 0) == preview.cell_foreground(0, 0)
+    });
+    let saved = std::fs::read_to_string(&managed).unwrap();
+    assert!(saved.contains("theme \"dracula\""), "{saved}");
+    assert!(saved.contains("theme_dark \"dracula\""), "{saved}");
+    assert!(saved.contains("theme_light \"dracula\""), "{saved}");
+    yinz.quit();
+
+    let mut reloaded = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config(config)
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = reloaded.expect_pty_spawn();
+    shell.output(PROMPT);
+    reloaded.wait_until("saved theme survives reload", |snapshot| {
+        snapshot.contains("$") && snapshot.cell_foreground(0, 0) == preview.cell_foreground(0, 0)
+    });
+    reloaded.quit();
+}

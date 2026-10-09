@@ -4565,3 +4565,187 @@ fn palette_distinguishes_terminal_and_plugin_with_the_same_id() {
         );
     }
 }
+
+fn theme_screen() -> Screen {
+    let mut screen = screen();
+    let mut alpha = screen.style.colors;
+    alpha.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((20, 30, 40));
+    let mut beta = alpha;
+    beta.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((220, 230, 240));
+    screen.themes =
+        std::collections::BTreeMap::from([("alpha".into(), alpha), ("beta".into(), beta)]);
+    screen.theme_name = Some("beta".into());
+    screen.repaint_theme(beta).unwrap();
+    screen
+}
+
+fn open_themes(screen: &mut Screen) {
+    palette_search(screen, "Change theme");
+    palette_key(screen, BareKey::Enter);
+}
+
+#[test]
+fn theme_preview_initial_selection_filter_empty_and_cancel() {
+    let mut screen = theme_screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let original = screen.style.colors;
+    open_themes(&mut screen);
+    assert_eq!(screen.style.colors, original);
+    palette_key(&mut screen, BareKey::Up);
+    assert_eq!(screen.style.colors, screen.themes["alpha"]);
+    assert_eq!(
+        screen.default_mode_info.style.colors,
+        screen.themes["alpha"]
+    );
+    screen.command_palette_handles_input(&None, b"missing", false, CLIENT);
+    assert_eq!(screen.style.colors, original);
+    palette_key(&mut screen, BareKey::Esc);
+    assert!(screen.theme_preview.is_none());
+    assert_eq!(screen.style.colors, original);
+    assert!(!receiver
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, ServerInstruction::SavePaletteTheme { .. })));
+}
+
+#[test]
+fn theme_preview_excludes_other_clients_and_restores_latest_host_report() {
+    use yinz_types::style::HostTerminalThemeMode;
+    let mut screen = theme_screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    screen.host_theme_dark_styling = Some(screen.themes["alpha"]);
+    screen.host_theme_light_styling = Some(screen.themes["beta"]);
+    screen
+        .update_host_terminal_theme_mode(HostTerminalThemeMode::Light)
+        .unwrap();
+    open_themes(&mut screen);
+    screen.toggle_command_palette(other);
+    screen.command_palette_handles_input(&None, b"Change theme", false, other);
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Enter)),
+        &[],
+        false,
+        other,
+    );
+    let snapshot = render_frame_into(&mut screen, &receiver, other, &mut grid);
+    assert!(
+        snapshot.contains("Theme picker is open in another client"),
+        "{snapshot}"
+    );
+    assert_eq!(screen.theme_preview.as_ref().unwrap().client, CLIENT);
+    screen
+        .update_host_terminal_theme_mode(HostTerminalThemeMode::Dark)
+        .unwrap();
+    assert_eq!(screen.style.colors, screen.themes["beta"]);
+    screen.close_command_palette(CLIENT);
+    assert_eq!(screen.style.colors, screen.themes["alpha"]);
+    assert_eq!(
+        screen.mode_info[&other].style.colors,
+        screen.themes["alpha"]
+    );
+}
+
+#[test]
+fn theme_preview_disconnect_reload_and_failed_save() {
+    let mut screen = theme_screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    open_themes(&mut screen);
+    palette_key(&mut screen, BareKey::Up);
+    palette_key(&mut screen, BareKey::Enter);
+    let request = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            ServerInstruction::SavePaletteTheme { request, name, .. } => {
+                assert_eq!(name, "alpha");
+                Some(request)
+            },
+            _ => None,
+        })
+        .unwrap();
+    screen.palette_theme_saved(CLIENT, uuid::Uuid::new_v4(), Ok(()));
+    assert!(screen.theme_preview.is_some());
+    screen.palette_theme_saved(CLIENT, request, Err("disk is read-only".into()));
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("disk is read-only"), "{snapshot}");
+    palette_key(&mut screen, BareKey::Enter);
+    let retry = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            ServerInstruction::SavePaletteTheme { request, .. } => Some(request),
+            _ => None,
+        })
+        .unwrap();
+    assert_ne!(retry, request);
+    screen.palette_theme_saved(CLIENT, retry, Err("still read-only".into()));
+    assert_eq!(screen.style.colors, screen.themes["alpha"]);
+    palette_key(&mut screen, BareKey::Esc);
+    assert_eq!(screen.style.colors, screen.themes["beta"]);
+    screen.close_command_palette(CLIENT);
+    open_themes(&mut screen);
+    palette_key(&mut screen, BareKey::Up);
+    let mut config = test_screen_config();
+    config.theme = Styling::default();
+    screen
+        .reconfigure(config, Keybinds::default(), CLIENT)
+        .unwrap();
+    assert!(screen.theme_preview.is_none());
+    assert_eq!(screen.style.colors, Styling::default());
+    screen.themes.insert("one".into(), Styling::default());
+    open_themes(&mut screen);
+    screen.remove_client(CLIENT).unwrap();
+    assert!(screen.theme_preview.is_none());
+}
+
+#[test]
+fn theme_preview_mouse_selection_toggle_and_outside_click_restore() {
+    for outside_click in [false, true] {
+        let mut screen = theme_screen();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        open_themes(&mut screen);
+        let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let row = snapshot
+            .lines()
+            .position(|line| line.contains("alpha"))
+            .unwrap();
+        let col = snapshot.lines().nth(row).unwrap().find("alpha").unwrap();
+        screen.command_palette_handles_mouse(
+            &MouseEvent::new_left_press_event(Position::new(row as i32, col as u16)),
+            CLIENT,
+        );
+        assert_eq!(screen.style.colors, screen.themes["alpha"]);
+        if outside_click {
+            screen.command_palette_handles_mouse(
+                &MouseEvent::new_left_press_event(Position::new(0, 0)),
+                CLIENT,
+            );
+        } else {
+            screen.toggle_command_palette(CLIENT);
+        }
+        assert!(screen.theme_preview.is_none());
+        assert_eq!(screen.style.colors, screen.themes["beta"]);
+    }
+}
+
+#[test]
+fn theme_preview_cancel_invalidates_queued_save() {
+    let mut screen = theme_screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    open_themes(&mut screen);
+    palette_key(&mut screen, BareKey::Up);
+    palette_key(&mut screen, BareKey::Enter);
+    let cancelled = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            ServerInstruction::SavePaletteTheme { cancelled, .. } => Some(cancelled),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+    palette_key(&mut screen, BareKey::Esc);
+    assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(screen.style.colors, screen.themes["beta"]);
+}

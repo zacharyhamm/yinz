@@ -1859,6 +1859,55 @@ pub fn start_server_impl(
                     session.change_mode_for_all_clients(input_mode)
                 });
             },
+            ServerInstruction::SavePaletteTheme {
+                cancelled,
+                client,
+                request,
+                name,
+            } => {
+                let Some((configuration, config_file_path, config_dir)) =
+                    with_session(&session_data, |session| {
+                        (
+                            session.session_configuration.clone(),
+                            session.config_file_path.clone(),
+                            session.config_dir.clone(),
+                        )
+                    })
+                else {
+                    continue;
+                };
+                let result = save_palette_theme(
+                    &configuration,
+                    client,
+                    &name,
+                    config_file_path.as_deref(),
+                    config_dir.as_deref(),
+                    &cancelled,
+                );
+                with_session_mut(&session_data, |session| {
+                    session
+                        .senders
+                        .send_to_screen(ScreenInstruction::PaletteThemeSaved {
+                            client,
+                            request,
+                            result: result
+                                .as_ref()
+                                .map(|_| ())
+                                .map_err(|error| format!("{error:#}")),
+                        })
+                        .context("replying to theme save")
+                        .non_fatal();
+                    if let Ok(config) = result {
+                        let mut changes = session
+                            .session_configuration
+                            .change_saved_config(config.clone());
+                        if !changes.iter().any(|(id, _)| *id == client) {
+                            changes.push((client, config));
+                        }
+                        session.propagate_configuration_changes(changes, true);
+                    }
+                });
+            },
             ServerInstruction::Reconfigure {
                 client_id,
                 config,
@@ -2697,6 +2746,60 @@ fn report_changes_in_config_file(
         })
         .await;
     });
+}
+
+/// Stage the theme change without touching live state; only a successful write may be applied.
+fn save_palette_theme(
+    configuration: &SessionConfiguration,
+    client: ClientId,
+    name: &str,
+    config_file_path: Option<&Path>,
+    config_dir: Option<&Path>,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<Config> {
+    let current = configuration.get_client_configuration(&client);
+    let fragment = theme_fragment(&current, name)?;
+    let mut staged = configuration.clone();
+    let (config, _) = staged
+        .reconfigure_runtime_config(&client, fragment.clone(), config_file_path, config_dir)
+        .context("validating theme configuration")?;
+    let config = config.context("theme configuration is unavailable")?;
+    let dir = yinz_runtime::home::get_config_overlay_dir(
+        config_dir
+            .map(Path::to_path_buf)
+            .or_else(yinz_runtime::home::find_default_config_dir),
+    )
+    .context("no config directory to save the theme in")?;
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(anyhow!("Theme selection was cancelled"));
+    }
+    Config::try_write_managed_fragment_guarded(&dir, &fragment, || {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            Err("Theme selection was cancelled".into())
+        } else {
+            Ok(())
+        }
+    })
+    .map_err(|error| anyhow!("{error}"))
+    .context("saving theme")?;
+    Ok(config)
+}
+
+fn theme_fragment(config: &Config, name: &str) -> Result<String> {
+    if config.themes.get_theme(name).is_none() {
+        return Err(anyhow!("Theme '{name}' is no longer available"));
+    }
+    let options = yinz_types::input::options::Options {
+        theme: Some(name.into()),
+        theme_dark: Some(name.into()),
+        theme_light: Some(name.into()),
+        ..Default::default()
+    };
+    Ok(yinz_config::kdl::options::to_kdl(&options, false)
+        .into_iter()
+        .map(|node| node.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 /// How a configuration change is kept, beyond the running session.

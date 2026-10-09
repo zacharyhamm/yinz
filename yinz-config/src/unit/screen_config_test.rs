@@ -106,6 +106,10 @@ fn defaults_match_the_documented_fallbacks() {
     // No `..`: a field added to `ScreenConfig` has to say what its default is here.
     let ScreenConfig {
         theme,
+        themes: _,
+        theme_name: _,
+        theme_dark_name: _,
+        theme_light_name: _,
         host_theme_dark,
         host_theme_light,
         explicit_theme_hue,
@@ -220,6 +224,10 @@ fn every_option_reaches_its_field() {
     let config = every_option_set();
     let ScreenConfig {
         theme,
+        themes: _,
+        theme_name: _,
+        theme_dark_name: _,
+        theme_light_name: _,
         host_theme_dark,
         host_theme_light,
         explicit_theme_hue,
@@ -337,4 +345,30 @@ fn pane_frames_off_wins_over_the_frame_style() {
         ScreenConfig::from_config(&config).pane_frame_style,
         PaneFrameStyle::None
     );
+}
+
+#[test]
+fn screen_theme_catalog_contains_all_resolved_themes_in_name_order() {
+    let mut config = Config {
+        themes: crate::assets::get_default_themes(),
+        ..Default::default()
+    };
+    config.themes.insert(
+        "a custom theme".into(),
+        crate::theme::Theme {
+            palette: styling(42),
+            sourced_from_external_file: true,
+        },
+    );
+    config.options.theme = Some("a custom theme".into());
+    config.options.theme_dark = Some("night".into());
+    config.options.theme_light = Some("day".into());
+    let screen = ScreenConfig::from_config(&config);
+    assert_eq!(screen.themes.len(), config.themes.inner().len());
+    assert_eq!(screen.themes["a custom theme"], styling(42));
+    assert_eq!(screen.theme_name, config.options.theme);
+    assert_eq!(screen.theme_dark_name, config.options.theme_dark);
+    assert_eq!(screen.theme_light_name, config.options.theme_light);
+    let names: Vec<_> = screen.themes.keys().collect();
+    assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
 }

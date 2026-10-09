@@ -3,6 +3,77 @@ use std::fs;
 use std::io::Read;
 
 #[test]
+fn managed_fragment_guard_runs_under_lock_and_rejection_preserves_the_file() {
+    for original in [None, Some("// keep this comment\nmouse_mode false\n")] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(super::MANAGED_CONFIG_FILE_NAME);
+        if let Some(original) = original {
+            fs::write(&path, original).unwrap();
+        }
+        let error =
+            Config::try_write_managed_fragment_guarded(dir.path(), "mouse_mode true\n", || {
+                let lock = fs::OpenOptions::new()
+                    .write(true)
+                    .open(dir.path().join(".yinz-managed.kdl.lock"))
+                    .unwrap();
+                assert!(matches!(lock.try_lock(), Err(fs::TryLockError::WouldBlock)));
+                Err("cancelled".into())
+            })
+            .unwrap_err();
+        assert_eq!(error, "cancelled");
+        if let Some(original) = original {
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        } else {
+            assert!(!path.exists());
+        }
+        // Rejection drops the staged file and releases the lock for subsequent writers.
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            1 + usize::from(original.is_some())
+        );
+        Config::write_managed_fragment(dir.path(), "mouse_mode true\n").unwrap();
+        assert!(fs::read_to_string(path)
+            .unwrap()
+            .contains("mouse_mode true"));
+    }
+}
+
+#[test]
+fn managed_fragment_contention_returns_without_waiting_and_allows_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(super::MANAGED_CONFIG_FILE_NAME);
+    let original = "// keep this comment\nmouse_mode false\n";
+    fs::write(&path, original).unwrap();
+    let lock = fs::File::create(dir.path().join(".yinz-managed.kdl.lock")).unwrap();
+    lock.lock().unwrap();
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = dir.path();
+        let worker = scope.spawn(move || {
+            tx.send(Config::try_write_managed_fragment_guarded(
+                dir,
+                "mouse_mode true\n",
+                || Ok(()),
+            ))
+            .unwrap();
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(5));
+        // Release before asserting so a blocking regression cannot hang the scoped worker.
+        drop(lock);
+        worker.join().unwrap();
+        assert_eq!(
+            result.unwrap().unwrap_err(),
+            "Configuration is busy; try saving again"
+        );
+    });
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    Config::try_write_managed_fragment_guarded(dir.path(), "mouse_mode true\n", || Ok(())).unwrap();
+    assert!(fs::read_to_string(path)
+        .unwrap()
+        .contains("mouse_mode true"));
+}
+
+#[test]
 fn config_save_atomically_replaces_the_file_and_keeps_its_backup() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.kdl");

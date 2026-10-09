@@ -625,3 +625,52 @@ fn color_palette_mode_query_answers_with_the_pinned_hue() {
         "a pinned session tells apps the pinned hue, not the host's or a guess"
     );
 }
+
+#[test]
+fn picker_theme_reaches_plugins_new_panes_and_clients() {
+    use yinz_types::keys::{BareKey, KeyWithModifier};
+    let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(PLUGIN_77), false);
+    let original = screen.style.colors;
+    let preview = styling_with_background(TEST_LIGHT_BG);
+    screen.themes.insert("preview".into(), preview);
+    screen.toggle_command_palette(CLIENT_1);
+    screen.command_palette_handles_input(&None, b"Change theme", false, CLIENT_1);
+    capture.drain_plugin_updates();
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Enter)),
+        &[],
+        false,
+        CLIENT_1,
+    );
+    assert!(capture.drain_plugin_updates().iter().any(
+        |(_, _, event)| matches!(event, Event::ModeUpdate(info) if info.style.colors == preview)
+    ));
+    assert_eq!(screen.tabs[&TabId::new(0)].style.colors, preview);
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    assert_eq!(screen.default_mode_info.style.colors, preview);
+    // A background tab must inherit the preview without navigating away from the picker.
+    screen
+        .new_tab(TabId::new(1), (vec![], vec![]), None, Some(other))
+        .unwrap();
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(2), None)],
+            vec![],
+            HashMap::new(),
+            TabId::new(1),
+            false,
+            other,
+            None,
+        )
+        .unwrap();
+    assert_eq!(screen.tabs[&TabId::new(1)].style.colors, preview);
+    screen.close_command_palette(CLIENT_1);
+    assert_eq!(screen.tabs[&TabId::new(0)].style.colors, original);
+    assert_eq!(screen.tabs[&TabId::new(1)].style.colors, original);
+    assert_eq!(screen.mode_info[&other].style.colors, original);
+}

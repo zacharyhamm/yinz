@@ -547,3 +547,89 @@ fn unsaved_background_clear_survives_attachment_keybinding_save_and_default_relo
     assert!(reloaded.background_plugins_cleared);
     assert!(reloaded.background_plugins.is_empty());
 }
+
+#[test]
+fn theme_save_escapes_names_preserves_other_settings_and_stages_until_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("config.kdl");
+    std::fs::write(&main, "mouse_mode false\n").unwrap();
+    let overlay = dir.path().join("config.d");
+    Config::write_managed_fragment(&overlay, "pane_frames false\n").unwrap();
+    let name = "custom \"quoted\" \\ theme";
+    let mut config = Config::from_kdl("mouse_mode false\npane_frames false\n", None).unwrap();
+    config.themes.insert(
+        name.into(),
+        yinz_config::theme::Theme {
+            palette: Default::default(),
+            sourced_from_external_file: true,
+        },
+    );
+    let mut configuration = SessionConfiguration::default();
+    configuration.set_client_runtime_configuration(CLIENT, config.clone());
+    let saved = save_palette_theme(
+        &configuration,
+        CLIENT,
+        name,
+        Some(&main),
+        Some(dir.path()),
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(configuration.get_client_configuration(&CLIENT), config);
+    assert_eq!(saved.options.theme.as_deref(), Some(name));
+    assert_eq!(saved.options.theme_dark.as_deref(), Some(name));
+    assert_eq!(saved.options.theme_light.as_deref(), Some(name));
+    assert_eq!(saved.options.mouse_mode, Some(false));
+    assert_eq!(std::fs::read_to_string(main).unwrap(), "mouse_mode false\n");
+    let text = std::fs::read_to_string(overlay.join("yinz-managed.kdl")).unwrap();
+    let loaded = Config::from_kdl(&text, Some(config)).unwrap();
+    assert_eq!(loaded.options, saved.options);
+    assert!(text.contains("pane_frames false"));
+    assert!(!text.contains("keybinds"));
+    assert!(!text.contains("themes {"));
+}
+
+#[test]
+fn theme_save_rejects_stale_names_and_write_failure_without_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.themes.insert(
+        "custom".into(),
+        yinz_config::theme::Theme {
+            palette: Default::default(),
+            sourced_from_external_file: false,
+        },
+    );
+    let mut configuration = SessionConfiguration::default();
+    configuration.set_client_runtime_configuration(CLIENT, config.clone());
+    assert!(save_palette_theme(
+        &configuration,
+        CLIENT,
+        "stale",
+        None,
+        Some(dir.path()),
+        &Default::default()
+    )
+    .is_err());
+    assert!(save_palette_theme(
+        &configuration,
+        CLIENT,
+        "custom",
+        None,
+        Some(dir.path()),
+        &std::sync::atomic::AtomicBool::new(true)
+    )
+    .is_err());
+    assert!(!dir.path().join("config.d").exists());
+    std::fs::write(dir.path().join("config.d"), "not a directory").unwrap();
+    assert!(save_palette_theme(
+        &configuration,
+        CLIENT,
+        "custom",
+        None,
+        Some(dir.path()),
+        &Default::default()
+    )
+    .is_err());
+    assert_eq!(configuration.get_client_configuration(&CLIENT), config);
+}

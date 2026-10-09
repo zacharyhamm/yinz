@@ -35,6 +35,7 @@ pub enum EntryKind {
     WarpTab,
     WarpPane,
     Project,
+    Theme,
 }
 
 impl EntryKind {
@@ -44,6 +45,7 @@ impl EntryKind {
             Self::WarpPaneSession => Some("Warp pane · Source session"),
             Self::WarpTab => Some("Warp tab"),
             Self::WarpPane => Some("Warp pane"),
+            Self::Theme => Some("Change theme"),
             Self::Project => Some("Switch current project"),
             Self::Command | Self::Plugin => None,
             Self::Agent => Some("Agents"),
@@ -325,6 +327,10 @@ impl CommandPalette {
         self.rematch_query();
     }
 
+    pub fn theme_picker(&self) -> bool {
+        self.picker == Some(EntryKind::Theme)
+    }
+
     pub fn agent_picker(&self) -> bool {
         self.picker == Some(EntryKind::Agent)
     }
@@ -396,7 +402,8 @@ impl CommandPalette {
                 self.picker.map_or(
                     !matches!(
                         entry.kind,
-                        EntryKind::Project
+                        EntryKind::Theme
+                            | EntryKind::Project
                             | EntryKind::ControlAgent
                             | EntryKind::SetControlAgent
                             | EntryKind::WarpTabSession
@@ -450,7 +457,10 @@ impl CommandPalette {
                 EntryKind::ExitedSession => 2,
                 _ => 0,
             };
-            (group, std::cmp::Reverse(*score))
+            (
+                group,
+                std::cmp::Reverse(if self.theme_picker() { 0 } else { *score }),
+            )
         });
         self.matches = matches.into_iter().map(|(index, _)| index).collect();
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
@@ -1098,6 +1108,8 @@ impl CommandPalette {
                                     "Tab/↑↓/Ctrl+n/p Fields  Enter Submit  Esc Back"
                                 } else if self.selected_entry().is_some_and(|entry| entry.kind == EntryKind::Agent) {
                                     "↑↓ Select · Enter Info · Ctrl+Enter Focus · Esc Back"
+                                } else if self.theme_picker() {
+                                    "↑↓ Preview · Enter Save · Esc Back"
                                 } else if self.picker.is_some() || self.view != 0 {
                                     "↑↓/Ctrl+n/p Select  Enter Choose  Esc Back"
                                 } else {

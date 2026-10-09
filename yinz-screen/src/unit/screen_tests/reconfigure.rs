@@ -20,6 +20,10 @@ fn styling(shade: u8) -> Styling {
 fn every_field_changed() -> ScreenConfig {
     ScreenConfig {
         theme: styling(1),
+        themes: std::collections::BTreeMap::from([("custom".into(), styling(1))]),
+        theme_name: Some("custom".into()),
+        theme_dark_name: Some("night".into()),
+        theme_light_name: Some("day".into()),
         host_theme_dark: Some(styling(2)),
         host_theme_light: Some(styling(3)),
         explicit_theme_hue: Some(ThemeHue::Light),
@@ -111,6 +115,10 @@ fn a_reload_applies_every_field_of_the_screen_config() {
 
     let ScreenConfig {
         theme,
+        themes,
+        theme_name,
+        theme_dark_name,
+        theme_light_name,
         host_theme_dark,
         host_theme_light,
         explicit_theme_hue,
@@ -163,6 +171,10 @@ fn a_reload_applies_every_field_of_the_screen_config() {
     // `theme` on its own
     assert_eq!(Some(screen.style.colors), host_theme_light);
     assert_ne!(Some(theme), host_theme_light);
+    assert_eq!(screen.themes, themes);
+    assert_eq!(screen.theme_name, theme_name);
+    assert_eq!(screen.theme_dark_name, theme_dark_name);
+    assert_eq!(screen.theme_light_name, theme_light_name);
     assert_eq!(screen.host_theme_dark_styling, host_theme_dark);
     assert_eq!(screen.host_theme_light_styling, host_theme_light);
     assert_eq!(screen.configured_explicit_theme_hue, explicit_theme_hue);
