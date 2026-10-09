@@ -458,6 +458,8 @@ fn headers_by_id(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EntryPage {
     pub entries: Vec<RunEntry>,
+    /// Revisions whose preview text was shortened by this page read.
+    pub truncated_revisions: Vec<u64>,
     /// Every entry the run has, not just this page's.
     pub total: u64,
     /// The revision to ask for next, or `None` when this page reached the end.
@@ -518,7 +520,17 @@ pub fn entry_page(
     // `entries_from_rows` sorts by revision whichever way the rows arrived, so the newest-page
     // fetch needs no reversing — only its own bound re-applying, since it took the *last*
     // `limit` entries and the budget below cuts from the wrong end for that case.
+    let mut truncated_revisions = if from.is_some() && limit == 1 {
+        vec![]
+    } else {
+        entries
+            .iter()
+            .filter(|entry| entry.text.chars().count() > ENTRY_TEXT_CHARS)
+            .map(|entry| entry.revision)
+            .collect()
+    };
     budget(&mut entries, from.is_none(), from.is_some() && limit == 1);
+    truncated_revisions.retain(|revision| entries.iter().any(|entry| entry.revision == *revision));
     let first = entries.first().map(|entry| entry.revision);
     let last = entries.last().map(|entry| entry.revision);
     // What is unread *after* this page, and only ever for a page read forward. A page taken
@@ -559,6 +571,7 @@ pub fn entry_page(
     };
     Ok(EntryPage {
         entries,
+        truncated_revisions,
         total,
         next_revision,
         earlier,
@@ -590,6 +603,7 @@ pub fn search_detail(
             .find(|entry| entry.revision == revision)
         {
             *selected = entry;
+            page.truncated_revisions.retain(|r| *r != revision);
         }
     }
     Ok(page)
@@ -2338,6 +2352,7 @@ mod tests {
             .unwrap();
             assert!(!expected.entries[2].text.contains("needle"));
             expected.entries[2] = recorded.entries[3].clone();
+            expected.truncated_revisions.retain(|r| *r != hit.revision);
 
             let detail = search_detail(&backend, &hit.run_id, hit.revision).unwrap();
             assert_eq!(detail.entries[2].text, text);
@@ -2442,6 +2457,10 @@ mod tests {
         let spent: usize = page.entries.iter().map(|e| e.text.len()).sum();
         assert!(spent <= PAGE_TEXT_BUDGET, "{spent} bytes");
         assert!(page.entries.len() < 40, "the page was cut short");
+        assert_eq!(
+            page.truncated_revisions,
+            page.entries.iter().map(|e| e.revision).collect::<Vec<_>>()
+        );
         assert!(page.next_revision.is_some(), "and says where to resume");
         // Each entry was cut to the per-entry cap, since the page holds more than one.
         assert!(page
@@ -2488,6 +2507,7 @@ mod tests {
         let page = entry_page(&backend, "claude:one-big", Some(1), 1).unwrap();
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].text.chars().count(), ENTRY_TEXT_CHARS * 3);
+        assert!(page.truncated_revisions.is_empty());
     }
 
     #[test]

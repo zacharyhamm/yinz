@@ -1,6 +1,9 @@
 //! Native command palette. The screen owns its lifetime and input capture.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+
+#[path = "command_palette_agent.rs"]
+mod agent;
 
 use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
@@ -168,6 +171,7 @@ pub struct CommandPalette {
     pub agent_metadata:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub metadata: Option<String>,
+    agent: Option<RefCell<agent::AgentView>>,
     metadata_offset: usize,
     metadata_focus: u8,
     metadata_rows: Cell<usize>,
@@ -207,6 +211,7 @@ pub struct CommandPaletteLayout {
     text_lines: Vec<String>,
     metadata_lines: Vec<String>,
     metadata_y: usize,
+    agent: Option<agent::AgentLayout>,
 }
 
 enum ResultRow {
@@ -216,6 +221,64 @@ enum ResultRow {
 }
 
 impl CommandPalette {
+    pub fn set_agent_history(
+        &mut self,
+        header: yinz_bus::command_palette::HistoryHeader,
+        events: Vec<yinz_bus::command_palette::HistoryEvent>,
+        actions: Vec<Entry>,
+        status: String,
+    ) {
+        self.metadata = None;
+        let agent = self
+            .agent
+            .get_or_insert_with(|| RefCell::new(agent::AgentView::new(header.clone())));
+        agent.get_mut().newest =
+            self.input.get_text().is_empty() && !actions.iter().any(|a| a.id.ends_with(":newer"));
+        agent.get_mut().update(header, events, actions, status);
+    }
+    pub fn open_agent_reader(&mut self, header: String, markdown: String, tool: String) {
+        let agent = self.agent.get_or_insert_with(|| {
+            RefCell::new(agent::AgentView::new(
+                yinz_bus::command_palette::HistoryHeader {
+                    name: String::new(),
+                    status: String::new(),
+                    location: String::new(),
+                    started: String::new(),
+                    details: String::new(),
+                },
+            ))
+        });
+        agent.get_mut().reader(header, markdown, tool);
+    }
+    pub fn agent_following(&self) -> bool {
+        self.agent.as_ref().is_some_and(|a| a.borrow().following)
+    }
+    pub fn agent_first_revision(&self) -> Option<u64> {
+        self.agent
+            .as_ref()
+            .and_then(|a| a.borrow().first_revision())
+    }
+    pub fn agent_page_request(&mut self, following: bool) {
+        if let Some(agent) = &mut self.agent {
+            agent.get_mut().page_request(following);
+        }
+    }
+    pub fn select_agent_revision(&mut self, revision: u64) {
+        if let Some(agent) = &mut self.agent {
+            agent.get_mut().select_revision(revision);
+        }
+    }
+    pub fn scroll_agent(&mut self, down: bool) -> bool {
+        if self.busy {
+            return self.agent.is_some();
+        }
+        if let Some(agent) = &mut self.agent {
+            agent.get_mut().scroll(down, 3);
+            return true;
+        }
+        false
+    }
+
     pub fn form_values(&self) -> Option<(&str, Vec<String>)> {
         self.form.as_ref().map(|form| {
             (
@@ -501,6 +564,13 @@ impl CommandPalette {
         if self.busy || (self.pending && !self.is_root()) {
             return Outcome::Cancel;
         }
+        if self
+            .agent
+            .as_mut()
+            .is_some_and(|agent| agent.get_mut().back())
+        {
+            return Outcome::None;
+        }
         if let Some(mut previous) = self.history.pop() {
             previous.history = std::mem::take(&mut self.history);
             *self = previous;
@@ -537,6 +607,11 @@ impl CommandPalette {
         }
         if self.busy {
             return Outcome::None;
+        }
+        if let Some(agent) = &mut self.agent {
+            if let Some(outcome) = agent.get_mut().key(&key, self.view) {
+                return outcome;
+            }
         }
         if self.metadata.is_some() && key.bare_key == BareKey::Tab {
             self.metadata_focus = (self.metadata_focus
@@ -717,7 +792,10 @@ impl CommandPalette {
     }
 
     pub fn insert_text(&mut self, text: &str) {
-        if self.busy || self.text.is_some() {
+        if self.busy
+            || self.text.is_some()
+            || self.agent.as_ref().is_some_and(|a| a.borrow().is_reader())
+        {
             return;
         }
         let text: String = text
@@ -888,7 +966,7 @@ impl CommandPalette {
     }
 
     pub fn layout(&self, surface: Viewport) -> CommandPaletteLayout {
-        let expanded = self.metadata.is_some() || self.text.is_some();
+        let expanded = self.metadata.is_some() || self.text.is_some() || self.agent.is_some();
         let cols = surface.cols.min(if expanded { 110 } else { 64 });
         let rows = surface.rows.min(if expanded { 36 } else { 11 });
         let rect = CellRect {
@@ -943,6 +1021,15 @@ impl CommandPalette {
             .text_offset
             .min(text_lines.len().saturating_sub(options_rows));
         CommandPaletteLayout {
+            agent: self.agent.as_ref().map(|a| {
+                a.borrow_mut().layout(
+                    rect,
+                    border,
+                    &self.input,
+                    self.error.as_deref(),
+                    self.busy || self.pending,
+                )
+            }),
             rect,
             metadata_lines,
             metadata_y,
@@ -970,6 +1057,13 @@ impl CommandPalette {
         if !layout.rect.contains(position.column(), y) {
             return;
         }
+        if let (Some(agent), Some(agent_layout)) = (&mut self.agent, &layout.agent) {
+            agent.get_mut().click(
+                agent_layout,
+                y.saturating_sub(layout.rect.y + layout.border),
+            );
+            return;
+        }
         if (layout.options_y..layout.options_y + layout.options_rows).contains(&y) {
             let index = layout.first_option + y - layout.options_y;
             if let Some(form) = &mut self.form {
@@ -993,6 +1087,9 @@ impl CommandPalette {
     }
 
     pub fn cursor(&self, layout: &CommandPaletteLayout) -> Option<(usize, usize)> {
+        if self.agent.is_some() {
+            return None;
+        }
         if layout.rect.is_empty()
             || self.text.is_some()
             || self.busy
@@ -1031,6 +1128,9 @@ impl CommandPalette {
     }
 
     pub fn chunks(&self, layout: &CommandPaletteLayout, style: &Style) -> Vec<CharacterChunk> {
+        if let Some(agent) = &layout.agent {
+            return agent::chunks(layout, agent, style);
+        }
         let rect = layout.rect;
         if rect.is_empty() {
             return vec![];

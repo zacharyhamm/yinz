@@ -1,0 +1,32 @@
+---
+source: yinz-panes/src/ui/unit/command_palette_agent_tests.rs
+expression: text
+---
+╭ Agent info · Timeline ─────────────────────────────────────────────╮
+│ Agent · codex · idle                                               │
+│ session · /work · Started 2026-10-09 10:00 UTC                     │
+│ > Type to search this run                                          │
+│ ────────────────────────────────────────────────────────────────── │
+│   Message · 10:00                                                  │
+│ Event 1                                                            │
+│                                                                    │
+│ • first                                                            │
+│ … more                                                             │
+│                                                                    │
+│   Message · 10:00                                                  │
+│ Event 2                                                            │
+│                                                                    │
+│ • first                                                            │
+│ … more                                                             │
+│                                                                    │
+│ › Message · 10:00                                                  │
+│ Event 3                                                            │
+│                                                                    │
+│ • first                                                            │
+│ … more                                                             │
+│                                                                    │
+│ · Focus                                                            │
+│ · Latest / Refresh                                                 │
+│ · Details                                                          │
+│ ↑↓ Events · Enter Read · PgUp/Dn Scroll · Tab Actions · Esc Back   │
+╰────────────────────────────────────────────────────────────────────╯

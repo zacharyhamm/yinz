@@ -17,7 +17,7 @@ pub(super) struct State {
     pub(super) opening: u64,
     pub(super) step: u64,
     source: PaneInfo,
-    pending: Option<(u64, Arc<AtomicBool>)>,
+    pending: Option<(u64, Arc<AtomicBool>, AgentAction)>,
     actions: HashMap<String, AgentAction>,
     pub(super) browsers: HashMap<u64, super::history::Browser>,
     submitted: bool,
@@ -51,7 +51,7 @@ impl State {
         self.pending.is_some()
     }
     pub(super) fn cancel(&mut self) {
-        if let Some((_, active)) = self.pending.take() {
+        if let Some((_, active, _)) = self.pending.take() {
             active.store(false, Ordering::Release);
         }
     }
@@ -86,7 +86,7 @@ impl Screen {
         ) || matches!(&action, AgentAction::Checkout { path, .. } if path.is_some() || value.is_some());
         state.agents.step += 1;
         let active = Arc::new(AtomicBool::new(true));
-        state.agents.pending = Some((state.widget.view, active.clone()));
+        state.agents.pending = Some((state.widget.view, active.clone(), action.clone()));
         state.widget.busy = !matches!(action, AgentAction::History(ref a) if !matches!(a, yinz_bus::command_palette::HistoryAction::Resume { .. }));
         state.widget.clear_error();
         let request = AgentRequest {
@@ -177,12 +177,23 @@ impl Screen {
         };
         if state.agents.opening != opening
             || state.agents.step != step
-            || !state.agents.pending.as_ref().is_some_and(|(view, active)| {
-                *view == state.widget.view && active.load(Ordering::Acquire)
-            })
+            || !state
+                .agents
+                .pending
+                .as_ref()
+                .is_some_and(|(view, active, _)| {
+                    *view == state.widget.view && active.load(Ordering::Acquire)
+                })
         {
             return;
         }
+        let history_action = state.agents.pending.as_ref().and_then(|(_, _, action)| {
+            if let AgentAction::History(action) = action {
+                Some(action.clone())
+            } else {
+                None
+            }
+        });
         state.agents.cancel();
         state.widget.busy = false;
         match reply {
@@ -191,7 +202,7 @@ impl Screen {
                 state.widget.set_error(error);
             },
             Ok(AgentReply::History(reply)) => {
-                self.palette_history_reply(client, reply);
+                self.palette_history_reply(client, reply, history_action);
             },
             Ok(AgentReply::Choices { title, choices }) => {
                 state.agents.submitted = false;

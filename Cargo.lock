@@ -6649,6 +6649,7 @@ dependencies = [
  "yinz-runtime",
  "yinz-terminal",
  "yinz-tile",
+ "yinz-tile-markdown",
  "yinz-types",
 ]
 

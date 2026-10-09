@@ -225,12 +225,39 @@ pub struct HistoryRow {
     pub action: HistoryAction,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct HistoryHeader {
+    pub name: String,
+    pub status: String,
+    pub location: String,
+    pub started: String,
+    pub details: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryEvent {
+    pub revision: u64,
+    pub kind: String,
+    pub time: String,
+    pub markdown: String,
+    pub truncated: bool,
+}
+
 #[derive(Clone, Debug)]
 pub enum HistoryReply {
-    Rows {
-        metadata: Option<String>,
+    Run {
+        header: HistoryHeader,
+        events: Vec<HistoryEvent>,
         rows: Vec<HistoryRow>,
         status: String,
     },
-    Text(String),
+    Reader {
+        header: String,
+        markdown: String,
+        tool: String,
+    },
+    Rows {
+        rows: Vec<HistoryRow>,
+        status: String,
+    },
 }

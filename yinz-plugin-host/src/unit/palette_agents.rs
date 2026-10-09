@@ -407,9 +407,12 @@ fn palette_history_search_exact_event_predecessor_and_resume() {
     assert_eq!(rows.len(), 1);
     assert!(commands.is_empty());
     let (reply, _) = execute(rows[0].action.clone());
-    let AgentReply::History(HistoryReply::Rows { rows, .. }) = reply.unwrap() else {
+    let AgentReply::History(HistoryReply::Run { rows, events, .. }) = reply.unwrap() else {
         panic!("expected timeline")
     };
+    assert!(events[0].markdown.starts_with("needle\n"));
+    assert!(events[0].truncated);
+    assert!(events[0].markdown.chars().count() <= agent_proto::run_history::ENTRY_TEXT_CHARS + 1);
     assert!(rows
         .iter()
         .any(|r| matches!(&r.action, HistoryAction::Run { id, .. } if id == "previous")));
@@ -417,7 +420,7 @@ fn palette_history_search_exact_event_predecessor_and_resume() {
         id: recorded.id.clone(),
         revision: 1,
     });
-    let AgentReply::History(HistoryReply::Text(text)) = reply.unwrap() else {
+    let AgentReply::History(HistoryReply::Reader { markdown: text, .. }) = reply.unwrap() else {
         panic!("expected retained event")
     };
     assert!(text.contains(&recorded.entries[0].text));
@@ -553,7 +556,7 @@ fn palette_history_older_follows_retained_revisions() {
         let mut starts = Vec::new();
         loop {
             let (reply, _) = run(&request(temp.path(), AgentAction::History(action)), &data);
-            let AgentReply::History(HistoryReply::Rows { rows, .. }) = reply.unwrap() else {
+            let AgentReply::History(HistoryReply::Run { rows, .. }) = reply.unwrap() else {
                 panic!("expected timeline")
             };
             starts.push(
@@ -634,6 +637,73 @@ fn palette_history_filters_match_the_same_runs_with_or_without_text() {
             ids.sort_unstable();
             assert_eq!(ids, expected, "{text:?} {filters}");
             assert!(commands.is_empty());
+        }
+    }
+}
+
+#[test]
+fn palette_history_run_search_orders_events_and_keeps_time_and_hit_navigation() {
+    use agent_proto::agents::{RunEntry, RunEntryKind};
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
+    let (temp, data) = repository();
+    let mut recorded = recorded_run(temp.path());
+    recorded.revision = 3;
+    recorded.entries = (1..=3)
+        .map(|revision| RunEntry {
+            revision,
+            event_id: None,
+            kind: RunEntryKind::Message,
+            text: format!(
+                "**{}**\n\n- retained Markdown",
+                "needle ".repeat(revision as usize)
+            ),
+            created_at_ms: Some(150),
+            tool: None,
+        })
+        .collect();
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &agent_proto::agents::rows::run_mutations(&recorded),
+        )
+        .unwrap();
+    for query in ["", "needle"] {
+        let (reply, _) = run(
+            &request(
+                temp.path(),
+                AgentAction::History(HistoryAction::Run {
+                    id: recorded.id.clone(),
+                    from: None,
+                    query: query.into(),
+                }),
+            ),
+            &data,
+        );
+        let AgentReply::History(HistoryReply::Run {
+            header,
+            events,
+            rows,
+            ..
+        }) = reply.unwrap()
+        else {
+            panic!("expected timeline")
+        };
+        assert_eq!(
+            events.iter().map(|e| e.revision).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert_eq!(header.started, "1970-01-01 00:00 UTC");
+        assert!(events.iter().all(|e| e.time == "1970-01-01 00:00 UTC"));
+        if query.is_empty() {
+            assert_eq!(events[0].markdown, recorded.entries[0].text);
+            assert!(!events[0].truncated);
+        } else {
+            assert_eq!(
+                rows.iter()
+                    .filter(|r| matches!(r.action, HistoryAction::Hit { .. }))
+                    .count(),
+                3
+            );
         }
     }
 }
