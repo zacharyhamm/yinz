@@ -74,6 +74,50 @@ fn structured_scripts_preserve_paths_and_obey_traversal_options() {
 }
 
 #[test]
+fn structured_search_excludes_its_scratch_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root '雪$()[*?]\\\n");
+    let bin = temp.path().join("bin");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&bin).unwrap();
+    let alias = temp.path().join("alias");
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    let file = root.join("keep.txt");
+    fs::write(&file, "keep").unwrap();
+    let expected = file.canonicalize().unwrap();
+    let out = alias.join("selection.sel");
+    let candidates = alias.join("selection.sel.candidates");
+    yinz_test_support::write_warm_script(&bin.join("fzf"), "cat");
+
+    for search_root in [&root, &alias] {
+        for recursive in [true, false] {
+            let mut request = options(PickKind::File);
+            request.recursive = Some(recursive);
+            let script = build_structured(
+                &BTreeMap::new(),
+                &request,
+                search_root,
+                out.to_str().unwrap(),
+            )
+            .unwrap();
+            let status = Command::new("/bin/sh")
+                .args(["-c", &script])
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .status()
+                .unwrap();
+            assert!(status.success());
+            let selection = fs::read_to_string(&out).unwrap();
+            assert_eq!(
+                parse_structured_selection(&selection).unwrap(),
+                expected.to_str()
+            );
+            assert_eq!(fs::read_to_string(&expected).unwrap(), "keep");
+            assert!(!candidates.exists());
+        }
+    }
+}
+
+#[test]
 fn structured_output_rejects_multiple_or_malformed_records() {
     assert_eq!(
         parse_structured_selection("/a\nb\0").unwrap(),
