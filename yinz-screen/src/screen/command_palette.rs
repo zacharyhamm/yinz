@@ -305,6 +305,10 @@ impl Screen {
             return false;
         };
         let layout = state.widget.layout(surface);
+        if (event.wheel_up || event.wheel_down) && state.widget.scroll_agent(event.wheel_down) {
+            self.render().non_fatal();
+            return true;
+        }
         if event.event_type == MouseEventType::Press && (event.left || event.right || event.middle)
         {
             let inside = usize::try_from(event.position.line())

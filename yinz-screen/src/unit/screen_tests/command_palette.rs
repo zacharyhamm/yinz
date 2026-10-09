@@ -3606,12 +3606,6 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
         .get_mut(&TabId::new(0))
         .unwrap()
         .set_pane_agent(pane, Some(replacement));
-    screen.command_palette_handles_input(
-        &Some(KeyWithModifier::new(BareKey::Tab)),
-        b"\t",
-        false,
-        CLIENT,
-    );
     screen.command_palette_handles_input(&enter, b"\r", false, CLIENT);
     let timeline = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(timeline.contains("Agent info · Timeline"), "{timeline}");
@@ -3658,7 +3652,6 @@ fn archive_queries_discard_stale_replies_and_resume_cannot_be_submitted_twice() 
             opening: request.opening,
             step: request.step,
             reply: Ok(AgentReply::History(HistoryReply::Rows {
-                metadata: None,
                 rows: vec![HistoryRow {
                     id: "run".into(),
                     label: label.into(),
@@ -3697,27 +3690,16 @@ fn archive_queries_discard_stale_replies_and_resume_cannot_be_submitted_twice() 
         client: CLIENT,
         opening: details.opening,
         step: details.step,
-        reply: Ok(AgentReply::History(HistoryReply::Rows {
-            metadata: Some("Recorded run".into()),
-            rows: vec![HistoryRow {
-                id: "resume".into(),
-                label: "Resume".into(),
-                description: String::new(),
-                action: HistoryAction::Resume {
-                    id: "recorded".into(),
-                },
-            }],
-            status: String::new(),
-        })),
+        reply: Ok(AgentReply::History(history_run(vec![HistoryRow {
+            id: "resume".into(),
+            label: "Resume".into(),
+            description: String::new(),
+            action: HistoryAction::Resume {
+                id: "recorded".into(),
+            },
+        }]))),
     });
-    for _ in 0..2 {
-        screen.command_palette_handles_input(
-            &Some(KeyWithModifier::new(BareKey::Tab)),
-            b"",
-            false,
-            CLIENT,
-        );
-    }
+    palette_key(&mut screen, BareKey::Tab);
     screen.command_palette_handles_input(&enter, b"", false, CLIENT);
     let submitted = next();
     screen.command_palette_handles_input(&enter, b"", false, CLIENT);
@@ -3739,7 +3721,7 @@ fn archive_queries_discard_stale_replies_and_resume_cannot_be_submitted_twice() 
 #[test]
 fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
     use yinz_bus::command_palette::{
-        AgentAction, AgentReply, HistoryAction, HistoryReply, HistoryRow, Instruction,
+        AgentAction, AgentReply, HistoryAction, HistoryRow, Instruction,
     };
     use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
 
@@ -3788,19 +3770,15 @@ fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
                 client: CLIENT,
                 opening: request.opening,
                 step: request.step,
-                reply: Ok(AgentReply::History(HistoryReply::Rows {
-                    metadata: None,
-                    rows: vec![HistoryRow {
-                        id: "event:90".into(),
-                        label: "Old event".into(),
-                        description: String::new(),
-                        action: HistoryAction::Event {
-                            id: "codex:provider-session".into(),
-                            revision: 90,
-                        },
-                    }],
-                    status: String::new(),
-                })),
+                reply: Ok(AgentReply::History(history_run(vec![HistoryRow {
+                    id: "event:90".into(),
+                    label: "Old event".into(),
+                    description: String::new(),
+                    action: HistoryAction::Event {
+                        id: "codex:provider-session".into(),
+                        revision: 90,
+                    },
+                }]))),
             });
         }
         screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
@@ -3809,11 +3787,7 @@ fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
             client: CLIENT,
             opening: query.opening,
             step: query.step,
-            reply: Ok(AgentReply::History(HistoryReply::Rows {
-                metadata: None,
-                rows: vec![],
-                status: String::new(),
-            })),
+            reply: Ok(AgentReply::History(history_run(vec![]))),
         });
         agent.run_id = Some("explicit-run".into());
         screen
@@ -3883,7 +3857,6 @@ fn history_typing_preserves_pending_hit_and_event_replies() {
             opening: search.opening,
             step: search.step,
             reply: Ok(AgentReply::History(HistoryReply::Rows {
-                metadata: None,
                 rows: vec![HistoryRow {
                     id: "result".into(),
                     label: "Result".into(),
@@ -3911,20 +3884,20 @@ fn history_typing_preserves_pending_hit_and_event_replies() {
         let loading = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(loading.contains("Loading"), "{loading}");
         let reply = match action {
-            HistoryAction::Hit { .. } => HistoryReply::Rows {
-                metadata: None,
-                rows: vec![HistoryRow {
-                    id: "event:7".into(),
-                    label: "Loaded history content".into(),
-                    description: String::new(),
-                    action: HistoryAction::Event {
-                        id: "recorded".into(),
-                        revision: 7,
-                    },
-                }],
-                status: String::new(),
+            HistoryAction::Hit { .. } => history_run(vec![HistoryRow {
+                id: "event:7".into(),
+                label: "Loaded history content".into(),
+                description: String::new(),
+                action: HistoryAction::Event {
+                    id: "recorded".into(),
+                    revision: 7,
+                },
+            }]),
+            _ => HistoryReply::Reader {
+                header: "Event".into(),
+                markdown: "Loaded history content".into(),
+                tool: String::new(),
             },
-            _ => HistoryReply::Text("Loaded history content".into()),
         };
         screen.plugin_palette_instruction(Instruction::AgentReply {
             client: CLIENT,
@@ -3980,31 +3953,27 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
         client: CLIENT,
         opening: request.opening,
         step: request.step,
-        reply: Ok(AgentReply::History(HistoryReply::Rows {
-            metadata: None,
-            status: String::new(),
-            rows: vec![
-                HistoryRow {
-                    id: "latest".into(),
-                    label: "Latest / Refresh".into(),
-                    description: String::new(),
-                    action: HistoryAction::Run {
-                        id: "run".into(),
-                        from: None,
-                        query: String::new(),
-                    },
+        reply: Ok(AgentReply::History(history_run(vec![
+            HistoryRow {
+                id: "latest".into(),
+                label: "Latest / Refresh".into(),
+                description: String::new(),
+                action: HistoryAction::Run {
+                    id: "run".into(),
+                    from: None,
+                    query: String::new(),
                 },
-                HistoryRow {
-                    id: "event:1".into(),
-                    label: "Event".into(),
-                    description: String::new(),
-                    action: HistoryAction::Event {
-                        id: "run".into(),
-                        revision: 1,
-                    },
+            },
+            HistoryRow {
+                id: "event:1".into(),
+                label: "Event".into(),
+                description: String::new(),
+                action: HistoryAction::Event {
+                    id: "run".into(),
+                    revision: 1,
                 },
-            ],
-        })),
+            },
+        ]))),
     };
     palette_search(&mut screen, "provider:codex");
     let enter = Some(KeyWithModifier::new(BareKey::Enter));
@@ -4015,8 +3984,8 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
         if operation == "search" {
             screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
         } else {
-            // Metadata -> Actions for refresh, then Actions -> Timeline for the event.
-            for _ in 0..2 {
+            // Timeline -> Actions for refresh; refreshed pages focus the timeline.
+            if operation == "refresh" {
                 screen.command_palette_handles_input(
                     &Some(KeyWithModifier::new(BareKey::Tab)),
                     b"",
@@ -4026,7 +3995,7 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
             }
             if operation == "refresh" {
                 screen.command_palette_handles_input(
-                    &Some(KeyWithModifier::new(BareKey::End)),
+                    &Some(KeyWithModifier::new(BareKey::Down)),
                     b"",
                     false,
                     CLIENT,
@@ -4040,9 +4009,11 @@ fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return()
                 client: CLIENT,
                 opening: request.opening,
                 step: request.step,
-                reply: Ok(AgentReply::History(HistoryReply::Text(
-                    "Event detail".into(),
-                ))),
+                reply: Ok(AgentReply::History(HistoryReply::Reader {
+                    header: "Event".into(),
+                    markdown: "Event detail".into(),
+                    tool: String::new(),
+                })),
             });
             screen.command_palette_handles_input(
                 &Some(KeyWithModifier::new(BareKey::Esc)),
@@ -4101,7 +4072,6 @@ fn archive_filter_forms_preserve_literal_search_text() {
         opening: request.opening,
         step: request.step,
         reply: Ok(AgentReply::History(HistoryReply::Rows {
-            metadata: None,
             rows: vec![],
             status: String::new(),
         })),
@@ -4748,4 +4718,199 @@ fn theme_preview_cancel_invalidates_queued_save() {
     palette_key(&mut screen, BareKey::Esc);
     assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
     assert_eq!(screen.style.colors, screen.themes["beta"]);
+}
+
+fn history_run(
+    rows: Vec<yinz_bus::command_palette::HistoryRow>,
+) -> yinz_bus::command_palette::HistoryReply {
+    use yinz_bus::command_palette::{HistoryAction, HistoryEvent, HistoryHeader, HistoryReply};
+    let events = rows
+        .iter()
+        .filter_map(|row| match row.action {
+            HistoryAction::Event { revision, .. } => Some(HistoryEvent {
+                revision,
+                kind: "Message".into(),
+                time: String::new(),
+                markdown: row.label.clone(),
+                truncated: false,
+            }),
+            _ => None,
+        })
+        .collect();
+    HistoryReply::Run {
+        header: HistoryHeader {
+            name: "Recorded run".into(),
+            ..Default::default()
+        },
+        events,
+        rows,
+        status: String::new(),
+    }
+}
+
+#[test]
+fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, HistoryAction, HistoryRow, Instruction,
+    };
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    let mut screen = screen();
+    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+        PaneId::Terminal(TerminalId::new(1)),
+        Some(AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Idle,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: Some("session".into()),
+            run_id: Some("run".into()),
+        }),
+    );
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let (tick_tx, tick_rx) = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(tick_tx));
+    palette_search(&mut screen, "provider:codex");
+    palette_key(&mut screen, BareKey::Enter);
+    let initial = next();
+    let reply =
+        |request: &yinz_bus::command_palette::AgentRequest, start: u64| Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply: Ok(AgentReply::History(history_run(
+                (start..start + 30)
+                    .map(|revision| HistoryRow {
+                        id: format!("event:{revision}"),
+                        label: format!("Event {revision}"),
+                        description: String::new(),
+                        action: HistoryAction::Event {
+                            id: "run".into(),
+                            revision,
+                        },
+                    })
+                    .collect(),
+            ))),
+        };
+    screen.plugin_palette_instruction(reply(&initial, 50));
+    let view = loop {
+        let (instruction, _) = tick_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let ScreenInstruction::CommandPalette(Instruction::HistoryTick { view, .. }) =
+            instruction
+        {
+            break view;
+        }
+    };
+    screen.plugin_palette_instruction(Instruction::HistoryTick {
+        client: CLIENT,
+        opening: initial.opening,
+        view,
+        generation: 1,
+    });
+    let latest = next();
+    assert!(matches!(
+        latest.action,
+        AgentAction::History(HistoryAction::Run { from: None, .. })
+    ));
+    // The response was requested while following, but arrives after scrolling back.
+    palette_key(&mut screen, BareKey::Up);
+    screen.plugin_palette_instruction(reply(&latest, 51));
+    let pinned = next();
+    assert!(matches!(
+        pinned.action,
+        AgentAction::History(HistoryAction::Run { from: Some(50), .. })
+    ));
+    screen.plugin_palette_instruction(reply(&pinned, 50));
+    screen.plugin_palette_instruction(Instruction::HistoryTick {
+        client: CLIENT,
+        opening: initial.opening,
+        view,
+        generation: 3,
+    });
+    let anchored = next();
+    assert!(matches!(
+        anchored.action,
+        AgentAction::History(HistoryAction::Run { from: Some(50), .. })
+    ));
+
+    let with_page = |request, start, name: &str, from| {
+        let mut response = reply(request, start);
+        if let Instruction::AgentReply {
+            reply:
+                Ok(AgentReply::History(yinz_bus::command_palette::HistoryReply::Run { rows, .. })),
+            ..
+        } = &mut response
+        {
+            rows.push(HistoryRow {
+                id: name.to_lowercase(),
+                label: name.into(),
+                description: String::new(),
+                action: HistoryAction::Run {
+                    id: "run".into(),
+                    from: Some(from),
+                    query: String::new(),
+                },
+            });
+        }
+        response
+    };
+    screen.plugin_palette_instruction(with_page(&anchored, 50, "Older", 20));
+    for key in [BareKey::Tab, BareKey::Down, BareKey::Enter] {
+        palette_key(&mut screen, key);
+    }
+    let older = next();
+    assert!(matches!(
+        older.action,
+        AgentAction::History(HistoryAction::Run { from: Some(20), .. })
+    ));
+    screen.plugin_palette_instruction(with_page(&older, 20, "Newer", 50));
+    for key in [BareKey::Tab, BareKey::Down, BareKey::Enter] {
+        palette_key(&mut screen, key);
+    }
+    let newer = next();
+    assert!(matches!(
+        newer.action,
+        AgentAction::History(HistoryAction::Run { from: Some(50), .. })
+    ));
+    screen.plugin_palette_instruction(reply(&newer, 50));
+    palette_key(&mut screen, BareKey::End);
+    screen.plugin_palette_instruction(Instruction::HistoryTick {
+        client: CLIENT,
+        opening: initial.opening,
+        view,
+        generation: 7,
+    });
+    let latest = next();
+    assert!(matches!(
+        latest.action,
+        AgentAction::History(HistoryAction::Run { from: None, .. })
+    ));
+    palette_key(&mut screen, BareKey::Up);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    screen.plugin_palette_instruction(reply(&latest, 51));
+    let pinned = next();
+    assert!(matches!(
+        pinned.action,
+        AgentAction::History(HistoryAction::Run { from: Some(50), .. })
+    ));
+    assert_eq!(
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        before
+    );
+    screen.plugin_palette_instruction(reply(&pinned, 50));
+    assert_eq!(
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        before
+    );
 }

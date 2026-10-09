@@ -3,7 +3,7 @@ use crate::ui::command_palette::{Entry, EntryKind, Field, Form, Outcome, PluginS
 use std::collections::{BTreeMap, HashMap};
 use yinz_bus::command_palette::{
     query::{AgentQuery, ARCHIVE_FIELDS, LIVE_FIELDS},
-    AgentAction, HistoryAction, HistoryReply, Instruction,
+    AgentAction, HistoryAction, HistoryHeader, HistoryReply, Instruction,
 };
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{
@@ -96,7 +96,6 @@ pub(super) struct Browser {
     live: Option<LiveAgent>,
     action: HistoryAction,
     rows: HashMap<String, HistoryAction>,
-    recorded: String,
     generation: u64,
 }
 
@@ -212,26 +211,45 @@ impl Screen {
             "Archived agents"
         };
         state.widget.push_view(view, title.into());
-        if let Some(live) = &live {
-            state.widget.metadata = Some(live.text());
+        let entries: Vec<_> = live
+            .as_ref()
+            .map(|_| Entry {
+                id: "history-focus".into(),
+                label: "Focus".into(),
+                description: String::new(),
+                shortcut: String::new(),
+                aliases: vec![],
+                kind: EntryKind::Plugin,
+            })
+            .into_iter()
+            .collect();
+        if matches!(action, HistoryAction::Search(_)) {
+            state.widget.set_sections(vec![PluginSection {
+                title: title.into(),
+                entries,
+                semantic: true,
+                status: Some("Loading…".into()),
+            }]);
+        } else {
+            state.widget.set_agent_history(
+                HistoryHeader {
+                    name: live
+                        .as_ref()
+                        .map(|live| live.pane.title.clone())
+                        .unwrap_or_else(|| "Agent info".into()),
+                    status: live
+                        .as_ref()
+                        .map(LiveAgent::description)
+                        .unwrap_or_default(),
+                    started: "Unavailable".into(),
+                    details: live.as_ref().map(LiveAgent::text).unwrap_or_default(),
+                    ..Default::default()
+                },
+                vec![],
+                entries,
+                "Loading…".into(),
+            );
         }
-        state.widget.set_sections(vec![PluginSection {
-            title: title.into(),
-            entries: live
-                .as_ref()
-                .map(|_| Entry {
-                    id: "history-focus".into(),
-                    label: "Focus".into(),
-                    description: String::new(),
-                    shortcut: String::new(),
-                    aliases: vec![],
-                    kind: EntryKind::Plugin,
-                })
-                .into_iter()
-                .collect(),
-            semantic: true,
-            status: Some("Loading…".into()),
-        }]);
         let missing = live.as_ref().is_some_and(|live| live.run().is_none());
         state.agents.browsers.insert(
             view,
@@ -239,60 +257,127 @@ impl Screen {
                 live,
                 action: action.clone(),
                 rows: HashMap::new(),
-                recorded: String::new(),
                 generation: 0,
             },
         );
         if missing {
             self.palette_history_reply(
                 client,
-                HistoryReply::Rows {
-                    metadata: Some("Recorded history: unavailable".into()),
+                HistoryReply::Run {
+                    header: HistoryHeader {
+                        name: "Recorded history unavailable".into(),
+                        details: "No recorded history".into(),
+                        ..Default::default()
+                    },
+                    events: vec![],
                     rows: vec![],
                     status: "No recorded history".into(),
                 },
+                None,
             );
         } else {
             self.request_palette_agent(client, AgentAction::History(action), None);
         }
     }
 
-    pub(super) fn palette_history_reply(&mut self, client: ClientId, reply: HistoryReply) {
+    pub(super) fn palette_history_reply(
+        &mut self,
+        client: ClientId,
+        reply: HistoryReply,
+        request: Option<HistoryAction>,
+    ) {
         let Some(state) = self.command_palettes.get_mut(&client) else {
             return;
         };
         let Some(browser) = state.agents.browsers.get_mut(&state.widget.view) else {
             return;
         };
+        // A newest-page reply can arrive after the user has scrolled back.
+        if let HistoryReply::Run { events, .. } = &reply {
+            if let HistoryAction::Run { from, .. } = &mut browser.action {
+                if browser.live.is_some()
+                    && matches!(request, Some(HistoryAction::Run { from: None, ref query, .. }) if query.is_empty())
+                    && !state.widget.agent_following()
+                {
+                    if let Some(first) = state
+                        .widget
+                        .agent_first_revision()
+                        .filter(|first| events.first().is_some_and(|e| e.revision > *first))
+                    {
+                        *from = Some(first);
+                        let action = browser.action.clone();
+                        self.request_palette_agent(client, AgentAction::History(action), None);
+                        return;
+                    }
+                }
+            }
+        }
         match reply {
-            HistoryReply::Text(text) => state.widget.open_text(text),
-            HistoryReply::Rows {
-                metadata,
+            HistoryReply::Reader {
+                header,
+                markdown,
+                tool,
+            } => state.widget.open_agent_reader(header, markdown, tool),
+            HistoryReply::Run {
+                mut header,
+                events,
                 rows,
                 status,
             } => {
-                browser.recorded = metadata.unwrap_or_default();
-                if browser.live.is_some() || !browser.recorded.is_empty() {
-                    state.widget.metadata = Some(format!(
-                        "{}\n{}",
-                        browser
-                            .live
-                            .as_ref()
-                            .map(LiveAgent::text)
-                            .unwrap_or_default(),
-                        browser.recorded
-                    ));
+                if let Some(live) = &browser.live {
+                    header.name = live.pane.title.clone();
+                    header.status = ["provider", "state"]
+                        .iter()
+                        .filter_map(|key| live.metadata.get(*key).cloned())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    header.location = ["session", "directory"]
+                        .iter()
+                        .filter_map(|key| live.metadata.get(*key).cloned())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    header.details = format!("{}\n{}", live.text(), header.details);
                 }
+                let entry = |id: String, label: String| Entry {
+                    id,
+                    label,
+                    description: String::new(),
+                    shortcut: String::new(),
+                    aliases: vec![],
+                    kind: EntryKind::Plugin,
+                };
+                let mut actions = Vec::new();
                 if browser.live.is_some() {
-                    if let HistoryAction::Run { from, .. } = &mut browser.action {
-                        if from.is_none() {
-                            *from = rows.iter().find_map(|r| match r.action {
-                                HistoryAction::Event { revision, .. } => Some(revision),
-                                _ => None,
-                            });
-                        }
-                    }
+                    actions.push(entry("history-focus".into(), "Focus".into()));
                 }
+                browser.rows.clear();
+                for row in rows {
+                    let id = format!("history:{}:{}", state.widget.view, row.id);
+                    if !matches!(
+                        row.action,
+                        HistoryAction::Event { .. } | HistoryAction::Hit { .. }
+                    ) {
+                        actions.push(entry(id.clone(), row.label));
+                    }
+                    browser.rows.insert(id, row.action);
+                }
+                actions.push(entry("history-details".into(), "Details".into()));
+                if status.contains("Partial") {
+                    state.widget.set_error(status.clone());
+                }
+                state
+                    .widget
+                    .set_agent_history(header, events, actions, status);
+                if let HistoryAction::Hit { id, revision } = &browser.action {
+                    state.widget.select_agent_revision(*revision);
+                    browser.action = HistoryAction::Run {
+                        id: id.clone(),
+                        from: Some(revision.saturating_sub(2).max(1)),
+                        query: String::new(),
+                    };
+                }
+            },
+            HistoryReply::Rows { rows, status } => {
                 browser.rows.clear();
                 let mut entries = Vec::new();
                 let entry = |id: String, label: String, description: String| Entry {
@@ -303,56 +388,30 @@ impl Screen {
                     aliases: vec![],
                     kind: EntryKind::Plugin,
                 };
-                if browser.live.is_some() {
-                    entries.push(entry(
-                        "history-focus".into(),
-                        "Focus".into(),
-                        "Focus this live agent".into(),
-                    ));
-                }
-                if matches!(browser.action, HistoryAction::Search(_)) {
-                    entries.push(entry(
-                        "history-filters".into(),
-                        "Filters…".into(),
-                        "provider project session host run since".into(),
-                    ));
-                }
+                entries.push(entry(
+                    "history-filters".into(),
+                    "Filters…".into(),
+                    "provider project session host run since".into(),
+                ));
                 for r in rows {
                     let id = format!("history:{}:{}", state.widget.view, r.id);
                     browser.rows.insert(id.clone(), r.action);
                     entries.push(entry(id, r.label, r.description));
                 }
-                if matches!(browser.action, HistoryAction::Search(_)) {
-                    entries.push(entry(
-                        "history-refresh".into(),
-                        "Refresh".into(),
-                        String::new(),
-                    ));
-                }
+                entries.push(entry(
+                    "history-refresh".into(),
+                    "Refresh".into(),
+                    String::new(),
+                ));
                 if status.contains("Partial") {
                     state.widget.set_error(status.clone());
                 }
                 state.widget.set_sections(vec![PluginSection {
-                    title: if matches!(browser.action, HistoryAction::Search(_)) {
-                        "Archived agents"
-                    } else {
-                        "Timeline"
-                    }
-                    .into(),
+                    title: "Archived agents".into(),
                     entries,
                     semantic: true,
                     status: Some(status),
                 }]);
-                if let HistoryAction::Hit { id, revision } = &browser.action {
-                    state
-                        .widget
-                        .select_id(&format!("history:{}:event:{revision}", state.widget.view));
-                    browser.action = HistoryAction::Run {
-                        id: id.clone(),
-                        from: Some(revision.saturating_sub(2).max(1)),
-                        query: String::new(),
-                    };
-                }
             },
         }
         if browser.live.is_some() {
@@ -463,6 +522,7 @@ impl Screen {
                 if let HistoryAction::Run { id, from, .. } = &mut browser.action {
                     *id = current.run().unwrap_or_default();
                     *from = None;
+                    state.widget.agent_page_request(true);
                 }
             }
             browser.live = Some(current);
@@ -476,14 +536,29 @@ impl Screen {
         if missing {
             self.palette_history_reply(
                 client,
-                HistoryReply::Rows {
-                    metadata: Some("Recorded history: unavailable".into()),
+                HistoryReply::Run {
+                    header: HistoryHeader {
+                        name: "Recorded history unavailable".into(),
+                        details: "No recorded history".into(),
+                        ..Default::default()
+                    },
+                    events: vec![],
                     rows: vec![],
                     status: "No recorded history".into(),
                 },
+                None,
             );
         } else {
-            let action = browser.action.clone();
+            let mut action = browser.action.clone();
+            if let HistoryAction::Run { from, query, .. } = &mut action {
+                if query.is_empty() {
+                    *from = if state.widget.agent_following() {
+                        None
+                    } else {
+                        state.widget.agent_first_revision().or(*from)
+                    };
+                }
+            }
             self.request_palette_agent(client, AgentAction::History(action), None);
         }
     }
@@ -629,10 +704,17 @@ impl Screen {
             },
             HistoryAction::Run { id, .. } if matches!(&browser.action, HistoryAction::Run { id: current, .. } if current == id) =>
             {
+                state
+                    .widget
+                    .agent_page_request(matches!(action, HistoryAction::Run { from: None, .. }));
                 browser.action = action.clone();
                 state.widget.set_query(String::new());
                 state.agents.cancel();
                 self.request_palette_agent(client, AgentAction::History(action), None);
+            },
+            HistoryAction::Hit { .. } => {
+                let live = browser.live.clone();
+                self.open_palette_history(client, live, Some(action));
             },
             _ => self.open_palette_history(client, None, Some(action)),
         }

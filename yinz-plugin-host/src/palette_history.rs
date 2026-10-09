@@ -4,7 +4,9 @@ use agent_proto::{
     agents::{AgentRunHeader, RunOutcome},
     run_history as history, store,
 };
-use yinz_bus::command_palette::{HistoryAction, HistoryReply, HistoryRow};
+use yinz_bus::command_palette::{
+    HistoryAction, HistoryEvent, HistoryHeader, HistoryReply, HistoryRow,
+};
 use yinz_tile::prelude::*;
 
 struct Reader<'a>(&'a DataAccess);
@@ -53,6 +55,11 @@ fn row(
         description,
         action,
     }
+}
+fn timestamp(ms: Option<i64>) -> String {
+    ms.and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|time| time.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "Time unavailable".into())
 }
 fn run_action(id: &str, from: Option<u64>) -> HistoryAction {
     HistoryAction::Run {
@@ -181,7 +188,6 @@ pub(super) fn execute(
                 }
             }
             HistoryReply::Rows {
-                metadata: None,
                 rows,
                 status: if partial {
                     "Partial results: 50-run or 4,000-row scan limit; narrow filters"
@@ -193,8 +199,13 @@ pub(super) fn execute(
         },
         HistoryAction::Run { id, from, query } => {
             let Some(h) = history::run_header(&backend, id)? else {
-                return Ok(AgentReply::History(HistoryReply::Rows {
-                    metadata: Some("Recorded history: unavailable".into()),
+                return Ok(AgentReply::History(HistoryReply::Run {
+                    header: HistoryHeader {
+                        name: "Recorded history unavailable".into(),
+                        details: "No recorded history".into(),
+                        ..Default::default()
+                    },
+                    events: vec![],
                     rows: vec![],
                     status: "No recorded history".into(),
                 }));
@@ -232,6 +243,7 @@ pub(super) fn execute(
                 String::new(),
                 run_action(id, None),
             ));
+            let mut events = Vec::new();
             let status;
             if query.is_empty() {
                 let page = history::entry_page(&backend, id, *from, 30)?;
@@ -274,10 +286,17 @@ pub(super) fn execute(
                 }
                 status = format!("{} retained events · type to search this run · previews may be shortened; Enter expands", page.total);
                 for e in page.entries {
+                    events.push(HistoryEvent {
+                        revision: e.revision,
+                        kind: e.kind.label().into(),
+                        time: timestamp(e.created_at_ms),
+                        truncated: page.truncated_revisions.contains(&e.revision),
+                        markdown: e.text.clone(),
+                    });
                     rows.push(row(
                         format!("event:{}", e.revision),
                         format!("{} · {}", e.revision, e.kind.label()),
-                        history::snippet(&e.text, ""),
+                        String::new(),
                         HistoryAction::Event {
                             id: id.clone(),
                             revision: e.revision,
@@ -294,19 +313,42 @@ pub(super) fn execute(
                 }
                 .into();
                 for hit in found.hits {
+                    events.push(HistoryEvent {
+                        revision: hit.revision,
+                        kind: hit.kind.label().into(),
+                        time: timestamp(hit.created_at_ms),
+                        markdown: yinz_tile_markdown::escape_inline(&hit.snippet),
+                        truncated: true,
+                    });
                     rows.push(row(
                         format!("event:{}", hit.revision),
                         format!("{} · {}", hit.revision, hit.kind.label()),
                         hit.snippet,
-                        HistoryAction::Event {
+                        HistoryAction::Hit {
                             id: id.clone(),
                             revision: hit.revision,
                         },
                     ));
                 }
             }
-            HistoryReply::Rows {
-                metadata: Some(metadata),
+            events.sort_by_key(|event| event.revision);
+            HistoryReply::Run {
+                header: HistoryHeader {
+                    name: if h.title.is_empty() {
+                        h.id.clone()
+                    } else {
+                        h.title.clone()
+                    },
+                    status: format!("{} · {:?}", h.kind, h.outcome),
+                    location: format!(
+                        "{} · {}",
+                        h.yinz_session_name,
+                        h.cwd.as_deref().unwrap_or("Directory unavailable")
+                    ),
+                    started: timestamp(Some(h.started_at_ms)),
+                    details: metadata,
+                },
+                events,
                 rows,
                 status,
             }
@@ -334,14 +376,16 @@ pub(super) fn execute(
                 .transpose()
                 .map_err(|e| format!("Cannot format tool details: {e}"))?
                 .unwrap_or_default();
-            HistoryReply::Text(format!(
-                "Revision: {} · {} · {:?}\n\n{}\n\n{}",
-                entry.revision,
-                entry.kind.label(),
-                entry.created_at_ms,
-                entry.text,
-                tool
-            ))
+            HistoryReply::Reader {
+                header: format!(
+                    "Revision: {} · {} · {}",
+                    entry.revision,
+                    entry.kind.label(),
+                    timestamp(entry.created_at_ms)
+                ),
+                markdown: entry.text,
+                tool,
+            }
         },
         HistoryAction::Resume { id } => {
             let h = history::run_header(&backend, id)?.ok_or("Run no longer retained")?;
