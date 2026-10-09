@@ -662,7 +662,7 @@ pub fn frame_color(
             _ => Some((style.colors.frame_highlight.base, 8)),
         }
     } else if mouse_is_hovering_over_pane {
-        Some((style.colors.frame_highlight.base, 4))
+        Some((style.colors.ribbon_unselected.emphasis_1, 4))
     } else if pane_is_related {
         // Kin of the focused pane, and drawn as such: the focused frame's own colour, faded
         // most of the way back to the background, so it reads as "these belong with that one"
