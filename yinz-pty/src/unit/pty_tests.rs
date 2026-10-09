@@ -4645,12 +4645,18 @@ fn note_editor_forced_closure_completes_once_and_startup_failure_has_no_pane() {
     *os.local_spawns_to_allow.lock().unwrap() = 1;
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os.clone());
     let (exit, receiver) = crossbeam::channel::bounded(1);
-    pty.open_note_editor("/tmp/note.md".into(), TabId::new(0), ClientId::new(7), exit)
-        .unwrap();
+    pty.open_note_editor(
+        "/tmp/note.md".into(),
+        "#123 Current title".into(),
+        TabId::new(0),
+        ClientId::new(7),
+        exit,
+    )
+    .unwrap();
     let id = TerminalId::new(0);
     assert!(pty.note_editors.contains_key(&id));
     assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(instruction,
-        ScreenInstruction::NewPane(PaneId::Terminal(terminal), _, _, _, NewPanePlacement::Overlay(_), _, ClientTabIndexOrPaneId::TabIndexForClient(tab, client), ..) if terminal == id && tab == TabId::new(0) && client == ClientId::new(7)
+        ScreenInstruction::NewPane(PaneId::Terminal(terminal), Some(title), _, _, NewPanePlacement::Overlay(_), _, ClientTabIndexOrPaneId::TabIndexForClient(tab, client), ..) if terminal == id && title == "#123 Current title" && tab == TabId::new(0) && client == ClientId::new(7)
     )));
     pty.close_pane(PaneId::Terminal(id)).unwrap();
     pty.close_pane(PaneId::Terminal(id)).unwrap();
@@ -4676,7 +4682,13 @@ fn note_editor_forced_closure_completes_once_and_startup_failure_has_no_pane() {
     *os.fail_local_spawns.lock().unwrap() = true;
     let (exit, _) = crossbeam::channel::bounded(1);
     assert!(pty
-        .open_note_editor("/tmp/note.md".into(), TabId::new(0), ClientId::new(7), exit)
+        .open_note_editor(
+            "/tmp/note.md".into(),
+            "#123 Current title".into(),
+            TabId::new(0),
+            ClientId::new(7),
+            exit
+        )
         .is_err());
     assert!(pty.note_editors.is_empty());
 }
@@ -4688,8 +4700,14 @@ fn note_editor_completion_uses_exit_status() {
         *os.local_spawns_to_allow.lock().unwrap() = 1;
         let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os);
         let (exit, receiver) = crossbeam::channel::bounded(1);
-        pty.open_note_editor("/tmp/note.md".into(), TabId::new(0), ClientId::new(7), exit)
-            .unwrap();
+        pty.open_note_editor(
+            "/tmp/note.md".into(),
+            "#123 Current title".into(),
+            TabId::new(0),
+            ClientId::new(7),
+            exit,
+        )
+        .unwrap();
         let pane = PaneId::Terminal(TerminalId::new(0));
         assert_eq!(
             receiver.try_recv(),
@@ -4724,8 +4742,14 @@ fn note_editor_placement_failure_waits_for_exit_and_preserves_error() {
     pty.bus.senders.should_silently_fail = false;
     let (exit, receiver) = crossbeam::channel::bounded(1);
     // Success here prevents OpenNoteEditor from reporting an immediate startup failure.
-    pty.open_note_editor("/tmp/note.md".into(), TabId::new(0), ClientId::new(7), exit)
-        .unwrap();
+    pty.open_note_editor(
+        "/tmp/note.md".into(),
+        "#123 Current title".into(),
+        TabId::new(0),
+        ClientId::new(7),
+        exit,
+    )
+    .unwrap();
     let pane = PaneId::Terminal(TerminalId::new(0));
     os.exit_check_started.wait();
     assert_eq!(
@@ -4759,8 +4783,14 @@ fn note_editor_forced_close_reports_teardown_and_confirmation_errors() {
     *os.local_spawns_to_allow.lock().unwrap() = 1;
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os);
     let (exit, receiver) = crossbeam::channel::bounded(1);
-    pty.open_note_editor("/tmp/note.md".into(), TabId::new(0), ClientId::new(7), exit)
-        .unwrap();
+    pty.open_note_editor(
+        "/tmp/note.md".into(),
+        "#123 Current title".into(),
+        TabId::new(0),
+        ClientId::new(7),
+        exit,
+    )
+    .unwrap();
     pty.close_pane(PaneId::Terminal(TerminalId::new(0)))
         .unwrap();
     let error = receiver

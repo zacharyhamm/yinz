@@ -208,7 +208,8 @@ impl Screen {
             .map(|note| Entry {
                 id: format!("native-note:{}", note.id),
                 label: format!(
-                    "{}{}",
+                    "#{} {}{}",
+                    note.id,
                     note.title,
                     if note.archived { " [archived]" } else { "" }
                 ),
@@ -293,6 +294,7 @@ impl Screen {
         token: u64,
         revision: u64,
         path: PathBuf,
+        pane_title: String,
         exit: NoteEditorCompletion,
     ) {
         let valid = self.command_palettes.get(&client).is_some_and(|state| {
@@ -316,6 +318,7 @@ impl Screen {
             .senders
             .send_to_pty(PtyInstruction::OpenNoteEditor {
                 path,
+                pane_title,
                 client,
                 tab,
                 exit: exit.clone(),

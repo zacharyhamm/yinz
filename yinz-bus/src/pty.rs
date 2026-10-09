@@ -265,6 +265,7 @@ pub enum PtyInstruction {
     SpawnResolved(PendingSpawn),
     OpenNoteEditor {
         path: PathBuf,
+        pane_title: String,
         client: ClientId,
         tab: TabId,
         exit: crate::command_palette::NoteEditorCompletion,

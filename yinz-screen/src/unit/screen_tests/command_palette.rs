@@ -681,14 +681,19 @@ fn palette_searches_pane_ids_and_keeps_them_visible_before_long_titles() {
                     palette_search(&mut screen, &query);
                 }
                 let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+                let label = format!(
+                    "› [{}]",
+                    match pane {
+                        PaneId::Terminal(id) => id.to_string(),
+                        PaneId::Plugin(_) => pane.to_string(),
+                    }
+                );
+                let continuation = frame
+                    .lines()
+                    .skip_while(|line| !line.contains(&label))
+                    .nth(1);
                 assert!(
-                    frame.contains(&format!(
-                        "› [{}] 界",
-                        match pane {
-                            PaneId::Terminal(id) => id.to_string(),
-                            PaneId::Plugin(_) => pane.to_string(),
-                        }
-                    )),
+                    continuation.is_some_and(|line| line.contains('界') && line.contains('…')),
                     "{query}: {frame}"
                 );
                 palette_key(&mut screen, BareKey::Enter);
@@ -4197,7 +4202,7 @@ fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
         reply: results(),
     });
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(rendered.contains("First [archived]"), "{rendered}");
+    assert!(rendered.contains("#1 First [archived]"), "{rendered}");
     assert!(rendered.contains("Matching body"), "{rendered}");
     assert!(rendered.contains("more results"), "{rendered}");
     screen.command_palette_handles_input(
@@ -4217,6 +4222,7 @@ fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
         token: open.token,
         revision: open.revision,
         path: "/tmp/note.md".into(),
+        pane_title: "#2 Current title".into(),
         exit,
     });
     assert!(!screen.command_palettes.contains_key(&CLIENT));
@@ -4231,7 +4237,7 @@ fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
         "suspending note search must keep the provider opening alive"
     );
     assert!(pty_rx.try_iter().any(
-        |(i, _)| matches!(i, PtyInstruction::OpenNoteEditor { tab, .. } if tab == TabId::new(0))
+        |(i, _)| matches!(i, PtyInstruction::OpenNoteEditor { tab, pane_title, .. } if tab == TabId::new(0) && pane_title == "#2 Current title")
     ));
     assert!(!screen.command_palette_handles_input(&None, b"editor input", false, CLIENT));
     screen.plugin_palette_instruction(Instruction::NoteFinished {
@@ -4248,7 +4254,7 @@ fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
         revision: refreshed.revision,
         reply: results(),
     });
-    assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("› Second"));
+    assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("› #2 Second"));
     screen.command_palette_handles_input(&esc, b"", false, CLIENT);
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(rendered.contains("Search project notes"), "{rendered}");
@@ -4345,6 +4351,7 @@ fn native_note_editor_completion_does_not_replace_a_new_palette_or_restore_a_dis
             token: open.token,
             revision: open.revision,
             path: "/tmp/note.md".into(),
+            pane_title: "#2 Current title".into(),
             exit,
         });
         assert!(!screen.command_palettes.contains_key(&CLIENT));
@@ -4406,7 +4413,7 @@ fn note_editor_placement_keeps_its_tab_and_only_focuses_its_requester() {
         screen
             .place_new_pane(
                 editor,
-                Some("Project note".into()),
+                Some("#1 Note".into()),
                 None,
                 None,
                 NewPanePlacement::Overlay(OverlayPlacement::modal(None)),

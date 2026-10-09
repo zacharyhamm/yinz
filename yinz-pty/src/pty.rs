@@ -711,11 +711,14 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             },
             PtyInstruction::OpenNoteEditor {
                 path,
+                pane_title,
                 client,
                 tab,
                 exit,
             } => {
-                if let Err(error) = pty.open_note_editor(path, tab, client, exit.clone()) {
+                if let Err(error) =
+                    pty.open_note_editor(path, pane_title, tab, client, exit.clone())
+                {
                     let _ = exit.send(Err(format!("Cannot start note editor: {error:#}")));
                 }
             },
@@ -1975,6 +1978,7 @@ impl Pty {
     fn open_note_editor(
         &mut self,
         path: PathBuf,
+        pane_title: String,
         tab: TabId,
         client: ClientId,
         exit: yinz_bus::command_palette::NoteEditorCompletion,
@@ -2018,7 +2022,7 @@ impl Pty {
             )));
         let placed = self.bus.senders.send_to_screen(ScreenInstruction::NewPane(
             PaneId::Terminal(id),
-            Some("Project note".into()),
+            Some(pane_title),
             None,
             Some(Run::EditFile(path, None, None)),
             placement,

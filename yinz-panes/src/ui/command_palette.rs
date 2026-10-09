@@ -168,6 +168,7 @@ pub struct CommandPalette {
     pub view: u64,
     pub busy: bool,
     pub pending: bool,
+    result_width: Cell<usize>,
     pub agent_metadata:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub metadata: Option<String>,
@@ -217,7 +218,7 @@ pub struct CommandPaletteLayout {
 enum ResultRow {
     Heading(String),
     Status(usize, String),
-    Entry(usize),
+    Entry(usize, usize),
 }
 
 impl CommandPalette {
@@ -654,6 +655,10 @@ impl CommandPalette {
             )
         {
             self.normalize_region_selection();
+            if matches!(key.bare_key, BareKey::PageUp | BareKey::PageDown) {
+                self.page_selection(key.bare_key == BareKey::PageDown);
+                return Outcome::None;
+            }
             let region: Vec<_> = self
                 .matches
                 .iter()
@@ -663,12 +668,9 @@ impl CommandPalette {
                 .collect();
             if !region.is_empty() {
                 let current = region.iter().position(|i| *i == self.selected).unwrap_or(0);
-                let page = self.page_rows.get().max(1);
                 let next = match key.bare_key {
                     BareKey::Up => current.saturating_sub(1),
                     BareKey::Down => current.saturating_add(1),
-                    BareKey::PageUp => current.saturating_sub(page),
-                    BareKey::PageDown => current.saturating_add(page),
                     BareKey::Home => 0,
                     BareKey::End => region.len() - 1,
                     _ => current,
@@ -751,14 +753,8 @@ impl CommandPalette {
                     return Outcome::FocusAgent(entry.id.clone());
                 }
             },
-            BareKey::PageUp => {
-                self.selected = self.selected.saturating_sub(self.page_rows.get().max(1))
-            },
-            BareKey::PageDown => {
-                self.selected = self
-                    .selected
-                    .saturating_add(self.page_rows.get().max(1))
-                    .min(self.matches.len().saturating_sub(1))
+            BareKey::PageUp | BareKey::PageDown => {
+                self.page_selection(key.bare_key == BareKey::PageDown);
             },
             BareKey::Up | BareKey::Down if key.has_no_modifiers() => {
                 let rows = self.result_rows(1);
@@ -838,7 +834,9 @@ impl CommandPalette {
 
     fn row_selected(&self, row: &ResultRow) -> bool {
         match row {
-            ResultRow::Entry(index) => self.selected_entry().is_some() && *index == self.selected,
+            ResultRow::Entry(index, _) => {
+                self.selected_entry().is_some() && *index == self.selected
+            },
             ResultRow::Status(section, _) => self.selected_status == Some(*section),
             ResultRow::Heading(_) => false,
         }
@@ -846,7 +844,7 @@ impl CommandPalette {
 
     fn select_row(&mut self, row: &ResultRow) {
         match row {
-            ResultRow::Entry(index) => {
+            ResultRow::Entry(index, _) => {
                 self.selected = *index;
                 self.selected_status = None;
             },
@@ -885,7 +883,7 @@ impl CommandPalette {
                     rows.push(ResultRow::Heading(label.into()));
                 }
             }
-            rows.push(ResultRow::Entry(index));
+            rows.push(ResultRow::Entry(index, 0));
             previous = (section, label);
         }
         if self.picker.is_none() {
@@ -898,7 +896,7 @@ impl CommandPalette {
                         !self.scored_section(section_index)
                             && self.entry_sections[**entry] == Some(section_index)
                     })
-                    .map(|(index, _)| ResultRow::Entry(index))
+                    .map(|(index, _)| ResultRow::Entry(index, 0))
                     .collect();
                 if entries.is_empty() && section.status.is_none() {
                     continue;
@@ -915,41 +913,135 @@ impl CommandPalette {
         rows
     }
 
-    fn visible_result_rows(&self, capacity: usize) -> Vec<ResultRow> {
+    fn entry_lines(&self, index: usize, width: usize, max_lines: usize) -> Vec<String> {
+        use unicode_width::UnicodeWidthStr;
+        let entry = &self.entries[self.matches[index]];
+        let shortcut = take_columns(&entry.shortcut, width.saturating_sub(3));
+        let width = width.saturating_sub(shortcut.width() + usize::from(!shortcut.is_empty()));
+        let width = width - width.saturating_sub(1).min(2);
+        if width == 0 {
+            return vec![String::new()];
+        }
+        let mut lines = crate::ui::notification::wrapped_text_lines(&entry.label, width);
+        let truncated = lines.len() > max_lines || lines.iter().any(|line| line.width() > width);
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            if truncated {
+                *last = format!("{}…", take_columns(last, width.saturating_sub(1)));
+            } else if !entry.description.is_empty() {
+                last.push_str(&format!(" — {}", entry.description));
+            }
+        }
+        lines
+    }
+
+    fn entry_heading(&self, index: usize) -> Option<String> {
+        let entry = &self.entries[self.matches[index]];
+        if entry.kind == EntryKind::Plugin {
+            self.entry_sections[self.matches[index]].map(|i| self.sections[i].title.clone())
+        } else if self.picker == Some(EntryKind::Session) {
+            match entry.kind {
+                EntryKind::Session => Some("Live sessions".into()),
+                EntryKind::ExitedSession => Some("Exited sessions".into()),
+                _ => None,
+            }
+        } else if self.picker.is_none() {
+            entry.kind.parent_label().map(String::from)
+        } else {
+            None
+        }
+    }
+
+    fn wrapped_result_rows(&self, capacity: usize, width: usize) -> Vec<ResultRow> {
         let rows = self.result_rows(capacity);
+        rows.into_iter()
+            .flat_map(|row| {
+                if let ResultRow::Entry(index, _) = row {
+                    let heading = usize::from(self.entry_heading(index).is_some());
+                    let max_lines = capacity.saturating_sub(heading).clamp(1, 2);
+                    (0..self.entry_lines(index, width, max_lines).len())
+                        .map(|line| ResultRow::Entry(index, line))
+                        .collect()
+                } else {
+                    vec![row]
+                }
+            })
+            .collect()
+    }
+
+    fn page_selection(&mut self, down: bool) {
+        let capacity = self.page_rows.get().max(1);
+        let mut rows = self.wrapped_result_rows(capacity, self.result_width.get());
+        if self.metadata.is_some() {
+            rows.retain(|row| {
+                matches!(row, ResultRow::Entry(index, _)
+                if self.in_focused_region(&self.entries[self.matches[*index]]))
+            });
+        }
+        if rows.is_empty() {
+            return;
+        }
+        let selected = rows
+            .iter()
+            .position(|row| self.row_selected(row))
+            .unwrap_or(0);
+        let heading = match &rows[selected] {
+            ResultRow::Entry(index, _) => self.entry_heading(*index).is_some(),
+            ResultRow::Status(_, _) => true,
+            ResultRow::Heading(_) => false,
+        };
+        let distance = capacity.saturating_sub(usize::from(heading)).max(1);
+        let target = if down {
+            selected
+                .saturating_add(distance)
+                .min(rows.len().saturating_sub(1))
+        } else {
+            selected.saturating_sub(distance)
+        };
+        let row = if down {
+            rows[target..]
+                .iter()
+                .find(|row| !matches!(row, ResultRow::Heading(_)))
+        } else {
+            rows[..=target]
+                .iter()
+                .rev()
+                .find(|row| !matches!(row, ResultRow::Heading(_)))
+        };
+        if let Some(row) = row {
+            self.select_row(row);
+        }
+    }
+
+    fn visible_result_rows(&self, capacity: usize, width: usize) -> Vec<ResultRow> {
+        let rows = self.wrapped_result_rows(capacity, width);
         if rows.is_empty() {
             return rows;
         }
         let selected = rows
             .iter()
-            .position(|row| self.row_selected(row))
+            .rposition(|row| self.row_selected(row))
             .unwrap_or(0);
         let mut start = (selected + 1).saturating_sub(capacity);
         let sticky_heading = |start: usize| {
             if let Some(ResultRow::Status(section, _)) = rows.get(start) {
                 return Some(self.sections[*section].title.clone());
             }
-            let Some(ResultRow::Entry(index)) = rows.get(start) else {
+            let Some(ResultRow::Entry(index, _)) = rows.get(start) else {
                 return None;
             };
-            let entry = &self.entries[self.matches[*index]];
-            if entry.kind == EntryKind::Plugin {
-                self.entry_sections[self.matches[*index]].map(|i| self.sections[i].title.clone())
-            } else if self.picker == Some(EntryKind::Session) {
-                match entry.kind {
-                    EntryKind::Session => Some("Live sessions".into()),
-                    EntryKind::ExitedSession => Some("Exited sessions".into()),
-                    _ => None,
-                }
-            } else if self.picker.is_none() {
-                entry.kind.parent_label().map(String::from)
-            } else {
-                None
-            }
+            self.entry_heading(*index)
         };
-        // Account for a repeated section heading before choosing the visible entry window.
-        if capacity >= 2 && sticky_heading(start).is_some() && selected >= start + capacity - 1 {
-            start += 1;
+        // Keep whole entries below their repeated heading, including the selected title.
+        loop {
+            let heading = usize::from(capacity >= 2 && sticky_heading(start).is_some());
+            if selected >= start + capacity - heading
+                || matches!(rows.get(start), Some(ResultRow::Entry(_, line)) if *line > 0)
+            {
+                start += 1;
+            } else {
+                break;
+            }
         }
         let mut visible = Vec::new();
         if capacity >= 2 {
@@ -1017,6 +1109,7 @@ impl CommandPalette {
             .unwrap_or_default();
         self.text_rows.set(text_lines.len());
         self.page_rows.set(options_rows);
+        self.result_width.set(cols.saturating_sub(2 * border));
         let offset = self
             .text_offset
             .min(text_lines.len().saturating_sub(options_rows));
@@ -1041,7 +1134,7 @@ impl CommandPalette {
             footer_y,
             picker_heading_y: (self.picker.is_some() && self.form.is_none() && rows >= 6)
                 .then_some(input_y + 1),
-            result_rows: self.visible_result_rows(options_rows),
+            result_rows: self.visible_result_rows(options_rows, self.result_width.get()),
             text_lines: text_lines
                 .into_iter()
                 .skip(offset)
@@ -1073,7 +1166,7 @@ impl CommandPalette {
             } else if let Some(row) = layout.result_rows.get(y - layout.options_y) {
                 self.select_row(row);
                 if self.metadata.is_some() {
-                    if let ResultRow::Entry(index) = row {
+                    if let ResultRow::Entry(index, _) = row {
                         self.metadata_focus =
                             if self.entries[self.matches[*index]].id.contains("event:") {
                                 1
@@ -1231,7 +1324,7 @@ impl CommandPalette {
                         let row = layout.result_rows.get(y - layout.options_y);
                         let index = if self.form.is_some() {
                             layout.first_option + y - layout.options_y
-                        } else if let Some(ResultRow::Entry(index)) = row {
+                        } else if let Some(ResultRow::Entry(index, _)) = row {
                             *index
                         } else {
                             usize::MAX
@@ -1275,29 +1368,23 @@ impl CommandPalette {
                         ) = row
                         {
                             label.clone()
-                        } else if let Some(entry) =
-                            self.matches.get(index).map(|i| &self.entries[*i])
-                        {
-                            let label = format!(
-                                "{} {}{}",
-                                if is_selected { '›' } else { ' ' },
-                                entry.label,
-                                if entry.description.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" — {}", entry.description)
-                                }
-                            );
-                            if entry.shortcut.is_empty() {
-                                label
-                            } else {
-                                use unicode_width::UnicodeWidthStr;
-                                let shortcut =
-                                    take_columns(&entry.shortcut, width.saturating_sub(3));
-                                let label =
-                                    fit(&label, width.saturating_sub(shortcut.width() + 1), ' ');
+                        } else if let Some(ResultRow::Entry(index, line)) = row {
+                            use unicode_width::UnicodeWidthStr;
+                            let entry = &self.entries[self.matches[*index]];
+                            let shortcut = take_columns(&entry.shortcut, width.saturating_sub(3));
+                            let label_width = width.saturating_sub(shortcut.width() + usize::from(!shortcut.is_empty()));
+                            let remaining = layout.result_rows.len() - (y - layout.options_y);
+                            let max_lines = (line + remaining).min(2);
+                            let lines = self.entry_lines(*index, width, max_lines);
+                            let prefix = if is_selected && *line == 0 { "› " } else { "  " };
+                            let label = format!("{}{}", take_columns(prefix, label_width.saturating_sub(1).min(2)),
+                                lines.get(*line).map(String::as_str).unwrap_or(""));
+                            if *line == 0 && !shortcut.is_empty() {
+                                let label = fit(&label, label_width, ' ');
                                 shortcut_start = label.chars().count() + 1;
                                 format!("{label} {shortcut}")
+                            } else {
+                                take_columns(&label, label_width)
                             }
                         } else if self.matches.is_empty() && y == layout.options_y {
                             if self.picker == Some(EntryKind::Project)
