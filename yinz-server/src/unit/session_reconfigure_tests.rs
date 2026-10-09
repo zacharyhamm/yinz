@@ -577,8 +577,8 @@ fn theme_save_escapes_names_preserves_other_settings_and_stages_until_written() 
     .unwrap();
     assert_eq!(configuration.get_client_configuration(&CLIENT), config);
     assert_eq!(saved.options.theme.as_deref(), Some(name));
-    assert_eq!(saved.options.theme_dark.as_deref(), Some(name));
-    assert_eq!(saved.options.theme_light.as_deref(), Some(name));
+    assert_eq!(saved.options.theme_dark, None);
+    assert_eq!(saved.options.theme_light, None);
     assert_eq!(saved.options.mouse_mode, Some(false));
     assert_eq!(std::fs::read_to_string(main).unwrap(), "mouse_mode false\n");
     let text = std::fs::read_to_string(overlay.join("yinz-managed.kdl")).unwrap();
@@ -587,6 +587,47 @@ fn theme_save_escapes_names_preserves_other_settings_and_stages_until_written() 
     assert!(text.contains("pane_frames false"));
     assert!(!text.contains("keybinds"));
     assert!(!text.contains("themes {"));
+}
+
+#[test]
+fn theme_save_preserves_configured_variants_after_reload() {
+    for variants in [
+        "",
+        "theme_dark \"nightfox\"\n",
+        "theme_light \"dayfox\"\n",
+        "theme_dark \"nightfox\"\ntheme_light \"dayfox\"\n",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let themes = Config::from_kdl(
+            include_str!("../../../yinz-config/assets/themes/dracula.kdl"),
+            None,
+        )
+        .unwrap();
+        let config = Config::from_kdl(variants, Some(themes)).unwrap();
+        let mut configuration = SessionConfiguration::default();
+        configuration.set_client_runtime_configuration(CLIENT, config.clone());
+        let saved = save_palette_theme(
+            &configuration,
+            CLIENT,
+            "dracula",
+            None,
+            Some(dir.path()),
+            &Default::default(),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(dir.path().join("config.d/yinz-managed.kdl")).unwrap();
+        let loaded = Config::from_kdl(&text, Some(config.clone())).unwrap();
+        assert_eq!(loaded.options, saved.options);
+        assert_eq!(loaded.options.theme.as_deref(), Some("dracula"));
+        assert_eq!(
+            loaded.options.theme_dark.as_deref(),
+            config.options.theme_dark.as_ref().map(|_| "dracula")
+        );
+        assert_eq!(
+            loaded.options.theme_light.as_deref(),
+            config.options.theme_light.as_ref().map(|_| "dracula")
+        );
+    }
 }
 
 #[test]

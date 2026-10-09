@@ -2791,8 +2791,8 @@ fn theme_fragment(config: &Config, name: &str) -> Result<String> {
     }
     let options = yinz_types::input::options::Options {
         theme: Some(name.into()),
-        theme_dark: Some(name.into()),
-        theme_light: Some(name.into()),
+        theme_dark: config.options.theme_dark.as_ref().map(|_| name.into()),
+        theme_light: config.options.theme_light.as_ref().map(|_| name.into()),
         ..Default::default()
     };
     Ok(yinz_config::kdl::options::to_kdl(&options, false)
