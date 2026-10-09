@@ -173,6 +173,9 @@ pub fn build_structured(
 out={out}
 candidates={candidates}
 trap 'rm -f "$candidates"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 : > "$out" || exit 10
 command -v fzf >/dev/null 2>&1 || exit 11
 {{ {listing}; }} > "$candidates" || exit 10

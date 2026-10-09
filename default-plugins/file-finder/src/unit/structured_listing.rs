@@ -47,6 +47,7 @@ fn structured_scripts_preserve_paths_and_obey_traversal_options() {
             .status()
             .unwrap();
         assert!(status.success());
+        assert!(!out.with_extension("candidates").exists());
         let bytes = fs::read_to_string(&out).unwrap();
         bytes
             .split_terminator('\0')
@@ -105,12 +106,14 @@ fn listing_and_fzf_failures_are_not_cancellation() {
             out.to_str().unwrap(),
         )
         .unwrap();
-        Command::new("/bin/sh")
+        let status = Command::new("/bin/sh")
             .args(["-c", &script])
             .env("PATH", path)
             .status()
             .unwrap()
-            .code()
+            .code();
+        assert!(!out.with_extension("candidates").exists());
+        status
     };
     let path = format!("{}:/usr/bin:/bin", bin.display());
     assert_eq!(run(&request, path.clone()), Some(10));
@@ -121,4 +124,44 @@ fn listing_and_fzf_failures_are_not_cancellation() {
     assert_eq!(run(&request, path), Some(12));
     fs::remove_file(bin.join("fzf")).unwrap();
     assert_eq!(run(&request, bin.to_string_lossy().into_owned()), Some(11));
+}
+
+#[test]
+fn termination_signals_remove_candidates() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    yinz_test_support::write_warm_script(
+        &bin.join("fzf"),
+        "cat >/dev/null\nkill -\"$PICKER_SIGNAL\" \"$PPID\"\n",
+    );
+    let out = temp.path().join("selection");
+    let script = build_structured(
+        &BTreeMap::new(),
+        &options(PickKind::File),
+        temp.path(),
+        out.to_str().unwrap(),
+    )
+    .unwrap();
+    for (signal, code) in [("HUP", 129), ("INT", 130), ("TERM", 143)] {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", &script])
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("PICKER_SIGNAL", signal)
+            .spawn()
+            .unwrap();
+        let status = yinz_test_support::Watched::new(None);
+        let finished = status.clone();
+        let waiter = std::thread::spawn(move || {
+            *finished.lock() = Some(child.wait().unwrap());
+        });
+        let status = status.wait_until(
+            "signalled picker to exit",
+            std::time::Duration::from_secs(30),
+            |status| *status,
+        );
+        waiter.join().unwrap();
+        assert_eq!(status.code(), Some(code), "{signal}");
+        assert!(!out.with_extension("candidates").exists(), "{signal}");
+    }
 }
