@@ -1367,3 +1367,44 @@ fn static_palette_scores_interleave_with_native_and_preserve_ties_and_geometry()
             .any(|r| matches!(r, ResultRow::Heading(t) if t == "A")));
     }
 }
+
+#[test]
+fn theme_picker_filters_selects_and_previews_with_mouse() {
+    let mut palette = CommandPalette::default();
+    palette.set_entries(vec![
+        entry("command", "Change theme…", EntryKind::Command),
+        entry("theme:a", "alpha", EntryKind::Theme),
+        entry("theme:b", "beta", EntryKind::Theme),
+    ]);
+    assert_eq!(ids(&palette), vec!["command"]);
+    palette.open_picker(EntryKind::Theme);
+    assert_eq!(ids(&palette), vec!["theme:a", "theme:b"]);
+    palette.select_id("theme:b");
+    assert_eq!(palette.selected_entry().unwrap().label, "beta");
+    key(&mut palette, BareKey::Up);
+    assert_eq!(palette.selected_entry().unwrap().label, "alpha");
+    let layout = palette.layout(Viewport {
+        x: 0,
+        y: 0,
+        cols: 100,
+        rows: 24,
+    });
+    assert!(rendered_lines(&palette, &layout)
+        .iter()
+        .any(|line| line.contains("↑↓ Preview · Enter Save · Esc Back")));
+    palette.click(
+        &layout,
+        Position::new((layout.options_y + 1) as i32, (layout.rect.x + 2) as u16),
+    );
+    assert_eq!(palette.selected_entry().unwrap().label, "beta");
+    palette.set_query("alpha".into());
+    assert_eq!(palette.selected_entry().unwrap().label, "alpha");
+    palette.set_query("no-such-theme".into());
+    assert!(palette.selected_entry().is_none());
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::None
+    );
+    key(&mut palette, BareKey::Esc);
+    assert!(palette.is_root());
+}

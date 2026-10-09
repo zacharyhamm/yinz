@@ -800,6 +800,14 @@ pub fn screen_thread_main(
                         completion.set_stdout_message(handled.to_string());
                     }
                 },
+                ScreenInstruction::PaletteThemeSaved {
+                    client,
+                    request,
+                    result,
+                } => {
+                    screen.palette_theme_saved(client, request, result);
+                    screen.render()?;
+                },
                 ScreenInstruction::CommandPalette(instruction) => {
                     if screen.plugin_palette_instruction(instruction) {
                         screen.render()?;

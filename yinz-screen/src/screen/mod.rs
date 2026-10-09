@@ -861,6 +861,11 @@ pub(crate) struct Screen {
     /// The `explicit_theme_hue` the session was last configured with, so a
     /// reconfigure can tell a changed pin from an unchanged one.
     configured_explicit_theme_hue: Option<ThemeHue>,
+    themes: BTreeMap<String, Styling>,
+    theme_name: Option<String>,
+    theme_dark_name: Option<String>,
+    theme_light_name: Option<String>,
+    theme_preview: Option<command_palette::themes::Preview>,
     host_theme_dark_styling: Option<Styling>,
     host_theme_light_styling: Option<Styling>,
     nested_session_handling: NestedSessionHandling,
@@ -1250,6 +1255,10 @@ impl Screen {
             explicit_theme_hue: _,
             // Went into `mode_info`.
             default_mode: _,
+            themes,
+            theme_name,
+            theme_dark_name,
+            theme_light_name,
             host_theme_dark,
             host_theme_light,
             pane_frame_style,
@@ -1479,6 +1488,11 @@ impl Screen {
             last_host_reported_theme_mode: None,
             theme_policy: ThemePolicy::Auto,
             configured_explicit_theme_hue: None,
+            themes,
+            theme_name,
+            theme_dark_name,
+            theme_light_name,
+            theme_preview: None,
             host_theme_dark_styling: host_theme_dark,
             host_theme_light_styling: host_theme_light,
             nested_session_handling,
@@ -3993,6 +4007,10 @@ impl Screen {
         }
         let ScreenConfig {
             theme,
+            themes,
+            theme_name,
+            theme_dark_name,
+            theme_light_name,
             host_theme_dark,
             host_theme_light,
             explicit_theme_hue,
@@ -4044,6 +4062,13 @@ impl Screen {
         let should_support_arrow_fonts = !simplified_ui;
         let disable_kitty_keyboard_protocol = !support_kitty_keyboard_protocol;
 
+        if let Some(client) = self.theme_preview.as_ref().map(|preview| preview.client) {
+            self.close_command_palette(client);
+        }
+        self.themes = themes;
+        self.theme_name = theme_name;
+        self.theme_dark_name = theme_dark_name;
+        self.theme_light_name = theme_light_name;
         self.set_pane_animations(pane_animations);
         self.set_agent_double_escape(agent_double_escape);
         self.host_theme_dark_styling = host_theme_dark;
@@ -4214,6 +4239,9 @@ impl Screen {
         }
         self.host_terminal_theme_mode = Some(mode);
         self.repaint_theme_mode(mode)?;
+        if let Some(client) = self.theme_preview.as_ref().map(|preview| preview.client) {
+            self.refresh_theme_preview(client);
+        }
 
         // fan out the plugin event
         self.bus
@@ -4252,63 +4280,43 @@ impl Screen {
     /// Swap the active palette to the `theme_dark` / `theme_light` styling for `mode` and
     /// push it into every tab and client, without announcing a mode change to anyone.
     fn repaint_theme_mode(&mut self, mode: HostTerminalThemeMode) -> Result<()> {
-        let err_context = || "Failed to update host terminal theme mode".to_string();
-
-        // resolve target styling
-        let resolved = match mode {
-            HostTerminalThemeMode::Dark => self.host_theme_dark_styling,
-            HostTerminalThemeMode::Light => self.host_theme_light_styling,
-        };
-
-        // theme propagation when both keys configured and the resolved
-        // styling exists. (If only one of theme_dark/theme_light is set,
-        // skip auto-switch; the static `theme` stays authoritative.)
-        let auto_switch_enabled =
-            self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some();
-        if auto_switch_enabled {
-            if let Some(theme) = resolved {
-                // Screen's own style is what later panes and the
-                // `ColorPaletteMode` guess inherit, so it tracks the swap.
-                self.style.colors = theme;
-                self.default_mode_info.update_theme(theme);
-                for tab in self.tabs.values_mut() {
-                    tab.update_theme(theme);
-                }
-                // Iterate every connected client (active_tab_ids is the
-                // canonical "who is connected" map). Iterating
-                // self.mode_info.keys() would skip any client that has
-                // never manually changed mode
-                let client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
-                let default_for_new = self.default_mode_info.clone();
-                for client_id in client_ids {
-                    let mode_info = self
-                        .mode_info
-                        .entry(client_id)
-                        .or_insert_with(|| default_for_new.clone());
-                    mode_info.update_theme(theme);
-                    let mode_info_clone = mode_info.clone();
-                    // Push the freshly-themed mode_info into every tab's
-                    // per-client mode_info map. `update_input_modes` below
-                    // reads from THAT map (not Screen's) when fanning out
-                    // ModeUpdate to plugins, so without this step plugins
-                    // receive ModeUpdate carrying the *old* style and the
-                    // status-bar / tab-bar do not repaint. Also mark the
-                    // active pane for rerender so terminal panes refresh
-                    // their borders/title using the new palette.
-                    for tab in self.tabs.values_mut() {
-                        tab.change_mode_info(mode_info_clone.clone(), client_id);
-                        tab.mark_active_pane_for_rerender(client_id);
-                    }
-                }
-                for tab in self.tabs.values_mut() {
-                    tab.update_input_modes().with_context(err_context)?;
-                }
-            } else {
-                log::warn!(
-                    "host theme auto-switch enabled but resolved styling missing for {:?}",
-                    mode
-                );
+        if self.theme_preview.is_some() {
+            return Ok(());
+        }
+        if self.host_theme_dark_styling.is_some() && self.host_theme_light_styling.is_some() {
+            let theme = match mode {
+                HostTerminalThemeMode::Dark => self.host_theme_dark_styling,
+                HostTerminalThemeMode::Light => self.host_theme_light_styling,
+            };
+            if let Some(theme) = theme {
+                self.repaint_theme(theme)?;
             }
+        }
+        Ok(())
+    }
+
+    fn repaint_theme(&mut self, theme: Styling) -> Result<()> {
+        self.style.colors = theme;
+        self.default_mode_info.update_theme(theme);
+        for tab in self.tabs.values_mut() {
+            tab.update_theme(theme);
+            tab.set_force_render();
+        }
+        let default_for_new = self.default_mode_info.clone();
+        for client in self.active_tab_ids.keys().copied() {
+            let mode_info = self
+                .mode_info
+                .entry(client)
+                .or_insert_with(|| default_for_new.clone());
+            mode_info.update_theme(theme);
+            for tab in self.tabs.values_mut() {
+                tab.change_mode_info(mode_info.clone(), client);
+                tab.mark_active_pane_for_rerender(client);
+            }
+        }
+        for tab in self.tabs.values_mut() {
+            tab.update_input_modes()
+                .context("failed to propagate theme to plugins")?;
         }
         Ok(())
     }

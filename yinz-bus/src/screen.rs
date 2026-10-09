@@ -390,6 +390,11 @@ pub enum ScreenInstruction {
     /// `HostTerminalThemeChanged` plugin event, and per-pane DSR forwarding
     /// for panes that opted in via `CSI ? 2031 h`.
     HostTerminalThemeChanged(HostTerminalThemeMode),
+    PaletteThemeSaved {
+        client: ClientId,
+        request: uuid::Uuid,
+        result: Result<(), String>,
+    },
     /// Manual theme actions issued via the CLI (e.g. `yinz action set-dark-theme`)
     /// or a keybinding. They share the same convergence point as
     /// `HostTerminalThemeChanged`, but additionally surface a CLI-friendly error
@@ -987,6 +992,7 @@ impl From<&ScreenInstruction> for ScreenContext {
         // here, which is a stronger guarantee than the exhaustive match this replaced: it also
         // catches the two names silently drifting apart.
         match screen_instruction {
+            ScreenInstruction::PaletteThemeSaved { .. } => ScreenContext::ToggleCommandPalette,
             ScreenInstruction::CommandPalette(..) => ScreenContext::ToggleCommandPalette,
             // The one instruction whose context is chosen by payload rather than by name.
             ScreenInstruction::Resize(.., strategy, _) => match strategy {

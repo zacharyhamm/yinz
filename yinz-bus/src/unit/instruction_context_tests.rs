@@ -217,6 +217,7 @@ pin_context_to_instruction! {
     // `Resize` picks its context from the payload; the rest are named differently
     special: [
         "Resize",
+        "PaletteThemeSaved",
         "PtyBytes",
         "SubscribePaneOutput",
         "UnsubscribePaneOutput",
@@ -239,6 +240,7 @@ pin_context_to_instruction! {
         "ResizeDecreaseRight",
     ];
     targets: [
+        ("PaletteThemeSaved", ScreenInstruction::PaletteThemeSaved { client: ClientId::new(1), request: uuid::Uuid::nil(), result: Ok(()) }, "ToggleCommandPalette"),
         ("RenderWriterReady", ScreenInstruction::RenderWriterReady, "RenderToClients"),
         (
             "CommandPalette",
@@ -457,9 +459,14 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError"];
+    special: ["SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
+        (
+            "SavePaletteTheme",
+            ServerInstruction::SavePaletteTheme { cancelled: Default::default(), client: ClientId::new(1), request: uuid::Uuid::nil(), name: "default".into() },
+            "Reconfigure"
+        ),
         (
             "FirstClientConnected",
             ServerInstruction::FirstClientConnected(CliAssets::default(), ClientId::new(1)),

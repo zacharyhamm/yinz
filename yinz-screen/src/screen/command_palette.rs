@@ -7,6 +7,9 @@ pub(super) mod notes;
 #[path = "palette_plugins.rs"]
 pub(super) mod plugins;
 
+#[path = "palette_themes.rs"]
+pub(super) mod themes;
+
 use std::collections::HashMap;
 use yinz_bus::screen::ScreenInstruction;
 use yinz_bus::ServerInstruction;
@@ -174,6 +177,7 @@ impl Screen {
         dismiss_plugins: bool,
     ) -> Option<CommandPaletteState> {
         let mut state = self.command_palettes.remove(&client_id)?;
+        self.cancel_theme_preview(client_id);
         state.backing = TranslucentOverlayBacking::default();
         state.watcher_backing = TranslucentOverlayBacking::default();
         state.painted = None;
@@ -274,6 +278,7 @@ impl Screen {
             self.refresh_plugin_palette(client_id, query_changed);
         }
         self.handle_palette_outcome(client_id, outcome);
+        self.refresh_theme_preview(client_id);
         for tab in self.tabs.values_mut() {
             tab.pending_agent_escapes
                 .retain(|(client, _), _| *client != client_id);
@@ -308,9 +313,10 @@ impl Screen {
             if !inside {
                 self.close_command_palette(client_id);
                 self.command_palette_mouse_captures.insert(client_id);
-            } else if event.left {
+            } else if event.left && !state.widget.busy {
                 state.widget.click(&layout, event.position);
             }
+            self.refresh_theme_preview(client_id);
             self.render().non_fatal();
         }
         true
@@ -428,6 +434,7 @@ impl Screen {
 #[derive(Clone)]
 enum Builtin {
     SearchNotes,
+    Theme(String),
     Inspect(history::LiveAgent),
     Archive,
     AgentFilters,
@@ -692,6 +699,12 @@ impl Screen {
             &["fork agent"],
             Builtin::Agent(yinz_bus::command_palette::AgentAction::Fork),
         );
+        command(
+            "change-theme",
+            "Change theme…",
+            &["colors appearance"],
+            Builtin::Picker(EntryKind::Theme),
+        );
         for (id, label, kind) in [
             ("warp-tab", "Warp tab…", EntryKind::WarpTabSession),
             ("warp-pane", "Warp pane…", EntryKind::WarpPaneSession),
@@ -864,6 +877,19 @@ impl Screen {
                     kind: EntryKind::ExitedSession,
                 },
                 Builtin::Action(switch_session(name.clone(), None)),
+            ));
+        }
+        for name in self.themes.keys() {
+            entries.push((
+                Entry {
+                    id: format!("theme:{name}"),
+                    label: name.clone(),
+                    description: String::new(),
+                    shortcut: String::new(),
+                    aliases: vec![],
+                    kind: EntryKind::Theme,
+                },
+                Builtin::Theme(name.clone()),
             ));
         }
         let mode_info = self
@@ -1298,6 +1324,15 @@ impl Screen {
     }
 
     fn handle_palette_outcome(&mut self, client: ClientId, outcome: Outcome) {
+        if outcome == Outcome::Cancel
+            && self
+                .theme_preview
+                .as_ref()
+                .is_some_and(|preview| preview.client == client)
+        {
+            self.close_command_palette(client);
+            return;
+        }
         if self.note_palette_outcome(client, &outcome) {
             return;
         }
@@ -1334,6 +1369,14 @@ impl Screen {
         };
         let create_session = matches!(builtin, Builtin::Form(FormKind::NewSession));
         let result = match builtin {
+            Builtin::Theme(name) => {
+                self.save_palette_theme(client, name);
+                return;
+            },
+            Builtin::Picker(EntryKind::Theme) => {
+                self.open_theme_picker(client);
+                return;
+            },
             Builtin::Inspect(agent) => {
                 self.open_palette_history(client, Some(agent), None);
                 return;
