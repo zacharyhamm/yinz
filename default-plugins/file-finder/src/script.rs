@@ -153,7 +153,9 @@ pub fn build_structured(
                 )
             })
             .unwrap_or_default();
-        let select = format!("-type {kind} {suffixes}-print0");
+        let select = format!(
+            r#"-type {kind} ! -samefile "$out" ! -samefile "$candidates" {suffixes}-print0"#
+        );
         let expression = if recursive {
             select
         } else {
