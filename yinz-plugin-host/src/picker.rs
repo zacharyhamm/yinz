@@ -1,6 +1,7 @@
 //! Picker ownership lives on the plugin thread; screen acknowledges focus restoration.
 use super::*;
 use prost::Message;
+use std::path::Path;
 use yinz_types::internal_ids::TerminalId;
 use yinz_types::pick::{PickCommand, PickOptions, PickRequest, PickResult};
 
@@ -58,6 +59,13 @@ pub(crate) fn dispatch(env: &mut PluginEnv, command: PickCommand) -> Result<()> 
                     .context("receive picker cwd")?
                 {
                     yinz_types::data::GetPaneCwdResponse::Ok(cwd) => cwd,
+                    yinz_types::data::GetPaneCwdResponse::Err(_)
+                        if options.roots.as_ref().is_some_and(|roots| {
+                            roots.iter().all(|root| Path::new(root).is_absolute())
+                        }) =>
+                    {
+                        PathBuf::from("/")
+                    },
                     yinz_types::data::GetPaneCwdResponse::Err(error) => return Err(anyhow!(error)),
                 };
             }

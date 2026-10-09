@@ -1,6 +1,73 @@
 use super::*;
 
 #[test]
+fn absolute_roots_work_from_an_exited_pane_but_relative_roots_require_a_cwd() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("held-picker.ts"),
+        r#"
+import z from 'yinz:plugin';
+let root, held;
+export default {
+  async load(config) {
+    await z.waitForPermissions(['RunCommands','ReadApplicationState','MessageAndLaunchOtherPlugins','ChangeApplicationState']);
+    root = config.root;
+    z.subscribe(['CommandPaneExited']);
+    held = z.host.openCommandPaneFloating([{path:'/usr/bin/true'}, null, {}]);
+  },
+  async update(event) {
+    if (!held || event.CommandPaneExited?.[0] !== held.Terminal) return false;
+    try {
+      if (JSON.stringify(z.host.getFocusedPaneInfo().pane_id) !== JSON.stringify(held))
+        throw new Error('exited pane is not focused');
+      for (const options of [{}, {roots:['.']}, {roots:[root, '.']}]) {
+        let rejected = false;
+        try { await z.pick({kind:'file', ...options}); }
+        catch (error) {
+          if (!/CWD|not running/.test(String(error))) throw error;
+          rejected = true;
+        }
+        if (!rejected) throw new Error('relative roots accepted without cwd');
+      }
+      const file = await z.pick({kind:'file', roots:[root]});
+      if (file !== root + '/book.pdf') throw new Error('wrong selection: ' + file);
+      if (JSON.stringify(z.host.getFocusedPaneInfo().pane_id) !== JSON.stringify(held))
+        throw new Error('focus was not restored');
+      z.host.renameTerminalPane([held.Terminal, 'HELD PICK COMPLETE']);
+    } catch (error) {
+      console.error('HELD PICK ERROR', String(error));
+    }
+    return false;
+  }
+};
+"#,
+    )
+    .unwrap();
+    let path = root.path().join("held-picker.integration.test.ts");
+    std::fs::write(&path, r#"
+import {test, session, assert} from 'yinz:testing';
+test('absolute roots from an exited process', {grants:['RunCommands','ReadApplicationState','MessageAndLaunchOtherPlugins','ChangeApplicationState']}, async () => {
+  const home = session.fixture({'project/book.pdf':''}, {fzf:'cat'});
+  session.start();
+  await session.waitForText('yinz-test>');
+  session.loadPlugin(import.meta.resolve('./held-picker.ts'), {headless:true, configuration:{root:home + '/project'}});
+  await session.waitFor('held pane pick completes', () => {
+    assert(!session.logs.includes('HELD PICK ERROR'), session.logs);
+    return session.panes.some(pane => pane.title === 'HELD PICK COMPLETE' && pane.is_held);
+  });
+});
+"#).unwrap();
+    let report = yinz_server::plugin_testing::run(
+        &path,
+        &Default::default(),
+        None,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}
+
+#[test]
 fn awaited_folder_then_pdf_restores_focus_before_second_picker() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("picker.ts");
