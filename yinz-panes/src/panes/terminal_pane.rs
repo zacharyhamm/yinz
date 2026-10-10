@@ -1757,6 +1757,9 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
     let Some(Run::Command(run_command)) = invoked_with else {
         return None;
     };
+    let (program, args) =
+        yinz_types::agent::bubblewrap_program_and_args(&run_command.command, &run_command.args)
+            .unwrap_or((&run_command.command, &run_command.args));
     let kind = match &run_command.originating_plugin {
         Some(plugin) => match plugin.context.get(AGENT_PANE_CONTEXT)?.trim() {
             "" | "true" => {
@@ -1764,18 +1767,13 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
             },
             kind => kind.to_owned(),
         },
-        None if run_command
-            .command
-            .file_name()
-            .is_some_and(|name| name == "env")
-            && run_command
-                .args
+        None if program.file_name().is_some_and(|name| name == "env")
+            && args
                 .iter()
                 .take_while(|arg| arg.contains('='))
                 .any(|arg| arg.strip_prefix(yinz_types::agent::AGENT_PANE_ENV) == Some("=1")) =>
         {
-            yinz_types::agent::kind_from_program_and_args(&run_command.command, &run_command.args)?
-                .to_owned()
+            yinz_types::agent::kind_from_program_and_args(program, args)?.to_owned()
         },
         None => return None,
     };

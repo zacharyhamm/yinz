@@ -1,8 +1,10 @@
 # Project Bubblewrap environments
 
 On Linux, `yinz agent spawn --bubblewrap` runs an agent in a prepared project environment.
-Install Bubblewrap (`bwrap`) on the host first. The host must permit user namespaces.
-Yinz does not install operating system packages.
+Install Bubblewrap 0.10.0 or newer (`bwrap`) on the host first. The host must permit user namespaces.
+Yinz does not install operating system packages. Version validation happens before provisioning or
+checkout changes, including for declarations without optional mounts. Descriptor-based mounts require
+[Bubblewrap 0.10.0](https://github.com/containers/bubblewrap/releases/tag/v0.10.0).
 
 Each primary Git checkout has one persistent private home. Its contained worktrees share that home.
 Build output stays in each worktree. Yinz never sets `CARGO_TARGET_DIR`.
@@ -72,6 +74,11 @@ Preparation accepts the declaration, copies seed files, runs setup, and runs che
 It marks the environment ready only when all commands succeed.
 
 Launch uses the saved declaration. Editing either KDL file has no effect until preparation succeeds again.
+Launch checks run once inside the pane, under its shared environment lease, before the agent starts.
+Server preflight validates the platform and saved environment without running checks.
+Each check suite has a 10-second total deadline, including the mandatory namespace and mount probe.
+Preparation check output stays in `prepare.log`; launch check stdout and stderr append to private
+`launch.log` in the environment metadata directory. Failures show an error and log location in the pane.
 Launch never provisions tools. Repeated preparation reruns setup and seed operations.
 Failed preparation preserves the private home and logs but makes the environment unavailable.
 
@@ -137,11 +144,22 @@ seed "${HOST_HOME}/.codex/auth.json" "${SANDBOX_HOME}/.codex/auth.json"
 
 A wrapper executable can require additional host files. Add explicit read-only mounts for those files,
 or install the agent entirely in the private home during setup.
-For other authentication methods, declare the required variables with `inherit-env` or `env`.
-Do not commit credentials in project KDL. Use the global declaration for machine-specific secrets.
+For other authentication methods, prefer `inherit-env` for credentials. Do not commit credentials in project KDL.
+Literal `env` values remain stored in the KDL file and the accepted declaration.
+
+Yinz passes environment values through a private, unnamed temporary file using Bubblewrap's
+[`--args FD`](https://github.com/containers/bubblewrap/blob/main/bwrap.xml) option.
+The file contains NUL-separated arguments. Values do not appear in Bubblewrap's command line, and stdin remains available to the agent.
+This transport does not hide credentials from the agent, the owning user, or root.
+Secrets explicitly included in command arguments remain visible in those arguments.
 Preparation repeats seed copies, so it can replace credentials changed inside the private home.
 
 The shared API accepts `bubblewrap: true` in `AgentSpawnSpec`, including CLI JSON files and
 `yinz.agent.spawn({...})`. Omission keeps the existing unsandboxed launch behavior.
 The interactive chooser is unchanged. SSH and Firecracker cannot be combined with Bubblewrap.
 A failed check, unavailable Bubblewrap, or sandbox startup failure never falls back to an unsandboxed launch.
+
+Missing global project paths are skipped with a diagnostic. Invalid project blocks and
+other path resolution errors still stop preparation. Run preparation again to recover
+from a truncated or incompatible acceptance file. Each attempt clears readiness before
+provisioning; only successful preparation makes the environment available again.

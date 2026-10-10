@@ -2007,6 +2007,7 @@ async fn bridge_reports_only_failures_locally_and_remotely_without_changing_traf
 fn bubblewrap_private_backend_uses_its_socket_and_dies_with_its_owner() {
     const TEST: &str = "tests::bubblewrap_private_backend_uses_its_socket_and_dies_with_its_owner";
     if let Ok(socket) = std::env::var("YINZ_TEST_PRIVATE_SOCKET") {
+        eprintln!("PRIVATE_BACKEND_STDERR_MARKER");
         let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
         loop {
             let _ = listener.accept().unwrap();
@@ -2031,6 +2032,20 @@ fn bubblewrap_private_backend_uses_its_socket_and_dies_with_its_owner() {
                 );
                 assert!(child.wait().await.unwrap().success());
             });
+        return;
+    }
+    if std::env::var_os("YINZ_TEST_PRIVATE_OWNER").is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("YINZ_TEST_PRIVATE_OWNER", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("PRIVATE_BACKEND_STDERR_MARKER"));
         return;
     }
     let root = tempfile::tempdir().unwrap();

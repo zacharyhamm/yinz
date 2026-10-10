@@ -238,6 +238,15 @@ fn display_command_drops_only_the_planners_hook_wiring() {
     .unwrap();
     let raw = shown(command);
     assert_eq!(display_command(&raw), "claude --model haiku");
+    // A sandboxed pane shows the agent, not the internal wrapper around it.
+    assert_eq!(
+        display_command(&format!(
+            "/usr/bin/yinz --bubblewrap-run /my project -- {raw}"
+        )),
+        "claude --model haiku"
+    );
+    let kept = "other --bubblewrap-run /project -- claude";
+    assert_eq!(display_command(kept), kept);
 
     // The same settings with their keys in another order, as a plugin may print them.
     let mut reordered = String::from("{\"hooks\":{");

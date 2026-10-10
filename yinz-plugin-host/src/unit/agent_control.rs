@@ -988,3 +988,240 @@ fn bubblewrap_rejects_remote_targets_before_checkout_changes() {
         assert!(!temp.path().join(".worktrees").exists());
     }
 }
+
+#[test]
+fn bubblewrap_checkout_rejections_leave_git_and_paths_unchanged() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let root = base.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    git(&root, &["config", "user.name", "Test"]);
+    git(&root, &["commit", "--allow-empty", "-qm", "initial"]);
+    std::os::unix::fs::symlink(&base, root.join("escape")).unwrap();
+    std::os::unix::fs::symlink(base.join("missing"), root.join("dangling")).unwrap();
+    let state = || {
+        let outputs: Vec<_> = [
+            vec!["show-ref"],
+            vec!["rev-parse", "HEAD"],
+            vec!["worktree", "list", "--porcelain"],
+        ]
+        .into_iter()
+        .map(|args| {
+            process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap()
+                .stdout
+        })
+        .collect();
+        (
+            outputs,
+            std::fs::read(root.join(".git/info/exclude")).unwrap(),
+        )
+    };
+    let before = state();
+    let data = DataAccess::sqlite(&base.join("data"));
+    let store = data.plugin_data();
+    for def in project_data::store::shared_defs() {
+        store
+            .define_entity(project_data::store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    let mut project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
+    project.worktree_dir = Some(base.join("saved-external").to_string_lossy().into_owned());
+    store
+        .apply(
+            project_data::store::SHARED,
+            &[project_data::projects::to_mutation(&project)],
+        )
+        .unwrap();
+    for explicit in [None, Some(base.join("explicit-external"))] {
+        let spec = AgentSpawnSpec {
+            kind: Some("codex".into()),
+            branch: Some("configured".into()),
+            worktree_dir: explicit
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let (_, mut checkout) = yinz_runtime::agent::launch::plan(&spec).unwrap();
+        apply_project_worktree_dir(&mut checkout, spec.worktree_dir.as_deref(), &root, || {
+            store.fetch(
+                project_data::store::SHARED,
+                &FetchRequest::entity("project"),
+            )
+        })
+        .unwrap();
+        let mut attempted = None;
+        assert!(agent_folder_tracked(
+            checkout,
+            Some(base.clone()),
+            root.clone(),
+            false,
+            WorktreeGuard::Required,
+            &mut attempted,
+            Some(&root)
+        )
+        .is_err());
+        assert!(attempted.is_none());
+        assert_eq!(state(), before);
+    }
+    assert!(!base.join("saved-external").exists());
+    assert!(!base.join("explicit-external").exists());
+    std::fs::create_dir(root.join("suffix")).unwrap();
+    std::os::unix::fs::symlink(base.join("missing-suffix"), root.join("suffix-2")).unwrap();
+    let mut attempted = None;
+    assert!(prepare_git_checkout_in_tracked(
+        root.clone(),
+        GitCheckout::NewWorktree {
+            branch: "suffix".into(),
+            base: "HEAD".into(),
+            path: root.join("suffix")
+        },
+        false,
+        WorktreeGuard::Required,
+        &mut attempted,
+        Some(&root)
+    )
+    .is_err());
+    assert!(attempted.is_none());
+    assert_eq!(state(), before);
+    assert!(!base.join("missing-suffix").exists());
+
+    for path in [
+        base.join("external"),
+        PathBuf::from("../relative"),
+        PathBuf::from("escape/symlink"),
+        PathBuf::from("dangling/tree"),
+    ] {
+        for reuse in [false, true] {
+            let mut attempted = None;
+            assert!(prepare_git_checkout_in_tracked(
+                root.clone(),
+                GitCheckout::NewWorktree {
+                    branch: "topic".into(),
+                    base: "HEAD".into(),
+                    path: path.clone()
+                },
+                reuse,
+                WorktreeGuard::Required,
+                &mut attempted,
+                Some(&root)
+            )
+            .is_err());
+            assert!(attempted.is_none());
+            assert_eq!(state(), before);
+        }
+    }
+    assert!(!base.join("external").exists());
+    assert!(!base.join("relative").exists());
+    assert!(!base.join("symlink").exists());
+    let mut attempted = None;
+    let prepared = prepare_git_checkout_in_tracked(
+        root.clone(),
+        GitCheckout::NewWorktree {
+            branch: "inside".into(),
+            base: "HEAD".into(),
+            path: PathBuf::from("new/parents/inside"),
+        },
+        false,
+        WorktreeGuard::Required,
+        &mut attempted,
+        Some(&root),
+    )
+    .unwrap();
+    assert_eq!(prepared.path, root.join("new/parents/inside"));
+}
+
+#[test]
+fn bubblewrap_checks_reused_and_collision_suffixed_destinations() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let root = base.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    git(&root, &["config", "user.name", "Test"]);
+    git(&root, &["commit", "--allow-empty", "-qm", "initial"]);
+    let outside = base.join("outside");
+    git(
+        &root,
+        &["worktree", "add", "-b", "reused", outside.to_str().unwrap()],
+    );
+    let mut attempted = None;
+    for checkout in [
+        GitCheckout::NewBranch {
+            branch: "reused".into(),
+            base: "HEAD".into(),
+        },
+        GitCheckout::NewWorktree {
+            branch: "reused".into(),
+            base: "HEAD".into(),
+            path: root.join("unused"),
+        },
+        GitCheckout::NewWorktree {
+            branch: "other".into(),
+            base: "HEAD".into(),
+            path: outside.clone(),
+        },
+    ] {
+        assert!(prepare_git_checkout_in_tracked(
+            root.clone(),
+            checkout,
+            true,
+            WorktreeGuard::Required,
+            &mut attempted,
+            Some(&root)
+        )
+        .is_err());
+        assert!(attempted.is_none());
+    }
+    std::fs::create_dir(root.join("collision")).unwrap();
+    std::os::unix::fs::symlink(&base, root.join("collision-2")).unwrap();
+    // Force the suffix search past an existing path and an escaping symlink.
+    let checkout = GitCheckout::NewWorktree {
+        branch: "collision".into(),
+        base: "HEAD".into(),
+        path: root.join("collision"),
+    };
+    let prepared = prepare_git_checkout_in_tracked(
+        root.clone(),
+        checkout,
+        false,
+        WorktreeGuard::Required,
+        &mut attempted,
+        Some(&root),
+    )
+    .unwrap();
+    assert!(prepared.path.starts_with(&root));
+    assert_ne!(prepared.path, root.join("collision-2"));
+    let linked = prepared.path;
+    let contained = prepare_git_checkout_in_tracked(
+        linked.clone(),
+        GitCheckout::NewWorktree {
+            branch: "from-linked".into(),
+            base: "HEAD".into(),
+            path: PathBuf::from("trees/from-linked"),
+        },
+        false,
+        WorktreeGuard::Required,
+        &mut attempted,
+        Some(&root),
+    )
+    .unwrap();
+    assert_eq!(contained.path, root.join("trees/from-linked"));
+    assert!(agent_folder_tracked(
+        GitCheckout::Current,
+        Some(outside),
+        linked,
+        false,
+        WorktreeGuard::Waived,
+        &mut None,
+        Some(&root)
+    )
+    .is_err());
+}

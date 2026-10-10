@@ -1966,7 +1966,112 @@ pub fn a_spawned_opencode_pane_records_its_kind_before_it_has_said_anything() {
     .is_none());
 }
 
+#[test]
+fn bubblewrap_launches_record_agents_before_output() {
+    yinz_types::agent::provider::register(
+        0,
+        yinz_types::agent::provider::AgentProvider {
+            kind: "opencode".into(),
+            executable: "opencode".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for (kind, inner) in [
+        ("claude", vec!["claude"]),
+        ("opencode", vec!["opencode"]),
+        (
+            "codex",
+            vec![
+                "/usr/bin/yinz",
+                "agent",
+                "codex",
+                "--command",
+                "/opt/codex",
+                "--",
+            ],
+        ),
+    ] {
+        let mut args = vec![
+            "--bubblewrap-run",
+            "/project",
+            "--",
+            "/usr/bin/env",
+            "YINZ_AGENT_PANE=1",
+        ];
+        args.extend(inner);
+        let command = RunCommand {
+            command: "/usr/bin/yinz".into(),
+            args: args.into_iter().map(str::to_owned).collect(),
+            cwd: Some("/project/.worktrees/task".into()),
+            ..Default::default()
+        };
+        for marker in [None, Some(kind), Some("true"), Some("")] {
+            let mut command = command.clone();
+            if let Some(marker) = marker {
+                command.originating_plugin = Some(yinz_types::data::OriginatingPlugin::new(
+                    yinz_types::internal_ids::PluginId::new(2),
+                    crate::ClientId::new(1),
+                    std::collections::BTreeMap::from([(
+                        yinz_types::data::AGENT_PANE_CONTEXT.into(),
+                        marker.into(),
+                    )]),
+                ));
+            }
+            let pane = agent_pane_with_run(Some(super::Run::Command(command)));
+            let agent = pane
+                .agent_info()
+                .expect("agent record exists before any output or hooks");
+            assert_eq!(agent.kind, kind);
+            assert_eq!(agent.source, AgentSource::Spawned);
+            assert_eq!(agent.state, AgentState::Busy);
+            assert_eq!(agent.cwd.as_deref(), Some("/project/.worktrees/task"));
+        }
+    }
+}
+
+#[test]
+fn bubblewrap_registration_requires_a_leading_launch_marker() {
+    for (program, args) in [
+        ("yinz", "--bubblewrap-run /project -- claude"),
+        ("yinz", "--bubblewrap-run /project -- env claude"),
+        (
+            "yinz",
+            "--bubblewrap-run /project -- env YINZ_AGENT_PANE=0 claude",
+        ),
+        (
+            "yinz",
+            "--bubblewrap-run /project -- env claude YINZ_AGENT_PANE=1",
+        ),
+        (
+            "yinz",
+            "--bubblewrap-run /project env YINZ_AGENT_PANE=1 claude",
+        ),
+        ("yinz", "--bubblewrap-run -- env YINZ_AGENT_PANE=1 claude"),
+        ("yinz", "--bubblewrap-run /project --"),
+        (
+            "other",
+            "--bubblewrap-run /project -- env YINZ_AGENT_PANE=1 claude",
+        ),
+        (
+            "claude",
+            "--bubblewrap-run /project -- env YINZ_AGENT_PANE=1 claude",
+        ),
+    ] {
+        let run = super::Run::Command(RunCommand {
+            command: program.into(),
+            args: args.split_whitespace().map(str::to_owned).collect(),
+            ..Default::default()
+        });
+        assert!(super::agent_from_run(Some(&run)).is_none(), "{run:?}");
+    }
+}
+
 fn agent_pane() -> TerminalPane {
+    agent_pane_with_run(None)
+}
+
+fn agent_pane_with_run(invoked_with: Option<super::Run>) -> TerminalPane {
     let mut geom = PaneGeom::default();
     geom.cols.set_inner(80);
     geom.rows.set_inner(20);
@@ -1983,7 +2088,7 @@ fn agent_pane() -> TerminalPane {
         Rc::new(RefCell::new(Palette::default())),
         Rc::new(RefCell::new(HashMap::new())),
         None,
-        None,
+        invoked_with,
         false, // debug
         true,  // arrow_fonts
         true,  // styled_underlines
