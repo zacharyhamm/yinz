@@ -51,7 +51,8 @@ pub struct ResolvedSpawn {
     pub terminal_id: TerminalId,
     pub command: RunCommand,
     pub rerun_command: RunCommand,
-    pub endpoint: RemoteEndpoint,
+    /// `None` for a command that runs on this machine once resolved.
+    pub endpoint: Option<RemoteEndpoint>,
 }
 
 /// Where a remote command's broker is reached: the ssh host (an alias, or the

@@ -1969,7 +1969,7 @@ pub struct RunCommandAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PaneTarget {
-    #[prost(oneof="pane_target::Kind", tags="1, 2, 3")]
+    #[prost(oneof="pane_target::Kind", tags="1, 2, 3, 4")]
     pub kind: ::core::option::Option<pane_target::Kind>,
 }
 /// Nested message and enum types in `PaneTarget`.
@@ -1983,6 +1983,9 @@ pub mod pane_target {
         SshHost(::prost::alloc::string::String),
         #[prost(message, tag="3")]
         Firecracker(super::FirecrackerTarget),
+        /// This machine, inside the Bubblewrap environment of the primary checkout at this path.
+        #[prost(string, tag="4")]
+        BubblewrapRoot(::prost::alloc::string::String),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]

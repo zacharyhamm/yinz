@@ -26,6 +26,10 @@ pub enum PaneTarget {
         /// Canonical host worktree mirrored into the VM, or the pane's cwd.
         worktree: Option<PathBuf>,
     },
+    /// This machine, inside the Bubblewrap environment prepared for the primary
+    /// checkout at `root`. The command stays the one asked for; the sandbox is
+    /// applied where the process is exec'd.
+    Bubblewrap { root: PathBuf },
 }
 
 /// The prefix `PaneTarget::display` puts before a Firecracker VM's name.
@@ -83,6 +87,19 @@ impl PaneTarget {
         })
     }
 
+    /// A Bubblewrap target for the primary checkout at `root`, an absolute path.
+    pub fn bubblewrap(root: &Path) -> Result<Self, String> {
+        if !root.is_absolute() {
+            return Err(format!(
+                "bubblewrap must be an absolute path, got {}",
+                root.display()
+            ));
+        }
+        Ok(PaneTarget::Bubblewrap {
+            root: root.to_path_buf(),
+        })
+    }
+
     /// Build a target from the loose optional spellings every parser starts
     /// from: `None`/`None` is local, an ssh host and a VM name together are
     /// refused, and an image or worktree without a VM is refused too.
@@ -120,9 +137,23 @@ impl PaneTarget {
     pub fn is_local(&self) -> bool {
         matches!(self, PaneTarget::Local)
     }
-    /// Runs on another machine, over ssh or in a VM.
+    /// Runs on another machine, over ssh or in a VM. A Bubblewrap pane is neither
+    /// `Local` nor remote: its cwd, pid and Git checkout are this machine's.
     pub fn is_remote(&self) -> bool {
-        !self.is_local()
+        matches!(
+            self,
+            PaneTarget::Ssh { .. } | PaneTarget::Firecracker { .. }
+        )
+    }
+    pub fn is_bubblewrap(&self) -> bool {
+        matches!(self, PaneTarget::Bubblewrap { .. })
+    }
+    /// The primary checkout of a `Bubblewrap` target.
+    pub fn bubblewrap_root(&self) -> Option<&Path> {
+        match self {
+            PaneTarget::Bubblewrap { root } => Some(root),
+            _ => None,
+        }
     }
     pub fn is_firecracker(&self) -> bool {
         matches!(self, PaneTarget::Firecracker { .. })
@@ -153,12 +184,12 @@ impl PaneTarget {
             _ => None,
         }
     }
-    /// What to show a user for this target: `None` for a local pane, the ssh
+    /// What to show a user for this target: `None` for a pane on this machine, the ssh
     /// host, or `firecracker:<vm>`. The VM's ssh endpoint is a provider detail
     /// and never appears here.
     pub fn display(&self) -> Option<String> {
         match self {
-            PaneTarget::Local => None,
+            PaneTarget::Local | PaneTarget::Bubblewrap { .. } => None,
             PaneTarget::Ssh { host } => Some(host.clone()),
             PaneTarget::Firecracker { vm, .. } => Some(format!("{FIRECRACKER_HOST_PREFIX}{vm}")),
         }

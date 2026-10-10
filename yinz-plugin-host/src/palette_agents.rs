@@ -141,7 +141,7 @@ fn execute(
                     )
                 })
                 .collect();
-            if !vm && request.source.target.is_local() {
+            if !vm && !request.source.target.is_remote() {
                 if let Some(cwd) = request.source.cwd.as_deref() {
                     if let Ok(root) = primary_worktree(Path::new(cwd)) {
                         entries.push(choice(
@@ -350,12 +350,12 @@ fn existing_command(
     cwd: &str,
     target: PaneTarget,
 ) -> Result<PreparedAgent, AgentSpawnError> {
-    if target.is_local() && !Path::new(cwd).is_dir() {
+    if !target.is_remote() && !Path::new(cwd).is_dir() {
         return Err("Agent directory no longer exists".into());
     }
     let mut command =
         yinz_runtime::agent::launch::command_in_context(kind, Some(cwd.into()), target)?;
-    if command.target.is_local() {
+    if !command.target.is_remote() {
         yinz_runtime::agent::pi::prepare_command(&mut command)?;
     } else {
         yinz_runtime::agent::pi::strip_extension(&mut command.args);

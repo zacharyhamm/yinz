@@ -1,7 +1,6 @@
 //! Explicitly accepted, persistent user-space environments. Launch never reads project KDL.
 use kdl::{KdlDocument, KdlNode};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, Write};
@@ -36,7 +35,24 @@ const ETC: &[&str] = &[
     "/etc/pki/tls/certs",
     "/etc/ca-certificates",
     "/etc/ld.so.cache",
+    // Debian-family systems reach `cc`, `awk` and other `/usr/bin` tools through here.
+    "/etc/alternatives",
 ];
+/// Synthesized for the sandbox's single user, so `getpwuid` agrees with the private home.
+const ACCOUNTS: &[&str] = &["/etc/passwd", "/etc/group"];
+const LOG_LIMIT: u64 = 1024 * 1024;
+
+/// The launch program does not resolve on the sandbox's own `PATH`.
+#[derive(Debug)]
+pub struct ProgramNotFound;
+
+impl std::fmt::Display for ProgramNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("program not found in the Bubblewrap environment")
+    }
+}
+
+impl std::error::Error for ProgramNotFound {}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Declaration {
@@ -82,6 +98,12 @@ fn bind_binary(command: &mut Command, root: &Path, binary: &Path) {
 }
 
 fn platform() -> Result<()> {
+    // Only success is remembered. A later downgrade still fails closed: an older bwrap
+    // rejects the options every launch passes.
+    static SUPPORTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if SUPPORTED.get().is_some() {
+        return Ok(());
+    }
     if !cfg!(target_os = "linux") {
         bail!("Bubblewrap agent environments require Linux");
     }
@@ -89,7 +111,46 @@ fn platform() -> Result<()> {
         .arg("--version")
         .output()
         .context("Bubblewrap 0.10.0 or newer is required; install or upgrade bwrap")?;
-    validate_version(&output)
+    validate_version(&output)?;
+    let _ = SUPPORTED.set(());
+    Ok(())
+}
+
+/// An append-only log, emptied once it outgrows `LOG_LIMIT` so repeated launches cannot
+/// grow it without bound.
+fn open_log(path: &Path) -> Result<File> {
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    log.set_permissions(fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("protect {}", path.display()))?;
+    if log.metadata().context("inspect Bubblewrap log")?.len() > LOG_LIMIT {
+        log.set_len(0).context("truncate Bubblewrap log")?;
+    }
+    Ok(log)
+}
+
+/// `/etc/passwd` and `/etc/group` for the sandbox: the invoking user, at home in `HOME`.
+fn accounts() -> [String; 2] {
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let name = std::env::var("USER")
+        .ok()
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        })
+        .unwrap_or_else(|| "yinz".to_owned());
+    [
+        format!(
+            "{name}:x:{uid}:{gid}::{HOME}:/bin/sh\nnobody:x:65534:65534::/:/usr/sbin/nologin\n"
+        ),
+        format!("{name}:x:{gid}:\nnogroup:x:65534:\n"),
+    ]
 }
 
 fn validate_version(output: &std::process::Output) -> Result<()> {
@@ -264,7 +325,7 @@ fn parse(doc: &KdlDocument, root: &Path, host_home: &Path) -> Result<Declaration
 impl Declaration {
     fn validate(&self, root: &Path) -> Result<()> {
         let mut destinations = vec![root.to_path_buf()];
-        destinations.extend(SYSTEM.iter().chain(ETC).map(PathBuf::from));
+        destinations.extend(SYSTEM.iter().chain(ETC).chain(ACCOUNTS).map(PathBuf::from));
         destinations.extend([HOME, "/run", "/tmp", "/dev", "/proc"].map(PathBuf::from));
         for (src, dst) in &self.mounts {
             if src
@@ -347,10 +408,7 @@ impl Environment {
     }
 
     fn at(root: PathBuf, data: &Path) -> Self {
-        let key: String = Sha256::digest(root.as_os_str().as_encoded_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let key = crate::root_key(&root);
         Self {
             root,
             metadata: data.join("environments").join(&key),
@@ -360,12 +418,24 @@ impl Environment {
 
     pub fn for_project(project: &Path) -> Result<Self> {
         let root = crate::root(project).map_err(|error| anyhow!(error))?;
-        let env = Self::at(root, &yinz_runtime::home::xdg_data_dir().join("bubblewrap"));
+        let env = Self::at_root(&root);
         env.validate_cwd(project)?;
         Ok(env)
     }
 
-    fn validate_cwd(&self, cwd: &Path) -> Result<()> {
+    /// The environment of a primary checkout already resolved by [`Self::for_project`].
+    /// Nothing is trusted from `root` itself: a launch still requires its accepted record.
+    pub fn at_root(root: &Path) -> Self {
+        // Environments are keyed by canonical path. One that does not resolve keeps its
+        // spelling and finds no accepted record.
+        Self::at(
+            root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+            &yinz_runtime::home::xdg_data_dir().join("bubblewrap"),
+        )
+    }
+
+    /// Reject a launch directory outside the checkout, or one whose Git metadata is.
+    pub fn validate_cwd(&self, cwd: &Path) -> Result<()> {
         let cwd = cwd
             .canonicalize()
             .context("resolve Bubblewrap launch directory")?;
@@ -408,9 +478,8 @@ impl Environment {
     }
 
     fn lock(&self, exclusive: bool) -> Result<File> {
-        fs::create_dir_all(&self.metadata).context("create Bubblewrap metadata directory")?;
-        fs::set_permissions(&self.metadata, fs::Permissions::from_mode(0o700))
-            .context("protect Bubblewrap metadata")?;
+        yinz_runtime::shared::ensure_secure_dir(&self.metadata)
+            .context("create Bubblewrap metadata directory")?;
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -481,23 +550,6 @@ impl Environment {
         Ok(())
     }
 
-    pub fn wrap(&self, command: &mut yinz_types::command::CommandToRun) -> Result<()> {
-        if !command.target.is_local() {
-            bail!("Bubblewrap cannot be combined with SSH or Firecracker");
-        }
-        self.validate_cwd(command.cwd.as_deref().context("missing launch directory")?)?;
-        let mut args = vec![
-            RUN_FLAG.into(),
-            self.root.to_string_lossy().into_owned(),
-            "--".into(),
-            command.path.to_string_lossy().into_owned(),
-        ];
-        args.append(&mut command.args);
-        command.path = yinz_binary()?.clone();
-        command.args = args;
-        Ok(())
-    }
-
     fn command(&self, declaration: &Declaration, cwd: &Path, runtime: bool) -> Result<Command> {
         let mut command = Command::new("bwrap");
         command.args([
@@ -516,6 +568,18 @@ impl Environment {
         command
             .arg("--args")
             .arg(environment_args.as_raw_fd().to_string());
+        // Rewound and inherited with the environment arguments below.
+        let mut data_files = Vec::new();
+        for (path, contents) in ACCOUNTS.iter().zip(accounts()) {
+            let mut file = tempfile::tempfile().context("create sandbox account file")?;
+            file.write_all(contents.as_bytes())
+                .context("write sandbox account file")?;
+            command
+                .arg("--ro-bind-data")
+                .arg(file.as_raw_fd().to_string())
+                .arg(path);
+            data_files.push(file);
+        }
         let mut setenv = |name: &str, value: &str| -> Result<()> {
             if name.contains('\0') || value.contains('\0') {
                 bail!("NUL in Bubblewrap environment argument");
@@ -553,7 +617,13 @@ impl Environment {
         command.arg("--bind").arg(&self.home).arg(HOME);
         let mut mount_files = Vec::new();
         for (src, dst) in &declaration.mounts {
-            let file = File::open(src).context("open accepted Bubblewrap source")?;
+            // `O_PATH` pins the source without opening it for reading, which a socket,
+            // an execute-only file or a search-only directory refuses and a FIFO blocks on.
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH)
+                .open(src)
+                .context("open accepted Bubblewrap source")?;
             let fd = file.as_raw_fd();
             if fs::read_link(format!("/proc/self/fd/{fd}")).context("verify opened mount source")?
                 != *src
@@ -648,7 +718,13 @@ impl Environment {
         unsafe {
             command.pre_exec(move || {
                 environment_args.rewind()?;
-                for file in std::iter::once(&environment_args).chain(&mount_files) {
+                for file in &mut data_files {
+                    file.rewind()?;
+                }
+                for file in std::iter::once(&environment_args)
+                    .chain(&data_files)
+                    .chain(&mount_files)
+                {
                     if libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
@@ -725,11 +801,8 @@ impl Environment {
             declaration: Declaration::default(),
             ready: false,
         })?;
-        let mut log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.metadata.join("prepare.log"))
-            .context("open preparation log")?;
+        let mut log =
+            open_log(&self.metadata.join("prepare.log")).context("open preparation log")?;
         writeln!(log, "Preparation {:?}", std::time::SystemTime::now())
             .context("write preparation log")?;
         let result: Result<()> = (|| {
@@ -743,9 +816,8 @@ impl Environment {
             };
             self.validate_storage(&accepted.declaration)?;
             self.save(&accepted)?;
-            fs::create_dir_all(&self.home).context("create private Bubblewrap home")?;
-            fs::set_permissions(&self.home, fs::Permissions::from_mode(0o700))
-                .context("protect Bubblewrap home")?;
+            yinz_runtime::shared::ensure_secure_dir(&self.home)
+                .context("create private Bubblewrap home")?;
             for (src, dst) in &accepted.declaration.seeds {
                 let status = self
                     .command(&accepted.declaration, &self.root, false)?
@@ -798,8 +870,48 @@ impl Environment {
         })
     }
 
-    pub fn run(&self, args: &[String]) -> Result<()> {
+    /// Everything a launch must pass before its pane's process exists: the platform, the
+    /// accepted declaration, the launch directory, the declared checks, and `program`
+    /// resolving on the sandbox's own `PATH`. Run by the server so a failure is the
+    /// spawner's answer; [`Self::run`] repeats only what guards the exec itself.
+    ///
+    /// A `program` that does not resolve is reported as [`ProgramNotFound`].
+    pub fn check_launch(&self, cwd: &Path, program: &Path) -> Result<()> {
         platform()?;
+        let _lock = self.lock(false)?;
+        let accepted = self.accepted()?;
+        self.validate_cwd(cwd)?;
+        let path = self.metadata.join("launch.log");
+        let log = open_log(&path).context("open launch check log")?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        self.checks(&accepted.declaration, cwd, &log, deadline)
+            .with_context(|| format!("Launch checks failed; inspect {}", path.display()))?;
+        let mut command = self.command(&accepted.declaration, cwd, false)?;
+        command
+            .args([
+                "--",
+                "/bin/sh",
+                "-c",
+                "command -v -- \"$1\" >/dev/null",
+                "sh",
+            ])
+            .arg(program)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().context("clone check log")?)
+            .stderr(log.try_clone().context("clone check log")?)
+            .process_group(0);
+        // The checks above proved the sandbox itself starts, so a failure here is the lookup's.
+        if !wait_status(&mut command, deadline)
+            .context("resolve the launch program")?
+            .success()
+        {
+            return Err(anyhow!(ProgramNotFound))
+                .with_context(|| format!("{} is not on the sandbox PATH", program.display()));
+        }
+        Ok(())
+    }
+
+    pub fn run(&self, args: &[String]) -> Result<()> {
         if args.is_empty() {
             bail!("missing sandbox command");
         }
@@ -807,22 +919,6 @@ impl Environment {
         let accepted = self.accepted()?;
         let cwd = std::env::current_dir().context("read launch directory")?;
         self.validate_cwd(&cwd)?;
-        let path = self.metadata.join("launch.log");
-        let log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(&path)
-            .context("open launch check log")?;
-        log.set_permissions(fs::Permissions::from_mode(0o600))
-            .context("protect launch check log")?;
-        self.checks(
-            &accepted.declaration,
-            &cwd,
-            &log,
-            Instant::now() + Duration::from_secs(10),
-        )
-        .with_context(|| format!("Launch checks failed; inspect {}", path.display()))?;
         let mut command = self.command(&accepted.declaration, &cwd, true)?;
         // Bubblewrap retains this shared lease through its PID namespace's lifetime.
         let fd = lock.as_raw_fd();
@@ -839,15 +935,19 @@ impl Environment {
 }
 
 fn wait_check(command: &mut Command, deadline: Instant) -> Result<()> {
+    let status = wait_status(command, deadline)?;
+    if !status.success() {
+        bail!("check exited with {status}");
+    }
+    Ok(())
+}
+
+/// Run a check to completion, killing its process group at `deadline`.
+fn wait_status(command: &mut Command, deadline: Instant) -> Result<std::process::ExitStatus> {
     let mut child = command.spawn().context("start check")?;
     let failure = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                }
-                bail!("check exited with {status}");
-            },
+            Ok(Some(status)) => return Ok(status),
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(
                     Duration::from_millis(10)

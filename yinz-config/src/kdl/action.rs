@@ -287,6 +287,7 @@ fn run_command_is_writable(run_command_action: &RunCommandAction) -> Result<(), 
     match &run_command_action.target {
         PaneTarget::Local => Ok(()),
         PaneTarget::Ssh { .. } => Err("a `Run` line cannot name an ssh host"),
+        PaneTarget::Bubblewrap { .. } => Err("a `Run` line cannot name a Bubblewrap environment"),
         PaneTarget::Firecracker {
             vm,
             image,

@@ -1318,6 +1318,7 @@ mod tests {
             cwd: Some("/work/agent".to_owned()),
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms,
             ended_at_ms: None,
             outcome: RunOutcome::Active,

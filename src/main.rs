@@ -29,9 +29,9 @@ fn main() {
                 anyhow::bail!("invalid Bubblewrap invocation");
             };
             anyhow::ensure!(separator == "--", "missing Bubblewrap command separator");
-            yinz_config::project_config::bubblewrap::Environment::for_project(
-                std::path::Path::new(root),
-            )?
+            yinz_config::project_config::bubblewrap::Environment::at_root(std::path::Path::new(
+                root,
+            ))
             .run(command)
         })();
         if let Err(error) = result {

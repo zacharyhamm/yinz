@@ -21,6 +21,9 @@ impl From<&PaneTarget> for ProtobufPaneTarget {
                 image: image.clone(),
                 worktree: worktree.as_ref().map(|path| path.display().to_string()),
             }),
+            PaneTarget::Bubblewrap { root } => {
+                ProtobufPaneTargetKind::BubblewrapRoot(root.display().to_string())
+            },
         };
         ProtobufPaneTarget { kind: Some(kind) }
     }
@@ -36,6 +39,9 @@ impl TryFrom<ProtobufPaneTarget> for PaneTarget {
                 vm: firecracker.vm,
                 image: firecracker.image,
                 worktree: firecracker.worktree.map(PathBuf::from),
+            },
+            Some(ProtobufPaneTargetKind::BubblewrapRoot(root)) => {
+                PaneTarget::bubblewrap(Path::new(&root)).map_err(|_| "invalid pane target")?
             },
         })
     }
@@ -54,7 +60,9 @@ pub struct FlatPaneTarget {
 impl From<&PaneTarget> for FlatPaneTarget {
     fn from(target: &PaneTarget) -> Self {
         match target {
-            PaneTarget::Local => FlatPaneTarget::default(),
+            // The flat spelling predates Bubblewrap; a plugin that reads only it sees a
+            // pane on this machine, which is where the pane is.
+            PaneTarget::Local | PaneTarget::Bubblewrap { .. } => FlatPaneTarget::default(),
             PaneTarget::Ssh { host } => FlatPaneTarget {
                 remote_host: Some(host.clone()),
                 ..Default::default()

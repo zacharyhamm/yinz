@@ -1207,6 +1207,8 @@ message PaneTarget {
     bool local = 1;
     string ssh_host = 2;
     FirecrackerTarget firecracker = 3;
+    // This machine, inside the Bubblewrap environment of the primary checkout at this path.
+    string bubblewrap_root = 4;
   }
 }
 

@@ -766,6 +766,7 @@ mod tests {
             host: None,
             firecracker_image: None,
             firecracker_worktree: None,
+            bubblewrap: None,
             status: agents::AgentStatus::Running,
             tab: None,
             detected: None,

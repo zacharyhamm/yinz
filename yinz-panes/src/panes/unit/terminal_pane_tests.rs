@@ -1992,18 +1992,16 @@ fn bubblewrap_launches_record_agents_before_output() {
             ],
         ),
     ] {
-        let mut args = vec![
-            "--bubblewrap-run",
-            "/project",
-            "--",
-            "/usr/bin/env",
-            "YINZ_AGENT_PANE=1",
-        ];
+        let mut args = vec!["YINZ_AGENT_PANE=1"];
         args.extend(inner);
+        // The sandbox is the pane's target; its command is the agent's own.
         let command = RunCommand {
-            command: "/usr/bin/yinz".into(),
+            command: "/usr/bin/env".into(),
             args: args.into_iter().map(str::to_owned).collect(),
             cwd: Some("/project/.worktrees/task".into()),
+            target: yinz_types::command::PaneTarget::Bubblewrap {
+                root: "/project".into(),
+            },
             ..Default::default()
         };
         for marker in [None, Some(kind), Some("true"), Some("")] {
@@ -2027,43 +2025,6 @@ fn bubblewrap_launches_record_agents_before_output() {
             assert_eq!(agent.state, AgentState::Busy);
             assert_eq!(agent.cwd.as_deref(), Some("/project/.worktrees/task"));
         }
-    }
-}
-
-#[test]
-fn bubblewrap_registration_requires_a_leading_launch_marker() {
-    for (program, args) in [
-        ("yinz", "--bubblewrap-run /project -- claude"),
-        ("yinz", "--bubblewrap-run /project -- env claude"),
-        (
-            "yinz",
-            "--bubblewrap-run /project -- env YINZ_AGENT_PANE=0 claude",
-        ),
-        (
-            "yinz",
-            "--bubblewrap-run /project -- env claude YINZ_AGENT_PANE=1",
-        ),
-        (
-            "yinz",
-            "--bubblewrap-run /project env YINZ_AGENT_PANE=1 claude",
-        ),
-        ("yinz", "--bubblewrap-run -- env YINZ_AGENT_PANE=1 claude"),
-        ("yinz", "--bubblewrap-run /project --"),
-        (
-            "other",
-            "--bubblewrap-run /project -- env YINZ_AGENT_PANE=1 claude",
-        ),
-        (
-            "claude",
-            "--bubblewrap-run /project -- env YINZ_AGENT_PANE=1 claude",
-        ),
-    ] {
-        let run = super::Run::Command(RunCommand {
-            command: program.into(),
-            args: args.split_whitespace().map(str::to_owned).collect(),
-            ..Default::default()
-        });
-        assert!(super::agent_from_run(Some(&run)).is_none(), "{run:?}");
     }
 }
 

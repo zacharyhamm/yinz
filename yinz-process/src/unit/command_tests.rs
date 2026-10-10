@@ -204,3 +204,51 @@ fn command_lookup_works_after_the_current_directory_is_removed() {
         }
     }
 }
+
+#[test]
+fn only_a_bubblewrap_target_execs_through_this_binarys_launcher() {
+    let plain = RunCommand {
+        command: "claude".into(),
+        args: vec!["--resume".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        exec_program_and_args(&plain).unwrap(),
+        (PathBuf::from("claude"), vec!["--resume".to_owned()])
+    );
+
+    let sandboxed = RunCommand {
+        target: yinz_types::command::PaneTarget::Bubblewrap {
+            root: "/my project".into(),
+        },
+        ..plain.clone()
+    };
+    let (program, args) = exec_program_and_args(&sandboxed).unwrap();
+    assert_eq!(Some(&program), yinz_runtime::own_binary::server_binary());
+    assert_eq!(
+        args,
+        [
+            yinz_types::agent::BUBBLEWRAP_RUN_FLAG,
+            "/my project",
+            "--",
+            "claude",
+            "--resume"
+        ]
+    );
+    // What a sandboxed pane reports for its process reads back to the command as asked.
+    let mut argv = vec![program.to_string_lossy().into_owned()];
+    argv.extend(args);
+    assert_eq!(
+        yinz_types::agent::bubblewrap_inner_argv(&argv),
+        Some(["claude".to_owned(), "--resume".to_owned()].as_slice())
+    );
+    // The agent resolves on the sandbox's PATH, not this machine's.
+    assert!(can_exec(
+        &sandboxed,
+        Some(std::ffi::OsStr::new("/nonexistent"))
+    ));
+    assert!(!can_exec(
+        &plain,
+        Some(std::ffi::OsStr::new("/nonexistent"))
+    ));
+}

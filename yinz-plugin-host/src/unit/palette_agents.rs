@@ -308,6 +308,10 @@ fn palette_current_directory_vm_defaults_and_fresh_duplicate_targets() {
             host: "host".into(),
         },
         commands[0].target.clone(),
+        // A sandboxed agent's duplicate is sandboxed: the target is the sandbox.
+        PaneTarget::Bubblewrap {
+            root: repo.path().to_owned(),
+        },
     ] {
         let mut duplicate = request(
             repo.path(),
@@ -333,7 +337,7 @@ fn palette_current_directory_vm_defaults_and_fresh_duplicate_targets() {
             .any(|arg| arg == "--resume" || arg == "--continue"));
         assert_eq!(
             commands[0].args.iter().any(|arg| arg == "--settings"),
-            target.is_local()
+            !target.is_remote()
         );
     }
     let cancelled = request(
@@ -361,6 +365,7 @@ fn recorded_run(root: &Path) -> agent_proto::agents::AgentRun {
         cwd: Some(root.to_string_lossy().into_owned()),
         host: None,
         worktree: None,
+        bubblewrap: None,
         started_at_ms: 100,
         ended_at_ms: Some(200),
         outcome: agent_proto::agents::RunOutcome::Completed,
@@ -431,6 +436,22 @@ fn palette_history_search_exact_event_predecessor_and_resume() {
     assert_eq!(commands.len(), 1);
     assert!(commands[0].args.iter().any(|arg| arg == "archived"));
     assert_eq!(commands[0].cwd.as_deref(), Some(temp.path()));
+    assert_eq!(commands[0].target, PaneTarget::Local);
+    // A run recorded in a Bubblewrap environment resumes inside it, where its conversation is.
+    let mut sandboxed = recorded.clone();
+    sandboxed.bubblewrap = Some(temp.path().to_string_lossy().into_owned());
+    write(&sandboxed);
+    let (reply, commands) = execute(HistoryAction::Resume {
+        id: recorded.id.clone(),
+    });
+    assert!(matches!(reply.unwrap(), AgentReply::Launched(_)));
+    assert_eq!(
+        commands[0].target,
+        PaneTarget::Bubblewrap {
+            root: temp.path().to_owned()
+        }
+    );
+    write(&recorded);
     for (outcome, host, host_id, kind, session, directory, error) in [
         (
             agent_proto::agents::RunOutcome::Active,

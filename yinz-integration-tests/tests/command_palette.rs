@@ -1163,6 +1163,7 @@ fn command_palette_agent_history_event_back_focus_and_archive_resume() {
         cwd: Some(root.join("cwd").to_string_lossy().into_owned()),
         host: None,
         worktree: None,
+        bubblewrap: None,
         started_at_ms: 100,
         ended_at_ms: Some(200),
         outcome: RunOutcome::Completed,

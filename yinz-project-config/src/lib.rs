@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 pub mod bubblewrap;
 
+/// A stable directory name for per-checkout state: the SHA-256 of `root`'s path, in hex.
+#[cfg(not(target_family = "wasm"))]
+pub fn root_key(root: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(root.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub server_bind: Option<std::net::IpAddr>,

@@ -265,6 +265,7 @@ impl State {
                     &run.session_id,
                     run.cwd.as_deref(),
                     run.host.as_deref(),
+                    run.bubblewrap.as_deref(),
                 )
             })
             .and_then(|command| {

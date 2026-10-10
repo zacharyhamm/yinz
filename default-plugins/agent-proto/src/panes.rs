@@ -92,6 +92,10 @@ pub fn agent_pane(pane: &PaneInfo, tab: Option<(TabId, String)>) -> agents::Agen
             .target
             .firecracker_worktree()
             .map(|path| path.display().to_string()),
+        bubblewrap: pane
+            .target
+            .bubblewrap_root()
+            .map(|path| path.display().to_string()),
         // Order matters: a held pane has also exited, and "waiting to be re-run"
         // is the more useful of the two things to say.
         status: if pane.is_held {

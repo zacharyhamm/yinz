@@ -373,6 +373,24 @@ fn terminal_safe(text: &str) -> String {
     text.chars().flat_map(char::escape_default).collect()
 }
 
+/// What a deferred spawn is waiting on before its command can start.
+fn resolving_status(target: &PaneTarget) -> &'static str {
+    match target {
+        PaneTarget::Firecracker { .. } => "waiting for the Firecracker provider",
+        PaneTarget::Bubblewrap { .. } => "checking the Bubblewrap environment",
+        PaneTarget::Ssh { .. } | PaneTarget::Local => "connecting to the remote host",
+    }
+}
+
+/// What a deferred spawn does once its target is resolved.
+fn starting_status(target: &PaneTarget) -> &'static str {
+    match target {
+        PaneTarget::Firecracker { .. } => "connecting to the guest",
+        PaneTarget::Bubblewrap { .. } => "entering the Bubblewrap environment",
+        PaneTarget::Ssh { .. } | PaneTarget::Local => "starting the remote command",
+    }
+}
+
 fn remote_loading_screen(command: &RunCommand, status: &str) -> Vec<u8> {
     let status = terminal_safe(status);
     let body = match &command.target {
@@ -393,6 +411,11 @@ fn remote_loading_screen(command: &RunCommand, status: &str) -> Vec<u8> {
         PaneTarget::Ssh { host } => format!(
             "\u{1b}[H\u{1b}[2J\u{1b}[1mConnecting to remote host\u{1b}[0m\r\n\r\nHost: {}\r\n\r\nStatus: {}",
             terminal_safe(host),
+            status,
+        ),
+        PaneTarget::Bubblewrap { root } => format!(
+            "\u{1b}[H\u{1b}[2J\u{1b}[1mStarting Bubblewrap environment\u{1b}[0m\r\n\r\nCheckout: {}\r\n\r\nStatus: {}",
+            terminal_safe(&root.display().to_string()),
             status,
         ),
         PaneTarget::Local => return vec![],
@@ -439,11 +462,7 @@ fn spawn_remote_terminal(
                 senders,
                 pending.terminal_id,
                 &command,
-                if command.target.is_firecracker() {
-                    "connecting to the guest"
-                } else {
-                    "starting the remote command"
-                },
+                starting_status(&command.target),
             )
             .non_fatal();
             os_input.spawn_resolved(resolved, quit_cb)
@@ -494,11 +513,7 @@ fn run_spawn_job(
                                 senders,
                                 terminal_id,
                                 &pending.run_command,
-                                if pending.run_command.target.is_firecracker() {
-                                    "connecting to the guest"
-                                } else {
-                                    "starting the remote command"
-                                },
+                                starting_status(&pending.run_command.target),
                             )
                             .non_fatal();
                             os_input.rerun_resolved(resolved, quit_cb)
@@ -569,6 +584,9 @@ pub struct Pty {
     pub(crate) id_to_child_pid: HashMap<TerminalId, ProcessId>, // terminal_id => child pid
     originating_plugins: HashMap<TerminalId, OriginatingPlugin>,
     workflow_owners: HashMap<TerminalId, String>,
+    /// Panes whose command runs in a Bubblewrap environment. The process holding such a
+    /// pane's pty is the sandbox, so its argv is read through to the command inside.
+    bubblewrap_terminals: HashSet<TerminalId>,
     debug_to_file: bool,
     task_handles: HashMap<TerminalId, JoinHandle<()>>, // terminal_id to join-handle
     default_editor: Option<PathBuf>,
@@ -1342,6 +1360,7 @@ impl Pty {
             default_editor,
             originating_plugins: HashMap::new(),
             workflow_owners: HashMap::new(),
+            bubblewrap_terminals: HashSet::new(),
             post_command_discovery_hook,
             plugin_cwds: HashMap::new(),
             terminal_cwds: HashMap::new(),
@@ -1538,11 +1557,7 @@ impl Pty {
                         &senders,
                         pending.terminal_id,
                         command,
-                        if command.target.is_firecracker() {
-                            "waiting for the Firecracker provider"
-                        } else {
-                            "connecting to the remote host"
-                        },
+                        resolving_status(&command.target),
                     )?;
                 }
             },
@@ -1552,11 +1567,7 @@ impl Pty {
                         &senders,
                         terminal_id,
                         &pending.run_command,
-                        if pending.run_command.target.is_firecracker() {
-                            "waiting for the Firecracker provider"
-                        } else {
-                            "connecting to the remote host"
-                        },
+                        resolving_status(&pending.run_command.target),
                     )?;
                 }
             },
@@ -1610,7 +1621,7 @@ impl Pty {
         if !run_command.defers_spawn() {
             return Ok(Some((run_command, completion_tx)));
         }
-        self.track_workflow_owner(terminal_id, &run_command);
+        self.track_launch(terminal_id, &run_command);
         let _ = self.task_handles.remove(&terminal_id);
         let _ = self.id_to_child_pid.remove(&terminal_id);
         let generation = self.next_rerun_generation;
@@ -2069,7 +2080,7 @@ impl Pty {
             child_pid,
         } = spawned;
         if let TerminalAction::RunCommand(command) = terminal_action {
-            self.track_workflow_owner(terminal_id, command);
+            self.track_launch(terminal_id, command);
         }
         let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_bytes = async_runtime().spawn({
@@ -2750,7 +2761,7 @@ impl Pty {
                 let starts_held = command.hold_on_start;
                 // The default shell's cwd is a path on *this* machine; a command
                 // that runs elsewhere must not inherit it.
-                if command.cwd.is_none() && command.target.is_local() {
+                if command.cwd.is_none() && !command.target.is_remote() {
                     if let TerminalAction::RunCommand(cmd) = default_shell {
                         command.cwd = cmd.cwd;
                     }
@@ -2923,11 +2934,29 @@ impl Pty {
             Some(Run::Plugin(_)) => Ok(None),
         }
     }
-    fn track_workflow_owner(&mut self, terminal_id: TerminalId, command: &RunCommand) {
+    /// Record what a pane's command says about the pane itself, each time one starts in it.
+    fn track_launch(&mut self, terminal_id: TerminalId, command: &RunCommand) {
         if let Some(owner) = command.workflow_owner() {
             self.workflow_owners.insert(terminal_id, owner.to_owned());
         } else {
             self.workflow_owners.remove(&terminal_id);
+        }
+        if command.target.is_bubblewrap() {
+            self.bubblewrap_terminals.insert(terminal_id);
+        } else {
+            self.bubblewrap_terminals.remove(&terminal_id);
+        }
+    }
+
+    /// The argv to report for a pane's own process: the command inside the sandbox for a
+    /// Bubblewrap pane, and the process's own otherwise.
+    fn pane_argv(&self, terminal_id: TerminalId, argv: Vec<String>) -> Vec<String> {
+        if !self.bubblewrap_terminals.contains(&terminal_id) {
+            return argv;
+        }
+        match yinz_types::agent::bubblewrap_inner_argv(&argv) {
+            Some(inner) => inner.to_vec(),
+            None => argv,
         }
     }
 
@@ -3030,6 +3059,7 @@ impl Pty {
                 self.signal_pane_child(id, ChildSignal::Hup);
                 self.id_to_child_pid.remove(&id);
                 self.workflow_owners.remove(&id);
+                self.bubblewrap_terminals.remove(&id);
                 self.pane_activity_flags.remove(&id);
                 self.forget_terminal_cwd(id);
                 self.forget_terminal_host(id);
@@ -3210,6 +3240,7 @@ impl Pty {
         // not follow the pane out.
         self.originating_plugins.remove(&terminal_id);
         self.workflow_owners.remove(&terminal_id);
+        self.bubblewrap_terminals.remove(&terminal_id);
     }
 
     /// Take a supervisor over from another session (or from a server that died)
@@ -3309,7 +3340,7 @@ impl Pty {
 
         let terminal_id = adopted.terminal_id;
         let child_pid = adopted.child_pid;
-        self.track_workflow_owner(terminal_id, &adopted.cmd);
+        self.track_launch(terminal_id, &adopted.cmd);
         let activity_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let terminal_bytes = async_runtime().spawn({
             let err_context = |terminal_id: TerminalId| {
@@ -3462,7 +3493,7 @@ impl Pty {
                         }
                     },
                 }
-                self.track_workflow_owner(id, &run_command);
+                self.track_launch(id, &run_command);
                 let _ = self.task_handles.remove(&id); // if all is well, this shouldn't be here
                 let _ = self.id_to_child_pid.remove(&id); // if all is wlel, this shouldn't be here
                 let previous_host = self.host_of_pane(&PaneId::Terminal(id));
@@ -3891,6 +3922,7 @@ impl Pty {
                 self.set_terminal_cwd(*terminal_id, cwd);
             }
             if let Some(cmd) = cmd {
+                let cmd = self.pane_argv(*terminal_id, cmd);
                 self.terminal_cmds.insert(*terminal_id, cmd);
             }
         }
@@ -4150,7 +4182,9 @@ impl Pty {
                         if let Some(command_args) = cmd_foreground {
                             GetPaneRunningCommandResponse::Ok(command_args.clone())
                         } else if let Some(command_args) = cmd_sysinfo {
-                            GetPaneRunningCommandResponse::Ok(command_args.clone())
+                            GetPaneRunningCommandResponse::Ok(
+                                self.pane_argv(terminal_id, command_args.clone()),
+                            )
                         } else {
                             GetPaneRunningCommandResponse::Err(format!(
                                 "Could not retrieve running command for terminal pane {}",

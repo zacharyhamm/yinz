@@ -6943,6 +6943,7 @@ dependencies = [
  "yinz-bus",
  "yinz-ipc",
  "yinz-process",
+ "yinz-project-config",
  "yinz-runtime",
  "yinz-test-support",
  "yinz-types",

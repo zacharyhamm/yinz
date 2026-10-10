@@ -2517,3 +2517,48 @@ fn note_file_editor_precedence_and_arguments_use_executable_stubs() {
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("/tmp/note.md"));
 }
+
+/// A Bubblewrap launch that cannot be checked is refused, never run on the host, and the
+/// refusal names the pane it belongs in.
+#[test]
+fn a_bubblewrap_launch_that_cannot_resolve_is_a_pane_start_failure() {
+    let target = PaneTarget::Bubblewrap {
+        root: "/repo".into(),
+    };
+    let no_directory = RunCommand {
+        command: "claude".into(),
+        target: target.clone(),
+        ..Default::default()
+    };
+    let refused = make_server()
+        .resolve_target(no_directory, None)
+        .unwrap_err();
+    let failed = resolve_failed(TerminalId::new(7), &target, refused);
+    match failed.downcast_ref::<YinzError>() {
+        Some(YinzError::PaneStartFailed {
+            terminal_id,
+            message,
+        }) => {
+            assert_eq!(*terminal_id, TerminalId::new(7));
+            assert!(message.contains("Bubblewrap environment"), "{message}");
+            assert!(message.contains("working directory"), "{message}");
+        },
+        other => panic!("expected a pane start failure, got {other:?}"),
+    }
+
+    // A program missing from the sandbox's PATH reads as any missing command does.
+    let missing = resolve_failed(
+        TerminalId::new(7),
+        &target,
+        YinzError::CommandNotFound {
+            terminal_id: TerminalId::new(0),
+            command: "claude".into(),
+        }
+        .into(),
+    );
+    assert!(matches!(
+        missing.downcast_ref::<YinzError>(),
+        Some(YinzError::CommandNotFound { terminal_id, command })
+            if *terminal_id == TerminalId::new(7) && command == "claude"
+    ));
+}
