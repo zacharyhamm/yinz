@@ -9228,6 +9228,7 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: cwd.map(str::to_owned),
             host: host.map(str::to_owned),
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,

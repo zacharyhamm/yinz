@@ -273,7 +273,7 @@ fn palette_worktree_base_prefers_main_and_falls_back_to_primary_head() {
 }
 
 #[test]
-fn palette_current_directory_vm_defaults_and_fresh_duplicate_targets() {
+fn palette_current_directory_and_fresh_duplicate_targets() {
     let (repo, data) = repository();
     let current = request(
         repo.path(),
@@ -521,15 +521,6 @@ fn palette_history_search_exact_event_predecessor_and_resume() {
             "archived",
             Some(temp.path().to_string_lossy().into_owned()),
             "active",
-        ),
-        (
-            agent_proto::agents::RunOutcome::Completed,
-            Some("build-box".into()),
-            recorded.host_id.clone(),
-            "codex",
-            "archived",
-            recorded.cwd.clone(),
-            "SSH",
         ),
         (
             agent_proto::agents::RunOutcome::Completed,

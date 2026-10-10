@@ -1060,3 +1060,36 @@ fn context_menu_item_with_a_wire_only_action_is_refused() {
     assert!(error.contains("List them"), "{error}");
     assert!(error.contains("ListClients"), "{error}");
 }
+
+#[test]
+fn run_rejects_retired_firecracker_children_regardless_of_value_or_placement() {
+    for placement in ["", "floating true;", "in_place true;", "stacked true;"] {
+        for field in [
+            "firecracker_vm",
+            "firecracker_image",
+            "firecracker_worktree",
+        ] {
+            for value in ["\"vm\"", "\"\"", "", "null", "42", "true"] {
+                let text = format!("Run \"ls\" {{ {placement} {field} {value}; }}");
+                let doc: KdlDocument = text.parse().unwrap();
+                let node = doc.get("Run").unwrap();
+                let child = node.children().unwrap().get(field).unwrap();
+                let error = crate::kdl::action::from_kdl((node, &Options::default())).unwrap_err();
+                let ConfigError::KdlError(error) = error else {
+                    panic!("expected a configuration error")
+                };
+                assert!(error.error_message.contains(field));
+                assert!(error
+                    .error_message
+                    .contains("Firecracker execution is no longer supported."));
+                assert_eq!(error.offset, Some(child.span().offset()));
+                assert_eq!(error.len, Some(child.span().len()));
+            }
+        }
+        let text = format!("Run \"ls\" {{ {placement} cwd \"/tmp\"; }}");
+        let doc: KdlDocument = text.parse().unwrap();
+        assert!(
+            crate::kdl::action::from_kdl((doc.get("Run").unwrap(), &Options::default())).is_ok()
+        );
+    }
+}

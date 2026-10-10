@@ -52,3 +52,7 @@ pub use prost;
 #[cfg(test)]
 #[path = "unit/wire_tests.rs"]
 mod wire_tests;
+
+#[cfg(test)]
+#[path = "unit/retired_targets.rs"]
+mod retired_targets;

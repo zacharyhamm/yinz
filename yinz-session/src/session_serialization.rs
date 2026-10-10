@@ -1,6 +1,7 @@
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use yinz_types::command::PaneTarget;
 
 use yinz_types::{
     geometry::{PercentOrFixed, SplitDirection, SplitSize},
@@ -181,6 +182,7 @@ fn serialize_tiled_pane(
         &mut tiled_pane_node,
     );
 
+    serialize_target_attributes(&layout.run, &mut tiled_pane_node);
     serialize_tiled_layout_attributes(layout, ignore_size, &mut tiled_pane_node);
     if let Some(ref fg) = layout.default_fg {
         tiled_pane_node
@@ -682,6 +684,7 @@ fn serialize_floating_pane(
         has_children,
         &mut floating_pane_node,
     );
+    serialize_target_attributes(&layout.run, &mut floating_pane_node);
     if let Some(ref fg) = layout.default_fg {
         floating_pane_node
             .entries_mut()
