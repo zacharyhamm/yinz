@@ -423,7 +423,7 @@ pub(super) fn execute(
                 kind: Some(h.kind),
                 ..Default::default()
             };
-            return launch(request, senders, spec, TILED, |_| {
+            return launch(request, senders, spec, |_| {
                 Ok(PreparedAgent {
                     command,
                     cwd: cwd.into(),

@@ -1932,22 +1932,6 @@ impl Screen {
             };
             let err_context = || format!("failed to apply layout for tab {tab_id:?}",);
 
-            let mother_source = self.active_tab_ids.get(&client_id).copied();
-            let passthrough_affected_client_ids: Vec<ClientId> = if should_change_client_focus {
-                if self.session_is_mirrored {
-                    self.connected_clients.borrow().iter().copied().collect()
-                } else {
-                    vec![client_id]
-                }
-            } else {
-                vec![]
-            };
-            let passthrough_old_focused_panes: Vec<(ClientId, Option<PaneId>)> =
-                passthrough_affected_client_ids
-                    .iter()
-                    .map(|c| (*c, self.get_active_pane_id(c)))
-                    .collect();
-
             let warp_slots = if self.pending_warp_relationships.contains_key(&tab_id) {
                 let mut plugins = new_plugin_ids.clone();
                 let mut tiled = new_terminal_ids.iter();
@@ -2053,46 +2037,8 @@ impl Screen {
                     .with_context(err_context)?;
             }
 
-            // move the relevant clients out of the current tab and place them in the new one
-            let drained_clients = if should_change_client_focus {
-                if self.session_is_mirrored {
-                    let client_mode_infos_in_source_tab =
-                        if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
-                            let client_mode_infos_in_source_tab =
-                                active_tab.drain_connected_clients(None);
-                            if active_tab.has_no_connected_clients() {
-                                active_tab
-                                    .visible(false)
-                                    .with_context(err_context)
-                                    .non_fatal();
-                            }
-                            Some(client_mode_infos_in_source_tab)
-                        } else {
-                            None
-                        };
-                    let all_connected_clients: Vec<ClientId> =
-                        self.connected_clients.borrow().iter().copied().collect();
-                    for client_id in all_connected_clients {
-                        self.update_client_tab_focus(client_id, tab_id);
-                    }
-                    client_mode_infos_in_source_tab
-                } else if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
-                    let client_mode_info_in_source_tab =
-                        active_tab.drain_connected_clients(Some(vec![client_id]));
-                    if active_tab.has_no_connected_clients() {
-                        active_tab
-                            .visible(false)
-                            .with_context(err_context)
-                            .non_fatal();
-                    }
-                    self.update_client_tab_focus(client_id, tab_id);
-                    Some(client_mode_info_in_source_tab)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            let mut transition =
+                should_change_client_focus.then(|| self.begin_tab_transition(client_id, tab_id));
 
             if !self.active_tab_ids.contains_key(&client_id) {
                 self.connected_clients.borrow_mut().insert(client_id);
@@ -2121,28 +2067,26 @@ impl Screen {
                         tab.restore_warp_relationships(slots, relationships)
                             .non_fatal();
                     }
-                    if let Some(drained_clients) = drained_clients {
-                        tab.visible(true).non_fatal();
-                        tab.add_multiple_clients(drained_clients).non_fatal();
-                    }
-                    // after the drained clients have joined, so the plugins in this tab hear
-                    // about their modes too and not only about the client that opened it
-                    tab.update_input_modes().non_fatal();
-                    // the tab keeps the size its viewers gave it here; `recompute_tab_size` below
-                    // reflows it against the session surface
-                    let tab_size = tab.size;
-                    tab.resize_whole_tab(tab_size)
-                        .with_context(err_context)
-                        .non_fatal();
-                    tab.set_force_render();
                     Ok(())
                 })
                 .with_context(err_context)?;
 
-            if should_change_client_focus {
-                if let Some(source) = mother_source.filter(|source| *source != tab_id) {
-                    self.mother_follows(client_id, source, tab_id, &passthrough_old_focused_panes);
-                }
+            if let Some(transition) = &mut transition {
+                self.finish_tab_transition(transition, None)
+                    .with_context(err_context)
+                    .non_fatal();
+            }
+            if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                // after the drained clients have joined, so the plugins in this tab hear
+                // about their modes too and not only about the client that opened it
+                tab.update_input_modes().non_fatal();
+                // the tab keeps the size its viewers gave it here; `recompute_tab_size` below
+                // reflows it against the session surface
+                let tab_size = tab.size;
+                tab.resize_whole_tab(tab_size)
+                    .with_context(err_context)
+                    .non_fatal();
+                tab.set_force_render();
             }
             let mut retired_source = None;
             if !self.active_tab_ids.contains_key(&client_id) {
@@ -2163,7 +2107,9 @@ impl Screen {
                 .with_context(err_context)
                 .non_fatal();
 
-            for (affected_client_id, old_pane_id) in passthrough_old_focused_panes {
+            for (affected_client_id, old_pane_id) in
+                transition.into_iter().flat_map(|t| t.old_focus)
+            {
                 let new_pane_id = self.get_active_pane_id(&affected_client_id);
                 if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
                     self.report_key_passthrough_state(affected_client_id, old, new);
@@ -3234,6 +3180,7 @@ impl Screen {
         let tab_index = self.tab_position_containing_pane(pane_id);
         match tab_index {
             Some(tab_index) => {
+                self.hide_mother_for_pane_focus(pane_id, client_id);
                 self.switch_active_tab(tab_index, None, true, client_id)?;
                 // The tab's own result is what gets logged. Mapping over the lookup used to
                 // produce an `Option<Result>` whose *outer* layer was the only thing

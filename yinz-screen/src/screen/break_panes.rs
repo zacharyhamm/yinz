@@ -24,7 +24,7 @@ type ExtractedPane = (
 
 /// An `ExtractedPane` that remembers the tab it came from, so a destination that refuses it
 /// can hand it back.
-type ExtractedPaneWithSource = (
+pub(super) type ExtractedPaneWithSource = (
     TabId,
     ExtractedPanePlacement,
     Box<dyn Pane>,
@@ -32,6 +32,104 @@ type ExtractedPaneWithSource = (
 );
 
 impl Screen {
+    pub(super) fn extract_pane_for_transfer(
+        &mut self,
+        source: TabId,
+        pane_id: PaneId,
+    ) -> Option<ExtractedPaneWithSource> {
+        let tab = self.tabs.get_mut(&source)?;
+        let original = tab.placement_for_extraction(pane_id);
+        let respawn = tab.take_pending_respawn(pane_id);
+        if let Some(pane) = tab.extract_pane(pane_id, true) {
+            Some((source, original, pane, respawn))
+        } else {
+            if let Some(entry) = respawn {
+                tab.restore_pending_respawn(pane_id, entry);
+            }
+            None
+        }
+    }
+
+    pub(super) fn accept_transferred_panes(
+        &mut self,
+        extracted: Vec<(ExtractedPaneWithSource, ExtractedPanePlacement)>,
+        tab_id: TabId,
+        arrangement: bool,
+    ) -> BreakPanesToTabOutcome {
+        let mut outcome = BreakPanesToTabOutcome::default();
+        let mut refused: Vec<ExtractedPaneWithSource> = vec![];
+        match self.get_tab_by_id_mut(tab_id) {
+            Some(destination) => {
+                for ((source_tab_id, original, pane, carried_respawn), placement) in extracted {
+                    let pane_id = pane.pid();
+                    let accepted = if arrangement {
+                        destination.accept_arranged_pane(pane, placement)
+                    } else {
+                        destination.accept_extracted_pane(pane, placement)
+                    };
+                    match accepted {
+                        AcceptedPane::Accepted => {
+                            outcome.moved.push(pane_id);
+                            if let Some(entry) = carried_respawn {
+                                destination.restore_pending_respawn(pane_id, entry);
+                            }
+                        },
+                        AcceptedPane::NoRoom(pane) => {
+                            refused.push((source_tab_id, original, pane, carried_respawn))
+                        },
+                        AcceptedPane::LostInAdd => outcome.closed.push(pane_id),
+                    }
+                }
+            },
+            // Every extracted pane needs a home even if its destination disappeared.
+            None => {
+                log::error!("Tab {tab_id} vanished mid-move");
+                refused = extracted.into_iter().map(|(pane, _)| pane).collect();
+            },
+        }
+
+        // put back anything the destination would not take - as what it was, so a refusal does
+        // not quietly demote a modal in the tab it never left
+        for (source_tab_id, placement, pane, carried_respawn) in refused {
+            let pane_id = pane.pid();
+            let put_back = match self.get_tab_by_id_mut(source_tab_id) {
+                Some(source) => source.accept_extracted_pane(pane, placement),
+                None => AcceptedPane::NoRoom(pane),
+            };
+            match put_back {
+                AcceptedPane::Accepted => {
+                    log::error!(
+                        "Tab {tab_id} had no room for pane {pane_id:?}; returned it to tab {source_tab_id}"
+                    );
+                    outcome.returned_to_source.push(pane_id);
+                    if let Some(entry) = carried_respawn {
+                        if let Some(source) = self.get_tab_by_id_mut(source_tab_id) {
+                            source.restore_pending_respawn(pane_id, entry);
+                        }
+                    }
+                },
+                AcceptedPane::NoRoom(..) | AcceptedPane::LostInAdd => {
+                    // Last resort: the pane fits nowhere. Dropping the box here is only
+                    // safe because `close_homeless_pane` below tears the pane down
+                    // first - the same order `close_tab_by_id` uses for the panes of a
+                    // tab it removes. Dropping it *without* that is the bug this
+                    // function exists to fix. A pending respawn is dropped along with it,
+                    // matching `Tab::close_pane`'s own cleanup for a pane that closes
+                    // outright.
+                    log::error!(
+                        "Pane {pane_id:?} fits in neither tab {tab_id} nor tab {source_tab_id}; closing it"
+                    );
+                    outcome.closed.push(pane_id);
+                },
+            }
+        }
+        for pane_id in outcome.closed.clone() {
+            self.close_homeless_pane(pane_id);
+        }
+
+        outcome
+    }
+
     pub fn break_pane(
         &mut self,
         default_shell: Option<TerminalAction>,
@@ -478,108 +576,34 @@ impl Screen {
 
         // remember where each pane came from, so that a destination that refuses it can
         // be recovered from rather than losing the pane
-        let mut extracted: Vec<ExtractedPaneWithSource> = Vec::with_capacity(to_extract.len());
-        {
-            let all_tabs = self.get_tabs_mut();
-            'panes: for pane_id in to_extract {
-                for tab in all_tabs.values_mut() {
-                    if tab.id == tab_id || !tab.has_pane_with_pid(&pane_id) {
-                        continue;
-                    }
-                    let source_tab_id = tab.id;
-                    // *before* the extraction: it is what drops an overlay's kind and
-                    // coordinates, and "not floating" would land a modal here as a tiled pane
-                    let placement = if arrangement && tab.pane_is_stack_list_member(&pane_id) {
-                        ExtractedPanePlacement::Tiled
-                    } else {
-                        tab.placement_for_extraction(pane_id)
-                    };
-                    let carried_respawn = tab.take_pending_respawn(pane_id);
-                    // dont_swap_if_suppressed, and no client_id: we do not need to
-                    // necessarily trigger a relayout for the source tab
-                    if let Some(pane) = tab.extract_pane(pane_id, true) {
-                        extracted.push((source_tab_id, placement, pane, carried_respawn));
-                        continue 'panes;
-                    } else if let Some(entry) = carried_respawn {
-                        tab.restore_pending_respawn(pane_id, entry);
-                    }
-                }
+        let mut extracted = Vec::with_capacity(to_extract.len());
+        for pane_id in to_extract {
+            let source = self
+                .tabs
+                .values()
+                .find(|tab| tab.id != tab_id && tab.has_pane_with_pid(&pane_id));
+            let Some(source) = source else {
+                outcome.not_found.push(pane_id);
+                continue;
+            };
+            let destination_placement = if arrangement && source.pane_is_stack_list_member(&pane_id)
+            {
+                ExtractedPanePlacement::Tiled
+            } else {
+                source.placement_for_extraction(pane_id)
+            };
+            let source = source.id;
+            if let Some(pane) = self.extract_pane_for_transfer(source, pane_id) {
+                extracted.push((pane, destination_placement));
+            } else {
                 outcome.not_found.push(pane_id);
             }
         }
 
-        let mut refused: Vec<ExtractedPaneWithSource> = vec![];
-        match self.get_tab_by_id_mut(tab_id) {
-            Some(destination) => {
-                for (source_tab_id, placement, pane, carried_respawn) in extracted {
-                    let pane_id = pane.pid();
-                    let accepted = if arrangement {
-                        destination.accept_arranged_pane(pane, placement.clone())
-                    } else {
-                        destination.accept_extracted_pane(pane, placement.clone())
-                    };
-                    match accepted {
-                        AcceptedPane::Accepted => {
-                            outcome.moved.push(pane_id);
-                            if let Some(entry) = carried_respawn {
-                                destination.restore_pending_respawn(pane_id, entry);
-                            }
-                        },
-                        AcceptedPane::NoRoom(pane) => {
-                            refused.push((source_tab_id, placement, pane, carried_respawn))
-                        },
-                        AcceptedPane::LostInAdd => outcome.closed.push(pane_id),
-                    }
-                }
-            },
-            // Unreachable: the destination was found by this same key above, and
-            // nothing since has removed a tab. Handled as a refusal anyway rather than
-            // with `?`, because an early return here would drop every pane already
-            // extracted - which is precisely how this function used to lose them.
-            None => {
-                log::error!("Tab {tab_id} vanished mid-move");
-                refused = extracted;
-            },
-        }
-
-        // put back anything the destination would not take - as what it was, so a refusal does
-        // not quietly demote a modal in the tab it never left
-        for (source_tab_id, placement, pane, carried_respawn) in refused {
-            let pane_id = pane.pid();
-            let put_back = match self.get_tab_by_id_mut(source_tab_id) {
-                Some(source) => source.accept_extracted_pane(pane, placement),
-                None => AcceptedPane::NoRoom(pane),
-            };
-            match put_back {
-                AcceptedPane::Accepted => {
-                    log::error!(
-                        "Tab {tab_id} had no room for pane {pane_id:?}; returned it to tab {source_tab_id}"
-                    );
-                    outcome.returned_to_source.push(pane_id);
-                    if let Some(entry) = carried_respawn {
-                        if let Some(source) = self.get_tab_by_id_mut(source_tab_id) {
-                            source.restore_pending_respawn(pane_id, entry);
-                        }
-                    }
-                },
-                AcceptedPane::NoRoom(..) | AcceptedPane::LostInAdd => {
-                    // Last resort: the pane fits nowhere. Dropping the box here is only
-                    // safe because `close_homeless_pane` below tears the pane down
-                    // first - the same order `close_tab_by_id` uses for the panes of a
-                    // tab it removes. Dropping it *without* that is the bug this
-                    // function exists to fix. A pending respawn is dropped along with it,
-                    // matching `Tab::close_pane`'s own cleanup for a pane that closes
-                    // outright.
-                    log::error!(
-                        "Pane {pane_id:?} fits in neither tab {tab_id} nor tab {source_tab_id}; closing it"
-                    );
-                    outcome.closed.push(pane_id);
-                },
-            }
-        }
-        for pane_id in outcome.closed.clone() {
-            self.close_homeless_pane(pane_id);
-        }
+        let transferred = self.accept_transferred_panes(extracted, tab_id, arrangement);
+        outcome.moved.extend(transferred.moved);
+        outcome.returned_to_source = transferred.returned_to_source;
+        outcome.closed = transferred.closed;
 
         // focus last, so the destination renders with the panes already in it
         if should_change_focus_to_target_tab {

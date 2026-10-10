@@ -158,6 +158,10 @@ impl NotificationEnd {
         self.affected_pane_id = Some(pane_id);
     }
 
+    pub fn clear_affected_pane_id(&mut self) {
+        self.affected_pane_id = None;
+    }
+
     pub fn set_affected_tab_id(&mut self, tab_id: TabId) {
         self.affected_tab_id = Some(tab_id);
         self.placement_pending = false;

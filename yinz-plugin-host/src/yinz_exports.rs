@@ -3376,7 +3376,7 @@ fn spawn_agent_for_control(
     senders: &ThreadSenders,
     data_access: &DataAccess,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
-    spawn_agent_prepared(placement, TILED, false, spec, client_id, senders, |spec| {
+    spawn_agent_prepared(placement, false, spec, client_id, senders, |spec| {
         agent_control::prepare_automation_agent(
             spec,
             cwd,
@@ -3388,17 +3388,21 @@ fn spawn_agent_for_control(
     })
 }
 
-/// `placement` picks the tab; `surface` says where in it the pane goes. Only a tiled pane may
+/// `placement` picks the tab; mother goes on the overlay surface. Only a tiled pane may
 /// be redirected to a roomier tab (`Screen::agent_pane_target`).
 fn spawn_agent_prepared(
     placement: yinz_types::agent::control::AgentPlacement,
-    surface: NewPanePlacement,
     is_mother: bool,
     mut spec: AgentSpawnSpec,
     client_id: crate::ClientId,
     senders: &ThreadSenders,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
+    let surface = if is_mother {
+        NewPanePlacement::Overlay(OverlayPlacement::mother())
+    } else {
+        TILED
+    };
     let started = Instant::now();
     if spec.prompt.is_some() || spec.reuse_prompt.is_some() {
         return Err(

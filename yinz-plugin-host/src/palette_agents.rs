@@ -316,7 +316,7 @@ fn execute(
                 allow_outside_worktree: Some(path.is_some()),
                 ..Default::default()
             };
-            launch(request, senders, spec, TILED, |spec| {
+            launch(request, senders, spec, |spec| {
                 prepare_agent(spec, cwd, None, *vm, registered.is_some(), false, data)
             })
         },
@@ -332,7 +332,7 @@ fn execute(
                 allow_outside_worktree: Some(true),
                 ..Default::default()
             };
-            launch(request, senders, spec, TILED, |_| {
+            launch(request, senders, spec, |_| {
                 existing_command(kind, cwd, target)
             })
         },
@@ -359,7 +359,7 @@ fn execute(
                 kind: Some(kind.clone()),
                 ..Default::default()
             };
-            launch(request, senders, spec, TILED, |_| {
+            launch(request, senders, spec, |_| {
                 existing_command(kind, cwd, source.target.clone())
             })
         },
@@ -391,22 +391,32 @@ fn existing_command(
 }
 
 /// Launch the session's mother agent: a fresh conversation in the directory the session
-/// started in, on the session surface instead of in a tab's tiled layout.
+/// started in (or home if it disappeared), on the session surface instead of a tiled pane.
 fn mother(
     request: &AgentRequest,
     kind: &str,
     session_cwd: &Path,
     senders: &ThreadSenders,
 ) -> Result<AgentReply, String> {
-    let cwd = session_cwd.to_string_lossy();
+    let cwd = mother_directory(session_cwd, std::env::home_dir())?;
+    let cwd = cwd.to_string_lossy();
     let spec = AgentSpawnSpec {
         kind: Some(kind.to_owned()),
         allow_outside_worktree: Some(true),
         ..Default::default()
     };
-    let surface = NewPanePlacement::Overlay(OverlayPlacement::mother());
-    launch(request, senders, spec, surface, |_| {
+    launch(request, senders, spec, |_| {
         existing_command(kind, &cwd, PaneTarget::Local)
+    })
+}
+
+fn mother_directory(session_cwd: &Path, home: Option<PathBuf>) -> Result<PathBuf, String> {
+    if session_cwd.is_dir() {
+        return Ok(session_cwd.to_path_buf());
+    }
+    home.filter(|path| path.is_dir()).ok_or_else(|| {
+        "Mother cannot launch: neither the session directory nor the home directory is available"
+            .into()
     })
 }
 
@@ -414,7 +424,6 @@ fn launch(
     request: &AgentRequest,
     senders: &ThreadSenders,
     spec: AgentSpawnSpec,
-    surface: NewPanePlacement,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
 ) -> Result<AgentReply, String> {
     let is_mother = matches!(request.action, AgentAction::Mother { .. });
@@ -446,7 +455,6 @@ fn launch(
     };
     let response = match spawn_agent_prepared(
         AgentPlacement::Automatic,
-        surface,
         is_mother,
         spec,
         request.client,

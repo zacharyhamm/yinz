@@ -929,6 +929,7 @@ fn place_mother(
 ) -> tokio::sync::oneshot::Receiver<crate::route::ActionCompletionResult> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let mut completion = crate::route::NotificationEnd::new(tx);
+    completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(id)));
     completion.is_mother = true;
     completion.wait_for_agent_start = true;
     screen
@@ -1072,4 +1073,329 @@ fn mother_is_registered_before_pending_layout_completes_placement() {
         .unwrap();
     assert_eq!(screen.live_mother(), Some(MOTHER));
     assert_eq!(mother_tab(&screen), tab);
+}
+
+#[test]
+fn explicit_focus_hides_mother_and_replacements_unless_another_client_uses_them() {
+    for another_tab in [false, true] {
+        for stand_in in [false, true] {
+            for shared in [false, true] {
+                let mut screen = screen_with_mother();
+                new_tab(&mut screen, 3, TabId::new(1));
+                screen.go_to_tab(TabNumber::new(1), CLIENT).unwrap();
+                screen.toggle_mother(CLIENT).unwrap();
+                let visible = if stand_in {
+                    let editor = PaneId::Terminal(TerminalId::new(4));
+                    screen
+                        .tab_containing_pane_mut(MOTHER)
+                        .unwrap()
+                        .replace_pane_with_editor_pane(editor, MOTHER)
+                        .unwrap();
+                    editor
+                } else {
+                    MOTHER
+                };
+                if shared {
+                    screen.add_client(OTHER).unwrap();
+                    screen
+                        .focus_pane_with_id(visible, false, false, OTHER)
+                        .unwrap();
+                }
+                let requested = if another_tab {
+                    PaneId::Terminal(TerminalId::new(3))
+                } else {
+                    SHELL
+                };
+                screen
+                    .focus_pane_with_id(requested, false, false, CLIENT)
+                    .unwrap();
+                assert_eq!(screen.get_active_pane_id(&CLIENT), Some(requested));
+                assert_input_goes_to(&mut screen, CLIENT, requested);
+                assert_eq!(
+                    screen
+                        .tab_containing_overlay(visible)
+                        .unwrap()
+                        .overlay_carry_for(visible)
+                        .hidden,
+                    !shared
+                );
+                assert_eq!(
+                    screen.tab_containing_overlay(visible).unwrap().id,
+                    TabId::new(0)
+                );
+                if shared {
+                    assert_input_goes_to(&mut screen, OTHER, visible);
+                }
+                screen.toggle_mother(CLIENT).unwrap();
+                assert_eq!(screen.get_active_pane_id(&CLIENT), Some(visible));
+                assert_input_goes_to(&mut screen, CLIENT, visible);
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_explicit_focus_leaves_mother_visible_and_focused() {
+    let mut screen = screen_with_mother();
+    screen.toggle_mother(CLIENT).unwrap();
+    screen
+        .focus_pane_with_id(PaneId::Terminal(TerminalId::new(99)), false, false, CLIENT)
+        .unwrap();
+    assert!(!hidden(&screen));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
+    assert_input_goes_to(&mut screen, CLIENT, MOTHER);
+}
+
+#[test]
+fn notification_and_tiled_agent_launch_focus_hide_mother_before_switching_tabs() {
+    use yinz_bus::command_palette::{AgentReply, Instruction};
+    use yinz_types::agent::control::{AgentOutcome, AgentResponse};
+    use yinz_types::agent::SpawnedAgent;
+    use yinz_types::internal_ids::NotificationId;
+
+    for launch in [false, true] {
+        let mut screen = screen_with_mother();
+        new_tab(&mut screen, 3, TabId::new(1));
+        screen.go_to_tab(TabNumber::new(1), CLIENT).unwrap();
+        screen.toggle_mother(CLIENT).unwrap();
+        let target = PaneId::Terminal(TerminalId::new(3));
+        if launch {
+            let (sender, requests) = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.toggle_command_palette(CLIENT);
+            screen.command_palette_handles_input(&None, b"claude current directory", false, CLIENT);
+            palette_key(&mut screen, BareKey::Enter);
+            let request = requests
+                .try_iter()
+                .find_map(|(instruction, _)| match instruction {
+                    PluginInstruction::PaletteAgent(request) => Some(request),
+                    _ => None,
+                })
+                .unwrap();
+            screen.plugin_palette_instruction(Instruction::AgentReply {
+                client: CLIENT,
+                opening: request.opening,
+                step: request.step,
+                reply: Ok(AgentReply::Launched(AgentResponse {
+                    outcome: AgentOutcome::Ok,
+                    spawned: Some(SpawnedAgent {
+                        pane_id: target,
+                        tab_id: Some(TabId::new(1)),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })),
+            });
+            assert!(!screen.command_palettes.contains_key(&CLIENT));
+        } else {
+            screen.activate_notification(
+                NotificationId::new(0),
+                Some(target),
+                None,
+                CLIENT,
+                std::time::Instant::now(),
+            );
+        }
+        assert!(hidden(&screen));
+        assert_eq!(mother_tab(&screen), TabId::new(0));
+        assert_eq!(screen.get_active_pane_id(&CLIENT), Some(target));
+        assert_input_goes_to(&mut screen, CLIENT, target);
+        screen.toggle_mother(CLIENT).unwrap();
+        assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
+        assert_input_goes_to(&mut screen, CLIENT, MOTHER);
+    }
+}
+
+#[test]
+fn palette_pane_focus_hides_mother_before_switching_tabs() {
+    let mut screen = screen_with_mother();
+    new_tab(&mut screen, 3, TabId::new(1));
+    screen.go_to_tab(TabNumber::new(1), CLIENT).unwrap();
+    screen.toggle_mother(CLIENT).unwrap();
+    let target = PaneId::Terminal(TerminalId::new(3));
+    let (sender, instructions) = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(sender));
+    screen.toggle_command_palette(CLIENT);
+    screen.command_palette_handles_input(&None, target.to_string().as_bytes(), false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    let ScreenInstruction::ActivateCommandPaletteAction {
+        pane_id,
+        tab_id,
+        action,
+        create_session,
+        client_id,
+    } = instructions.try_recv().unwrap().0
+    else {
+        panic!("expected palette activation");
+    };
+    assert_eq!(action, Action::FocusPaneByPaneId { pane_id: target });
+    screen.dispatch_command_palette_action(pane_id, tab_id, action, create_session, client_id);
+    let ScreenInstruction::FocusPaneWithId(pane, float, in_place, client, completion) =
+        instructions
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .0
+    else {
+        panic!("expected pane focus");
+    };
+    screen
+        .focus_pane_by_request(
+            pane,
+            float,
+            in_place,
+            client,
+            completion,
+            &mut Default::default(),
+        )
+        .unwrap();
+    assert!(hidden(&screen));
+    assert_eq!(mother_tab(&screen), TabId::new(0));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(target));
+    assert_input_goes_to(&mut screen, CLIENT, target);
+    screen.toggle_mother(CLIENT).unwrap();
+    assert_input_goes_to(&mut screen, CLIENT, MOTHER);
+}
+
+#[test]
+fn mother_reclamation_in_place_preserves_pending_respawn() {
+    let mut screen = screen_with_mother();
+    let respawn = (
+        RunCommand {
+            command: "/usr/bin/true".into(),
+            ..Default::default()
+        },
+        true,
+    );
+    let tab = screen.tab_containing_pane_mut(MOTHER).unwrap();
+    tab.suppress_pane(MOTHER, Some(CLIENT));
+    tab.restore_pending_respawn(MOTHER, respawn.clone());
+    screen.toggle_mother(CLIENT).unwrap();
+    let tab = screen.tab_containing_pane_mut(MOTHER).unwrap();
+    assert_eq!(tab.id, TabId::new(0));
+    assert!(tab.pane_is_overlay(MOTHER));
+    assert_eq!(tab.take_pending_respawn(MOTHER), Some(respawn));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
+}
+
+#[test]
+fn mother_transfer_refusal_restores_original_surface_and_respawn() {
+    let mut screen = screen_with_mother();
+    let respawn = (
+        RunCommand {
+            command: "/usr/bin/true".into(),
+            ..Default::default()
+        },
+        true,
+    );
+    screen
+        .tab_containing_pane_mut(MOTHER)
+        .unwrap()
+        .restore_pending_respawn(MOTHER, respawn.clone());
+    let pane = screen
+        .extract_pane_for_transfer(TabId::new(0), MOTHER)
+        .unwrap();
+    let outcome = screen.accept_transferred_panes(
+        vec![(pane, crate::tab::ExtractedPanePlacement::Tiled)],
+        TabId::new(99),
+        false,
+    );
+    assert_eq!(outcome.returned_to_source, vec![MOTHER]);
+    assert!(outcome.closed.is_empty());
+    let tab = screen.tab_containing_pane_mut(MOTHER).unwrap();
+    assert!(tab.pane_is_overlay(MOTHER));
+    assert_eq!(tab.take_pending_respawn(MOTHER), Some(respawn));
+}
+
+#[test]
+fn mother_candidates_exist_only_without_a_live_mother() {
+    let mut screen = screen();
+    let renders = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    for live in [false, true, false] {
+        if live {
+            overlay(&mut screen, MOTHER);
+            screen.mother_spawned(MOTHER).unwrap();
+        } else if screen.mother.is_some() {
+            hold(&mut screen, MOTHER);
+        }
+        screen.toggle_command_palette(CLIENT);
+        screen.command_palette_handles_input(&None, b"mother", false, CLIENT);
+        let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+        assert_eq!(frame.contains("Launch mother"), !live, "{frame}");
+        if !live {
+            palette_key(&mut screen, BareKey::Enter);
+            let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+            assert!(
+                frame.contains("codex") && frame.contains("claude"),
+                "{frame}"
+            );
+        }
+        screen.close_command_palette(CLIENT);
+    }
+}
+
+#[test]
+fn independent_transitions_leave_hidden_exited_or_watched_mother_behind() {
+    for state in ["hidden", "exited", "watched"] {
+        for transition in ["ordinary", "directional", "layout"] {
+            let mut screen = screen_with_mother();
+            if transition != "layout" {
+                new_tab(&mut screen, 3, TabId::new(1));
+                screen.go_to_tab(TabNumber::new(1), CLIENT).unwrap();
+                screen.toggle_mother(CLIENT).unwrap();
+            }
+            match state {
+                "hidden" => {
+                    screen
+                        .tab_containing_pane_mut(MOTHER)
+                        .unwrap()
+                        .hide_overlay_pane(MOTHER);
+                },
+                "exited" => hold(&mut screen, MOTHER),
+                _ => screen.add_client(OTHER).unwrap(),
+            }
+            match transition {
+                "layout" => new_tab(&mut screen, 3, TabId::new(1)),
+                "directional" => screen
+                    .switch_active_tab(
+                        yinz_types::internal_ids::TabPosition::new(1),
+                        Some(Direction::Left),
+                        true,
+                        CLIENT,
+                    )
+                    .unwrap(),
+                _ => screen.go_to_tab(TabNumber::new(2), CLIENT).unwrap(),
+            }
+            assert_eq!(mother_tab(&screen), TabId::new(0), "{state} {transition}");
+            assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+            assert_input_goes_to(&mut screen, CLIENT, PaneId::Terminal(TerminalId::new(3)));
+        }
+    }
+}
+
+#[test]
+fn a_failed_mother_transfer_insertion_closes_the_homeless_process() {
+    let mut screen = screen_with_mother();
+    let (sender, messages) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(sender));
+    let pane = screen
+        .extract_pane_for_transfer(TabId::new(0), MOTHER)
+        .unwrap();
+    let mut placement = OverlayPlacement::mother();
+    placement.background_opacity = Some(101);
+    let outcome = screen.accept_transferred_panes(
+        vec![(
+            pane,
+            crate::tab::ExtractedPanePlacement::Overlay(placement, Default::default()),
+        )],
+        TabId::new(0),
+        false,
+    );
+    assert_eq!(outcome.closed, vec![MOTHER]);
+    assert!(outcome.moved.is_empty());
+    assert!(screen.tab_containing_pane(MOTHER).is_none());
+    assert!(screen.mother.is_none());
+    assert!(messages.try_iter().any(
+        |(instruction, _)| matches!(instruction, PtyInstruction::ClosePane(id, _) if id == MOTHER)
+    ));
 }

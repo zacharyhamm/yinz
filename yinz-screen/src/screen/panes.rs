@@ -286,6 +286,7 @@ impl Screen {
             // Two launches raced. The first one stays mother; this pane was never shown, so
             // the reply names no pane.
             if let Some(c) = completion_tx.as_mut() {
+                c.clear_affected_pane_id();
                 c.set_error_message("Mother is already running".into());
             }
             pending.waiting_for_pane.remove(&pid);
