@@ -118,6 +118,7 @@ mod tests {
             host: None,
             firecracker_image: None,
             firecracker_worktree: None,
+            bubblewrap: None,
             status: agents::AgentStatus::Running,
             tab: Some((TabId::new(0), String::new())),
             detected: None,

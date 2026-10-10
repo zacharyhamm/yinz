@@ -248,17 +248,18 @@ impl RunCommand {
     pub fn display_host(&self) -> Option<String> {
         self.target.display()
     }
-    /// Runs on another machine, so the spawn resolves an endpoint (an ssh
-    /// connection, a VM to boot) and happens off the pty thread; a held pane
-    /// waits for the user instead.
+    /// The spawn has slow work to resolve first (an ssh connection, a VM to boot,
+    /// a Bubblewrap environment's launch checks) and happens off the pty thread; a
+    /// held pane waits for the user instead.
     pub fn defers_spawn(&self) -> bool {
-        self.target.is_remote() && !self.hold_on_start
+        !self.target.is_local() && !self.hold_on_start
     }
     /// A start failure is shown in the pane rather than closing it: always for
-    /// a remote target, whose failures (an unreachable host, a VM that did not
-    /// boot) the user has to read, and otherwise only when asked.
+    /// a target that resolves off the pty thread, whose failures (an unreachable
+    /// host, a VM that did not boot, a failed launch check) the user has to read,
+    /// and otherwise only when asked.
     pub fn shows_start_failure(&self) -> bool {
-        self.hold_on_close || self.target.is_remote()
+        self.hold_on_close || !self.target.is_local()
     }
 }
 
@@ -322,6 +323,35 @@ mod tests {
             PaneTarget::from_parts(None, None, None, None).unwrap(),
             PaneTarget::Local
         );
+    }
+
+    #[test]
+    fn a_bubblewrap_target_is_on_this_machine_and_resolves_off_the_pty_thread() {
+        assert!(PaneTarget::bubblewrap(Path::new("relative/repo")).is_err());
+        let target = PaneTarget::bubblewrap(Path::new("/repo")).unwrap();
+        assert!(!target.is_local() && !target.is_remote() && target.is_bubblewrap());
+        assert_eq!(target.bubblewrap_root(), Some(Path::new("/repo")));
+        // Not a host: nothing that groups panes by machine sees a sandbox as one.
+        assert_eq!(target.display(), None);
+
+        let command = RunCommand {
+            command: PathBuf::from("claude"),
+            target: target.clone(),
+            ..Default::default()
+        };
+        assert!(command.defers_spawn());
+        assert!(command.shows_start_failure());
+        assert!(!command.is_remote_default_shell());
+        let held = RunCommand {
+            hold_on_start: true,
+            ..command
+        };
+        assert!(!held.defers_spawn());
+        assert!(!RunCommand::default().defers_spawn());
+
+        let mut inherited = PaneTarget::Local;
+        inherited.merge_from(&target);
+        assert_eq!(inherited, target);
     }
 
     #[test]

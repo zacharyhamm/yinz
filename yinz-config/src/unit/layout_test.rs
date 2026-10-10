@@ -3583,6 +3583,52 @@ fn a_bare_firecracker_pane_is_the_guests_login_shell() {
 }
 
 #[test]
+fn a_bubblewrap_pane_keeps_its_command_and_names_its_checkout() {
+    let layout = crate::kdl::layout::from_kdl(
+        r#"layout { pane command="claude" cwd="/repo/.worktrees/task" bubblewrap="/repo" { args "--resume"; }; }"#,
+        Some("layout_file_name".into()),
+        None,
+        None,
+    )
+    .unwrap();
+    let Some(Run::Command(command)) = &layout.template.as_ref().unwrap().0.children[0].run else {
+        panic!("expected a command pane");
+    };
+    assert_eq!(command.command, PathBuf::from("claude"));
+    assert_eq!(command.args, ["--resume"]);
+    assert_eq!(
+        command.target,
+        PaneTarget::Bubblewrap {
+            root: PathBuf::from("/repo")
+        }
+    );
+    for (layout, why) in [
+        (
+            r#"layout { pane command="claude" bubblewrap="relative/repo" }"#,
+            "a relative checkout",
+        ),
+        (
+            r#"layout { pane bubblewrap="/repo" }"#,
+            "a sandbox with no command",
+        ),
+        (
+            r#"layout { pane edit="notes.md" bubblewrap="/repo" }"#,
+            "an edit pane in a sandbox",
+        ),
+        (
+            r#"layout { pane command="claude" bubblewrap="/repo" firecracker_vm="review" }"#,
+            "a sandbox inside a vm",
+        ),
+    ] {
+        assert!(
+            crate::kdl::layout::from_kdl(layout, Some("layout_file_name".into()), None, None)
+                .is_err(),
+            "{why} should be a layout error"
+        );
+    }
+}
+
+#[test]
 fn firecracker_pane_properties_are_validated() {
     for (layout, why) in [
         (

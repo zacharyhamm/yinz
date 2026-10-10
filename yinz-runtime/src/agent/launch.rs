@@ -63,7 +63,7 @@ pub fn command_in_context(
 ) -> Result<yinz_types::command::CommandToRun, String> {
     let (command, _) = plan(&Spec {
         kind: Some(kind.to_owned()),
-        hooks: Some(target.is_local()),
+        hooks: Some(!target.is_remote()),
         ..Default::default()
     })?;
     Ok(yinz_types::command::CommandToRun {
@@ -579,17 +579,15 @@ pub fn display_args(args: &[String]) -> Vec<String> {
 
 /// A pane's stringified command (`RunCommand`'s space-joined form) without the planner's
 /// hook wiring: the `--settings <hook json>` pair, the `YINZ_CLAUDE_INLINE_HOOKS`
-/// and agent-pane markers, the
-/// `env` wrapper when the markers were all it carried, and the internal Bubblewrap wrapper.
+/// and agent-pane markers, and the
+/// `env` wrapper when the markers were all it carried.
 ///
 /// The settings are matched as JSON, not text: a plugin and the server can order the same
 /// object's keys differently. Pi's generated extension is filtered by `RunCommand`
 /// before its arguments are joined. For display only. Classification reads the full command.
 pub fn display_command(command: &str) -> String {
     const FLAG: &str = " --settings ";
-    let mut command = yinz_types::agent::bubblewrap_command(command)
-        .unwrap_or(command)
-        .to_owned();
+    let mut command = command.to_owned();
     if let Some(flag) = command.find(&format!("{FLAG}{{")) {
         let json = flag + FLAG.len();
         let mut values =
@@ -846,6 +844,8 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
 ///
 /// `session_id` is the agent's own, as `AgentRun` stores it. `host` is the machine the
 /// `cwd` is on, absent for this one, in the spelling `PaneTarget::parse_display` reads.
+/// `bubblewrap` is the checkout whose environment the run was in: its conversation is in
+/// that environment's private home, so the resume is sandboxed the same way or not at all.
 ///
 /// Every refusal here is written to be read on a divider one row high, so each says what is
 /// missing in as few characters as it can and leaves the reasoning to these comments.
@@ -854,6 +854,7 @@ pub fn resume_command(
     session_id: &str,
     cwd: Option<&str>,
     host: Option<&str>,
+    bubblewrap: Option<&str>,
 ) -> Result<CommandToRun, String> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
@@ -862,7 +863,13 @@ pub fn resume_command(
         // it to hand to `--resume`.
         return Err("this run recorded no session id to resume".to_owned());
     }
-    let target = PaneTarget::parse_display(host);
+    let target = match bubblewrap.map(str::trim).filter(|root| !root.is_empty()) {
+        Some(_) if host.is_some() => {
+            return Err("this run recorded both a host and a Bubblewrap environment".to_owned())
+        },
+        Some(root) => PaneTarget::bubblewrap(std::path::Path::new(root))?,
+        None => PaneTarget::parse_display(host),
+    };
     if let PaneTarget::Firecracker { vm, .. } = &target {
         // A run records the VM's name inside `host` but neither the image it was built
         // from nor the guest worktree it was mirrored into, and a session-scoped VM is
@@ -884,7 +891,7 @@ pub fn resume_command(
     // resume in `$YINZ_TMP_DIR/scratch`, which is the wrong folder rather than a refusal.
     // A remote cwd is the far machine's and is passed through as it stands, so this is the
     // local case only - and the list has to stay in step with the one over there.
-    if matches!(target, PaneTarget::Local) {
+    if !target.is_remote() {
         if let Some(mount) = cwd.as_ref().and_then(|cwd| {
             ["/host", "/data", "/cache", "/tmp"]
                 .into_iter()
@@ -1528,7 +1535,7 @@ mod tests {
         let (command, _) = plan(&without_hooks("muse")).unwrap();
         assert_eq!(command.path, PathBuf::from("muse"));
         assert!(command.args.is_empty());
-        let command = resume_command("muse", "01a0f4fc-89e7", Some("/w"), None).unwrap();
+        let command = resume_command("muse", "01a0f4fc-89e7", Some("/w"), None, None).unwrap();
         assert_eq!(command.path, PathBuf::from("yinz"));
         assert_eq!(
             command.args,
@@ -1677,6 +1684,7 @@ mod tests {
             "9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f",
             Some("/home/u/proj"),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(command.path, PathBuf::from("env"));
@@ -1699,7 +1707,7 @@ mod tests {
     /// the same ordering every other caller does rather than a second spelling of its own.
     #[test]
     fn a_codex_run_resumes_through_its_subcommand() {
-        let command = resume_command("codex", "0192-abc", Some("/w"), None).unwrap();
+        let command = resume_command("codex", "0192-abc", Some("/w"), None, None).unwrap();
         assert_eq!(command.path, PathBuf::from("yinz"));
         assert_eq!(
             command.args,
@@ -1713,7 +1721,7 @@ mod tests {
                 "0192-abc"
             ]
         );
-        let command = resume_command("cursor", "chat-7", None, None).unwrap();
+        let command = resume_command("cursor", "chat-7", None, None, None).unwrap();
         assert_eq!(command.path, PathBuf::from("cursor-agent"));
         assert_eq!(command.args, vec!["--resume", "chat-7"]);
         // Nothing recorded, nothing claimed: the pane lands where a command pane with no cwd
@@ -1726,17 +1734,17 @@ mod tests {
     /// user would take for their old conversation.
     #[test]
     fn a_run_with_no_session_id_cannot_be_resumed() {
-        let refused = resume_command("claude", "", Some("/w"), None).unwrap_err();
+        let refused = resume_command("claude", "", Some("/w"), None, None).unwrap_err();
         assert!(refused.contains("no session id"), "{refused}");
         // Whitespace is blank, the way `trimmed` reads every other field.
-        assert!(resume_command("claude", "   ", None, None).is_err());
+        assert!(resume_command("claude", "   ", None, None, None).is_err());
     }
 
     /// The kinds with no resume spelling are refused by `shape_args`, which this goes
     /// through - so there is one list of what can be resumed, not two.
     #[test]
     fn a_kind_with_no_resume_spelling_is_refused() {
-        let refused = resume_command("gemini", "abc", None, None).unwrap_err();
+        let refused = resume_command("gemini", "abc", None, None, None).unwrap_err();
         assert!(refused.contains("resume spelling"), "{refused}");
     }
 
@@ -1746,7 +1754,8 @@ mod tests {
     /// run reaches the archive.
     #[test]
     fn an_ssh_run_keeps_its_host_and_a_firecracker_one_is_refused() {
-        let command = resume_command("claude", "abc", Some("/srv/w"), Some("build-box")).unwrap();
+        let command =
+            resume_command("claude", "abc", Some("/srv/w"), Some("build-box"), None).unwrap();
         assert_eq!(
             command.target,
             PaneTarget::Ssh {
@@ -1754,8 +1763,8 @@ mod tests {
             }
         );
         assert_eq!(command.cwd, Some(PathBuf::from("/srv/w")));
-        let refused =
-            resume_command("claude", "abc", Some("/w"), Some("firecracker:vm-1")).unwrap_err();
+        let refused = resume_command("claude", "abc", Some("/w"), Some("firecracker:vm-1"), None)
+            .unwrap_err();
         assert!(refused.contains("vm-1"), "{refused}");
         assert!(refused.contains("Firecracker"), "{refused}");
     }
@@ -1766,12 +1775,12 @@ mod tests {
     #[test]
     fn a_local_folder_the_plugin_mounts_claim_is_refused() {
         for cwd in ["/tmp/scratch-repo", "/host/w", "/data/w", "/cache/w"] {
-            let refused = resume_command("claude", "abc", Some(cwd), None).unwrap_err();
+            let refused = resume_command("claude", "abc", Some(cwd), None, None).unwrap_err();
             assert!(refused.contains("plugin mounts"), "{cwd}: {refused}");
         }
         // Only those four, and only on their own component boundaries.
-        assert!(resume_command("claude", "abc", Some("/tmpfoo/w"), None).is_ok());
-        assert!(resume_command("claude", "abc", Some("/home/u/proj"), None).is_ok());
+        assert!(resume_command("claude", "abc", Some("/tmpfoo/w"), None, None).is_ok());
+        assert!(resume_command("claude", "abc", Some("/home/u/proj"), None, None).is_ok());
         // And not remotely: a remote cwd is a path on the far machine, which the host passes
         // through untouched.
         let command = resume_command(
@@ -1779,9 +1788,33 @@ mod tests {
             "abc",
             Some("/tmp/scratch-repo"),
             Some("build-box"),
+            None,
         )
         .unwrap();
         assert_eq!(command.cwd, Some(PathBuf::from("/tmp/scratch-repo")));
+    }
+
+    #[test]
+    fn a_sandboxed_run_resumes_in_its_bubblewrap_environment() {
+        let command = resume_command(
+            "claude",
+            "abc",
+            Some("/repo/.worktrees/task"),
+            None,
+            Some("/repo"),
+        )
+        .unwrap();
+        assert_eq!(
+            command.target,
+            PaneTarget::Bubblewrap {
+                root: PathBuf::from("/repo")
+            }
+        );
+        assert_eq!(command.cwd, Some(PathBuf::from("/repo/.worktrees/task")));
+        // The pane is on this machine, so the plugin mounts still claim their paths.
+        assert!(resume_command("claude", "abc", Some("/tmp/w"), None, Some("/repo")).is_err());
+        assert!(resume_command("claude", "abc", Some("/w"), None, Some("relative")).is_err());
+        assert!(resume_command("claude", "abc", Some("/w"), Some("box"), Some("/repo")).is_err());
     }
 
     #[test]
@@ -1840,7 +1873,7 @@ mod tests {
             );
         }
 
-        let command = resume_command("antigravity", "conv-xyz", Some("/w"), None).unwrap();
+        let command = resume_command("antigravity", "conv-xyz", Some("/w"), None, None).unwrap();
         assert_eq!(command.path, PathBuf::from("agy"));
         assert_eq!(command.args, vec!["--conversation", "conv-xyz"]);
     }

@@ -168,10 +168,10 @@ impl ServerOsApi for FakeServerOsApi {
         Ok(ResolvedSpawn {
             terminal_id,
             rerun_command: command.clone(),
-            endpoint: RemoteEndpoint {
+            endpoint: Some(RemoteEndpoint {
                 host: command.target.display().unwrap_or_default(),
                 ssh_options: Default::default(),
-            },
+            }),
             command,
         })
     }
@@ -195,10 +195,10 @@ impl ServerOsApi for FakeServerOsApi {
         Ok(ResolvedSpawn {
             terminal_id,
             rerun_command: command.clone(),
-            endpoint: RemoteEndpoint {
+            endpoint: Some(RemoteEndpoint {
                 host: command.target.display().unwrap_or_default(),
                 ssh_options: Default::default(),
-            },
+            }),
             command,
         })
     }

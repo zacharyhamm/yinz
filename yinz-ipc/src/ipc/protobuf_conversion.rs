@@ -1539,6 +1539,9 @@ fn pane_target_to_protobuf(
                 .as_ref()
                 .map(|path| path.to_string_lossy().to_string()),
         }),
+        yinz_types::command::PaneTarget::Bubblewrap { root } => {
+            Kind::BubblewrapRoot(root.to_string_lossy().to_string())
+        },
     };
     PaneTarget { kind: Some(kind) }
 }
@@ -1554,6 +1557,9 @@ fn pane_target_from_protobuf(
             vm: firecracker.vm,
             image: firecracker.image,
             worktree: firecracker.worktree.map(std::path::PathBuf::from),
+        },
+        Some(Kind::BubblewrapRoot(root)) => yinz_types::command::PaneTarget::Bubblewrap {
+            root: std::path::PathBuf::from(root),
         },
     }
 }

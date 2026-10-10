@@ -420,11 +420,7 @@ fn private_dir(path: &Path) -> Result<()> {
 fn directory(root: &Path) -> Result<PathBuf> {
     let base = PathBuf::from(format!("/tmp/yinz-swamp-{}", nix::unistd::geteuid()));
     private_dir(&base)?;
-    let digest = Sha256::digest(root.as_os_str().as_encoded_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let dir = base.join(digest);
+    let dir = base.join(yinz_project_config::root_key(root));
     private_dir(&dir)?;
     Ok(dir)
 }

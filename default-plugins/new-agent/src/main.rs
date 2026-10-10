@@ -1021,7 +1021,11 @@ fn agent_cwd(pane: &AgentPane) -> Option<&str> {
 fn command_in_context(pane: &AgentPane, kind: &str) -> Result<CommandToRun, String> {
     // Use the source pane even when this picker was opened from a workflow view.
     // An exited process loses its live cwd, but its agent record retains it.
-    let mut target = PaneTarget::parse_display(pane.host.as_deref());
+    let mut target = match pane.bubblewrap.as_deref() {
+        // The sandbox is part of where the pane runs, as much as its machine is.
+        Some(root) => PaneTarget::bubblewrap(std::path::Path::new(root))?,
+        None => PaneTarget::parse_display(pane.host.as_deref()),
+    };
     if let PaneTarget::Firecracker {
         image, worktree, ..
     } = &mut target
@@ -1548,6 +1552,7 @@ mod tests {
             host: None,
             firecracker_image: None,
             firecracker_worktree: None,
+            bubblewrap: None,
             status: agents::AgentStatus::Running,
             tab: Some((yinz_tile::prelude::TabId::new(1), "work".to_owned())),
             detected: Some(kind.to_owned()),
@@ -3137,6 +3142,7 @@ mod tests {
             host: Some("builder".to_owned()),
             firecracker_image: None,
             firecracker_worktree: None,
+            bubblewrap: None,
             status: agents::AgentStatus::Running,
             tab: Some((yinz_tile::prelude::TabId::new(1), "work".to_owned())),
             detected: Some("cursor".to_owned()),
@@ -3157,6 +3163,18 @@ mod tests {
         let command = duplicate_command(&local_pane, &BTreeMap::new()).unwrap();
         assert_eq!(command.cwd, Some("/tmp/repo".into()));
         assert!(command.target.is_local());
+
+        // A sandboxed pane's duplicate is sandboxed in the same environment.
+        let sandboxed = AgentPane {
+            bubblewrap: Some("/repo".to_owned()),
+            ..local_pane.clone()
+        };
+        let command = duplicate_command(&sandboxed, &BTreeMap::new()).unwrap();
+        assert_eq!(command.path, PathBuf::from("cursor-agent"));
+        assert_eq!(
+            command.target.bubblewrap_root(),
+            Some(std::path::Path::new("/repo"))
+        );
 
         let exited = AgentPane {
             cwd: None,

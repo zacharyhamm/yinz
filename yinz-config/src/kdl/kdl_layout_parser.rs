@@ -97,6 +97,7 @@ impl<'a> KdlLayoutParser<'a> {
             || word == "firecracker_vm"
             || word == "firecracker_image"
             || word == "firecracker_worktree"
+            || word == "bubblewrap"
     }
     fn is_a_valid_pane_property(&self, property_name: &str) -> bool {
         property_name == "tabbed"
@@ -125,6 +126,7 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "firecracker_vm"
             || property_name == "firecracker_image"
             || property_name == "firecracker_worktree"
+            || property_name == "bubblewrap"
     }
     fn is_a_valid_floating_pane_property(&self, property_name: &str) -> bool {
         if property_name == "pane" {
@@ -154,6 +156,7 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "firecracker_vm"
             || property_name == "firecracker_image"
             || property_name == "firecracker_worktree"
+            || property_name == "bubblewrap"
     }
     fn is_a_valid_tab_property(&self, property_name: &str) -> bool {
         property_name == "focus"
@@ -461,13 +464,25 @@ impl<'a> KdlLayoutParser<'a> {
         }
     }
     /// The `firecracker_vm`, `firecracker_image` and `firecracker_worktree` properties of a
-    /// pane, checked here rather than when the pane is spawned: a layout error names the
-    /// node, a spawn error is a banner in the pane.
-    fn parse_firecracker(&self, pane_node: &KdlNode) -> Result<Option<PaneTarget>, ConfigError> {
+    /// pane, or its `bubblewrap` checkout, checked here rather than when the pane is
+    /// spawned: a layout error names the node, a spawn error is a banner in the pane.
+    fn parse_target(&self, pane_node: &KdlNode) -> Result<Option<PaneTarget>, ConfigError> {
         let vm = kdl_get_string_property_or_child_value_with_error!(pane_node, "firecracker_vm");
         let image =
             kdl_get_string_property_or_child_value_with_error!(pane_node, "firecracker_image");
         let worktree = self.parse_path(pane_node, "firecracker_worktree")?;
+        let bubblewrap = self.parse_path(pane_node, "bubblewrap")?;
+        if let Some(root) = bubblewrap {
+            if vm.is_some() || image.is_some() || worktree.is_some() {
+                return Err(kdl_parsing_error!(
+                    "a pane cannot use both bubblewrap and a Firecracker VM".to_owned(),
+                    pane_node
+                ));
+            }
+            return PaneTarget::bubblewrap(&root)
+                .map(Some)
+                .map_err(|error| kdl_parsing_error!(error, pane_node));
+        }
         if vm.is_none() && image.is_none() && worktree.is_none() {
             return Ok(None);
         }
@@ -533,7 +548,7 @@ impl<'a> KdlLayoutParser<'a> {
         }
         let cwd = self.parse_path(pane_node, "cwd")?;
         let args = self.parse_args(pane_node)?;
-        let firecracker = self.parse_firecracker(pane_node)?;
+        let target = self.parse_target(pane_node)?;
         let close_on_exit =
             kdl_get_bool_property_or_child_value_with_error!(pane_node, "close_on_exit");
         let start_suspended =
@@ -549,7 +564,11 @@ impl<'a> KdlLayoutParser<'a> {
         }
         let hold_on_close = close_on_exit.map(|c| !c).unwrap_or(true);
         let hold_on_start = start_suspended.unwrap_or(false);
-        match (command, edit, cwd, firecracker) {
+        match (command, edit, cwd, target) {
+            (None, _, _, Some(PaneTarget::Bubblewrap { .. })) => Err(kdl_parsing_error!(
+                "bubblewrap requires a command".to_owned(),
+                pane_node
+            )),
             (None, Some(_), _, Some(_)) => Err(kdl_parsing_error!(
                 "an edit pane cannot run in a Firecracker VM".to_owned(),
                 pane_node

@@ -1001,22 +1001,6 @@ mod tests {
             restart_args(Path::new("codex"), &strings(&["-p", "profile", "work"])).unwrap(),
             strings(&["-p", "profile"])
         );
-        let wrapper = [
-            yinz_types::agent::BUBBLEWRAP_RUN_FLAG,
-            "/project",
-            "--",
-            "env",
-            "YINZ_AGENT_PANE=1",
-            "codex",
-            "-p",
-            "profile",
-        ];
-        let mut sandboxed = strings(&wrapper);
-        sandboxed.push("work".into());
-        assert_eq!(
-            restart_args(Path::new("/usr/bin/yinz"), &sandboxed).unwrap(),
-            strings(&wrapper)
-        );
     }
 
     #[test]

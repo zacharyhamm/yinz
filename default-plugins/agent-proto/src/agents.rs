@@ -82,6 +82,10 @@ pub struct AgentPane {
     pub firecracker_image: Option<String>,
     #[serde(default)]
     pub firecracker_worktree: Option<String>,
+    /// The primary checkout whose Bubblewrap environment the pane runs in, when it is in
+    /// one. A duplicate or fork of the pane starts in the same environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bubblewrap: Option<String>,
     pub status: AgentStatus,
     /// The stable tab id and tab name this pane sits in. `None` for a session-global
     /// pane, which is in no tab.
@@ -965,6 +969,11 @@ pub struct AgentRun {
     /// every run that is not in a VM, which reads as "the cwd is the identity".
     #[serde(default)]
     pub worktree: Option<String>,
+    /// The primary checkout whose Bubblewrap environment the run's pane was in, when it
+    /// was in one. The conversation lives in that environment's private home, so a resume
+    /// has to go back into it to find it - and must not quietly run the agent on the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bubblewrap: Option<String>,
     pub started_at_ms: i64,
     #[serde(default)]
     pub ended_at_ms: Option<i64>,
@@ -1036,6 +1045,7 @@ impl AgentRun {
             cwd: self.cwd.clone(),
             host: self.host.clone(),
             worktree: self.worktree.clone(),
+            bubblewrap: self.bubblewrap.clone(),
             started_at_ms: self.started_at_ms,
             ended_at_ms: self.ended_at_ms,
             outcome: self.outcome,
@@ -1072,6 +1082,9 @@ pub struct AgentRunHeader {
     /// The host worktree a Firecracker run's VM mirrors. See [`AgentRun::worktree`].
     #[serde(default)]
     pub worktree: Option<String>,
+    /// The checkout whose Bubblewrap environment the run was in. See [`AgentRun::bubblewrap`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bubblewrap: Option<String>,
     pub started_at_ms: i64,
     #[serde(default)]
     pub ended_at_ms: Option<i64>,
@@ -1905,6 +1918,7 @@ pub mod rows {
             cwd: run.cwd.clone(),
             host: run.host.clone(),
             worktree: run.worktree.clone(),
+            bubblewrap: run.bubblewrap.clone(),
             started_at_ms: run.started_at_ms,
             ended_at_ms: run.ended_at_ms,
             outcome: run.outcome,
@@ -3971,6 +3985,7 @@ mod tests {
             host: None,
             firecracker_image: None,
             firecracker_worktree: None,
+            bubblewrap: None,
             status: AgentStatus::Running,
             tab: None,
             detected: None,
@@ -4014,6 +4029,7 @@ mod tests {
             cwd: cwd.map(str::to_owned),
             host: host.map(str::to_owned),
             worktree: worktree.map(str::to_owned),
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -5142,6 +5158,7 @@ mod tests {
             cwd: None,
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -5304,6 +5321,7 @@ mod tests {
             cwd: None,
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -5392,6 +5410,7 @@ mod tests {
             cwd: None,
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -5450,6 +5469,7 @@ mod tests {
             cwd: None,
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -5543,6 +5563,7 @@ mod tests {
             cwd: Some("/work".to_owned()),
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -5885,6 +5906,7 @@ mod tests {
             cwd: Some("/work".to_owned()),
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: RunOutcome::Active,
@@ -8765,6 +8787,7 @@ mod tests {
             cwd: None,
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: RunOutcome::Active,

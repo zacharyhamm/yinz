@@ -477,7 +477,7 @@ export type PercentOrFixed = {Percent: Integer} | {Fixed: Integer};
 export interface FloatingPaneCoordinates {x: PercentOrFixed | null; y: PercentOrFixed | null; width: PercentOrFixed | null; height: PercentOrFixed | null; pinned: boolean | null; borderless: boolean | null;}
 export interface OverlayPlacement {kind: 'Dismissible' | 'Modal'; coordinates?: FloatingPaneCoordinates | null; /** Below 100 opts into global background_opacity; the percentage does not override it. 100 or omitted means opaque. */ background_opacity?: number | null;}
 export interface ResizeStrategy {resize: Resize; direction: Direction | null; invert_on_boundaries: boolean;}
-export type PaneTarget = 'Local' | {Ssh: {host: string}} | {Firecracker: {vm: string; image: string | null; worktree: string | null}};
+export type PaneTarget = 'Local' | {Ssh: {host: string}} | {Firecracker: {vm: string; image: string | null; worktree: string | null}} | {Bubblewrap: {root: string}};
 export interface CommandToRun {path?: string; args?: string[]; cwd?: string | null; target?: PaneTarget | null; remote_host?: string | null; firecracker_vm?: string | null; firecracker_image?: string | null; firecracker_worktree?: string | null; remote_default_shell?: boolean;}
 export interface FileToOpen {path?: string; line_number?: Integer | null; cwd?: string | null;}
 export interface PluginMessage {name?: string; payload?: string; worker_name?: string | null;}

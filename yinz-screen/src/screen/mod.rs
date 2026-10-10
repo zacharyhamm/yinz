@@ -3557,6 +3557,7 @@ impl Screen {
                 yinz_types::command::PaneTarget::Local => "local",
                 yinz_types::command::PaneTarget::Ssh { .. } => "ssh",
                 yinz_types::command::PaneTarget::Firecracker { .. } => "firecracker",
+                yinz_types::command::PaneTarget::Bubblewrap { .. } => "bubblewrap",
             }
             .to_owned(),
         );

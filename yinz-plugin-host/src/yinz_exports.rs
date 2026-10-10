@@ -3262,9 +3262,14 @@ fn prepare_agent(
     )
     .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?;
     if let Some(environment) = bubblewrap {
+        // Reused worktrees and the caller's own directory were not checked on the way here:
+        // only a Git write is refused early. The folder the agent lands in is.
         environment
-            .wrap(&mut command)
+            .validate_cwd(&folder)
             .map_err(|error| AgentSpawnError::failed(format!("{error:#}"), Some(resources)))?;
+        command.target = PaneTarget::Bubblewrap {
+            root: environment.root().to_path_buf(),
+        };
     }
     let requested_branch = requested_branch.filter(|requested| branch.as_ref() != Some(requested));
     Ok(PreparedAgent {
@@ -3701,7 +3706,6 @@ fn agent_folder_tracked(
 ) -> Result<PreparedCheckout, String> {
     match (checkout, cwd) {
         (GitCheckout::Current, Some(cwd)) => {
-            validate_checkout_root(&cwd, bubblewrap_root)?;
             guard.check(&cwd)?;
             Ok(PreparedCheckout {
                 reused_worktree: false,
@@ -3710,7 +3714,6 @@ fn agent_folder_tracked(
             })
         },
         (GitCheckout::Current, None) => {
-            validate_checkout_root(&source, bubblewrap_root)?;
             guard.check(&source)?;
             Ok(PreparedCheckout {
                 reused_worktree: false,
@@ -3885,7 +3888,6 @@ fn prepare_git_checkout_in_tracked(
     let root = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
     match checkout {
         GitCheckout::Current => {
-            validate_checkout_root(&root, bubblewrap_root)?;
             guard.check(&root)?;
             Ok(PreparedCheckout {
                 reused_worktree: false,
@@ -3900,7 +3902,6 @@ fn prepare_git_checkout_in_tracked(
                 // git allows one checkout of a branch at a time - so the agent goes
                 // to the worktree already holding it rather than nowhere at all.
                 if let Some(worktree) = worktree_holding(&root, &branch)? {
-                    validate_checkout_root(&worktree, bubblewrap_root)?;
                     guard.check(&worktree)?;
                     return Ok(PreparedCheckout {
                         reused_worktree: true,
@@ -3912,7 +3913,6 @@ fn prepare_git_checkout_in_tracked(
             // Every route left lands in `root` - this checkout moves to the branch - so
             // the guard is settled here, before the switch that would otherwise leave a
             // refused request with the user's checkout already moved.
-            validate_checkout_root(&root, bubblewrap_root)?;
             guard.check(&root)?;
             if reuse && branch_exists(&root, &branch) {
                 before_git_write(&root, &branch, &branch)?;
@@ -3960,7 +3960,6 @@ fn prepare_git_checkout_in_tracked(
                 // nothing about it is changed. That branch is what is answered - the
                 // one asked for was not used - and a detached checkout holds none.
                 if let Some(existing) = worktree_at(&root, &path)? {
-                    validate_checkout_root(&existing.path, bubblewrap_root)?;
                     guard.check(&existing.path)?;
                     return Ok(PreparedCheckout {
                         reused_worktree: true,
@@ -3969,7 +3968,6 @@ fn prepare_git_checkout_in_tracked(
                     });
                 }
                 if let Some(existing) = worktree_holding(&root, &branch)? {
-                    validate_checkout_root(&existing, bubblewrap_root)?;
                     guard.check(&existing)?;
                     return Ok(PreparedCheckout {
                         reused_worktree: true,

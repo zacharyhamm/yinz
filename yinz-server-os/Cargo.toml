@@ -12,6 +12,7 @@ workspace = true
 yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
 yinz-process = { path = "../yinz-process", version = "0.1.0" }
 yinz-ipc = { workspace = true }
+yinz-project-config = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }
 anyhow = { workspace = true }

@@ -857,9 +857,9 @@ impl ServerOsInputOutput {
             .map(|sender| sender.queue.clone())
     }
     /// Resolve where a command runs: this binary for a local Codex wrapper, the ssh host for an
-    /// ssh one, and for a Firecracker one the endpoint the provider hands back once
-    /// the VM is up. The returned command is the one to send there (a Firecracker
-    /// command gets the guest cwd filled in); the second is the command as asked for,
+    /// ssh one, a checked Bubblewrap environment, and for a Firecracker one the endpoint the
+    /// provider hands back once the VM is up. The returned command is the one to send there
+    /// (a Firecracker command gets the guest cwd filled in); the second is the command as asked for,
     /// kept so a re-run can resolve it again - plus the identity the provider resolved,
     /// which is the VM's worktree and only when the caller named none. That much is not
     /// "where it ran this time" but what the pane *is*, and the pane outlives the run:
@@ -887,6 +887,16 @@ impl ServerOsInputOutput {
                     ssh_options: SshOptions::default(),
                 };
                 return Ok((cmd, rerun_cmd, Some(endpoint)));
+            },
+            // The command is left as asked for: the sandbox is entered where it is exec'd
+            // (`exec_program_and_args`). What happens here is everything that can refuse
+            // the launch, so the refusal is this spawn's answer rather than text in a pane.
+            PaneTarget::Bubblewrap { root } => {
+                if let Some(report_progress) = report_progress {
+                    report_progress("running launch checks");
+                }
+                check_bubblewrap_launch(root, &cmd)?;
+                return Ok((cmd, rerun_cmd, None));
             },
             PaneTarget::Firecracker {
                 vm,
@@ -993,17 +1003,10 @@ impl ServerOsInputOutput {
         report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
         let (command, _) = build_command(terminal_action, default_editor);
-        let display_host = command.display_host();
+        let target = command.target.clone();
         let (command, rerun_command, endpoint) = self
             .resolve_target(command, Some(report_progress))
-            .map_err(|error| {
-                pane_start_failed(
-                    terminal_id,
-                    display_host.as_deref().unwrap_or("firecracker"),
-                    error,
-                )
-            })?;
-        let endpoint = endpoint.context("a local command has no endpoint to resolve")?;
+            .map_err(|error| resolve_failed(terminal_id, &target, error))?;
         Ok(ResolvedSpawn {
             terminal_id,
             command,
@@ -1018,6 +1021,10 @@ impl ServerOsInputOutput {
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         let terminal_id = resolved.terminal_id;
+        if resolved.endpoint.is_none() {
+            let (reader, child_pid) = self.spawn_resolved_here(resolved, quit_cb)?;
+            return Ok((terminal_id, reader, Some(child_pid)));
+        }
         let reader = self.open_remote(resolved, quit_cb)?;
         // Deliberately no pid. The child's pid is meaningful only on its own
         // machine, and handing one back here would put it in
@@ -1026,6 +1033,30 @@ impl ServerOsInputOutput {
         // `None` makes those paths skip the pane instead, which is what the
         // remote-aware replacements rely on.
         Ok((terminal_id, reader, None))
+    }
+
+    /// Start a resolved command that has no endpoint - one that runs on this machine,
+    /// which a deferred spawn does only for a Bubblewrap environment.
+    fn spawn_resolved_here(
+        &self,
+        resolved: ResolvedSpawn,
+        quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
+    ) -> Result<(Box<dyn AsyncReader>, ProcessId)> {
+        let ResolvedSpawn {
+            terminal_id,
+            command,
+            rerun_command,
+            ..
+        } = resolved;
+        let quit_cb = if command != rerun_command {
+            Box::new(move |pane_id, status, _| quit_cb(pane_id, status, rerun_command.clone()))
+                as Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>
+        } else {
+            quit_cb
+        };
+        self.pty_backend
+            .spawn_terminal(command, None, quit_cb, terminal_id)
+            .context("failed to spawn terminal")
     }
 
     /// Open a pane on a resolved endpoint's broker and register its transport
@@ -1039,8 +1070,10 @@ impl ServerOsInputOutput {
             terminal_id,
             command,
             rerun_command,
-            endpoint: RemoteEndpoint { host, ssh_options },
+            endpoint,
         } = resolved;
+        let RemoteEndpoint { host, ssh_options } =
+            endpoint.context("a local command has no endpoint to open")?;
         let (conn, reader_socket) = self
             .remote_hosts
             .open_pane_with_ssh_options(&host, &command, None, terminal_id, ssh_options)
@@ -1056,17 +1089,10 @@ impl ServerOsInputOutput {
         command: RunCommand,
         report_progress: &mut dyn FnMut(&str),
     ) -> Result<ResolvedSpawn> {
-        let display_host = command.display_host();
+        let target = command.target.clone();
         let (command, rerun_command, endpoint) = self
             .resolve_target(command, Some(report_progress))
-            .map_err(|error| {
-                pane_start_failed(
-                    terminal_id,
-                    display_host.as_deref().unwrap_or("firecracker"),
-                    error,
-                )
-            })?;
-        let endpoint = endpoint.context("a local command has no endpoint to resolve")?;
+            .map_err(|error| resolve_failed(terminal_id, &target, error))?;
         Ok(ResolvedSpawn {
             terminal_id,
             command,
@@ -1085,6 +1111,10 @@ impl ServerOsInputOutput {
         // side's only handle on it and leave it to the orphan timeout; and the
         // id has to be reserved again once cleared, or the next spawn takes it.
         self.clear_terminal_id(resolved.terminal_id).non_fatal();
+        if resolved.endpoint.is_none() {
+            let (reader, child_pid) = self.spawn_resolved_here(resolved, quit_cb)?;
+            return Ok((reader, Some(child_pid)));
+        }
         self.pty_backend.reserve_terminal_id(resolved.terminal_id);
         let reader = self.open_remote(resolved, quit_cb)?;
         // No pid, for the same reason `spawn_resolved` gives none.
@@ -1191,6 +1221,67 @@ fn pane_start_failed(terminal_id: TerminalId, host: &str, err: anyhow::Error) ->
     .into()
 }
 
+/// As [`pane_start_failed`], for a failure to resolve `target` itself.
+fn resolve_failed(
+    terminal_id: TerminalId,
+    target: &PaneTarget,
+    err: anyhow::Error,
+) -> anyhow::Error {
+    if !target.is_bubblewrap() {
+        return pane_start_failed(
+            terminal_id,
+            target.display().as_deref().unwrap_or("firecracker"),
+            err,
+        );
+    }
+    if let Some(YinzError::CommandNotFound { command, .. }) = err.downcast_ref::<YinzError>() {
+        return YinzError::CommandNotFound {
+            terminal_id,
+            command: command.clone(),
+        }
+        .into();
+    }
+    YinzError::PaneStartFailed {
+        terminal_id,
+        message: format!("could not start the Bubblewrap environment: {err:#}"),
+    }
+    .into()
+}
+
+/// Run a Bubblewrap launch's checks for the environment of the checkout at `root`.
+///
+/// A program missing from the sandbox's `PATH` becomes the `CommandNotFound` a missing
+/// local command already is. Its terminal id is a placeholder, as a broker's is:
+/// [`resolve_failed`] names the pane.
+#[cfg(unix)]
+fn check_bubblewrap_launch(root: &Path, cmd: &RunCommand) -> Result<()> {
+    use yinz_project_config::bubblewrap::{Environment, ProgramNotFound};
+    let cwd = cmd
+        .cwd
+        .as_deref()
+        .context("a Bubblewrap pane needs a working directory")?;
+    let (program, _) = yinz_types::agent::unwrapped_program_and_args(&cmd.command, &cmd.args)
+        .unwrap_or((&cmd.command, &cmd.args));
+    Environment::at_root(root)
+        .check_launch(cwd, program)
+        .map_err(|error| {
+            if error.downcast_ref::<ProgramNotFound>().is_some() {
+                YinzError::CommandNotFound {
+                    terminal_id: TerminalId::new(0),
+                    command: program.to_string_lossy().into_owned(),
+                }
+                .into()
+            } else {
+                error
+            }
+        })
+}
+
+#[cfg(not(unix))]
+fn check_bubblewrap_launch(_root: &Path, _cmd: &RunCommand) -> Result<()> {
+    Err(anyhow!("Bubblewrap agent environments require Linux"))
+}
+
 impl ServerOsApi for ServerOsInputOutput {
     fn set_terminal_size_using_terminal_id(
         &self,
@@ -1223,16 +1314,12 @@ impl ServerOsApi for ServerOsInputOutput {
         self.pty_backend.reserve_terminal_id(terminal_id);
 
         let (cmd, failover_cmd) = build_command(terminal_action, default_editor);
-        let display_host = cmd.display_host();
-        let (cmd, rerun_cmd, endpoint) = self.resolve_target(cmd, None).map_err(|e| {
-            pane_start_failed(
-                terminal_id,
-                display_host.as_deref().unwrap_or("firecracker"),
-                e,
-            )
-        })?;
+        let target = cmd.target.clone();
+        let (cmd, rerun_cmd, endpoint) = self
+            .resolve_target(cmd, None)
+            .map_err(|e| resolve_failed(terminal_id, &target, e))?;
 
-        if let Some(endpoint) = endpoint {
+        if endpoint.is_some() {
             let async_reader = self.open_remote(
                 ResolvedSpawn {
                     terminal_id,
@@ -1550,16 +1637,11 @@ impl ServerOsApi for ServerOsInputOutput {
         // A held remote pane re-runs on the machine it was held on. Without this
         // the command would quietly run *here* under the same pane, and the pane
         // still open on the far machine would be left to the orphan timeout.
-        let display_host = run_command.display_host();
-        let (run_command, rerun_command, endpoint) =
-            self.resolve_target(run_command, None).map_err(|e| {
-                pane_start_failed(
-                    terminal_id,
-                    display_host.as_deref().unwrap_or("firecracker"),
-                    e,
-                )
-            })?;
-        if let Some(endpoint) = endpoint {
+        let target = run_command.target.clone();
+        let (run_command, rerun_command, endpoint) = self
+            .resolve_target(run_command, None)
+            .map_err(|e| resolve_failed(terminal_id, &target, e))?;
+        if endpoint.is_some() {
             return self.rerun_resolved(
                 ResolvedSpawn {
                     terminal_id,

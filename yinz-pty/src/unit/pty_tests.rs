@@ -270,10 +270,10 @@ impl ServerOsApi for MockOsApi {
             terminal_id,
             command,
             rerun_command,
-            endpoint: crate::os_input_output::RemoteEndpoint {
+            endpoint: Some(crate::os_input_output::RemoteEndpoint {
                 host: "resolved-vm".to_owned(),
                 ssh_options: Default::default(),
-            },
+            }),
         })
     }
     fn spawn_resolved(
@@ -309,10 +309,10 @@ impl ServerOsApi for MockOsApi {
             terminal_id,
             command,
             rerun_command,
-            endpoint: crate::os_input_output::RemoteEndpoint {
+            endpoint: Some(crate::os_input_output::RemoteEndpoint {
                 host: "resolved-vm".to_owned(),
                 ssh_options: Default::default(),
-            },
+            }),
         })
     }
     fn reserve_terminal_id(&self) -> std::result::Result<TerminalId, anyhow::Error> {
@@ -2479,6 +2479,82 @@ fn a_remote_panes_foreground_command_is_reported_like_any_other() {
     );
 }
 
+/// The process holding a sandboxed pane's pty is this binary's launcher and then `bwrap`.
+/// Reporting either would unlatch a live agent, so the pane reports the command inside -
+/// and only a pane launched into a sandbox does: a shell that runs `bwrap` by hand is
+/// reported as it is.
+#[test]
+fn a_bubblewrap_pane_reports_the_command_inside_its_sandbox() {
+    let sandboxed = TerminalId::new(1);
+    let shell = TerminalId::new(2);
+    let bwrap: Vec<String> = [
+        "bwrap",
+        "--unshare-all",
+        "--chdir",
+        "/repo",
+        "--",
+        "env",
+        "YINZ_AGENT_PANE=1",
+        "claude",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let mock = MockOsApi::new();
+    let (mut pty, plugin_rx) = make_pty_with_plugin_receiver(mock.clone());
+    for (terminal_id, pid) in [(sandboxed, 100), (shell, 200)] {
+        set_active_terminal(&mut pty, terminal_id, ProcessId::new(pid));
+        mock.cmds
+            .lock()
+            .unwrap()
+            .insert(ProcessId::new(pid), bwrap.clone());
+    }
+    pty.track_launch(
+        sandboxed,
+        &RunCommand {
+            command: "env".into(),
+            target: PaneTarget::Bubblewrap {
+                root: "/repo".into(),
+            },
+            ..Default::default()
+        },
+    );
+    pty.track_launch(shell, &RunCommand::default());
+
+    pty.update_and_report_cwds();
+
+    let mut events = collect_command_changed_events(&plugin_rx);
+    events.sort_by_key(|(pane_id, _, _)| *pane_id);
+    assert_eq!(
+        events,
+        vec![
+            (
+                PaneId::Terminal(sandboxed),
+                vec![
+                    "env".to_owned(),
+                    "YINZ_AGENT_PANE=1".to_owned(),
+                    "claude".to_owned()
+                ],
+                false
+            ),
+            (PaneId::Terminal(shell), bwrap.clone(), false),
+        ]
+    );
+    assert_eq!(
+        pty.get_pane_running_command(PaneId::Terminal(sandboxed)),
+        GetPaneRunningCommandResponse::Ok(vec![
+            "env".to_owned(),
+            "YINZ_AGENT_PANE=1".to_owned(),
+            "claude".to_owned()
+        ])
+    );
+    // A rerun as a plain command stops reading through.
+    pty.track_launch(sandboxed, &RunCommand::default());
+    assert_eq!(
+        pty.get_pane_running_command(PaneId::Terminal(sandboxed)),
+        GetPaneRunningCommandResponse::Ok(bwrap)
+    );
+}
+
 /// With nothing in the foreground, the pane's own command is reported and
 /// flagged as not-foreground — exactly as for a local pane.
 #[test]
@@ -4506,6 +4582,10 @@ fn direct_agent_remote_startup_waits_before_placement_and_late_cancelled_starts_
             vm: "review".into(),
             image: None,
             worktree: None,
+        },
+        // Its launch checks run in the same worker, so the spawner waits on them too.
+        PaneTarget::Bubblewrap {
+            root: "/repo".into(),
         },
     ] {
         for cancel in [false, true] {

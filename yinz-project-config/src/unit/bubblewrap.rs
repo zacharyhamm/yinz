@@ -213,6 +213,11 @@ fn real_bubblewrap_isolation_preparation_retry_and_private_caches() {
         test ! -e '{}'
         test ! -e '{}'
         ! touch /usr/bin/yinz-bubblewrap-write-test
+        id -un >/dev/null
+        grep -q ":$(id -u):$(id -g)::/home/yinz:" /etc/passwd
+        for tool in awk cc; do
+            if [ -L "/usr/bin/$tool" ]; then test -e "/usr/bin/$tool"; fi
+        done
         ! cat /proc/1/root'{}'
         mkdir -p nested
         git init -q nested
@@ -240,29 +245,7 @@ fn real_bubblewrap_isolation_preparation_retry_and_private_caches() {
 }
 
 #[test]
-fn wrapper_preserves_agent_identity_and_rejects_boundary_env_overrides() {
-    let (_temp, env) = fixture();
-    let mut command = yinz_types::command::CommandToRun {
-        path: "env".into(),
-        args: vec![
-            "YINZ_AGENT_PANE=1".into(),
-            "yinz".into(),
-            "agent".into(),
-            "codex".into(),
-            "--command".into(),
-            "codex".into(),
-            "--".into(),
-            "--model".into(),
-            "model".into(),
-        ],
-        cwd: Some(env.root.clone()),
-        ..Default::default()
-    };
-    env.wrap(&mut command).unwrap();
-    assert_eq!(
-        yinz_types::agent::agent_kind_of(Path::new("yinz"), &command.args).as_deref(),
-        Some("codex")
-    );
+fn spawn_env_cannot_override_the_sandbox_boundary() {
     for name in [
         "HOME",
         "PATH",
@@ -299,23 +282,6 @@ fn checkout_built_binary_is_not_mounted_over_the_writable_project() {
             "/run/yinz-bin/yinz"
         ]
     );
-}
-
-#[test]
-fn wrapper_runs_the_binary_resolved_at_startup() {
-    let (_temp, env) = fixture();
-    let mut command = yinz_types::command::CommandToRun {
-        path: "claude".into(),
-        cwd: Some(env.root.clone()),
-        ..Default::default()
-    };
-    env.wrap(&mut command).unwrap();
-    assert_eq!(
-        Some(&command.path),
-        yinz_runtime::own_binary::server_binary()
-    );
-    assert_eq!(command.args[0], yinz_types::agent::BUBBLEWRAP_RUN_FLAG);
-    assert_eq!(RUN_FLAG, yinz_types::agent::BUBBLEWRAP_RUN_FLAG);
 }
 
 #[test]
@@ -381,6 +347,49 @@ fn real_bubblewrap_pins_sources_before_startup() {
     );
     assert_eq!(output.stdout, b"accepted");
     assert!(env.command(&declaration, &env.root, false).is_err());
+
+    // Sources that cannot be opened for reading still mount: a socket, a FIFO (which
+    // would block an ordinary open), and a file the owner may only execute.
+    let _listener = std::os::unix::net::UnixListener::bind(env.root.join("agent.sock")).unwrap();
+    assert!(Command::new("mkfifo")
+        .arg(env.root.join("pipe"))
+        .status()
+        .unwrap()
+        .success());
+    fs::write(env.root.join("exec-only"), "#!/bin/sh\n").unwrap();
+    fs::set_permissions(
+        env.root.join("exec-only"),
+        fs::Permissions::from_mode(0o111),
+    )
+    .unwrap();
+    let declaration = parse(
+        &r#"
+        ro-bind "agent.sock" "/opt/agent.sock"
+        ro-bind "pipe" "/opt/pipe"
+        ro-bind "exec-only" "/opt/exec-only"
+        "#
+        .parse()
+        .unwrap(),
+        &env.root,
+        temp.path(),
+    )
+    .unwrap();
+    let output = env
+        .command(&declaration, &env.root, false)
+        .unwrap()
+        .args([
+            "--",
+            "sh",
+            "-c",
+            "test -S /opt/agent.sock && test -p /opt/pipe && test -x /opt/exec-only",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -681,7 +690,10 @@ fn real_bubblewrap_checks_run_once_capture_output_and_share_deadline() {
             PathBuf::from(root),
             Path::new(&std::env::var("BWRAP_RUN_TEST_DATA").unwrap()),
         );
-        let result = env.run(&["sh".into(), "-c".into(), "touch agent-ran".into()]);
+        // The server's half of a launch, then the pane's.
+        let result = env
+            .check_launch(&std::env::current_dir().unwrap(), Path::new("sh"))
+            .and_then(|()| env.run(&["sh".into(), "-c".into(), "touch agent-ran".into()]));
         let error = result.unwrap_err();
         eprintln!("{error:#}");
         assert!(std::env::var_os("BWRAP_RUN_EXPECT_FAILURE").is_some());
@@ -741,6 +753,14 @@ fn real_bubblewrap_checks_run_once_capture_output_and_share_deadline() {
     let output = fs::read_to_string(env.metadata.join("launch.log")).unwrap();
     assert_eq!(output.matches("private-output").count(), 2);
     assert_eq!(output.matches("private-error").count(), 2);
+    // A program the sandbox cannot resolve is told apart from a failed check.
+    let missing = env
+        .check_launch(&env.root, Path::new("yinz-no-such-program"))
+        .unwrap_err();
+    assert!(
+        missing.downcast_ref::<ProgramNotFound>().is_some(),
+        "{missing:#}"
+    );
     env.save(&Accepted {
         root: env.root.clone(),
         declaration: Declaration {

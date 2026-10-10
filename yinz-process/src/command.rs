@@ -33,6 +33,34 @@ pub fn resolve_agent_launcher(
     Ok(())
 }
 
+/// The program and arguments to exec for `cmd` on this machine.
+///
+/// A Bubblewrap target is entered here and nowhere else: the pane's command stays the one
+/// that was asked for, and only the exec goes through this binary's internal launcher,
+/// which builds the sandbox and replaces itself with it.
+pub fn exec_program_and_args(cmd: &RunCommand) -> Result<(PathBuf, Vec<String>)> {
+    let Some(root) = cmd.target.bubblewrap_root() else {
+        return Ok((cmd.command.clone(), cmd.args.clone()));
+    };
+    let launcher = yinz_runtime::own_binary::server_binary()
+        .context("find this Yinz binary for the Bubblewrap launcher")?;
+    let mut args = vec![
+        yinz_types::agent::BUBBLEWRAP_RUN_FLAG.to_owned(),
+        root.to_string_lossy().into_owned(),
+        "--".to_owned(),
+        cmd.command.to_string_lossy().into_owned(),
+    ];
+    args.extend(cmd.args.iter().cloned());
+    Ok((launcher.clone(), args))
+}
+
+/// Whether `cmd` can be exec'd, as far as this machine can tell before trying. A Bubblewrap
+/// command resolves on the sandbox's `PATH`, which the server checked when it resolved the
+/// spawn; here it only needs its launcher.
+pub fn can_exec(cmd: &RunCommand, search_path: Option<&std::ffi::OsStr>) -> bool {
+    cmd.target.is_bubblewrap() || resolve_command_with_path(cmd, search_path).is_some()
+}
+
 fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {
     if candidate.is_file() && access(candidate, AccessFlags::X_OK).is_ok() {
         return Some(candidate.to_path_buf());
@@ -42,11 +70,8 @@ fn find_executable(candidate: &std::path::Path) -> Option<PathBuf> {
 
 /// Resolve a command as the child will: explicit paths from its working directory,
 /// bare names through PATH. Relative PATH entries also start at the child's cwd.
-pub fn resolve_command(cmd: &RunCommand) -> Option<PathBuf> {
-    resolve_command_with_path(cmd, None)
-}
-
-/// As `resolve_command`, but against the `PATH` the child will actually get.
+///
+/// Resolved against the `PATH` the child will actually get.
 ///
 /// A remote pane's child is given a `PATH` composed from the far machine's passwd
 /// entry rather than the supervisor's own, and `Command` execs against the
@@ -102,7 +127,7 @@ pub fn resolve_command_with_path(
 }
 
 pub fn command_exists(cmd: &RunCommand) -> bool {
-    resolve_command(cmd).is_some()
+    can_exec(cmd, None)
 }
 
 #[cfg(test)]

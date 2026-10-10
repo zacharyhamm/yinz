@@ -226,8 +226,10 @@ fn handle_openpty(
         .with_context(|| err_context(&cmd));
     }
 
+    let (program, args) =
+        yinz_process::command::exec_program_and_args(&cmd).with_context(|| err_context(&cmd))?;
     let child = unsafe {
-        let command = &mut Command::new(&cmd.command);
+        let command = &mut Command::new(program);
         if let Some(current_dir) = &cmd.cwd {
             if current_dir.exists() && current_dir.is_dir() {
                 command.current_dir(current_dir);
@@ -239,7 +241,7 @@ fn handle_openpty(
             }
         }
         command
-            .args(&cmd.args)
+            .args(args)
             // The server may itself be running in a supervised pane. This
             // in-process fallback has no stable supervisor reference of its own,
             // and no broker token either: a server running inside a remote pane

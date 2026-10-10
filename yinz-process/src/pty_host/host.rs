@@ -1176,12 +1176,7 @@ fn start_session(
     // Against the `PATH` the *child* will get, not this supervisor's: for a remote
     // pane those differ, and `Command` execs against the environment it was given.
     // Searching the wrong one would reject a command that would have exec'd fine.
-    if crate::command::resolve_command_with_path(
-        cmd,
-        crate::pty_host::remote::env::path_in(child_env.vars),
-    )
-    .is_none()
-    {
+    if !crate::command::can_exec(cmd, crate::pty_host::remote::env::path_in(child_env.vars)) {
         return Err(YinzError::CommandNotFound {
             terminal_id,
             command: cmd.command.to_string_lossy().to_string(),
@@ -1236,7 +1231,8 @@ fn start_session(
     fdpass::set_cloexec(slave.as_raw_fd()).with_context(err_context)?;
 
     let slave_raw = slave.as_raw_fd();
-    let mut command = Command::new(&cmd.command);
+    let (program, args) = crate::command::exec_program_and_args(cmd).with_context(err_context)?;
+    let mut command = Command::new(program);
     if let Some(arg0) = arg0 {
         // The whole of what makes a shell a *login* shell. Local panes pass
         // `None` and exec exactly as they always have.
@@ -1252,7 +1248,7 @@ fn start_session(
             );
         }
     }
-    command.args(&cmd.args);
+    command.args(args);
     if child_env.login_session {
         // Whatever ssh session started this machine's broker left its own
         // `SSH_*` in the environment every pane inherits. They describe a

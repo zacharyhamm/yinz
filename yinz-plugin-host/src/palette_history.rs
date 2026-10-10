@@ -407,10 +407,11 @@ pub(super) fn execute(
                 &h.session_id,
                 None,
                 h.host.as_deref(),
+                h.bubblewrap.as_deref(),
             )?;
             // Native launches do not translate Wasm mount paths.
             command.cwd = Some(cwd.into());
-            if command.target.is_local() {
+            if !command.target.is_remote() {
                 if !Path::new(cwd).is_dir() {
                     return Err("Recorded directory no longer exists".into());
                 }

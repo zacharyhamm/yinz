@@ -1169,16 +1169,25 @@ fn bubblewrap_checks_reused_and_collision_suffixed_destinations() {
             path: outside.clone(),
         },
     ] {
-        assert!(prepare_git_checkout_in_tracked(
+        // Reusing a worktree writes nothing, so it is not refused here. The folder it
+        // answers with is outside the checkout, which the launch then refuses.
+        let reused = prepare_git_checkout_in_tracked(
             root.clone(),
             checkout,
             true,
             WorktreeGuard::Required,
             &mut attempted,
-            Some(&root)
+            Some(&root),
         )
-        .is_err());
+        .unwrap();
+        assert!(reused.reused_worktree);
+        assert_eq!(reused.path, outside);
         assert!(attempted.is_none());
+        assert!(
+            yinz_config::project_config::bubblewrap::Environment::at_root(&root)
+                .validate_cwd(&reused.path)
+                .is_err()
+        );
     }
     std::fs::create_dir(root.join("collision")).unwrap();
     std::os::unix::fs::symlink(&base, root.join("collision-2")).unwrap();
@@ -1214,14 +1223,21 @@ fn bubblewrap_checks_reused_and_collision_suffixed_destinations() {
     )
     .unwrap();
     assert_eq!(contained.path, root.join("trees/from-linked"));
-    assert!(agent_folder_tracked(
+    // The caller's own directory is answered as it is, and refused as the launch folder.
+    let current = agent_folder_tracked(
         GitCheckout::Current,
-        Some(outside),
+        Some(outside.clone()),
         linked,
         false,
         WorktreeGuard::Waived,
         &mut None,
-        Some(&root)
+        Some(&root),
     )
-    .is_err());
+    .unwrap();
+    assert_eq!(current.path, outside);
+    assert!(
+        yinz_config::project_config::bubblewrap::Environment::at_root(&root)
+            .validate_cwd(&current.path)
+            .is_err()
+    );
 }

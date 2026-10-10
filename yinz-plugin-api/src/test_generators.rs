@@ -472,9 +472,13 @@ pub(crate) fn run_command_actions(tc: &hegel::TestCase) -> RunCommandAction {
 }
 
 pub(crate) fn pane_targets(tc: &hegel::TestCase) -> PaneTarget {
-    match tc.draw(generators::integers::<u8>().max_value(2)) {
+    match tc.draw(generators::integers::<u8>().max_value(3)) {
         0 => PaneTarget::Local,
         1 => PaneTarget::Ssh { host: strings(tc) },
+        // Absolute, as the wire refuses anything else.
+        2 => PaneTarget::Bubblewrap {
+            root: std::path::Path::new("/").join(strings(tc).trim_start_matches('/')),
+        },
         _ => PaneTarget::Firecracker {
             vm: strings(tc),
             image: optional_strings(tc),

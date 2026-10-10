@@ -201,6 +201,9 @@ struct State {
     /// The VM is kept beside the worktree because it is what the retraction is keyed on;
     /// see `VmCheckout` and `rebuild_panes`.
     firecracker_worktrees: BTreeMap<u32, VmCheckout>,
+    /// The checkout whose Bubblewrap environment each sandboxed pane runs in, from the
+    /// manifest and pruned with `hosts`. A run copies it so a resume re-enters the sandbox.
+    bubblewrap_roots: BTreeMap<u32, String>,
     activity: agents::Activity,
     /// The checkout each terminal pane's frame is currently decorated with.
     ///
@@ -402,8 +405,13 @@ fn relocate_run(
     run: &mut agents::AgentRun,
     host: Option<String>,
     worktree: Option<String>,
+    bubblewrap: Option<String>,
 ) -> bool {
     let mut moved = false;
+    if run.bubblewrap != bubblewrap {
+        run.bubblewrap = bubblewrap;
+        moved = true;
+    }
     if run.host != host {
         run.host = host;
         moved = true;
@@ -1268,6 +1276,7 @@ impl State {
             .firecracker_worktrees
             .get(&pane_id)
             .map(|checkout| checkout.worktree.clone());
+        let bubblewrap = self.bubblewrap_roots.get(&pane_id).cloned();
         let run = self
             .runs
             .entry(pane_id)
@@ -1283,6 +1292,7 @@ impl State {
                 cwd: event.cwd.clone(),
                 host: host.clone(),
                 worktree: worktree.clone(),
+                bubblewrap: bubblewrap.clone(),
                 started_at_ms: now_ms,
                 ended_at_ms: None,
                 outcome: agents::RunOutcome::Active,
@@ -1332,7 +1342,7 @@ impl State {
                 changed = true;
             }
         }
-        changed |= relocate_run(run, host, worktree);
+        changed |= relocate_run(run, host, worktree, bubblewrap);
         changed |= self
             .pending_messages
             .entry(pane_id)
@@ -1883,6 +1893,15 @@ impl State {
                     self.hosts.remove(&pane_id);
                 },
             }
+            match pane.target.bubblewrap_root() {
+                Some(root) => {
+                    self.bubblewrap_roots
+                        .insert(pane_id, root.display().to_string());
+                },
+                None => {
+                    self.bubblewrap_roots.remove(&pane_id);
+                },
+            }
             // The host path a Firecracker pane's VM mirrors, which is what identifies
             // its work. Read from the target rather than from the pane's folder: the
             // folder is a guest path.
@@ -1948,6 +1967,7 @@ impl State {
         self.cwds.retain(|id, _| live.contains(id));
         self.hosts.retain(|id, _| live.contains(id));
         self.firecracker_worktrees.retain(|id, _| live.contains(id));
+        self.bubblewrap_roots.retain(|id, _| live.contains(id));
         // The runs' own copies of the two maps above, kept level here as well as on the next
         // hook. Every run left is one whose pane is live — the closed ones were released just
         // above — so the maps are the answer for all of them. Doing it only on a hook leaves a
@@ -1961,6 +1981,7 @@ impl State {
                 self.firecracker_worktrees
                     .get(pane_id)
                     .map(|checkout| checkout.worktree.clone()),
+                self.bubblewrap_roots.get(pane_id).cloned(),
             );
             if moved {
                 self.dirty_runs.insert(run.id.clone(), run.clone());
@@ -3965,6 +3986,7 @@ mod tests {
             host: None,
             firecracker_image: None,
             firecracker_worktree: None,
+            bubblewrap: None,
             status: agents::AgentStatus::Running,
             tab: None,
             detected: None,
@@ -4504,6 +4526,7 @@ mod tests {
             cwd: Some("/work".to_owned()),
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: agents::RunOutcome::Closed,
@@ -6827,6 +6850,7 @@ mod tests {
             cwd: None,
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 0,
             ended_at_ms: None,
             outcome: agents::RunOutcome::Active,
@@ -7993,6 +8017,7 @@ mod tests {
             cwd: None,
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 1,
             ended_at_ms: None,
             outcome: agents::RunOutcome::Active,
@@ -9262,6 +9287,29 @@ mod tests {
         assert_eq!(run.host, None);
     }
 
+    /// A run records the Bubblewrap environment its pane is in. The conversation is in that
+    /// environment's private home, so a resume that did not know would run the agent on the
+    /// host and find nothing to resume.
+    #[test]
+    fn a_run_records_the_bubblewrap_environment_its_pane_is_in() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/repo/.worktrees/task")]),
+            ..State::default()
+        };
+        state.bubblewrap_roots.insert(7, "/repo".to_owned());
+        feed(&mut state, 7, &prompt("rewrite the retry backoff"), None);
+        let run = state.runs.get(&7).expect("the pane's run");
+        assert_eq!(run.bubblewrap.as_deref(), Some("/repo"));
+        assert_eq!(run.header().bubblewrap.as_deref(), Some("/repo"));
+        assert_eq!(run.host, None);
+
+        // A pane re-run on the host is not in the sandbox any more.
+        state.bubblewrap_roots.remove(&7);
+        feed(&mut state, 7, &prompt("and now the timeout"), None);
+        let run = state.runs.get(&7).expect("the pane's run");
+        assert_eq!(run.bubblewrap, None);
+    }
+
     /// And it is repaired by the manifest as well as by the next hook, because there may not
     /// be a next hook. A run whose first event beat the manifest that named its VM's worktree
     /// would otherwise be archived with none, and `matches_root` files a run with a host and
@@ -9357,6 +9405,7 @@ mod tests {
             cwd: Some("/work".to_owned()),
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
             outcome: agents::RunOutcome::Active,
@@ -9401,6 +9450,7 @@ mod tests {
             cwd: Some("/work".to_owned()),
             host: None,
             worktree: None,
+            bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
             outcome: agents::RunOutcome::Completed,

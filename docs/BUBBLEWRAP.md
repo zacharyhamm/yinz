@@ -55,7 +55,8 @@ Yinz does not expand `~`, shell variables, or command substitutions. To use shel
 run `sh -c`. Setup commands run in order and must tolerate existing installations.
 
 Unknown declarations, named arguments, missing sources, and overlapping mount destinations are errors.
-Declarations cannot replace repository, system, runtime, or private-home mounts.
+Declarations cannot replace repository, system, runtime, or private-home mounts, or `/etc/passwd` and `/etc/group`.
+A `ro-bind` source needs no read permission: sockets, FIFOs, execute-only files, and search-only directories mount.
 `HOME`, `PATH`, `TMPDIR`, the XDG directory variables, `YINZ_*`, and `CARGO_TARGET_DIR` are reserved.
 The spawn API also rejects overrides of sandbox boundary variables.
 
@@ -74,11 +75,13 @@ Preparation accepts the declaration, copies seed files, runs setup, and runs che
 It marks the environment ready only when all commands succeed.
 
 Launch uses the saved declaration. Editing either KDL file has no effect until preparation succeeds again.
-Launch checks run once inside the pane, under its shared environment lease, before the agent starts.
-Server preflight validates the platform and saved environment without running checks.
+Launch checks run once in the server, before the pane's process starts. The pane shows their progress.
+After the declared checks, Yinz confirms that the agent's program resolves on the sandbox `PATH`.
+A failed check, a missing program, or an unprepared environment fails the spawn:
+`yinz agent spawn` and plugin callers receive the error instead of a pane holding one.
 Each check suite has a 10-second total deadline, including the mandatory namespace and mount probe.
 Preparation check output stays in `prepare.log`; launch check stdout and stderr append to private
-`launch.log` in the environment metadata directory. Failures show an error and log location in the pane.
+`launch.log` in the environment metadata directory. Each log is emptied once it exceeds 1 MiB.
 Launch never provisions tools. Repeated preparation reruns setup and seed operations.
 Failed preparation preserves the private home and logs but makes the environment unavailable.
 
@@ -100,6 +103,9 @@ The primary checkout is writable at its original absolute path. This includes ne
 checkout are rejected. Symlinks do not expose host files that have no sandbox mount.
 
 The sandbox contains read-only system tools, libraries, DNS settings, and certificate files.
+`/etc/alternatives` is included, so Debian-family links such as `/usr/bin/cc` resolve.
+`/etc/passwd` and `/etc/group` are generated for the launch: they name only the invoking user, with
+`/home/yinz` as its home, and `nobody`. Host account files are not mounted.
 Each launch has its own `/tmp`, runtime directories, devices, and process namespace.
 Yinz exposes its executable, reporting assets, and shared control directory.
 The host's `YINZ_SOCK_DIR` is mounted read-only at `/run/yinz-control/<contract-directory>`.
@@ -158,6 +164,18 @@ The shared API accepts `bubblewrap: true` in `AgentSpawnSpec`, including CLI JSO
 `yinz.agent.spawn({...})`. Omission keeps the existing unsandboxed launch behavior.
 The interactive chooser is unchanged. SSH and Firecracker cannot be combined with Bubblewrap.
 A failed check, unavailable Bubblewrap, or sandbox startup failure never falls back to an unsandboxed launch.
+
+## Relaunching a sandboxed agent
+
+The sandbox is part of where a pane runs, like an SSH host or a Firecracker VM. The pane's command
+stays the agent's own, and plugins see the target as `{Bubblewrap: {root}}`. Everything that starts
+a command from an existing pane keeps it:
+
+- Re-running or restarting the pane runs the launch checks again and re-enters the environment.
+- Fork and Duplicate in the command palette start the new agent in the same environment.
+- A run records its environment. Resuming it from history returns to the private home that holds its conversation.
+- A saved or resurrected layout writes `bubblewrap="/path/to/repository"` on the pane.
+  The same property works in a hand-written layout on a pane with a `command`.
 
 Missing global project paths are skipped with a diagnostic. Invalid project blocks and
 other path resolution errors still stop preparation. Run preparation again to recover

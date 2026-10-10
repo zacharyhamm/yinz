@@ -181,7 +181,7 @@ fn serialize_tiled_pane(
         has_children,
         &mut tiled_pane_node,
     );
-    serialize_firecracker_attributes(&layout.run, &mut tiled_pane_node);
+    serialize_target_attributes(&layout.run, &mut tiled_pane_node);
 
     serialize_tiled_layout_attributes(layout, ignore_size, &mut tiled_pane_node);
     if let Some(ref fg) = layout.default_fg {
@@ -228,13 +228,20 @@ fn serialize_tiled_pane(
     tiled_pane_node
 }
 
-/// Where a command pane runs, when that is a Firecracker VM. The layout parser reads
-/// these back into the same `RunCommand` fields, so a dumped or resurrected pane lands
-/// in its VM again rather than running the command locally.
-fn serialize_firecracker_attributes(layout_run: &Option<Run>, kdl_node: &mut KdlNode) {
+/// Where a command pane runs, when that is a Firecracker VM or a Bubblewrap environment.
+/// The layout parser reads these back into the same `RunCommand` fields, so a dumped or
+/// resurrected pane lands in its VM or sandbox again rather than running the command on
+/// the host.
+fn serialize_target_attributes(layout_run: &Option<Run>, kdl_node: &mut KdlNode) {
     let Some(Run::Command(run_command)) = layout_run else {
         return;
     };
+    if let PaneTarget::Bubblewrap { root } = &run_command.target {
+        kdl_node
+            .entries_mut()
+            .push(KdlEntry::new_prop("bubblewrap", root.display().to_string()));
+        return;
+    }
     let PaneTarget::Firecracker {
         vm,
         image,
@@ -265,7 +272,7 @@ pub fn extract_command_and_args(layout_run: &Option<Run>) -> (Option<String>, Ve
         // the empty placeholder would resurrect as a local pane running "",
         // where saying nothing resurrects it as a plain default-shell pane. An
         // ssh pane has no layout surface to say where it ran; a Firecracker one
-        // keeps its `firecracker_vm` (see `serialize_firecracker_attributes`),
+        // keeps its `firecracker_vm` (see `serialize_target_attributes`),
         // which the parser turns back into that guest's login shell.
         Some(Run::Command(run_command)) if run_command.is_remote_default_shell() => (None, vec![]),
         Some(Run::Command(run_command)) => (
@@ -708,7 +715,7 @@ fn serialize_floating_pane(
         has_children,
         &mut floating_pane_node,
     );
-    serialize_firecracker_attributes(&layout.run, &mut floating_pane_node);
+    serialize_target_attributes(&layout.run, &mut floating_pane_node);
     if let Some(ref fg) = layout.default_fg {
         floating_pane_node
             .entries_mut()
@@ -2821,6 +2828,64 @@ mod tests {
         );
         assert_eq!(tiled.children[1].run, Some(Run::Command(guest_shell)));
         assert_eq!(floating[0].run, Some(Run::Command(resurrected_in_vm)));
+    }
+    /// A sandboxed pane resurrects into its sandbox: its command is the agent's own, so
+    /// without the attribute it would come back running on the host.
+    #[test]
+    fn can_serialize_bubblewrap_panes() {
+        use yinz_types::input::command::RunCommand;
+        let sandboxed = RunCommand {
+            command: PathBuf::from("claude"),
+            args: vec!["--resume".to_owned()],
+            cwd: Some(PathBuf::from("/repo/.worktrees/task")),
+            hold_on_close: true,
+            target: PaneTarget::Bubblewrap {
+                root: PathBuf::from("/repo"),
+            },
+            ..Default::default()
+        };
+        let tab_layout_manifest = TabLayoutManifest {
+            tiled_panes: vec![PaneLayoutManifest {
+                run: Some(Run::Command(sandboxed.clone())),
+                geom: PaneGeom {
+                    x: 0,
+                    y: 0,
+                    rows: Dimension::fixed(10),
+                    cols: Dimension::fixed(10),
+                    stacked: None,
+                    is_pinned: false,
+                    logical_position: None,
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let global_layout_manifest = GlobalLayoutManifest {
+            tabs: vec![("Tab #1".to_owned(), tab_layout_manifest)],
+            ..Default::default()
+        };
+        let kdl = serialize_session_layout(global_layout_manifest).unwrap();
+        assert!(kdl.0.contains(r#"bubblewrap="/repo""#), "{}", kdl.0);
+
+        let layout =
+            yinz_config::kdl::layout::from_kdl(&kdl.0, Some("dump.kdl".into()), None, None)
+                .unwrap();
+        let (_, tiled, _) = &layout.tabs[0];
+        let mut panes = vec![tiled];
+        let mut resurrected = None;
+        while let Some(pane) = panes.pop() {
+            if let Some(Run::Command(command)) = &pane.run {
+                resurrected = Some(command.clone());
+            }
+            panes.extend(&pane.children);
+        }
+        assert_eq!(
+            resurrected,
+            Some(RunCommand {
+                hold_on_start: true,
+                ..sandboxed
+            })
+        );
     }
     #[test]
     fn can_serialize_new_tab_template_with_a_single_pane() {

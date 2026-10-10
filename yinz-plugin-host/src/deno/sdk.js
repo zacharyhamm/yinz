@@ -317,9 +317,9 @@
     if (cmd.remote_default_shell !== undefined && typeof cmd.remote_default_shell !== 'boolean') throw new TypeError('remote_default_shell must be a boolean');
     if (cmd.target != null && cmd.target !== 'Local') {
       const target = record(cmd.target, 'target');
-      if (Object.keys(target).length !== 1 || (!target.Ssh && !target.Firecracker)) throw new TypeError('invalid pane target');
-      const fields = record(target.Ssh ?? target.Firecracker, 'target fields');
-      if (typeof fields[target.Ssh ? 'host' : 'vm'] !== 'string') throw new TypeError('target needs a host or vm');
+      if (Object.keys(target).length !== 1 || (!target.Ssh && !target.Firecracker && !target.Bubblewrap)) throw new TypeError('invalid pane target');
+      const fields = record(target.Ssh ?? target.Firecracker ?? target.Bubblewrap, 'target fields');
+      if (typeof fields[target.Ssh ? 'host' : target.Firecracker ? 'vm' : 'root'] !== 'string') throw new TypeError('target needs a host, vm or root');
       for (const key of ['image', 'worktree']) if (fields[key] != null && typeof fields[key] !== 'string') throw new TypeError(`target ${key} must be a string or null`);
     }
     if (cmd.target == null) {
@@ -335,7 +335,7 @@
   }
   function paneTarget(cmd) {
     const target = cmd.target ?? (cmd.firecracker_vm?.trim() ? {Firecracker: {vm: cmd.firecracker_vm.trim(), image: cmd.firecracker_image?.trim() || null, worktree: cmd.firecracker_worktree || null}} : cmd.remote_host?.trim() ? {Ssh: {host: cmd.remote_host.trim()}} : 'Local');
-    return target === 'Local' ? ['Local'] : target.Ssh ? ['Ssh', target.Ssh.host] : ['Firecracker', target.Firecracker.vm, target.Firecracker.image ?? null, target.Firecracker.worktree ?? null];
+    return target === 'Local' ? ['Local'] : target.Ssh ? ['Ssh', target.Ssh.host] : target.Bubblewrap ? ['Bubblewrap', target.Bubblewrap.root] : ['Firecracker', target.Firecracker.vm, target.Firecracker.image ?? null, target.Firecracker.worktree ?? null];
   }
   function paneCommand(step, pane) {
     const {name, stdin, timeoutMs, ...cmd} = step;
