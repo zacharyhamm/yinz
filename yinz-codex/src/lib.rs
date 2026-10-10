@@ -785,6 +785,7 @@ async fn private_backend(program: &Path, socket: &Path) -> Result<tokio::process
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
         .context("start private Codex backend")?;

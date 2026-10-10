@@ -3160,10 +3160,12 @@ fn prepare_agent(
         if !command.target.is_local() || automatic_firecracker_vm {
             return Err("Bubblewrap cannot be combined with SSH or Firecracker".into());
         }
-        let environment = yinz_config::project_config::bubblewrap::Environment::for_project(
-            cwd.as_deref().unwrap_or(&source),
-        )
-        .map_err(|error| format!("{error:#}"))?;
+        let environment =
+            yinz_config::project_config::bubblewrap::Environment::for_project(match &checkout {
+                GitCheckout::Current => cwd.as_deref().unwrap_or(&source),
+                _ => &source,
+            })
+            .map_err(|error| format!("{error:#}"))?;
         environment
             .preflight()
             .map_err(|error| format!("{error:#}"))?;
@@ -3217,6 +3219,7 @@ fn prepare_agent(
         spec.reuse.unwrap_or(false),
         guard,
         &mut attempted,
+        bubblewrap.as_ref().map(|environment| environment.root()),
     )
     .map_err(|error| match attempted {
         Some(resources) => AgentSpawnError::failed(error, Some(resources)),
@@ -3671,7 +3674,20 @@ fn agent_folder(
     reuse: bool,
     guard: WorktreeGuard,
 ) -> Result<PreparedCheckout, String> {
-    agent_folder_tracked(checkout, cwd, source, reuse, guard, &mut None)
+    agent_folder_tracked(checkout, cwd, source, reuse, guard, &mut None, None)
+}
+
+fn validate_checkout_root(path: &Path, root: Option<&Path>) -> Result<(), String> {
+    if let Some(root) = root {
+        let resolved = resolve_fs_ancestors(path).map_err(|error| format!("{error:#}"))?;
+        if !resolved.starts_with(root) {
+            return Err(format!(
+                "Bubblewrap checkout must be inside {}",
+                root.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn agent_folder_tracked(
@@ -3681,9 +3697,11 @@ fn agent_folder_tracked(
     reuse: bool,
     guard: WorktreeGuard,
     attempted: &mut Option<AgentLaunchResources>,
+    bubblewrap_root: Option<&Path>,
 ) -> Result<PreparedCheckout, String> {
     match (checkout, cwd) {
         (GitCheckout::Current, Some(cwd)) => {
+            validate_checkout_root(&cwd, bubblewrap_root)?;
             guard.check(&cwd)?;
             Ok(PreparedCheckout {
                 reused_worktree: false,
@@ -3692,6 +3710,7 @@ fn agent_folder_tracked(
             })
         },
         (GitCheckout::Current, None) => {
+            validate_checkout_root(&source, bubblewrap_root)?;
             guard.check(&source)?;
             Ok(PreparedCheckout {
                 reused_worktree: false,
@@ -3699,7 +3718,14 @@ fn agent_folder_tracked(
                 branch: None,
             })
         },
-        (checkout, _) => prepare_git_checkout_in_tracked(source, checkout, reuse, guard, attempted),
+        (checkout, _) => prepare_git_checkout_in_tracked(
+            source,
+            checkout,
+            reuse,
+            guard,
+            attempted,
+            bubblewrap_root,
+        ),
     }
 }
 
@@ -3824,7 +3850,7 @@ fn prepare_git_checkout_in(
     reuse: bool,
     guard: WorktreeGuard,
 ) -> Result<PreparedCheckout, String> {
-    prepare_git_checkout_in_tracked(source_directory, checkout, reuse, guard, &mut None)
+    prepare_git_checkout_in_tracked(source_directory, checkout, reuse, guard, &mut None, None)
 }
 
 fn prepare_git_checkout_in_tracked(
@@ -3833,8 +3859,10 @@ fn prepare_git_checkout_in_tracked(
     reuse: bool,
     guard: WorktreeGuard,
     attempted: &mut Option<AgentLaunchResources>,
+    bubblewrap_root: Option<&Path>,
 ) -> Result<PreparedCheckout, String> {
     let mut before_git_write = |path: &Path, branch: &str, requested: &str| {
+        validate_checkout_root(path, bubblewrap_root)?;
         *attempted = Some(AgentLaunchResources {
             tab_id: None,
             created_tab_id: None,
@@ -3843,6 +3871,7 @@ fn prepare_git_checkout_in_tracked(
             requested_branch: (branch != requested).then(|| requested.to_owned()),
             reused: false,
         });
+        Ok::<(), String>(())
     };
     let root_output = process::Command::new("git")
         .arg("-C")
@@ -3856,6 +3885,7 @@ fn prepare_git_checkout_in_tracked(
     let root = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
     match checkout {
         GitCheckout::Current => {
+            validate_checkout_root(&root, bubblewrap_root)?;
             guard.check(&root)?;
             Ok(PreparedCheckout {
                 reused_worktree: false,
@@ -3870,6 +3900,7 @@ fn prepare_git_checkout_in_tracked(
                 // git allows one checkout of a branch at a time - so the agent goes
                 // to the worktree already holding it rather than nowhere at all.
                 if let Some(worktree) = worktree_holding(&root, &branch)? {
+                    validate_checkout_root(&worktree, bubblewrap_root)?;
                     guard.check(&worktree)?;
                     return Ok(PreparedCheckout {
                         reused_worktree: true,
@@ -3881,9 +3912,10 @@ fn prepare_git_checkout_in_tracked(
             // Every route left lands in `root` - this checkout moves to the branch - so
             // the guard is settled here, before the switch that would otherwise leave a
             // refused request with the user's checkout already moved.
+            validate_checkout_root(&root, bubblewrap_root)?;
             guard.check(&root)?;
             if reuse && branch_exists(&root, &branch) {
-                before_git_write(&root, &branch, &branch);
+                before_git_write(&root, &branch, &branch)?;
                 run_git(&root, &["switch", &branch], "switch to the branch")?;
                 return Ok(PreparedCheckout {
                     reused_worktree: false,
@@ -3897,7 +3929,7 @@ fn prepare_git_checkout_in_tracked(
             } else {
                 free_branch(&root, &branch)?
             };
-            before_git_write(&root, &branch, &requested);
+            before_git_write(&root, &branch, &requested)?;
             run_git(
                 &root,
                 &["switch", "-c", &branch, &base],
@@ -3928,6 +3960,7 @@ fn prepare_git_checkout_in_tracked(
                 // nothing about it is changed. That branch is what is answered - the
                 // one asked for was not used - and a detached checkout holds none.
                 if let Some(existing) = worktree_at(&root, &path)? {
+                    validate_checkout_root(&existing.path, bubblewrap_root)?;
                     guard.check(&existing.path)?;
                     return Ok(PreparedCheckout {
                         reused_worktree: true,
@@ -3936,6 +3969,7 @@ fn prepare_git_checkout_in_tracked(
                     });
                 }
                 if let Some(existing) = worktree_holding(&root, &branch)? {
+                    validate_checkout_root(&existing, bubblewrap_root)?;
                     guard.check(&existing)?;
                     return Ok(PreparedCheckout {
                         reused_worktree: true,
@@ -3954,7 +3988,7 @@ fn prepare_git_checkout_in_tracked(
                 } else {
                     vec!["worktree", "add", "-b", &branch, "--", &path_string, &base]
                 };
-                before_git_write(&path, &branch, &branch);
+                before_git_write(&path, &branch, &branch)?;
                 run_git(&root, &args, "create the worktree")?;
                 exclude_nested_worktree(&root, &path);
                 return Ok(PreparedCheckout {
@@ -3968,7 +4002,7 @@ fn prepare_git_checkout_in_tracked(
             let requested = branch.clone();
             let (branch, path) = free_worktree(&root, &path, &branch)?;
             let path_string = path.to_string_lossy().into_owned();
-            before_git_write(&path, &branch, &requested);
+            before_git_write(&path, &branch, &requested)?;
             run_git(
                 &root,
                 &["worktree", "add", "-b", &branch, "--", &path_string, &base],

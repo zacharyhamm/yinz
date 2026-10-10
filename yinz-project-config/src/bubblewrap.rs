@@ -4,11 +4,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+use std::os::unix::{
+    fs::{OpenOptionsExt, PermissionsExt},
+    process::CommandExt,
+};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use yinz_runtime::errors::prelude::*;
 
 /// Protect variables that establish the sandbox boundary, including against spawn's env wrapper.
@@ -21,7 +25,7 @@ pub fn validate_spawn_env(env: &BTreeMap<String, String>) -> Result<()> {
     Ok(())
 }
 
-pub const RUN_FLAG: &str = "--bubblewrap-run";
+pub const RUN_FLAG: &str = yinz_types::agent::BUBBLEWRAP_RUN_FLAG;
 const HOME: &str = "/home/yinz";
 const SYSTEM: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib64"];
 const ETC: &[&str] = &[
@@ -58,17 +62,59 @@ pub struct Environment {
     home: PathBuf,
 }
 
+/// Resolved once: after the running binary is replaced on disk, `current_exe()` names a
+/// `(deleted)` path that can be neither bound nor executed.
+fn yinz_binary() -> Result<&'static PathBuf> {
+    yinz_runtime::own_binary::server_binary().context("locate Yinz executable")
+}
+
+/// Expose the Yinz executable at its host path and on the sandbox's own `PATH`.
+fn bind_binary(command: &mut Command, root: &Path, binary: &Path) {
+    // The checkout's own build is already visible through the writable project bind.
+    // A file mount there would make replacing the binary fail with EBUSY.
+    if !binary.starts_with(root) {
+        command.arg("--ro-bind").arg(binary).arg(binary);
+    }
+    command
+        .arg("--ro-bind")
+        .arg(binary)
+        .arg("/run/yinz-bin/yinz");
+}
+
 fn platform() -> Result<()> {
     if !cfg!(target_os = "linux") {
         bail!("Bubblewrap agent environments require Linux");
     }
-    let status = Command::new("bwrap")
+    let output = Command::new("bwrap")
         .arg("--version")
-        .stdout(Stdio::null())
-        .status()
-        .context("Bubblewrap is required; install bwrap")?;
-    if !status.success() {
-        bail!("bwrap --version failed");
+        .output()
+        .context("Bubblewrap 0.10.0 or newer is required; install or upgrade bwrap")?;
+    validate_version(&output)
+}
+
+fn validate_version(output: &std::process::Output) -> Result<()> {
+    if !output.status.success() {
+        bail!("bwrap --version failed; install Bubblewrap 0.10.0 or newer");
+    }
+    let text = std::str::from_utf8(&output.stdout).context("malformed Bubblewrap version")?;
+    let version = text
+        .trim()
+        .strip_prefix("bubblewrap ")
+        .context("malformed Bubblewrap version; expected bubblewrap 0.10.0 or newer")?;
+    let numeric = version
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .next()
+        .unwrap_or("");
+    let parts = numeric
+        .split('.')
+        .map(str::parse::<u64>)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("malformed Bubblewrap version")?;
+    let [major, minor, patch] = parts.as_slice() else {
+        bail!("malformed Bubblewrap version; expected three numeric components");
+    };
+    if (*major, *minor, *patch) < (0, 10, 0) {
+        bail!("Bubblewrap 0.10.0 or newer is required; upgrade bwrap (found {numeric})");
     }
     Ok(())
 }
@@ -259,13 +305,21 @@ fn selected(root: &Path, config_dir: Option<&Path>, host_home: &Path) -> Result<
                     if node.name().value() != "project" {
                         bail!("global bubblewrap.kdl only accepts project blocks");
                     }
-                    let project = absolute(path)?
-                        .canonicalize()
-                        .context("resolve global Bubblewrap project")?;
+                    let body = node.children().context("project requires a block")?;
+                    let path = absolute(path)?;
+                    let project = match path.canonicalize() {
+                        Ok(project) => project,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            eprintln!("Skipping missing Bubblewrap project {}", path.display());
+                            continue;
+                        },
+                        Err(error) => {
+                            return Err(error).context("resolve global Bubblewrap project")
+                        },
+                    };
                     if !roots.insert(project.clone()) {
                         bail!("duplicate global Bubblewrap project {}", project.display());
                     }
-                    let body = node.children().context("project requires a block")?;
                     if project == root {
                         selected = Some(parse(body, root, host_home)?);
                     }
@@ -288,6 +342,10 @@ fn selected(root: &Path, config_dir: Option<&Path>, host_home: &Path) -> Result<
 }
 
 impl Environment {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn at(root: PathBuf, data: &Path) -> Self {
         let key: String = Sha256::digest(root.as_os_str().as_encoded_bytes())
             .iter()
@@ -419,8 +477,8 @@ impl Environment {
     pub fn preflight(&self) -> Result<()> {
         platform()?;
         let _lock = self.lock(false)?;
-        let accepted = self.accepted()?;
-        self.checks(&accepted.declaration, &self.root, None)
+        self.accepted()?;
+        Ok(())
     }
 
     pub fn wrap(&self, command: &mut yinz_types::command::CommandToRun) -> Result<()> {
@@ -435,7 +493,7 @@ impl Environment {
             command.path.to_string_lossy().into_owned(),
         ];
         args.append(&mut command.args);
-        command.path = std::env::current_exe().context("locate Yinz executable")?;
+        command.path = yinz_binary()?.clone();
         command.args = args;
         Ok(())
     }
@@ -450,6 +508,28 @@ impl Environment {
             "ALL",
             "--clearenv",
         ]);
+        let mut environment_args =
+            tempfile::tempfile().context("create Bubblewrap environment arguments")?;
+        environment_args
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .context("restrict Bubblewrap environment arguments")?;
+        command
+            .arg("--args")
+            .arg(environment_args.as_raw_fd().to_string());
+        let mut setenv = |name: &str, value: &str| -> Result<()> {
+            if name.contains('\0') || value.contains('\0') {
+                bail!("NUL in Bubblewrap environment argument");
+            }
+            for arg in ["--setenv", name, value] {
+                environment_args
+                    .write_all(arg.as_bytes())
+                    .context("write Bubblewrap environment argument")?;
+                environment_args
+                    .write_all(&[0])
+                    .context("terminate Bubblewrap environment argument")?;
+            }
+            Ok(())
+        };
         for path in SYSTEM.iter().chain(ETC) {
             if Path::new(path).exists() {
                 command.args(["--ro-bind", path, path]);
@@ -486,17 +566,6 @@ impl Environment {
             command.arg("--ro-bind-fd").arg(fd.to_string()).arg(dst);
             mount_files.push(file);
         }
-        // Pin accepted sources so a concurrent symlink swap cannot expose another host path.
-        unsafe {
-            command.pre_exec(move || {
-                for file in &mount_files {
-                    if libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-                Ok(())
-            });
-        }
         let mut paths = vec![
             "/run/yinz-bin".to_owned(),
             "/usr/local/bin".into(),
@@ -505,12 +574,12 @@ impl Environment {
         ];
         paths.extend(declaration.paths.iter().cloned());
         for (name, value) in &declaration.env {
-            command.args(["--setenv", name, value]);
+            setenv(name, value)?;
         }
         for name in &declaration.inherit {
             let value = std::env::var(name)
                 .with_context(|| format!("missing inherited variable {name}"))?;
-            command.args(["--setenv", name, &value]);
+            setenv(name, &value)?;
         }
         for (name, value) in [
             ("HOME", HOME),
@@ -522,7 +591,7 @@ impl Environment {
             ("XDG_DATA_HOME", "/home/yinz/.local/share"),
             ("YINZ_BUBBLEWRAP", "1"),
         ] {
-            command.args(["--setenv", name, value]);
+            setenv(name, value)?;
         }
         for name in ["TERM", "COLORTERM", "LANG"] {
             if declaration.env.contains_key(name)
@@ -531,17 +600,10 @@ impl Environment {
                 continue;
             }
             if let Ok(value) = std::env::var(name) {
-                command.args(["--setenv", name, &value]);
+                setenv(name, &value)?;
             }
         }
-        {
-            let binary = std::env::current_exe().context("locate Yinz executable")?;
-            command.arg("--ro-bind").arg(&binary).arg(&binary);
-            command
-                .arg("--ro-bind")
-                .arg(&binary)
-                .arg("/run/yinz-bin/yinz");
-        }
+        bind_binary(&mut command, &self.root, yinz_binary()?);
         if runtime {
             let session = std::env::var("YINZ_SESSION_NAME")
                 .context("Bubblewrap launch requires a Yinz session")?;
@@ -558,7 +620,7 @@ impl Environment {
                 .arg("--ro-bind")
                 .arg(&*yinz_runtime::consts::YINZ_SOCK_DIR)
                 .arg(destination);
-            command.args(["--setenv", "YINZ_SOCKET_DIR", "/run/yinz-control"]);
+            setenv("YINZ_SOCKET_DIR", "/run/yinz-control")?;
             if let Ok(reference) = std::env::var("YINZ_PANE_REF") {
                 if reference.len() != 12 || !reference.bytes().all(|byte| byte.is_ascii_hexdigit())
                 {
@@ -574,7 +636,7 @@ impl Environment {
                 "YINZ_AGENT_PANE",
             ] {
                 if let Ok(value) = std::env::var(name) {
-                    command.args(["--setenv", name, &value]);
+                    setenv(name, &value)?;
                 }
             }
             let pi = yinz_runtime::agent::pi::pi_extension_path();
@@ -582,15 +644,48 @@ impl Environment {
                 command.arg("--ro-bind").arg(&pi).arg(&pi);
             }
         }
+        // Retain private arguments and pinned mount sources until exec, inheriting them only in the child.
+        unsafe {
+            command.pre_exec(move || {
+                environment_args.rewind()?;
+                for file in std::iter::once(&environment_args).chain(&mount_files) {
+                    if libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
         command.arg("--chdir").arg(cwd);
         Ok(command)
     }
 
-    fn checks(&self, declaration: &Declaration, cwd: &Path, log: Option<&File>) -> Result<()> {
+    fn checks(
+        &self,
+        declaration: &Declaration,
+        cwd: &Path,
+        log: &File,
+        deadline: Instant,
+    ) -> Result<()> {
         // Even an empty declaration must prove namespaces and mandatory mounts work.
-        self.execute(declaration, cwd, &["/usr/bin/true".into()], log)?;
-        for args in &declaration.checks {
-            self.execute(declaration, cwd, args, log)?;
+        for args in
+            std::iter::once(vec!["/usr/bin/true".into()]).chain(declaration.checks.iter().cloned())
+        {
+            let result = (|| {
+                if Instant::now() >= deadline {
+                    bail!("check deadline expired");
+                }
+                let mut command = self.command(declaration, cwd, false)?;
+                command
+                    .arg("--")
+                    .args(&args)
+                    .stdin(Stdio::null())
+                    .stdout(log.try_clone().context("clone check log")?)
+                    .stderr(log.try_clone().context("clone check log")?)
+                    .process_group(0);
+                wait_check(&mut command, deadline)
+            })();
+            result.with_context(|| format!("Bubblewrap check failed: {}", args[0]))?;
         }
         Ok(())
     }
@@ -625,14 +720,11 @@ impl Environment {
     pub fn prepare(&self, config_dir: Option<&Path>) -> Result<()> {
         let _lock = self.lock(true)?;
         // Invalidate before accepting or executing anything, including malformed replacement KDL.
-        if self.metadata.join("accepted.json").exists() {
-            let bytes = fs::read(self.metadata.join("accepted.json"))
-                .context("read previous declaration")?;
-            let mut previous: Accepted =
-                serde_json::from_slice(&bytes).context("decode previous declaration")?;
-            previous.ready = false;
-            self.save(&previous)?;
-        }
+        self.save(&Accepted {
+            root: self.root.clone(),
+            declaration: Declaration::default(),
+            ready: false,
+        })?;
         let mut log = OpenOptions::new()
             .create(true)
             .append(true)
@@ -680,7 +772,12 @@ impl Environment {
             for args in &accepted.declaration.setup {
                 self.execute(&accepted.declaration, &self.root, args, Some(&log))?;
             }
-            self.checks(&accepted.declaration, &self.root, Some(&log))?;
+            self.checks(
+                &accepted.declaration,
+                &self.root,
+                &log,
+                Instant::now() + Duration::from_secs(10),
+            )?;
             accepted.ready = true;
             self.save(&accepted)?;
             println!(
@@ -710,7 +807,22 @@ impl Environment {
         let accepted = self.accepted()?;
         let cwd = std::env::current_dir().context("read launch directory")?;
         self.validate_cwd(&cwd)?;
-        self.checks(&accepted.declaration, &cwd, None)?;
+        let path = self.metadata.join("launch.log");
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)
+            .context("open launch check log")?;
+        log.set_permissions(fs::Permissions::from_mode(0o600))
+            .context("protect launch check log")?;
+        self.checks(
+            &accepted.declaration,
+            &cwd,
+            &log,
+            Instant::now() + Duration::from_secs(10),
+        )
+        .with_context(|| format!("Launch checks failed; inspect {}", path.display()))?;
         let mut command = self.command(&accepted.declaration, &cwd, true)?;
         // Bubblewrap retains this shared lease through its PID namespace's lifetime.
         let fd = lock.as_raw_fd();
@@ -724,6 +836,39 @@ impl Environment {
             .args(args);
         Err(command.exec()).context("start sandboxed agent")
     }
+}
+
+fn wait_check(command: &mut Command, deadline: Instant) -> Result<()> {
+    let mut child = command.spawn().context("start check")?;
+    let failure = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                }
+                bail!("check exited with {status}");
+            },
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(
+                    Duration::from_millis(10)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            },
+            Ok(None) => break anyhow!("check timed out"),
+            Err(error) => break anyhow!(error).context("wait for check"),
+        }
+    };
+    let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    let kill_error = (killed == -1).then(std::io::Error::last_os_error);
+    let reaped = child.wait().context("reap failed check");
+    if let Some(error) = kill_error {
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            reaped?;
+            return Err(error).context(format!("{failure:#}; terminate check process group"));
+        }
+    }
+    reaped?;
+    Err(failure)
 }
 
 #[cfg(test)]

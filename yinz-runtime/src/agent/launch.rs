@@ -579,15 +579,17 @@ pub fn display_args(args: &[String]) -> Vec<String> {
 
 /// A pane's stringified command (`RunCommand`'s space-joined form) without the planner's
 /// hook wiring: the `--settings <hook json>` pair, the `YINZ_CLAUDE_INLINE_HOOKS`
-/// and agent-pane markers, and the
-/// `env` wrapper when the markers were all it carried.
+/// and agent-pane markers, the
+/// `env` wrapper when the markers were all it carried, and the internal Bubblewrap wrapper.
 ///
 /// The settings are matched as JSON, not text: a plugin and the server can order the same
 /// object's keys differently. Pi's generated extension is filtered by `RunCommand`
 /// before its arguments are joined. For display only. Classification reads the full command.
 pub fn display_command(command: &str) -> String {
     const FLAG: &str = " --settings ";
-    let mut command = command.to_owned();
+    let mut command = yinz_types::agent::bubblewrap_command(command)
+        .unwrap_or(command)
+        .to_owned();
     if let Some(flag) = command.find(&format!("{FLAG}{{")) {
         let json = flag + FLAG.len();
         let mut values =

@@ -253,18 +253,47 @@ pub fn hook_settings(events: &[&str], command: &str, timeout: u64) -> Value {
     json!({ "hooks": hooks })
 }
 
-/// The program and arguments behind an `env(1)` or a `yinz agent` agent launcher
+/// The internal flag behind which `yinz` runs a command in a project's Bubblewrap
+/// environment. Launching and recognition share it so neither can drift from the other.
+pub const BUBBLEWRAP_RUN_FLAG: &str = "--bubblewrap-run";
+
+/// The command inside the internal `yinz --bubblewrap-run <root> -- <command>` wrapper.
+pub fn bubblewrap_program_and_args<'a>(
+    program: &Path,
+    args: &'a [String],
+) -> Option<(&'a Path, &'a [String])> {
+    if program.file_name()? == "yinz" {
+        if let [flag, _root, separator, command, rest @ ..] = args {
+            if flag == BUBBLEWRAP_RUN_FLAG && separator == "--" {
+                return Some((Path::new(command), rest));
+            }
+        }
+    }
+    None
+}
+
+/// The command line inside a stringified Bubblewrap wrapper: [`bubblewrap_program_and_args`]
+/// for a pane's space-joined command. A root containing ` -- ` is not supported there.
+pub fn bubblewrap_command(command: &str) -> Option<&str> {
+    let (wrapper, rest) = command.trim_start().split_once(' ')?;
+    if program(wrapper) != "yinz" {
+        return None;
+    }
+    let rest = rest.strip_prefix(BUBBLEWRAP_RUN_FLAG)?.strip_prefix(' ')?;
+    let (_root, inner) = rest.split_once(" -- ")?;
+    Some(inner)
+}
+
+/// The program and arguments behind an `env(1)`, Bubblewrap, or `yinz agent` launcher
 /// wrapper. Other commands are returned unchanged.
 pub fn unwrapped_program_and_args<'a>(
     program: &'a Path,
     args: &'a [String],
 ) -> Option<(&'a Path, &'a [String])> {
+    if let Some((program, args)) = bubblewrap_program_and_args(program, args) {
+        return unwrapped_program_and_args(program, args);
+    }
     if program.file_name()? == "yinz" {
-        if let [flag, _root, separator, command, rest @ ..] = args {
-            if flag == "--bubblewrap-run" && separator == "--" {
-                return unwrapped_program_and_args(Path::new(command), rest);
-            }
-        }
         if let [agent, launcher, flag, command, separator, rest @ ..] = args {
             if agent == "agent"
                 && matches!(launcher.as_str(), "codex" | "muse")
@@ -394,6 +423,9 @@ pub fn kind_of(word: &str) -> Option<String> {
 /// running an agent right now is one, whatever it is called. `agent-service` latches
 /// on this and nothing else.
 pub fn kind_from_command(command: &str) -> Option<String> {
+    if let Some(inner) = bubblewrap_command(command) {
+        return kind_from_command(inner);
+    }
     let mut words = command.split_whitespace();
     let first = words.next().unwrap_or_default();
     if program(first) == "yinz" && words.next() == Some("agent") {
@@ -1585,6 +1617,14 @@ mod tests {
             ("pi-agent", "pi"),
             ("yinz agent codex --command codex -- resume --last", "codex"),
             ("yinz agent muse --command muse -- resume --last", "muse"),
+            (
+                "yinz --bubblewrap-run /project -- claude --resume",
+                "claude",
+            ),
+            (
+                "/usr/bin/yinz --bubblewrap-run /my project -- yinz agent codex --command codex --",
+                "codex",
+            ),
         ] {
             assert_eq!(
                 kind_from_command(command).as_deref(),
@@ -1597,6 +1637,11 @@ mod tests {
             "pipenv run pi",
             "git commit -m 'ask claude'",
             "yinz hooks install",
+            "yinz --bubblewrap-run /project -- zsh",
+            "yinz --bubblewrap-run /project claude",
+            "yinz --bubblewrap-run",
+            "other --bubblewrap-run /project -- claude",
+            "git commit -m 'yinz --bubblewrap-run /project -- claude'",
             "",
         ] {
             assert_eq!(kind_from_command(command), None, "{command}");
