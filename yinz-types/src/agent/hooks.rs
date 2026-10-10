@@ -49,7 +49,7 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     // instant version of it.
     "Elicitation",
     "ElicitationResult",
-    // Explicit input and elicitation notifications. Permission reminders are ignored.
+    // Explicit input, elicitation, and permission prompt notifications.
     "Notification",
     // Stop hooks run before the turn ends; transcript confirmation restores idle. It carries
     // `last_assistant_message`, which nothing buys a summary from any more - a summary is
@@ -491,8 +491,8 @@ fn interpreted_script<'a>(interpreter: &str, args: &'a [String]) -> Option<&'a s
 pub const HOOK_SESSION_END: &str = "SessionEnd";
 
 /// The `Notification` kinds that mean the agent is blocked on the user.
-/// Permission reminders are excluded: their timer can fire during automatic approval.
-/// Worker permission reminders also lack the identity needed to clear a worker wait.
+/// Claude permission prompts are handled separately in [`hook_state_for`].
+/// Worker permission reminders lack the identity needed to clear a worker wait.
 ///
 /// Most notifications are not about being waited on — `auth_success` and the
 /// `quota_auto_resume_*` family say nothing about the turn, and `idle_prompt` fires a minute
@@ -720,7 +720,7 @@ pub struct HookEvent {
     /// `dontAsk`, `bypassPermissions`. Carried on every event.
     ///
     /// Providers other than Claude use it to distinguish automatic permission approval.
-    /// Claude permission evaluation and timed reminders do not establish a human wait.
+    /// Claude permission evaluation stays busy; its permission notification establishes a wait.
     #[serde(default)]
     pub permission_mode: Option<String>,
     /// Codex's permission reviewer, supplied by the hook or its matching transcript turn.
@@ -1067,6 +1067,9 @@ pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
                     .as_deref()
                     .is_some_and(|tool| WAITING_TOOLS.contains(&tool)))
                 .then_some(AgentState::Busy);
+            },
+            "Notification" if event.notification_type.as_deref() == Some("permission_prompt") => {
+                return Some(AgentState::Waiting);
             },
             _ => {},
         }
@@ -1958,7 +1961,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_permission_evaluation_and_reminders_do_not_establish_a_wait() {
+    fn claude_permission_evaluation_stays_busy_until_a_prompt_notification() {
         for mode in [
             None,
             Some("plan"),
@@ -2030,8 +2033,19 @@ mod tests {
                         agent_id: worker.map(str::to_owned),
                         ..prompt.clone()
                     };
-                    assert_eq!(hook_outcome("claude", &prompt), HookOutcome::Nothing);
-                    for provider in ["claude", "codex", "muse", "opencode"] {
+                    let expected = (kind == "permission_prompt").then_some(AgentState::Waiting);
+                    if worker.is_none() && expected.is_some() {
+                        let HookOutcome::Reported(info) = hook_outcome("claude", &prompt) else {
+                            panic!("a prompt notification reports waiting");
+                        };
+                        assert_eq!(info.state, AgentState::Waiting);
+                        assert_eq!(info.waiting_on.as_deref(), Some("Allow Bash?"));
+                        assert!(info.wait_needs_a_person);
+                    } else {
+                        assert_eq!(hook_outcome("claude", &prompt), HookOutcome::Nothing);
+                    }
+                    assert_eq!(hook_state_for("claude", &prompt), expected);
+                    for provider in ["codex", "muse", "opencode"] {
                         assert_eq!(hook_state_for(provider, &prompt), None);
                     }
                     let broadcast = AgentEvent::from_hook(
@@ -2040,7 +2054,7 @@ mod tests {
                         &prompt,
                         serde_json::to_string(&prompt).unwrap(),
                     );
-                    assert_eq!(broadcast.state, None);
+                    assert_eq!(broadcast.state, expected);
                 }
             }
         }

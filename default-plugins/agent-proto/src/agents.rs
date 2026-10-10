@@ -6806,7 +6806,7 @@ mod tests {
         );
         assert_eq!(
             hook_phase("claude", &notification("permission_prompt")),
-            None
+            Some(HookPhase::Waiting)
         );
         assert_eq!(
             hook_phase("claude", &notification("agent_needs_input")),

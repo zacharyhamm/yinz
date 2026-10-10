@@ -978,7 +978,7 @@ impl State {
     ///   `finish_run_as`, which queues every close that knows the run is over, and
     ///   `drain_finished_runs`, which is where the asking happens.
     /// - **The waiting toast.** A classified user wait announces a question or approval
-    ///   prompt. Claude permission evaluation and timed reminders do not establish a wait.
+    ///   prompt. Claude permission evaluation stays busy until a permission notification.
     ///
     /// The screen heuristic keeps running, but only for the idle *clock*: `activity` is what
     /// `status_cell` counts minutes with, on both paths, so a hook-fed pane's `idle 3m` reads
@@ -7572,36 +7572,82 @@ mod tests {
         assert!(repeated.is_empty());
     }
 
-    /// Evaluation and its timed reminders never establish a human wait.
+    /// Claude Code 2.1.296 emitted only tool progress for native auto approval,
+    /// even when the classifier took 14.1 seconds.
     #[test]
-    fn permission_reminders_do_not_interrupt_or_change_the_feed() {
-        for notification in ["permission_prompt", "worker_permission_prompt"] {
-            let mut state = State {
-                panes: Some(vec![pane(7, "claude", "/work")]),
-                ..State::default()
+    fn native_auto_approval_tool_progress_stays_busy_without_alerting() {
+        let mut state = State {
+            panes: Some(vec![pane(7, "claude", "/work")]),
+            ..State::default()
+        };
+        for name in ["PreToolUse", "PostToolUse"] {
+            let event = wire::HookEvent {
+                permission_mode: Some("auto".to_owned()),
+                ..tool_hook(name, "Bash", serde_json::json!({"command": "git status"}))
             };
-            let (first, _) = feed(
-                &mut state,
-                7,
-                &tool_hook("PermissionRequest", "Bash", serde_json::json!({})),
-                None,
-            );
-            assert!(first.is_empty());
-            assert_eq!(cell(&state, 7), "busy · Bash");
-
-            let backstop = wire::HookEvent {
-                notification_type: Some(notification.to_owned()),
-                message: Some("Allow Bash?".to_owned()),
-                ..hook("Notification")
-            };
-            let (second, _) = feed(&mut state, 7, &backstop, None);
-            assert!(second.is_empty());
-            let (repeated, _) = feed(&mut state, 7, &backstop, None);
-            assert!(repeated.is_empty());
-            assert_eq!(cell(&state, 7), "busy · Bash");
-            feed(&mut state, 7, &hook("PostToolUse"), None);
-            assert_eq!(cell(&state, 7), "busy");
+            assert!(feed(&mut state, 7, &event, None).0.is_empty());
+            assert_eq!(state.hooks[&7].phase, agents::HookPhase::Busy);
             assert_eq!(state.hooks[&7].waiting_on, None);
+        }
+    }
+
+    /// Parent permission notifications, including custom-hook prompts, establish a wait.
+    /// Worker reminders do not.
+    #[test]
+    fn permission_prompts_notify_once_and_tool_progress_clears_waiting() {
+        for mode in ["default", "auto"] {
+            for evaluation in [false, true] {
+                for notification in ["permission_prompt", "worker_permission_prompt"] {
+                    let mut state = State {
+                        panes: Some(vec![pane(7, "claude", "/work")]),
+                        ..State::default()
+                    };
+                    assert!(feed(&mut state, 7, &hook("UserPromptSubmit"), None)
+                        .0
+                        .is_empty());
+                    if evaluation {
+                        let (first, _) = feed(
+                            &mut state,
+                            7,
+                            &wire::HookEvent {
+                                permission_mode: Some(mode.to_owned()),
+                                ..tool_hook("PermissionRequest", "Bash", serde_json::json!({}))
+                            },
+                            None,
+                        );
+                        assert!(first.is_empty());
+                        assert_eq!(cell(&state, 7), "busy · Bash");
+                    }
+
+                    let backstop = wire::HookEvent {
+                        permission_mode: Some(mode.to_owned()),
+                        notification_type: Some(notification.to_owned()),
+                        message: Some("Allow Bash?".to_owned()),
+                        ..hook("Notification")
+                    };
+                    let (second, _) = feed(&mut state, 7, &backstop, None);
+                    let expected = if notification == "permission_prompt" {
+                        assert_eq!(
+                            second,
+                            vec![(7, "agent waiting · 7 · claude◆\nAllow Bash?".to_owned())]
+                        );
+                        "waiting · Allow Bash?"
+                    } else {
+                        assert!(second.is_empty());
+                        if evaluation {
+                            "busy · Bash"
+                        } else {
+                            "busy"
+                        }
+                    };
+                    let (repeated, _) = feed(&mut state, 7, &backstop, None);
+                    assert!(repeated.is_empty());
+                    assert_eq!(cell(&state, 7), expected);
+                    feed(&mut state, 7, &hook("PostToolUse"), None);
+                    assert_eq!(cell(&state, 7), "busy");
+                    assert_eq!(state.hooks[&7].waiting_on, None);
+                }
+            }
         }
     }
 
