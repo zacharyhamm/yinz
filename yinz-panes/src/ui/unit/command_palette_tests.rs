@@ -1537,6 +1537,12 @@ fn page_navigation_counts_wrapped_rows() {
     assert_eq!(palette.selected, 0);
     key(&mut palette, BareKey::PageDown);
     assert_eq!(palette.selected, 1);
+    key(&mut palette, BareKey::PageUp);
+    assert_eq!(palette.selected, 0);
+    key(&mut palette, BareKey::PageUp);
+    assert_eq!(palette.selected, 0);
+    key(&mut palette, BareKey::PageDown);
+    assert_eq!(palette.selected, 1);
     key(&mut palette, BareKey::PageDown);
     assert_eq!(palette.selected, 2);
     key(&mut palette, BareKey::PageUp);
