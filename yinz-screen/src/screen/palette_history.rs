@@ -102,7 +102,7 @@ pub(super) struct Browser {
 impl Screen {
     pub(super) fn live_palette_agents(&self) -> Vec<LiveAgent> {
         let mut agents = Vec::new();
-        let mut add = |session: &SessionName, pane: PaneInfo, control: bool| {
+        let mut add = |session: &SessionName, pane: PaneInfo, mother: bool| {
             let Some(a) = &pane.agent else {
                 return;
             };
@@ -121,7 +121,7 @@ impl Screen {
                     "target".into(),
                     pane.target.display().unwrap_or_else(|| "local".into()),
                 ),
-                ("control".into(), control.to_string()),
+                ("mother".into(), mother.to_string()),
                 ("pane".into(), pane.id.to_string()),
             ]);
             for (k, v) in [
@@ -149,9 +149,8 @@ impl Screen {
         };
         for tab in self.tabs.values() {
             for pane in tab.pane_infos() {
-                let control =
-                    matches!(pane.id, PaneId::Terminal(id) if self.control_agents.contains(&id));
-                add(&self.session_name, pane, control);
+                let mother = matches!(pane.id, PaneId::Terminal(id) if self.mother == Some(id));
+                add(&self.session_name, pane, mother);
             }
         }
         for session in self
@@ -160,9 +159,8 @@ impl Screen {
             .filter(|s| s.name != self.session_name)
         {
             for pane in session.panes.panes.values().flatten() {
-                let control =
-                    matches!(pane.id, PaneId::Terminal(id) if session.control_agents.contains(&id));
-                add(&session.name, pane.clone(), control);
+                let mother = matches!(pane.id, PaneId::Terminal(id) if session.mother == Some(id));
+                add(&session.name, pane.clone(), mother);
             }
         }
         agents.sort_by_key(LiveAgent::id);

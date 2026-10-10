@@ -309,6 +309,7 @@ message Action {
     ActivateNotificationAction activate_notification = 166;
     ToggleNotificationDetailAction toggle_notification_detail = 167;
     ToggleCommandPaletteAction toggle_command_palette = 171;
+    ToggleMotherAction toggle_mother = 172;
   }
 }
 
@@ -355,6 +356,7 @@ message ToggleFocusFullscreenAction {}
 message ToggleFocusNoUiFullscreenAction {}
 message TogglePaneFramesAction {}
 message ToggleCommandPaletteAction {}
+message ToggleMotherAction {}
 message SetPaneFrameStyleAction {
   string style = 1;
 }

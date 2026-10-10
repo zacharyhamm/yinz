@@ -513,20 +513,6 @@ fn parse_agent_target(value: &str) -> Result<yinz_types::pane_id::PaneId, String
     })
 }
 
-#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
-pub enum AgentControl {
-    /// Register the calling pane's live tracked agent.
-    Register {
-        #[clap(long)]
-        json: bool,
-    },
-    /// Remove the calling pane's control-agent registration.
-    Unregister {
-        #[clap(long)]
-        json: bool,
-    },
-}
-
 impl Agent {
     /// Whether the caller asked for machine-readable output, including for errors. Archive
     /// replies are JSON either way.
@@ -536,9 +522,6 @@ impl Agent {
                 false
             },
             Agent::Archive(archive) => archive.json(),
-            Agent::Control(AgentControl::Register { json } | AgentControl::Unregister { json }) => {
-                *json
-            },
             Agent::Watch { json, .. }
             | Agent::Register { json, .. }
             | Agent::List { json, .. }
@@ -620,9 +603,6 @@ pub enum Agent {
     #[clap(hide = true)]
     MuseReport,
 
-    /// Register this pane as a control agent, or remove its registration.
-    #[clap(subcommand)]
-    Control(AgentControl),
     /// Follow normalized agent lifecycle events in this session.
     Watch {
         #[clap(flatten)]

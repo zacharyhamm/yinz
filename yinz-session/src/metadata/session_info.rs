@@ -150,24 +150,19 @@ pub fn from_string(
         .and_then(|e| e.value().as_i64())
         .map(|c| Duration::from_secs(c as u64))
         .unwrap_or_default();
-    let control_agents = kdl_document
-        .get("control_agents")
+    let mother = kdl_document
+        .get("mother")
         .map(|node| {
             node.entries()
                 .iter()
-                .map(|entry| {
-                    entry
-                        .value()
-                        .as_i64()
-                        .and_then(|id| yinz_types::internal_ids::TerminalId::try_from(id).ok())
-                        .ok_or("invalid control-agent terminal ID".to_owned())
-                })
-                .collect::<Result<Vec<_>, _>>()
+                .next()
+                .and_then(|entry| entry.value().as_i64())
+                .and_then(|id| yinz_types::internal_ids::TerminalId::try_from(id).ok())
+                .ok_or("invalid mother terminal ID".to_owned())
         })
-        .transpose()?
-        .unwrap_or_default();
+        .transpose()?;
     Ok(SessionInfo {
-        control_agents,
+        mother,
         name: name.into(),
         tabs,
         panes,
@@ -273,12 +268,10 @@ pub fn to_string(value: &SessionInfo) -> anyhow::Result<String> {
     kdl_document.nodes_mut().push(tab_history);
     kdl_document.nodes_mut().push(pane_history);
 
-    if !value.control_agents.is_empty() {
-        let mut control_agents = KdlNode::new("control_agents");
-        for id in &value.control_agents {
-            control_agents.push(i64::from(id.get()));
-        }
-        kdl_document.nodes_mut().push(control_agents);
+    if let Some(id) = value.mother {
+        let mut mother = KdlNode::new("mother");
+        mother.push(i64::from(id.get()));
+        kdl_document.nodes_mut().push(mother);
     }
     let mut creation_time_node = KdlNode::new("creation_time");
     creation_time_node.push(value.creation_time.as_secs() as i64);

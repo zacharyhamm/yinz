@@ -369,9 +369,10 @@ pub fn plugin_thread_main(
                 let senders = bus.senders.clone();
                 let data = palette_data.clone();
                 let shutdown = shutdown_send.clone();
+                let session_cwd = yinz_cwd.clone();
                 yinz_bus::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
                     let _shutdown = shutdown;
-                    yinz_exports::palette_agents::handle(*request, &senders, &data);
+                    yinz_exports::palette_agents::handle(*request, &senders, &data, &session_cwd);
                 });
             },
             PluginInstruction::DenoPalette(delivery) => {

@@ -345,11 +345,6 @@ pub(crate) fn apply_pane_agent_report(
         && agent
             .as_ref()
             .is_some_and(|agent| agent.kind == "muse" && agent.session_id.is_some());
-    if provisional_muse_bind {
-        if let PaneId::Terminal(id) = pane_id {
-            screen.control_agents.remove(&id);
-        }
-    }
     if !provisional_muse_bind
         && (previous
             .as_ref()
@@ -815,6 +810,14 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::ToggleCommandPalette(client_id, _completion) => {
                     screen.toggle_command_palette(client_id);
+                    screen.render()?;
+                },
+                ScreenInstruction::ToggleMother(client_id, _completion) => {
+                    screen.toggle_mother(client_id)?;
+                    screen.render()?;
+                },
+                ScreenInstruction::MotherSpawned(pane_id) => {
+                    screen.mother_spawned(pane_id)?;
                     screen.render()?;
                 },
                 ScreenInstruction::ResetAgentEscape(client_id) => {

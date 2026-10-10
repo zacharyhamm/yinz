@@ -568,6 +568,7 @@ enum ActionName {
     ToggleNotificationDetail = 121;
     Copy = 122;
     ToggleCommandPalette = 126;
+    ToggleMother = 127;
     reserved 110;
 }
 

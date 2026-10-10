@@ -78,17 +78,18 @@ They now use the shared launch planner, which supplies Claude's state hooks on l
 Firecracker launches continue to use the hooks installed in the guest.
 See [Firecracker VMs](FIRECRACKER.md) for installation, images, launch, sync, and recovery.
 
-Run `yinz agent control register` from a live tracked agent's pane to make it a control agent.
-Run `yinz agent control unregister` from that pane to remove the registration. Both commands accept `--json`.
-They resolve the calling pane through inherited `YINZ_PANE_REF`. An explicit `--session` must match its current owner.
-Registration grants no additional permissions. Repeating either command is safe, including unregistration after automatic cleanup.
+Each session can have one **mother**: a coding agent in an overlay pane that is available on every tab.
+Press `Ctrl e`, then `m`, to toggle it. With no mother running, the key opens the command palette at the agents to launch it as.
+**Launch mother…** in the command palette opens the same list, and becomes **Toggle mother** once one is running.
+Mother starts a fresh conversation in the directory the session was started in, without a worktree.
 
-Choose **Focus control agent** in the command palette to find registered agents across all live sessions on this host.
-Search by pane title, pane ID, session, or tab. The current project does not filter this list.
-Press Enter to focus the pane, switching tabs or sessions as needed. Peer session updates can take time to appear.
+Toggling shows mother on the tab you are on and gives it the keyboard, or hides it when it already has the keyboard.
+A visible mother follows you when you switch tabs. A hidden one stays hidden until you toggle it.
 
-Registration ends when the agent exits, its conversation changes or clears, or its pane closes or leaves the session.
-A replacement agent must register again. Session resurrection does not restore registrations.
+Mother is the pane, so `/clear`, `/new`, or a replaced conversation keeps it.
+Once its agent exits, the next toggle closes what is left of the pane and offers a new mother, unless you restarted the agent in that pane first.
+Closing the pane, or moving it to another session, also ends it.
+Being mother grants no additional permissions. Session resurrection does not restore it.
 
 `yinz agent spawn` preserves the attached client's active pane and tab.
 Workers use tiled placement. When space is insufficient, the worker uses another tab or creates a tab in the background.

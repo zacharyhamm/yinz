@@ -379,19 +379,10 @@ fn clear_draft_requires_explicit_guards_and_valid_numbers() {
 }
 
 #[test]
-fn control_agent_commands_take_no_target_and_support_json() {
+fn control_agent_registration_is_removed() {
     use clap::Parser;
     for operation in ["register", "unregister"] {
-        let command = AgentCli::try_parse_from(["agent", "control", operation, "--json"])
-            .unwrap()
-            .command;
-        assert!(command.json());
-        assert!(matches!(command, Agent::Control(_)));
-        assert!(AgentCli::try_parse_from(["agent", "control", operation, "7"]).is_err());
-        assert!(!AgentCli::try_parse_from(["agent", "control", operation])
-            .unwrap()
-            .command
-            .json());
+        assert!(AgentCli::try_parse_from(["agent", "control", operation]).is_err());
     }
 }
 

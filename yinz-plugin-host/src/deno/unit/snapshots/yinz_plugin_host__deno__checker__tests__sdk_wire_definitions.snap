@@ -2164,7 +2164,7 @@ uint32 tab_index = 1;
 repeated PaneInfo panes = 2;
 }
 message SessionManifest {
-reserved 8, 9, 13;
+reserved 8, 9, 13, 14;
 string name = 1;
 repeated TabInfo tabs = 2;
 repeated PaneManifest panes = 3;
@@ -2175,7 +2175,7 @@ repeated PluginInfo plugins = 7;
 repeated ClientTabHistory tab_history = 10;
 repeated ClientPaneHistory pane_history = 11;
 uint64 creation_time = 12;
-repeated uint32 control_agents = 14;
+optional uint32 mother = 15;
 }
 message ClientTabHistory {
 uint32 client_id = 1;
@@ -3125,6 +3125,7 @@ ActivateNotification = 120;
 ToggleNotificationDetail = 121;
 Copy = 122;
 ToggleCommandPalette = 126;
+ToggleMother = 127;
 reserved 110;
 }
 message Position {

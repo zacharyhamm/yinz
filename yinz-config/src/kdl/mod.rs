@@ -125,6 +125,7 @@ macro_rules! parse_kdl_action_arguments {
                 "ToggleFocusNoUiFullscreen" => Ok(Action::ToggleFocusNoUiFullscreen),
                 "TogglePaneFrames" => Ok(Action::TogglePaneFrames),
                 "ToggleCommandPalette" => Ok(Action::ToggleCommandPalette),
+                "ToggleMother" => Ok(Action::ToggleMother),
                 "ToggleActiveSyncTab" => Ok(Action::ToggleActiveSyncTab),
                 "TogglePaneEmbedOrFloating" => Ok(Action::TogglePaneEmbedOrFloating),
                 "ToggleFloatingPanes" => Ok(Action::ToggleFloatingPanes),

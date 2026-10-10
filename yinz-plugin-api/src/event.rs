@@ -1772,11 +1772,7 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
             });
         }
         Ok(ProtobufSessionManifest {
-            control_agents: session_info
-                .control_agents
-                .into_iter()
-                .map(|id| id.get())
-                .collect(),
+            mother: session_info.mother.map(|id| id.get()),
             name: session_info.name.to_string(),
             panes: protobuf_pane_manifests,
             tabs: session_info
@@ -1911,11 +1907,9 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
             );
         }
         Ok(SessionInfo {
-            control_agents: protobuf_session_manifest
-                .control_agents
-                .into_iter()
-                .map(yinz_types::internal_ids::TerminalId::new)
-                .collect(),
+            mother: protobuf_session_manifest
+                .mother
+                .map(yinz_types::internal_ids::TerminalId::new),
             name: protobuf_session_manifest.name.into(),
             tabs: protobuf_session_manifest
                 .tabs
@@ -3621,7 +3615,7 @@ fn serialize_session_update_event_with_non_default_values() {
         [1, 2, 3].into_iter().map(TabId::new).collect(),
     );
     let session_info_1 = SessionInfo {
-        control_agents: Default::default(),
+        mother: None,
         name: "session 1".to_owned().into(),
         tabs: tab_infos,
         panes: PaneManifest { panes },
@@ -3652,7 +3646,7 @@ fn serialize_session_update_event_with_non_default_values() {
         creation_time: Duration::from_secs(100),
     };
     let session_info_2 = SessionInfo {
-        control_agents: Default::default(),
+        mother: None,
         name: "session 2".to_owned().into(),
         tabs: vec![],
         panes: PaneManifest {
@@ -4689,8 +4683,8 @@ fn multipane_manifest_metadata_roundtrips_and_rejects_invalid_ratios() {
 }
 
 #[cfg(test)]
-#[path = "unit/control_agents.rs"]
-mod control_agents_tests;
+#[path = "unit/mother.rs"]
+mod mother_tests;
 
 #[cfg(test)]
 #[test]

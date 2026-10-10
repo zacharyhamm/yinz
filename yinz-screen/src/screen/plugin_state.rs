@@ -432,7 +432,7 @@ impl Screen {
                 .unwrap_or_default()
         };
         let session_info = SessionInfo {
-            control_agents: vec![],
+            mother: None,
             name: self.session_name.clone(),
             tabs: tab_infos,
             panes: pane_manifest,
@@ -456,17 +456,20 @@ impl Screen {
     }
 
     fn report_session_info(&mut self, mut session_info: SessionInfo) -> Result<()> {
-        self.control_agents.retain(|id| {
-            session_info.panes.panes.values().flatten().any(|pane| {
-                pane.id == PaneId::Terminal(*id)
-                    && !pane.exited
-                    && pane
-                        .agent
-                        .as_ref()
-                        .is_some_and(|agent| agent.state != yinz_types::agent::AgentState::Exited)
-            })
+        // Mother is its pane: gone once the pane closes or leaves the session. An exited one
+        // is kept only so the next toggle can close what it left behind.
+        let mother = self.mother.and_then(|id| {
+            session_info
+                .panes
+                .panes
+                .values()
+                .flatten()
+                .find(|pane| pane.id == PaneId::Terminal(id))
         });
-        session_info.control_agents = self.control_agents.iter().copied().collect();
+        self.mother = self.mother.filter(|_| mother.is_some());
+        session_info.mother = self
+            .mother
+            .filter(|_| mother.is_some_and(|pane| !pane.exited && !pane.is_held));
         let err_context = || "Failed to report session info".to_string();
 
         self.bus

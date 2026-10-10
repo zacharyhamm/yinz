@@ -10,7 +10,7 @@ fn quoted_filters_roundtrip_and_match_only_available_fields() {
     assert!(!q.matches(&BTreeMap::new()));
     for input in [
         "state:done",
-        "control:yes",
+        "mother:yes",
         "state:idle state:busy",
         "title:\"oops",
     ] {

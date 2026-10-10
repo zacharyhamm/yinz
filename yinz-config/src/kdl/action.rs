@@ -570,6 +570,7 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
         Action::ToggleFocusNoUiFullscreen => Ok(KdlNode::new("ToggleFocusNoUiFullscreen")),
         Action::TogglePaneFrames => Ok(KdlNode::new("TogglePaneFrames")),
         Action::ToggleCommandPalette => Ok(KdlNode::new("ToggleCommandPalette")),
+        Action::ToggleMother => Ok(KdlNode::new("ToggleMother")),
         Action::SetPaneFrameStyle(style) => {
             let style = match style {
                 PaneFrameStyle::Full => "full",
@@ -1208,6 +1209,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
         | "ToggleFocusNoUiFullscreen"
         | "TogglePaneFrames"
         | "ToggleCommandPalette"
+        | "ToggleMother"
         | "ToggleActiveSyncTab"
         | "TogglePaneEmbedOrFloating"
         | "ToggleFloatingPanes"

@@ -9,7 +9,7 @@ pub const LIVE_FIELDS: &[&str] = &[
     "session",
     "host",
     "target",
-    "control",
+    "mother",
     "title",
     "directory",
     "pane",
@@ -82,8 +82,8 @@ impl AgentQuery {
                 {
                     return Err("source must be spawned, registered, reported, or detected".into());
                 }
-                if key == "control" && !["true", "false"].contains(&value) {
-                    return Err("control must be true or false".into());
+                if key == "mother" && !["true", "false"].contains(&value) {
+                    return Err("mother must be true or false".into());
                 }
                 if key == "since" && value.parse::<i64>().is_err() {
                     return Err("since requires epoch milliseconds".into());
