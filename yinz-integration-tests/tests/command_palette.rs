@@ -701,7 +701,8 @@ fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
         bytes.ends_with(b"to-second")
     });
 
-    // Once its process exits it is no longer mother, and the key offers a new one.
+    // Once its process exits it is no longer mother, and the key offers a new one over what it
+    // left behind.
     toggle();
     yinz.wait_until("mother shown before it exits", |snapshot| {
         snapshot.contains("MOTHER READY")
@@ -712,8 +713,12 @@ fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
         snapshot.contains("restart agent") && !snapshot.contains("MOTHER READY")
     });
     toggle();
-    yinz.wait_until("a new mother is offered", |snapshot| {
-        snapshot.contains("Launch mother") && !snapshot.contains("MOTHER READY")
+    // The pane shows through the palette's translucent backing wherever the two overlap, so
+    // each is matched by text the other leaves alone.
+    yinz.wait_until("a new mother is offered over the exited one", |snapshot| {
+        snapshot.contains("Enter Choose")
+            && snapshot.contains("codex")
+            && snapshot.contains("Enter: restart")
     });
     yinz.quit();
 }
