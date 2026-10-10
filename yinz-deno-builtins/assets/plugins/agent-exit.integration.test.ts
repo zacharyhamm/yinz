@@ -12,7 +12,10 @@ test("agent-exit visible fallback handles keys, resize and reload", async () => 
     "fallback pane closes",
     () => !session.panes.some((pane) => pane.plugin_url === "yinz:agent-exit"),
   );
-  assert(!session.screen.includes("restart agent"));
+  await session.waitFor(
+    "fallback pane closing render",
+    () => !session.screen.includes("restart agent"),
+  );
 });
 
 const gitFixture = `#!/bin/sh
