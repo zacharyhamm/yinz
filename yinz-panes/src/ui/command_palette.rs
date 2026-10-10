@@ -1007,6 +1007,10 @@ impl CommandPalette {
                 .iter()
                 .rev()
                 .find(|row| !matches!(row, ResultRow::Heading(_)))
+                .or_else(|| {
+                    rows.iter()
+                        .find(|row| !matches!(row, ResultRow::Heading(_)))
+                })
         };
         if let Some(row) = row {
             self.select_row(row);
