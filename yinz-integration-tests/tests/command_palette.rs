@@ -17,9 +17,11 @@ fn command_palette_refreshes_shortcuts_after_reconfigure_without_input() {
                 locked {
                     bind "Ctrl Alt p" { ToggleCommandPalette; }
                     bind "Ctrl g" { SwitchToMode "Normal"; }
+                }
+                normal {
+                    bind "Ctrl p" { SwitchToMode "Pane"; }
                     bind "Ctrl b" { SwitchToMode "Tmux"; }
                 }
-                normal { bind "Ctrl p" { SwitchToMode "Pane"; }; }
                 pane { bind "f" { ToggleFocusFullscreen; }; }
                 tmux { bind "z" { ToggleFocusFullscreen; }; }
             }
@@ -35,30 +37,32 @@ fn command_palette_refreshes_shortcuts_after_reconfigure_without_input() {
         snapshot.contains("Switch session")
     });
     yinz.send_stdin(b"Fullscreen");
-    yinz.wait_until("regular route wins over shorter Tmux route", |snapshot| {
-        snapshot.contains("> Fullscreen") && snapshot.contains("Ctrl g → Ctrl p → f")
+    yinz.wait_until("regular route wins over Tmux route", |snapshot| {
+        snapshot.contains("> Fullscreen")
+            && snapshot.contains("Ctrl p → f")
+            && !snapshot.contains("Ctrl g →")
     });
 
     // No keyboard input or terminal output after opening and filtering the palette.
     for (kdl, hint, old_hint) in [
         (
             r#"keybinds { pane { unbind "f"; bind "x" { ToggleFocusFullscreen; }; }; }"#,
-            "Ctrl g → Ctrl p → x",
-            "Ctrl g → Ctrl p → f",
+            "Ctrl p → x",
+            "Ctrl p → f",
         ),
         (
             r#"keybinds { normal { unbind "Ctrl p"; bind "Ctrl o" { SwitchToMode "Pane"; }; }; }"#,
-            "Ctrl g → Ctrl o → x",
-            "Ctrl g → Ctrl p → x",
+            "Ctrl o → x",
+            "Ctrl p → x",
         ),
         (
             r#"keybinds { pane { unbind "x"; }; }"#,
             "Ctrl b → z",
-            "Ctrl g → Ctrl o → x",
+            "Ctrl o → x",
         ),
         (r#"keybinds { tmux { unbind "z"; }; }"#, "", "Ctrl b → z"),
         (
-            r#"keybinds { locked { bind "Alt f" { ToggleFocusFullscreen; }; }; }"#,
+            r#"keybinds { normal { bind "Alt f" { ToggleFocusFullscreen; }; }; }"#,
             "Alt f",
             "Ctrl b → z",
         ),
@@ -77,6 +81,7 @@ fn command_palette_refreshes_shortcuts_after_reconfigure_without_input() {
                 && snapshot.contains("Esc Close")
                 && snapshot.contains(hint)
                 && !snapshot.contains(old_hint)
+                && !snapshot.contains("Ctrl g →")
         });
     }
     assert!(shell.stdin_bytes().is_empty());
