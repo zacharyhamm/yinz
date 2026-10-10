@@ -114,7 +114,7 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
             }
             commands
         });
-        let reply = execute(request, &senders, data);
+        let reply = execute(request, &senders, data, Path::new("/nonexistent/session"));
         drop(senders);
         (reply, worker.join().unwrap())
     })
@@ -355,6 +355,7 @@ fn palette_current_directory_vm_defaults_and_fresh_duplicate_targets() {
 #[test]
 fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane() {
     let start = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(&start.path().join("data"));
     let launch = |active: bool| {
         // The pane the palette opened from is somewhere else, and may be gone by now.
         let request = request(
@@ -394,7 +395,7 @@ fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane(
                 }
                 launches
             });
-            let reply = mother(&request, "claude", start.path(), &senders);
+            let reply = execute(&request, &senders, &data, start.path());
             drop(senders);
             (reply, worker.join().unwrap())
         });

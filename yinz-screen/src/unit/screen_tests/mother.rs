@@ -191,13 +191,22 @@ fn mother_survives_a_new_conversation_and_ends_with_its_process() {
     assert_eq!(screen.live_mother(), None);
     assert_eq!(reported_mother(&screen), None);
 
-    // The next toggle clears away the exited pane and offers a new mother.
-    let (pty_sender, _pty) = channels::unbounded();
-    screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
+    // What it left on screen no longer follows the client.
+    new_tab(&mut screen, 3, TabId::new(1));
+    assert_eq!(mother_tab(&screen), TabId::new(0));
+
+    // The next toggle fetches it to be read or re-run, and offers a new mother over it.
     screen.toggle_mother(CLIENT).unwrap();
-    assert!(screen.tab_containing_pane(MOTHER).is_none());
-    assert!(screen.mother.is_none());
+    assert_eq!(mother_tab(&screen), TabId::new(1));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
     assert!(screen.command_palettes.contains_key(&CLIENT));
+    // Turning the offer down leaves it there, and asking again offers again instead of hiding.
+    screen.close_command_palette(CLIENT);
+    assert_eq!(screen.mother, Some(TerminalId::new(2)));
+    screen.toggle_mother(CLIENT).unwrap();
+    assert!(!hidden(&screen));
+    assert!(screen.command_palettes.contains_key(&CLIENT));
+    assert_eq!(reported_mother(&screen), None);
 }
 
 #[test]
@@ -251,8 +260,9 @@ fn mother_is_forgotten_when_its_pane_closes() {
     let (pty_sender, _pty) = channels::unbounded();
     screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
     screen.close_pane_explicitly(MOTHER, None);
-    screen.log_and_report_session_state().unwrap();
+    // Forgotten with the pane, not by whichever report next finds it missing.
     assert!(screen.mother.is_none());
+    screen.log_and_report_session_state().unwrap();
     assert_eq!(reported_mother(&screen), None);
 }
 
@@ -262,8 +272,7 @@ fn a_second_launch_never_replaces_a_live_mother() {
     let (pty_sender, _pty) = channels::unbounded();
     screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_sender));
     let late = PaneId::Terminal(TerminalId::new(3));
-    overlay(&mut screen, late);
-    screen.mother_spawned(late).unwrap();
+    drop(place_mother(&mut screen, 3, false));
     assert_eq!(screen.mother, Some(TerminalId::new(2)));
     assert!(screen.tab_containing_pane(late).is_none());
 
@@ -348,17 +357,16 @@ fn another_client_cannot_carry_or_hide_a_focused_mother() {
                 .hidden
         );
 
+        // From another tab the toggle cannot take it either, so it goes to it.
         new_tab(&mut screen, 3, TabId::new(1));
         screen.toggle_mother(CLIENT).unwrap();
         assert_eq!(
             screen.tab_containing_overlay(visible).unwrap().id,
             TabId::new(0)
         );
+        assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(0));
         assert_eq!(screen.get_active_pane_id(&OTHER), Some(visible));
-        assert_eq!(
-            screen.get_active_pane_id(&CLIENT),
-            Some(PaneId::Terminal(TerminalId::new(3)))
-        );
+        assert_eq!(screen.get_active_pane_id(&CLIENT), Some(visible));
 
         let (sender, writes) = channels::unbounded();
         screen
@@ -383,6 +391,12 @@ fn another_client_cannot_carry_or_hide_a_focused_mother() {
             PtyWriteInstruction::Write(bytes, id, _) if id == terminal && bytes == b"still typing"
         )));
 
+        // Leaving again does not take it along, until the other client lets go of it.
+        screen.go_to_tab(TabNumber::new(2), CLIENT).unwrap();
+        assert_eq!(
+            screen.tab_containing_overlay(visible).unwrap().id,
+            TabId::new(0)
+        );
         screen
             .focus_pane_with_id(SHELL, false, false, OTHER)
             .unwrap();
@@ -550,7 +564,7 @@ fn mothers_replacements_toggle_travel_and_restore_as_overlays() {
 }
 
 #[test]
-fn a_toggle_fetches_a_parked_mother_like_any_parked_pane() {
+fn a_toggle_puts_a_parked_mother_back_on_the_surface() {
     let mut screen = screen_with_mother();
     screen
         .tab_containing_pane_mut(MOTHER)
@@ -559,9 +573,80 @@ fn a_toggle_fetches_a_parked_mother_like_any_parked_pane() {
     screen.toggle_mother(CLIENT).unwrap();
     let tab = screen.tab_containing_pane(MOTHER).unwrap();
     assert_eq!(tab.get_suppressed_panes().count(), 0);
-    assert!(tab.has_non_suppressed_pane_with_pid(&MOTHER));
+    assert!(tab.pane_is_overlay(MOTHER));
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
     assert_eq!(screen.live_mother(), Some(MOTHER));
+}
+
+#[test]
+fn a_toggle_restores_a_mother_that_is_no_longer_an_overlay() {
+    for float in [true, false] {
+        let mut screen = screen_with_mother();
+        // Parked and then fetched by an ordinary focus request, mother comes back as a
+        // floating or tiled pane.
+        screen
+            .tab_containing_pane_mut(MOTHER)
+            .unwrap()
+            .suppress_pane(MOTHER, Some(CLIENT));
+        screen
+            .focus_pane_with_id(MOTHER, float, false, CLIENT)
+            .unwrap();
+        let tab = screen.tab_containing_pane(MOTHER).unwrap();
+        assert!(!tab.pane_is_overlay(MOTHER));
+        assert_eq!(tab.pane_id_is_floating(&MOTHER), float);
+        new_tab(&mut screen, 3, TabId::new(1));
+
+        // The toggle brings it to the client as the overlay it was launched as.
+        screen.toggle_mother(CLIENT).unwrap();
+        assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+        assert_eq!(mother_tab(&screen), TabId::new(1));
+        assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
+        assert_eq!(screen.live_mother(), Some(MOTHER));
+        screen.toggle_mother(CLIENT).unwrap();
+        assert!(hidden(&screen));
+        assert_eq!(
+            screen.get_active_pane_id(&CLIENT),
+            Some(PaneId::Terminal(TerminalId::new(3)))
+        );
+    }
+}
+
+#[test]
+fn mother_stays_with_a_client_still_looking_at_it() {
+    let mut screen = screen_with_mother();
+    screen.add_client(OTHER).unwrap();
+    assert_eq!(screen.get_active_pane_id(&OTHER), Some(SHELL));
+    // The other client has not focused it, and would still lose sight of it.
+    new_tab(&mut screen, 3, TabId::new(1));
+    assert_eq!(screen.active_tab_ids[&OTHER], TabId::new(0));
+    assert_eq!(mother_tab(&screen), TabId::new(0));
+    assert!(!hidden(&screen));
+
+    // Asking for it outright still fetches it.
+    screen.toggle_mother(CLIENT).unwrap();
+    assert_eq!(mother_tab(&screen), TabId::new(1));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
+}
+
+#[test]
+fn repeated_toggles_do_not_stack_the_launch_picker_or_replace_another() {
+    let mut screen = screen();
+    screen.toggle_mother(CLIENT).unwrap();
+    screen.toggle_mother(CLIENT).unwrap();
+    // One step back to the palette's root, and one more to leave it.
+    palette_key(&mut screen, BareKey::Esc);
+    assert!(screen.command_palettes.contains_key(&CLIENT));
+    palette_key(&mut screen, BareKey::Esc);
+    assert!(!screen.command_palettes.contains_key(&CLIENT));
+
+    // A palette already in another picker keeps it.
+    screen.toggle_command_palette(CLIENT);
+    assert!(screen.command_palette_handles_input(&None, b"change theme", false, CLIENT));
+    palette_key(&mut screen, BareKey::Enter);
+    screen.toggle_mother(CLIENT).unwrap();
+    palette_key(&mut screen, BareKey::Esc);
+    palette_key(&mut screen, BareKey::Esc);
+    assert!(!screen.command_palettes.contains_key(&CLIENT));
 }
 
 #[test]
@@ -744,21 +829,21 @@ fn generic_focus_fetches_hidden_mother_and_its_replacement_without_toggling_or_s
 }
 
 #[test]
-fn generic_mother_focus_respects_other_clients_and_invalid_tabs_and_fetches_a_parked_mother() {
+fn generic_mother_focus_goes_to_a_shared_mother_and_fetches_a_parked_one() {
     let mut screen = screen_with_mother();
     screen.add_client(OTHER).unwrap();
     screen.toggle_mother(OTHER).unwrap();
     new_tab(&mut screen, 3, TabId::new(1));
+    // Another client is typing into it, so the request goes to mother instead of taking it.
     screen
         .focus_pane_with_id(MOTHER, true, false, CLIENT)
         .unwrap();
     assert_eq!(mother_tab(&screen), TabId::new(0));
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
-    assert_eq!(
-        screen.get_active_pane_id(&CLIENT),
-        Some(PaneId::Terminal(TerminalId::new(3)))
-    );
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(0));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
     assert_input_goes_to(&mut screen, OTHER, MOTHER);
+    screen.go_to_tab(TabNumber::new(2), CLIENT).unwrap();
+    assert_eq!(mother_tab(&screen), TabId::new(0));
     screen.active_tab_ids.insert(CLIENT, TabId::new(99));
     screen
         .focus_pane_with_id(MOTHER, true, false, CLIENT)

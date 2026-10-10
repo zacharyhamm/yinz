@@ -147,7 +147,7 @@ Yinz cannot prompt it; relaunch it with `agent spawn` to control it.
 A session has at most one mother: an agent in an overlay pane that the user toggles with `Ctrl e`, then `m`, on any tab.
 Only the user launches it, from that key or the command palette's **Launch mother…** entry. No CLI command creates, registers, or toggles a mother.
 Mother starts in the session's starting directory, is listed by `agent list` like any managed agent, and has no additional permissions.
-It stays mother across `/clear`, `/new`, and conversation changes. After its agent exits, the user's next toggle closes the pane and offers a new mother; closing the pane or moving it to another session also ends it. Session resurrection does not restore it.
+It stays mother across `/clear`, `/new`, and conversation changes. After its agent exits, the user's next toggle shows the pane and offers a new mother, and launching one closes the old pane; closing the pane or moving it to another session also ends it. Session resurrection does not restore it.
 Plugins see its terminal pane ID in `SessionInfo.mother`, which is `null` when none is running.
 
 ```sh

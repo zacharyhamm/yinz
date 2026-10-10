@@ -36,10 +36,7 @@ pub(crate) fn handle(
             }
         }
     }
-    let reply = match &request.action {
-        AgentAction::Mother { kind } => mother(&request, kind, session_cwd, senders),
-        _ => execute(&request, senders, data),
-    };
+    let reply = execute(&request, senders, data, session_cwd);
     senders
         .send_to_screen(ScreenInstruction::CommandPalette(Instruction::AgentReply {
             client: request.client,
@@ -109,12 +106,14 @@ fn execute(
     request: &AgentRequest,
     senders: &ThreadSenders,
     data: &DataAccess,
+    session_cwd: &Path,
 ) -> Result<AgentReply, String> {
     use AgentAction::*;
-    if let AgentAction::History(action) = &request.action {
-        return history::execute(request, action, senders, data);
-    }
-    let source = current_source(request, senders)?;
+    let source = match &request.action {
+        History(action) => return history::execute(request, action, senders, data),
+        Mother { kind } => return mother(request, kind, session_cwd, senders),
+        _ => current_source(request, senders)?,
+    };
     let choice = |label: String, description: String, action| AgentChoice {
         label,
         description,
@@ -122,8 +121,7 @@ fn execute(
     };
     let choices = |title: String, choices| Ok(AgentReply::Choices { title, choices });
     match &request.action {
-        History(_) => unreachable!("handled above"),
-        Mother { .. } => unreachable!("handled by `handle`"),
+        History(_) | Mother { .. } => unreachable!("handled above"),
         Start { kind, vm, project } => {
             let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let action = match project.as_ref().filter(|name| registry.contains_key(*name)) {
@@ -144,6 +142,7 @@ fn execute(
                 },
                 senders,
                 data,
+                session_cwd,
             )
         },
         Projects { kind, vm } => {
@@ -260,6 +259,7 @@ fn execute(
                 },
                 senders,
                 data,
+                session_cwd,
             )
         },
         Launch {
@@ -404,15 +404,7 @@ fn mother(
         allow_outside_worktree: Some(true),
         ..Default::default()
     };
-    let surface =
-        NewPanePlacement::Overlay(OverlayPlacement::dismissible(FloatingPaneCoordinates::new(
-            Some("10%".into()),
-            Some("10%".into()),
-            Some("80%".into()),
-            Some("80%".into()),
-            None,
-            None,
-        )));
+    let surface = NewPanePlacement::Overlay(OverlayPlacement::mother());
     launch(request, senders, spec, surface, |_| {
         existing_command(kind, &cwd, PaneTarget::Local)
     })
@@ -425,10 +417,14 @@ fn launch(
     surface: NewPanePlacement,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
 ) -> Result<AgentReply, String> {
+    let is_mother = matches!(request.action, AgentAction::Mother { .. });
     // Mother belongs to the session, so the pane the palette opened from may come and go.
-    let still_valid = || match request.action {
-        AgentAction::Mother { .. } => still_wanted(request),
-        _ => current_source(request, senders).map(drop),
+    let still_valid = || {
+        if is_mother {
+            still_wanted(request)
+        } else {
+            current_source(request, senders).map(drop)
+        }
     };
     still_valid()?;
     let prepare = |spec: &mut AgentSpawnSpec| {
@@ -451,7 +447,7 @@ fn launch(
     let response = match spawn_agent_prepared(
         AgentPlacement::Automatic,
         surface,
-        matches!(request.action, AgentAction::Mother { .. }),
+        is_mother,
         spec,
         request.client,
         senders,

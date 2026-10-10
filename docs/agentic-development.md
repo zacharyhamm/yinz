@@ -84,15 +84,17 @@ Press `Ctrl e`, then `m`, to toggle it. With no mother running, the key opens th
 Mother starts a fresh conversation in the directory the session was started in, without a worktree.
 
 Toggling shows mother on the tab you are on and gives it the keyboard, or hides it when it already has the keyboard.
-A visible mother follows you when you switch tabs. A hidden one stays hidden until you toggle or focus it.
+A visible mother follows you when you switch tabs, unless another client is still on the tab you left. A hidden one stays hidden until you toggle or focus it.
 If another client has mother focused, your tab switches, toggles, and focus requests cannot move or hide it.
-You can still focus mother from the same tab. Ordinary pane focus requests also fetch mother
-into your current tab and show it, including when it is hidden, without toggling it off.
+A toggle or focus request from another tab takes you to mother's tab instead, where you share it.
+Ordinary pane focus requests also fetch mother into your current tab and show it, including when it is hidden, without toggling it off.
 While an editor or in-place plugin replaces mother, toggles control that replacement.
 The replacement carries mother with it across tabs, and closing it restores mother.
+A mother that was parked, or brought back from parking as a floating or tiled pane, returns to the overlay on the next toggle.
 
 Mother is the pane, so `/clear`, `/new`, or a replaced conversation keeps it.
-Once its agent exits, the next toggle closes what is left of the pane and offers a new mother, unless you restarted the agent in that pane first.
+Once its agent exits, the pane stops following you. The next toggle brings what is left of it to your tab and offers a new mother over it.
+Launching one closes the old pane. Dismissing the offer leaves the pane to read or to restart the agent in.
 Closing the pane, or moving it to another session, also ends it.
 Being mother grants no additional permissions. Session resurrection does not restore it.
 
