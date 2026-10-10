@@ -2518,40 +2518,30 @@ impl Tab {
         if self.multipane_info(pane_id).is_some() {
             return Err(anyhow!("cannot embed a multipane child"));
         }
-        let err_context = || {
-            format!(
-                "failed to toggle embedded/floating pane for pane_id {:?}",
-                pane_id
-            )
-        };
         if self.tiled_panes.fullscreen_is_active() {
             self.tiled_panes.unset_fullscreen();
         }
-        if self.floating_panes.panes_contain(&pane_id) {
-            if self.tiled_panes.has_room_for_new_pane() {
-                let floating_pane_to_embed = self
-                    .extract_pane(pane_id, true)
-                    .with_context(|| {
-                        format!("failed to find floating pane (ID: {pane_id:?}) to embed",)
-                    })
-                    .with_context(err_context)?;
-                self.add_tiled_pane(floating_pane_to_embed, pane_id, false, client_id)?;
+        let is_floating = self.floating_panes.panes_contain(&pane_id);
+        if is_floating {
+            if !self.tiled_panes.has_room_for_new_pane() {
+                return Err(anyhow!("not enough room to embed pane {pane_id:?}"));
             }
         } else if self.tiled_panes.panes_contain(&pane_id) {
             if self.get_selectable_tiled_panes().count() <= 1
                 && !self.pane_is_stack_list_member(&pane_id)
             {
-                log::error!("Cannot float the last tiled pane...");
-                // don't close the only pane on screen...
-                return Ok(());
+                return Err(anyhow!("cannot float the last tiled pane"));
             }
-            if let Some(embedded_pane_to_float) = self.extract_pane(pane_id, true) {
-                self.add_floating_pane(embedded_pane_to_float, pane_id, None, true, client_id)?;
-            }
-        } else if self.pane_is_hidden_stack_list_member(&pane_id) {
-            if let Some(hidden_member_to_float) = self.extract_pane(pane_id, true) {
-                self.add_floating_pane(hidden_member_to_float, pane_id, None, true, client_id)?;
-            }
+        } else if !self.pane_is_hidden_stack_list_member(&pane_id) {
+            return Err(anyhow!("pane {pane_id:?} not found"));
+        }
+        let pane = self.extract_pane(pane_id, true).with_context(|| {
+            format!("failed to find pane {pane_id:?} to toggle embedded/floating")
+        })?;
+        if is_floating {
+            self.add_tiled_pane(pane, pane_id, false, client_id)?;
+        } else {
+            self.add_floating_pane(pane, pane_id, None, true, client_id)?;
         }
         Ok(())
     }

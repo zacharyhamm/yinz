@@ -13,6 +13,8 @@ pub struct AgentTabPlacement {
 
 #[derive(Debug, Clone)]
 pub struct ActionCompletionResult {
+    /// True only when the action owner acknowledged completion.
+    pub confirmed: bool,
     pub agent_tab: Option<AgentTabPlacement>,
     pub exit_status: Option<i32>,
     pub affected_pane_id: Option<PaneId>,
@@ -228,6 +230,7 @@ impl Drop for NotificationEnd {
         }
         if let Some(tx) = self.channel.take() {
             let result = ActionCompletionResult {
+                confirmed: true,
                 agent_tab: self.agent_tab.clone(),
                 exit_status: self.exit_status,
                 affected_pane_id: self.affected_pane_id,
@@ -272,6 +275,7 @@ mod tests {
     #[test]
     fn test_action_completion_result_includes_tab_id() {
         let result = ActionCompletionResult {
+            confirmed: true,
             agent_tab: None,
             exit_status: None,
             affected_pane_id: None,

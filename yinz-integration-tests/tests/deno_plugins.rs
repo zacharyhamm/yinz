@@ -2185,3 +2185,49 @@ fn background_startup_rejections_leave_lifecycle_commands_usable() {
     wait_for_plugin_state(&yinz, &plugin, PluginState::Running);
     yinz.quit();
 }
+
+#[test]
+fn deno_palette_completion_notifies_above_its_result_view() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("completion.ts");
+    fs::write(&plugin, r#"
+import {definePlugin,yinz} from 'yinz:plugin';
+export default definePlugin({
+  async load() {
+    await yinz.waitForPermissions(['ReadApplicationState']);
+    yinz.commandPalette.registerProvider({id:'reports',title:'Reports',actions:[{
+      id:'save',label:'Save report',async run() {
+        await Promise.resolve();
+        return {type:'complete',notification:'Report saved successfully',view:{type:'text',title:'Saved report',text:'Report contents'}};
+      }
+    }]});
+    yinz.requestRender();
+  },
+  render() { return 'Completion provider ready'; }
+});
+"#).unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane; pane focus=true {{ plugin location=\"file:{}\"; }}; }}",
+            plugin.display()
+        )))
+        .start();
+    let terminal = yinz.expect_pty_spawn();
+    terminal.output(b"terminal ready\r\n");
+    yinz.wait_until("completion provider permission", |grid| {
+        grid.contains("Plugin permissions")
+    });
+    yinz.send_stdin(b"\t\r");
+    yinz.wait_until("completion provider ready", |grid| {
+        grid.contains("Completion provider ready")
+    });
+    yinz.send_stdin(b"\x1b[112;7u");
+    yinz.send_stdin(b"Save report");
+    yinz.wait_until("completion action", |grid| grid.contains("› Save report"));
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("completion popup and result view", |grid| {
+        grid.contains("Report saved successfully") && grid.contains("Report contents")
+    });
+    yinz.quit();
+}

@@ -436,7 +436,11 @@ impl Screen {
                     },
                 )
                 .context("failed to render command palette")?;
-            if let Some((x, y)) = state.widget.cursor(&layout) {
+            if let Some((x, y)) = state
+                .widget
+                .cursor(&layout)
+                .filter(|(x, y)| !output.cursor_is_covered_by_notification(*x, *y))
+            {
                 output.add_post_vte_instruction_to_client(
                     client,
                     &format!("\u{1b}[{};{}H\u{1b}[0m\u{1b}[2 q\u{1b}[?25h", y + 1, x + 1),
@@ -1100,6 +1104,7 @@ impl Screen {
                 state
                     .widget
                     .set_error("Source session no longer exists".into());
+                notify(&self.bus.senders, "Source session no longer exists".into());
             }
             return;
         };
@@ -1123,6 +1128,7 @@ impl Screen {
                 state
                     .widget
                     .set_error("Warp target no longer exists".into());
+                notify(&self.bus.senders, "Warp target no longer exists".into());
             }
             return;
         }
@@ -1144,7 +1150,7 @@ impl Screen {
                         id,
                         yinz_types::data::WarpPlacement::NewTab,
                         WARP_PULL_TIMEOUT,
-                    )
+                    ).map(|_| format!("Brought pane from session ‘{source}’"))
                 } else {
                     let total = tab_ids.len();
                     tab_ids
@@ -1295,11 +1301,13 @@ impl Screen {
             Outcome::Submit { id, values } => (id, Some(values)),
             _ => return,
         };
+        let label = state.widget.action_label(&id);
         let Some(builtin) = state.actions.get(&id).cloned() else {
             if let Some(state) = self.command_palettes.get_mut(&client) {
                 state
                     .widget
                     .set_error("Destination no longer exists".into());
+                notify(&self.bus.senders, "Destination no longer exists".into());
             }
             return;
         };
@@ -1356,6 +1364,7 @@ impl Screen {
                         state
                             .widget
                             .set_error("Source session no longer exists".into());
+                        notify(&self.bus.senders, "Source session no longer exists".into());
                     }
                 }
                 self.refresh_command_palettes();
@@ -1368,12 +1377,14 @@ impl Screen {
             },
             Builtin::Project(name) => {
                 if self.projects.contains(&name) {
+                    notify(&self.bus.senders, format!("Current project: {name}"));
                     self.client_projects.entry(client).or_default().current = Some(name);
                     if let Some(state) = self.command_palettes.get_mut(&client) {
                         state.widget.back();
                     }
                 } else if let Some(state) = self.command_palettes.get_mut(&client) {
                     state.widget.set_error("Project no longer exists".into());
+                    notify(&self.bus.senders, "Project no longer exists".into());
                 }
                 self.refresh_plugin_palette(client, false);
                 return;
@@ -1397,7 +1408,11 @@ impl Screen {
                         },
                         Err(error) => {
                             if let Some(state) = self.command_palettes.get_mut(&client) {
-                                state.widget.set_error(error);
+                                state.widget.set_error(error.clone());
+                                notify(
+                                    &self.bus.senders,
+                                    format!("Could not {}: {error}", label.to_lowercase()),
+                                );
                             }
                         },
                     }
@@ -1422,6 +1437,7 @@ impl Screen {
                 self.bus
                     .senders
                     .send_to_screen(ScreenInstruction::ActivateCommandPaletteAction {
+                        label,
                         pane_id: pane,
                         tab_id: tab,
                         action,
@@ -1432,7 +1448,11 @@ impl Screen {
             },
             Err(error) => {
                 if let Some(state) = self.command_palettes.get_mut(&client) {
-                    state.widget.set_error(error);
+                    state.widget.set_error(error.clone());
+                    notify(
+                        &self.bus.senders,
+                        format!("Could not {}: {error}", label.to_lowercase()),
+                    );
                 }
             },
         }
@@ -1607,6 +1627,7 @@ impl Screen {
         action: Action,
         create_session: bool,
         client: ClientId,
+        label: String,
     ) {
         let target_exists = if create_session {
             self.tabs.contains_key(&tab)
@@ -1619,7 +1640,10 @@ impl Screen {
             self.bus
                 .senders
                 .send_to_screen(ScreenInstruction::Notify(
-                    "Command palette target changed or no longer exists".into(),
+                    format!(
+                        "Could not {}: destination no longer exists",
+                        label.to_lowercase()
+                    ),
                     None,
                     None,
                     None,
@@ -1634,7 +1658,23 @@ impl Screen {
                 .non_fatal();
             return;
         }
-        self.run_overlay_actions(pane, vec![action], client, Some(tab));
+        if matches!(&action, Action::MoveTabByTabId { .. }) && self.tabs.len() < 2 {
+            notify(&self.bus.senders, "Tab was not moved: no other tab".into());
+            return;
+        }
+        let departure = match &action {
+            Action::Detach => Some("Detaching…".to_owned()),
+            Action::SwitchSession { name, .. } => Some(if create_session {
+                format!("Creating session ‘{name}’…")
+            } else {
+                format!("Switching to session ‘{name}’…")
+            }),
+            _ => None,
+        };
+        if let Some(message) = departure {
+            notify(&self.bus.senders, message);
+        }
+        self.run_overlay_actions(pane, vec![action], client, Some((tab, label)));
     }
 
     pub(crate) fn move_command_palette_pane(
@@ -1649,7 +1689,7 @@ impl Screen {
             .get(&tab)
             .is_some_and(|tab| tab.has_pane_with_pid(&pane))
         {
-            return Ok(());
+            anyhow::bail!("Pane is no longer available");
         }
         if let Some(direction) = direction {
             let mut tabs: Vec<_> = self
@@ -1659,6 +1699,7 @@ impl Screen {
                 .collect();
             tabs.sort();
             if tabs.len() < 2 {
+                notify(&self.bus.senders, "Pane was not moved: no other tab".into());
                 return Ok(());
             }
             let Some(index) = tabs.iter().position(|(_, id)| *id == tab) else {
@@ -1673,27 +1714,51 @@ impl Screen {
             let outcome = self
                 .break_multiple_panes_to_tab_with_id(vec![pane], destination, true, client)
                 .context("failed to move palette pane")?;
-            if outcome.moved.contains(&pane) {
-                self.focus_pane_with_id(pane, false, false, client)
-                    .context("failed to focus moved palette pane")?;
-                self.clear_bell_for_pane_id(pane, client);
-                self.sync_scroll_mode_on_focus(client)
-                    .context("failed to sync scroll mode for moved palette pane")?;
-                self.log_and_report_session_state()
-                    .context("failed to report moved palette pane focus")?;
+            if !outcome.moved.contains(&pane) {
+                notify(&self.bus.senders, "Pane was not moved".into());
+                return Ok(());
             }
+            self.focus_pane_with_id(pane, false, false, client)
+                .context("failed to focus moved palette pane")?;
+            self.clear_bell_for_pane_id(pane, client);
+            self.sync_scroll_mode_on_focus(client)
+                .context("failed to sync scroll mode for moved palette pane")?;
+            self.log_and_report_session_state()
+                .context("failed to report moved palette pane focus")?;
         } else {
-            self.break_multiple_panes_to_new_tab(
-                vec![pane],
-                self.default_shell_action.clone(),
-                true,
-                None,
-                client,
-            )
-            .context("failed to move palette pane to new tab")?;
+            let destination = self
+                .break_multiple_panes_to_new_tab(
+                    vec![pane],
+                    self.default_shell_action.clone(),
+                    true,
+                    None,
+                    client,
+                )
+                .context("failed to move palette pane to new tab")?;
+            if !self
+                .tabs
+                .get(&destination)
+                .is_some_and(|tab| tab.has_pane_with_pid(&pane))
+            {
+                notify(&self.bus.senders, "Pane was not moved".into());
+                return Ok(());
+            }
         }
+        let label = match direction {
+            Some(Direction::Left) => "Move pane to previous tab",
+            Some(_) => "Move pane to next tab",
+            None => "Move pane to new tab",
+        };
+        notify(&self.bus.senders, format!("Completed: {label}"));
         Ok(())
     }
+}
+
+pub(super) fn notify(senders: &yinz_bus::thread_bus::ThreadSenders, message: String) {
+    senders
+        .send_to_screen(ScreenInstruction::Notify(message, None, None, None))
+        .context("notifying palette result")
+        .non_fatal();
 }
 
 fn optional_name(name: String) -> Option<String> {

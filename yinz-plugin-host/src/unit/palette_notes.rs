@@ -107,7 +107,7 @@ fn replacement_saves_both_fields_preserves_metadata_and_skips_unchanged() {
     assert_eq!(note.todo_ids, [todo_id]);
     let path = directory.path().join("note.md");
     fs::write(&path, document(&note)).unwrap();
-    finish(&backend, &note, &path, Ok(())).unwrap();
+    assert!(!finish(&backend, &note, &path, Ok(())).unwrap());
     assert_eq!(
         notes::fetch_note(&backend, note.id).unwrap().unwrap().rev,
         note.rev
@@ -115,7 +115,7 @@ fn replacement_saves_both_fields_preserves_metadata_and_skips_unchanged() {
     let replacement = directory.path().join("replacement");
     fs::write(&replacement, "# Updated\n\nUpdated body\n").unwrap();
     fs::rename(replacement, &path).unwrap();
-    finish(&backend, &note, &path, Ok(())).unwrap();
+    assert!(finish(&backend, &note, &path, Ok(())).unwrap());
     let after = notes::fetch_note(&backend, note.id).unwrap().unwrap();
     assert_eq!((&*after.title, &*after.body), ("Updated", "Updated body"));
     assert_eq!(after.tags, note.tags);

@@ -38,9 +38,6 @@ impl Screen {
             }
             return;
         }
-        if self.command_palette_handles_mouse(&event, client_id) {
-            return;
-        }
         let is_bare_motion = event.event_type == MouseEventType::Motion
             && !event.left
             && !event.right
@@ -70,7 +67,7 @@ impl Screen {
         let now = Instant::now();
         // A browsing client sees the browser in place of its toasts, so the browser is what gets
         // hit-tested - never the toasts it is covering.
-        if self.notification_browsers.contains_key(&client_id) {
+        if self.notification_browser_is_visible(client_id) {
             if session_surface.is_some_and(|surface| {
                 self.handle_notification_browser_mouse(&event, surface, client_id, now)
             }) {
@@ -83,6 +80,25 @@ impl Screen {
             self.handle_pane_notification_click(&event, surface, client_id, now)
         }) {
             self.notification_mouse_captures.insert(client_id);
+            return;
+        }
+        if self.command_palettes.contains_key(&client_id)
+            && session_surface.is_some_and(|surface| {
+                usize::try_from(event.position.line())
+                    .ok()
+                    .is_some_and(|line| {
+                        self.notification_cell_rects(surface, now)
+                            .iter()
+                            .any(|rect| rect.contains(event.position.column(), line))
+                    })
+            })
+        {
+            if event.event_type == MouseEventType::Press && event.left {
+                self.notification_mouse_captures.insert(client_id);
+            }
+            return;
+        }
+        if self.command_palette_handles_mouse(&event, client_id) {
             return;
         }
         // A client descended into a nested guest has handed that pane its keys; alt+mouse

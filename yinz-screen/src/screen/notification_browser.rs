@@ -50,6 +50,11 @@ pub(super) struct BrowserFrame {
 }
 
 impl Screen {
+    pub(super) fn notification_browser_is_visible(&self, client_id: ClientId) -> bool {
+        self.notification_browsers.contains_key(&client_id)
+            && !self.command_palettes.contains_key(&client_id)
+    }
+
     /// The notifications the browser lists, newest first.
     fn browser_entries(&self) -> Vec<&NotificationRecord> {
         self.notification_history.iter().rev().collect()

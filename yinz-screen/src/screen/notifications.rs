@@ -261,7 +261,7 @@ impl Screen {
             for client_id in &client_ids {
                 // a browsing client is shown its browser instead of the toasts, so that is what
                 // its cells are diffed against
-                let painted = if self.notification_browsers.contains_key(client_id) {
+                let painted = if self.notification_browser_is_visible(*client_id) {
                     self.notification_browser_rects(*client_id, viewport)
                 } else {
                     toast_rects.clone()
@@ -312,7 +312,9 @@ impl Screen {
             self.notification_cell_rects(viewport, now)
         };
         for client_id in self.notification_browsers.keys() {
-            rects.extend(self.notification_browser_rects(*client_id, viewport));
+            if self.notification_browser_is_visible(*client_id) {
+                rects.extend(self.notification_browser_rects(*client_id, viewport));
+            }
         }
         rects
     }
@@ -332,7 +334,7 @@ impl Screen {
         let (browsing_clients, toast_clients): (Vec<ClientId>, Vec<ClientId>) = client_ids
             .iter()
             .copied()
-            .partition(|client_id| self.notification_browsers.contains_key(client_id));
+            .partition(|client_id| self.notification_browser_is_visible(*client_id));
         let layouts = if toast_clients.is_empty() {
             vec![]
         } else {

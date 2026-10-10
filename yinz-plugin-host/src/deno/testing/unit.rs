@@ -649,6 +649,10 @@ fn palette_test_types_accept_serialized_protocol() {
             actions: actions.clone(),
         },
         Reply::Close,
+        Reply::Complete {
+            notification: "Saved".into(),
+            view: None,
+        },
         Reply::View {
             view: View::Actions {
                 title: "Actions".into(),
@@ -694,7 +698,7 @@ fn palette_test_types_accept_serialized_protocol() {
 import {{test,assertEquals,type PaletteTestMessage,type PaletteTestCommand}} from 'yinz:testing';
 const messages: PaletteTestMessage[] = {};
 const commands: PaletteTestCommand[] = {};
-test('Rust protocol matches test declarations',()=>{{assertEquals(messages.length,6);assertEquals(commands.length,9);}});
+test('Rust protocol matches test declarations',()=>{{assertEquals(messages.length,6);assertEquals(commands.length,10);}});
 "#, serde_json::to_string(&messages).unwrap(), serde_json::to_string(&commands).unwrap())).unwrap();
     let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
     assert!(report.passed(), "{report:#?}");

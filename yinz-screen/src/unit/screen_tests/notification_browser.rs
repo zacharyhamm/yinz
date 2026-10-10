@@ -704,3 +704,105 @@ fn a_browsing_client_is_shown_the_list_instead_of_its_toasts() {
         "closing the browser left its cells painted"
     );
 }
+
+#[test]
+fn palette_suspends_history_and_restores_its_selection_and_cells() {
+    let (mut screen, client) = browsing(vec![
+        record(0, "old history entry", None, None),
+        record(1, "new history entry", None, None),
+    ]);
+    screen.move_notification_selection(Direction::Down, client);
+    screen.toggle_notification_detail(client);
+    screen.notification_position = NotificationPosition::TopLeft;
+    let saved = format!("{:?}", screen.notification_browsers[&client]);
+    let viewport = screen.notification_browser_viewport(client).unwrap();
+    let hidden_rect = screen.notification_browser_rects(client, viewport)[0];
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(screen.surface_size());
+    let (before_cursor, before) =
+        render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+    let before_cells = grid.as_character_lines();
+    screen.toggle_command_palette(client);
+    screen
+        .change_mode(InputMode::Locked, Some(InputMode::Normal), client)
+        .unwrap();
+    let (cursor, opened) = render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+    assert!(opened.contains("Switch session"), "{opened}");
+    assert!(!opened.contains("history entry"), "{opened}");
+    assert!(cursor.is_some());
+    assert!(screen.command_palette_handles_input(&None, b"Switch tab", false, client));
+    let filtered = render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert!(filtered.contains("> Switch tab"), "{filtered}");
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    let mut notification = settled_toast(2, "live toast");
+    notification.on_click = Some(click_target("live"));
+    screen.notifications.push(notification);
+    let toast = render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert!(toast.contains("live toast"), "{toast}");
+    assert!(!toast.contains("history entry"), "{toast}");
+    let toast_rect = screen.notification_cell_rects(viewport, Instant::now())[0];
+    let toast_position = Position::new((toast_rect.y + 1) as i32, (toast_rect.x + 2) as u16);
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(toast_position), client);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(toast_position), client);
+    assert!(plugin_rx
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction,
+        PluginInstruction::NotificationClicked { payload, .. } if payload == "live")));
+    assert!(screen.command_palettes.contains_key(&client));
+    screen.notifications.clear();
+    // A click over the suspended browser must reach the palette's outside-click dismissal.
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(
+            (hidden_rect.y + 1) as i32,
+            (hidden_rect.x + 2) as u16,
+        )),
+        client,
+    );
+    assert!(!screen.command_palettes.contains_key(&client));
+    assert_eq!(
+        format!("{:?}", screen.notification_browsers[&client]),
+        saved
+    );
+    screen
+        .change_mode(InputMode::Notifications, Some(InputMode::Normal), client)
+        .unwrap();
+    let (restored_cursor, restored) =
+        render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+    assert_eq!(restored, before);
+    assert_eq!(grid.as_character_lines(), before_cells);
+    assert_eq!(restored_cursor, before_cursor);
+}
+
+#[test]
+fn palette_history_damage_and_cursor_occlusion_follow_each_clients_visibility() {
+    let (mut screen, client) = browsing(vec![record(0, "history", None, None)]);
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    screen.open_notification_browser(other);
+    let viewport = screen.notification_browser_viewport(client).unwrap();
+    let rects = screen.notification_browser_rects(client, viewport);
+    let now = Instant::now();
+    let size = screen.surface_size();
+    screen.prepare_notification_damage(now, size);
+    screen.toggle_command_palette(client);
+    assert!(!screen.notification_browser_is_visible(client));
+    assert!(screen.notification_browser_is_visible(other));
+    assert!(!screen.prepare_notification_damage(now, size).is_empty());
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(size);
+    let other_frame = render_frame_into(&mut screen, &receiver, other, &mut grid);
+    assert!(other_frame.contains("history"), "{other_frame}");
+    assert!(!other_frame.contains("Switch session"), "{other_frame}");
+    assert!(!screen.last_notification_fill.contains_key(&client));
+    assert_eq!(screen.last_notification_fill[&other], rects);
+    assert_eq!(screen.notification_occlusion_rects(viewport, now), rects);
+    screen.toggle_command_palette(other);
+    assert!(screen
+        .notification_occlusion_rects(viewport, now)
+        .is_empty());
+    screen.close_command_palette(client);
+    screen.prepare_notification_damage(now, size);
+    assert_eq!(screen.last_notification_fill[&client], rects);
+    assert_eq!(screen.notification_occlusion_rects(viewport, now), rects);
+}

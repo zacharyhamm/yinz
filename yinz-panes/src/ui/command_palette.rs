@@ -278,6 +278,20 @@ impl CommandPalette {
         false
     }
 
+    pub fn action_label(&self, id: &str) -> String {
+        self.form
+            .as_ref()
+            .filter(|form| form.id == id)
+            .map(|form| form.title.clone())
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .map(|entry| entry.label.clone())
+            })
+            .unwrap_or_else(|| "Palette action".into())
+    }
+
     pub fn form_values(&self) -> Option<(&str, Vec<String>)> {
         self.form.as_ref().map(|form| {
             (

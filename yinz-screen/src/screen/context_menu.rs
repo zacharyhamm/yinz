@@ -581,7 +581,7 @@ impl Screen {
         pane_id: PaneId,
         actions: Vec<Action>,
         client_id: ClientId,
-        palette_tab: Option<yinz_types::internal_ids::TabId>,
+        palette_tab: Option<(yinz_types::internal_ids::TabId, String)>,
     ) {
         let senders = self.bus.senders.clone();
         let default_mode = self.default_mode_info.mode;
@@ -602,7 +602,11 @@ impl Screen {
                 // `route::actions_leave_clipboard_message`.
                 let leaves_clipboard_message = actions_leave_clipboard_message(&actions);
                 for action in actions {
-                    let name = action.to_string();
+                    let name = palette_tab
+                        .as_ref()
+                        .map(|(_, label)| label.clone())
+                        .unwrap_or_else(|| action.to_string());
+                    let departure = matches!(action, Action::Detach | Action::SwitchSession { .. });
                     // A no-op when the pane is already focused, which is the ordinary case - see
                     // the `already_focused` arm of `ScreenInstruction::FocusPaneWithId`.
                     if palette_tab.is_none() {
@@ -624,7 +628,7 @@ impl Screen {
                             cli_client_id: None,
                         })
                         .non_fatal();
-                    if let Some(tab_id) = palette_tab {
+                    if let Some((tab_id, _)) = &palette_tab {
                         let direction = match action {
                             Action::BreakPane => Some(None),
                             Action::BreakPaneLeft => {
@@ -646,7 +650,7 @@ impl Screen {
                             senders
                                 .send_to_screen(ScreenInstruction::MoveCommandPalettePane {
                                     pane_id,
-                                    tab_id,
+                                    tab_id: *tab_id,
                                     direction,
                                     client_id,
                                 })
@@ -679,6 +683,8 @@ impl Screen {
                         leaves_clipboard_message,
                         true, // is_client_input
                     );
+                    let confirmed =
+                        matches!(&result, Ok((_, Some(completion))) if completion.confirmed);
                     let error = match result {
                         Err(error) => Some(format!("{error:#}")),
                         Ok((_, Some(completion))) => {
@@ -691,7 +697,13 @@ impl Screen {
                             } else {
                                 None
                             };
-                            if completion.error_message.is_none() {
+                            let error = completion.error_message.or_else(|| {
+                                completion
+                                    .exit_status
+                                    .filter(|status| *status != 0)
+                                    .map(|status| format!("action exited with status {status}"))
+                            });
+                            if error.is_none() {
                                 if let Some(pane_id) = pane_to_focus {
                                     route_action(
                                         Action::FocusPaneByPaneId { pane_id },
@@ -709,7 +721,7 @@ impl Screen {
                                     .non_fatal();
                                 }
                             }
-                            completion.error_message
+                            error
                         },
                         _ => None,
                     };
@@ -717,13 +729,28 @@ impl Screen {
                         log::error!("overlay action '{name}' failed: {error}");
                         senders
                             .send_to_screen(ScreenInstruction::Notify(
-                                format!("{name}: {error}"),
+                                if palette_tab.is_some() {
+                                    format!(
+                                        "Could not {}: action failed (see logs)",
+                                        name.to_lowercase()
+                                    )
+                                } else {
+                                    format!("{name}: {error}")
+                                },
                                 None,
                                 None,
                                 None,
                             ))
                             .non_fatal();
                         break;
+                    }
+                    if palette_tab.is_some() && !departure {
+                        let message = if confirmed {
+                            format!("Completed: {name}")
+                        } else {
+                            format!("Completion not confirmed: {name}")
+                        };
+                        super::command_palette::notify(&senders, message);
                     }
                 }
             });

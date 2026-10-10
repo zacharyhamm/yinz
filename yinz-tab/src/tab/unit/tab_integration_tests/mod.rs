@@ -1632,9 +1632,15 @@ impl SuppressedPaneModel {
     #[rule]
     fn toggle_a_pane_between_floating_and_embedded(&mut self, tc: hegel::TestCase) {
         let pane_id = Self::pick(&tc, &self.on_screen());
-        self.tab
+        let was_floating = self.tab.pane_id_is_floating(&pane_id);
+        if self
+            .tab
             .toggle_pane_embed_or_floating_for_pane_id(pane_id, Some(Self::CLIENT_ID))
-            .unwrap();
+            .is_err()
+        {
+            // The last tiled pane and an embedding without room must stay where they were.
+            assert_eq!(self.tab.pane_id_is_floating(&pane_id), was_floating);
+        }
     }
 
     /// Closing takes exactly the pane it was asked for, wherever that pane was.

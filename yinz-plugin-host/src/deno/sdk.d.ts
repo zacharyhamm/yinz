@@ -1045,17 +1045,22 @@ export interface PaletteAction {
   /** Alternative nonempty search text. Labels and aliases are matched independently. */
   aliases?: string[];
   /** Return an actions, form, or text view to push it; other successful returns close. Malformed views and thrown errors show an inline retryable error. */
-  run(context: PaletteExecution): PaletteView | void | Promise<PaletteView | void>;
+  run(context: PaletteExecution): PaletteView | PaletteCompletion | void | Promise<PaletteView | PaletteCompletion | void>;
 }
 export type PaletteActionSource = (request: PaletteRequest) => PaletteAction[] | Promise<PaletteAction[]>;
 export type PaletteField =
   | { type: "text"; id: string; label: string; initialValue?: string }
   | { type: "choice"; id: string; label: string; options: string[]; initialValue?: string };
+export interface PaletteCompletion {
+  type: "complete";
+  notification: string;
+  view?: PaletteView;
+}
 export type PaletteView =
   | { type: "actions"; title: string; actions: PaletteAction[] | PaletteActionSource }
   | { type: "form"; title: string; fields: PaletteField[]; submitLabel?: string;
       /** Same return and error handling as PaletteAction.run. */
-      onSubmit(values: Record<string, string>, context: PaletteExecution): PaletteView | void | Promise<PaletteView | void> }
+      onSubmit(values: Record<string, string>, context: PaletteExecution): PaletteView | PaletteCompletion | void | Promise<PaletteView | PaletteCompletion | void> }
   | { type: "text"; title: string; text: string };
 export interface CommandPalette {
   /**

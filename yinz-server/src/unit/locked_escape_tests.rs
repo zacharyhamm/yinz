@@ -644,19 +644,20 @@ fn locked_escape_resize_does_not_resolve_or_extend_the_prefix() {
 }
 
 #[test]
-fn command_palette_holds_input_locked_and_restores_only_the_original_lock_state() {
+fn command_palette_holds_input_locked_and_restores_lock_state_or_notification_browsing() {
     for original in [
         InputMode::Normal,
         InputMode::Locked,
         InputMode::Pane,
         InputMode::Scroll,
+        InputMode::Notifications,
     ] {
         let mut session = session();
         let (screen_tx, screen_rx) = channels::unbounded();
         session.senders.to_screen = Some(SenderWithContext::new(screen_tx));
         session.current_input_modes.insert(CLIENT_1, original);
-        let restored = if original == InputMode::Locked {
-            InputMode::Locked
+        let restored = if matches!(original, InputMode::Locked | InputMode::Notifications) {
+            original
         } else {
             InputMode::Normal
         };

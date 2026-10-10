@@ -51,7 +51,8 @@ pub enum Instruction {
         client: ClientId,
         token: u64,
         revision: u64,
-        result: Result<(), String>,
+        /// True if the note changed and was saved.
+        result: Result<bool, String>,
     },
     AgentReply {
         client: ClientId,

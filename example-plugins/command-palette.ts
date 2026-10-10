@@ -14,9 +14,13 @@ function messageForm(title: string): PaletteView {
       const message = values["message"] ?? "";
       if (!message.trim()) throw new Error("Enter a message");
       return {
-        type: "text",
-        title,
-        text: values["style"] === "Uppercase" ? message.toUpperCase() : message,
+        type: "complete",
+        notification: "Message formatted",
+        view: {
+          type: "text",
+          title,
+          text: values["style"] === "Uppercase" ? message.toUpperCase() : message,
+        },
       };
     },
   };

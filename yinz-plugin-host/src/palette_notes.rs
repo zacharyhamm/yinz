@@ -112,12 +112,12 @@ fn finish(
     original: &notes::Note,
     path: &Path,
     exit: Result<(), String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     exit?;
     let text = fs::read_to_string(path).map_err(|e| format!("Cannot read edited note: {e}"))?;
     let (title, body) = parse(&text)?;
     if title == original.title && body == original.body {
-        return Ok(());
+        return Ok(false);
     }
     // A deleted row must be an error, not a successful update affecting zero rows.
     notes::fetch_note(backend, original.id)?.ok_or("Note was deleted during editing")?;
@@ -129,7 +129,7 @@ fn finish(
             e.into()
         }
     })?;
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn handle(request: NoteRequest, senders: &ThreadSenders, data: &DataAccess) {
@@ -156,7 +156,7 @@ pub(crate) fn handle(request: NoteRequest, senders: &ThreadSenders, data: &DataA
                     return Err("Note no longer belongs to this project".into());
                 }
                 if !request.active.load(Ordering::Acquire) {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let directory = tempfile::Builder::new()
                     .prefix("yinz-note-")
@@ -195,7 +195,7 @@ pub(crate) fn handle(request: NoteRequest, senders: &ThreadSenders, data: &DataA
                     }
                     return Err(error);
                 }
-                Ok(())
+                result
             });
             Instruction::NoteFinished {
                 client: request.client,

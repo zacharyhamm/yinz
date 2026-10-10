@@ -570,9 +570,9 @@ impl Screen {
             .any(|a| target.same(a) && a.pane.is_selectable && !a.pane.is_suppressed)
         {
             if let Some(state) = self.command_palettes.get_mut(&client) {
-                state.widget.set_error(
-                    "Agent disappeared or changed identity; Focus is unavailable".into(),
-                );
+                let message = "Agent disappeared or changed identity; Focus is unavailable";
+                super::notify(&self.bus.senders, message.into());
+                state.widget.set_error(message.into());
             }
             return;
         }
@@ -594,7 +594,14 @@ impl Screen {
         };
         let (pane, tab) = (state.context.pane_id, state.context.tab_id);
         self.close_command_palette(client);
-        self.dispatch_command_palette_action(pane, tab, action, false, client);
+        self.dispatch_command_palette_action(
+            pane,
+            tab,
+            action,
+            false,
+            client,
+            "Focus agent".into(),
+        );
     }
 
     pub(super) fn open_agent_filters(&mut self, client: ClientId) {

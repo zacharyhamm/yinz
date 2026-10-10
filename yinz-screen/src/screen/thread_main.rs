@@ -3342,6 +3342,7 @@ pub fn screen_thread_main(
                     screen.set_context_menu_items(request_id, items, plugin_id, client_id);
                 },
                 ScreenInstruction::ActivateCommandPaletteAction {
+                    label,
                     pane_id,
                     tab_id,
                     action,
@@ -3354,6 +3355,7 @@ pub fn screen_thread_main(
                         action,
                         create_session,
                         client_id,
+                        label,
                     );
                     screen.render()?;
                 },
@@ -4355,13 +4357,20 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::TogglePaneEmbedOrFloatingWithPaneId(
                     pane_id,
-                    mut _completion_tx,
+                    mut completion_tx,
                 ) => {
                     if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                        tab.toggle_pane_embed_or_floating_for_pane_id(pane_id, None)
-                            .non_fatal();
+                        if let Err(error) =
+                            tab.toggle_pane_embed_or_floating_for_pane_id(pane_id, None)
+                        {
+                            log::error!("{error:#}");
+                            if let Some(completion) = completion_tx.as_mut() {
+                                completion.set_error_message(format!("{error:#}"));
+                                completion.set_exit_status(1);
+                            }
+                        }
                     } else {
-                        Screen::report_pane_not_found(pane_id, &mut _completion_tx);
+                        Screen::report_pane_not_found(pane_id, &mut completion_tx);
                     }
                     screen.log_and_report_session_state()?;
                     screen.render()?;

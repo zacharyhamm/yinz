@@ -71,9 +71,9 @@ impl Screen {
             return;
         }
         if state.agents.submitted {
-            state.widget.set_error(
-                "Launch already submitted; inspect agents before reopening the palette".into(),
-            );
+            let message = "Launch already submitted; inspect agents before reopening the palette";
+            super::notify(&self.bus.senders, message.into());
+            state.widget.set_error(message.into());
             return;
         }
         state.cancel_requests(&self.bus.senders, client);
@@ -133,6 +133,10 @@ impl Screen {
             state.agents.cancel();
             state.agents.submitted = false;
             state.widget.busy = false;
+            super::notify(
+                &self.bus.senders,
+                format!("Could not request agent action: {error}"),
+            );
             state
                 .widget
                 .set_error(format!("Could not request agent action: {error}"));
@@ -195,10 +199,29 @@ impl Screen {
                 None
             }
         });
+        let label = match state.agents.pending.as_ref().map(|(_, _, action)| action) {
+            Some(AgentAction::History(yinz_bus::command_palette::HistoryAction::Resume {
+                ..
+            })) => "Resume agent",
+            Some(AgentAction::Duplicate { .. }) => "Duplicate agent",
+            Some(AgentAction::Fork) => "Fork agent",
+            _ => "Launch agent",
+        };
         state.agents.cancel();
         state.widget.busy = false;
         match reply {
             Err(error) => {
+                if history_action.as_ref().is_none_or(|action| {
+                    matches!(
+                        action,
+                        yinz_bus::command_palette::HistoryAction::Resume { .. }
+                    )
+                }) {
+                    super::notify(
+                        &self.bus.senders,
+                        format!("Could not {}: {error}", label.to_lowercase()),
+                    );
+                }
                 state.agents.submitted = false;
                 state.widget.set_error(error);
             },
@@ -267,6 +290,7 @@ impl Screen {
                 }
                 if response.outcome == AgentOutcome::Ok {
                     if let Some(spawned) = response.spawned {
+                        super::notify(&self.bus.senders, format!("Completed: {label}"));
                         self.close_command_palette(client);
                         self.focus_pane_with_id(spawned.pane_id, false, false, client)
                             .context("focusing palette agent")
@@ -283,6 +307,10 @@ impl Screen {
                 let mut message = response
                     .message
                     .unwrap_or_else(|| "Agent launch did not complete".into());
+                super::notify(
+                    &self.bus.senders,
+                    format!("Could not {}: {message}", label.to_lowercase()),
+                );
                 let partial = response.launch_resources.is_some() || response.spawned.is_some();
                 if let Some(resources) = response.launch_resources {
                     if let Some(cwd) = resources.cwd {

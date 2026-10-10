@@ -1376,6 +1376,11 @@ impl Output {
     pub fn set_notification_rects(&mut self, notification_rects: Vec<CellRect>) {
         self.notification_rects = notification_rects;
     }
+    pub fn cursor_is_covered_by_notification(&self, x: usize, y: usize) -> bool {
+        self.notification_rects
+            .iter()
+            .any(|rect| rect.contains(x, y))
+    }
     /// Where each client's context menu paints this frame, in absolute session coordinates.
     ///
     /// Set before anything renders, for the reason `set_notification_rects` gives: a fake cursor is
@@ -1397,11 +1402,7 @@ impl Output {
         if self.input_overlay_clients.contains(&client_id) {
             return false;
         }
-        if self
-            .notification_rects
-            .iter()
-            .any(|rect| rect.contains(cursor_x, cursor_y))
-        {
+        if self.cursor_is_covered_by_notification(cursor_x, cursor_y) {
             return false;
         }
         if self

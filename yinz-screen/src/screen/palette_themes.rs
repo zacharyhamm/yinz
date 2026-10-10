@@ -164,10 +164,12 @@ impl Screen {
         }
         match result {
             Ok(()) => {
+                super::notify(&self.bus.senders, "Completed: Save theme".into());
                 self.theme_preview = None;
                 self.close_command_palette(client);
             },
             Err(error) => {
+                super::notify(&self.bus.senders, format!("Could not save theme: {error}"));
                 if let Some(preview) = self.theme_preview.as_mut() {
                     preview.saving = None;
                 }

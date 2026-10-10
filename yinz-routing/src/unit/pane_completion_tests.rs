@@ -206,3 +206,13 @@ fn pane_creation_rejects_empty_and_cancelled_completion() {
         );
     }
 }
+
+#[test]
+fn palette_completion_requires_an_acknowledgement() {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    drop(sender);
+    assert!(!wait_for_action_completion(receiver, "test", false).confirmed);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    drop(NotificationEnd::new(sender));
+    assert!(wait_for_action_completion(receiver, "test", false).confirmed);
+}

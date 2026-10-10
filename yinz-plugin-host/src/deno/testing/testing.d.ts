@@ -26,6 +26,7 @@ export type PaletteTestView =
 export type PaletteTestReply =
   | {type: "actions"; actions: PaletteTestAction[]}
   | {type: "view"; view: PaletteTestView}
+  | {type: "complete"; notification: string; view: PaletteTestView | null}
   | {type: "close"};
 export type PaletteTestCommand =
   | {type: "register"; id: string; title: string; registration: string; staticActions: boolean}

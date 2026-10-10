@@ -1535,7 +1535,10 @@
       try {
         if (failed) throw error;
         const isView = value !== null && typeof value === "object" && ["actions", "form", "text"].includes(value.type);
-        const reply = task.closed ? {type: "close"} : message.type === "discover"
+        const complete = message.type !== "discover" && value !== null && typeof value === "object" && value.type === "complete";
+        const reply = complete ? {type: "complete", notification: paletteString(value.notification, "Completion notification"),
+          view: !task.closed && value.view !== undefined ? paletteView(value.view, task) : null}
+          : task.closed ? {type: "close"} : message.type === "discover"
           ? {type: "actions", actions: paletteActions(value, task)}
           : isView ? {type: "view", view: paletteView(value, task)} : {type: "close"};
         paletteCommand({type: "reply", scope: task.scope, result: {Ok: paletteBound(reply)}});

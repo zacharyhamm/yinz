@@ -132,3 +132,45 @@ fn palette_alias_defaults_validation_and_utf8_display_bound() {
     actions[0].aliases[0].push('読');
     assert!(reply.validate().is_err());
 }
+
+#[test]
+fn palette_completion_validates_text_views_and_releases_handles() {
+    for notification in ["", "  ", "bad\x1b[31m", "bad\ntext"] {
+        assert!(Reply::Complete {
+            notification: notification.into(),
+            view: None
+        }
+        .validate()
+        .is_err());
+    }
+    assert!(Reply::Complete {
+        notification: "x".repeat(MAX_DISPLAY_BYTES),
+        view: None
+    }
+    .validate()
+    .is_err());
+    let reply = Reply::Complete {
+        notification: "Report saved".into(),
+        view: Some(View::Form {
+            title: "Report".into(),
+            fields: vec![],
+            submit_label: "Save".into(),
+            handle: "submit".into(),
+        }),
+    };
+    assert!(reply.validate().is_ok());
+    assert_eq!(reply.handles(), vec!["submit"]);
+    assert_eq!(
+        serde_json::from_str::<Reply>(&serde_json::to_string(&reply).unwrap()).unwrap(),
+        reply
+    );
+    assert!(Reply::Complete {
+        notification: "Done".into(),
+        view: Some(View::Text {
+            title: "Result".into(),
+            text: "\x1b".into()
+        })
+    }
+    .validate()
+    .is_err());
+}

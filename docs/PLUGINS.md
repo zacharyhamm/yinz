@@ -144,3 +144,32 @@ The example obtains HOME from the session environment and sends the selected pat
 
 For SDK tests, use `harness.pickRequests`, `completePick(requestId, pathOrNull)`, and `failPick(requestId, message)`.
 These helpers deliver the normal result event. Use `advance()` to exercise deadlines.
+
+## Palette completion feedback
+
+Palette actions and form submissions can return a `PaletteCompletion`, including
+from an async callback:
+
+```ts
+import type { PaletteCompletion } from "yinz:plugin";
+
+const result: PaletteCompletion = {
+  type: "complete",
+  notification: "Report saved",
+  view: { type: "text", title: "Report", text: "Saved report contents" },
+};
+```
+
+Omit `view` to close the palette. Return an ordinary `PaletteView` to navigate
+without a notification. A callback that returns nothing closes the palette with
+“Completed: <action label>”. Forms use their title. Incidental return values keep
+the same closing behavior. Failed callbacks show a notification and retain the
+inline error so the user can retry.
+
+`context.close()` closes immediately. Feedback waits for the callback to settle.
+After close, the host ignores a returned view but still shows a completion message
+or failure. Cancellation, stale replies, provider reload, and client disconnect
+invalidate pending feedback. Notification text must be nonblank, contain no
+terminal controls, and fit within the existing 256 KiB display-reply limit.
+The host supplies plugin attribution. Notification policy can suppress or replace
+messages, and the normal history, placement, and lifetime settings apply.
