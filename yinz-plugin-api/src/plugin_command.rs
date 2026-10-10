@@ -990,7 +990,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                             command,
                             payload.source_directory.into(),
                             checkout,
-                            payload.automatic_firecracker_vm,
                         ))
                     },
                     _ => Err("Mismatched payload for OpenCommandPaneInGitCheckoutNearPlugin"),
@@ -3055,7 +3054,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         .into_iter()
                         .map(|item| (item.name, item.value))
                         .collect(),
-                    automatic_firecracker_vm: payload.automatic_firecracker_vm,
+
                     start_suppressed: payload.start_suppressed,
                 }),
                 _ => Err("Mismatched payload for SpawnAgent"),
@@ -3775,7 +3774,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 command_to_run,
                 source_directory,
                 checkout,
-                automatic_firecracker_vm,
             ) => {
                 let checkout = match checkout {
                     GitCheckout::Current => {
@@ -3805,7 +3803,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                             command_to_run: Some(command_to_run.try_into()?),
                             source_directory: source_directory.display().to_string(),
                             checkout: Some(checkout),
-                            automatic_firecracker_vm,
                         },
                     )),
                 })
@@ -5533,7 +5530,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 cwd,
                 name,
                 context,
-                automatic_firecracker_vm,
+
                 start_suppressed,
             } => Ok(ProtobufPluginCommand {
                 name: CommandName::SpawnAgent as i32,
@@ -5546,7 +5543,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         .into_iter()
                         .map(|(name, value)| ContextItem { name, value })
                         .collect(),
-                    automatic_firecracker_vm,
+
                     start_suppressed,
                 })),
             }),
@@ -6954,8 +6951,7 @@ impl From<AgentSpawnSpec> for ProtobufAgentSpawnSpec {
             permission_mode: spec.permission_mode,
             resume: spec.resume,
             hooks: spec.hooks,
-            firecracker: spec.firecracker,
-            firecracker_image: spec.firecracker_image,
+
             reuse: spec.reuse,
             reuse_prompt: spec.reuse_prompt,
             allow_outside_worktree: spec.allow_outside_worktree,
@@ -6985,8 +6981,7 @@ impl From<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
             permission_mode: spec.permission_mode,
             resume: spec.resume,
             hooks: spec.hooks,
-            firecracker: spec.firecracker,
-            firecracker_image: spec.firecracker_image,
+
             reuse: spec.reuse,
             reuse_prompt: spec.reuse_prompt,
             allow_outside_worktree: spec.allow_outside_worktree,
@@ -7388,7 +7383,7 @@ mod tests {
 
     #[test]
     fn git_checkout_command_survives_the_wire() {
-        for automatic in [false, true] {
+        {
             let command = PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
                 CommandToRun::new("codex"),
                 PathBuf::from("/work/project"),
@@ -7397,13 +7392,12 @@ mod tests {
                     base: "main".to_owned(),
                     path: PathBuf::from(".worktrees/topic"),
                 },
-                automatic,
             );
             let protobuf: ProtobufPluginCommand = command.try_into().unwrap();
             let decoded: PluginCommand = protobuf.try_into().unwrap();
             assert!(matches!(decoded,
-                PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, GitCheckout::NewWorktree { branch, base, path }, decoded_automatic)
-                if source == *"/work/project" && branch == "topic" && base == "main" && path == *".worktrees/topic" && decoded_automatic == automatic));
+                PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(_, source, GitCheckout::NewWorktree { branch, base, path })
+                if source == *"/work/project" && branch == "topic" && base == "main" && path == *".worktrees/topic"));
         }
     }
 
@@ -7428,15 +7422,12 @@ mod tests {
                 permission_mode: Some("skip".to_owned()),
                 resume: Some("last".to_owned()),
                 hooks: Some(false),
-                firecracker: Some("vm".to_owned()),
-                firecracker_image: Some("image".to_owned()),
                 bubblewrap: true,
             },
             source_directory: Some(PathBuf::from("/host")),
             cwd: Some(PathBuf::from("/tmp/work")),
             name: Some("fixer".to_owned()),
             context: BTreeMap::from([("step".to_owned(), "1".to_owned())]),
-            automatic_firecracker_vm: true,
             start_suppressed: true,
         };
         let protobuf: ProtobufPluginCommand = command.clone().try_into().unwrap();
@@ -7449,7 +7440,6 @@ mod tests {
             cwd: None,
             name: None,
             context: BTreeMap::new(),
-            automatic_firecracker_vm: false,
             start_suppressed: false,
         };
         let protobuf: ProtobufPluginCommand = empty.clone().try_into().unwrap();

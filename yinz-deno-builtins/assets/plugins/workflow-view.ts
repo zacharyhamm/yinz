@@ -1027,7 +1027,7 @@ function render(rows: number, cols: number): string {
                   : "Waiting for your answer"
                 : cleanup
                   ? cleanup.removed
-                    ? "Worktree removed; branch and VM retained"
+                    ? "Worktree removed; branch retained"
                     : "Worktree retained; cleanup did not complete"
                   : integrated?.integrated
                     ? "Integrated locally; worktree retained"
@@ -1103,7 +1103,7 @@ function render(rows: number, cols: number): string {
       if (typeof attrs.removed === "boolean")
         add(
           attrs.removed
-            ? "Worktree removed. Branch and VM retained."
+            ? "Worktree removed. Branch retained."
             : "Worktree retained. Inspect cleanup diagnostics before retrying.",
         );
       if (typeof attrs.integrated === "boolean")

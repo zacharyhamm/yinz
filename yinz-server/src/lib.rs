@@ -19,7 +19,6 @@ compile_error!("Yinz does not support Windows");
 
 pub use yinz_bus::os_input_output;
 pub use yinz_panes::{pane, panes};
-pub use yinz_process::firecracker;
 pub use yinz_terminal::output;
 use yinz_types::internal_ids::TabPosition;
 use yinz_types::style::default_palette;
@@ -2336,7 +2335,6 @@ pub fn start_server_impl(
     } else {
         Ok(())
     };
-    os_input.begin_firecracker_shutdown();
     let session_metadata = session_data.write().unwrap().take();
     drop(session_metadata);
 
@@ -2354,11 +2352,6 @@ pub fn start_server_impl(
     } else {
         Ok(())
     };
-    // On every exit path, the fatal-error one included: the pty thread has been
-    // joined and every pane closed by now, so nothing in this server still needs
-    // its VMs. Only a server that never reaches here — killed, or crashed — leaves
-    // them running, which is what `yinz firecracker list` is for.
-    os_input.stop_firecracker_session().non_fatal();
 
     if let Some(client_id) = kill_completion_client {
         let error = owned_teardown
@@ -2455,16 +2448,6 @@ fn init_session(
             .detachable_panes
             .unwrap_or(pty_host::DEFAULT_DETACHABLE_PANES),
     );
-    os_input
-        .set_firecracker_provider(
-            config.options.firecracker_provider.clone(),
-            config.options.firecracker_provider_timeout_secs,
-            envs::get_session_name()
-                .unwrap_or_else(|_| "default".to_owned().into())
-                .to_string(),
-        )
-        .non_fatal();
-
     let default_shell = config_options.default_shell.clone().map(|command| {
         TerminalAction::RunCommand(RunCommand {
             command,
@@ -2487,11 +2470,6 @@ fn init_session(
             let mut bus = Bus::new(
                 vec![pty_receiver],
                 Some(&to_screen_bounded),
-                // The pty thread sends to itself: a Firecracker pane is resolved on a
-                // worker thread (booting a VM must not block this one) and hands its
-                // result back as a `Firecracker*Spawned` instruction. Without this
-                // sender that hand-back fails, and the pane - error pane included -
-                // is dropped without a trace.
                 Some(&to_pty),
                 Some(&to_plugin),
                 Some(&to_server),

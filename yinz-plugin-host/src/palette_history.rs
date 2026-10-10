@@ -106,11 +106,9 @@ pub(super) fn execute(
                         ("host".into(), h.host_id.to_string()),
                         ("run".into(), h.id.clone()),
                     ]);
-                if let Some(location) = agent_proto::agents::checkout_location(
-                    h.worktree.as_deref(),
-                    h.host.as_deref(),
-                    h.cwd.as_deref(),
-                ) {
+                if let Some(location) =
+                    agent_proto::agents::checkout_location(h.host.as_deref(), h.cwd.as_deref())
+                {
                     if let Some(p) = project_data::projects::for_cwd(&projects, &location) {
                         metadata.insert("project".into(), p.name.clone());
                     }
@@ -210,9 +208,9 @@ pub(super) fn execute(
                     status: "No recorded history".into(),
                 }));
             };
-            let metadata = format!("Run: {}\nProvider: {}\nTitle: {}\nAgent session: {}\nSession: {}\nHost: {}\nPane: {}\nDirectory: {}\nExecution target: {}\nWorktree: {}\nStarted (epoch ms): {}\nEnded (epoch ms): {}\nOutcome: {:?}\nRevision: {}\nSummary: {}\nPrevious run: {}\nOriginal run: {}",
+            let metadata = format!("Run: {}\nProvider: {}\nTitle: {}\nAgent session: {}\nSession: {}\nHost: {}\nPane: {}\nDirectory: {}\nExecution target: {}\nStarted (epoch ms): {}\nEnded (epoch ms): {}\nOutcome: {:?}\nRevision: {}\nSummary: {}\nPrevious run: {}\nOriginal run: {}",
                 h.id, h.kind, h.title, h.session_id, h.yinz_session_name, h.host_id, h.pane_id,
-                h.cwd.as_deref().unwrap_or("Unavailable"), h.host.as_deref().unwrap_or("local"), h.worktree.as_deref().unwrap_or("Unavailable"), h.started_at_ms,
+                h.cwd.as_deref().unwrap_or("Unavailable"), h.host.as_deref().unwrap_or("local"), h.started_at_ms,
                 h.ended_at_ms.map(|v| v.to_string()).unwrap_or_else(|| "Unavailable".into()), h.outcome, h.revision,
                 h.summary.as_ref().map(|s| s.text.as_str()).unwrap_or("Unavailable"), h.previous_run_id.as_deref().unwrap_or("Unavailable"), h.origin_run_id.as_deref().unwrap_or("Unavailable"));
             let mut rows = Vec::new();

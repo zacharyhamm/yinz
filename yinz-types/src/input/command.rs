@@ -255,9 +255,7 @@ impl RunCommand {
         !self.target.is_local() && !self.hold_on_start
     }
     /// A start failure is shown in the pane rather than closing it: always for
-    /// a target that resolves off the pty thread, whose failures (an unreachable
-    /// host, a VM that did not boot, a failed launch check) the user has to read,
-    /// and otherwise only when asked.
+    /// a remote target, whose connection failures the user has to read, and otherwise only when asked.
     pub fn shows_start_failure(&self) -> bool {
         self.hold_on_close || !self.target.is_local()
     }
@@ -268,62 +266,6 @@ mod tests {
     use super::*;
 
     use std::path::Path;
-
-    #[test]
-    fn firecracker_panes_display_their_vm_name() {
-        let command = RunCommand {
-            target: PaneTarget::firecracker("review", None, None).unwrap(),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            command.display_host().as_deref(),
-            Some("firecracker:review")
-        );
-        assert_eq!(
-            PaneTarget::parse_display(command.display_host().as_deref()),
-            PaneTarget::Firecracker {
-                vm: "review".to_owned(),
-                image: None,
-                worktree: None,
-            }
-        );
-        assert_eq!(
-            PaneTarget::parse_display(Some("build-box")),
-            PaneTarget::Ssh {
-                host: "build-box".to_owned()
-            }
-        );
-        assert_eq!(PaneTarget::parse_display(None), PaneTarget::Local);
-    }
-
-    #[test]
-    fn a_firecracker_target_carries_every_validation_rule() {
-        assert!(PaneTarget::firecracker("bad/name", None, None).is_err());
-        assert!(PaneTarget::firecracker("review", Some("bad/image"), None).is_err());
-        assert!(PaneTarget::firecracker("review", None, Some(Path::new("relative"))).is_err());
-        assert_eq!(
-            PaneTarget::firecracker(" review ", Some(" "), Some(Path::new(""))).unwrap(),
-            PaneTarget::Firecracker {
-                vm: "review".to_owned(),
-                image: None,
-                worktree: None,
-            }
-        );
-        assert!(PaneTarget::from_parts(Some("build-box"), Some("review"), None, None).is_err());
-        assert!(PaneTarget::from_parts(None, None, Some("rust-dev"), None).is_err());
-        assert!(PaneTarget::from_parts(Some("build-box"), None, Some("rust-dev"), None).is_err());
-        assert_eq!(
-            PaneTarget::from_parts(Some(" build-box "), None, None, None).unwrap(),
-            PaneTarget::Ssh {
-                host: "build-box".to_owned()
-            }
-        );
-        assert_eq!(
-            PaneTarget::from_parts(None, None, None, None).unwrap(),
-            PaneTarget::Local
-        );
-    }
 
     #[test]
     fn a_bubblewrap_target_is_on_this_machine_and_resolves_off_the_pty_thread() {
@@ -352,34 +294,5 @@ mod tests {
         let mut inherited = PaneTarget::Local;
         inherited.merge_from(&target);
         assert_eq!(inherited, target);
-    }
-
-    #[test]
-    fn a_consumer_target_inherits_image_and_worktree_individually() {
-        let base =
-            PaneTarget::firecracker("review", Some("rust-dev"), Some(Path::new("/w"))).unwrap();
-        let mut local = PaneTarget::Local;
-        local.merge_from(&base);
-        assert_eq!(local, base);
-
-        let mut other_vm = PaneTarget::firecracker("review-2", None, None).unwrap();
-        other_vm.merge_from(&base);
-        assert_eq!(
-            other_vm,
-            PaneTarget::Firecracker {
-                vm: "review-2".to_owned(),
-                image: Some("rust-dev".to_owned()),
-                worktree: Some(PathBuf::from("/w")),
-            }
-        );
-
-        let mut own_image = PaneTarget::firecracker("review-2", Some("go"), None).unwrap();
-        own_image.merge_from(&base);
-        assert_eq!(own_image.firecracker_image(), Some("go"));
-        assert_eq!(own_image.firecracker_worktree(), Some(Path::new("/w")));
-
-        let mut ssh = PaneTarget::ssh("build-box").unwrap();
-        ssh.merge_from(&base);
-        assert_eq!(ssh.ssh_host(), Some("build-box"));
     }
 }

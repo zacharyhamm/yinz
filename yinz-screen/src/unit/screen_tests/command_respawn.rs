@@ -498,11 +498,7 @@ fn only_a_changed_pane_host_is_broadcast() {
     let _ = drain_background_jobs(&background_jobs);
 
     screen
-        .set_pane_host(
-            crate::TerminalId::new(1),
-            Some("build-box".to_owned()),
-            None,
-        )
+        .set_pane_host(crate::TerminalId::new(1), Some("build-box".to_owned()))
         .unwrap();
     let jobs = drain_background_jobs(&background_jobs);
     assert_eq!(
@@ -516,11 +512,7 @@ fn only_a_changed_pane_host_is_broadcast() {
     );
 
     screen
-        .set_pane_host(
-            crate::TerminalId::new(1),
-            Some("build-box".to_owned()),
-            None,
-        )
+        .set_pane_host(crate::TerminalId::new(1), Some("build-box".to_owned()))
         .unwrap();
     let jobs = drain_background_jobs(&background_jobs);
     assert_eq!(
@@ -534,7 +526,7 @@ fn only_a_changed_pane_host_is_broadcast() {
     );
 
     screen
-        .set_pane_host(crate::TerminalId::new(1), None, None)
+        .set_pane_host(crate::TerminalId::new(1), None)
         .unwrap();
     assert_eq!(
         session_reports(&drain_background_jobs(&background_jobs)),
@@ -543,7 +535,7 @@ fn only_a_changed_pane_host_is_broadcast() {
     );
 
     screen
-        .set_pane_host(crate::TerminalId::new(1), None, None)
+        .set_pane_host(crate::TerminalId::new(1), None)
         .unwrap();
     assert_eq!(
         session_reports(&drain_background_jobs(&background_jobs)),

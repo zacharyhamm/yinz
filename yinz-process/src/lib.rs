@@ -13,12 +13,11 @@
 // test comment 3
 // test comment 4
 // test comment 5
-//! Terminal process supervision, local and remote transport, and the VM provider client.
+//! Terminal process supervision, local and SSH transport.
 pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 
 pub mod claude_turn;
 pub mod command;
-pub mod firecracker;
 pub mod pane_context;
 pub mod pty_host;
 
@@ -27,6 +26,10 @@ use std::io;
 
 // async fn in traits is not supported by rust, so dtolnay's excellent async_trait macro is being
 // used. See https://smallcultfollowing.com/babysteps/blog/2019/10/26/async-fn-in-traits-are-hard/
+#[expect(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to the generated future"
+)]
 #[async_trait]
 pub trait AsyncReader: Send + Sync {
     #[expect(

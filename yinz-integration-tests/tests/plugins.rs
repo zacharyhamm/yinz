@@ -84,9 +84,7 @@ fn a_relatively_named_script_plugin_is_launched_from_the_user_plugin_dir() {
         direction: None,
         command: vec![],
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         plugin: Some("file:probe.ts".to_string()),
         cwd: None,
         floating: false,

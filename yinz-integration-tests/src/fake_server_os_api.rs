@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -62,18 +61,6 @@ pub struct FakeServerOsApi {
     /// like it is nowhere, and anything that reads a pane's folder — project
     /// detection above all — cannot be tested end to end.
     cwds: Arc<Mutex<HashMap<ProcessId, PathBuf>>>,
-    /// How many times the server asked for the session's Firecracker VMs to be
-    /// released on its way out. The fake counts completed releases and can wait
-    /// for a provider lock to model shutdown during a guarded close.
-    firecracker_session_stops: Arc<AtomicUsize>,
-    /// How many of those releases found a pane still registered. The server's
-    /// shutdown order - close every pane, then stop the VMs - lives in `lib.rs`
-    /// and nothing else observes it; a stop counted here happened too early.
-    firecracker_stops_with_live_panes: Arc<AtomicUsize>,
-    firecracker_provider_lock: Arc<Mutex<Option<PathBuf>>>,
-    /// The session names the server asked to have their orphaned supervisors
-    /// swept, on its way out. Only a `KillSession` exit asks; the fake records
-    /// rather than sweeps, since a fake pane has no supervisor process.
     orphan_sweeps: Arc<Mutex<Vec<String>>>,
     orphan_sweep_error: Arc<Mutex<Option<String>>>,
 }
@@ -89,19 +76,6 @@ impl FakeServerOsApi {
 
     pub fn written_files(&self) -> HashMap<String, String> {
         self.fake_filesystem.lock().unwrap().clone()
-    }
-
-    pub fn firecracker_session_stops(&self) -> usize {
-        self.firecracker_session_stops.load(Ordering::SeqCst)
-    }
-
-    pub fn firecracker_stops_with_live_panes(&self) -> usize {
-        self.firecracker_stops_with_live_panes
-            .load(Ordering::SeqCst)
-    }
-
-    pub fn set_firecracker_provider_lock(&self, path: PathBuf) {
-        *self.firecracker_provider_lock.lock().unwrap() = Some(path);
     }
 
     pub fn connected_client_count(&self) -> usize {
@@ -359,30 +333,6 @@ impl ServerOsApi for FakeServerOsApi {
     }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()> {
         self.shared_ptys.remove(terminal_id);
-        Ok(())
-    }
-    /// Hand a pane's supervisor over without killing it.
-    ///
-    /// A real one detaches a process the server never owned in the first place;
-    /// the fake moves its pty state somewhere neither session's registry can see
-    /// until the other one asks for it. `host_pid` is not modelled — nothing here
-    /// has a supervisor process — but the control socket is, because that is the
-    /// only thing the receiving session is told and the only thing it can get
-    /// wrong.
-    fn stop_firecracker_session(&self) -> Result<()> {
-        if let Some(path) = self.firecracker_provider_lock.lock().unwrap().as_ref() {
-            let lock = std::fs::File::open(path).context("open fake provider lock")?;
-            lock.lock().context("lock fake provider during shutdown")?;
-        }
-        if self
-            .shared_ptys
-            .read(|registry| !registry.fake_pty_states.is_empty())
-        {
-            self.firecracker_stops_with_live_panes
-                .fetch_add(1, Ordering::SeqCst);
-        }
-        self.firecracker_session_stops
-            .fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
     fn terminate_orphaned_pty_hosts(&self, session: &str) -> Result<()> {

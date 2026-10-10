@@ -66,34 +66,10 @@ if [ ! -d "$HOME/repo/.git" ]; then
     "$git" -C "$HOME/topic" add file
   fi
 fi
-if [ "\${1:-}" = "-C" ] && [ "\${3:-}" = "worktree" ] && [ "\${4:-}" = "remove" ]; then
-  [ ! -e "$HOME/require-vm-close" ] || [ -e "$HOME/vm-closed" ]
-fi
 if [ "\${3:-}" = fetch ] && [ -e "$HOME/change-during-fetch" ]; then
   printf dirty > "$HOME/topic/during-fetch"
 fi
 exec "$git" "$@"
-`;
-const firecrackerFixture = `#!/bin/sh
-set -eu
-# Match the provider: VM worktree identities use physical local paths.
-worktree=$(cd "$HOME/topic" && pwd -P)
-if [ "$1" = firecracker ] && [ "$2" = list ]; then
-  printf '{"vms":[{"session":"work","name":"review","state":"running","vm_id":"/vm/review.socket","worktree":"%s","metrics":{"generation":"42:100"}}],"recoveries":[]}' "$worktree"
-elif [ "$1" = firecracker ] && [ "$2" = close ] && [ "$3" = review ] && [ "$4" = --session ] && [ "$5" = work ] && [ "$6" = --expected-identity ]; then
-  printf '%s' "$7" | grep -q '"generation":"42:100"'
-  [ "$8" = --expected-worktree ] && [ "$9" = "$worktree" ]
-  [ "\${10}" = --expected-head ] && [ -n "\${11}" ]
-  [ "\${12}" = --expected-branch ] && [ "\${13}" = topic ]
-  if [ -e "$HOME/other-lease" ]; then
-    echo 'Worktree is still leased by other' >&2
-    exit 1
-  fi
-  /usr/bin/git -C "$HOME/repo" worktree remove --force -- "$HOME/topic"
-  : > "$HOME/vm-closed"
-else
-  exit 9
-fi
 `;
 
 test(
@@ -250,66 +226,6 @@ for (const [marker, reason] of [
     },
   );
 }
-
-test(
-  "agent-exit closes a guarded Firecracker lease before removing its worktree",
-  { grants: ["ReadFiles", "RunCommands"] },
-  async () => {
-    const root = session.fixture(
-      { "require-vm-close": "" },
-      {
-        git: gitFixture,
-        "yinz-fixture": firecrackerFixture,
-      },
-    );
-    session.start();
-    session.loadPlugin("yinz:agent-exit", {
-      configuration: {
-        agent_target: "firecracker",
-        agent_firecracker_worktree: `${root}/topic`,
-        agent_firecracker_vm: "review",
-        agent_session: "work",
-        agent_yinz_executable: "yinz-fixture",
-      },
-    });
-    await session.waitForText("Delete: Delete worktree & branch and close pane");
-    session.key("Delete");
-    await session.waitForText("Delete again");
-    session.key("Delete");
-    await session.waitFor(
-      "VM close permits Git deletion",
-      () => !session.panes.some((pane) => pane.plugin_url === "yinz:agent-exit"),
-    );
-    assert(!session.screen.includes("Deletion failed"));
-  },
-);
-
-test(
-  "agent-exit refuses Git deletion while another Firecracker lease remains",
-  { grants: ["ReadFiles", "RunCommands"] },
-  async () => {
-    const root = session.fixture(
-      { "other-lease": "", "require-vm-close": "" },
-      { git: gitFixture, "yinz-fixture": firecrackerFixture },
-    );
-    session.start();
-    session.loadPlugin("yinz:agent-exit", {
-      configuration: {
-        agent_target: "firecracker",
-        agent_firecracker_worktree: `${root}/topic`,
-        agent_firecracker_vm: "review",
-        agent_session: "work",
-        agent_yinz_executable: "yinz-fixture",
-      },
-    });
-    await session.waitForText("Delete: Delete worktree & branch and close pane");
-    session.key("Delete");
-    await session.waitForText("Delete again");
-    session.key("Delete");
-    await session.waitForText("Worktree is still leased by");
-    assert(session.screen.includes("Delete: retry cleanup"));
-  },
-);
 
 import { failedWorkflow, deliveryValues } from "./testing-fixtures/workflow.ts";
 test(

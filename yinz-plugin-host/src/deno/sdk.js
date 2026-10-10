@@ -313,29 +313,20 @@
     if (timeoutMs !== undefined) validateTimerDuration(timeoutMs);
     validate(cmd);
     if (cmd.args !== undefined && (!Array.isArray(cmd.args) || Array.from(cmd.args).some(arg => typeof arg !== 'string'))) throw new TypeError('args must be strings');
-    for (const key of ['cwd', 'remote_host', 'firecracker_vm', 'firecracker_image', 'firecracker_worktree']) if (cmd[key] != null && typeof cmd[key] !== 'string') throw new TypeError(`${key} must be a string or null`);
+    for (const key of ['cwd', 'remote_host']) if (cmd[key] != null && typeof cmd[key] !== 'string') throw new TypeError(`${key} must be a string or null`);
     if (cmd.remote_default_shell !== undefined && typeof cmd.remote_default_shell !== 'boolean') throw new TypeError('remote_default_shell must be a boolean');
     if (cmd.target != null && cmd.target !== 'Local') {
       const target = record(cmd.target, 'target');
-      if (Object.keys(target).length !== 1 || (!target.Ssh && !target.Firecracker && !target.Bubblewrap)) throw new TypeError('invalid pane target');
-      const fields = record(target.Ssh ?? target.Firecracker ?? target.Bubblewrap, 'target fields');
-      if (typeof fields[target.Ssh ? 'host' : target.Firecracker ? 'vm' : 'root'] !== 'string') throw new TypeError('target needs a host, vm or root');
-      for (const key of ['image', 'worktree']) if (fields[key] != null && typeof fields[key] !== 'string') throw new TypeError(`target ${key} must be a string or null`);
-    }
-    if (cmd.target == null) {
-      if (cmd.remote_host?.trim() && cmd.firecracker_vm?.trim()) throw new TypeError('remote_host and firecracker_vm conflict');
-      if (!cmd.firecracker_vm?.trim() && (cmd.firecracker_image?.trim() || cmd.firecracker_worktree)) throw new TypeError('image and worktree need firecracker_vm');
-      if (cmd.firecracker_vm?.trim()) {
-        for (const name of [cmd.firecracker_vm.trim(), cmd.firecracker_image?.trim()].filter(Boolean)) if (!/^[a-zA-Z0-9._-]{1,64}$/.test(name)) throw new TypeError('invalid Firecracker name');
-        if (cmd.firecracker_worktree && !cmd.firecracker_worktree.startsWith('/')) throw new TypeError('firecracker_worktree must be absolute');
-      }
+      if (Object.keys(target).length !== 1 || (!target.Ssh && !target.Bubblewrap)) throw new TypeError('invalid pane target');
+      const fields = record(target.Ssh ?? target.Bubblewrap, 'target fields');
+      if (typeof fields[target.Ssh ? 'host' : 'root'] !== 'string') throw new TypeError('target needs a host or root');
     }
     // Copy nested command data so a caller cannot change a validated queued step.
     return {...JSON.parse(JSON.stringify(cmd)), name, stdin, timeoutMs};
   }
   function paneTarget(cmd) {
-    const target = cmd.target ?? (cmd.firecracker_vm?.trim() ? {Firecracker: {vm: cmd.firecracker_vm.trim(), image: cmd.firecracker_image?.trim() || null, worktree: cmd.firecracker_worktree || null}} : cmd.remote_host?.trim() ? {Ssh: {host: cmd.remote_host.trim()}} : 'Local');
-    return target === 'Local' ? ['Local'] : target.Ssh ? ['Ssh', target.Ssh.host] : target.Bubblewrap ? ['Bubblewrap', target.Bubblewrap.root] : ['Firecracker', target.Firecracker.vm, target.Firecracker.image ?? null, target.Firecracker.worktree ?? null];
+    const target = cmd.target ?? (cmd.remote_host?.trim() ? {Ssh: {host: cmd.remote_host.trim()}} : 'Local');
+    return target === 'Local' ? ['Local'] : target.Ssh ? ['Ssh', target.Ssh.host] : ['Bubblewrap', target.Bubblewrap.root];
   }
   function paneCommand(step, pane) {
     const {name, stdin, timeoutMs, ...cmd} = step;
@@ -640,9 +631,9 @@
     control: controlAgent,
     spawnDetails(options) {
       validate(options); record(options, "agent spawn options");
-      const {sourceDirectory, cwd, name, context = {}, automaticFirecrackerVm = false, startSuppressed = false, ...spec} = options;
+      const {sourceDirectory, cwd, name, context = {}, startSuppressed = false, ...spec} = options;
       return command("SpawnAgent", {spec, source_directory:sourceDirectory ?? null, cwd:cwd ?? null, name:name ?? null,
-        context, automatic_firecracker_vm:automaticFirecrackerVm, start_suppressed:startSuppressed});
+        context, start_suppressed:startSuppressed});
     },
     spawn(options) { return agent.spawnDetails(options).pane_id; },
     info(pane) { const id = terminalId(pane); watchAgents(); return agentPanes.get(id)?.agent ? {...agentPanes.get(id).agent} : null; },

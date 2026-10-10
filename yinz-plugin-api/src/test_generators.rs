@@ -116,8 +116,7 @@ pub(crate) fn agent_spawn_specs(tc: &hegel::TestCase) -> AgentSpawnSpec {
         permission_mode: optional_strings(tc),
         resume: optional_strings(tc),
         hooks: optional_booleans(tc),
-        firecracker: optional_strings(tc),
-        firecracker_image: optional_strings(tc),
+
         reuse: optional_booleans(tc),
         reuse_prompt: optional_strings(tc),
         allow_outside_worktree: optional_booleans(tc),
@@ -472,17 +471,12 @@ pub(crate) fn run_command_actions(tc: &hegel::TestCase) -> RunCommandAction {
 }
 
 pub(crate) fn pane_targets(tc: &hegel::TestCase) -> PaneTarget {
-    match tc.draw(generators::integers::<u8>().max_value(3)) {
+    match tc.draw(generators::integers::<u8>().max_value(2)) {
         0 => PaneTarget::Local,
         1 => PaneTarget::Ssh { host: strings(tc) },
         // Absolute, as the wire refuses anything else.
-        2 => PaneTarget::Bubblewrap {
+        _ => PaneTarget::Bubblewrap {
             root: std::path::Path::new("/").join(strings(tc).trim_start_matches('/')),
-        },
-        _ => PaneTarget::Firecracker {
-            vm: strings(tc),
-            image: optional_strings(tc),
-            worktree: optional_paths(tc),
         },
     }
 }
@@ -593,7 +587,7 @@ pub(crate) fn run_plugins_or_aliases(tc: &hegel::TestCase) -> RunPluginOrAlias {
 }
 
 pub(crate) fn runs(tc: &hegel::TestCase) -> Run {
-    match tc.draw(generators::integers::<u8>().max_value(3)) {
+    match tc.draw(generators::integers::<u8>().max_value(2)) {
         0 => Run::Plugin(run_plugins_or_aliases(tc)),
         1 => Run::Command(run_commands(tc)),
         2 => Run::EditFile(paths(tc), optional_usize_as_u32(tc), optional_paths(tc)),
@@ -606,7 +600,7 @@ pub(crate) fn optional_runs(tc: &hegel::TestCase) -> Option<Run> {
 }
 
 pub(crate) fn layout_constraints(tc: &hegel::TestCase) -> LayoutConstraint {
-    match tc.draw(generators::integers::<u8>().max_value(3)) {
+    match tc.draw(generators::integers::<u8>().max_value(2)) {
         0 => LayoutConstraint::MaxPanes(usize_as_u32(tc)),
         1 => LayoutConstraint::MinPanes(usize_as_u32(tc)),
         2 => LayoutConstraint::ExactPanes(usize_as_u32(tc)),
@@ -1668,7 +1662,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             cwd: optional_paths(tc),
             name: optional_strings(tc),
             context: context(tc),
-            automatic_firecracker_vm: booleans(tc),
+
             start_suppressed: booleans(tc),
         },
         CommandType::SetQuitNotice => PluginCommand::SetQuitNotice {
@@ -2096,7 +2090,6 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 commands_to_run(tc),
                 paths(tc),
                 git_checkouts(tc),
-                booleans(tc),
             )
         },
         CommandType::OpenTerminalNearPlugin => {

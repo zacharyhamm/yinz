@@ -331,7 +331,8 @@ impl SixelGrid {
         viewport_y_offset: usize,
     ) -> Vec<SixelImageChunk> {
         let mut changed_sixel_image_chunks = vec![];
-        if let Some(character_cell_size) = *self.character_cell_size.borrow() {
+        let character_cell_size = *self.character_cell_size.borrow();
+        if let Some(character_cell_size) = character_cell_size {
             for (sixel_image_id, sixel_image_pixel_rect) in self.image_coordinates() {
                 for (line_index, line_count) in &changed_rects {
                     let changed_rect = PixelRect::new(

@@ -376,7 +376,6 @@ fn terminal_safe(text: &str) -> String {
 /// What a deferred spawn is waiting on before its command can start.
 fn resolving_status(target: &PaneTarget) -> &'static str {
     match target {
-        PaneTarget::Firecracker { .. } => "waiting for the Firecracker provider",
         PaneTarget::Bubblewrap { .. } => "checking the Bubblewrap environment",
         PaneTarget::Ssh { .. } | PaneTarget::Local => "connecting to the remote host",
     }
@@ -385,7 +384,6 @@ fn resolving_status(target: &PaneTarget) -> &'static str {
 /// What a deferred spawn does once its target is resolved.
 fn starting_status(target: &PaneTarget) -> &'static str {
     match target {
-        PaneTarget::Firecracker { .. } => "connecting to the guest",
         PaneTarget::Bubblewrap { .. } => "entering the Bubblewrap environment",
         PaneTarget::Ssh { .. } | PaneTarget::Local => "starting the remote command",
     }
@@ -394,20 +392,6 @@ fn starting_status(target: &PaneTarget) -> &'static str {
 fn remote_loading_screen(command: &RunCommand, status: &str) -> Vec<u8> {
     let status = terminal_safe(status);
     let body = match &command.target {
-        PaneTarget::Firecracker {
-            vm,
-            image,
-            worktree,
-        } => format!(
-            "\u{1b}[H\u{1b}[2J\u{1b}[1mStarting Firecracker VM\u{1b}[0m\r\n\r\nVM: {}\r\nImage: {}\r\nWorktree: {}\r\n\r\nStatus: {}",
-            terminal_safe(vm),
-            image.as_deref().map(terminal_safe).unwrap_or_else(|| "default".to_owned()),
-            worktree
-                .as_ref()
-                .map(|path| terminal_safe(&path.display().to_string()))
-                .unwrap_or_else(|| "none".to_owned()),
-            status,
-        ),
         PaneTarget::Ssh { host } => format!(
             "\u{1b}[H\u{1b}[2J\u{1b}[1mConnecting to remote host\u{1b}[0m\r\n\r\nHost: {}\r\n\r\nStatus: {}",
             terminal_safe(host),
@@ -1536,8 +1520,7 @@ impl Pty {
         }
     }
 
-    /// Hand a spawn to a worker thread. Resolving where a command runs (a VM to
-    /// boot, an ssh host to reach) and starting it there can take minutes, and
+    /// Hand a spawn to a worker thread. Reaching an SSH host and starting it there can take minutes, and
     /// the pty thread has every other pane's input to serve meanwhile; the
     /// worker sends `SpawnResolved` back when it is done.
     fn defer_spawn(&mut self, job: SpawnJob) -> Result<()> {
@@ -3272,9 +3255,6 @@ impl Pty {
                 .send_to_screen(ScreenInstruction::UpdatePaneHost(
                     terminal_id,
                     cmd.display_host(),
-                    cmd.target
-                        .firecracker_worktree()
-                        .map(|path| path.to_path_buf()),
                 ))
                 .context("failed to report held terminal host")
                 .non_fatal();
@@ -3765,27 +3745,11 @@ impl Pty {
             .as_ref()
             .and_then(|os_input| os_input.remote_pane_host(terminal_id));
         if host.is_some() {
-            // The worktree rides with the host because it is the same fact about the
-            // same transport, discovered at the same moment: a Firecracker pane that
-            // joined a VM asked for no worktree, and what it got is only knowable once
-            // the provider has answered.
-            let worktree = self.remote_worktree(terminal_id);
             let _ = self
                 .bus
                 .senders
-                .send_to_screen(ScreenInstruction::UpdatePaneHost(
-                    terminal_id,
-                    host,
-                    worktree,
-                ));
+                .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, host));
         }
-    }
-
-    fn remote_worktree(&self, terminal_id: TerminalId) -> Option<std::path::PathBuf> {
-        self.bus
-            .os_input
-            .as_ref()
-            .and_then(|os_input| os_input.remote_pane_worktree(terminal_id))
     }
 
     /// The respawn counterpart of `report_terminal_host`. A pane's host is fixed for the life
@@ -3800,22 +3764,17 @@ impl Pty {
             .os_input
             .as_ref()
             .and_then(|os_input| os_input.remote_pane_host(terminal_id));
-        let worktree = self.remote_worktree(terminal_id);
         let _ = self
             .bus
             .senders
-            .send_to_screen(ScreenInstruction::UpdatePaneHost(
-                terminal_id,
-                host,
-                worktree,
-            ));
+            .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, host));
     }
 
     fn forget_terminal_host(&mut self, terminal_id: TerminalId) {
         let _ = self
             .bus
             .senders
-            .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, None, None));
+            .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, None));
     }
 
     fn forget_terminal_foreground(&mut self, terminal_id: TerminalId) {
@@ -4300,31 +4259,9 @@ impl Pty {
 }
 
 impl Drop for Pty {
-    /// Close every local pane and every Firecracker pane on the way out. A
-    /// plain ssh pane is deliberately not on the list: its broker keeps the
-    /// process, and `yinz pty-host adopt --host` can pick it up later. A
-    /// Firecracker pane's VM belongs to this session and is stopped with it,
-    /// so the process is over either way; terminating it first lets the
-    /// broker report the exit instead of the VM simply vanishing under it.
+    // SSH brokers keep their processes available for later adoption.
     fn drop(&mut self) {
-        let firecracker_ids = self
-            .bus
-            .os_input
-            .as_ref()
-            .map(|os_input| {
-                os_input
-                    .remote_pane_ids()
-                    .into_iter()
-                    .filter(|id| os_input.is_firecracker_pane(*id))
-                    .collect::<Vec<TerminalId>>()
-            })
-            .unwrap_or_default();
-        let child_ids: HashSet<TerminalId> = self
-            .id_to_child_pid
-            .keys()
-            .copied()
-            .chain(firecracker_ids)
-            .collect();
+        let child_ids: HashSet<TerminalId> = self.id_to_child_pid.keys().copied().collect();
         for id in child_ids {
             self.close_pane(PaneId::Terminal(id))
                 .with_context(|| format!("failed to close pane {id}"))

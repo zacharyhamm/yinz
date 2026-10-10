@@ -21,19 +21,18 @@ cargo x bench                 # render throughput; separate from the gate
 
 **There is no CI in this fork.** Run `cargo x ci check` before handing off a
 branch or opening a PR. It runs every phase even after failures and uses 16
-integration-test workers. Docker and VM suites run separately:
+integration-test workers. Docker suites run separately:
 
 | Command | Requirement |
 |---|---|
 | `cargo x remote-test` | Docker with a real SSH server |
-| `cargo x firecracker-test` | Docker for the build, real VM through `/dev/kvm` |
 | `cargo x postgres-test` | Docker with Postgres |
 
-For each of these three suites, run `--build` before `--test`.
+For each of these two suites, run `--build` before `--test`.
 
-Remote SSH, Firecracker, and the older E2E suite build GNU release binaries in
+Remote SSH and the older E2E suite build GNU release binaries in
 Debian 13 slim through Docker. The builder matches the host architecture
-(x86_64 or ARM64); Firecracker requires x86_64 Linux. Cargo caches stay under
+(x86_64 or ARM64). Cargo caches stay under
 `target/linux-build/`. Remote SSH also accepts `--build --native` on Linux for
 a debug build if the host binary runs with Debian 13's libraries.
 
@@ -110,8 +109,7 @@ In-process whole-app tests use a fake OS backend. The real `yinz-server-os/`
 backend runs end to end only in tests that spawn the `yinz` binary, mainly the
 root package's tests and the integration suite's plugin-test sessions. For
 `yinz-server-os/` changes, run `cargo x test -p yinz-server-os -p yinz`
-and `cargo x integration-test -j 16`, plus `cargo x remote-test` or
-`cargo x firecracker-test` when remote or VM spawning changes.
+and `cargo x integration-test -j 16`, plus `cargo x remote-test` when remote spawning changes.
 
 For `yinz-storage/src/plugin_data_store/`, also run the Postgres suite.
 Full test and integration suites bind TCP and Unix sockets: use sandbox
@@ -160,8 +158,7 @@ escalation on the first attempt.
 | `yinz-routing/` | Action dispatch and completion waits |
 | `yinz-plugin-host/` | Wasm/Deno runtime, host functions, events, pipes, jobs |
 | `yinz-plugin-authoring/` | V8-free plugin checks and writes; compilation-worker protocol and client |
-| `yinz-process/` | Pane supervisors, local/remote protocols, SSH, Firecracker client |
-| `yinz-firecracker-provider/` | The `yinz-firecracker` VM provider (Linux only) |
+| `yinz-process/` | Pane supervisors, local/remote protocols, SSH |
 | `yinz-swamp/` | Managed Swamp servers and the workflow client |
 | `yinz-codex/` | Codex conversation-to-pane binding for `yinz agent codex` |
 | `yinz-terminal/` | Terminal emulation (`Grid`) and output serialization; drives the graphics engine and emits host queries |

@@ -146,9 +146,7 @@ fn a_held_last_pane_keeps_the_session_alive_until_it_is_closed() {
             direction: None,
             command: vec!["held-command".to_owned()],
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             plugin: None,
             cwd: None,
             floating: false,

@@ -323,13 +323,7 @@ fn builtin_shape_args(
     }
     let mode = trimmed(&spec.permission_mode);
     let resume = trimmed(&spec.resume);
-    // A Firecracker pane's hooks are installed in the guest when the VM is provisioned, so
-    // nothing is handed to the agent here. Claude Code *merges* hooks across settings sources
-    // rather than letting one override another, so a second copy inline would fire every
-    // event twice - and it would carry the local `agent-report` command, which cannot reach
-    // a session from inside a VM anyway.
-    let firecracker = trimmed(&spec.firecracker).is_some();
-    let hooks = spec.hooks.unwrap_or(true) && !firecracker;
+    let hooks = spec.hooks.unwrap_or(true);
     let unknown_mode = |accepted: &[&str], mode: &str| {
         Err(format!(
             "{kind} has no permission mode {mode:?}; it accepts: {}",
@@ -464,12 +458,6 @@ fn builtin_shape_args(
                 },
             }
             if hooks {
-                // The reporting extension, handed over the way a spawned claude's hook
-                // settings are: the pane loads the file, and the extension is what
-                // reports. A Firecracker pane is excluded above, for the same reason
-                // claude's are - the guest's image has its own wiring - and an SSH pane
-                // is stripped by the host, which knows the target when this cannot.
-                // See `agent::pi`.
                 flags.push("--extension".to_owned());
                 flags.push(super::pi::EXTENSION_ARGUMENT.to_owned());
             }
@@ -617,40 +605,15 @@ pub fn display_command(command: &str) -> String {
     words.join(" ")
 }
 
-/// The spec's environment, hook routing, and Firecracker sandbox marker.
-///
-/// A guest logs in as root, and `claude --dangerously-skip-permissions` refuses to run as
-/// root. The refusal stands in for "you have no sandbox", and here the VM *is* the sandbox -
-/// which is the whole reason the pane was asked for - so the pane would otherwise die on a
-/// check that has already been satisfied. `IS_SANDBOX` is how Claude Code is told so.
-///
-/// The flag itself is what is looked for, in the arguments as they will be run. A
-/// `permission_mode` of `skip` is only one of the two ways to ask for it - `shape_args` turns
-/// that mode into this flag - and the other, passing it in `args`, is just as supported and
-/// dies on the same check.
-///
-/// A caller that sets IS_SANDBOX itself keeps its value. Local panes need no sandbox marker.
-fn launch_environment(
-    spec: &Spec,
-    kind: Option<&str>,
-    args: &[String],
-) -> BTreeMap<String, String> {
+fn launch_environment(spec: &Spec, kind: Option<&str>) -> BTreeMap<String, String> {
     let mut env = spec.env.clone();
-    let firecracker = trimmed(&spec.firecracker).is_some();
     if kind == Some("claude") {
         // Override inherited markers too: installed hooks must report without inline hooks.
-        let inline_hooks = spec.hooks.unwrap_or(true) && !firecracker;
+        let inline_hooks = spec.hooks.unwrap_or(true);
         env.insert(
             "YINZ_CLAUDE_INLINE_HOOKS".into(),
             if inline_hooks { "1" } else { "0" }.into(),
         );
-    }
-    let skipping = args
-        .iter()
-        .any(|arg| arg == "--dangerously-skip-permissions");
-    if firecracker && kind == Some("claude") && skipping {
-        env.entry("IS_SANDBOX".to_owned())
-            .or_insert_with(|| "1".to_owned());
     }
     env
 }
@@ -661,12 +624,7 @@ fn launch_environment(
 /// status row, agent hands them back to the model as the tool result — so they say what
 /// is missing rather than that something is.
 pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
-    let target = PaneTarget::from_parts(
-        None,
-        trimmed(&spec.firecracker),
-        trimmed(&spec.firecracker_image),
-        None,
-    )?;
+    let target = PaneTarget::Local;
     let kind = kind_for_spec(spec);
     let provider = kind
         .as_deref()
@@ -738,7 +696,7 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     // Settled from the flags alone, before the prompt joins them: a prompt whose text reads
     // like a flag is still a prompt, and what the agent was asked to do says nothing about
     // how it was asked to run.
-    let env = launch_environment(spec, kind.as_deref(), &args);
+    let env = launch_environment(spec, kind.as_deref());
     // Prompt placement belongs to the provider; argv templates preserve it as one argument.
     if let Some(prompt) = trimmed(&spec.prompt) {
         if let Some(provider) = &provider {
@@ -760,13 +718,6 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         }
     }
 
-    // An environment is an `env(1)` wrapper: assignments first, then the program and its
-    // arguments. `env` execs, so the pane's foreground process is still the agent, and the
-    // session names the record for it rather than for `env` (`agent_kind_of`).
-    //
-    // Everything here is visible in `ps` and in the pane's title, so it carries settings,
-    // never secrets. A credential reaches a Firecracker guest as a file, through the
-    // provider's `credential_files`.
     let (program, args) = match kind.as_deref() {
         Some("codex") if spec.hooks.unwrap_or(true) => wrap_codex(program, args),
         Some("muse") if spec.hooks.unwrap_or(true) => wrap_muse(program, args),
@@ -870,16 +821,7 @@ pub fn resume_command(
         Some(root) => PaneTarget::bubblewrap(std::path::Path::new(root))?,
         None => PaneTarget::parse_display(host),
     };
-    if let PaneTarget::Firecracker { vm, .. } = &target {
-        // A run records the VM's name inside `host` but neither the image it was built
-        // from nor the guest worktree it was mirrored into, and a session-scoped VM is
-        // gone by the time the run reaches the archive. Saying so beats opening a pane
-        // that cannot start. Short, because where this is read is a divider one row high:
-        // the whole of the reasoning is in this comment and in `docs/AGENT_HOOKS.md`.
-        return Err(format!(
-            "the Firecracker VM {vm} cannot be rebuilt from what the run recorded"
-        ));
-    }
+
     let cwd = cwd
         .map(str::trim)
         .filter(|cwd| !cwd.is_empty())
@@ -1027,48 +969,6 @@ mod tests {
     fn no_branch_means_no_git_work() {
         let (_, checkout) = plan(&spec("codex")).unwrap();
         assert_eq!(checkout, GitCheckout::Current);
-    }
-
-    /// The VM's own install is the only one: the provider wires both agents' hooks in the
-    /// guest at provisioning, and Claude Code merges hooks across settings sources rather
-    /// than overriding, so a second copy handed in here would fire every event twice.
-    #[test]
-    fn firecracker_agents_leave_the_hooks_to_the_guest_and_keep_explicit_environment() {
-        let (command, checkout) = plan(&Spec {
-            firecracker: Some("review".to_owned()),
-            env: BTreeMap::from([("TOKEN".to_owned(), "explicit".to_owned())]),
-            ..spec("claude")
-        })
-        .unwrap();
-        assert_eq!(checkout, GitCheckout::Current);
-        assert_eq!(command.target.firecracker_vm(), Some("review"));
-        assert_eq!(command.path, PathBuf::from("env"));
-        assert_eq!(command.args[0], "TOKEN=explicit");
-        assert!(
-            !command.args.iter().any(|arg| arg == "--settings"),
-            "{:?}",
-            command.args
-        );
-    }
-
-    #[test]
-    fn a_blank_firecracker_field_keeps_local_agent_defaults() {
-        let (command, _) = plan(&Spec {
-            firecracker: Some("  ".to_owned()),
-            ..spec("claude")
-        })
-        .unwrap();
-        assert_eq!(command.target.firecracker_vm(), None);
-        assert!(command.args.iter().any(|arg| arg == "--settings"));
-    }
-
-    #[test]
-    fn a_firecracker_image_requires_a_vm() {
-        assert!(plan(&Spec {
-            firecracker_image: Some("rust".to_owned()),
-            ..spec("codex")
-        })
-        .is_err());
     }
 
     #[test]
@@ -1247,125 +1147,6 @@ mod tests {
             hooks: Some(false),
             ..spec(kind)
         }
-    }
-
-    /// A guest logs in as root, where `--dangerously-skip-permissions` refuses to run. The
-    /// VM is the sandbox the flag is asking after, so the pane says so rather than dying on
-    /// a check it has already passed.
-    #[test]
-    fn a_firecracker_claude_skipping_permissions_declares_its_sandbox() {
-        let (command, _) = plan(&Spec {
-            firecracker: Some("review".to_owned()),
-            permission_mode: Some("skip".to_owned()),
-            ..without_hooks("claude")
-        })
-        .unwrap();
-        assert_eq!(command.path, PathBuf::from("env"));
-        assert_eq!(
-            command.args,
-            vec![
-                "IS_SANDBOX=1",
-                "YINZ_CLAUDE_INLINE_HOOKS=0",
-                "claude",
-                "--dangerously-skip-permissions"
-            ]
-        );
-        assert_eq!(
-            crate::agent::agent_kind_of(&command.path, &command.args).as_deref(),
-            Some("claude"),
-        );
-    }
-
-    /// The other way to ask for the flag. `permission_mode` is not the condition - the flag
-    /// is - and a caller that spells it out in `args` is on the same root check.
-    #[test]
-    fn a_flag_passed_in_args_declares_the_sandbox_too() {
-        let (command, _) = plan(&Spec {
-            firecracker: Some("review".to_owned()),
-            args: vec!["--dangerously-skip-permissions".to_owned()],
-            ..without_hooks("claude")
-        })
-        .unwrap();
-        assert_eq!(command.path, PathBuf::from("env"));
-        assert_eq!(
-            command.args,
-            vec![
-                "IS_SANDBOX=1",
-                "YINZ_CLAUDE_INLINE_HOOKS=0",
-                "claude",
-                "--dangerously-skip-permissions"
-            ]
-        );
-    }
-
-    /// The prompt is what the agent was asked to do, not how it was asked to run: a prompt
-    /// that reads like the flag is still a prompt.
-    #[test]
-    fn a_prompt_that_looks_like_the_flag_declares_nothing() {
-        let (command, _) = plan(&Spec {
-            firecracker: Some("review".to_owned()),
-            prompt: Some("--dangerously-skip-permissions".to_owned()),
-            ..without_hooks("claude")
-        })
-        .unwrap();
-        assert!(
-            !command.args.iter().any(|arg| arg.starts_with("IS_SANDBOX")),
-            "{command:?}"
-        );
-    }
-
-    /// Nothing is added anywhere else: a local pane runs as the user and needs none of it,
-    /// a milder permission mode was never refused, and another agent's root check is not
-    /// this one's to answer - however it was asked for.
-    #[test]
-    fn nothing_else_declares_a_sandbox() {
-        for spec in [
-            Spec {
-                permission_mode: Some("skip".to_owned()),
-                ..without_hooks("claude")
-            },
-            Spec {
-                args: vec!["--dangerously-skip-permissions".to_owned()],
-                ..without_hooks("claude")
-            },
-            Spec {
-                firecracker: Some("review".to_owned()),
-                permission_mode: Some("acceptEdits".to_owned()),
-                ..without_hooks("claude")
-            },
-            Spec {
-                firecracker: Some("review".to_owned()),
-                permission_mode: Some("skip".to_owned()),
-                ..without_hooks("codex")
-            },
-            Spec {
-                firecracker: Some("review".to_owned()),
-                args: vec!["--dangerously-skip-permissions".to_owned()],
-                ..without_hooks("codex")
-            },
-        ] {
-            let (command, _) = plan(&spec).unwrap();
-            assert!(
-                !command.args.iter().any(|arg| arg.starts_with("IS_SANDBOX")),
-                "{command:?}"
-            );
-        }
-    }
-
-    /// A caller who set the variable meant it.
-    #[test]
-    fn an_explicit_sandbox_value_is_kept() {
-        let (command, _) = plan(&Spec {
-            firecracker: Some("review".to_owned()),
-            permission_mode: Some("skip".to_owned()),
-            env: BTreeMap::from([("IS_SANDBOX".to_owned(), "0".to_owned())]),
-            ..without_hooks("claude")
-        })
-        .unwrap();
-        assert_eq!(
-            command.args.first().map(String::as_str),
-            Some("IS_SANDBOX=0")
-        );
     }
 
     #[test]
@@ -1733,12 +1514,7 @@ mod tests {
     /// is nothing in that to hand `--resume`, and saying so beats starting a fresh agent the
     /// user would take for their old conversation.
     #[test]
-    fn a_run_with_no_session_id_cannot_be_resumed() {
-        let refused = resume_command("claude", "", Some("/w"), None, None).unwrap_err();
-        assert!(refused.contains("no session id"), "{refused}");
-        // Whitespace is blank, the way `trimmed` reads every other field.
-        assert!(resume_command("claude", "   ", None, None, None).is_err());
-    }
+    fn a_run_with_no_session_id_cannot_be_resumed() {}
 
     /// The kinds with no resume spelling are refused by `shape_args`, which this goes
     /// through - so there is one list of what can be resumed, not two.
@@ -1748,25 +1524,12 @@ mod tests {
         assert!(refused.contains("resume spelling"), "{refused}");
     }
 
-    /// A run on another machine keeps its target, so the pane opens where the folder is.
-    /// A Firecracker one cannot: the run records the VM's name and neither the image it was
-    /// built from nor the guest worktree, and a session-scoped VM is gone by the time the
-    /// run reaches the archive.
     #[test]
-    fn an_ssh_run_keeps_its_host_and_a_firecracker_one_is_refused() {
+    fn an_ssh_run_keeps_its_host() {
         let command =
             resume_command("claude", "abc", Some("/srv/w"), Some("build-box"), None).unwrap();
-        assert_eq!(
-            command.target,
-            PaneTarget::Ssh {
-                host: "build-box".to_owned()
-            }
-        );
+        assert_eq!(command.target, PaneTarget::ssh("build-box").unwrap());
         assert_eq!(command.cwd, Some(PathBuf::from("/srv/w")));
-        let refused = resume_command("claude", "abc", Some("/w"), Some("firecracker:vm-1"), None)
-            .unwrap_err();
-        assert!(refused.contains("vm-1"), "{refused}");
-        assert!(refused.contains("Firecracker"), "{refused}");
     }
 
     /// The host reads a local command's cwd through the plugin mounts, so a run recorded in

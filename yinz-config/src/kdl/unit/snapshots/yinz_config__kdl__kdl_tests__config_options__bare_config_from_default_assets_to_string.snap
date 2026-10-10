@@ -362,10 +362,8 @@ plugins {
     session-manager location="yinz:session-manager"
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"
-    swamp-issues location="yinz:swamp-issues"
     tab-bar location="yinz:tab-bar"
     todos location="yinz:todos"
-    vms location="yinz:vms"
     welcome-screen location="yinz:session-manager" {
         welcome_screen true
     }

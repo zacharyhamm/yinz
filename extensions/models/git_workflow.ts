@@ -23,10 +23,9 @@ import {
     git,
     locked,
     Mutation,
-    Sync,
 } from "./_lib/git_checkout.ts";
 import { outputPreview, OutputRef } from "./_lib/evidence.ts";
-export { Evidence, Finding, Sync };
+export { Evidence, Finding };
 
 const Finding = z.object({
     severity: z.enum(["error", "warning", "info"]),
@@ -55,26 +54,6 @@ export const Integration = Mutation.extend({
     test: Test.nullable(),
     approved: z.literal(true),
 });
-async function liveVm(c: Context, args: z.infer<typeof Args>) {
-    if ("mode" in args.vmSync) return true;
-    const owner = args.vmSync.owner;
-    if (!owner) throw new Error("VM sync evidence lacks agent ownership");
-    const current = await operation({
-        ...c,
-        globalArgs: { session: owner.session, binary: args.binary },
-    }, {
-        method: "vm_status",
-        work: owner.work,
-        key: "verify-vm",
-        agent: owner.agent,
-    });
-    if (
-        JSON.stringify(current.owner) !== JSON.stringify(owner)
-    ) throw new Error("VM sync evidence belongs to a different agent");
-    return (current.vm ?? null) === (args.vmSync.vm ?? null) &&
-        current.clean === true;
-}
-
 // Saved method calls without pane ownership retain their guarded internal execution.
 const Placement = z.object({
     work: Key.optional(),
@@ -89,11 +68,6 @@ export async function cleanupCheckout(
     args: z.infer<typeof Cleanup>,
     c: Context & GitContext,
 ) {
-    if (!await liveVm(c, args)) {
-        throw new Error(
-            "Guest changes or sync conflicts remain unresolved",
-        );
-    }
     const current = await evidence(c, args);
     if (
         !current.source.clean ||
@@ -126,17 +100,9 @@ export async function integrateCheckout(
     c: Context,
     run = (cwd: string, argv: string[]) => checked(c, cwd, argv),
 ) {
-    const vmClean = await liveVm(c, args);
     const current = await evidence(c, args);
     const reason = mergeCheckProblem(current, args.review, args.test);
     if (reason) return { integrated: false, reason, evidence: current };
-    if (!vmClean) {
-        return {
-            integrated: false,
-            reason: "Guest changes require sync and fresh evidence",
-            evidence: current,
-        };
-    }
     for (
         const proof of [
             args.evidence,
@@ -469,7 +435,7 @@ export const extension = {
         ),
         evidence: resource(
             Evidence,
-            "Source, target, contents, gate and VM sync identity",
+            "Source, target, contents, gate identity",
         ),
         rebaseResult: resource(
             RebaseResult,

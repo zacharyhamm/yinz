@@ -678,18 +678,8 @@ impl Controller {
                 }
                 let request: AgentRequest =
                     serde_json::from_value(arg).context("test agent request")?;
-                if let AgentRequest::Spawn {
-                    spec,
-                    remote_host,
-                    automatic_firecracker_vm,
-                    ..
-                } = &request
-                {
-                    if remote_host.is_some()
-                        || *automatic_firecracker_vm
-                        || spec.firecracker.is_some()
-                        || spec.firecracker_image.is_some()
-                    {
+                if let AgentRequest::Spawn { remote_host, .. } = &request {
+                    if remote_host.is_some() {
                         bail!("test agent spawning is limited to the owned local session");
                     }
                 }

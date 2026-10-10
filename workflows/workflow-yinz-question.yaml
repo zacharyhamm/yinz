@@ -47,14 +47,6 @@
           "type": "string"
         },
         "default": []
-      },
-      "firecracker": {
-        "type": "string",
-        "default": ""
-      },
-      "firecrackerImage": {
-        "type": "string",
-        "default": ""
       }
     },
     "required": [

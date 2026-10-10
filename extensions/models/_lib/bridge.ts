@@ -72,13 +72,6 @@ export const Operation = z.object({
     target: z.union([
         z.literal("Local"),
         z.object({ Ssh: z.object({ host: z.string() }) }),
-        z.object({
-            Firecracker: z.object({
-                vm: z.string(),
-                image: z.string().nullable().optional(),
-                worktree: z.string().nullable().optional(),
-            }),
-        }),
     ]).optional(),
     processExited: z.boolean().optional(),
     cancelRequested: z.boolean().optional(),
@@ -94,7 +87,6 @@ export const Operation = z.object({
     agentSession: z.string().nullable().optional(),
     exitCode: z.number().int().nullable().optional(),
     log: z.string().optional(),
-    vm: z.string().nullable().optional(),
     clean: z.boolean().optional(),
     output: z.string().optional(),
     outputTruncated: z.boolean().optional(),
@@ -128,9 +120,6 @@ export const AgentSpec = z.object({
     source_directory: Literal.optional(),
     cwd: Literal.optional(),
     name: Literal.optional(),
-    firecracker: Literal.transform((s) => s || undefined).optional(),
-    firecracker_image: Literal.transform((s) => s || undefined).optional(),
-    automatic_firecracker_vm: z.boolean().optional(),
     reuse: z.boolean().optional(),
     allow_outside_worktree: z.boolean().optional(),
     hooks: z.boolean().optional(),

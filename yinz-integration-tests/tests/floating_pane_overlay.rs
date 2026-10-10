@@ -34,9 +34,7 @@ fn open_overlay_pane(yinz: &TestSession) -> yinz_integration_tests::FakePtyHandl
         direction: None,
         command: vec!["overlay-cmd".to_string()],
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         plugin: None,
         cwd: None,
         floating: true,
@@ -76,9 +74,7 @@ fn open_modal_pane(yinz: &TestSession) -> yinz_integration_tests::FakePtyHandle 
         direction: None,
         command: vec!["modal-cmd".to_string()],
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         plugin: None,
         cwd: None,
         floating: true,
@@ -118,9 +114,7 @@ fn open_plain_floating_pane(yinz: &TestSession) -> yinz_integration_tests::FakeP
         direction: None,
         command: vec!["floating-cmd".to_string()],
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         plugin: None,
         cwd: None,
         floating: true,
@@ -251,9 +245,7 @@ fn open_popup(yinz: &TestSession) {
         direction: None,
         command: vec![],
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         plugin: Some("yinz:quit-confirmation".to_string()),
         cwd: None,
         floating: true,

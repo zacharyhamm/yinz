@@ -289,7 +289,7 @@ impl State {
         self.take_ring_stop(Some(if stop == wire::STOP_HISTORY {
             wire::STOP_HISTORY
         } else {
-            agent_proto::vms::STOP_TABS
+            agent_proto::tabs::STOP_TABS
         }));
     }
     fn key_sheet(&self) -> Vec<(String, String)> {
@@ -339,7 +339,7 @@ impl State {
             .retain(|client| *client != self.own_client_id);
     }
     fn take_ring_stop(&mut self, stop: Option<&str>) -> bool {
-        self.tabs_focused = stop == Some(agent_proto::vms::STOP_TABS);
+        self.tabs_focused = stop == Some(agent_proto::tabs::STOP_TABS);
         self.bar_focused
             .retain(|client| *client != self.own_client_id);
         if self.tabs_focused {

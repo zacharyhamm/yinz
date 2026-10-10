@@ -49,10 +49,6 @@ try:
                 continue
         if not prompt: continue
         report('UserPromptSubmit', prompt=prompt)
-        if prompt == 'guest edit':
-            with open('guest.txt', 'w') as output: output.write('guest\n')
-        if prompt == 'guest conflict':
-            with open('file', 'w') as output: output.write('guest conflict\n')
         if prompt.startswith(('Resolve only the current rebase conflicts', 'CUSTOM RESOLVER:')):
             assert sys.argv[-1] == prompt, 'resolver prompt must arrive as startup argument'
             with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'resolver-prompts.jsonl'), 'a') as log:
@@ -111,9 +107,6 @@ try:
                 log.write(json.dumps(dict(message=json.loads(message)['message'], changes=changes, checkout=os.getcwd())) + '\n')
             if '--malformed-commit' in sys.argv:
                 message = 'not a structured commit message'
-        if prompt == 'guest edit':
-            # The mirror preserves host ownership; trust only this disposable guest checkout.
-            message = subprocess.check_output(['git', '-c', 'safe.directory=' + os.getcwd(), 'rev-parse', 'HEAD']).decode().strip()
         if '--inspect-review' in sys.argv and prompt.startswith('Review '):
             assert not remote
             assert not subprocess.check_output(['git', 'status', '--porcelain'])

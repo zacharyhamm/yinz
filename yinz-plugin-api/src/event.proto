@@ -627,8 +627,6 @@ message PaneInfo {
     optional string host = 29;   // the machine the pane runs on, unset for local panes
     optional AgentInfo agent = 30;
     // Flat spelling of `target`, kept for plugins built before `PaneTarget`.
-    optional string firecracker_image = 31;
-    optional string firecracker_worktree = 32;
     optional command.PaneTarget target = 33;
     bool is_stack_list_member = 34;
     optional string restart_error = 35;

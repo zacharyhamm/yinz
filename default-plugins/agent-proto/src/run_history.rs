@@ -41,11 +41,7 @@ pub fn header_reply(
         "session": header.yinz_session_name,
         "host_id": header.host_id,
         "cwd": header.cwd,
-        // A Firecracker run's `cwd` is a guest path, so its project is the one that
-        // owns the host worktree its VM mirrored — the rule `agents::checkout_location`
-        // states for a live pane, applied to a run that may have no pane left.
         "project": agents::checkout_location(
-                header.worktree.as_deref(),
                 header.host.as_deref(),
                 header.cwd.as_deref(),
             )
@@ -211,7 +207,6 @@ impl Filter {
                 header.cwd.as_deref(),
                 header.host.as_deref(),
                 &header.host_id,
-                header.worktree.as_deref(),
                 scope,
             ),
             None => true,
@@ -245,46 +240,15 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(str::trim).filter(|v| !v.is_empty())
 }
 
-/// Whether a run's folder is inside a project's root.
-///
-/// A prefix on path boundaries rather than `starts_with` on the raw string, so `/work/agent`
-/// does not claim `/work/agent-fork`. A run with no `cwd` at all — one recorded before the
-/// field existed — belongs to no project rather than to every one.
-///
-/// A run on another machine matches nothing, which is `projects::contains`' rule and is here
-/// for its reason: `/home/me/work` on a build box and `/home/me/work` here are two different
-/// folders, and a project is a folder on *this* machine. Filing a remote agent's run under a
-/// local project because the two spell the same path would put work nobody did here into the
-/// answer to "what has been done on this".
-///
-/// A Firecracker run is the exception the host rule has to make: its `cwd` is a guest path
-/// in a *copy* of a folder on this machine, and `worktree` names the original. The work was
-/// done on this project, so the path matched is the worktree and the host is beside the
-/// point — the same exception `agents::checkout_location` makes for a live pane.
-///
-/// `host_id` is a second, independent way a run can be on another machine, checked whether or
-/// not `worktree` is set: `host` is the ssh or VM target the *pane* was opened on, which the run
-/// has always carried, while `host_id` is the machine whose server recorded the run, which only
-/// matters once the store is shared. With `plugin_data_url` pointing at Postgres, a laptop and
-/// a build box writing to one database both record runs whose `host` is empty, and only the
-/// row's own machine tells them apart.
-///
-/// An **empty** `host_id` matches. It is a row from before the column, and for a run `""` reads
-/// as "this machine" — the same accommodation `agents::rows::owned_or_unclaimed` makes, and for
-/// the same reason: there was only one machine when it was written, so refusing it would hide a
-/// project's whole history from before the upgrade.
 pub fn matches_root(
     cwd: Option<&str>,
     host: Option<&str>,
     host_id: &HostId,
-    worktree: Option<&str>,
     scope: &RootScope,
 ) -> bool {
-    let cwd = match worktree {
-        Some(worktree) => Some(worktree),
-        None if host.is_some_and(|host| !host.trim().is_empty()) => return false,
-        None => cwd,
-    };
+    if host.is_some_and(|host| !host.trim().is_empty()) {
+        return false;
+    }
     let host_id = host_id.as_str().trim();
     if !host_id.is_empty() && host_id != scope.host_id.as_str().trim() {
         return false;
@@ -1317,7 +1281,6 @@ mod tests {
             kind: kind.to_owned(),
             cwd: Some("/work/agent".to_owned()),
             host: None,
-            worktree: None,
             bubblewrap: None,
             started_at_ms,
             ended_at_ms: None,
@@ -2251,37 +2214,32 @@ mod tests {
             Some("/work/agent"),
             None,
             &HostId::new(HOST),
-            None,
             &here
         ));
         assert!(matches_root(
             Some("/work/agent/src"),
             None,
             &HostId::new(HOST),
-            None,
             &here
         ));
         assert!(matches_root(
             Some("/work/agent/"),
             None,
             &HostId::new(HOST),
-            None,
             &here
         ));
         assert!(!matches_root(
             Some("/work/agent-fork"),
             None,
             &HostId::new(HOST),
-            None,
             &here
         ));
-        assert!(!matches_root(None, None, &HostId::new(HOST), None, &here));
+        assert!(!matches_root(None, None, &HostId::new(HOST), &here));
         // The same path over ssh is another folder, not this project.
         assert!(!matches_root(
             Some("/work/agent"),
             Some("build-box"),
             &HostId::new(HOST),
-            None,
             &here
         ));
         // And so is the same path on another machine sharing the store, where the pane is
@@ -2290,7 +2248,6 @@ mod tests {
             Some("/work/agent"),
             None,
             &HostId::new("another-machine"),
-            None,
             &here
         ));
         // A run from before the column names no machine, and there was only one machine then.
@@ -2298,30 +2255,6 @@ mod tests {
             Some("/work/agent"),
             None,
             &HostId::new(""),
-            None,
-            &here
-        ));
-    }
-
-    /// The exception the host rule makes for a VM: the folder the run names is a copy of
-    /// one on this machine, and the worktree is where the work actually landed.
-    #[test]
-    fn a_firecracker_run_matches_the_project_of_the_worktree_its_vm_mirrored() {
-        let here = RootScope::new("/work/agent", HostId::new(HOST));
-        assert!(matches_root(
-            Some("/workspace"),
-            Some("firecracker:review"),
-            &HostId::new(HOST),
-            Some("/work/agent"),
-            &here
-        ));
-        // And only that project: the worktree is matched on path boundaries like any
-        // other folder.
-        assert!(!matches_root(
-            Some("/workspace"),
-            Some("firecracker:review"),
-            &HostId::new(HOST),
-            Some("/work/agent-fork"),
             &here
         ));
     }

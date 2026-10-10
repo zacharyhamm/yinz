@@ -109,7 +109,7 @@ fn pane_tabs_descriptors_keep_originating_cwd_on_retries() {
             tabs.iter()
                 .map(|tab| tab.location.as_str())
                 .collect::<Vec<_>>(),
-            ["yinz:agents", "yinz:todos", "yinz:vms", "yinz:swamp-issues"]
+            ["yinz:agents", "yinz:todos"]
         );
         assert_eq!(
             tabs[0].configuration.get("view").map(String::as_str),
@@ -1374,7 +1374,7 @@ fn r_arms_a_confirmation_on_an_archived_run_and_nowhere_else() {
     );
 }
 
-/// Leaving the tab drops the resume question armed there, as it drops a VMs one: left
+/// Leaving the tab drops the resume question armed there, as it drops a Todos one: left
 /// armed, it answered the first key of the next visit, and a `y` then started a process
 /// for a question asked about a list since forgotten.
 #[test]
@@ -2172,7 +2172,7 @@ fn readers_have_their_own_footer_and_other_tabs_none() {
 /// and over the reader - neither of which would otherwise have the right keys on show - and
 /// goes back to the list's or the reader's own hints once the keys leave it. The other tabs
 /// say it in the hint row they have anyway, so they grow no footer: their bodies keep the
-/// same number of rows whoever has the keys - but for a quiet VMs list, which has no such
+/// same number of rows whoever has the keys - but for a quiet Todos list, which has no such
 /// row and grows one of its own (`render_vms`).
 #[test]
 fn the_bar_hint_is_the_footer_wherever_the_bar_has_the_keys() {
@@ -2279,7 +2279,7 @@ fn queued_bar_keys_do_not_reach_the_list() {
     state.set_rows(unfocused(strip()));
     state.render(20, 40);
     state.selected = 3;
-    state.take_ring_stop(Some(agent_proto::vms::STOP_TABS));
+    state.take_ring_stop(Some(agent_proto::tabs::STOP_TABS));
     for key in [
         BareKey::Left,
         BareKey::Right,
@@ -2298,7 +2298,7 @@ fn queued_bar_keys_do_not_reach_the_list() {
     assert!(state.tabs_focused);
     assert!(!state.on_paste("queued paste"));
     for release in [BareKey::Enter, BareKey::Tab, BareKey::Esc] {
-        state.take_ring_stop(Some(agent_proto::vms::STOP_TABS));
+        state.take_ring_stop(Some(agent_proto::tabs::STOP_TABS));
         assert!(state.on_key(KeyWithModifier::new(release)));
         assert!(!state.tabs_focused);
         assert_eq!(state.selected, 3);
@@ -2339,7 +2339,7 @@ fn a_click_bringing_the_keys_back_only_points() {
                 assert!(state.tabs_focused);
             },
             "take" => {
-                state.take_ring_stop(Some(agent_proto::vms::STOP_TABS));
+                state.take_ring_stop(Some(agent_proto::tabs::STOP_TABS));
                 assert!(state.tabs_focused);
             },
             _ => state.has_keyboard = Some(false),
@@ -2392,7 +2392,7 @@ fn esc_on_the_tab_bar_returns_to_the_list() {
 }
 
 /// The tab bar is the panel's only map, so a filtered Agents view does not take it away:
-/// the four tabs stay drawn and clickable on every surface, and the view's name is the
+/// the two tabs stay drawn and clickable on every surface, and the view's name is the
 /// Agents surface's own first row, with the list a row below it.
 #[test]
 fn the_tab_bar_stays_up_in_every_view_and_the_view_names_itself_above_the_list() {
@@ -4007,7 +4007,6 @@ fn a_run() -> agents::AgentRun {
         kind: "claude".to_owned(),
         cwd: Some("/work".to_owned()),
         host: None,
-        worktree: None,
         bubblewrap: None,
         started_at_ms: 10,
         ended_at_ms: Some(20),
@@ -4108,7 +4107,7 @@ fn reading(prompt: &str) -> State {
 
 #[test]
 fn reader_traverses_the_panel_bar_without_losing_its_event() {
-    let mut state = reading("An event kept open while visiting VMs");
+    let mut state = reading("An event kept open while visiting Todos");
     state.on_key(KeyWithModifier::new(BareKey::Tab));
     assert!(state.tabs_focused);
     state.on_key(KeyWithModifier::new(BareKey::Right));
@@ -5704,7 +5703,7 @@ fn keys_the_sheet_does_not_answer_shut_it_and_do_their_job() {
     assert!(state.confirming_resume.is_some(), "Esc shut the sheet");
 
     // Every surface has a sheet of its own, even one with nothing listed on it yet - on
-    // VMs with no agent to ask, only the key that finds one.
+    // Todos with no agent to ask, only the key that finds one.
 }
 
 /// What a key sheet row says after the keys' column, `key_width` wide: the description's

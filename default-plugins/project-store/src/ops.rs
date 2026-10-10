@@ -135,7 +135,6 @@ pub fn plan_mutate(
                 &view.project_rows,
                 name,
                 arg(args, "root"),
-                args.get("firecracker_image").and_then(Value::as_str),
                 args.get("worktree_dir").and_then(Value::as_str),
             )?;
             Ok((
@@ -516,34 +515,6 @@ mod tests {
         load_view(backend, "project_list", &json!({}))
             .expect("loaded")
             .projects
-    }
-
-    #[test]
-    fn remembering_project_settings_distinguishes_omitted_and_empty_values() {
-        let backend = backend();
-        let remember = |args| run_mutate(&backend, "project_remember", &args).unwrap();
-        remember(
-            json!({"name":" work ","root":" /tmp/work ","worktree_dir":" trees ","firecracker_image":" rust "}),
-        );
-        remember(json!({"name":"work"}));
-        let saved = registry(&backend);
-        assert_eq!(saved["work"].root, "/tmp/work");
-        assert_eq!(saved["work"].worktree_dir.as_deref(), Some(" trees "));
-        assert_eq!(saved["work"].firecracker_image.as_deref(), Some("rust"));
-        remember(json!({"name":"work","worktree_dir":""}));
-        let saved = registry(&backend);
-        assert_eq!(saved["work"].worktree_dir, None);
-        assert_eq!(saved["work"].firecracker_image.as_deref(), Some("rust"));
-        remember(json!({"name":"work","worktree_dir":"../trees","firecracker_image":""}));
-        let saved = registry(&backend);
-        assert_eq!(saved["work"].worktree_dir.as_deref(), Some("../trees"));
-        assert_eq!(saved["work"].firecracker_image, None);
-        remember(
-            json!({"name":"work","root":"/tmp/work","worktree_dir":"","firecracker_image":""}),
-        );
-        let saved = registry(&backend);
-        assert_eq!(saved["work"].worktree_dir, None);
-        assert_eq!(saved["work"].firecracker_image, None);
     }
 
     fn field(out: &str, key: &str) -> Value {
@@ -1090,7 +1061,7 @@ mod tests {
         let found = projects::Project {
             name: "found".to_owned(),
             root: "/tmp/found".to_owned(),
-            firecracker_image: None,
+
             worktree_dir: None,
             remote: None,
             worktree_status: Some(projects::WorktreeStatus::Primary),
@@ -1120,7 +1091,7 @@ mod tests {
         let found = projects::Project {
             name: "tmp-found".to_owned(),
             root: "/tmp/found".to_owned(),
-            firecracker_image: None,
+
             worktree_dir: None,
             remote: Some("git@example.com:me/found".to_owned()),
             worktree_status: Some(projects::WorktreeStatus::Primary),

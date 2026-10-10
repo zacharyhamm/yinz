@@ -37,7 +37,7 @@ type Request = {
   process?: number;
   action: string;
   cancel_active?: boolean;
-  spec: AgentSpawnOptions & { source_directory?: string; automatic_firecracker_vm?: boolean };
+  spec: AgentSpawnOptions & { source_directory?: string };
   argv: string[];
   cwd: string;
   inputs?: Record<string, Json>;
@@ -87,7 +87,6 @@ type Delivery = {
   view?: number | undefined;
   entries?: Record<string, Attachment> | undefined;
   choice?: string | undefined;
-  vm?: string | null | undefined;
   clean?: boolean | undefined;
   transport?: string | undefined;
   requestId?: string | undefined;
@@ -552,7 +551,7 @@ function present(work: string): void {
   }
   if (placement.current == null && next != null) {
     const source = read(scope(work, "source"))[0];
-    // Keep the source for pane/VM actions, without restoring it when the view closes.
+    // Keep the source for pane actions, without restoring it when the view closes.
     if (source?.pane != null) z.command("HidePaneWithId", terminal(source.pane));
   }
   if (placement.current != null) paneSubtitle(current);
@@ -1887,21 +1886,11 @@ async function handle(
     }
   }
   let row: DataRecord | undefined, uid: string | undefined, value: Delivery | undefined;
-  if (args.method === "vm_status")
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
-    value = {
-      work: args.work,
-      key: args.key,
-      request: encode(args),
-      incarnation: identity.incarnation,
-    } as Delivery;
-  else {
-    const [claimed, previous] = claim(args);
-    uid = claimed;
-    if (previous) return previous;
-    [value, row] = read(uid);
-    assert(value, "No operation with that identity");
-  }
+  const [claimed, previous] = claim(args);
+  uid = claimed;
+  if (previous) return previous;
+  [value, row] = read(uid);
+  assert(value, "No operation with that identity");
   if (args.method === "workflow_run") {
     assert(args.directory, "Missing project directory");
     const config = z.projectConfig.read(args.directory);
@@ -1958,22 +1947,7 @@ async function handle(
         owner: { ...identity, work: args.work, agent: "source" },
       });
       inputs["kind"] = pane.agent?.kind ?? inputs["kind"] ?? "";
-      const vm =
-        typeof pane.target === "object" && "Firecracker" in pane.target
-          ? pane.target.Firecracker
-          : undefined;
-      if (vm) {
-        inputs["firecracker"] = vm.vm;
-        inputs["firecrackerImage"] = vm.image ?? "";
-        // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
-      } else assert(!Boolean(inputs["firecracker"]), "Local source cannot select a different VM");
     }
-    assert(
-      // oxlint-disable-next-line eslint/no-extra-boolean-cast -- Explicit conversion narrows a JSON value while preserving legacy truthiness.
-      !Boolean(inputs["firecracker"]) ||
-        (typeof inputs["sourcePane"] === "number" && inputs["sourcePane"] >= 0),
-      "VM work requires its original pane identity",
-    );
     inputs["target"] ??= config.root;
     inputs["gate"] ??= config.config.ci ?? ["cargo", "x", "ci", "check"];
     inputs["targetBranch"] ??= config.config.default_branch ?? "main";
@@ -2088,14 +2062,11 @@ async function handle(
     value.outcome = "pending";
     put(required(uid), value, row);
     // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
-    const { source_directory, automatic_firecracker_vm, prompt, ...spec } = args.spec;
+    const { source_directory, prompt, ...spec } = args.spec;
     const opts = {
       ...spec,
       ...(prompt == null ? {} : { prompt }),
       ...(source_directory === undefined ? {} : { sourceDirectory: source_directory }),
-      ...(automatic_firecracker_vm === undefined
-        ? {}
-        : { automaticFirecrackerVm: automatic_firecracker_vm }),
       context: { swamp_owner: encode(owner), swamp_operation: args.key },
       startSuppressed: placements.has(args.work) && placements.get(args.work)?.detached !== true,
     };
@@ -2116,25 +2087,7 @@ async function handle(
     assert(value, "No operation with that identity");
     value.target = info?.target;
     put(required(uid), value, row);
-    let host: Supervisor;
-    if (typeof value.target === "object" && "Firecracker" in value.target) {
-      const deadline = Date.now() + 150000;
-      for (;;) {
-        try {
-          // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
-          host = await supervisor(required(value.pane));
-          break;
-        } catch {
-          ensureOpen(args.work);
-          assert(
-            Date.now() < deadline,
-            "VM dispatch has a pane but no verified transport; reconcile it without repeating spawn",
-          );
-          // oxlint-disable-next-line eslint/no-await-in-loop -- These operations must complete in order before the next state transition.
-          await z.sleep(200);
-        }
-      }
-    } else host = await supervisor(required(value.pane));
+    const host = await supervisor(required(value.pane));
     [value, row] = read(required(uid));
     assert(value, "No operation with that identity");
     Object.assign(value, {
@@ -2235,65 +2188,6 @@ async function handle(
     value.process = host.child_pid;
     put(required(uid), value, row);
     ensureOpen(args.work);
-  } else if (["source_sync", "vm_inspect", "vm_sync", "vm_status"].includes(args.method)) {
-    const agent: Partial<Delivery> =
-      args.method === "source_sync"
-        ? read(scope(args.work, "source"))[0]
-          ? await owned({ work: args.work, agent: "source" })
-          : { target: "Local" }
-        : await owned(args);
-    value.owner = agent.owner;
-    value.target = agent.target;
-    const target =
-      typeof agent.target === "object" && "Firecracker" in agent.target
-        ? agent.target.Firecracker
-        : undefined;
-    if (target) {
-      const name = target.vm;
-      assert(name, "Missing VM identity");
-      let output = "",
-        warnings = "";
-      if (args.method === "vm_sync" || args.method === "source_sync") {
-        const r = await z.runCommand({
-          command: [
-            z.serverBinary || "yinz",
-            "firecracker",
-            "sync",
-            name,
-            "--session",
-            identity.session,
-          ],
-          cwd: "/",
-          context: { swamp_owner: encode(identity) },
-          maxBytesReturned: 1048576,
-        });
-        warnings = z.decodeUtf8(r.stderr);
-        output = z.decodeUtf8(r.stdout);
-        assert(
-          r.exitCode === 0,
-          `VM sync failed; inspect provider reports before retrying: ${warnings}`,
-        );
-      }
-      const count = await command([
-        z.serverBinary || "yinz",
-        "firecracker",
-        "changes",
-        name,
-        "--session",
-        identity.session,
-      ]);
-      assert(/^\d+\s*$/u.test(count), "Invalid guest change count");
-      Object.assign(value, {
-        outcome: "completed",
-        vm: name,
-        output: output + warnings + count,
-        clean: Number(count) === 0 && warnings === "",
-      });
-    } else {
-      Object.assign(value, { outcome: "completed", vm: null, clean: true });
-    }
-    if (uid) put(uid, value, row);
-    else return value;
   } else throw new Error("Unknown bridge method");
   return result(required(uid));
 }

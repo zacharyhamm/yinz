@@ -95,9 +95,7 @@ impl Tab {
         existing: usize,
         client: ClientId,
     ) -> Result<PaneTabsInfo> {
-        for descriptor in &mut layout.tabs {
-            descriptor.normalize_agent_panel();
-        }
+        for _descriptor in &mut layout.tabs {}
         layout.validate().map_err(|error| anyhow!(error))?;
         let PaneId::Plugin(plugin_id) = pane else {
             return Err(anyhow!("pane tabs require a plugin pane"));

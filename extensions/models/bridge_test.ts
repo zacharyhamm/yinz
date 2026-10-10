@@ -223,7 +223,6 @@ print(json.dumps({'result': dict(request, outcome='pending', incarnation='test',
             source: revision,
             target: revision,
             gate: ["true"],
-            vmSync: { mode: "local" as const },
         };
         const output = "LOG START\n" + "🙂".repeat(262144) + "\nLOG END";
         await methods.test_result.execute({

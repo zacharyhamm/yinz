@@ -439,7 +439,7 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
             clear.clone(),
             AgentRequest::Spawn {
                 placement: Default::default(),
-                automatic_firecracker_vm: false,
+
                 spec: AgentSpawnSpec {
                     kind: Some("zsh".into()),
                     ..Default::default()

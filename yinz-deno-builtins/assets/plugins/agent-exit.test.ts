@@ -336,12 +336,11 @@ for (const target of ["local", "bubblewrap"]) {
     assertEquals(plugin.commands.at(-1), "CloseSelf");
   });
 }
-for (const target of ["local", "firecracker", "bubblewrap"]) {
+for (const target of ["local", "bubblewrap"]) {
   for (const changes of [" M tracked\n", "?? untracked\n", "M  staged\n"]) {
     test(`agent-exit preserves ${target} dirty worktree and branch: ${changes.trim()}`, async () => {
       const plugin = await checkout({
         agent_target: target,
-        agent_firecracker_vm: "review",
         agent_session: "work",
         agent_yinz_executable: "/bin/yinz",
       });
@@ -352,14 +351,12 @@ for (const target of ["local", "firecracker", "bubblewrap"]) {
       const commands = JSON.stringify(plugin.commands);
       assert(!commands.includes('"worktree","remove"'));
       assert(!commands.includes('"update-ref"'));
-      assert(!commands.includes('"firecracker","close"'));
       assert(!plugin.commands.includes("CloseSelf"));
     });
   }
   test(`agent-exit preserves ${target} commits not merged into the configured base`, async () => {
     const plugin = await checkout({
       agent_target: target,
-      agent_firecracker_vm: "review",
       agent_session: "work",
       agent_yinz_executable: "/bin/yinz",
     });
@@ -377,7 +374,6 @@ for (const target of ["local", "firecracker", "bubblewrap"]) {
     const commands = JSON.stringify(plugin.commands);
     assert(!commands.includes('"worktree","remove"'));
     assert(!commands.includes('"update-ref"'));
-    assert(!commands.includes('"firecracker","close"'));
     assert(!plugin.commands.includes("CloseSelf"));
   });
 }
@@ -427,126 +423,6 @@ test("agent-exit refuses a branch whose head changed", async () => {
   await reply(plugin, "", 128, "cannot lock ref: is at another head but expected original");
   assert((await plugin.render()).includes("cannot lock ref"));
   assert(!plugin.commands.includes("CloseSelf"));
-});
-test("agent-exit closes a guarded Firecracker VM before Git deletion", async () => {
-  const plugin = await checkout({
-    agent_target: "firecracker",
-    agent_firecracker_worktree: "/repo/topic",
-    agent_firecracker_vm: "review",
-    agent_session: "work",
-    agent_yinz_executable: "/bin/yinz",
-    agent_yinz_config_file: "/config/config.kdl",
-    agent_yinz_config_dir: "/config",
-  });
-  await prepareDeletion(plugin);
-  assert((await plugin.render(24, 200)).includes("VM: review"));
-  await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
-  await reply(plugin, "", 128, "origin unavailable");
-  await reply(plugin, listing());
-  await cleanCheckout(plugin);
-  const first = plugin.commands.at(-1);
-  assert(typeof first === "object" && first != null && "RunCommand" in first);
-  assert(Array.isArray(first.RunCommand));
-  assertEquals(first.RunCommand[1], {
-    YINZ_CONFIG_FILE: "/config/config.kdl",
-    YINZ_CONFIG_DIR: "/config",
-  });
-  const vm = {
-    session: "work",
-    name: "review",
-    vm_id: "/vm/review.socket",
-    worktree: "/repo/topic",
-    metrics: { generation: "42:100" },
-  };
-  await reply(plugin, JSON.stringify({ vms: [vm], recoveries: [] }));
-  await reply(plugin, "");
-  await reply(plugin, "");
-  const commands = JSON.stringify(plugin.commands);
-  assert(commands.includes('"close","review","--session","work","--expected-identity"'));
-  assert(commands.includes('"--expected-worktree","/repo/topic","--expected-head"'));
-  assert(!commands.includes('"worktree","remove"'));
-});
-test("agent-exit refuses Git deletion while another VM lease remains", async () => {
-  const plugin = await checkout({
-    agent_target: "firecracker",
-    agent_firecracker_worktree: "/repo/topic",
-    agent_firecracker_vm: "review",
-    agent_session: "work",
-    agent_yinz_executable: "/bin/yinz",
-  });
-  await confirmDeletion(plugin);
-  await reply(plugin, listing());
-  await cleanCheckout(plugin);
-  const vm = {
-    session: "work",
-    name: "review",
-    vm_id: "/vm/review.socket",
-    worktree: "/repo/topic",
-    metrics: { generation: "42:100" },
-  };
-  await reply(plugin, JSON.stringify({ vms: [vm], recoveries: [] }));
-  await reply(plugin, "", 1, "Worktree is still leased by other");
-  assert((await plugin.render(24, 200)).includes("still leased by other"));
-  assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
-});
-test("agent-exit refuses a named Firecracker VM that moved to another worktree", async () => {
-  const plugin = await checkout({
-    agent_target: "firecracker",
-    agent_firecracker_worktree: "/repo/topic",
-    agent_firecracker_vm: "review",
-    agent_session: "work",
-    agent_yinz_executable: "/bin/yinz",
-  });
-  await confirmDeletion(plugin);
-  await reply(plugin, listing());
-  await cleanCheckout(plugin);
-  await reply(
-    plugin,
-    JSON.stringify({
-      vms: [
-        {
-          session: "work",
-          name: "review",
-          vm_id: "/vm/review.socket",
-          worktree: "/repo/other",
-          metrics: { generation: "42:100" },
-        },
-      ],
-      recoveries: [],
-    }),
-  );
-  assert((await plugin.render()).includes("VM identity changed"));
-  assert(!JSON.stringify(plugin.commands).includes('"firecracker","close"'));
-});
-test("agent-exit retries only branch cleanup after guarded Firecracker removal", async () => {
-  const plugin = await checkout({
-    agent_target: "firecracker",
-    agent_firecracker_worktree: "/repo/topic",
-    agent_firecracker_vm: "review",
-    agent_session: "work",
-    agent_yinz_executable: "/bin/yinz",
-  });
-  const vm = {
-    session: "work",
-    name: "review",
-    vm_id: "/vm/review.socket",
-    worktree: "/repo/topic",
-    metrics: { generation: "42:100" },
-  };
-  await confirmDeletion(plugin);
-  await reply(plugin, listing());
-  await cleanCheckout(plugin);
-  await reply(plugin, JSON.stringify({ vms: [vm], recoveries: [] }));
-  await reply(plugin, "");
-  await reply(plugin, "", 1, "branch is locked");
-  const closes = JSON.stringify(plugin.commands).match(/"firecracker","close"/g)?.length ?? 0;
-  await confirmDeletion(plugin);
-  await reply(plugin, "");
-  assertEquals(
-    JSON.stringify(plugin.commands).match(/"firecracker","close"/g)?.length ?? 0,
-    closes,
-  );
-  assertEquals(plugin.commands.at(-1), "CloseSelf");
 });
 test("agent-exit leaves configured workflow behavior unchanged", async () => {
   const plugin = await loadPlugin("./agent-exit.ts", {

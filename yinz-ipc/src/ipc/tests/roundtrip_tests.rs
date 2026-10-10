@@ -235,7 +235,7 @@ fn test_client_messages() {
             },
             AgentRequest::Spawn {
                 placement: Default::default(),
-                automatic_firecracker_vm: false,
+
                 spec: yinz_types::agent::AgentSpawnSpec {
                     kind: Some("codex".into()),
                     branch: Some("review-auth".into()),
@@ -758,8 +758,7 @@ fn test_client_messages() {
                 plugin_data_url: None,
                 plugin_data_schema: None,
                 host_id: None,
-                firecracker_provider: None,
-                firecracker_provider_timeout_secs: None,
+
                 pane_frames: Some(true),
                 pane_animations: Some(false),
                 pane_frame_style: Some(PaneFrameStyle::Full),
@@ -5517,7 +5516,6 @@ fn agent_spawn_placement_and_failure_resources_roundtrip() {
             cwd: None,
             project: None,
             remote_host: None,
-            automatic_firecracker_vm: false,
         }));
     }
     test_client_roundtrip!(ClientToServerMsg::AgentControl(

@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use yinz_types::{
-    command::PaneTarget,
     geometry::{PercentOrFixed, SplitDirection, SplitSize},
     pane_size::Constraint,
 };
@@ -181,7 +180,6 @@ fn serialize_tiled_pane(
         has_children,
         &mut tiled_pane_node,
     );
-    serialize_target_attributes(&layout.run, &mut tiled_pane_node);
 
     serialize_tiled_layout_attributes(layout, ignore_size, &mut tiled_pane_node);
     if let Some(ref fg) = layout.default_fg {
@@ -228,10 +226,7 @@ fn serialize_tiled_pane(
     tiled_pane_node
 }
 
-/// Where a command pane runs, when that is a Firecracker VM or a Bubblewrap environment.
-/// The layout parser reads these back into the same `RunCommand` fields, so a dumped or
-/// resurrected pane lands in its VM or sandbox again rather than running the command on
-/// the host.
+/// Preserve the Bubblewrap environment when dumping a command pane.
 fn serialize_target_attributes(layout_run: &Option<Run>, kdl_node: &mut KdlNode) {
     let Some(Run::Command(run_command)) = layout_run else {
         return;
@@ -240,40 +235,12 @@ fn serialize_target_attributes(layout_run: &Option<Run>, kdl_node: &mut KdlNode)
         kdl_node
             .entries_mut()
             .push(KdlEntry::new_prop("bubblewrap", root.display().to_string()));
-        return;
-    }
-    let PaneTarget::Firecracker {
-        vm,
-        image,
-        worktree,
-    } = &run_command.target
-    else {
-        return;
-    };
-    kdl_node
-        .entries_mut()
-        .push(KdlEntry::new_prop("firecracker_vm", vm.to_owned()));
-    if let Some(image) = image {
-        kdl_node
-            .entries_mut()
-            .push(KdlEntry::new_prop("firecracker_image", image.to_owned()));
-    }
-    if let Some(worktree) = worktree {
-        kdl_node.entries_mut().push(KdlEntry::new_prop(
-            "firecracker_worktree",
-            worktree.display().to_string(),
-        ));
     }
 }
 
 pub fn extract_command_and_args(layout_run: &Option<Run>) -> (Option<String>, Vec<String>) {
     match layout_run {
-        // Its command was never named here — the far machine chose it. Emitting
-        // the empty placeholder would resurrect as a local pane running "",
-        // where saying nothing resurrects it as a plain default-shell pane. An
-        // ssh pane has no layout surface to say where it ran; a Firecracker one
-        // keeps its `firecracker_vm` (see `serialize_target_attributes`),
-        // which the parser turns back into that guest's login shell.
+        // A remote default shell has no explicit command to serialize.
         Some(Run::Command(run_command)) if run_command.is_remote_default_shell() => (None, vec![]),
         Some(Run::Command(run_command)) => (
             Some(run_command.command.display().to_string()),
@@ -715,7 +682,6 @@ fn serialize_floating_pane(
         has_children,
         &mut floating_pane_node,
     );
-    serialize_target_attributes(&layout.run, &mut floating_pane_node);
     if let Some(ref fg) = layout.default_fg {
         floating_pane_node
             .entries_mut()
@@ -2594,10 +2560,10 @@ mod tests {
                     configuration: BTreeMap::new(),
                 },
                 PaneTabDescriptor {
-                    label: "VMs!".into(),
-                    location: "yinz:agents".into(),
+                    label: "Todos!".into(),
+                    location: "yinz:todos".into(),
                     initial_cwd: None,
-                    configuration: BTreeMap::from([("view".into(), "vms".into())]),
+                    configuration: BTreeMap::from([("custom".into(), "value".into())]),
                 },
             ],
         };
@@ -2629,9 +2595,7 @@ mod tests {
             } else {
                 tiled.children[0].pane_tabs.as_ref()
             };
-            let mut expected = tabs.clone();
-            expected.tabs[1].location = "yinz:vms".into();
-            expected.tabs[1].configuration.clear();
+            let expected = tabs.clone();
             assert_eq!(actual, Some(&expected), "{raw}");
         }
     }
@@ -2730,105 +2694,7 @@ mod tests {
         "#]]
         .assert_eq(&kdl.0);
     }
-    /// Where a command pane runs is part of what a dump has to say: parsed back,
-    /// a Firecracker pane is the same `RunCommand`, and a guest login shell is
-    /// still a guest login shell.
-    #[test]
-    fn can_serialize_firecracker_panes() {
-        use yinz_types::input::command::RunCommand;
-        let geom = |y: usize| PaneGeom {
-            x: 0,
-            y,
-            rows: Dimension::fixed(10),
-            cols: Dimension::fixed(10),
-            stacked: None,
-            is_pinned: false,
-            logical_position: None,
-        };
-        let in_vm = RunCommand {
-            command: PathBuf::from("cargo"),
-            args: vec!["test".to_owned()],
-            cwd: Some(PathBuf::from("/workspace")),
-            hold_on_close: true,
-            target: PaneTarget::Firecracker {
-                vm: "review".to_owned(),
-                image: Some("rust-dev".to_owned()),
-                worktree: Some(PathBuf::from("/home/me/src/project")),
-            },
-            ..Default::default()
-        };
-        let guest_shell = RunCommand {
-            remote_default_shell: true,
-            target: PaneTarget::Firecracker {
-                vm: "review".to_owned(),
-                image: None,
-                worktree: None,
-            },
-            ..Default::default()
-        };
-        let tab_layout_manifest = TabLayoutManifest {
-            tiled_panes: vec![
-                PaneLayoutManifest {
-                    run: Some(Run::Command(in_vm.clone())),
-                    geom: geom(0),
-                    ..Default::default()
-                },
-                PaneLayoutManifest {
-                    run: Some(Run::Command(guest_shell.clone())),
-                    geom: geom(10),
-                    ..Default::default()
-                },
-            ],
-            floating_panes: vec![PaneLayoutManifest {
-                run: Some(Run::Command(in_vm.clone())),
-                geom: geom(1),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let global_layout_manifest = GlobalLayoutManifest {
-            tabs: vec![("Tab #1".to_owned(), tab_layout_manifest)],
-            ..Default::default()
-        };
-        let kdl = serialize_session_layout(global_layout_manifest).unwrap();
-        expect![[r#"
-            layout {
-                tab name="Tab #1" {
-                    pane command="cargo" cwd="/workspace" firecracker_vm="review" firecracker_image="rust-dev" firecracker_worktree="/home/me/src/project" size=10 {
-                        args "test"
-                        start_suspended true
-                    }
-                    pane firecracker_vm="review" size=10
-                    floating_panes {
-                        pane command="cargo" cwd="/workspace" firecracker_vm="review" firecracker_image="rust-dev" firecracker_worktree="/home/me/src/project" {
-                            start_suspended true
-                            height 10
-                            width 10
-                            x 0
-                            y 1
-                            args "test"
-                        }
-                    }
-                }
-            }
-        "#]]
-        .assert_eq(&kdl.0);
 
-        let layout =
-            yinz_config::kdl::layout::from_kdl(&kdl.0, Some("dump.kdl".into()), None, None)
-                .unwrap();
-        let (_, tiled, floating) = &layout.tabs[0];
-        let resurrected_in_vm = RunCommand {
-            hold_on_start: true,
-            ..in_vm
-        };
-        assert_eq!(
-            tiled.children[0].run,
-            Some(Run::Command(resurrected_in_vm.clone()))
-        );
-        assert_eq!(tiled.children[1].run, Some(Run::Command(guest_shell)));
-        assert_eq!(floating[0].run, Some(Run::Command(resurrected_in_vm)));
-    }
     /// A sandboxed pane resurrects into its sandbox: its command is the agent's own, so
     /// without the attribute it would come back running on the host.
     #[test]

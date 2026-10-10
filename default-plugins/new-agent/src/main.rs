@@ -24,8 +24,6 @@ const PERMISSION_MODE: &str = "permission_mode";
 const AGENT_DEFAULT: &str = "Agent default";
 const PROMPT: &str = "prompt";
 const INITIAL_PROMPT: &str = "initial_prompt";
-const FIRECRACKER: &str = "firecracker";
-const FIRECRACKER_IMAGE: &str = "firecracker_image";
 const CREATE_BRANCH: &str = "create_branch";
 const BASE: &str = "base";
 const BRANCH: &str = "branch";
@@ -117,7 +115,6 @@ struct State {
     /// A manifest without this pane keeps the last one known.
     own_tab: Option<TabPosition>,
     job: Job,
-    firecracker_image_edited: bool,
     worktree_dir_edited: bool,
     error: Option<String>,
     /// A standing remark for the status row: what the fork modal is forking, or why a
@@ -174,8 +171,6 @@ impl Default for State {
             // takes, so asking agent for an agent and filling this in are the
             // same request said two ways.
             .field(PROMPT, "Prompt (optional)", TextInput::empty())
-            .checkbox(FIRECRACKER, "Run in Firecracker", Checkbox::new(false))
-            .field(FIRECRACKER_IMAGE, "Firecracker image", TextInput::empty())
             .checkbox(
                 CREATE_BRANCH,
                 "Create and switch branch",
@@ -226,7 +221,6 @@ impl Default for State {
             plugin_id: yinz_tile::prelude::PluginId::new(0),
             own_tab: None,
             job: Job::New,
-            firecracker_image_edited: false,
             worktree_dir_edited: false,
             error: None,
             note: None,
@@ -1015,24 +1009,17 @@ fn agent_cwd(pane: &AgentPane) -> Option<&str> {
         .or(pane.cwd.as_deref())
 }
 
-/// The command that starts `kind` where `pane` is running: same machine, same VM, same
+/// The command that starts `kind` where `pane` is running: same machine, same
 /// folder, and nothing of the old argv - a duplicate and a fork both start a fresh
 /// conversation, they only differ over which agent has it.
 fn command_in_context(pane: &AgentPane, kind: &str) -> Result<CommandToRun, String> {
     // Use the source pane even when this picker was opened from a workflow view.
     // An exited process loses its live cwd, but its agent record retains it.
-    let mut target = match pane.bubblewrap.as_deref() {
+    let target = match pane.bubblewrap.as_deref() {
         // The sandbox is part of where the pane runs, as much as its machine is.
         Some(root) => PaneTarget::bubblewrap(std::path::Path::new(root))?,
         None => PaneTarget::parse_display(pane.host.as_deref()),
     };
-    if let PaneTarget::Firecracker {
-        image, worktree, ..
-    } = &mut target
-    {
-        image.clone_from(&pane.firecracker_image);
-        *worktree = pane.firecracker_worktree.clone().map(Into::into);
-    }
     launch::command_in_context(kind, agent_cwd(pane).map(Into::into), target)
 }
 
@@ -1164,13 +1151,6 @@ impl State {
         if id == PROJECT {
             self.fill_worktree_default();
             self.refresh_git_suggestions();
-            self.fill_firecracker_image_default();
-        }
-        if id == FIRECRACKER {
-            self.fill_firecracker_image_default();
-        }
-        if id == FIRECRACKER_IMAGE {
-            self.firecracker_image_edited = true;
         }
         if id == CREATE_BRANCH && !self.dialog.form().checked(CREATE_BRANCH) {
             self.set_checked(WORKTREE, false);
@@ -1225,17 +1205,6 @@ impl State {
         self.set_text(PATH, &dir);
     }
 
-    fn fill_firecracker_image_default(&mut self) {
-        if self.firecracker_image_edited {
-            return;
-        }
-        let image = selected_project(self.dialog.form(), &self.projects)
-            .filter(|_| self.dialog.form().checked(FIRECRACKER))
-            .and_then(|project| project.firecracker_image.clone())
-            .unwrap_or_default();
-        self.set_text(FIRECRACKER_IMAGE, &image);
-    }
-
     /// What the status row says in a pane `cols` wide.
     ///
     /// The error wins the row: it is the thing the user has to act on. The note says what
@@ -1249,17 +1218,7 @@ impl State {
             (None, Some(note)) => Some(Text::new(note)),
             (None, None) => {
                 let form = self.dialog.form();
-                let hint = match form.focused_id() {
-                    Some(FIRECRACKER) => Some("First use: yinz-firecracker setup"),
-                    Some(FIRECRACKER_IMAGE) if form.checked(FIRECRACKER) => {
-                        Some("Blank uses the default VM image")
-                    },
-                    Some(FIRECRACKER_IMAGE) => Some("Used only with Run in Firecracker"),
-                    _ => None,
-                };
-                hint.map(Text::new).or_else(|| {
-                    prompt_is_cut(form, cols).then(|| Text::new(prompt_summary(form.text(PROMPT))))
-                })
+                prompt_is_cut(form, cols).then(|| Text::new(prompt_summary(form.text(PROMPT))))
             },
         }
     }
@@ -1430,9 +1389,6 @@ fn spec(form: &Form) -> launch::Spec {
     let branch = form
         .checked(CREATE_BRANCH)
         .then(|| form.text(BRANCH).to_owned());
-    let firecracker = form
-        .checked(FIRECRACKER)
-        .then(launch::unique_firecracker_vm);
     launch::Spec {
         // The select's labels are the shared kinds, capitalised; `launch` lowercases.
         kind: Some(form.text(AGENT).to_owned()),
@@ -1442,12 +1398,7 @@ fn spec(form: &Form) -> launch::Spec {
         effort: selected_agent_option(form, EFFORT),
         permission_mode: selected_agent_option(form, PERMISSION_MODE),
         prompt: Some(form.text(PROMPT).to_owned()),
-        firecracker,
-        // Keep a typed image in the form when switching back to local, but do not
-        // send an inactive VM option to the launcher.
-        firecracker_image: form
-            .checked(FIRECRACKER)
-            .then(|| form.text(FIRECRACKER_IMAGE).to_owned()),
+
         // No branch is how `launch` is told to leave the repository alone, which is
         // exactly what an unchecked box means.
         branch,
@@ -1531,7 +1482,7 @@ mod tests {
             Project {
                 name: name.to_owned(),
                 root: root.to_owned(),
-                firecracker_image: None,
+
                 worktree_dir: None,
                 remote: None,
                 worktree_status: None,
@@ -1550,8 +1501,6 @@ mod tests {
             command: Some(kind.to_owned()),
             cwd: Some("/work/yinz".to_owned()),
             host: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
             bubblewrap: None,
             status: agents::AgentStatus::Running,
             tab: Some((yinz_tile::prelude::TabId::new(1), "work".to_owned())),
@@ -1625,17 +1574,17 @@ mod tests {
     #[test]
     fn the_modal_is_tall_enough_for_the_whole_dialog() {
         let state = State::default();
-        assert_eq!(modal_height(&state.dialog), 22);
-        assert_eq!(state.dialog.height() + FRAME_ROWS, 22);
+        assert_eq!(modal_height(&state.dialog), 20);
+        assert_eq!(state.dialog.height() + FRAME_ROWS, 20);
     }
 
     #[test]
     fn the_modal_moves_up_to_keep_its_footer_inside_short_viewports() {
         let mut state = State::default();
-        for (rows, y) in [(40, 8), (24, 2), (22, 0), (18, 0), (22, 0), (40, 8)] {
+        for (rows, y) in [(40, 8), (24, 4), (20, 0), (18, 0), (20, 0), (40, 8)] {
             state.resize(80, rows);
-            assert_eq!(state.requested_size, Some(("40".into(), rows.min(22), y)));
-            assert!(y + 22.min(rows) <= rows);
+            assert_eq!(state.requested_size, Some(("40".into(), rows.min(20), y)));
+            assert!(y + 20.min(rows) <= rows);
         }
     }
 
@@ -1714,100 +1663,6 @@ mod tests {
             matches!(checkout, GitCheckout::NewWorktree { branch, base, path }
             if branch == "topic" && base == "main" && path == *".worktrees/topic")
         );
-    }
-
-    #[test]
-    fn choosing_firecracker_keeps_host_worktree_setup() {
-        let mut state = State {
-            projects: registry(),
-            source_directory: PathBuf::from("/work/yinz"),
-            ..Default::default()
-        };
-        state.fill_projects();
-        state.set_checked(FIRECRACKER, true);
-        state.changed(FIRECRACKER);
-        assert!(state.dialog.form().checked(CREATE_BRANCH));
-        assert!(state.dialog.form().checked(WORKTREE));
-        state.set_text(BRANCH, "topic");
-        state.changed(BRANCH);
-        let (command, checkout) = request(state.dialog.form()).unwrap();
-        assert!(command.target.firecracker_vm().is_some());
-        assert!(matches!(checkout, GitCheckout::NewWorktree { .. }));
-    }
-
-    #[test]
-    fn switching_back_to_local_ignores_the_image_and_keeps_it_for_next_time() {
-        let mut state = State::default();
-        state.set_text(BRANCH, "topic");
-        state.changed(BRANCH);
-        state.set_checked(FIRECRACKER, true);
-        state.changed(FIRECRACKER);
-        state.set_text(FIRECRACKER_IMAGE, "rust");
-        state.changed(FIRECRACKER_IMAGE);
-        assert_eq!(
-            spec(state.dialog.form()).firecracker_image.as_deref(),
-            Some("rust")
-        );
-
-        state.set_checked(FIRECRACKER, false);
-        state.changed(FIRECRACKER);
-        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "rust");
-        assert_eq!(spec(state.dialog.form()).firecracker_image, None);
-        assert!(request(state.dialog.form()).unwrap().0.target.is_local());
-
-        state.set_checked(FIRECRACKER, true);
-        state.changed(FIRECRACKER);
-        assert!(matches!(
-            request(state.dialog.form()).unwrap().0.target,
-            PaneTarget::Firecracker { image: Some(image), .. } if image == "rust"
-        ));
-    }
-
-    #[test]
-    fn firecracker_fields_explain_setup_defaults_and_inactive_images() {
-        let mut state = State::default();
-        for (field, enabled, expected) in [
-            (FIRECRACKER, false, "First use: yinz-firecracker setup"),
-            (
-                FIRECRACKER_IMAGE,
-                false,
-                "Used only with Run in Firecracker",
-            ),
-            (FIRECRACKER_IMAGE, true, "Blank uses the default VM image"),
-        ] {
-            state.set_checked(FIRECRACKER, enabled);
-            state.dialog.form_mut().focus_on(field);
-            assert_eq!(
-                status(&state, narrowest_inside()).as_deref(),
-                Some(expected)
-            );
-            assert!(expected.chars().count() <= narrowest_inside());
-        }
-    }
-
-    #[test]
-    fn an_unprojected_agent_gets_its_own_valid_vm_name() {
-        let mut state = State::default();
-        state.set_checked(CREATE_BRANCH, false);
-        state.changed(CREATE_BRANCH);
-        state.set_checked(FIRECRACKER, true);
-        state.changed(FIRECRACKER);
-        let first = request(state.dialog.form())
-            .unwrap()
-            .0
-            .target
-            .firecracker_vm()
-            .unwrap()
-            .to_owned();
-        let second = request(state.dialog.form())
-            .unwrap()
-            .0
-            .target
-            .firecracker_vm()
-            .unwrap()
-            .to_owned();
-        assert_ne!(first, second);
-        assert!(validate_firecracker_vm_name(&first).is_ok());
     }
 
     /// The point of the shared module: the modal's form and agent's `agent_spawn`
@@ -2486,52 +2341,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn firecracker_image_defaults_follow_the_project_until_edited() {
-        let mut projects = registry();
-        projects.get_mut("yinz").unwrap().firecracker_image = Some("rust".to_owned());
-        projects.get_mut("dobbs").unwrap().firecracker_image = Some("ruby".to_owned());
-        let mut state = State {
-            projects,
-            source_directory: PathBuf::from("/work/yinz"),
-            ..Default::default()
-        };
-        state.fill_projects();
-        state.changed(PROJECT);
-        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
-
-        state.set_checked(FIRECRACKER, true);
-        state.changed(FIRECRACKER);
-        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "rust");
-
-        state.set_checked(FIRECRACKER, false);
-        state.changed(FIRECRACKER);
-        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
-
-        state.set_checked(FIRECRACKER, true);
-        state.changed(FIRECRACKER);
-
-        state
-            .dialog
-            .form_mut()
-            .select_by_id_mut(PROJECT)
-            .unwrap()
-            .select_option("dobbs");
-        state.changed(PROJECT);
-        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "ruby");
-
-        state.set_text(FIRECRACKER_IMAGE, "");
-        state.changed(FIRECRACKER_IMAGE);
-        state
-            .dialog
-            .form_mut()
-            .select_by_id_mut(PROJECT)
-            .unwrap()
-            .select_option("yinz");
-        state.changed(PROJECT);
-        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
-    }
-
     /// The field says where a worktree is *placed*, so what is offered is the
     /// directories the linked ones already live in, each once. The primary checkout
     /// is not among them - leaving the "use worktree" box unticked is what running
@@ -2616,119 +2425,6 @@ mod tests {
             .unwrap()
             .suggestions()
             .is_empty());
-    }
-
-    #[test]
-    fn the_fork_default_is_an_agent_other_than_the_one_running() {
-        // The two agents a person swaps between default to each other.
-        assert_eq!(default_fork_kind("codex"), Some("claude"));
-        assert_eq!(default_fork_kind("claude"), Some("codex"));
-        // Anything else - the third offered agent, or a kind `classify` knows and the
-        // picker does not - opens on the first offered one.
-        assert_eq!(default_fork_kind("cursor"), Some("codex"));
-        assert_eq!(default_fork_kind("gemini"), Some("codex"));
-    }
-
-    #[test]
-    fn the_picker_opens_on_the_other_agent_and_still_offers_this_one() {
-        let state = forking("codex");
-
-        let select = state.dialog.form().select_by_id(AGENT).unwrap();
-        assert_eq!(select.selected_option(), Some("Claude"));
-        // Forking onto the same agent is a duplicate, and stays one keypress away.
-        assert!(select.options().iter().any(|option| option == "Codex"));
-        assert_eq!(state.note.as_deref(), Some("forking codex in yinz"));
-        assert!(state.error.is_none());
-
-        assert_eq!(
-            forking("claude").dialog.form().text(AGENT),
-            "Codex",
-            "the default swaps both ways"
-        );
-    }
-
-    /// A fork is a duplicate that changed its mind about which agent: everything that says
-    /// *where* the pane runs is carried over untouched.
-    #[test]
-    fn forking_keeps_the_context_and_applies_the_new_agents_launch_defaults() {
-        let pane = AgentPane {
-            host: Some("builder".to_owned()),
-            cwd: Some("/tmp/repo".to_owned()),
-            ..agent_pane("codex")
-        };
-        let command = command_in_context(&pane, "claude").unwrap();
-        assert_eq!(command.path, PathBuf::from("env"));
-        assert!(
-            command.args == ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"],
-            "SSH forks preserve installed broker-aware hooks"
-        );
-        // The cwd of an ssh pane is a path on `builder`, so it is sent as-is.
-        assert_eq!(command.cwd, Some("/tmp/repo".into()));
-        assert_eq!(command.target.ssh_host(), Some("builder"));
-
-        // The one offered kind whose program is not its name.
-        assert_eq!(
-            command_in_context(&pane, "cursor").unwrap().path,
-            PathBuf::from("cursor-agent")
-        );
-
-        let local = AgentPane {
-            host: None,
-            ..pane.clone()
-        };
-        let local_command = command_in_context(&local, "claude").unwrap();
-        assert_eq!(
-            local_command.args,
-            launch::plan(&launch::Spec {
-                kind: Some("claude".into()),
-                ..Default::default()
-            })
-            .unwrap()
-            .0
-            .args
-        );
-        assert_eq!(
-            local_command.args[2], "--settings",
-            "local forks keep automatic reporting hooks"
-        );
-        assert_eq!(local_command.cwd, Some("/tmp/repo".into()));
-        assert!(local_command.target.is_local());
-
-        let vm = AgentPane {
-            host: Some("firecracker:review".to_owned()),
-            firecracker_image: Some("rust-dev".to_owned()),
-            firecracker_worktree: Some("/host/repo".to_owned()),
-            ..pane.clone()
-        };
-        let vm_command = command_in_context(&vm, "claude").unwrap();
-        assert!(
-            vm_command.args == ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"],
-            "VM hooks are already installed in the guest"
-        );
-        assert_eq!(vm_command.cwd, Some("/tmp/repo".into()));
-        assert_eq!(
-            vm_command.target,
-            PaneTarget::Firecracker {
-                vm: "review".to_owned(),
-                image: Some("rust-dev".to_owned()),
-                worktree: Some("/host/repo".into()),
-            }
-        );
-        for (pane, fork) in [
-            (&pane, &command),
-            (&local, &local_command),
-            (&vm, &vm_command),
-        ] {
-            let duplicate =
-                duplicate_command(pane, &BTreeMap::from([(7, "claude".into())])).unwrap();
-            assert_eq!(duplicate.path, fork.path);
-            assert_eq!(
-                duplicate.args, fork.args,
-                "duplicates use the same reporting hooks as forks"
-            );
-            assert_eq!(duplicate.cwd, fork.cwd);
-            assert_eq!(duplicate.target, fork.target);
-        }
     }
 
     /// The alternative would be starting an agent in whatever folder the modal was opened
@@ -3048,6 +2744,143 @@ mod tests {
         }
     }
 
+    /// The hide goes to every panel, so it says which tab the launch was on: the panel on
+    /// another client's tab is not over the new agent, and leaves itself up.
+    #[test]
+    fn the_hide_names_the_modals_tab() {
+        let me = PaneId::Plugin(yinz_tile::prelude::PluginId::new(12));
+        let two_tabs = |modal_tab: usize| PaneManifest {
+            panes: std::collections::HashMap::from([
+                (
+                    TabPosition::new(modal_tab),
+                    vec![PaneInfo {
+                        id: me,
+                        is_floating: true,
+                        ..Default::default()
+                    }],
+                ),
+                (
+                    TabPosition::new(1 - modal_tab),
+                    vec![PaneInfo {
+                        id: PaneId::Terminal(TerminalId::new(3)),
+                        ..Default::default()
+                    }],
+                ),
+            ]),
+        };
+        assert_eq!(tab_of(&two_tabs(1), me), Some(TabPosition::new(1)));
+        assert_eq!(tab_of(&two_tabs(0), me), Some(TabPosition::new(0)));
+        assert_eq!(tab_of(&PaneManifest::default(), me), None);
+
+        // Every manifest moves it, and one without the modal keeps the last one known.
+        let mut state = State {
+            plugin_id: yinz_tile::prelude::PluginId::new(12),
+            ..Default::default()
+        };
+        state.update(Event::PaneUpdate(two_tabs(1)));
+        assert_eq!(state.own_tab, Some(TabPosition::new(1)));
+        state.update(Event::PaneUpdate(PaneManifest::default()));
+        assert_eq!(state.own_tab, Some(TabPosition::new(1)));
+
+        let hide = panel_hide(Some(TabPosition::new(2)));
+        assert_eq!(hide.message_name, wire::AGENT_STRIP_HIDE);
+        assert_eq!(
+            hide.message_args.get(wire::PANEL_TAB).map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(hide.plugin_url, None, "a hide launches nobody");
+        let hide = panel_hide(None);
+        assert_eq!(hide.message_name, wire::AGENT_STRIP_HIDE);
+        assert!(hide.message_args.is_empty());
+    }
+
+    #[test]
+    fn the_fork_default_is_an_agent_other_than_the_one_running() {
+        // The two agents a person swaps between default to each other.
+        assert_eq!(default_fork_kind("codex"), Some("claude"));
+        assert_eq!(default_fork_kind("claude"), Some("codex"));
+        // Anything else - the third offered agent, or a kind `classify` knows and the
+        // picker does not - opens on the first offered one.
+        assert_eq!(default_fork_kind("cursor"), Some("codex"));
+        assert_eq!(default_fork_kind("gemini"), Some("codex"));
+    }
+
+    #[test]
+    fn the_picker_opens_on_the_other_agent_and_still_offers_this_one() {
+        let state = forking("codex");
+
+        let select = state.dialog.form().select_by_id(AGENT).unwrap();
+        assert_eq!(select.selected_option(), Some("Claude"));
+        // Forking onto the same agent is a duplicate, and stays one keypress away.
+        assert!(select.options().iter().any(|option| option == "Codex"));
+        assert_eq!(state.note.as_deref(), Some("forking codex in yinz"));
+        assert!(state.error.is_none());
+
+        assert_eq!(
+            forking("claude").dialog.form().text(AGENT),
+            "Codex",
+            "the default swaps both ways"
+        );
+    }
+
+    #[test]
+    fn forking_keeps_the_context_and_applies_the_new_agents_launch_defaults() {
+        let pane = AgentPane {
+            host: Some("builder".to_owned()),
+            cwd: Some("/tmp/repo".to_owned()),
+            ..agent_pane("codex")
+        };
+        let command = command_in_context(&pane, "claude").unwrap();
+        assert_eq!(command.path, PathBuf::from("env"));
+        assert!(
+            command.args == ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"],
+            "SSH forks preserve installed broker-aware hooks"
+        );
+        // The cwd of an ssh pane is a path on `builder`, so it is sent as-is.
+        assert_eq!(command.cwd, Some("/tmp/repo".into()));
+        assert_eq!(command.target.ssh_host(), Some("builder"));
+
+        // The one offered kind whose program is not its name.
+        assert_eq!(
+            command_in_context(&pane, "cursor").unwrap().path,
+            PathBuf::from("cursor-agent")
+        );
+
+        let local = AgentPane {
+            host: None,
+            ..pane.clone()
+        };
+        let local_command = command_in_context(&local, "claude").unwrap();
+        assert_eq!(
+            local_command.args,
+            launch::plan(&launch::Spec {
+                kind: Some("claude".into()),
+                ..Default::default()
+            })
+            .unwrap()
+            .0
+            .args
+        );
+        assert_eq!(
+            local_command.args[2], "--settings",
+            "local forks keep automatic reporting hooks"
+        );
+        assert_eq!(local_command.cwd, Some("/tmp/repo".into()));
+        assert!(local_command.target.is_local());
+
+        for (pane, fork) in [(&pane, &command), (&local, &local_command)] {
+            let duplicate =
+                duplicate_command(pane, &BTreeMap::from([(7, "claude".into())])).unwrap();
+            assert_eq!(duplicate.path, fork.path);
+            assert_eq!(
+                duplicate.args, fork.args,
+                "duplicates use the same reporting hooks as forks"
+            );
+            assert_eq!(duplicate.cwd, fork.cwd);
+            assert_eq!(duplicate.target, fork.target);
+        }
+    }
+
     #[test]
     fn explicit_hidden_sources_keep_their_agent_and_launch_context() {
         let reply: PollReply =
@@ -3055,22 +2888,13 @@ mod tests {
         for target in [
             PaneTarget::Local,
             PaneTarget::parse_display(Some("builder")),
-            PaneTarget::Firecracker {
-                vm: "review".to_owned(),
-                image: Some("rust-dev".to_owned()),
-                worktree: Some("/host/repo".into()),
-            },
         ] {
             let info = PaneInfo {
                 id: PaneId::Terminal(TerminalId::new(7)),
                 is_suppressed: true,
                 exited: true,
                 is_held: true,
-                host: match &target {
-                    PaneTarget::Local => None,
-                    PaneTarget::Firecracker { .. } => Some("firecracker:review".to_owned()),
-                    _ => Some("builder".to_owned()),
-                },
+                host: target.display(),
                 target: target.clone(),
                 agent: Some(agents::registered_agent(
                     "claude",
@@ -3140,8 +2964,6 @@ mod tests {
             command: Some("git status".to_owned()),
             cwd: Some("/tmp/repo".to_owned()),
             host: Some("builder".to_owned()),
-            firecracker_image: None,
-            firecracker_worktree: None,
             bubblewrap: None,
             status: agents::AgentStatus::Running,
             tab: Some((yinz_tile::prelude::TabId::new(1), "work".to_owned())),
@@ -3190,78 +3012,11 @@ mod tests {
         );
         assert_eq!(fork_note(&exited, "cursor"), "forking cursor in repo");
 
-        let firecracker_pane = AgentPane {
-            host: Some("firecracker:review".to_owned()),
-            firecracker_image: Some("rust-dev".to_owned()),
-            firecracker_worktree: Some("/host/repo".to_owned()),
-            ..pane.clone()
-        };
-        let command = duplicate_command(&firecracker_pane, &BTreeMap::new()).unwrap();
-        assert_eq!(command.cwd, Some("/tmp/repo".into()));
-        assert_eq!(
-            command.target,
-            PaneTarget::Firecracker {
-                vm: "review".to_owned(),
-                image: Some("rust-dev".to_owned()),
-                worktree: Some("/host/repo".into()),
-            }
-        );
-
         let ordinary_pane = AgentPane {
             command: Some("bash".to_owned()),
             detected: None,
             ..pane
         };
         assert!(duplicate_command(&ordinary_pane, &BTreeMap::new()).is_none());
-    }
-
-    /// The hide goes to every panel, so it says which tab the launch was on: the panel on
-    /// another client's tab is not over the new agent, and leaves itself up.
-    #[test]
-    fn the_hide_names_the_modals_tab() {
-        let me = PaneId::Plugin(yinz_tile::prelude::PluginId::new(12));
-        let two_tabs = |modal_tab: usize| PaneManifest {
-            panes: std::collections::HashMap::from([
-                (
-                    TabPosition::new(modal_tab),
-                    vec![PaneInfo {
-                        id: me,
-                        is_floating: true,
-                        ..Default::default()
-                    }],
-                ),
-                (
-                    TabPosition::new(1 - modal_tab),
-                    vec![PaneInfo {
-                        id: PaneId::Terminal(TerminalId::new(3)),
-                        ..Default::default()
-                    }],
-                ),
-            ]),
-        };
-        assert_eq!(tab_of(&two_tabs(1), me), Some(TabPosition::new(1)));
-        assert_eq!(tab_of(&two_tabs(0), me), Some(TabPosition::new(0)));
-        assert_eq!(tab_of(&PaneManifest::default(), me), None);
-
-        // Every manifest moves it, and one without the modal keeps the last one known.
-        let mut state = State {
-            plugin_id: yinz_tile::prelude::PluginId::new(12),
-            ..Default::default()
-        };
-        state.update(Event::PaneUpdate(two_tabs(1)));
-        assert_eq!(state.own_tab, Some(TabPosition::new(1)));
-        state.update(Event::PaneUpdate(PaneManifest::default()));
-        assert_eq!(state.own_tab, Some(TabPosition::new(1)));
-
-        let hide = panel_hide(Some(TabPosition::new(2)));
-        assert_eq!(hide.message_name, wire::AGENT_STRIP_HIDE);
-        assert_eq!(
-            hide.message_args.get(wire::PANEL_TAB).map(String::as_str),
-            Some("2")
-        );
-        assert_eq!(hide.plugin_url, None, "a hide launches nobody");
-        let hide = panel_hide(None);
-        assert_eq!(hide.message_name, wire::AGENT_STRIP_HIDE);
-        assert!(hide.message_args.is_empty());
     }
 }

@@ -439,7 +439,7 @@ feed() {{
 # Either way the event travels on stdin rather than as an argument, clear of execve's
 # per-argument limit.
 if [ -n "${token_env}" ]; then
-    # A remote pane - ssh or Firecracker.
+    # A remote pane - ssh.
     feed "$1" | "$YINZ_BIN" --pty-broker report agy >/dev/null 2>&1
 else
     # A local pane: the action resolves $YINZ_PANE_REF at dispatch.
@@ -508,7 +508,7 @@ YINZ_BIN='{yinz}'
 # Either way the event travels on stdin rather than as an argument, clear of execve's
 # per-argument limit.
 if [ -n "${token_env}" ]; then
-    # A remote pane - ssh or Firecracker. There is no session on this machine to tell,
+    # A remote pane - ssh. There is no session on this machine to tell,
     # so the event goes to the broker that owns the pty, which names the pane by the
     # token it put here and relays it on the pane's own channel to the pane's server.
     "$YINZ_BIN" --pty-broker report {wire_kind} >/dev/null 2>&1
@@ -1672,8 +1672,6 @@ mod tests {
         (argv, payload)
     }
 
-    /// A pane on the far side of an ssh or Firecracker transport has no session to tell,
-    /// so the script hands the event to that machine's broker instead.
     #[test]
     fn a_remote_pane_reports_through_its_broker() {
         let token = yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV;

@@ -704,8 +704,6 @@ pub struct OpenCommandPaneInGitCheckoutPayload {
     pub command_to_run: ::core::option::Option<super::command::Command>,
     #[prost(string, tag="2")]
     pub source_directory: ::prost::alloc::string::String,
-    #[prost(bool, tag="6")]
-    pub automatic_firecracker_vm: bool,
     #[prost(oneof="open_command_pane_in_git_checkout_payload::Checkout", tags="3, 4, 5")]
     pub checkout: ::core::option::Option<open_command_pane_in_git_checkout_payload::Checkout>,
 }
@@ -792,10 +790,6 @@ pub struct AgentSpawnSpec {
     pub resume: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="13")]
     pub hooks: ::core::option::Option<bool>,
-    #[prost(string, optional, tag="14")]
-    pub firecracker: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag="15")]
-    pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="16")]
     pub effort: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="17")]
@@ -820,8 +814,6 @@ pub struct SpawnAgentPayload {
     pub name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, repeated, tag="5")]
     pub context: ::prost::alloc::vec::Vec<ContextItem>,
-    #[prost(bool, tag="6")]
-    pub automatic_firecracker_vm: bool,
     #[prost(bool, tag="7")]
     pub start_suppressed: bool,
 }

@@ -157,52 +157,6 @@ fn consumer(runtime: &mut JsRuntime, name: &str) {
 }
 
 #[test]
-fn deno_bridge_spawn_options_use_sdk_validation_and_defaults() {
-    let mut runtime = sdk();
-    run(&mut runtime, include_str!("bridge_fixture.js"));
-    run(&mut runtime, r#"
-      mock.agent=yinz.agent;
-      panes[7]=true; // The test host replies to SpawnAgent with terminal 7.
-    "#);
-    consumer(&mut runtime, "swamp-bridge");
-    run(&mut runtime, r#"
-      M.load(); globalThis.done=0;
-      const options=[{}, {source_directory:'/source'}, {automatic_firecracker_vm:true},
-        {source_directory:'/source',automatic_firecracker_vm:false},
-        {source_directory:'/source',automatic_firecracker_vm:true}];
-      for(const [i,extra] of options.entries()) {
-        bind({load() { (async()=>{
-          const args={method:'agent_spawn',work:'options-'+i,key:'agent',spec:{kind:'codex',cwd:'/work',...extra}};
-          const first=await handler(args,{source:{Plugin:1}});
-          check(first.outcome==='completed' && first.pane===7 && first.supervisor==='supervisor-7');
-          check((await handler(args,{source:{Plugin:1}})).pane===7);
-          let rejected=false;
-          try {await handler({...args,spec:{...args.spec,cwd:'/wrong'}},{source:{Plugin:1}});}
-          catch(e) {check(String(e).includes('Conflicting'));rejected=true;}
-          check(rejected);
-          done++;
-        })().catch(e=>{failure=String(e.stack)}); }});
-        bridge('load',{},2);
-      }
-    "#);
-    run(&mut runtime, "if(failure) throw Error(failure); check(done===5);");
-    capture_commands(&mut runtime);
-    run(&mut runtime, r#"
-      const spawns=sent.map(([c])=>c.SpawnAgent).filter(Boolean);
-      check(spawns.length===5); // Retries and conflicting requests never dispatch again.
-      for(const [i,payload] of spawns.entries()) {
-        check(JSON.stringify(payload.spec)==='{"kind":"codex"}');
-        check(payload.cwd==='/work' && payload.name===null && payload.start_suppressed===false);
-        check(payload.source_directory===([null,'/source',null,'/source','/source'][i]));
-        check(payload.automatic_firecracker_vm===([false,false,true,false,true][i]));
-        const owner=JSON.parse(payload.context.swamp_owner);
-        check(owner.host_id==='host' && owner.session==='session' && owner.incarnation==='incarnation');
-        check(owner.work==='options-'+i && owner.agent==='agent' && payload.context.swamp_operation==='agent');
-      }
-    "#);
-}
-
-#[test]
 fn deno_bridge_commands_use_sdk_validation_with_optional_cwd() {
     let mut runtime = sdk();
     run(&mut runtime, include_str!("bridge_fixture.js"));
@@ -1186,6 +1140,49 @@ fn workflow_cli_attachments_accept_null_ids_and_acknowledge() {
         try { M.pipe({name:'show',source:{Cli:'pipe'},payload:JSON.stringify({directory:'/work',...ids})}); }
         catch { refused=true; }
         check(refused && !commands.some(([name])=>name==='CliPipeOutput'));
+      }
+    "#);
+}
+
+#[test]
+fn deno_bridge_spawn_options_use_sdk_validation_and_defaults() {
+    let mut runtime = sdk();
+    run(&mut runtime, include_str!("bridge_fixture.js"));
+    run(&mut runtime, r#"
+      mock.agent=yinz.agent;
+      panes[7]=true; // The test host replies to SpawnAgent with terminal 7.
+    "#);
+    consumer(&mut runtime, "swamp-bridge");
+    run(&mut runtime, r#"
+      M.load(); globalThis.done=0;
+      const options=[{}, {source_directory:'/source'}];
+      for(const [i,extra] of options.entries()) {
+        bind({load() { (async()=>{
+          const args={method:'agent_spawn',work:'options-'+i,key:'agent',spec:{kind:'codex',cwd:'/work',...extra}};
+          const first=await handler(args,{source:{Plugin:1}});
+          check(first.outcome==='completed' && first.pane===7 && first.supervisor==='supervisor-7');
+          check((await handler(args,{source:{Plugin:1}})).pane===7);
+          let rejected=false;
+          try {await handler({...args,spec:{...args.spec,cwd:'/wrong'}},{source:{Plugin:1}});}
+          catch(e) {check(String(e).includes('Conflicting'));rejected=true;}
+          check(rejected);
+          done++;
+        })().catch(e=>{failure=String(e.stack)}); }});
+        bridge('load',{},2);
+      }
+    "#);
+    run(&mut runtime, "if(failure) throw Error(failure); check(done===2);");
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const spawns=sent.map(([c])=>c.SpawnAgent).filter(Boolean);
+      check(spawns.length===2); // Retries and conflicting requests never dispatch again.
+      for(const [i,payload] of spawns.entries()) {
+        check(JSON.stringify(payload.spec)==='{"kind":"codex"}');
+        check(payload.cwd==='/work' && payload.name===null && payload.start_suppressed===false);
+        check(payload.source_directory===([null,'/source'][i]));
+        const owner=JSON.parse(payload.context.swamp_owner);
+        check(owner.host_id==='host' && owner.session==='session' && owner.incarnation==='incarnation');
+        check(owner.work==='options-'+i && owner.agent==='agent' && payload.context.swamp_operation==='agent');
       }
     "#);
 }

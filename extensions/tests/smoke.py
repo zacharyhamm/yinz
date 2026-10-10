@@ -25,7 +25,6 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--binary', default='target/debug/yinz')
-parser.add_argument('--firecracker-only', action='store_true')
 parser.add_argument('--validation-loop-only', action='store_true')
 parser.add_argument('--cancellation-only', action='store_true')
 parser.add_argument('--recovery-only', action='store_true')
@@ -63,8 +62,6 @@ if args.timing_only or args.transition_timing_only:
     env['YINZ_SWAMP_TIMING'] = '1'
     root.chmod(0o700)
 swamp_config = Path(env.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'swamp'
-if args.firecracker_only and not swamp_config.exists():
-    swamp_config = Path.home() / '.config/swamp'
 for name in ('YINZ', 'YINZ_SESSION_NAME', 'YINZ_PANE_ID', 'YINZ_PANE_REF', 'YINZ_CONFIG_FILE', 'YINZ_CONFIG_DIR', 'SWAMP_REPO_DIR', 'SWAMP_SERVER_URL', 'GIT_PAGER', 'PAGER', 'LESS'):
     env.pop(name, None)
 for name, directory in [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'),
@@ -115,7 +112,7 @@ transcript = (root / 'commands.log').open('w')
 
 def run(*argv, cwd=main, check=True):
     result = subprocess.run([str(x) for x in argv], cwd=cwd, env=env,
-                            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300 if args.firecracker_only else 120)
+                            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     transcript.write(json.dumps(list(map(str, argv))) + '\n' + result.stdout + result.stderr + '\n')
     transcript.flush()
     if check and result.returncode:
@@ -227,7 +224,7 @@ def teardown():
         step('kill-session', lambda: run(binary, 'kill-session', session))
         step('workflow server stop', lambda: run(binary, 'workflow', 'server', 'stop'))
         # The shared SSH bootstrap master expires after ControlPersist=60 seconds.
-        deadline = time.monotonic() + (70 if args.firecracker_only else 10)
+        deadline = time.monotonic() + 10
         while True:
             survivors = fixture_processes()
             supervisors = json.loads(run(binary, 'pty-host', 'list', '--json').stdout)
@@ -511,7 +508,7 @@ if args.source_diff_only:
     (topic / 'file').write_text('topic\n')
     print('PASS: exact viewer argv isolates checkout and index, quotes nested repositories, excludes its own TMPDIR, and fails for a missing checkout', flush=True)
 (root / 'config/yinz').mkdir(exist_ok=True)
-(root / 'config/yinz/config.kdl').write_text('builtin_plugins_dir ' + json.dumps(str(builtins)) + '\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/yinz-firecracker')) + '\n')
+(root / 'config/yinz/config.kdl').write_text('builtin_plugins_dir ' + json.dumps(str(builtins)) + '\n')
 observer = root / 'snapshot.ts'
 observer.write_text('''import z, {definePlugin} from 'yinz:plugin';
 export default definePlugin({
@@ -531,10 +528,6 @@ export default definePlugin({
 ''')
 (root / 'cache/yinz').mkdir(exist_ok=True)
 (root / 'cache/yinz/permissions.kdl').write_text(json.dumps(str(observer)) + ' {\n MessageAndLaunchOtherPlugins\n ReadCliPipes\n}\n')
-if args.firecracker_only:
-    provider_config = source / 'target/firecracker-test/config/yinz/firecracker.json'
-    shutil.copy(provider_config, root / 'config/yinz/firecracker.json')
-    # Config names the existing immutable image; VM state stays in this fixture.
 cold_start_ms = None
 if args.timing_only or args.transition_timing_only:
     started = time.monotonic()
@@ -889,70 +882,6 @@ try:
         measured=dict(samples=samples, exit_to_question=summary('exit_to_question'), answer_to_question=summary('answer_to_question'))
         (root / 'question-latency.json').write_text(json.dumps(measured, indent=2))
         print('QUESTION LATENCY:', measured, flush=True)
-        raise SystemExit(0)
-    if args.firecracker_only:
-        shutil.copy(source / 'extensions/tests/stub_agent.py', topic / 'stub_agent.py')
-        vm = bridge(method='agent_spawn', work='vm', key='worker', spec=dict(command='/usr/bin/python3', args=['stub_agent.py', '--exit'], cwd=str(topic), source_directory=str(topic), firecracker='workflow-vm', firecracker_image='yinz-dev', automatic_firecracker_vm=True))
-        assert vm['supervisor'].startswith('remote:')
-        bridge(method='agent_prompt', work='vm', key='edit', agent='worker', prompt='guest edit')
-        until('original guest exits', lambda: bridge(method='observe', work='vm', key='worker').get('processExited'))
-        edited = bridge(method='observe', work='vm', key='edit')
-        assert edited.get('message'), yinz('action', 'dump-screen', '--pane-id', 'terminal_' + str(vm['pane']))
-        guest_commit = edited['message']
-        assert not (topic / 'guest.txt').exists()
-        vm_name = vm['target']['Firecracker']['vm']
-        (main / 'host-only').write_text('host revision\n')
-        run('git', 'add', 'host-only')
-        run('git', 'commit', '-m', 'advance host target')
-        host_target = run('git', 'rev-parse', 'HEAD').stdout.strip()
-        launch('original-vm', sourcePane=vm['pane'], firecracker=vm_name,
-               agentArgs=[str(main / 'extensions/tests/stub_agent.py'), '--exit', '--inspect-review'])
-        prepared = until('original VM synced without worker', lambda: pending('original-vm', 'prepare'))
-        assert (topic / 'guest.txt').read_text() == 'guest\n'
-        assert bridge(method='lookup', work='original-vm', key='worker') is None
-        answer(prepared, 'commit-and-rebase', 'vm-rebase')
-        dismiss_commit('original-vm')
-        review_menu = until('host rebased review menu', lambda: pending('original-vm', 'prepare'))
-        host_commit = run('git', 'rev-parse', 'HEAD', cwd=topic).stdout.strip()
-        assert host_commit != guest_commit
-        answer(review_menu, 'review', 'vm-review')
-        confirmation = until('host reviewer confirmation', lambda: pending('original-vm', 'prepare'))
-        records = swamp('data', 'query', 'modelType == "@hammz/yinz" && name == "review-current"', '--select', '{"attributes":attributes}')['results']
-        reviewed = next(r['attributes'] for r in records if r['attributes']['evidence']['source']['commit'] == host_commit)
-        inspected = json.loads(reviewed['findings'][0]['message'])
-        assert reviewed['resolved']
-        assert inspected['checkout'] == str(topic)
-        assert inspected['commit'] == reviewed['evidence']['source']['commit']
-        assert inspected['contents'] == reviewed['evidence']['source']['contents']
-        assert inspected['host_file'] == 'host revision\n'
-        helper = bridge(method='lookup', work='original-vm', key=reviewed['reviewer'])
-        assert helper['target'] == 'Local'
-        answer(confirmation, 'leave', 'vm-review-leave')
-        print('PASS: VM reviewer runs locally and inspects rebased host evidence', flush=True)
-        # A second explicitly spawned fixture creates guest/host conflicting changes.
-        conflict = bridge(method='agent_spawn', work='vm-conflict-fixture', key='worker', spec=dict(command='/usr/bin/python3', args=['stub_agent.py', '--exit'], cwd=str(topic), source_directory=str(topic), firecracker=vm_name, reuse=True))
-        bridge(method='agent_prompt', work='vm-conflict-fixture', key='edit', agent='worker', prompt='guest conflict')
-        until('conflicting guest exits', lambda: bridge(method='observe', work='vm-conflict-fixture', key='worker').get('processExited'))
-        (topic / 'file').write_text('host conflict\n')
-        launch('conflict-vm', sourcePane=conflict['pane'], firecracker=vm_name)
-        def conflict_failed():
-            runs = swamp('workflow', 'history', 'search', '--input', 'launch=conflict-vm')['results']
-            # Recoverable step errors suspend the workflow; a pending question alone is not a sync failure.
-            blocked = any(r['status'] in ('failed', 'suspended')
-                          and r['workflowName'] == '@hammz/yinz-review-integration'
-                          and r.get('failedStep') == 'sync'
-                          and r.get('failureReason') == 'Original VM has unresolved changes or sync conflicts'
-                          for r in runs)
-            return runs if blocked and not any(r['status'] == 'running' for r in runs) else None
-        failed_runs = until('sync conflict blocks preparation', conflict_failed)
-        for item in failed_runs:
-            if item['status'] in ('failed', 'suspended'):
-                swamp('report', 'get', '@swamp/workflow-summary', '--workflow', item['workflowName'])
-        assert bridge(method='lookup', work='conflict-vm', key='worker') is None
-        assert (topic / 'file').read_text() == 'host conflict\n'
-        assert run('git', 'rev-parse', 'HEAD').stdout.strip() == host_target
-        assert topic.exists()
-        print('PASS: original exited VM synced without spawning; sync conflicts preserve checkout and block integration', flush=True)
         raise SystemExit(0)
     if not args.recovery_only:
         attach_ui()

@@ -1198,7 +1198,6 @@ message RunCommandAction {
   bool hold_on_start = 6;                              // Renumbered
   optional OriginatingPlugin originating_plugin = 7;   // Added missing originating_plugin field
   bool use_terminal_title = 8;                         // Added missing use_terminal_title field
-  reserved 9, 11, 12, 13;                              // remote_host / firecracker_* before PaneTarget
   bool remote_default_shell = 10;                         // Resolve the login shell on the machine the pane runs on, ignoring command
   PaneTarget target = 14;                                 // The machine this command runs on
 }
@@ -1208,17 +1207,11 @@ message PaneTarget {
   oneof kind {
     bool local = 1;
     string ssh_host = 2;
-    FirecrackerTarget firecracker = 3;
     // This machine, inside the Bubblewrap environment of the primary checkout at this path.
     string bubblewrap_root = 4;
   }
 }
 
-message FirecrackerTarget {
-  string vm = 1;
-  optional string image = 2;
-  optional string worktree = 3;
-}
 
 message TiledPaneLayout {
   optional string pane_tabs_json = 17;
@@ -1515,8 +1508,6 @@ message Options {
   optional bool context_menu_on_right_click = 65;
   optional ThemeHue explicit_theme_hue = 69;
   optional string host_notification_protocol = 67;
-  optional string firecracker_provider = 70;
-  optional uint64 firecracker_provider_timeout_secs = 71;
   optional uint32 agent_pane_min_columns = 72;
   optional uint32 agent_pane_min_rows = 73;
   optional uint64 locked_escape_timeout_ms = 75;

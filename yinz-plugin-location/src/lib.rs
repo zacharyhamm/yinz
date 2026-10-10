@@ -202,10 +202,6 @@ mod retired_script_tests {
     }
 }
 
-#[cfg(test)]
-#[path = "unit/panel_migration.rs"]
-mod panel_migration;
-
 /// Resolve a declaration's local repository against the active configuration directory.
 pub fn resolve_repository_path(
     plugin: &mut yinz_types::input::git_plugin::GitPlugin,

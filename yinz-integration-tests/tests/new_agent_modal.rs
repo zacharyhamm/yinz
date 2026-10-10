@@ -10,7 +10,7 @@
 //! given exactly the rows it asked for - scrolled the whole frame up by one. Every widget
 //! then answered to a click one row *below* itself, and the title scrolled off the top.
 
-use yinz_integration_tests::{keys, LayoutInfo, Size, TestRunner, TestSession, TERMINAL_SIZE};
+use yinz_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
 
 /// The modal as the shipped config opens it, minus every background plugin: a floating
 /// plugin pane that sizes itself to the dialog, with the mouse on.
@@ -313,97 +313,6 @@ fn the_new_agent_modal_can_be_dragged_by_its_frame() {
         "the modal went back to where it was opened:\n{}",
         snapshot.text
     );
-
-    yinz.quit();
-}
-
-/// Changing a VM launch back to local preserves the image field for later without
-/// making that unused setting block the local agent.
-#[test]
-fn switching_back_to_local_after_typing_a_vm_image_starts_a_local_agent() {
-    // A tall terminal lets this check the modal's requested size rather than scrolling.
-    let mut yinz = TestRunner::new(Size {
-        cols: 120,
-        rows: 40,
-    })
-    .with_config(NEW_AGENT_CONFIG)
-    .with_layout(LayoutInfo::Stringified(SHELL_ONLY.to_owned()))
-    .start();
-    open_modal(&yinz);
-    let snapshot = yinz.wait_until("the new agent modal is up", |snapshot| {
-        snapshot.contains("Firecracker image")
-            && snapshot.contains("[x]")
-            && snapshot.contains("<Enter> open")
-    });
-    assert!(
-        snapshot.contains("Run in Firecracker"),
-        "the VM switch is missing from the modal:\n{}",
-        snapshot.text
-    );
-
-    // Off, so the branch fields are not the first thing the submit complains about.
-    let (column, row) = position_of(&snapshot, "Create and switch branch");
-    yinz.send_stdin(&sgr_press(column + 1, row + 1));
-    yinz.send_stdin(&sgr_release(column + 1, row + 1));
-    let snapshot = yinz.wait_until("the branch checkbox is off", |snapshot| {
-        snapshot
-            .text
-            .lines()
-            .any(|line| line.contains("Create and switch branch") && line.contains("[ ]"))
-    });
-
-    let (column, row) = position_of(&snapshot, "Run in Firecracker");
-    yinz.send_stdin(&sgr_press(column + 1, row + 1));
-    yinz.send_stdin(&sgr_release(column + 1, row + 1));
-    let snapshot = yinz.wait_until("the VM checkbox is on", |snapshot| {
-        snapshot
-            .text
-            .lines()
-            .any(|line| line.contains("Run in Firecracker") && line.contains("[x]"))
-    });
-
-    // A click into a text field is enough to start typing in it.
-    let (column, row) = position_of(&snapshot, "Firecracker image");
-    yinz.send_stdin(&sgr_press(column + 1, row + 1));
-    yinz.send_stdin(&sgr_release(column + 1, row + 1));
-    for character in "rust".chars() {
-        yinz.send_stdin(&keys::key(character));
-    }
-    let snapshot = yinz.wait_until("the image was typed into its field", |snapshot| {
-        snapshot
-            .text
-            .lines()
-            .any(|line| line.contains("Firecracker image") && line.contains("rust"))
-    });
-
-    let (column, row) = position_of(&snapshot, "Run in Firecracker");
-    yinz.send_stdin(&sgr_press(column + 1, row + 1));
-    yinz.send_stdin(&sgr_release(column + 1, row + 1));
-    let snapshot = yinz.wait_until("the VM checkbox is off", |snapshot| {
-        snapshot
-            .text
-            .lines()
-            .any(|line| line.contains("Run in Firecracker") && line.contains("[ ]"))
-    });
-    assert!(snapshot
-        .text
-        .lines()
-        .any(|line| line.contains("Firecracker image") && line.contains("rust")));
-
-    let (column, row) = position_of(&snapshot, "Create agent");
-    yinz.send_stdin(&sgr_press(column + 1, row + 1));
-    yinz.send_stdin(&sgr_release(column + 1, row + 1));
-    let agent = yinz.expect_pty_spawn();
-    let Some(yinz_types::input::command::TerminalAction::RunCommand(command)) =
-        agent.terminal_action()
-    else {
-        panic!("the modal must start an agent command");
-    };
-    assert_eq!(command.target, yinz_types::command::PaneTarget::Local);
-    agent.output(b"LOCAL AGENT\r\n");
-    yinz.wait_until("the modal closes onto the local agent", |snapshot| {
-        snapshot.contains("LOCAL AGENT") && !snapshot.contains("Create agent")
-    });
 
     yinz.quit();
 }

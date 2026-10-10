@@ -113,8 +113,6 @@ pub const PLUGINS: &[&str] = &[
     "shared-test",
     "todos",
     "agents",
-    "vms",
-    "swamp-issues",
     "new-agent",
     "agent-service",
     "project-store",

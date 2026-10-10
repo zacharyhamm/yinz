@@ -288,31 +288,11 @@ fn run_command_is_writable(run_command_action: &RunCommandAction) -> Result<(), 
         PaneTarget::Local => Ok(()),
         PaneTarget::Ssh { .. } => Err("a `Run` line cannot name an ssh host"),
         PaneTarget::Bubblewrap { .. } => Err("a `Run` line cannot name a Bubblewrap environment"),
-        PaneTarget::Firecracker {
-            vm,
-            image,
-            worktree,
-        } => {
-            // The parser rebuilds the target through `from_parts`, trimming, validating and
-            // shell-expanding on the way; a target that does not survive that is not this one.
-            let expanded = worktree
-                .as_ref()
-                .map(|worktree| yinz_runtime::shared::expand_path(&worktree.display().to_string()))
-                .transpose();
-            let reread = expanded.and_then(|worktree| {
-                PaneTarget::from_parts(None, Some(vm), image.as_deref(), worktree.as_deref())
-            });
-            if reread.as_ref() == Ok(&run_command_action.target) {
-                Ok(())
-            } else {
-                Err("the Firecracker target does not load back as written")
-            }
-        },
     }
 }
 
 /// The `Run` node every command form shares: the command and its arguments, then the children
-/// the parser reads back - `cwd`, the `firecracker_*` trio, `start_suspended`, `close_on_exit`
+/// the parser reads back - `cwd`, `start_suspended`, `close_on_exit`
 /// and `direction`. One writer for the four forms so that they cannot drift apart again: they
 /// did, and wrote `hold_on_start`/`hold_on_close`, two names the parser has never read.
 fn run_command_to_kdl(
@@ -331,7 +311,6 @@ fn run_command_to_kdl(
             .nodes_mut()
             .push(child("cwd", cwd.display().to_string()));
     }
-    push_firecracker_nodes(run_command_action, &mut children);
     if run_command_action.hold_on_start {
         children.nodes_mut().push(child("start_suspended", true));
     }
@@ -1682,34 +1661,6 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             let stacked = command_metadata
                 .and_then(|c_m| kdl_child_bool_value_for_entry(c_m, "stacked"))
                 .unwrap_or(false);
-            let firecracker_vm = command_metadata
-                .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_vm"));
-            let firecracker_image = command_metadata
-                .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_image"));
-            let firecracker_worktree = command_metadata
-                .and_then(|c_m| kdl_child_string_value_for_entry(c_m, "firecracker_worktree"))
-                .map(yinz_runtime::shared::expand_path)
-                .transpose()
-                .map_err(|error| {
-                    ConfigError::new_kdl_error(
-                        format!("firecracker_worktree: {error}"),
-                        kdl_action.span().offset(),
-                        kdl_action.span().len(),
-                    )
-                })?;
-            let target = PaneTarget::from_parts(
-                None,
-                firecracker_vm,
-                firecracker_image,
-                firecracker_worktree.as_deref(),
-            )
-            .map_err(|error| {
-                ConfigError::new_kdl_error(
-                    error,
-                    kdl_action.span().offset(),
-                    kdl_action.span().len(),
-                )
-            })?;
             let run_command_action = RunCommandAction {
                 command: PathBuf::from(command),
                 args,
@@ -1717,7 +1668,6 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 direction,
                 hold_on_close,
                 hold_on_start,
-                target,
                 ..Default::default()
             };
             let x = command_metadata

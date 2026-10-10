@@ -1,9 +1,7 @@
+use yinz_types::command::PaneTarget;
+use yinz_types::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use yinz_types::input::layout::RunPluginOrAlias;
 use yinz_types::internal_ids::TabPosition;
-use yinz_types::{
-    command::PaneTarget,
-    geometry::{PercentOrFixed, SplitDirection, SplitSize},
-};
 use {
     crate::config::ConfigError, yinz_types::input::command::RunCommand,
     yinz_types::input::layout::FloatingPaneLayout, yinz_types::input::layout::Layout,
@@ -94,9 +92,6 @@ impl<'a> KdlLayoutParser<'a> {
             || word == "swap_floating_layout"
             || word == "hide_floating_panes"
             || word == "contents_file"
-            || word == "firecracker_vm"
-            || word == "firecracker_image"
-            || word == "firecracker_worktree"
             || word == "bubblewrap"
     }
     fn is_a_valid_pane_property(&self, property_name: &str) -> bool {
@@ -123,9 +118,6 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "contents_file"
             || property_name == "default_fg"
             || property_name == "default_bg"
-            || property_name == "firecracker_vm"
-            || property_name == "firecracker_image"
-            || property_name == "firecracker_worktree"
             || property_name == "bubblewrap"
     }
     fn is_a_valid_floating_pane_property(&self, property_name: &str) -> bool {
@@ -153,9 +145,6 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "contents_file"
             || property_name == "default_fg"
             || property_name == "default_bg"
-            || property_name == "firecracker_vm"
-            || property_name == "firecracker_image"
-            || property_name == "firecracker_worktree"
             || property_name == "bubblewrap"
     }
     fn is_a_valid_tab_property(&self, property_name: &str) -> bool {
@@ -463,32 +452,15 @@ impl<'a> KdlLayoutParser<'a> {
             None => Ok(None),
         }
     }
-    /// The `firecracker_vm`, `firecracker_image` and `firecracker_worktree` properties of a
-    /// pane, or its `bubblewrap` checkout, checked here rather than when the pane is
-    /// spawned: a layout error names the node, a spawn error is a banner in the pane.
+    /// Validate the Bubblewrap checkout before the pane is spawned.
     fn parse_target(&self, pane_node: &KdlNode) -> Result<Option<PaneTarget>, ConfigError> {
-        let vm = kdl_get_string_property_or_child_value_with_error!(pane_node, "firecracker_vm");
-        let image =
-            kdl_get_string_property_or_child_value_with_error!(pane_node, "firecracker_image");
-        let worktree = self.parse_path(pane_node, "firecracker_worktree")?;
         let bubblewrap = self.parse_path(pane_node, "bubblewrap")?;
         if let Some(root) = bubblewrap {
-            if vm.is_some() || image.is_some() || worktree.is_some() {
-                return Err(kdl_parsing_error!(
-                    "a pane cannot use both bubblewrap and a Firecracker VM".to_owned(),
-                    pane_node
-                ));
-            }
             return PaneTarget::bubblewrap(&root)
                 .map(Some)
                 .map_err(|error| kdl_parsing_error!(error, pane_node));
         }
-        if vm.is_none() && image.is_none() && worktree.is_none() {
-            return Ok(None);
-        }
-        PaneTarget::from_parts(None, vm, image, worktree.as_deref())
-            .map(Some)
-            .map_err(|error| kdl_parsing_error!(error, pane_node))
+        Ok(None)
     }
     fn parse_line_number(&self, pane_node: &KdlNode) -> Result<Option<usize>, ConfigError> {
         Ok(match kdl_get_property_or_child!(pane_node, "line_number") {
@@ -630,14 +602,14 @@ impl<'a> KdlLayoutParser<'a> {
                 "an edit pane cannot use a pane target".to_owned(),
                 pane_node
             )),
-            // Target-only templates inherit their command in Run::merge; only VMs can
-            // resolve to a login shell. Bubblewrap is validated after template resolution.
+            // Target-only templates inherit their command in Run::merge.
+            // Bubblewrap is validated after template resolution.
             (None, None, cwd, Some(target)) => Ok(Some(Run::Command(RunCommand {
                 cwd,
                 args: args.unwrap_or_default(),
                 hold_on_start,
                 hold_on_close: close_on_exit.map(|c| !c).unwrap_or(false),
-                remote_default_shell: !target.is_bubblewrap(),
+                remote_default_shell: false,
                 target,
                 ..Default::default()
             }))),

@@ -930,21 +930,6 @@ impl UnixPtyBackend {
             .unwrap_or(false)
     }
 
-    /// Whether a pane runs in a Firecracker guest rather than on an ordinary
-    /// remote host. Takes the transport lock, so ask only when the answer is
-    /// needed, not on every chunk of output.
-    pub fn is_firecracker(&self, terminal_id: TerminalId) -> bool {
-        self.terminal_id_to_transport
-            .lock()
-            .ok()
-            .and_then(|t| {
-                t.get(&terminal_id)
-                    .and_then(|t| t.remote())
-                    .map(|conn| conn.cmd().target.is_firecracker())
-            })
-            .unwrap_or(false)
-    }
-
     /// The last thing the broker reported about a remote pane, or `None` for a
     /// local one.
     ///
@@ -1024,19 +1009,6 @@ impl UnixPtyBackend {
             .get(&terminal_id)?
             .remote()
             .and_then(|conn| conn.cmd().display_host())
-    }
-
-    /// The host worktree a Firecracker pane's VM mirrors, off the transport's own
-    /// command — which is the one `resolve_target` resolved, so it carries the worktree
-    /// the provider named even when the caller asked for none.
-    pub fn remote_worktree(&self, terminal_id: TerminalId) -> Option<PathBuf> {
-        self.terminal_id_to_transport
-            .lock()
-            .ok()?
-            .get(&terminal_id)?
-            .remote()
-            .and_then(|conn| conn.cmd().target.firecracker_worktree())
-            .map(std::path::Path::to_path_buf)
     }
 
     /// Deliver a signal to a remote pane's child, by name rather than by pid.
@@ -1183,11 +1155,6 @@ impl UnixPtyBackend {
             .and_then(|transport| transport.remote())
             .cloned();
         if let Some(conn) = remote {
-            if conn.cmd().target.is_firecracker() {
-                return Err(anyhow!(
-                    "Firecracker panes belong to their originating session and cannot be moved between sessions"
-                ));
-            }
             if conn.transport_lost() {
                 return Err(anyhow!(
                     "the connection to {} is down and this pane is reconnecting, so it cannot \

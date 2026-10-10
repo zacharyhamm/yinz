@@ -1875,7 +1875,8 @@ impl KittyGrid {
         viewport_y_offset: usize,
     ) -> Vec<KittyImageChunk> {
         let mut changed_kitty_image_chunks = vec![];
-        if let Some(character_cell_size) = *self.character_cell_size.borrow() {
+        let character_cell_size = *self.character_cell_size.borrow();
+        if let Some(character_cell_size) = character_cell_size {
             for placement in &self.placements {
                 let image_pixel_rect = &placement.display_rect;
                 for (line_index, line_count) in &changed_rects {

@@ -132,10 +132,7 @@ Explicit standalone Codex launches retain their existing behavior.
 
 SSH launches use `--remote-host`, an absolute remote `--cwd`, and
 `--allow-outside-worktree`. They require an existing remote checkout and reject
-local project, branch, worktree and VM options.
-`--firecracker` selects a named session VM. `--firecracker-image` selects its image.
-A branch provides a host worktree for the VM. Without a branch or project,
-the VM uses its guest workspace.
+local project, branch, and worktree options.
 
 ### Pi
 
@@ -177,7 +174,6 @@ or abort produces `failed` or `interrupted`. Blocking extension UI prompts repor
 
 SSH launches require Pi and Yinz's hooks to be installed on the remote machine.
 Yinz removes its local extension argument and preserves user extension arguments.
-Firecracker launches do not provision Pi or its reporting extension automatically.
 
 ### Run `yinz` from inside a Codex agent
 
@@ -219,8 +215,7 @@ yinz agent spawn --kind codex --permission-mode on-request --allow-yinz \
    when one exists. `launch_resources` retains `cwd`, `branch`, `requested_branch`,
    and `reused` when known. Failed Git operations may report an attempted path or
    branch that was not fully created; inspect it first. Reconcile the reported resources
-   rather than creating another worker blindly. A guest-only VM launch reports
-   `cwd: null` when its directory is unknown; do not substitute a host directory.
+   before creating another worker.
 
 2. Wait for lifecycle reports to confirm that the agent is idle:
 

@@ -1207,9 +1207,7 @@ pub fn send_cli_new_pane_action_with_default_parameters() {
     );
     let cli_new_pane_action = CliAction::NewPane {
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         direction: None,
         command: vec![],
         plugin: None,
@@ -1321,9 +1319,7 @@ pub fn send_cli_new_pane_action_with_split_direction() {
     );
     let cli_new_pane_action = CliAction::NewPane {
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         direction: Some(Direction::Right),
         command: vec![],
         plugin: None,
@@ -1386,9 +1382,7 @@ pub fn send_cli_new_pane_action_with_command_and_cwd() {
     );
     let cli_new_pane_action = CliAction::NewPane {
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         direction: Some(Direction::Right),
         command: vec!["htop".into()],
         plugin: None,
@@ -1458,9 +1452,7 @@ pub fn send_cli_new_pane_action_with_floating_pane_and_coordinates() {
     );
     let cli_new_pane_action = CliAction::NewPane {
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         direction: Some(Direction::Right),
         command: vec!["htop".into()],
         plugin: None,

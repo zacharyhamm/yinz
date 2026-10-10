@@ -1740,8 +1740,8 @@ pub fn screen_thread_main(
                     screen.render()?;
                     screen.log_and_report_session_state()?;
                 },
-                ScreenInstruction::UpdatePaneHost(terminal_id, host, worktree) => {
-                    screen.set_pane_host(terminal_id, host, worktree)?;
+                ScreenInstruction::UpdatePaneHost(terminal_id, host) => {
+                    screen.set_pane_host(terminal_id, host)?;
                 },
                 ScreenInstruction::UpdatePaneForegroundCommand(terminal_id, command, program) => {
                     let pane_id = PaneId::Terminal(terminal_id);

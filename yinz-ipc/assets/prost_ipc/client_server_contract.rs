@@ -1975,7 +1975,7 @@ pub struct RunCommandAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PaneTarget {
-    #[prost(oneof="pane_target::Kind", tags="1, 2, 3, 4")]
+    #[prost(oneof="pane_target::Kind", tags="1, 2, 4")]
     pub kind: ::core::option::Option<pane_target::Kind>,
 }
 /// Nested message and enum types in `PaneTarget`.
@@ -1987,22 +1987,10 @@ pub mod pane_target {
         Local(bool),
         #[prost(string, tag="2")]
         SshHost(::prost::alloc::string::String),
-        #[prost(message, tag="3")]
-        Firecracker(super::FirecrackerTarget),
         /// This machine, inside the Bubblewrap environment of the primary checkout at this path.
         #[prost(string, tag="4")]
         BubblewrapRoot(::prost::alloc::string::String),
     }
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FirecrackerTarget {
-    #[prost(string, tag="1")]
-    pub vm: ::prost::alloc::string::String,
-    #[prost(string, optional, tag="2")]
-    pub image: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag="3")]
-    pub worktree: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -2470,10 +2458,6 @@ pub struct Options {
     pub explicit_theme_hue: ::core::option::Option<i32>,
     #[prost(string, optional, tag="67")]
     pub host_notification_protocol: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag="70")]
-    pub firecracker_provider: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(uint64, optional, tag="71")]
-    pub firecracker_provider_timeout_secs: ::core::option::Option<u64>,
     #[prost(uint32, optional, tag="72")]
     pub agent_pane_min_columns: ::core::option::Option<u32>,
     #[prost(uint32, optional, tag="73")]

@@ -691,7 +691,6 @@ impl Screen {
                     format!("{kind} worktree"),
                     yinz_bus::command_palette::AgentAction::Start {
                         kind: kind.clone(),
-                        vm: false,
                         project: state.context.current_project.clone(),
                     },
                 ),
@@ -700,16 +699,6 @@ impl Screen {
                     format!("Spawn {kind} agent in current directory"),
                     format!("{kind} current directory cwd"),
                     yinz_bus::command_palette::AgentAction::Current { kind: kind.clone() },
-                ),
-                (
-                    "firecracker",
-                    format!("Spawn {kind} agent in Firecracker…"),
-                    format!("{kind} firecracker vm"),
-                    yinz_bus::command_palette::AgentAction::Start {
-                        kind: kind.clone(),
-                        vm: true,
-                        project: state.context.current_project.clone(),
-                    },
                 ),
             ] {
                 command(

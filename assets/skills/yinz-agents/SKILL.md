@@ -14,7 +14,7 @@ Registration requires `agent-service`. Archive queries require `project-store`.
 
 Guarded prompts support Claude Code, Codex, Muse, Pi, and Antigravity (`agy`). Other kinds support launch and inspection.
 Before a first Codex, Muse, or AGY launch, check `yinz hooks status --agent KIND` and install missing hooks with `yinz hooks install --agent KIND` on the target host.
-Claude receives inline hooks; refresh older installed Claude hooks with the install command to prevent duplicate reports. Local Pi launches inject their reporting extension automatically; SSH Pi needs the extension installed remotely, and Firecracker does not provision it.
+Claude receives inline hooks; refresh older installed Claude hooks with the install command to prevent duplicate reports. Local Pi launches inject their reporting extension automatically; SSH Pi needs the extension installed remotely.
 AGY completion additionally requires its hooks to inherit `ANTIGRAVITY_LS_ADDRESS` and `ANTIGRAVITY_CSRF_TOKEN` for the local completion API. AGY CLI 1.2.14 does not supply these automatically; without them completion cannot be confirmed.
 Do not replace unavailable guarded prompting with raw input. Use general pane input only for deliberate interaction with unsupported kinds.
 
@@ -41,7 +41,7 @@ yinz agent spawn --kind claude --model haiku --cwd . --branch review-auth --base
 
 Use the actual `spawned.pane_id`, `spawned.tab_id`, `spawned.cwd`, and `spawned.branch` returned by spawn.
 `spawned.created_tab_id` identifies a tab created by this launch, including automatic overflow.
-If spawn fails, inspect `spawned` and `launch_resources`: a pane, tab, branch, or worktree may already exist. Reconcile those resources before retrying. Guest-only VM launches can return `cwd: null`; inspect the guest rather than treating a host path as its directory.
+If spawn fails, inspect `spawned` and `launch_resources`: a pane, tab, branch, or worktree may already exist. Reconcile those resources before retrying.
 The idle wait already returns status in `agents`; use its `agent.session_id` as the conversation guard and check `ready`, `status_available`, and `prompt_supported` before prompting.
 Completed prompt responses include the answer in `message` when the provider reports it. Use `status` for a fresh observation and `read` to diagnose missing readiness, dialogs, or missing output; neither is an automatic extra step.
 If startup remains `Spawned` or reports `status_unavailable`, read the pane and check hooks. Answer a visible startup dialog deliberately with `send-keys`, within the user's authorization, then wait again. A Codex worktree trust prompt accepts `y Enter`; do not approve trust without authorization.
@@ -136,10 +136,10 @@ Spawn rejects `prompt` and `reuse_prompt`, including fields in JSON. Use spawn, 
 Use `--reuse` only when the existing branch or worktree is the intended target.
 Otherwise collisions produce a fresh branch and worktree. Spawn then reports `requested_branch` beside the actual `branch`.
 A reused worktree reports `reused: true`, and `occupied_by` lists live agents already working there; two agents in one checkout can overwrite each other.
-Yinz adds a nested worktree folder such as `.worktrees/` to the repository's local `.git/info/exclude`. Project defaults supply worktree directories and VM images.
-Read `agent spawn --help` for model, effort, permissions, resume, and Firecracker options.
+Yinz adds a nested worktree folder such as `.worktrees/` to the repository's local `.git/info/exclude`. Project defaults supply worktree directories.
+Read `agent spawn --help` for model, effort, permissions and resume options.
 For SSH, provide an absolute `--cwd` and `--remote-host`. Verify the remote worktree and explicitly use `--allow-outside-worktree`.
-SSH launches cannot use local project, branch, worktree, or VM options. General pane creation owns arbitrary programs.
+SSH launches cannot use local project, branch, or worktree options. General pane creation owns arbitrary programs.
 Register an existing pane with `agent register PANE_ID KIND --json` for tracking. Registration alone does not enable guarded prompts or turn a shell-launched agent into a managed command pane.
 `agent list` also shows an agent started by hand in a shell as source `detected` with `not_ready_reason: unmanaged`.
 Yinz cannot prompt it; relaunch it with `agent spawn` to control it.

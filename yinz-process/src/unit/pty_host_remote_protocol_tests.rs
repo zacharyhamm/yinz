@@ -336,7 +336,7 @@ fn the_remote_protocol_versions_independently_of_the_supervisor_protocol() {
     // v3: Release/Released, so a pane can be handed to another server rather
     // than only picked back up by the one that lost it, and ListPanes, so one
     // stranded by a failed handoff can be found again.
-    // v4: `Spawn` carries a `PaneTarget` instead of loose host/VM fields.
+    // v4: `Spawn` carries a `PaneTarget` instead of a loose host field.
     // v5: `AgentReport`, a hook's event relayed on the pane's channel.
     // v6: `GetGitProbe` selects a directory independently of the process cwd.
     // v7: refresh tokens correlate requests with completed probes.

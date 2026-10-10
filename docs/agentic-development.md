@@ -19,12 +19,12 @@ Open the agent panel with `Ctrl e`, then `a`.
 Custom configurations can bind the `new-agent` and `agents` aliases to other keys.
 
 The panel is the agent list on the left and the agent conversation on the right.
-The list has four tabs: **Agents**, **Todos**, **VMs**, and **Swamp**.
+The list has two tabs: **Agents** and **Todos**.
 Its own tab bar is the keyboard route between them: `Shift+Tab` from a tab's list reaches the bar, `←` and `→` switch tabs, and `Enter`, `↓`, `Tab`, or `Esc` return to the tab's list.
-`Tab` and `Shift+Tab` walk one ring of five stops: the panel's tab bar, the tab's list, its second half (the history on Agents, the details on VMs), the conversation's tab bar, and the conversation's input box.
+`Tab` and `Shift+Tab` move focus between the panel tab bar and the active view.
 Press `?` in the list for a key sheet of every key the current tab answers.
 A hint line too narrow for all of its keys drops whole keys from its end.
-The Agents footer, the Swamp list header, and the VMs divider give up trailing keys to end with `? keys`; other hint lines add it only when there is room left, and a line drawn while you type into a box, where `?` is a character, has none.
+The Agents footer ends with `? keys` when there is room.
 Type `/keys` in the conversation for every key in the panel.
 
 `Esc` steps back before it hides the panel: it leaves an event being read, a question, a search or filtered view, the tab bar, or the key sheet first.
@@ -61,13 +61,6 @@ The panel stays up under the launcher, so `Esc` in the launcher returns the keyb
 Launching does not change the todo's completion status. Complete an open task with `Space` after checking the result.
 `Enter` edits a todo. The current project is named above the list, and `p` picks another.
 
-The **Swamp** tab lists swamp-club issues as the host's `swamp auth login` sees them.
-Opening the tab does not ask for permission. Press `r` to allow it; once allowed, later loads ask by themselves.
-`/` searches titles and bodies, `s`, `t`, `f`, and `u` filter by status, type, source, and assignee, `o` changes the sort, and `c` or `Esc` clears the search and every filter.
-`Enter` opens an issue and `Esc` returns to the list, with the search and filters still applied.
-`a` asks, then sends the selected issue to the agent conversation to triage.
-`Ctrl r`, or `r`, reloads the issues. On every tab, `Ctrl r` refreshes what that tab shows.
-
 The launcher now offers **Reasoning effort** and **Approval mode** alongside **Model**.
 The choices come from the existing launch planner and change with the selected agent.
 The default choice preserves the agent's own configuration. Selecting an agent does not carry another agent's permission override forward.
@@ -75,8 +68,6 @@ Cursor requires an explicit model when an effort is selected. Unsupported combin
 
 Duplicate and fork still start fresh conversations in the source pane's location.
 They now use the shared launch planner, which supplies Claude's state hooks on local and SSH launches.
-Firecracker launches continue to use the hooks installed in the guest.
-See [Firecracker VMs](FIRECRACKER.md) for installation, images, launch, sync, and recovery.
 
 Each session can have one **mother**: a coding agent in an overlay pane that is available on every tab.
 Press `Ctrl e`, then `m`, to toggle it. With no mother running, the key opens the command palette at the agents to launch it as.
@@ -103,7 +94,7 @@ Workers use tiled placement. When space is insufficient, the worker uses another
 
 For managed Codex launches, do not combine `--resume ID` or `--resume last` with `--permission-mode`.
 Omit `--permission-mode` to resume through Yinz's bridge, or start a new conversation with the requested mode.
-Yinz rejects this combination before it creates a pane, branch, worktree, or VM.
+Yinz rejects this combination before it creates a pane, branch, or worktree.
 JSON launches with `hooks:false` bypass the bridge and retain native Codex argument handling.
 
 On each host with installed Claude hooks, rerun `yinz hooks install --agent claude` after this update.
@@ -111,7 +102,7 @@ Refresh project installations with `--project` or `--project-dir PATH` too.
 Version 10 scripts skip reporting when a structured launch supplies inline hooks.
 Older scripts still produce duplicate reports until refreshed. Third-party hooks remain unchanged.
 Inline hooks report through the broker on SSH panes and through the local session on local panes.
-Ordinary shell launches and Firecracker launches continue to use installed hooks.
+Ordinary shell launches continue to use installed hooks.
 
 Pane replacement now replays terminal output that arrives before the replacement is placed.
 Buffered output is applied before newer output, so a fast startup cannot leave a blank replacement or reverse its first output chunks.

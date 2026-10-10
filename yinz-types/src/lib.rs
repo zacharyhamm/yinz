@@ -33,7 +33,6 @@ pub mod pane_id;
 pub mod mouse;
 pub mod notifications;
 
-pub mod firecracker;
 pub mod geometry;
 pub mod multipane;
 pub mod pane_size;

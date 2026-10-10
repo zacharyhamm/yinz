@@ -409,9 +409,7 @@ fn split_off_a_remote_pane(yinz: &TestSession, says: &str) -> FakePtyHandle {
         direction: None,
         command: vec!["cargo".to_string(), "watch".to_string()],
         remote_host: Some("build-box".to_string()),
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         plugin: None,
         cwd: None,
         floating: false,
@@ -1584,7 +1582,6 @@ fn codex_control_survives_pane_tab_and_failed_adoption_without_reinitialization(
                 cwd: Some(cwd.path().into()),
                 project: None,
                 remote_host: None,
-                automatic_firecracker_vm: false,
             }))
             .unwrap();
         let spawned = agent_response(&mut replies);

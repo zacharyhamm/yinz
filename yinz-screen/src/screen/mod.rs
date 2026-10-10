@@ -602,12 +602,6 @@ pub(crate) struct Screen {
     /// The machine each remote pane runs on. Absent for local panes, which is
     /// nearly all of them.
     terminal_hosts: HashMap<TerminalId, String>,
-    /// The host worktree each Firecracker pane's VM mirrors. See [`Screen::set_pane_host`],
-    /// which fills it, and `generate_and_report_pane_state`, which puts it on the manifest.
-    terminal_firecracker_worktrees: HashMap<TerminalId, PathBuf>,
-    /// The name each tab last showed a plugin, so a change to one that no other
-    /// event reports — a lone pane retitling itself, a project arriving, a
-    /// collision forming or clearing — still redraws the tab bar.
     last_plugin_tab_names: HashMap<TabId, String>,
     /// The project each tab is working on, as the last `SetTabProjects` had it.
     ///
@@ -1372,7 +1366,6 @@ impl Screen {
             terminal_cwds: HashMap::new(),
             terminal_foreground_cmds: HashMap::new(),
             terminal_hosts: HashMap::new(),
-            terminal_firecracker_worktrees: HashMap::new(),
             last_plugin_tab_names: HashMap::new(),
             arrangement_projects: HashMap::new(),
             pending_arrangement: None,
@@ -3536,7 +3529,6 @@ impl Screen {
             match &run_command.target {
                 yinz_types::command::PaneTarget::Local => "local",
                 yinz_types::command::PaneTarget::Ssh { .. } => "ssh",
-                yinz_types::command::PaneTarget::Firecracker { .. } => "firecracker",
                 yinz_types::command::PaneTarget::Bubblewrap { .. } => "bubblewrap",
             }
             .to_owned(),
@@ -3553,35 +3545,6 @@ impl Screen {
             }
         }
 
-        if let (Some(vm), Some(worktree)) = (
-            run_command.target.firecracker_vm(),
-            run_command.target.firecracker_worktree(),
-        ) {
-            payload.insert("agent_firecracker_vm".to_owned(), vm.to_owned());
-            payload.insert(
-                "agent_firecracker_worktree".to_owned(),
-                worktree.display().to_string(),
-            );
-            payload.insert("agent_session".to_owned(), self.session_name.to_string());
-            if let Some(executable) = yinz_runtime::own_binary::server_binary() {
-                payload.insert(
-                    "agent_yinz_executable".to_owned(),
-                    executable.display().to_string(),
-                );
-            }
-            if let Some(config_file_path) = &self.config_file_path {
-                payload.insert(
-                    "agent_yinz_config_file".to_owned(),
-                    config_file_path.display().to_string(),
-                );
-            }
-            if let Some(config_dir) = &self.config_dir {
-                payload.insert(
-                    "agent_yinz_config_dir".to_owned(),
-                    config_dir.display().to_string(),
-                );
-            }
-        }
         self.fire_hook(
             HookPoint::AgentExit,
             Some(pane_id),
@@ -3858,7 +3821,7 @@ impl Screen {
     }
     /// A pane the pty thread already started has nowhere to go: the tab or
     /// pane it was meant for closed while it was being spawned, which for a
-    /// remote pane can be a VM boot later. Nothing owns it now, so the pty
+    /// remote pane can take a long time. Nothing owns it now, so the pty
     /// thread is asked to close it; otherwise its process, transport and reader
     /// would run until the session ends.
     pub fn forget_unplaced_pane(&mut self, pane_id: PaneId, why: String) {
@@ -4596,34 +4559,13 @@ impl Screen {
     /// already had, and a local pane's close retracts a host it never announced. Reporting
     /// either would cost the session a whole-manifest broadcast to say nothing.
     ///
-    /// `worktree` travels with it: a Firecracker pane's VM mirrors a folder on this
-    /// machine, and a pane that joined a VM somebody else provisioned asked for no
-    /// worktree, so the only word on which folder its guest copy came from is the one the
-    /// provider gave when the pane was resolved. Kept beside the host and retracted with
-    /// it, because it is a fact about the same transport.
-    pub fn set_pane_host(
-        &mut self,
-        terminal_id: TerminalId,
-        host: Option<String>,
-        worktree: Option<PathBuf>,
-    ) -> Result<()> {
+    pub fn set_pane_host(&mut self, terminal_id: TerminalId, host: Option<String>) -> Result<()> {
         self.with_pane(PaneId::Terminal(terminal_id), |pane| {
             pane.set_remote_host(host.clone())
         });
-        let mut changed = match host {
+        let changed = match host {
             Some(host) => self.terminal_hosts.insert(terminal_id, host.clone()) != Some(host),
             None => self.terminal_hosts.remove(&terminal_id).is_some(),
-        };
-        changed |= match worktree {
-            Some(worktree) => {
-                self.terminal_firecracker_worktrees
-                    .insert(terminal_id, worktree.clone())
-                    != Some(worktree)
-            },
-            None => self
-                .terminal_firecracker_worktrees
-                .remove(&terminal_id)
-                .is_some(),
         };
         if changed {
             self.render()?;

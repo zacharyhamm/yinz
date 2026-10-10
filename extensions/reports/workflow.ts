@@ -205,13 +205,13 @@ export const report = {
             ...(cleanup
                 ? [
                     cleanup.removed
-                        ? "Clean worktree removed. Branch and VM resources were not deleted."
+                        ? "Clean worktree removed. Branch was not deleted."
                         : "Worktree removal was refused: " +
                             quote(cleanup.reason),
                 ]
                 : context.inputs?.phase === "cleanup" &&
                         context.inputs?.answer === "keep"
-                ? ["Worktree, branch and VM resources kept."]
+                ? ["Worktree and branch kept."]
                 : []),
             ...(!integrated && decisionPhase && checks?.recommendation
                 ? ["Next: " + quote(checks.recommendation)]

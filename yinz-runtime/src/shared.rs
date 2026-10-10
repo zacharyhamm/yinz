@@ -80,11 +80,6 @@ pub fn parse_base_url(url: &str) -> Result<ServerAddress> {
     Ok(ServerAddress { ip, port })
 }
 
-/// Expand `~` and `$VAR` in a path written by a user, in a layout or a config.
-///
-/// One spelling for every path property, so `~/src/project` means the same
-/// thing as a pane's `cwd`, a keybind's `firecracker_worktree` or the
-/// `firecracker_provider` option; the error names what could not be expanded.
 pub fn expand_path(raw: &str) -> Result<std::path::PathBuf, String> {
     shellexpand::full(raw)
         .map(|expanded| std::path::PathBuf::from(expanded.as_ref()))

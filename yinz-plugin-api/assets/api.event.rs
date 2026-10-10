@@ -843,10 +843,6 @@ pub struct PaneInfo {
     #[prost(message, optional, tag="30")]
     pub agent: ::core::option::Option<AgentInfo>,
     /// Flat spelling of `target`, kept for plugins built before `PaneTarget`.
-    #[prost(string, optional, tag="31")]
-    pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag="32")]
-    pub firecracker_worktree: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="33")]
     pub target: ::core::option::Option<super::command::PaneTarget>,
     #[prost(bool, tag="34")]

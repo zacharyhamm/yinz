@@ -1361,9 +1361,7 @@ fn deno_pane_exit_observes_a_held_cli_pane() {
         direction: None,
         command: vec!["controlled-command".to_owned()],
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         plugin: None,
         cwd: None,
         floating: false,

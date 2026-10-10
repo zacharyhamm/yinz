@@ -72,8 +72,6 @@ pub struct Project {
     pub name: String,
     pub root: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub firecracker_image: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
@@ -264,7 +262,6 @@ pub fn parse_legacy(json: &[u8]) -> Registry {
         .filter_map(|saved| {
             let mut project = validate(&saved.name, &saved.root).ok()?;
             project.discovered = saved.discovered;
-            project.firecracker_image = saved.firecracker_image;
             project.worktree_dir = saved.worktree_dir.filter(|dir| !dir.contains('\0'));
             project.remote = saved.remote;
             project.worktree_status = saved.worktree_status;
@@ -292,7 +289,7 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
     Ok(Project {
         name: name.to_owned(),
         root,
-        firecracker_image: None,
+
         worktree_dir: None,
         remote: None,
         worktree_status: None,
@@ -316,7 +313,6 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
 pub const ROW_COLUMNS: &[&str] = &[
     "name",
     "root",
-    "firecracker_image",
     "worktree_dir",
     "remote",
     "worktree_status",
@@ -373,7 +369,6 @@ pub fn from_rows(rows: &DataRows) -> Registry {
                 Project {
                     name,
                     root,
-                    firecracker_image: text_at(rows, row, "firecracker_image"),
                     worktree_dir: text_at(rows, row, "worktree_dir"),
                     remote: text_at(rows, row, "remote"),
                     worktree_status: text_at(rows, row, "worktree_status")
@@ -401,7 +396,6 @@ pub fn to_mutation(project: &Project) -> Mutation {
         .uid(project.name.clone())
         .set("name", project.name.clone())
         .set("root", project.root.clone())
-        .set("firecracker_image", project.firecracker_image.clone())
         .set("worktree_dir", project.worktree_dir.clone())
         .set("remote", project.remote.clone())
         .set(
@@ -456,10 +450,6 @@ pub fn to_rows(projects: &Registry) -> DataRows {
                 vec![
                     DataValue::Text(project.name.clone()),
                     DataValue::Text(project.root.clone()),
-                    project
-                        .firecracker_image
-                        .clone()
-                        .map_or(DataValue::Null, DataValue::Text),
                     project
                         .worktree_dir
                         .clone()
@@ -549,16 +539,11 @@ pub fn plan_remember(
     rows: &DataRows,
     name: &str,
     root: Option<&str>,
-    image: Option<&str>,
     worktree_dir: Option<&str>,
 ) -> Result<(Project, Vec<Mutation>), String> {
     let name = name.trim();
     let before = from_rows(rows);
     let stored = before.get(name);
-    let image = image.map(str::trim);
-    if let Some(image) = image.filter(|image| !image.is_empty()) {
-        yinz_tile::prelude::validate_firecracker_vm_name(image)?;
-    }
     if worktree_dir.is_some_and(|dir| dir.contains('\0')) {
         return Err("worktree_dir must not contain NUL bytes".into());
     }
@@ -568,14 +553,11 @@ pub fn plan_remember(
             .cloned()
             .ok_or_else(|| format!("unknown project {name}; root is required for a new project"))?,
     };
-    project.firecracker_image = image
-        .map(|image| (!image.is_empty()).then(|| image.to_owned()))
-        .unwrap_or_else(|| stored.and_then(|p| p.firecracker_image.clone()));
     project.worktree_dir = stored.and_then(|p| p.worktree_dir.clone());
     let (mut project, mut mutations) = if root.is_some() {
-        let (adopted, mutations) = plan_adopt(rows, project, image.is_some())?;
+        let (adopted, mutations) = plan_adopt(rows, project)?;
         (adopted.project, mutations)
-    } else if image.is_some() || worktree_dir.is_some() {
+    } else if worktree_dir.is_some() {
         let mutations = vec![
             assert_projects(rows, "name", &[name])?,
             to_mutation(&project),
@@ -662,14 +644,10 @@ fn record_replacement(
 }
 
 /// An explicit adoption and its history are committed together, guarded by the rows read.
-pub fn plan_adopt(
-    rows: &DataRows,
-    project: Project,
-    image_explicit: bool,
-) -> Result<(Adopted, Vec<Mutation>), String> {
+pub fn plan_adopt(rows: &DataRows, project: Project) -> Result<(Adopted, Vec<Mutation>), String> {
     let before = from_rows(rows);
     let mut after = before.clone();
-    let mut adopted = adopt(&mut after, project, image_explicit);
+    let mut adopted = adopt(&mut after, project);
     let name = adopted.project.name.clone();
     let mut names = vec![name.as_str()];
     if let Some(name) = &adopted.replaced {
@@ -1010,12 +988,8 @@ pub struct Adopted {
 
 /// Add a project the user named.
 ///
-/// A discovered project on the same folder goes away, because the user just
-/// gave that folder a better name. Its image was set on the folder, not on
-/// the name a poll gave it, so it comes along too - unless the caller said
-/// what the image should be (`image_explicit`), in which case the caller's
-/// answer stands even when that answer is "none".
-pub fn adopt(projects: &mut Registry, mut project: Project, image_explicit: bool) -> Adopted {
+/// A discovered project on the same folder is replaced, preserving its worktree defaults.
+pub fn adopt(projects: &mut Registry, mut project: Project) -> Adopted {
     if let Some(stored) = projects.get(&project.name) {
         project.replaced_ids.clone_from(&stored.replaced_ids);
     }
@@ -1026,11 +1000,6 @@ pub fn adopt(projects: &mut Registry, mut project: Project, image_explicit: bool
             project.remote.clone_from(&other.remote);
             project.worktree_status = other.worktree_status;
             project.common_dir.clone_from(&other.common_dir);
-            if !image_explicit && project.firecracker_image.is_none() {
-                project
-                    .firecracker_image
-                    .clone_from(&other.firecracker_image);
-            }
             if project.worktree_dir.is_none() {
                 project.worktree_dir.clone_from(&other.worktree_dir);
             }
@@ -1146,11 +1115,9 @@ mod tests {
         let mut source = validated("duplicate", "/source");
         source.remote = Some("git@example.com:Owner/Repo.git".into());
         source.worktree_dir = Some("/source-worktrees".into());
-        source.firecracker_image = Some("source-image".into());
         let mut target = validated("kept", "/target");
         target.remote = Some("https://example.com/Owner/Repo".into());
         target.worktree_dir = Some("../target-worktrees".into());
-        target.firecracker_image = Some("target-image".into());
         target.common_dir = Some("/target/.git".into());
         target.worktree_status = Some(WorktreeStatus::Linked);
         target.discovered = true;
@@ -1192,22 +1159,14 @@ mod tests {
         let mut expected = expected;
         expected.sort_unstable();
         assert_eq!(read_back(&backend)["last"].replaced_ids, expected);
-        let (adopted, mutations) = plan_adopt(
-            &project_rows(&backend),
-            validated("last", "/changed"),
-            false,
-        )
-        .unwrap();
+        let (adopted, mutations) =
+            plan_adopt(&project_rows(&backend), validated("last", "/changed")).unwrap();
         backend.apply(mutations).unwrap();
         assert_eq!(adopted.project.replaced_ids, expected);
         assert_eq!(read_back(&backend)["last"].replaced_ids, expected);
         backend.apply(vec![delete_mutation("last")]).unwrap();
-        let (_, mutations) = plan_adopt(
-            &project_rows(&backend),
-            validated("last", "/changed"),
-            false,
-        )
-        .unwrap();
+        let (_, mutations) =
+            plan_adopt(&project_rows(&backend), validated("last", "/changed")).unwrap();
         backend.apply(mutations).unwrap();
         assert!(read_back(&backend)["last"].replaced_ids.is_empty());
     }
@@ -1222,8 +1181,7 @@ mod tests {
             backend.apply(vec![to_mutation(&found)]).unwrap();
             let rows = project_rows(&backend);
             let id = row_ids(&rows)["found"];
-            let (adopted, mutations) =
-                plan_adopt(&rows, validated("mine", "/work"), false).unwrap();
+            let (adopted, mutations) = plan_adopt(&rows, validated("mine", "/work")).unwrap();
             assert_eq!(adopted.project.replaced_ids, vec![id, DataRowId::new(900)]);
             if conflict {
                 backend
@@ -2024,12 +1982,7 @@ mod tests {
             projects["agent"].worktree_dir.as_deref(),
             Some("../saved trees")
         );
-        let stale = adopt(
-            &mut projects,
-            validate("pocus", "/work/agent").unwrap(),
-            false,
-        )
-        .replaced;
+        let stale = adopt(&mut projects, validate("pocus", "/work/agent").unwrap()).replaced;
 
         assert_eq!(
             projects["pocus"].worktree_dir.as_deref(),
@@ -2042,50 +1995,6 @@ mod tests {
             projects["pocus"].remote.as_deref(),
             Some("git@example.com:agent.git")
         );
-    }
-
-    #[test]
-    fn adopting_a_discovered_project_keeps_its_firecracker_image_unless_one_is_named() {
-        let mut projects = Registry::new();
-        discover(
-            &mut projects,
-            &[git("/work/agent", None, WorktreeStatus::Primary)],
-        );
-        projects.get_mut("agent").unwrap().firecracker_image = Some("rust".to_owned());
-
-        let mut named = projects.clone();
-        let adopted = adopt(&mut named, validate("pocus", "/work/agent").unwrap(), false);
-        assert_eq!(named["pocus"].firecracker_image.as_deref(), Some("rust"));
-        assert_eq!(adopted.project.firecracker_image.as_deref(), Some("rust"));
-        assert_eq!(adopted.replaced.as_deref(), Some("agent"));
-
-        let mut own = validate("pocus", "/work/agent").unwrap();
-        own.firecracker_image = Some("ruby".to_owned());
-        adopt(&mut projects, own, true);
-        assert_eq!(projects["pocus"].firecracker_image.as_deref(), Some("ruby"));
-    }
-
-    /// Renaming a discovered project and clearing its image in the same call:
-    /// the clear is what the user said, so the discovered image must not creep
-    /// back in, and what is returned is what is stored.
-    #[test]
-    fn adopting_with_an_explicit_clear_drops_the_discovered_image() {
-        let mut projects = Registry::new();
-        discover(
-            &mut projects,
-            &[git("/work/agent", None, WorktreeStatus::Primary)],
-        );
-        projects.get_mut("agent").unwrap().firecracker_image = Some("rust".to_owned());
-
-        let adopted = adopt(
-            &mut projects,
-            validate("pocus", "/work/agent").unwrap(),
-            true,
-        );
-        assert_eq!(projects["pocus"].firecracker_image, None);
-        assert_eq!(adopted.project.firecracker_image, None);
-        assert_eq!(adopted.project, projects["pocus"]);
-        assert_eq!(adopted.replaced.as_deref(), Some("agent"));
     }
 
     #[test]

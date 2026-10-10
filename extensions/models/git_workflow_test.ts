@@ -2,45 +2,7 @@ import { Evidence, extension } from "./git_workflow.ts";
 import { locked } from "./_lib/git_checkout.ts";
 import { checked, Claim, claimed, Context } from "./_lib/workflow.ts";
 const methods = extension.methods[0];
-const owner = {
-    host_id: "test-host",
-    session: "test",
-    incarnation: "test-incarnation",
-    work: "test-work",
-    agent: "worker",
-};
-const sync = {
-    work: owner.work,
-    key: "sync",
-    request: "{}",
-    incarnation: owner.incarnation,
-    owner,
-    outcome: "completed" as const,
-    clean: true as const,
-    vm: null,
-};
 const originalCommand = Deno.Command;
-class Command extends originalCommand {
-    constructor(command: string | URL, opts: Deno.CommandOptions) {
-        super(command, opts);
-        if (command === "yinz") {
-            this.spawn = () => ({
-                stdin: new WritableStream<Uint8Array>(),
-                output: () => this.output(),
-            } as Deno.ChildProcess);
-            this.output = () =>
-                Promise.resolve({
-                    code: 0,
-                    success: true,
-                    signal: null,
-                    stdout: new TextEncoder().encode(
-                        JSON.stringify({ result: sync }),
-                    ),
-                    stderr: new Uint8Array(),
-                });
-        }
-    }
-}
 
 function assert(value: unknown, message = "assertion failed"): asserts value {
     if (!value) throw new Error(message);
@@ -96,7 +58,6 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
         target: main,
         targetBranch: "main",
         gate: ["/usr/bin/true"],
-        vmSync: { mode: "local" as const },
         binary: "yinz",
         work: "work",
         session: "session",
@@ -1138,7 +1099,6 @@ Deno.test("checkout status only reduces the menu for clean local branches with n
     }
 });
 Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrates once, and refuses unsafe cleanup", async () => {
-    Deno.Command = Command;
     const dir = await Deno.makeTempDir();
     try {
         const main = dir + "/main", source = dir + "/topic";
@@ -1158,13 +1118,11 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
         await git(main, ["add", "."]);
         await git(main, ["commit", "-m", "base"]);
         await git(main, ["worktree", "add", "-b", "topic", source]);
-        // Lua's saved null may be omitted; live inspection returns an explicit null.
         const args = {
             source,
             target: main,
             targetBranch: "main",
             gate: ["cargo", "x", "ci", "check"],
-            vmSync: { ...sync, vm: undefined },
             binary: "yinz",
         };
         await Deno.writeTextFile(source + "/file", "topic\n");
@@ -1253,10 +1211,10 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
             () => methods.integrate.execute({ ...ready, gate: ["false"] }, c),
             /Conflicting request/,
         );
-        // Local checkout evidence requires no worker/VM operation. Failed and skipped
+        // Local checkout evidence requires no worker operation. Failed and skipped
         // checks can be accepted explicitly, but never replace revision freshness.
         Deno.Command = originalCommand;
-        const local = { ...args, vmSync: { mode: "local" as const } };
+        const local = args;
         await methods.verify_checkout.execute(local, c);
         const localProof = Evidence.parse(saved.get("evidence-current"));
         for (
@@ -1358,8 +1316,7 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
         }, c);
         assert(saved.get("integrationDecision-current")?.integrated === false);
         await Deno.remove(source + "/late-untracked");
-        Deno.Command = Command;
-        await Deno.writeTextFile(source + "/keep", "important");
+            await Deno.writeTextFile(source + "/keep", "important");
         await rejects(
             () =>
                 methods.guarded_cleanup.execute({
@@ -1385,7 +1342,6 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
     }
 });
 Deno.test("rebase conflicts are inspected and abort is explicit; unknown dispatches are never repeated", async () => {
-    Deno.Command = Command;
     const dir = await Deno.makeTempDir();
     try {
         const main = dir + "/main", source = dir + "/topic";
@@ -1410,7 +1366,6 @@ Deno.test("rebase conflicts are inspected and abort is explicit; unknown dispatc
             target: main,
             targetBranch: "main",
             gate: ["true"],
-            vmSync: sync,
             binary: "yinz",
         };
         await Deno.writeTextFile(source + "/file", "topic\n");

@@ -17,8 +17,6 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "agent-service",
     "agents",
     "todos",
-    "vms",
-    "swamp-issues",
     "new-agent",
     "project-store",
 ];

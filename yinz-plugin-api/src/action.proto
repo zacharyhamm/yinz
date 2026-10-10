@@ -690,9 +690,6 @@ message RunCommandAction {
   bool hold_on_start = 7;
   reserved 8;
   // Flat spelling of `target`, kept for plugins built before `PaneTarget`.
-  optional string firecracker_vm = 9;
-  optional string firecracker_image = 10;
-  optional string firecracker_worktree = 11;
   optional command.PaneTarget target = 12;
 }
 

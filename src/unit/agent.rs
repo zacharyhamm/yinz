@@ -387,36 +387,6 @@ fn spawn_resolves_local_cwd_after_merging_flags_and_json() {
 }
 
 #[test]
-fn spawn_defaults_cwd_only_when_a_host_checkout_is_needed() {
-    let caller = serde_json::json!(std::env::current_dir().unwrap());
-    for input in [
-        serde_json::json!({}),
-        serde_json::json!({"cwd":null,"project":null,"remote_host":null}),
-        serde_json::json!({"firecracker":"vm","branch":"topic"}),
-        serde_json::json!({"firecracker":"vm","branch":"topic","worktree":false,"cwd":null}),
-    ] {
-        assert_eq!(spawn_args(&[], input)["cwd"], caller);
-    }
-    for input in [
-        serde_json::json!({"firecracker":"vm"}),
-        serde_json::json!({"firecracker":"vm","cwd":null}),
-        serde_json::json!({"firecracker":"vm","branch":"  "}),
-        serde_json::json!({"project":"work","cwd":null}),
-        serde_json::json!({"remote_host":"ssh","cwd":null}),
-    ] {
-        assert!(spawn_args(&[], input)["cwd"].is_null());
-    }
-    assert_eq!(
-        spawn_args(
-            &["--firecracker", "vm", "--branch", "topic"],
-            serde_json::json!({"cwd":null})
-        )["cwd"],
-        caller
-    );
-    assert!(spawn_args(&["--firecracker", "vm"], serde_json::json!({}))["cwd"].is_null());
-}
-
-#[test]
 fn spawn_rejects_opening_prompt_fields_in_json_including_null() {
     use clap::Parser;
     #[derive(Parser)]
@@ -434,17 +404,6 @@ fn spawn_rejects_opening_prompt_fields_in_json_including_null() {
                 .contains("spawn does not accept"));
         }
     }
-}
-
-#[test]
-fn cli_named_branch_vm_disables_automatic_naming() {
-    let request = spawn_args(
-        &["--firecracker", "review", "--branch", "topic"],
-        serde_json::json!({"kind":"codex"}),
-    );
-    assert_eq!(request["automatic_firecracker_vm"], false);
-    assert_eq!(request["spec"]["firecracker"], "review");
-    assert_eq!(request["spec"]["branch"], "topic");
 }
 
 #[test]
@@ -586,7 +545,6 @@ fn spawn_placement_waits_for_support_reply_before_sending_spawn() {
                     cwd: None,
                     project: None,
                     remote_host: None,
-                    automatic_firecracker_vm: false,
                 };
                 let expected = request.clone();
                 let server = std::thread::spawn(move || {
@@ -655,6 +613,48 @@ fn spawn_placement_waits_for_support_reply_before_sending_spawn() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn spawn_rejects_unknown_fields_before_launch_regardless_of_permissions() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Agent,
+    }
+    for flags in [vec![], vec!["--permission-mode", "skip"]] {
+        for field in ["firecracker", "unknown_option"] {
+            for value in [serde_json::Value::Null, json!({})] {
+                let cli = Cli::try_parse_from(
+                    ["agent", "spawn", "--file", "-"]
+                        .into_iter()
+                        .chain(flags.iter().copied()),
+                )
+                .unwrap();
+                let source = json!({"kind":"codex", "remote_host":null, field:value}).to_string();
+                let error = request(cli.command, &mut source.as_bytes()).unwrap_err();
+                assert!(format!("{error:#}").contains(&format!("unknown field `{field}`")));
+            }
+        }
+    }
+}
+
+#[test]
+fn spawn_preserves_supported_json_envelope_fields() {
+    for placement in [json!({"tab":3}), json!({"new_tab":"review"})] {
+        let mut input =
+            json!({"kind":"codex", "project":"work", "remote_host":"build", "cwd":"relative"});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(placement.as_object().unwrap().clone());
+        let spawn = spawn_args(&[], input);
+        assert_eq!(spawn["project"], "work");
+        assert_eq!(spawn["remote_host"], "build");
+        assert_eq!(spawn["cwd"], "relative");
+        assert_eq!(spawn["spec"]["kind"], "codex");
     }
 }
 

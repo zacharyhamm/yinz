@@ -1,8 +1,5 @@
-//! The server's OS boundary as a port: the [`ServerOsApi`] trait and the types that cross it.
-//!
-//! The real backend (ptys, pane supervisors, client socket writers, Firecracker) lives in
-//! `yinz-server-os`, which only the binary links. Everything else, the tests' fakes included,
-//! sees the backend only through this trait.
+//! The server OS boundary shared by the real backend and test fakes.
+//! The backend in `yinz-server-os` implements ptys, supervisors, and client socket writers.
 
 use crate::{ClientId, PaneId};
 use yinz_types::internal_ids::TerminalId;
@@ -55,10 +52,6 @@ pub struct ResolvedSpawn {
     pub endpoint: Option<RemoteEndpoint>,
 }
 
-/// Where a remote command's broker is reached: the ssh host (an alias, or the
-/// `ssh://` URL a Firecracker provider hands back) and the ssh options for it.
-/// Kept apart from the command's `PaneTarget`, which says what the user asked
-/// for and is what the pane shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteEndpoint {
     pub host: String,
@@ -242,21 +235,6 @@ pub trait ServerOsApi: Send + Sync {
     /// arrives with the first client, long after the backend is built, so this is
     /// set once at session init. Defaulted so mock implementations are unaffected.
     fn set_pty_host_enabled(&self, _enabled: bool) {}
-    fn set_firecracker_provider(
-        &self,
-        _provider: Option<PathBuf>,
-        _timeout_secs: Option<yinz_types::units::ElapsedSeconds>,
-        _session: String,
-    ) -> Result<()> {
-        Ok(())
-    }
-    fn stop_firecracker_session(&self) -> Result<()> {
-        Ok(())
-    }
-    /// The session was renamed: move its Firecracker VMs with it, so the management
-    /// commands, which resolve the session by its current name, keep finding them.
-    fn rename_firecracker_session(&self, _session: String) {}
-    fn begin_firecracker_shutdown(&self) {}
     /// Terminate every pty-host supervisor this server owns, on the way out.
     fn shutdown_pty_hosts(&self) {}
     fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {
@@ -291,15 +269,6 @@ pub trait ServerOsApi: Send + Sync {
     /// worse than no pid: it will happily name an unrelated *local* process, so
     /// a `kill` meant for a pane lands somewhere else entirely.
     fn is_remote_pane(&self, _terminal_id: TerminalId) -> bool {
-        false
-    }
-    /// Whether this pane runs in a Firecracker guest the provider started.
-    ///
-    /// The guest has no route to the session socket, so its hook reports arrive
-    /// as a control sequence on the pane's own byte stream. That channel is
-    /// trusted for these panes only: a program in an ordinary ssh pane could
-    /// otherwise forge agent records and hook events for the plugins.
-    fn is_firecracker_pane(&self, _terminal_id: TerminalId) -> bool {
         false
     }
     /// What the far side last reported about a remote pane: the cwd and
@@ -337,15 +306,6 @@ pub trait ServerOsApi: Send + Sync {
     }
     /// The machine a pane runs on, or `None` if it runs on this one.
     fn remote_pane_host(&self, _terminal_id: TerminalId) -> Option<String> {
-        None
-    }
-    /// The host worktree a Firecracker pane's VM mirrors, as the VM was actually
-    /// provisioned rather than as the caller asked.
-    ///
-    /// Read off the transport's own command for the reason `remote_pane_host` is: a pane
-    /// that joined a VM somebody else named the worktree for asked for none, and the
-    /// answer is the one `resolve_target` adopted from the provider.
-    fn remote_pane_worktree(&self, _terminal_id: TerminalId) -> Option<PathBuf> {
         None
     }
     /// Hand a pane's supervisor over without killing it, so another session can
