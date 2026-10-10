@@ -366,6 +366,7 @@ impl Screen {
                 || self.command_palettes.contains_key(&client)
             {
                 self.dismiss_plugin_palette(client, &mut state);
+                self.release_palette_input(client);
                 if let Err(error) = result {
                     log::error!("{error}");
                 }

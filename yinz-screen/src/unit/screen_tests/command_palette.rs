@@ -4038,6 +4038,152 @@ fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
 }
 
 #[test]
+fn note_editing_keeps_notifications_suspended_until_the_last_palette_finishes() {
+    use yinz_bus::command_palette::{Instruction, NoteChoice, NoteRequest, NoteResults};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+
+    fn open_editor(screen: &mut Screen) -> NoteRequest {
+        let (tx, rx) = unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        let next = || {
+            rx.try_iter()
+                .find_map(|(instruction, _)| match instruction {
+                    PluginInstruction::PaletteNote(request) => Some(*request),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        screen.toggle_command_palette(CLIENT);
+        screen.command_palette_handles_input(&None, b"Search project notes", false, CLIENT);
+        let enter = Some(KeyWithModifier::new(BareKey::Enter));
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        let search = next();
+        screen.plugin_palette_instruction(Instruction::NoteSearch {
+            client: CLIENT,
+            token: search.token,
+            revision: search.revision,
+            reply: Ok(NoteResults {
+                notes: vec![NoteChoice {
+                    id: 1,
+                    title: "Note".into(),
+                    snippet: "Body".into(),
+                    archived: false,
+                }],
+                truncated: false,
+            }),
+        });
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        let open = next();
+        let (exit, _) = crossbeam::channel::bounded(1);
+        screen.plugin_palette_instruction(Instruction::NoteReady {
+            client: CLIENT,
+            token: open.token,
+            revision: open.revision,
+            path: "/tmp/note.md".into(),
+            pane_title: "Note".into(),
+            exit,
+        });
+        open
+    }
+
+    for ending in ["saved", "failed", "tab", "replacement", "overlap"] {
+        let mut screen = screen();
+        let receiver = screen_wired_to_server(&mut screen);
+        screen.projects = ["project".into()].into_iter().collect();
+        screen
+            .change_mode(InputMode::Notifications, None, CLIENT)
+            .unwrap();
+        assert!(screen.notification_browser_is_visible(CLIENT));
+        let open = open_editor(&mut screen);
+        assert!(!screen.notification_browser_is_visible(CLIENT), "{ending}");
+        for mode in [InputMode::Normal, InputMode::Notifications] {
+            screen.change_mode(mode, None, CLIENT).unwrap();
+            screen.change_mode_for_all_clients(mode, None).unwrap();
+            assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Locked);
+            assert!(screen.notification_browsers.contains_key(&CLIENT));
+            assert!(!screen.notification_browser_is_visible(CLIENT));
+        }
+        for key in [
+            BareKey::Char('a'),
+            BareKey::Enter,
+            BareKey::Up,
+            BareKey::Down,
+        ] {
+            assert!(!screen.command_palette_handles_input(
+                &Some(KeyWithModifier::new(key)),
+                b"editor input",
+                false,
+                CLIENT
+            ));
+        }
+        let second = match ending {
+            "tab" => {
+                new_tab(&mut screen, 2, TabId::new(1));
+                None
+            },
+            "replacement" => {
+                screen.toggle_command_palette(CLIENT);
+                screen.close_command_palette(CLIENT);
+                None
+            },
+            "overlap" => Some(open_editor(&mut screen)),
+            _ => None,
+        };
+        assert!(
+            !receiver.try_iter().any(|(instruction, _)| matches!(
+                instruction,
+                ServerInstruction::SetCommandPaletteOpen(CLIENT, false)
+            )),
+            "{ending}"
+        );
+        screen.plugin_palette_instruction(Instruction::NoteFinished {
+            client: CLIENT,
+            token: open.token,
+            revision: open.revision,
+            result: if ending == "failed" {
+                Err("Cannot open editor".into())
+            } else {
+                Ok(true)
+            },
+        });
+        if ending != "tab" {
+            assert!(screen.command_palettes.contains_key(&CLIENT));
+            assert!(!screen.notification_browser_is_visible(CLIENT));
+            screen.close_command_palette(CLIENT);
+        }
+        if let Some(second) = second {
+            assert!(!receiver.try_iter().any(|(instruction, _)| matches!(
+                instruction,
+                ServerInstruction::SetCommandPaletteOpen(CLIENT, false)
+            )));
+            screen.plugin_palette_instruction(Instruction::NoteFinished {
+                client: CLIENT,
+                token: second.token,
+                revision: second.revision,
+                result: Ok(false),
+            });
+            screen.close_command_palette(CLIENT);
+        }
+        assert_eq!(
+            receiver
+                .try_iter()
+                .filter(|(instruction, _)| matches!(
+                    instruction,
+                    ServerInstruction::SetCommandPaletteOpen(CLIENT, false)
+                ))
+                .count(),
+            1,
+            "{ending}"
+        );
+        // Apply the server's restored mode after the final release.
+        screen
+            .change_mode(InputMode::Notifications, None, CLIENT)
+            .unwrap();
+        assert!(screen.notification_browser_is_visible(CLIENT));
+    }
+}
+
+#[test]
 fn native_note_palette_requires_a_current_project() {
     let mut screen = screen();
     let receiver = screen_wired_to_server(&mut screen);
