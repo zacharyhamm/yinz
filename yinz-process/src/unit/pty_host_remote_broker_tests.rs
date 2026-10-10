@@ -413,7 +413,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind failed");
     let broker_registry = registry.clone();
     let broker = std::thread::spawn(move || {
-        for _ in 0..9 {
+        for _ in 0..10 {
             let (stream, _) = listener.accept().expect("accept failed");
             let _ = serve_connection(stream, std::path::Path::new("/bin/false"), &broker_registry);
         }
@@ -483,7 +483,18 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
             None,
             Some(yinz_types::agent::AgentState::Busy),
         ),
-        ("Notification", "default", Some("permission_prompt"), None),
+        (
+            "Notification",
+            "default",
+            Some("permission_prompt"),
+            Some(yinz_types::agent::AgentState::Waiting),
+        ),
+        (
+            "Notification",
+            "auto",
+            Some("permission_prompt"),
+            Some(yinz_types::agent::AgentState::Waiting),
+        ),
         (
             "Notification",
             "default",

@@ -3525,7 +3525,7 @@ mod tests {
                     other => panic!("{other:?}"),
                 }
                 for reminder in ["permission_prompt", "worker_permission_prompt"] {
-                    let json = serde_json::json!({"hook_event_name": "Notification", "notification_type": reminder}).to_string();
+                    let json = serde_json::json!({"hook_event_name": "Notification", "notification_type": reminder, "permission_mode": mode}).to_string();
                     let event = serde_json::from_str(&json).unwrap();
                     let actions = hook_report_actions(
                         kind,
@@ -3533,9 +3533,17 @@ mod tests {
                         &event,
                         json,
                     );
-                    assert!(
-                        matches!(&actions[..], [Action::AgentEvent(event)] if event.state.is_none())
-                    );
+                    if kind == "claude" && reminder == "permission_prompt" {
+                        assert!(matches!(&actions[..], [Action::SetPaneAgent {
+                            agent: Some(agent), ..
+                        }, Action::AgentEvent(event)] if agent.state == AgentState::Waiting
+                            && agent.wait_needs_a_person
+                            && event.state == Some(AgentState::Waiting)));
+                    } else {
+                        assert!(
+                            matches!(&actions[..], [Action::AgentEvent(event)] if event.state.is_none())
+                        );
+                    }
                 }
             }
         }

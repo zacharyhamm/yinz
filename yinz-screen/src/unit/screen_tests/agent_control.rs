@@ -3171,7 +3171,52 @@ fn uncertain_submission_requires_explicit_recovery_and_replies_once() {
 }
 
 #[test]
-fn claude_permission_reminders_preserve_parent_state_and_worker_waits() {
+fn claude_permission_notification_waits_even_in_auto_mode() {
+    for target in pane_targets() {
+        for evaluation in [false, true] {
+            let (mut screen, _messages, _writes) = setup_on_target("claude", target.clone());
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            if evaluation {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    HookEvent {
+                        permission_mode: Some("auto".into()),
+                        tool_name: Some("Bash".into()),
+                        ..hook("PermissionRequest")
+                    },
+                );
+                assert_eq!(
+                    screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+                    AgentState::Busy
+                );
+            }
+            for _ in 0..2 {
+                report_kind(
+                    &mut screen,
+                    "claude",
+                    HookEvent {
+                        permission_mode: Some("auto".into()),
+                        notification_type: Some("permission_prompt".into()),
+                        message: Some("Allow Bash?".into()),
+                        ..hook("Notification")
+                    },
+                );
+                let agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+                assert_eq!(agent.state, AgentState::Waiting);
+                assert_eq!(agent.waiting_on.as_deref(), Some("Allow Bash?"));
+                assert!(agent.wait_needs_a_person);
+            }
+            report_kind(&mut screen, "claude", hook("PostToolUse"));
+            let agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+            assert_eq!(agent.state, AgentState::Busy);
+            assert_eq!(agent.waiting_on, None);
+        }
+    }
+}
+
+#[test]
+fn claude_worker_permission_reminders_preserve_parent_state_and_worker_waits() {
     for target in pane_targets() {
         for parent_state in [AgentState::Idle, AgentState::Busy] {
             let (mut screen, messages, _writes) = setup_on_target("claude", target.clone());
@@ -3223,21 +3268,9 @@ fn claude_permission_reminders_preserve_parent_state_and_worker_waits() {
                 report_kind(&mut screen, "claude", worker.clone());
                 let waiting = screen.get_pane_info(PANE).unwrap().agent.unwrap();
                 assert_eq!(waiting.state, AgentState::Waiting);
-                for kind in ["permission_prompt", "worker_permission_prompt"] {
-                    report_kind(
-                        &mut screen,
-                        "claude",
-                        HookEvent {
-                            notification_type: Some(kind.into()),
-                            ..reminder.clone()
-                        },
-                    );
-                    assert_eq!(
-                        screen.get_pane_info(PANE).unwrap().agent,
-                        Some(waiting.clone())
-                    );
-                    assert!(screen.agent_worker_waits.contains_key(&PANE));
-                }
+                report_kind(&mut screen, "claude", reminder.clone());
+                assert_eq!(screen.get_pane_info(PANE).unwrap().agent, Some(waiting));
+                assert!(screen.agent_worker_waits.contains_key(&PANE));
                 worker.hook_event_name = "PostToolUse".into();
                 report_kind(&mut screen, "claude", worker.clone());
                 assert_eq!(

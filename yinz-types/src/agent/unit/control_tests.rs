@@ -507,7 +507,10 @@ fn claude_permission_evaluation_does_not_end_prompt_observation() {
                     notification_type: Some(kind.into()),
                     ..hook.clone()
                 };
-                assert_eq!(observe(&mut observation, &broadcast(&notification)), None);
+                assert_eq!(
+                    observe(&mut observation, &broadcast(&notification)),
+                    (kind == "permission_prompt").then_some(AgentOutcome::NeedsInput)
+                );
             }
             let finished = HookEvent {
                 hook_event_name: "PostToolUse".into(),
