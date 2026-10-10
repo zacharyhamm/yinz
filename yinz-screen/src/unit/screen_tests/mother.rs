@@ -1224,12 +1224,20 @@ fn palette_pane_focus_hides_mother_before_switching_tabs() {
         action,
         create_session,
         client_id,
+        label,
     } = instructions.try_recv().unwrap().0
     else {
         panic!("expected palette activation");
     };
     assert_eq!(action, Action::FocusPaneByPaneId { pane_id: target });
-    screen.dispatch_command_palette_action(pane_id, tab_id, action, create_session, client_id);
+    screen.dispatch_command_palette_action(
+        pane_id,
+        tab_id,
+        action,
+        create_session,
+        client_id,
+        label,
+    );
     let ScreenInstruction::FocusPaneWithId(pane, float, in_place, client, completion) =
         instructions
             .recv_timeout(std::time::Duration::from_secs(5))
