@@ -804,6 +804,8 @@ pub struct AgentSpawnSpec {
     pub allow_outside_worktree: ::core::option::Option<bool>,
     #[prost(string, optional, tag="19")]
     pub reuse_prompt: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag="20")]
+    pub bubblewrap: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -1,6 +1,9 @@
 //! Workflow configuration is data. Reading it never launches a command or grants permissions.
 use serde::{Deserialize, Serialize};
 
+#[cfg(unix)]
+pub mod bubblewrap;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub server_bind: Option<std::net::IpAddr>,

@@ -87,6 +87,8 @@ pub enum AgentRequest {
     },
     /// Read-only feature negotiation before sending placement to an older server.
     SpawnPlacementSupport,
+    /// Read-only feature negotiation before sending a sandboxed spawn to an older server.
+    SpawnBubblewrapSupport,
     List {
         project: Option<String>,
     },

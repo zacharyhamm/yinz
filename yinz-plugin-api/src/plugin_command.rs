@@ -6959,6 +6959,7 @@ impl From<AgentSpawnSpec> for ProtobufAgentSpawnSpec {
             reuse: spec.reuse,
             reuse_prompt: spec.reuse_prompt,
             allow_outside_worktree: spec.allow_outside_worktree,
+            bubblewrap: spec.bubblewrap,
         }
     }
 }
@@ -6989,6 +6990,7 @@ impl From<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
             reuse: spec.reuse,
             reuse_prompt: spec.reuse_prompt,
             allow_outside_worktree: spec.allow_outside_worktree,
+            bubblewrap: spec.bubblewrap,
         }
     }
 }
@@ -7428,6 +7430,7 @@ mod tests {
                 hooks: Some(false),
                 firecracker: Some("vm".to_owned()),
                 firecracker_image: Some("image".to_owned()),
+                bubblewrap: true,
             },
             source_directory: Some(PathBuf::from("/host")),
             cwd: Some(PathBuf::from("/tmp/work")),

@@ -21,6 +21,24 @@ use {
 };
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some(yinz_config::project_config::bubblewrap::RUN_FLAG)
+    {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let result = (|| {
+            let [root, separator, command @ ..] = args.as_slice() else {
+                anyhow::bail!("invalid Bubblewrap invocation");
+            };
+            anyhow::ensure!(separator == "--", "missing Bubblewrap command separator");
+            yinz_config::project_config::bubblewrap::Environment::for_project(
+                std::path::Path::new(root),
+            )?
+            .run(command)
+        })();
+        if let Err(error) = result {
+            eprintln!("Error: {error:#}");
+        }
+        std::process::exit(1);
+    }
     if std::env::args().nth(1).as_deref() == Some(yinz_process::claude_turn::OBSERVER_FLAG) {
         if yinz_process::claude_turn::run().is_err() {
             std::process::exit(1);
@@ -115,6 +133,31 @@ fn main() {
             .context("find this yinz binary")
             .and_then(|binary| yinz_codex::report(&binary));
         std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+    if let Some(Command::Bubblewrap(yinz_cli::args::Bubblewrap::Prepare { project })) =
+        &opts.command
+    {
+        let result = (|| {
+            let project = project
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(std::env::current_dir)
+                .context("resolve project")?;
+            let config = opts
+                .config_dir
+                .clone()
+                .or_else(yinz_runtime::home::find_default_config_dir);
+            let root = yinz_config::project_config::root(&project).map_err(anyhow::Error::msg)?;
+            yinz_config::project_config::bubblewrap::Environment::for_project(&root)?
+                .prepare(config.as_deref())
+        })();
+        match result {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                std::process::exit(1);
+            },
+        }
     }
     configure_logger();
     create_config_and_cache_folders();

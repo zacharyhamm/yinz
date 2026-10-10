@@ -260,6 +260,11 @@ pub fn unwrapped_program_and_args<'a>(
     args: &'a [String],
 ) -> Option<(&'a Path, &'a [String])> {
     if program.file_name()? == "yinz" {
+        if let [flag, _root, separator, command, rest @ ..] = args {
+            if flag == "--bubblewrap-run" && separator == "--" {
+                return unwrapped_program_and_args(Path::new(command), rest);
+            }
+        }
         if let [agent, launcher, flag, command, separator, rest @ ..] = args {
             if agent == "agent"
                 && matches!(launcher.as_str(), "codex" | "muse")

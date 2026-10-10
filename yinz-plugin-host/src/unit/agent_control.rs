@@ -956,3 +956,35 @@ fn spawn_notes_explain_renames_and_stay_quiet_otherwise() {
         Some("reused an existing worktree")
     );
 }
+
+#[test]
+fn bubblewrap_rejects_remote_targets_before_checkout_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(temp.path());
+    for (remote, vm, automatic) in [
+        (Some("host"), None, false),
+        (None, Some("vm"), false),
+        (None, None, true),
+    ] {
+        let mut spec = AgentSpawnSpec {
+            kind: Some("codex".into()),
+            bubblewrap: true,
+            firecracker: vm.map(Into::into),
+            allow_outside_worktree: Some(true),
+            ..Default::default()
+        };
+        let result = prepare_automation_agent(
+            &mut spec,
+            Some(temp.path().into()),
+            None,
+            remote.map(Into::into),
+            automatic,
+            &data,
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Bubblewrap cannot be combined"));
+        assert!(!temp.path().join(".worktrees").exists());
+    }
+}

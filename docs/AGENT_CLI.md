@@ -64,6 +64,9 @@ hooks by default, so hook installation alone cannot enable confirmed completion.
 Codex launches reject Claude model aliases such as `haiku`, `sonnet`, and `opus`.
 Use `--kind claude` for these aliases. Other model IDs are validated by the configured provider.
 
+On Linux, `--bubblewrap` uses an explicitly prepared project environment.
+See [Project Bubblewrap environments](BUBBLEWRAP.md) for configuration, preparation, and authentication.
+
 `agent spawn --help` describes every launch option. Recognized kinds are
 `muse`, `codex`, `claude`, `cursor`, `qwen`, `gemini`, `aider`, `cline`,
 `opencode`, `pi` and `agy`. Recognition does not imply prompt support.

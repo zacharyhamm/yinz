@@ -302,3 +302,24 @@ fn removed_recording_commands_and_options_are_rejected() {
         assert!(try_parse_cli(args.clone()).is_err(), "{args:?}");
     }
 }
+
+#[test]
+fn bubblewrap_prepare_respects_the_selected_config_directory() {
+    let opts = try_parse_cli([
+        "yinz",
+        "--config-dir",
+        "/custom/config",
+        "bubblewrap",
+        "prepare",
+        "--project",
+        "/work/repo",
+    ])
+    .unwrap();
+    assert_eq!(
+        opts.config_dir.as_deref(),
+        Some(std::path::Path::new("/custom/config"))
+    );
+    assert!(
+        matches!(opts.command, Some(Command::Bubblewrap(yinz_cli::args::Bubblewrap::Prepare { project: Some(path) })) if path == std::path::Path::new("/work/repo"))
+    );
+}

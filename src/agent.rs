@@ -217,6 +217,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             resume,
             reuse,
             allow_outside_worktree,
+            bubblewrap,
             allow_yinz,
             json,
         } => {
@@ -252,6 +253,9 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                     .filter(|(_, value)| !value.is_null())
                     .map(|(key, value)| (key.clone(), value.clone())),
             );
+            if bubblewrap {
+                fields.insert("bubblewrap".into(), true.into());
+            }
             if reuse {
                 fields.insert("reuse".into(), true.into());
             }
@@ -526,19 +530,36 @@ fn exchange_on_socket(
     let mut receiver = sender
         .get_receiver::<ServerToClientMsg>()
         .context("cannot set up agent reply")?;
-    if matches!(&request, AgentRequest::Spawn { placement, .. } if *placement != yinz_types::agent::control::AgentPlacement::Automatic)
+    if let AgentRequest::Spawn {
+        placement, spec, ..
+    } = &request
     {
-        sender
-            .send_client_msg(ClientToServerMsg::AgentControl(
+        for (required, probe, feature, token) in [
+            (
+                *placement != yinz_types::agent::control::AgentPlacement::Automatic,
                 AgentRequest::SpawnPlacementSupport,
-            ))
-            .context("check server tab placement support")?;
-        let response = receive_response(&mut receiver, Instant::now() + Duration::from_secs(5))
-            .context("cannot verify server tab placement support (spawn was not sent)")?;
-        if response.outcome != AgentOutcome::Ok
-            || response.output.as_deref() != Some("agent-tab-placement-v1")
-        {
-            bail!("server did not confirm tab placement support; restart the session with this Yinz version (spawn was not sent)");
+                "tab placement",
+                "agent-tab-placement-v1",
+            ),
+            (
+                spec.bubblewrap,
+                AgentRequest::SpawnBubblewrapSupport,
+                "Bubblewrap",
+                "agent-bubblewrap-v1",
+            ),
+        ] {
+            if !required {
+                continue;
+            }
+            let guidance = format!("server did not confirm {feature} support; restart the session with this Yinz version (spawn was not sent)");
+            sender
+                .send_client_msg(ClientToServerMsg::AgentControl(probe))
+                .context(guidance.clone())?;
+            let response = receive_response(&mut receiver, Instant::now() + Duration::from_secs(5))
+                .context(guidance.clone())?;
+            if response.outcome != AgentOutcome::Ok || response.output.as_deref() != Some(token) {
+                bail!(guidance);
+            }
         }
     }
     // The server's deadline determines the outcome. Allow its timeout result to arrive.
