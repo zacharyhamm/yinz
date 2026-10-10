@@ -3359,6 +3359,12 @@ pub fn spawn_agent_for_cli(
     .map_err(|error| error.to_string())
 }
 
+/// Where an agent's pane goes unless the launch says otherwise.
+const TILED: NewPanePlacement = NewPanePlacement::Tiled {
+    direction: None,
+    borderless: None,
+};
+
 fn spawn_agent_for_control(
     placement: yinz_types::agent::control::AgentPlacement,
     spec: AgentSpawnSpec,
@@ -3370,28 +3376,16 @@ fn spawn_agent_for_control(
     senders: &ThreadSenders,
     data_access: &DataAccess,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
-    let surface = NewPanePlacement::Tiled {
-        direction: None,
-        borderless: None,
-    };
-    spawn_agent_prepared(
-        placement,
-        surface,
-        false,
-        spec,
-        client_id,
-        senders,
-        |spec| {
-            agent_control::prepare_automation_agent(
-                spec,
-                cwd,
-                project,
-                remote_host,
-                automatic_firecracker_vm,
-                data_access,
-            )
-        },
-    )
+    spawn_agent_prepared(placement, TILED, false, spec, client_id, senders, |spec| {
+        agent_control::prepare_automation_agent(
+            spec,
+            cwd,
+            project,
+            remote_host,
+            automatic_firecracker_vm,
+            data_access,
+        )
+    })
 }
 
 /// `placement` picks the tab; `surface` says where in it the pane goes. Only a tiled pane may

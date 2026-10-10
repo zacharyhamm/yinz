@@ -125,7 +125,6 @@ pub enum ScreenContext {
     TogglePaneFrames,
     ToggleCommandPalette,
     ToggleMother,
-    MotherSpawned,
     SetPaneFrameStyle,
     SetSelectable,
     ShowPluginCursor,

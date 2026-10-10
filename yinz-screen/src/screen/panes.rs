@@ -280,6 +280,18 @@ impl Screen {
         set_blocking: bool,
         pending: &mut PendingEvents,
     ) -> Result<()> {
+        // Read here: a blocking spawn hands its completion to the pane below.
+        let is_mother = completion_tx.as_ref().is_some_and(|c| c.is_mother);
+        if is_mother && self.live_mother().is_some() {
+            // Two launches raced. The first one stays mother; this pane was never shown, so
+            // the reply names no pane.
+            if let Some(c) = completion_tx.as_mut() {
+                c.set_error_message("Mother is already running".into());
+            }
+            pending.waiting_for_pane.remove(&pid);
+            self.forget_unplaced_pane(pid, "mother is already running".into());
+            return Ok(());
+        }
         if let Some(c) = completion_tx.as_mut() {
             c.set_affected_pane_id(pid)
         }
@@ -490,9 +502,7 @@ impl Screen {
             Ok(())
         })();
         // Placement owns registration even when its reply receiver has gone away or reflow failed.
-        if completion_tx.as_ref().is_some_and(|c| c.is_mother)
-            && self.tab_containing_pane(pid).is_some()
-        {
+        if is_mother && self.tab_containing_pane(pid).is_some() {
             self.mother_spawned(pid)
                 .context("failed to register mother")
                 .non_fatal();

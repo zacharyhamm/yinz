@@ -159,7 +159,10 @@ impl Screen {
                 .unwrap_or_default()
         };
         let session_info = SessionInfo {
-            mother: self.live_mother().and(self.mother),
+            mother: self
+                .mother_in(&pane_manifest)
+                .filter(|info| super::mother::mother_is_live(info))
+                .and(self.mother),
             name: self.session_name.clone(),
             tabs: tab_infos,
             panes: pane_manifest,

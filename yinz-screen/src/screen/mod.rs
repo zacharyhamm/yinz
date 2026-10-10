@@ -3214,15 +3214,17 @@ impl Screen {
         let pane_id = if let Some(mother) = self.live_mother() {
             let presentation = self.mother_presentation(mother);
             if pane_id == mother || presentation == Some(pane_id) {
-                let Some(presentation) = presentation else {
-                    return Ok(());
-                };
-                if self.tab_containing_overlay(presentation).is_some() {
-                    return self
-                        .show_and_focus_mother(presentation, client_id)
-                        .with_context(err_context);
+                match presentation {
+                    Some(presentation) if self.tab_containing_overlay(presentation).is_some() => {
+                        return self
+                            .show_and_focus_mother(presentation, client_id)
+                            .with_context(err_context);
+                    },
+                    Some(presentation) => presentation,
+                    // Parked with nothing standing in for it: the caller's flags decide, as
+                    // they do for any parked pane.
+                    None => pane_id,
                 }
-                presentation
             } else {
                 pane_id
             }

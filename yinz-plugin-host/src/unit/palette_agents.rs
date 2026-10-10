@@ -423,9 +423,6 @@ fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane(
     );
     assert!(!screen
         .iter()
-        .any(|instruction| matches!(instruction, ScreenInstruction::MotherSpawned(_))));
-    assert!(!screen
-        .iter()
         .any(|instruction| matches!(instruction, ScreenInstruction::GetPaneInfo { .. })));
 
     let (reply, launches, screen) = launch(false);

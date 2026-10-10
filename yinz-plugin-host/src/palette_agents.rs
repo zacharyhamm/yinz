@@ -390,11 +390,6 @@ fn existing_command(
     })
 }
 
-const TILED: NewPanePlacement = NewPanePlacement::Tiled {
-    direction: None,
-    borderless: None,
-};
-
 /// Launch the session's mother agent: a fresh conversation in the directory the session
 /// started in, on the session surface instead of in a tab's tiled layout.
 fn mother(
