@@ -409,7 +409,7 @@ pub(crate) struct SessionMetaData {
     pub session_configuration: SessionConfiguration,
     pub key_passthrough_clients: HashMap<ClientId, PaneId>,
     pub locked_escapes: HashMap<ClientId, locked_escape::LockedEscape>,
-    // Presence holds this client in Locked; dismissal restores only the original lock state.
+    // Presence holds this client in Locked; dismissal also resumes notification browsing.
     command_palette_restore_modes: HashMap<ClientId, InputMode>,
     screen_thread: Option<thread::JoinHandle<()>>,
     pty_thread: Option<thread::JoinHandle<()>>,
@@ -462,11 +462,13 @@ impl SessionMetaData {
                 });
             self.command_palette_restore_modes
                 .entry(client_id)
-                .or_insert(if previous_mode == InputMode::Locked {
-                    InputMode::Locked
-                } else {
-                    InputMode::Normal
-                });
+                .or_insert(
+                    if matches!(previous_mode, InputMode::Locked | InputMode::Notifications) {
+                        previous_mode
+                    } else {
+                        InputMode::Normal
+                    },
+                );
             InputMode::Locked
         } else if let Some(mode) = self.command_palette_restore_modes.remove(&client_id) {
             mode

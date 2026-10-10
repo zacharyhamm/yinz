@@ -6985,12 +6985,11 @@ fn multipane_replacing_a_child_with_the_last_working_pane_retains_the_tab() {
                 .unwrap();
             let terminal = PaneId::Terminal(crate::TerminalId::new(1));
             if floating {
-                screen
-                    .tabs
-                    .get_mut(&TabId::new(0))
-                    .unwrap()
-                    .toggle_pane_embed_or_floating_for_pane_id(terminal, None)
+                let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+                let pane = tab.extract_pane(terminal, true).unwrap();
+                tab.add_floating_pane(pane, terminal, None, true, Some(CLIENT_1))
                     .unwrap();
+                assert!(tab.pane_id_is_floating(&terminal));
             }
             let children = [7, 8].map(|id| {
                 open_overlay_plugin(

@@ -87,8 +87,16 @@ pub enum View {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Reply {
-    Actions { actions: Vec<Action> },
-    View { view: View },
+    Actions {
+        actions: Vec<Action>,
+    },
+    View {
+        view: View,
+    },
+    Complete {
+        notification: String,
+        view: Option<View>,
+    },
     Close,
 }
 
@@ -188,6 +196,13 @@ impl Reply {
         match self {
             Self::Actions { actions } => validate_actions(actions),
             Self::Close => Ok(()),
+            Self::Complete { notification, view } => {
+                label(notification)?;
+                if let Some(view) = view {
+                    Self::View { view: view.clone() }.validate()?;
+                }
+                Ok(())
+            },
             Self::View { view } => match view {
                 View::Actions {
                     title,
@@ -260,6 +275,9 @@ impl Reply {
 
     pub fn handles(&self) -> Vec<String> {
         match self {
+            Self::Complete {
+                view: Some(view), ..
+            } => Self::View { view: view.clone() }.handles(),
             Self::Actions { actions } => actions.iter().map(|a| a.handle.clone()).collect(),
             Self::View {
                 view: View::Actions {

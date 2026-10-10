@@ -44,6 +44,7 @@ pub fn wait_for_action_completion(
                 Err(e) => {
                     log::error!("Failed to wait for action {}: {}", action_name, e);
                     ActionCompletionResult {
+                        confirmed: false,
                         agent_tab: None,
                         exit_status: None,
                         affected_pane_id: None,
@@ -69,6 +70,7 @@ pub fn wait_for_action_completion(
             // of every warp, successful ones included, directly over the signal
             // anyone debugging a warp is looking for.
             Ok(Err(_)) => ActionCompletionResult {
+                confirmed: false,
                 agent_tab: None,
                 exit_status: None,
                 affected_pane_id: None,
@@ -84,6 +86,7 @@ pub fn wait_for_action_completion(
                     ACTION_COMPLETION_TIMEOUT
                 );
                 ActionCompletionResult {
+                    confirmed: false,
                     agent_tab: None,
                     exit_status: None,
                     affected_pane_id: None,

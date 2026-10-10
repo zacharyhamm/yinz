@@ -159,6 +159,9 @@ impl Screen {
             .senders
             .send_to_plugin(PluginInstruction::PaletteNote(Box::new(request)))
         {
+            if state.notes.opening_editor {
+                super::notify(&self.bus.senders, format!("Could not edit note: {error}"));
+            }
             state.notes.cancel();
             state.widget.pending = false;
             state.widget.busy = false;
@@ -333,7 +336,7 @@ impl Screen {
         client: ClientId,
         token: u64,
         revision: u64,
-        result: Result<(), String>,
+        result: Result<bool, String>,
     ) {
         if self
             .note_edit_palettes
@@ -341,6 +344,21 @@ impl Screen {
             .is_some_and(|(origin, state)| *origin != client || state.notes.revision != revision)
         {
             return;
+        }
+        let accepted = self.note_edit_palettes.contains_key(&token)
+            || self
+                .command_palettes
+                .get(&client)
+                .is_some_and(|state| state.notes.accepts(token, revision));
+        if accepted {
+            super::notify(
+                &self.bus.senders,
+                match &result {
+                    Ok(true) => "Completed: Save note".into(),
+                    Ok(false) => "Note unchanged".into(),
+                    Err(error) => format!("Could not edit note: {error}"),
+                },
+            );
         }
         if let Some((_, mut state)) = self.note_edit_palettes.remove(&token) {
             if self.active_tab_ids.get(&client) != Some(&state.context.tab_id)

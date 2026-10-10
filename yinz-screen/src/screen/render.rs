@@ -346,8 +346,17 @@ impl Screen {
 
             // notifications paint over the panes, so they're emitted once every tab has rendered
             if has_overlays {
-                self.render_notifications(&mut output, session_surface, &regular_client_ids, now)
-                    .context(err_context)?;
+                self.render_notifications(
+                    &mut output,
+                    session_surface,
+                    &regular_client_ids
+                        .iter()
+                        .copied()
+                        .filter(|id| !self.command_palettes.contains_key(id))
+                        .collect::<Vec<_>>(),
+                    now,
+                )
+                .context(err_context)?;
                 // Above the toasts: a menu is something the user opened and is looking at right
                 // now, and a toast arriving underneath it must not cover the row they are about
                 // to click.
@@ -382,7 +391,10 @@ impl Screen {
                         .is_some_and(|tab_id| self.deferred_render_tabs.contains(tab_id))
                 })
                 .collect();
-            self.render_command_palettes(&mut output, palette_clients.into_iter(), false)
+            self.render_command_palettes(&mut output, palette_clients.iter().copied(), false)
+                .context(err_context)?;
+
+            self.render_notifications(&mut output, session_surface, &palette_clients, now)
                 .context(err_context)?;
 
             self.render_permission_modals(&mut output)

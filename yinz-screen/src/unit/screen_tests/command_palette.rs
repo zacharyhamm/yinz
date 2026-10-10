@@ -804,10 +804,10 @@ fn palette_rejects_directional_splits_without_losing_input() {
                 }
                 palette_key(&mut screen, BareKey::Enter);
                 assert!(screen.command_palettes.contains_key(&CLIENT));
-                assert!(
-                    receiver.try_recv().is_err(),
-                    "{target}, {query}, form={form}"
-                );
+                assert!(matches!(
+                    receiver.try_recv().unwrap().0,
+                    ScreenInstruction::Notify(..)
+                ));
                 let mut grid = grid_for_render_snapshot(SIZE);
                 let rendered = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
                 // The footer clips the full error to the palette width.
@@ -870,9 +870,21 @@ fn palette_rechecks_directional_splits_before_dispatch() {
                         .unwrap();
                 }
             }
+            if change == "target-moved" {
+                assert!(
+                    matches!(receiver.try_recv().unwrap().0, ScreenInstruction::Notify(message, ..) if message == "Completed: Move pane to next tab")
+                );
+            }
             let (sender, pty_receiver) = channels::unbounded();
             screen.bus.senders.to_pty = Some(SenderWithContext::new(sender));
-            screen.dispatch_command_palette_action(origin, TabId::new(0), action, false, CLIENT);
+            screen.dispatch_command_palette_action(
+                origin,
+                TabId::new(0),
+                action,
+                false,
+                CLIENT,
+                "Test action".into(),
+            );
             assert!(matches!(
                 receiver.try_recv().unwrap().0,
                 ScreenInstruction::Notify(message, None, None, None)
@@ -932,6 +944,7 @@ fn palette_dispatches_supported_pane_placements() {
                 action,
                 create_session,
                 client_id,
+                ..
             } = receiver.try_recv().unwrap().0
             else {
                 panic!("expected palette activation");
@@ -945,6 +958,7 @@ fn palette_dispatches_supported_pane_placements() {
                 action,
                 create_session,
                 client_id,
+                "Test action".into(),
             );
             let instruction = pty_receiver
                 .recv_timeout(std::time::Duration::from_secs(5))
@@ -1000,7 +1014,10 @@ fn palette_forms_validate_session_names_and_capture_creation_values() {
         palette_key(&mut screen, BareKey::Enter);
     }
     assert!(screen.command_palettes.contains_key(&CLIENT));
-    assert!(receiver.try_recv().is_err());
+    assert!(matches!(
+        receiver.try_recv().unwrap().0,
+        ScreenInstruction::Notify(..)
+    ));
     palette_key(&mut screen, BareKey::Up);
     palette_key(&mut screen, BareKey::Up);
     let existing = screen.session_name.clone();
@@ -1009,10 +1026,10 @@ fn palette_forms_validate_session_names_and_capture_creation_values() {
         palette_key(&mut screen, BareKey::Enter);
     }
     assert!(screen.command_palettes.contains_key(&CLIENT));
-    assert!(
-        receiver.try_recv().is_err(),
-        "existing sessions cannot be created again"
-    );
+    assert!(matches!(
+        receiver.try_recv().unwrap().0,
+        ScreenInstruction::Notify(..)
+    ));
 }
 
 #[test]
@@ -1053,7 +1070,10 @@ fn palette_never_retargets_a_vanished_origin_or_destination() {
     tab.close_pane(PaneId::Terminal(TerminalId::new(1)), false, None);
     palette_key(&mut screen, BareKey::Down);
     palette_key(&mut screen, BareKey::Enter);
-    assert!(receiver.try_recv().is_err());
+    assert!(matches!(
+        receiver.try_recv().unwrap().0,
+        ScreenInstruction::Notify(..)
+    ));
     assert!(screen.command_palettes.contains_key(&CLIENT));
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(other));
     screen.dispatch_command_palette_action(
@@ -1062,6 +1082,7 @@ fn palette_never_retargets_a_vanished_origin_or_destination() {
         Action::BreakPane,
         false,
         CLIENT,
+        "Test action".into(),
     );
     assert!(matches!(
         receiver.try_recv().unwrap().0,
@@ -1082,6 +1103,7 @@ fn palette_dispatch_does_not_wait_for_the_screen_thread() {
         },
         false,
         CLIENT,
+        "Test action".into(),
     );
     // Receiving this instruction proves dispatch returned while its worker awaits completion.
     let (instruction, _) = receiver
@@ -1125,7 +1147,10 @@ fn palette_drops_a_destination_removed_after_selection() {
     screen.tabs.remove(&TabId::new(1));
     // No intervening paint: Enter still refers to the now-stale displayed ID.
     palette_key(&mut screen, BareKey::Enter);
-    assert!(receiver.try_recv().is_err());
+    assert!(matches!(
+        receiver.try_recv().unwrap().0,
+        ScreenInstruction::Notify(..)
+    ));
     assert!(screen.command_palettes.contains_key(&CLIENT));
 }
 
@@ -1152,7 +1177,14 @@ fn palette_float_and_embed_reveal_and_focus_the_captured_pane() {
             .focus_pane_with_id(other, false, false, CLIENT)
             .unwrap();
         assert!(!screen.tabs[&TabId::new(0)].are_floating_panes_visible());
-        screen.dispatch_command_palette_action(origin, TabId::new(0), action, false, CLIENT);
+        screen.dispatch_command_palette_action(
+            origin,
+            TabId::new(0),
+            action,
+            false,
+            CLIENT,
+            "Test action".into(),
+        );
         let instruction = receiver
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap()
@@ -1184,6 +1216,10 @@ fn palette_float_and_embed_reveal_and_focus_the_captured_pane() {
             },
             other => panic!("unexpected instruction: {other:?}"),
         }
+        assert!(
+            matches!(receiver.recv_timeout(Duration::from_secs(5)).unwrap().0,
+            ScreenInstruction::Notify(message, ..) if message == "Completed: Test action")
+        );
         assert_eq!(screen.get_active_pane_id(&CLIENT), Some(origin));
         assert_eq!(
             screen.tabs[&TabId::new(0)].are_floating_panes_visible(),
@@ -1377,9 +1413,9 @@ fn palette_moves_only_the_captured_pane_and_never_a_replacement() {
     assert!(screen.tabs[&TabId::new(1)].has_pane_with_pid(&origin));
     assert!(screen.tabs[&TabId::new(0)].has_pane_with_pid(&other));
     // The same stale origin-tab pair cannot move the other pane that remains there.
-    screen
+    assert!(screen
         .move_command_palette_pane(origin, TabId::new(0), None, CLIENT)
-        .unwrap();
+        .is_err());
     assert_eq!(screen.tabs.len(), 2);
     assert!(screen.tabs[&TabId::new(0)].has_pane_with_pid(&other));
     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(origin));
@@ -1820,6 +1856,7 @@ fn palette_restores_exited_sessions_and_rejects_deleted_checkpoints() {
         action,
         false,
         CLIENT,
+        "Test action".into(),
     );
     assert!(matches!(
         receiver.try_recv().unwrap().0,
@@ -1829,7 +1866,10 @@ fn palette_restores_exited_sessions_and_rejects_deleted_checkpoints() {
     palette_key(&mut screen, BareKey::Enter);
     screen.command_palette_handles_input(&None, name.as_str().as_bytes(), false, CLIENT);
     palette_key(&mut screen, BareKey::Enter);
-    assert!(receiver.try_recv().is_err());
+    assert!(matches!(
+        receiver.try_recv().unwrap().0,
+        ScreenInstruction::Notify(..)
+    ));
     assert!(screen.command_palettes.contains_key(&CLIENT));
 }
 
@@ -3975,7 +4015,7 @@ fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
         client: CLIENT,
         token: open.token,
         revision: open.revision,
-        result: Ok(()),
+        result: Ok(true),
     });
     let refreshed = next();
     assert!(matches!(refreshed.action, NoteAction::Search(ref query) if query == "body match"));
@@ -4090,7 +4130,7 @@ fn native_note_editor_completion_does_not_replace_a_new_palette_or_restore_a_dis
             client: ClientId::new(2),
             token: open.token,
             revision: open.revision,
-            result: Ok(()),
+            result: Ok(true),
         });
         assert!(screen.note_edit_palettes.contains_key(&open.token));
         if replaced {
@@ -4109,7 +4149,11 @@ fn native_note_editor_completion_does_not_replace_a_new_palette_or_restore_a_dis
             client: CLIENT,
             token: open.token,
             revision: open.revision,
-            result: if failed { Err(failure.into()) } else { Ok(()) },
+            result: if failed {
+                Err(failure.into())
+            } else {
+                Ok(true)
+            },
         });
         let logs = LOG.0.lock().unwrap();
         assert_eq!(logs.iter().any(|message| message == failure), failed);
@@ -4651,4 +4695,346 @@ fn history_following_requests_newest_but_scrolling_back_keeps_revision_page() {
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
         before
     );
+}
+
+#[test]
+fn palette_completion_notifications_are_scoped_and_readable() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    use yinz_bus::command_palette::{Delivery, Instruction, Owner};
+    use yinz_types::command_palette::{Action, Command, Message, Reply, View};
+    for early_close in [false, true] {
+        for kind in [
+            "default",
+            "custom",
+            "view",
+            "error",
+            "cancel",
+            "reload",
+            "disconnect",
+            "form",
+            "invalid",
+            "oversized",
+        ] {
+            let mut screen = screen();
+            let notifications = palette_actions_receiver(&mut screen);
+            let (sender, requests) = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            let owner = Owner {
+                plugin_id: PluginId::new(50),
+                generation: 9,
+                client_id: Some(CLIENT),
+            };
+            let command = |command| Instruction::Command {
+                owner: owner.clone(),
+                client: CLIENT,
+                unavailable: Arc::new(AtomicBool::new(false)),
+                command,
+            };
+            screen.plugin_palette_instruction(command(Command::Register {
+                id: "test".into(),
+                title: "Test".into(),
+                registration: "1".into(),
+                static_actions: true,
+            }));
+            screen.toggle_command_palette(CLIENT);
+            let next_scope = || {
+                requests
+                    .try_iter()
+                    .find_map(|(request, _)| match request {
+                        PluginInstruction::DenoPalette(Delivery {
+                            message:
+                                Message::Discover { scope, .. } | Message::Execute { scope, .. },
+                            ..
+                        }) => Some(scope),
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            screen.plugin_palette_instruction(command(Command::Reply {
+                scope: next_scope(),
+                result: Ok(Reply::Actions {
+                    actions: vec![Action {
+                        id: "save".into(),
+                        label: "Save report".into(),
+                        description: String::new(),
+                        aliases: vec![],
+                        handle: "save".into(),
+                    }],
+                }),
+            }));
+            assert!(notifications.try_recv().is_err(), "discovery is quiet");
+            screen.command_palette_handles_input(&None, b"Save report", false, CLIENT);
+            palette_key(&mut screen, BareKey::Enter);
+            let mut scope = next_scope();
+            if kind == "form" {
+                screen.plugin_palette_instruction(command(Command::Reply {
+                    scope,
+                    result: Ok(Reply::View {
+                        view: View::Form {
+                            title: "Edit report".into(),
+                            fields: vec![],
+                            submit_label: "Save".into(),
+                            handle: "submit".into(),
+                        },
+                    }),
+                }));
+                assert!(notifications.try_recv().is_err());
+                palette_key(&mut screen, BareKey::Enter);
+                scope = next_scope();
+            }
+            if early_close {
+                screen.plugin_palette_instruction(command(Command::Close {
+                    scope: scope.clone(),
+                }));
+                assert!(
+                    notifications.try_recv().is_err(),
+                    "early close waits for settlement"
+                );
+            }
+            match kind {
+                "cancel" if !early_close => {
+                    screen.close_command_palette(CLIENT);
+                },
+                "reload" => {
+                    screen.plugin_palette_instruction(Instruction::Dispose {
+                        plugin_id: owner.plugin_id,
+                        generation: owner.generation,
+                    });
+                },
+                "disconnect" => {
+                    screen.close_command_palette(CLIENT);
+                    screen.disconnect_palette_client(CLIENT);
+                },
+                _ => {},
+            }
+            let result = match kind {
+                "custom" => Ok(Reply::Complete {
+                    notification: "Report saved".into(),
+                    view: Some(View::Text {
+                        title: "Report".into(),
+                        text: "Contents".into(),
+                    }),
+                }),
+                "view" => Ok(Reply::View {
+                    view: View::Text {
+                        title: "Report".into(),
+                        text: "Contents".into(),
+                    },
+                }),
+                "error" => Err("Disk full".into()),
+                "invalid" => Ok(Reply::Complete {
+                    notification: " ".into(),
+                    view: None,
+                }),
+                "oversized" => Ok(Reply::Complete {
+                    notification: "x".repeat(yinz_types::command_palette::MAX_DISPLAY_BYTES),
+                    view: None,
+                }),
+                _ => Ok(Reply::Close),
+            };
+            let reply = command(Command::Reply { scope, result });
+            screen.plugin_palette_instruction(reply.clone());
+            let messages: Vec<_> = notifications
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    ScreenInstruction::Notify(message, pane, ..) => {
+                        assert_eq!(pane, Some(PaneId::Plugin(owner.plugin_id)));
+                        Some(message)
+                    },
+                    _ => None,
+                })
+                .collect();
+            let expected = match kind {
+                "reload" | "disconnect" => None,
+                "cancel" if !early_close => None,
+                "view" if !early_close => None,
+                "custom" => Some("Report saved"),
+                "form" => Some("Completed: Edit report"),
+                "invalid" => Some("Could not save report: Palette labels and IDs must be nonempty text without controls"),
+                "oversized" => Some("Could not save report: Palette display data exceeds 256 KiB"),
+                "error" => Some("Could not save report: Disk full"),
+                _ => Some("Completed: Save report"),
+            };
+            assert_eq!(
+                messages,
+                expected.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+                "{kind}, early close {early_close}"
+            );
+            screen.plugin_palette_instruction(reply);
+            assert!(
+                notifications.try_recv().is_err(),
+                "duplicate reply is quiet"
+            );
+        }
+    }
+}
+
+#[test]
+fn palette_cursor_hides_under_toasts_and_returns_when_uncovered() {
+    use crate::screen::Notification;
+    use yinz_types::pane_size::Viewport;
+    use yinz_types::{animation::Tween, input::options::NotificationPosition};
+
+    for dismiss in [false, true] {
+        for watching in [false, true] {
+            let mut screen = screen();
+            let watcher = ClientId::new(2);
+            screen.add_watcher_client(watcher).unwrap();
+            screen.set_watcher_size(watcher, SIZE);
+            screen.set_followed_client(CLIENT).unwrap();
+            let client = if watching { watcher } else { CLIENT };
+            let receiver = screen_wired_to_server(&mut screen);
+            let mut grid = grid_for_render_snapshot(SIZE);
+            let now = std::time::Instant::now();
+            screen.pinned_now = Some(now);
+            screen.toggle_command_palette(CLIENT);
+            let (cursor, _) =
+                render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+            let (x, y) = cursor.expect("palette cursor is visible");
+
+            let id = NotificationId::new(99);
+            let mut notification =
+                Notification::new(id, "Toast covering palette cursor".into(), None, None, now);
+            notification.reveal = Tween::settled(1.0);
+            screen.notification_position = NotificationPosition::TopLeft;
+            screen.notifications.push(notification);
+            let surface = Viewport {
+                x: 0,
+                y: 0,
+                cols: SIZE.cols,
+                rows: SIZE.rows,
+            };
+            let toast_y = screen.notification_layout(surface, now)[0].y;
+            screen.notifications[0].y_offset = Tween::settled(y as f32 - toast_y as f32);
+            assert!(screen
+                .notification_cell_rects(surface, now)
+                .iter()
+                .any(|rect| rect.contains(x, y)));
+            let (covered_cursor, _) =
+                render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+            assert_eq!(covered_cursor, if watching { cursor } else { None });
+
+            if dismiss {
+                screen.dismiss_notification(id, now).unwrap();
+                screen.pinned_now = Some(now + Duration::from_secs(1));
+            } else {
+                screen.notifications[0].y_offset = Tween::settled((y + 2) as f32 - toast_y as f32);
+            }
+            let (restored_cursor, _) =
+                render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+            assert_eq!(restored_cursor, cursor);
+        }
+    }
+}
+
+#[test]
+fn palette_popup_is_visible_preserves_cursor_and_restores_covered_content() {
+    use crate::screen::Notification;
+    use yinz_types::{animation::Tween, internal_ids::NotificationId};
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    screen.toggle_command_palette(CLIENT);
+    let (cursor, before) = render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
+    let now = std::time::Instant::now();
+    screen.pinned_now = Some(now);
+    let mut notification = Notification::new(
+        NotificationId::new(99),
+        "Report successfully saved above palette".into(),
+        None,
+        None,
+        now,
+    );
+    notification.reveal = Tween::settled(1.0);
+    notification.y_offset = Tween::settled(8.0);
+    screen.notification_position = yinz_types::input::options::NotificationPosition::TopRight;
+    screen.notifications.push(notification);
+    let (after_cursor, snapshot) =
+        render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        snapshot.contains("Report successfully saved above palette"),
+        "{snapshot}"
+    );
+    assert_eq!(after_cursor, cursor);
+    let line = snapshot
+        .lines()
+        .position(|line| line.contains("Report successfully saved above palette"))
+        .unwrap();
+    let col = snapshot
+        .lines()
+        .nth(line)
+        .unwrap()
+        .find("Report successfully saved above palette")
+        .unwrap();
+    screen.handle_mouse_event(
+        MouseEvent::new_left_press_event(Position::new(line as i32, col as u16)),
+        CLIENT,
+    );
+    assert!(screen.command_palettes.contains_key(&CLIENT));
+    screen
+        .dismiss_notification(NotificationId::new(99), now)
+        .unwrap();
+    screen.pinned_now = Some(now + Duration::from_secs(1));
+    let (after_cursor, after) =
+        render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(after, before);
+    assert_eq!(after_cursor, cursor);
+}
+
+#[test]
+fn palette_moves_without_another_tab_report_a_noop() {
+    let mut screen = screen();
+    let notifications = palette_actions_receiver(&mut screen);
+    screen
+        .move_command_palette_pane(
+            PaneId::Terminal(TerminalId::new(1)),
+            TabId::new(0),
+            Some(Direction::Right),
+            CLIENT,
+        )
+        .unwrap();
+    assert!(
+        matches!(notifications.try_recv().unwrap().0, ScreenInstruction::Notify(message, ..) if message == "Pane was not moved: no other tab")
+    );
+    screen.dispatch_command_palette_action(
+        PaneId::Terminal(TerminalId::new(1)),
+        TabId::new(0),
+        Action::MoveTabByTabId {
+            id: TabId::new(0),
+            direction: Direction::Right,
+        },
+        false,
+        CLIENT,
+        "Move tab right".into(),
+    );
+    assert!(
+        matches!(notifications.try_recv().unwrap().0, ScreenInstruction::Notify(message, ..) if message == "Tab was not moved: no other tab")
+    );
+}
+
+#[test]
+fn palette_nonzero_completion_without_message_does_not_focus_or_report_success() {
+    let mut screen = screen();
+    let receiver = palette_actions_receiver(&mut screen);
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    screen.dispatch_command_palette_action(
+        pane,
+        TabId::new(0),
+        Action::TogglePaneEmbedOrFloatingByPaneId { pane_id: pane },
+        false,
+        CLIENT,
+        "Float/embed pane".into(),
+    );
+    match receiver.recv_timeout(Duration::from_secs(5)).unwrap().0 {
+        ScreenInstruction::TogglePaneEmbedOrFloatingWithPaneId(_, mut completion) => {
+            completion.as_mut().unwrap().set_exit_status(1);
+            drop(completion);
+        },
+        other => panic!("unexpected instruction: {other:?}"),
+    }
+    assert!(
+        matches!(receiver.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        ScreenInstruction::Notify(message, ..) if message.starts_with("Could not float/embed pane:"))
+    );
+    assert!(receiver.try_recv().is_err());
 }

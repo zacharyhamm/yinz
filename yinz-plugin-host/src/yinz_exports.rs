@@ -416,6 +416,11 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         && !env.cancel.load(atomic::Ordering::Acquire),
                     "Palette plugin is no longer available"
                 );
+                let owner = yinz_bus::command_palette::Owner {
+                    plugin_id: env.plugin_id,
+                    generation,
+                    client_id: (!env.plugin_config.is_shared()).then_some(env.owner_client_id),
+                };
                 match &mut command {
                     yinz_types::command_palette::Command::Register {
                         id,
@@ -437,6 +442,19 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     yinz_types::command_palette::Command::Reply { result, .. } => {
                         if let Ok(reply) = result {
                             if let Err(error) = reply.validate() {
+                                env.senders
+                                    .send_to_plugin(PluginInstruction::DenoPalette(
+                                        yinz_bus::command_palette::Delivery {
+                                            owner: owner.clone(),
+                                            client: env.client_id,
+                                            message:
+                                                yinz_types::command_palette::Message::Release {
+                                                    handles: reply.handles(),
+                                                },
+                                            active: None,
+                                        },
+                                    ))
+                                    .context("releasing invalid palette reply")?;
                                 *result = Err(error);
                             }
                         }
@@ -453,12 +471,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 env.senders
                     .send_to_screen(ScreenInstruction::CommandPalette(
                         yinz_bus::command_palette::Instruction::Command {
-                            owner: yinz_bus::command_palette::Owner {
-                                plugin_id: env.plugin_id,
-                                generation,
-                                client_id: (!env.plugin_config.is_shared())
-                                    .then_some(env.owner_client_id),
-                            },
+                            owner,
                             client: env.client_id,
                             unavailable: env.unavailable.clone(),
                             command,

@@ -722,6 +722,7 @@ pub enum ScreenInstruction {
     /// otherwise be processed *after* an inline focus restoration and *before* the actions - which
     /// are dispatched from a spawned thread - putting the two on either side of it.
     ActivateCommandPaletteAction {
+        label: String,
         pane_id: PaneId,
         tab_id: TabId,
         action: Action,

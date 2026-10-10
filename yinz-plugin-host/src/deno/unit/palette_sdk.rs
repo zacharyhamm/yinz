@@ -192,6 +192,9 @@ fn palette_sdk_return_contract_and_private_commands() {
             capture_commands(&mut runtime);
             run(&mut runtime, "check(sent.at(-1)[0].CommandPalette.result.Err.includes('View title'));");
         }
+        run(&mut runtime, &format!("result = {{type:'complete',notification:'Saved'}}; {callback};"));
+        capture_commands(&mut runtime);
+        run(&mut runtime, "check(sent.at(-1)[0].CommandPalette.result.Ok.notification === 'Saved');");
         for reason in ["undefined", "null"] {
             run(&mut runtime, &format!("result = Promise.reject({reason}); {callback};"));
             capture_commands(&mut runtime);
@@ -355,4 +358,79 @@ fn palette_sdk_static_action_validation_uses_discovery_errors_and_utf8_bound() {
             if extra_bytes == 0 { "Ok" } else { "Err" }));
     }
 
+}
+
+#[test]
+fn palette_sdk_completion_messages_validate_and_survive_early_close() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.value = undefined;
+      globalThis.closeEarly = false;
+      bind({load() {
+        yinz.commandPalette.registerProvider({id:'completion',title:'Completion',actions:[{
+          id:'save',label:'Save report',async run(context) {
+            if (closeEarly) context.close();
+            await Promise.resolve();
+            return value;
+          }
+        }]});
+      }}); bridge('load',{},1);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      globalThis.scope = {registration:sent.find(([c]) => c.CommandPalette?.type === "register")[0].CommandPalette.registration,opening:1,view:0,revision:1};
+      globalThis.context = {clientId:1,paneId:{Terminal:1},tabId:0,currentProject:null};
+      bridge('palette',{type:'discover',scope,context,query:'',source:null},1);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      globalThis.handle = sent.at(-1)[0].CommandPalette.result.Ok.actions[0].handle;
+      globalThis.execute = () => bridge('palette',{type:'execute',scope:{...scope,revision:++scope.revision},context,handle,values:null},1);
+      value = {type:'complete',notification:'Saved',view:{type:'text',title:'Report',text:'Contents'}};
+      execute();
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      check(sent.at(-1)[0].CommandPalette.result.Ok.notification === 'Saved');
+      check(sent.at(-1)[0].CommandPalette.result.Ok.view.text === 'Contents');
+      closeEarly = true; execute();
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      check(sent.at(-1)[0].CommandPalette.result.Ok.notification === 'Saved');
+      check(sent.at(-1)[0].CommandPalette.result.Ok.view === null);
+      closeEarly = false;
+    "#);
+    for text in [" ".to_string(), "bad\x1b".to_string(), "x".repeat(256 * 1024)] {
+        run(&mut runtime, &format!("value = {{type:'complete',notification:{}}}; execute();", serde_json::to_string(&text).unwrap()));
+        capture_commands(&mut runtime);
+        run(&mut runtime, "check(typeof sent.at(-1)[0].CommandPalette.result.Err === 'string');");
+    }
+}
+
+#[test]
+fn palette_host_rejects_invalid_completion_and_releases_its_view() {
+    use crate::yinz_exports::run_plugin_command;
+    use yinz_bus::command_palette::{Delivery, Instruction};
+    use yinz_bus::screen::ScreenInstruction;
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::command_palette::{Command, Message, Reply, Scope, View};
+    use yinz_types::data::{PermissionType, PluginCommand};
+    let mut env = crate::test_env::test_env();
+    env.deno_generation = Some(2);
+    *env.permissions.lock().unwrap() = Some(std::collections::HashSet::from([PermissionType::ReadApplicationState]));
+    let (sender, screen) = unbounded();
+    env.senders.to_screen = Some(SenderWithContext::new(sender));
+    let (sender, plugin) = unbounded();
+    env.senders.to_plugin = Some(SenderWithContext::new(sender));
+    run_plugin_command(&mut env, PluginCommand::CommandPalette(Command::Reply {
+        scope: Scope { registration: "1".into(), opening: 1, view: 0, revision: 2 },
+        result: Ok(Reply::Complete { notification: "\x1b".into(), view: Some(View::Form {
+            title: "Report".into(), fields: vec![], submit_label: "Save".into(), handle: "callback".into(),
+        }) }),
+    })).unwrap();
+    assert!(matches!(plugin.try_recv().unwrap().0, PluginInstruction::DenoPalette(Delivery { message: Message::Release { handles }, .. }) if handles == ["callback"]));
+    assert!(matches!(screen.try_recv().unwrap().0, ScreenInstruction::CommandPalette(Instruction::Command {
+        command: Command::Reply { result: Err(_), .. }, owner, ..
+    }) if owner.plugin_id == env.plugin_id && owner.generation == 2));
 }

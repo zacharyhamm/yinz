@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -30,7 +30,7 @@ pub(crate) struct Provider {
 pub(crate) struct Registry {
     providers: BTreeMap<ProviderKey, Provider>,
     next_opening: u64,
-    closed: HashSet<(Owner, ClientId, Scope)>,
+    closed: HashMap<(Owner, ClientId, Scope), String>,
 }
 
 #[derive(Default)]
@@ -44,11 +44,18 @@ struct Nested {
     display: View,
 }
 
+struct Execution {
+    handle: String,
+    values: Option<BTreeMap<String, String>>,
+    label: String,
+}
+
 struct Pending {
     provider: ProviderKey,
     scope: Scope,
     active: Arc<AtomicBool>,
     execution: bool,
+    label: String,
 }
 
 #[derive(Default)]
@@ -211,7 +218,7 @@ impl CommandPaletteState {
         senders: &yinz_bus::thread_bus::ThreadSenders,
         client: ClientId,
         provider: ProviderKey,
-        execution: Option<(String, Option<BTreeMap<String, String>>)>,
+        execution: Option<Execution>,
         source: Option<String>,
     ) {
         let scope = Scope {
@@ -227,11 +234,15 @@ impl CommandPaletteState {
             current_project: self.context.current_project.clone(),
         };
         let active = Arc::new(AtomicBool::new(true));
+        let label = execution
+            .as_ref()
+            .map(|execution| execution.label.clone())
+            .unwrap_or_default();
         let is_execution = execution.is_some();
         if is_execution {
             self.widget.clear_error();
         }
-        let message = if let Some((handle, values)) = execution {
+        let message = if let Some(Execution { handle, values, .. }) = execution {
             Message::Execute {
                 scope: scope.clone(),
                 context,
@@ -271,6 +282,7 @@ impl CommandPaletteState {
             scope,
             active,
             execution: is_execution,
+            label,
         });
         self.widget.busy = is_execution;
         self.widget.pending = !is_execution;
@@ -290,7 +302,7 @@ impl Screen {
         }
         self.palette_providers
             .closed
-            .retain(|(_, origin, _)| *origin != client);
+            .retain(|(_, origin, _), _| *origin != client);
     }
 
     pub(super) fn open_plugin_palette(&mut self, client: ClientId) {
@@ -469,8 +481,20 @@ impl Screen {
                 View::Actions { actions, .. } => actions
                     .iter()
                     .find(|a| entry_id(&nested.provider, &a.id) == *id)
-                    .map(|a| (nested.provider.clone(), a.handle.clone(), None)),
-                View::Form { fields, handle, .. } => values.map(|values| {
+                    .map(|a| {
+                        (
+                            nested.provider.clone(),
+                            a.handle.clone(),
+                            None,
+                            a.label.clone(),
+                        )
+                    }),
+                View::Form {
+                    fields,
+                    handle,
+                    title,
+                    ..
+                } => values.map(|values| {
                     (
                         nested.provider.clone(),
                         handle.clone(),
@@ -481,6 +505,7 @@ impl Screen {
                                 .map(|(f, v)| (f.id().to_owned(), v.clone()))
                                 .collect(),
                         ),
+                        title.clone(),
                     )
                 }),
                 _ => None,
@@ -495,10 +520,10 @@ impl Screen {
                         .actions
                         .iter()
                         .find(|a| entry_id(provider, &a.id) == *id)
-                        .map(|a| (provider.clone(), a.handle.clone(), None))
+                        .map(|a| (provider.clone(), a.handle.clone(), None, a.label.clone()))
                 })
         };
-        let Some((provider, handle, values)) = activation else {
+        let Some((provider, handle, values, label)) = activation else {
             return state.widget.view != 0;
         };
         if state.widget.busy
@@ -515,7 +540,11 @@ impl Screen {
             &self.bus.senders,
             client,
             provider,
-            Some((handle, values)),
+            Some(Execution {
+                handle,
+                values,
+                label,
+            }),
             None,
         );
         state.sections(&self.palette_providers);
@@ -612,7 +641,7 @@ impl Screen {
                 for key in keys {
                     changed |= self.remove_palette_provider(&key);
                 }
-                self.palette_providers.closed.retain(|(owner, _, _)| {
+                self.palette_providers.closed.retain(|(owner, _, _), _| {
                     owner.plugin_id != plugin_id || owner.generation != generation
                 });
                 changed
@@ -679,7 +708,9 @@ impl Screen {
                             }) {
                                 let pending = state.plugins.pending.remove(index);
                                 pending.active.store(false, Ordering::Release);
-                                self.palette_providers.closed.insert((owner, client, scope));
+                                self.palette_providers
+                                    .closed
+                                    .insert((owner, client, scope), pending.label);
                                 self.close_command_palette(client);
                                 return true;
                             }
@@ -711,7 +742,7 @@ impl Screen {
         self.palette_providers.providers.remove(key);
         self.palette_providers
             .closed
-            .retain(|(owner, _, scope)| *owner != key.0 || scope.registration != key.1);
+            .retain(|(owner, _, scope), _| *owner != key.0 || scope.registration != key.1);
         let mut restored = Vec::new();
         for (client, state) in &mut self.command_palettes {
             if !state.plugins.results.contains_key(key)
@@ -799,41 +830,52 @@ impl Screen {
         mut result: Result<Reply, String>,
         timeout: bool,
     ) -> bool {
-        if !timeout
-            && self
-                .palette_providers
-                .closed
-                .remove(&(owner.clone(), client, scope.clone()))
-        {
-            if let Ok(reply) = &result {
-                deliver(
-                    &self.bus.senders,
-                    &owner,
-                    client,
-                    Message::Release {
-                        handles: reply.handles(),
+        if !timeout {
+            if let Some(label) =
+                self.palette_providers
+                    .closed
+                    .remove(&(owner.clone(), client, scope.clone()))
+            {
+                if let Ok(reply) = &result {
+                    deliver(
+                        &self.bus.senders,
+                        &owner,
+                        client,
+                        Message::Release {
+                            handles: reply.handles(),
+                        },
+                        None,
+                    );
+                    if let Err(error) = reply.validate() {
+                        result = Err(error);
+                    }
+                }
+                let message = match result {
+                    Ok(Reply::Complete { notification, .. }) => notification,
+                    Ok(Reply::Actions { .. }) => {
+                        format!("Could not {}: invalid palette reply", label.to_lowercase())
                     },
-                    None,
-                );
-            }
-            if let Err(error) = result {
-                log::error!(
-                    "[deno:{}] Palette callback failed after close: {}",
-                    owner.plugin_id,
-                    error
-                );
+                    Ok(_) => format!("Completed: {label}"),
+                    Err(error) => {
+                        log::error!(
+                            "[deno:{}] Palette callback failed: {error}",
+                            owner.plugin_id
+                        );
+                        format!("Could not {}: {error}", label.to_lowercase())
+                    },
+                };
                 self.bus
                     .senders
                     .send_to_screen(ScreenInstruction::Notify(
-                        format!("Palette action failed: {error}"),
+                        message,
                         Some(yinz_types::data::PaneId::Plugin(owner.plugin_id)),
                         None,
                         None,
                     ))
-                    .context("notifying palette failure")
+                    .context("notifying palette completion")
                     .non_fatal();
+                return true;
             }
-            return false;
         }
         let Some(state) = self.command_palettes.get_mut(&client) else {
             if let Ok(reply) = result {
@@ -886,6 +928,42 @@ impl Screen {
         state.widget.busy = false;
         state.widget.pending = state.plugins.pending.iter().any(|p| !p.execution);
         if pending.execution {
+            if let Ok(reply @ Reply::Actions { .. }) = &result {
+                state.release(&self.bus.senders, client, &pending.provider, reply);
+                result = Err("Action returned an invalid palette reply".into());
+            }
+            let notification = match &result {
+                Ok(Reply::Complete { notification, .. }) => Some(notification.clone()),
+                Ok(Reply::Close) => Some(format!("Completed: {}", pending.label)),
+                Err(error) => {
+                    log::error!(
+                        "[deno:{}] Palette callback failed: {error}",
+                        owner.plugin_id
+                    );
+                    Some(format!(
+                        "Could not {}: {error}",
+                        pending.label.to_lowercase()
+                    ))
+                },
+                _ => None,
+            };
+            if let Some(message) = notification {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::Notify(
+                        message,
+                        Some(yinz_types::data::PaneId::Plugin(owner.plugin_id)),
+                        None,
+                        None,
+                    ))
+                    .context("notifying palette completion")
+                    .non_fatal();
+            }
+            if let Ok(Reply::Complete { view, .. }) = result {
+                result = Ok(view
+                    .map(|view| Reply::View { view })
+                    .unwrap_or(Reply::Close));
+            }
             match result {
                 Ok(Reply::Close) => {
                     self.close_command_palette(client);

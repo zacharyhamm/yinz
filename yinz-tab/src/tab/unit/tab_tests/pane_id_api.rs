@@ -1247,3 +1247,36 @@ fn request_pane_redraw_waits_for_the_entire_pending_layout_event() {
         matches!(drain_pty_writer(&rx).last(), Some(PtyWriteInstruction::ResizePty(_, width, ..)) if *width == columns)
     );
 }
+
+#[test]
+fn float_embed_rejects_last_tiled_missing_and_no_room_targets() {
+    let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, false);
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let other = PaneId::Terminal(TerminalId::new(2));
+    assert!(tab
+        .toggle_pane_embed_or_floating_for_pane_id(pane, None)
+        .unwrap_err()
+        .to_string()
+        .contains("last tiled pane"));
+    assert!(!tab.pane_id_is_floating(&pane));
+    assert!(tab
+        .toggle_pane_embed_or_floating_for_pane_id(other, None)
+        .is_err());
+    tab.horizontal_split(other, None, None, ClientId::new(1), None, None)
+        .unwrap();
+    tab.toggle_pane_embed_or_floating_for_pane_id(other, None)
+        .unwrap();
+    assert!(tab.pane_id_is_floating(&other));
+    tab.toggle_pane_embed_or_floating_for_pane_id(other, None)
+        .unwrap();
+    assert!(!tab.pane_id_is_floating(&other));
+    tab.toggle_pane_embed_or_floating_for_pane_id(other, None)
+        .unwrap();
+    tab.resize_whole_tab(Size { cols: 5, rows: 3 }).unwrap();
+    assert!(tab
+        .toggle_pane_embed_or_floating_for_pane_id(other, None)
+        .unwrap_err()
+        .to_string()
+        .contains("not enough room"));
+    assert!(tab.pane_id_is_floating(&other));
+}

@@ -199,6 +199,16 @@ fn command_palette_default_binding_captures_keys_and_paste_without_running_comma
             yinz.wait_until("toggle or Escape closes palette", |snapshot| {
                 !snapshot.contains("Selected:") && !snapshot.contains("Esc Close")
             });
+            if mode == InputMode::Notifications {
+                // Browsing resumes after dismissal; leave it before checking terminal input.
+                assert_eq!(
+                    yinz.run_actions_reporting(vec![Action::SwitchToMode {
+                        input_mode: InputMode::Normal,
+                    }])
+                    .0,
+                    0
+                );
+            }
             yinz.send_stdin(b"still focused\x04");
             expected.extend_from_slice(b"still focused\x04");
             // Observe the server's keybinding mode without a quit binding ending the test.
@@ -835,6 +845,7 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
         .with_config(
             r#"
             pane_animations false
+            notification_timeout 1
             plugins {
                 project-store location="yinz:project-store"
                 agent-service location="yinz:agent-service"
@@ -1269,7 +1280,7 @@ fn theme_picker_can_cancel_while_config_file_is_locked() {
     yinz.send_stdin(b"\r");
     yinz.wait_until("retry saves the theme and closes the picker", |snapshot| {
         !snapshot.contains("> dracula")
-            && !snapshot.contains("Configuration is busy")
+            && snapshot.contains("Completed: Save theme")
             && !snapshot.contains("Enter Save")
             && !snapshot.contains("Esc Close")
             && snapshot.contains("RENDER WHILE LOCKED")
@@ -1394,4 +1405,199 @@ fn theme_picker_saving_active_light_theme_preserves_terminal_theme_queries() {
         });
         yinz.quit();
     }
+}
+
+#[test]
+fn command_palette_reports_readable_builtin_completion() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let root = yinz.expect_pty_spawn();
+    root.output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    palette_query(&yinz, "Split right");
+    let child = yinz.expect_pty_spawn();
+    child.output(b"CHILD");
+    yinz.wait_until("readable split completion", |snapshot| {
+        snapshot.contains("Completed: Split right") && snapshot.contains("CHILD")
+    });
+    yinz.quit();
+}
+
+#[test]
+fn command_palette_rejected_float_reports_failure_and_keeps_the_pane_tiled() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let root = yinz.expect_pty_spawn();
+    root.output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    palette_query(&yinz, "Float/embed pane");
+    yinz.wait_until("rejected float reports failure", |snapshot| {
+        snapshot.contains("Could not float/embed pane") && !snapshot.contains("Esc Close")
+    });
+    let (status, panes) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: true,
+        all: true,
+        json: true,
+    });
+    assert_eq!(status, 0);
+    let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
+    let terminals: Vec<_> = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|pane| pane["is_plugin"] == false)
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0]["is_floating"], false, "{panes}");
+    assert_ne!(
+        yinz.run_cli_action(CliAction::TogglePaneEmbedOrFloating {
+            pane_id: Some(format!("terminal_{}", root.terminal_id().get())),
+        }),
+        0
+    );
+    yinz.quit();
+}
+
+#[test]
+fn command_palette_float_embed_succeeds_and_small_surface_rejects_embedding() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            "load_plugins clear-defaults=true {}\npane_animations false\nnotification_timeout 1",
+        )
+        .with_layout(LayoutInfo::Stringified(
+            "layout split_direction=\"vertical\" { pane; pane; }".into(),
+        ))
+        .start();
+    let first = yinz.expect_pty_spawn();
+    let second = yinz.expect_pty_spawn();
+    first.output(PROMPT);
+    second.output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    for floating in [true, false, true] {
+        palette_query(&yinz, "Float/embed pane");
+        yinz.wait_until("float/embed completion", |snapshot| {
+            snapshot.contains("Completed: Float/embed pane") && !snapshot.contains("Esc Close")
+        });
+        let (status, panes) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: true,
+            geometry: true,
+            all: true,
+            json: true,
+        });
+        assert_eq!(status, 0);
+        let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
+        assert_eq!(
+            panes
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|pane| pane["is_floating"] == true)
+                .count(),
+            usize::from(floating),
+            "{panes}"
+        );
+        yinz.wait_until("previous completion toast expires", |snapshot| {
+            !snapshot.contains("Completed: Float/embed pane")
+        });
+    }
+    yinz.resize(yinz_integration_tests::Size { cols: 5, rows: 3 });
+    yinz.wait_until("small terminal applied", |snapshot| {
+        snapshot.row_count() == 3
+    });
+    let (status, panes) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: true,
+        all: true,
+        json: true,
+    });
+    assert_eq!(status, 0);
+    let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
+    let floating = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["is_floating"] == true)
+        .unwrap();
+    let (status, message) = yinz.run_cli_action_reporting(CliAction::TogglePaneEmbedOrFloating {
+        pane_id: Some(format!("terminal_{}", floating["id"])),
+    });
+    assert_ne!(status, 0, "{message}");
+    assert!(message.contains("not enough room"), "{message}");
+    let (_, after) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: true,
+        all: true,
+        json: true,
+    });
+    let after: serde_json::Value = serde_json::from_str(&after).unwrap();
+    assert_eq!(after, panes);
+    yinz.quit();
+}
+
+#[test]
+fn command_palette_suspends_notifications_mode_and_restores_history() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            "load_plugins clear-defaults=true {}\npane_animations false\nnotification_timeout 1",
+        )
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let root = yinz.expect_pty_spawn();
+    root.output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    assert_eq!(
+        yinz.run_cli_action(CliAction::Notify {
+            text: "Retained history".into()
+        }),
+        0
+    );
+    yinz.wait_until("toast appears", |snapshot| {
+        snapshot.contains("Retained history")
+    });
+    yinz.wait_until("toast expires", |snapshot| {
+        !snapshot.contains("Retained history")
+    });
+    yinz.send_stdin(&keys::ctrl('o'));
+    yinz.send_stdin(b"n");
+    yinz.wait_until("history opens", |snapshot| {
+        snapshot.contains("Retained history")
+    });
+    yinz.send_stdin(DO);
+    yinz.wait_until("palette suspends history", |snapshot| {
+        snapshot.contains("Switch session") && !snapshot.contains("Retained history")
+    });
+    yinz.send_stdin(b"Switch tab");
+    yinz.wait_until("palette receives keys in notifications mode", |snapshot| {
+        snapshot.contains("> Switch tab")
+    });
+    assert_eq!(
+        yinz.run_cli_action(CliAction::Notify {
+            text: "Live over palette".into()
+        }),
+        0
+    );
+    yinz.wait_until("live toast appears above palette", |snapshot| {
+        snapshot.contains("Live over palette")
+            && snapshot.contains("> Switch tab")
+            && !snapshot.contains("Retained history")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("history restored", |snapshot| {
+        snapshot.contains("Retained history") && !snapshot.contains("Esc Close")
+    });
+    assert!(root.stdin_bytes().is_empty());
+    yinz.quit();
 }
