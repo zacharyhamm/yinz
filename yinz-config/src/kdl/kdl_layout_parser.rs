@@ -531,6 +531,67 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(())
     }
+    fn merge_run(
+        &self,
+        base: &Option<Run>,
+        other: &Option<Run>,
+        node: &KdlNode,
+    ) -> Result<Option<Run>, ConfigError> {
+        let sandboxed = [base, other].iter().any(
+            |run| matches!(run, Some(Run::Command(command)) if command.target.is_bubblewrap()),
+        );
+        let merged = Run::merge(base, other);
+        if sandboxed && !matches!(merged, Some(Run::Command(_))) {
+            return Err(kdl_parsing_error!(
+                "a bubblewrap pane must run a command".to_owned(),
+                node
+            ));
+        }
+        Ok(merged)
+    }
+
+    fn validate_bubblewrap_layout(
+        &self,
+        layout: &Layout,
+        node: &KdlNode,
+    ) -> Result<(), ConfigError> {
+        let validate_run = |run: &Option<Run>| {
+            if matches!(run, Some(Run::Command(command)) if command.target.is_bubblewrap() && command.command.as_os_str().is_empty())
+            {
+                Err(kdl_parsing_error!(
+                    "bubblewrap requires a command".to_owned(),
+                    node
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        let mut tiled = Vec::new();
+        let mut floating = Vec::new();
+        for (_, pane, panes) in &layout.tabs {
+            tiled.push(pane);
+            floating.extend(panes);
+        }
+        for (pane, panes) in layout.template.iter().chain(&layout.swap_layouts) {
+            tiled.push(pane);
+            floating.extend(panes);
+        }
+        for (panes, _) in &layout.swap_tiled_layouts {
+            tiled.extend(panes.values());
+        }
+        for (panes, _) in &layout.swap_floating_layouts {
+            floating.extend(panes.values().flatten());
+        }
+        while let Some(pane) = tiled.pop() {
+            validate_run(&pane.run)?;
+            tiled.extend(&pane.children);
+        }
+        for pane in floating {
+            validate_run(&pane.run)?;
+        }
+        Ok(())
+    }
+
     fn parse_pane_command(
         &self,
         pane_node: &KdlNode,
@@ -553,7 +614,7 @@ impl<'a> KdlLayoutParser<'a> {
             kdl_get_bool_property_or_child_value_with_error!(pane_node, "close_on_exit");
         let start_suspended =
             kdl_get_bool_property_or_child_value_with_error!(pane_node, "start_suspended");
-        if !is_template {
+        if !is_template && !target.as_ref().is_some_and(PaneTarget::is_bubblewrap) {
             self.assert_no_bare_attributes_in_pane_node(
                 &command,
                 &args,
@@ -565,22 +626,18 @@ impl<'a> KdlLayoutParser<'a> {
         let hold_on_close = close_on_exit.map(|c| !c).unwrap_or(true);
         let hold_on_start = start_suspended.unwrap_or(false);
         match (command, edit, cwd, target) {
-            (None, _, _, Some(PaneTarget::Bubblewrap { .. })) => Err(kdl_parsing_error!(
-                "bubblewrap requires a command".to_owned(),
-                pane_node
-            )),
             (None, Some(_), _, Some(_)) => Err(kdl_parsing_error!(
-                "an edit pane cannot run in a Firecracker VM".to_owned(),
+                "an edit pane cannot use a pane target".to_owned(),
                 pane_node
             )),
-            // The guest's login shell, the shape `new-pane --firecracker` with no
-            // command makes: not held on close, since logging out ends it. A
-            // consumer of a command template gets the template's command back
-            // in `Run::merge`.
+            // Target-only templates inherit their command in Run::merge; only VMs can
+            // resolve to a login shell. Bubblewrap is validated after template resolution.
             (None, None, cwd, Some(target)) => Ok(Some(Run::Command(RunCommand {
                 cwd,
+                args: args.unwrap_or_default(),
+                hold_on_start,
                 hold_on_close: close_on_exit.map(|c| !c).unwrap_or(false),
-                remote_default_shell: true,
+                remote_default_shell: !target.is_bubblewrap(),
                 target,
                 ..Default::default()
             }))),
@@ -991,7 +1048,7 @@ impl<'a> KdlLayoutParser<'a> {
                     &mut pane_template,
                     pane_template_kdl_node,
                 )?;
-                pane_template.run = Run::merge(&pane_template.run, &run);
+                pane_template.run = self.merge_run(&pane_template.run, &run, kdl_node)?;
                 self.apply_line_number(kdl_node, &mut pane_template.run)?;
                 if let Some(pane_template_run_command) = pane_template.run.as_mut() {
                     // we need to do this because panes consuming a pane_template
@@ -1085,7 +1142,7 @@ impl<'a> KdlLayoutParser<'a> {
                     &start_suspended,
                     kdl_node,
                 )?;
-                pane_template.run = Run::merge(&pane_template.run, &run);
+                pane_template.run = self.merge_run(&pane_template.run, &run, kdl_node)?;
                 self.apply_line_number(kdl_node, &mut pane_template.run)?;
                 if let Some(pane_template_run_command) = pane_template.run.as_mut() {
                     // we need to do this because panes consuming a pane_template
@@ -1140,7 +1197,7 @@ impl<'a> KdlLayoutParser<'a> {
                     &start_suspended,
                     kdl_node,
                 )?;
-                pane_template.run = Run::merge(&pane_template.run, &run);
+                pane_template.run = self.merge_run(&pane_template.run, &run, kdl_node)?;
                 self.apply_line_number(kdl_node, &mut pane_template.run)?;
                 if let Some(pane_template_run_command) = pane_template.run.as_mut() {
                     // we need to do this because panes consuming a pane_template
@@ -2691,6 +2748,9 @@ impl<'a> KdlLayoutParser<'a> {
         existing_layout
             .swap_floating_layouts
             .append(&mut swap_floating_layouts);
+        if let Some(node) = kdl_swap_layout.nodes().first() {
+            self.validate_bubblewrap_layout(&existing_layout, node)?;
+        }
         Ok(existing_layout)
     }
     pub fn parse(&mut self) -> Result<Layout, ConfigError> {
@@ -2850,6 +2910,7 @@ impl<'a> KdlLayoutParser<'a> {
                 tab_cwd,
             )?
         };
+        self.validate_bubblewrap_layout(&layout, layout_node)?;
         Ok(layout)
     }
 }

@@ -943,3 +943,77 @@ fn agent_placement_timeout_preserves_known_tab_and_checkout_without_cancelling_t
     completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
     completion.complete_pane_placement(TabId::new(7));
 }
+
+#[test]
+fn plugin_agent_launch_waits_for_checks_and_rejects_errors_with_pane_ids() {
+    for (delay, error) in [
+        (false, None),
+        (true, None),
+        (false, Some("sandbox check failed")),
+    ] {
+        let mut env = crate::test_env::test_env();
+        let (pty_tx, pty_rx) = channels::unbounded();
+        env.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        let plugin_id = env.plugin_id;
+        let worker = std::thread::spawn(move || {
+            let (
+                PtyInstruction::SpawnTerminal(
+                    Some(TerminalAction::RunCommand(command)),
+                    title,
+                    placement,
+                    suppressed,
+                    destination,
+                    Some(mut completion),
+                    _,
+                ),
+                _,
+            ) = pty_rx.recv().unwrap()
+            else {
+                panic!("expected spawn")
+            };
+            assert!(completion.wait_for_agent_start);
+            assert!(suppressed);
+            assert_eq!(title.as_deref(), Some("sandbox agent"));
+            assert!(matches!(placement, NewPanePlacement::Tiled { .. }));
+            assert!(
+                matches!(destination, ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(id), _) if id == plugin_id)
+            );
+            assert_eq!(command.cwd, Some(PathBuf::from("/repo/task")));
+            let origin = command.originating_plugin.unwrap();
+            assert_eq!(origin.plugin_id, plugin_id);
+            assert_eq!(
+                origin.context.get(AGENT_PANE_CONTEXT).map(String::as_str),
+                Some("claude")
+            );
+            if delay {
+                // Exercise the former one-second completion timeout.
+                std::thread::sleep(Duration::from_millis(1200));
+            }
+            completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(42)));
+            if let Some(error) = error {
+                completion.set_error_message(error.to_owned());
+            }
+        });
+        let result = spawn_command_pane_near_plugin(
+            &env,
+            CommandToRun {
+                path: "claude".into(),
+                cwd: Some("/repo/task".into()),
+                target: PaneTarget::Bubblewrap {
+                    root: "/repo".into(),
+                },
+                ..Default::default()
+            },
+            BTreeMap::from([(AGENT_PANE_CONTEXT.into(), "claude".into())]),
+            Some("sandbox agent".into()),
+            true,
+            true,
+        );
+        worker.join().unwrap();
+        if let Some(error) = error {
+            assert_eq!(result.unwrap_err(), error);
+        } else {
+            assert_eq!(result.unwrap(), PaneId::Terminal(TerminalId::new(42)));
+        }
+    }
+}

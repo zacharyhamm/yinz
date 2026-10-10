@@ -1241,3 +1241,129 @@ fn bubblewrap_checks_reused_and_collision_suffixed_destinations() {
             .is_err()
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bubblewrap_preparation_validates_each_distinct_checkout_once() {
+    const CHILD: &str = "YINZ_TEST_BWRAP_VALIDATION";
+    if let Some(directory) = std::env::var_os(CHILD) {
+        let directory = PathBuf::from(directory);
+        let root = directory.join("repo").canonicalize().unwrap();
+        let metadata = yinz_runtime::home::xdg_data_dir()
+            .join("bubblewrap/environments")
+            .join(yinz_config::project_config::root_key(&root));
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::write(
+            metadata.join("accepted.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "root": root, "ready": true,
+                "declaration": {"mounts": [], "paths": [], "env": {}, "inherit": [],
+                    "seeds": [], "setup": [], "checks": []}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let data = DataAccess::sqlite(&directory.join("store"));
+        for def in project_data::store::shared_defs() {
+            data.plugin_data()
+                .define_entity(project_data::store::SHARED, "test", &def, false)
+                .unwrap();
+        }
+        for (branch, cwd, expected) in [
+            (None, root.clone(), 1),
+            (None, directory.join("alias"), 1),
+            (Some("inside"), root.clone(), 2),
+        ] {
+            std::fs::write(directory.join("calls"), "").unwrap();
+            let spec = AgentSpawnSpec {
+                kind: Some("codex".into()),
+                bubblewrap: true,
+                branch: branch.map(str::to_owned),
+                worktree_dir: branch.map(|_| root.join("trees").to_string_lossy().into_owned()),
+                allow_outside_worktree: Some(true),
+                ..Default::default()
+            };
+            let prepared =
+                prepare_agent(&spec, root.clone(), Some(cwd), false, false, false, &data).unwrap();
+            assert!(prepared.command.target.is_bubblewrap());
+            assert_eq!(
+                std::fs::read_to_string(directory.join("calls"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                expected
+            );
+        }
+        let environment = yinz_config::project_config::bubblewrap::Environment::at_root(&root);
+        for malformed in ["", "/tmp", "/tmp\n/tmp\n/tmp", "relative\nrelative"] {
+            std::env::set_var("YINZ_TEST_GIT_OUTPUT", malformed);
+            assert!(environment.validate_cwd(&root).is_err());
+        }
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().canonicalize().unwrap();
+    let root = directory.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(
+        &root,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        ],
+    );
+    std::os::unix::fs::symlink(&root, directory.join("alias")).unwrap();
+    let git_binary = process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(git_binary.status.success());
+    let bin = directory.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    yinz_test_support::write_warm_script(
+        &bin.join("git"),
+        r#"
+case "$*" in
+    *--path-format=absolute*)
+        printf 'metadata\n' >> "$YINZ_TEST_BWRAP_VALIDATION/calls"
+        if [ "${YINZ_TEST_GIT_OUTPUT+x}" = x ]; then
+            printf '%s\n' "$YINZ_TEST_GIT_OUTPUT"
+            exit 0
+        fi
+        ;;
+esac
+exec "$YINZ_TEST_REAL_GIT" "$@"
+"#,
+    );
+    let output = process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "yinz_exports::agent_control::tests::bubblewrap_preparation_validates_each_distinct_checkout_once",
+        ])
+        .env(CHILD, &directory)
+        .env("XDG_DATA_HOME", directory.join("data"))
+        .env(
+            "YINZ_TEST_REAL_GIT",
+            String::from_utf8(git_binary.stdout).unwrap().trim(),
+        )
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+}

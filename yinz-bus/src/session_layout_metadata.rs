@@ -43,22 +43,26 @@ impl SessionLayoutMetadata {
         for tab in self.tabs.iter_mut() {
             for tiled_pane in tab.tiled_panes.iter_mut() {
                 if let Some(Run::Command(run_command)) = tiled_pane.run.as_mut() {
-                    if Self::is_default_shell(
-                        self.default_shell.as_ref(),
-                        &run_command.command.display().to_string(),
-                        &run_command.args,
-                    ) {
+                    if !run_command.target.is_bubblewrap()
+                        && Self::is_default_shell(
+                            self.default_shell.as_ref(),
+                            &run_command.command.display().to_string(),
+                            &run_command.args,
+                        )
+                    {
                         tiled_pane.run = None;
                     }
                 }
             }
             for floating_pane in tab.floating_panes.iter_mut() {
                 if let Some(Run::Command(run_command)) = floating_pane.run.as_mut() {
-                    if Self::is_default_shell(
-                        self.default_shell.as_ref(),
-                        &run_command.command.display().to_string(),
-                        &run_command.args,
-                    ) {
+                    if !run_command.target.is_bubblewrap()
+                        && Self::is_default_shell(
+                            self.default_shell.as_ref(),
+                            &run_command.command.display().to_string(),
+                            &run_command.args,
+                        )
+                    {
                         floating_pane.run = None;
                     }
                 }
@@ -276,6 +280,11 @@ impl SessionLayoutMetadata {
         mut terminal_ids_to_commands: HashMap<TerminalId, Vec<String>>,
     ) {
         let mut update_cmd_in_pane_metadata = |pane_layout_metadata: &mut PaneLayoutMetadata| {
+            // Process discovery sees the host launcher, not the command to resurrect.
+            if matches!(&pane_layout_metadata.run, Some(Run::Command(command)) if command.target.is_bubblewrap())
+            {
+                return;
+            }
             if let PaneId::Terminal(id) = pane_layout_metadata.id {
                 if let Some(command) = terminal_ids_to_commands.remove(&id) {
                     let mut command_line = command.iter();
@@ -381,6 +390,9 @@ impl SessionLayoutMetadata {
 
         let upgrade_pane = |pane: &mut PaneLayoutMetadata| {
             if let Some(Run::Command(run_command)) = &pane.run {
+                if run_command.target.is_bubblewrap() {
+                    return;
+                }
                 let command_binary_name = run_command
                     .command
                     .file_name()
@@ -740,6 +752,67 @@ mod tests {
             None,
             None,
         )
+    }
+
+    #[test]
+    fn bubblewrap_commands_survive_running_metadata_and_session_roundtrip() {
+        use yinz_types::command::PaneTarget;
+        for (program, args) in [
+            ("claude", vec!["--resume".into()]),
+            ("/bin/sh", vec![]),
+            ("nvim", vec!["notes.md".into()]),
+        ] {
+            for floating in [false, true] {
+                let command = RunCommand {
+                    command: program.into(),
+                    args: args.clone(),
+                    hold_on_close: true,
+                    target: PaneTarget::bubblewrap(std::path::Path::new("/repo")).unwrap(),
+                    ..Default::default()
+                };
+                let mut pane = make_command_pane(TerminalId::new(1), "claude", vec![]);
+                pane.run = Some(Run::Command(command.clone()));
+                pane.geom.rows = yinz_types::pane_size::Dimension::fixed(10);
+                pane.geom.cols = yinz_types::pane_size::Dimension::fixed(10);
+                let mut metadata = SessionLayoutMetadata::default();
+                let (tiled, floats) = if floating {
+                    (vec![], vec![pane])
+                } else {
+                    (vec![pane], vec![])
+                };
+                metadata.add_tab("sandbox".into(), true, false, false, tiled, floats);
+                metadata.update_terminal_commands(HashMap::from([(
+                    TerminalId::new(1),
+                    vec!["bwrap".into(), "--args".into(), "17".into()],
+                )]));
+                metadata.update_default_shell("/bin/sh".into());
+                metadata.update_default_editor(&Some("nvim".into()));
+                metadata.detect_editor_panes();
+                let pane = if floating {
+                    &metadata.tabs[0].floating_panes[0]
+                } else {
+                    &metadata.tabs[0].tiled_panes[0]
+                };
+                assert_eq!(pane.run, Some(Run::Command(command.clone())));
+                let (source, _) =
+                    yinz_session::session_serialization::serialize_session_layout(metadata.into())
+                        .unwrap();
+                let layout = yinz_config::kdl::layout::from_kdl(&source, None, None, None).unwrap();
+                let (_, tiled, floats) = &layout.tabs[0];
+                let mut panes = vec![tiled];
+                let mut commands = floats
+                    .iter()
+                    .filter_map(|pane| pane.run.as_ref())
+                    .collect::<Vec<_>>();
+                while let Some(pane) = panes.pop() {
+                    commands.extend(pane.run.as_ref());
+                    panes.extend(&pane.children);
+                }
+                let mut restored = command;
+                restored.hold_on_start = true;
+                assert!(commands.contains(&&Run::Command(restored)), "{source}");
+            }
+        }
     }
 
     fn make_edit_file_pane(

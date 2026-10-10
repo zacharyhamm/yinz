@@ -91,7 +91,7 @@ impl Limits {
         if self.exhausted()
             || self
                 .live_buffers
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |live| {
                     live.checked_add(bytes)
                         .filter(|total| *total <= self.buffers)
                 })

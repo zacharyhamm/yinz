@@ -1554,6 +1554,65 @@ fn a_firecracker_rerun_does_not_block_the_pty_during_transport() {
     );
 }
 
+#[test]
+fn suspended_bubblewrap_creation_only_reserves_the_pane() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let command = RunCommand {
+        command: "claude".into(),
+        target: PaneTarget::Bubblewrap {
+            root: "/repo".into(),
+        },
+        hold_on_start: true,
+        ..Default::default()
+    };
+    let (_, held) = pty
+        .spawn_prepared_terminal(
+            TerminalAction::RunCommand(command),
+            ClientTabIndexOrPaneId::ClientId(CLIENT_1),
+        )
+        .unwrap();
+    assert!(held);
+    assert!(os_api.resolved_spawns.lock().unwrap().is_empty());
+}
+
+#[test]
+fn suspended_sandbox_and_remote_reruns_use_the_worker() {
+    for target in [
+        PaneTarget::Bubblewrap {
+            root: "/repo".into(),
+        },
+        firecracker_command().target,
+    ] {
+        let mut os_api = MockOsApi::new();
+        os_api.spawn_started = Arc::new(Barrier::new(2));
+        os_api.spawn_release = Arc::new(Barrier::new(2));
+        let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+        let (pty_tx, pty_rx) = channels::unbounded();
+        pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        let command = RunCommand {
+            target,
+            hold_on_start: true,
+            ..firecracker_command()
+        };
+        assert!(
+            !command.defers_spawn(),
+            "initial suspended creation must not launch"
+        );
+        assert!(pty
+            .request_rerun(PaneId::Terminal(TerminalId::new(41)), command, None)
+            .unwrap()
+            .is_none());
+        os_api.spawn_started.wait();
+        assert!(pty.close_pane(PaneId::Terminal(TerminalId::new(7))).is_ok());
+        assert!(pty_rx.try_recv().is_err());
+        os_api.spawn_release.wait();
+        let (pending, spawned) = resolved_rerun(&pty_rx);
+        assert!(!pending.run_command.hold_on_start);
+        pty.handle_rerun_spawned(pending, spawned).unwrap();
+    }
+}
+
 /// The worker has already registered the remote transport and started the guest command by
 /// the time its result is sent back, so a pane closed in the meantime still has to go through
 /// `clear_terminal_id` when that message lands — otherwise the guest command and the transport

@@ -3924,3 +3924,129 @@ fn legacy_panel_tabs_resolve_aliases_after_merging_and_keep_their_working_direct
         }
     }
 }
+
+#[test]
+fn bubblewrap_templates_resolve_before_validation() {
+    for (template, consumer, command, root) in [
+        (
+            r#"command="claude""#,
+            r#"bubblewrap="/repo""#,
+            "claude",
+            "/repo",
+        ),
+        (
+            r#"bubblewrap="/repo""#,
+            r#"command="claude""#,
+            "claude",
+            "/repo",
+        ),
+        (
+            r#"command="claude" bubblewrap="/repo""#,
+            r#"command="codex" bubblewrap="/other""#,
+            "codex",
+            "/other",
+        ),
+    ] {
+        for floating in [false, true] {
+            let pane = format!("sandbox {consumer}");
+            let pane = if floating {
+                format!("floating_panes {{ {pane}; }}")
+            } else {
+                pane
+            };
+            let source = format!("layout {{ pane_template name=\"sandbox\" {template}; {pane}; }}");
+            let layout = crate::kdl::layout::from_kdl(&source, None, None, None).unwrap();
+            let (tiled, floats) = layout.template.unwrap();
+            let run = if floating {
+                &floats[0].run
+            } else {
+                &tiled.children[0].run
+            };
+            let Some(Run::Command(run)) = run else {
+                panic!("expected command")
+            };
+            assert_eq!(run.command, PathBuf::from(command));
+            assert_eq!(
+                run.target,
+                PaneTarget::bubblewrap(std::path::Path::new(root)).unwrap()
+            );
+            assert!(!run.remote_default_shell);
+        }
+    }
+    for pane in [
+        "sandbox",
+        "floating_panes { sandbox; }",
+        "swap_tiled_layout { tab { sandbox; }; }",
+        "swap_floating_layout { floating_panes { sandbox; }; }",
+        r#"sandbox edit="notes.md""#,
+        r#"sandbox { plugin location="yinz:strider"; }"#,
+    ] {
+        let source =
+            format!("layout {{ pane_template name=\"sandbox\" bubblewrap=\"/repo\"; {pane}; }}");
+        assert!(
+            crate::kdl::layout::from_kdl(&source, None, None, None).is_err(),
+            "{source}"
+        );
+    }
+    assert!(crate::kdl::layout::from_kdl(
+        r#"layout { pane_template name="sandbox" bubblewrap="/repo"; pane; }"#,
+        None,
+        None,
+        None
+    )
+    .is_ok());
+}
+
+#[test]
+fn bubblewrap_swap_templates_are_validated_after_merging() {
+    for swap in [
+        "swap_tiled_layout { tab { sandbox COMMAND; }; }",
+        "swap_floating_layout { floating_panes { sandbox COMMAND; }; }",
+    ] {
+        for command in ["", r#"command="claude""#] {
+            let swap = swap.replace("COMMAND", command);
+            let source =
+                format!(r#"layout {{ pane_template name="sandbox" bubblewrap="/repo"; {swap}; }}"#);
+            assert_eq!(
+                crate::kdl::layout::from_kdl(&source, None, None, None).is_ok(),
+                !command.is_empty(),
+                "{source}"
+            );
+            let source = r#"layout { pane_template name="sandbox" bubblewrap="/repo"; pane; }"#;
+            assert_eq!(
+                crate::kdl::layout::from_kdl(source, None, Some(("swaps.kdl", &swap)), None)
+                    .is_ok(),
+                !command.is_empty(),
+                "{swap}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bubblewrap_template_arguments_and_explicit_flags_survive_merging() {
+    for (template, consumer, args) in [
+        (
+            r#"bubblewrap="/repo" { args "--resume"; }"#,
+            r#"command="claude""#,
+            vec!["--resume"],
+        ),
+        (
+            r#"command="claude" { args "--resume"; }"#,
+            r#"bubblewrap="/repo" { args "--new"; }"#,
+            vec!["--new"],
+        ),
+    ] {
+        let source = format!(
+            r#"layout {{ pane_template name="sandbox" {template}; sandbox start_suspended=true close_on_exit=true {consumer}; }}"#
+        );
+        let layout = crate::kdl::layout::from_kdl(&source, None, None, None).unwrap();
+        let Some(Run::Command(command)) = &layout.template.as_ref().unwrap().0.children[0].run
+        else {
+            panic!("expected command")
+        };
+        assert_eq!(command.args, args);
+        assert!(command.hold_on_start);
+        assert!(!command.hold_on_close);
+    }
+}
