@@ -8,13 +8,18 @@ pub struct Command {
     pub args: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(string, optional, tag="3")]
     pub cwd: ::core::option::Option<::prost::alloc::string::String>,
-    /// Fields 4 and 6-8 are the flat spelling of `target`, kept so plugins built
-    /// before `PaneTarget` keep working: readers take `target` when it is set and
-    /// fall back to these, writers fill both.
+    /// Legacy SSH spelling; writers fill both this and target.
     #[prost(string, optional, tag="4")]
     pub remote_host: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag="5")]
     pub remote_default_shell: bool,
+    /// Decode-only markers: reject retired execution requests.
+    #[prost(string, optional, tag="6")]
+    pub firecracker_vm: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="7")]
+    pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="8")]
+    pub firecracker_worktree: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="9")]
     pub target: ::core::option::Option<PaneTarget>,
 }
@@ -22,6 +27,9 @@ pub struct Command {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PaneTarget {
+    /// Outside the oneof so a local/SSH target cannot hide a retired VM request.
+    #[prost(bytes="vec", optional, tag="3")]
+    pub firecracker: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     #[prost(oneof="pane_target::Kind", tags="1, 2, 4")]
     pub kind: ::core::option::Option<pane_target::Kind>,
 }

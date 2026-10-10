@@ -893,7 +893,13 @@ pub struct RunCommandAction {
     pub hold_on_close: bool,
     #[prost(bool, tag="7")]
     pub hold_on_start: bool,
-    /// Flat spelling of `target`, kept for plugins built before `PaneTarget`.
+    /// Decode-only markers: reject retired execution requests.
+    #[prost(string, optional, tag="9")]
+    pub firecracker_vm: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="10")]
+    pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="11")]
+    pub firecracker_worktree: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="12")]
     pub target: ::core::option::Option<super::command::PaneTarget>,
 }

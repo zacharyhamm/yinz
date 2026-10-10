@@ -640,26 +640,24 @@ fn spawn_notes_explain_renames_and_stay_quiet_otherwise() {
 fn bubblewrap_rejects_remote_targets_before_checkout_changes() {
     let temp = tempfile::tempdir().unwrap();
     let data = DataAccess::sqlite(temp.path());
-    for remote in [Some("host")] {
-        let mut spec = AgentSpawnSpec {
-            kind: Some("codex".into()),
-            bubblewrap: true,
-            allow_outside_worktree: Some(true),
-            ..Default::default()
-        };
-        let result = prepare_automation_agent(
-            &mut spec,
-            Some(temp.path().into()),
-            None,
-            remote.map(Into::into),
-            &data,
-        );
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Bubblewrap cannot be combined"));
-        assert!(!temp.path().join(".worktrees").exists());
-    }
+    let mut spec = AgentSpawnSpec {
+        kind: Some("codex".into()),
+        bubblewrap: true,
+        allow_outside_worktree: Some(true),
+        ..Default::default()
+    };
+    let result = prepare_automation_agent(
+        &mut spec,
+        Some(temp.path().into()),
+        None,
+        Some("host".into()),
+        &data,
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Bubblewrap cannot be combined"));
+    assert!(!temp.path().join(".worktrees").exists());
 }
 
 #[test]
@@ -956,8 +954,7 @@ fn bubblewrap_preparation_validates_each_distinct_checkout_once() {
                 allow_outside_worktree: Some(true),
                 ..Default::default()
             };
-            let prepared =
-                prepare_agent(&spec, root.clone(), Some(cwd), false, false, false, &data).unwrap();
+            let prepared = prepare_agent(&spec, root.clone(), Some(cwd), false, &data).unwrap();
             assert!(prepared.command.target.is_bubblewrap());
             assert_eq!(
                 std::fs::read_to_string(directory.join("calls"))

@@ -1622,6 +1622,21 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             parse_kdl_action_char_or_string_arguments!(action_name, action_arguments, kdl_action)
         },
         "Run" => {
+            for children in &action_children {
+                for child in children.nodes() {
+                    let field = child.name().value();
+                    if matches!(
+                        field,
+                        "firecracker_vm" | "firecracker_image" | "firecracker_worktree"
+                    ) {
+                        return Err(ConfigError::new_kdl_error(
+                            format!("Removed field '{field}': Firecracker execution is no longer supported."),
+                            child.span().offset(),
+                            child.span().len(),
+                        ));
+                    }
+                }
+            }
             let arguments = action_arguments.iter().copied();
             let mut args = kdl_arguments_that_are_strings(arguments)?;
             if args.is_empty() {

@@ -90,7 +90,7 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
     }
     for with_env in [false, true] {
         let requested = codex_command(with_env);
-        let (resolved, rerun, endpoint) = server.resolve_target(requested.clone()).unwrap();
+        let (resolved, rerun, endpoint) = server.resolve_target(requested.clone(), None).unwrap();
         let mut expected = requested.clone();
         if with_env {
             expected.args[1] = current_exe.to_str().unwrap().into();
@@ -101,7 +101,7 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
         assert!(command_exists(&resolved));
         assert_eq!(rerun, requested);
         assert!(endpoint.is_none());
-        assert_eq!(server.resolve_target(rerun).unwrap().0, resolved);
+        assert_eq!(server.resolve_target(rerun, None).unwrap().0, resolved);
 
         // Before replacement the test executable rejects the wrapper's arguments;
         // after replacement the stub must succeed, including on a held pane's rerun.
@@ -155,7 +155,7 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
             args: args.into_iter().map(String::from).collect(),
             ..Default::default()
         };
-        let (resolved, rerun, endpoint) = server.resolve_target(requested.clone()).unwrap();
+        let (resolved, rerun, endpoint) = server.resolve_target(requested.clone(), None).unwrap();
         assert_eq!(resolved, requested);
         assert_eq!(rerun, requested);
         assert!(endpoint.is_none());

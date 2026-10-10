@@ -332,10 +332,7 @@ export default definePlugin({
       return;
     }
     const inspect = (): void => {
-      if (
-        config["agent_target"] !== "local" &&
-        config["agent_target"] !== "bubblewrap"
-      ) {
+      if (config["agent_target"] !== "local" && config["agent_target"] !== "bubblewrap") {
         status = "Checkout identity is unavailable.";
         return;
       }

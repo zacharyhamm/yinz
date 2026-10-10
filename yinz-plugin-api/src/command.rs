@@ -16,13 +16,19 @@ impl From<&PaneTarget> for ProtobufPaneTarget {
                 ProtobufPaneTargetKind::BubblewrapRoot(root.display().to_string())
             },
         };
-        ProtobufPaneTarget { kind: Some(kind) }
+        ProtobufPaneTarget {
+            kind: Some(kind),
+            firecracker: None,
+        }
     }
 }
 
 impl TryFrom<ProtobufPaneTarget> for PaneTarget {
     type Error = &'static str;
     fn try_from(target: ProtobufPaneTarget) -> Result<Self, &'static str> {
+        if target.firecracker.is_some() {
+            return Err("Firecracker execution is no longer supported.");
+        }
         Ok(match target.kind {
             None | Some(ProtobufPaneTargetKind::Local(_)) => PaneTarget::Local,
             Some(ProtobufPaneTargetKind::SshHost(host)) => PaneTarget::Ssh { host },
@@ -38,6 +44,9 @@ impl TryFrom<ProtobufPaneTarget> for PaneTarget {
 #[derive(Default)]
 pub struct FlatPaneTarget {
     pub remote_host: Option<String>,
+    pub firecracker_vm: Option<String>,
+    pub firecracker_image: Option<String>,
+    pub firecracker_worktree: Option<String>,
 }
 
 impl From<&PaneTarget> for FlatPaneTarget {
@@ -48,6 +57,7 @@ impl From<&PaneTarget> for FlatPaneTarget {
             PaneTarget::Local | PaneTarget::Bubblewrap { .. } => FlatPaneTarget::default(),
             PaneTarget::Ssh { host } => FlatPaneTarget {
                 remote_host: Some(host.clone()),
+                ..Default::default()
             },
         }
     }
@@ -60,6 +70,12 @@ pub fn pane_target_from_wire(
     target: Option<ProtobufPaneTarget>,
     flat: FlatPaneTarget,
 ) -> Result<PaneTarget, &'static str> {
+    if flat.firecracker_vm.is_some()
+        || flat.firecracker_image.is_some()
+        || flat.firecracker_worktree.is_some()
+    {
+        return Err("Firecracker execution is no longer supported.");
+    }
     match target {
         Some(target) => PaneTarget::try_from(target),
         None => flat
@@ -83,6 +99,9 @@ impl TryFrom<ProtobufCommand> for CommandToRun {
             protobuf_command.target,
             FlatPaneTarget {
                 remote_host: protobuf_command.remote_host,
+                firecracker_vm: protobuf_command.firecracker_vm,
+                firecracker_image: protobuf_command.firecracker_image,
+                firecracker_worktree: protobuf_command.firecracker_worktree,
             },
         )?;
         Ok(CommandToRun {
@@ -107,6 +126,9 @@ impl TryFrom<CommandToRun> for ProtobufCommand {
             remote_default_shell: command_to_run.remote_default_shell,
 
             target: Some(ProtobufPaneTarget::from(&command_to_run.target)),
+            firecracker_vm: None,
+            firecracker_image: None,
+            firecracker_worktree: None,
         })
     }
 }
