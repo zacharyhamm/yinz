@@ -467,9 +467,7 @@ impl Screen {
                 .find(|pane| pane.id == PaneId::Terminal(id))
         });
         self.mother = self.mother.filter(|_| mother.is_some());
-        session_info.mother = self
-            .mother
-            .filter(|_| mother.is_some_and(|pane| !pane.exited && !pane.is_held));
+        session_info.mother = self.live_mother().and(self.mother);
         let err_context = || "Failed to report session info".to_string();
 
         self.bus

@@ -1932,6 +1932,7 @@ impl Screen {
             };
             let err_context = || format!("failed to apply layout for tab {tab_id:?}",);
 
+            let mother_source = self.active_tab_ids.get(&client_id).copied();
             let passthrough_affected_client_ids: Vec<ClientId> = if should_change_client_focus {
                 if self.session_is_mirrored {
                     self.connected_clients.borrow().iter().copied().collect()
@@ -2138,6 +2139,11 @@ impl Screen {
                 })
                 .with_context(err_context)?;
 
+            if should_change_client_focus {
+                if let Some(source) = mother_source.filter(|source| *source != tab_id) {
+                    self.mother_follows(client_id, source, tab_id, &passthrough_old_focused_panes);
+                }
+            }
             let mut retired_source = None;
             if !self.active_tab_ids.contains_key(&client_id) {
                 // Capture the departed source before the layout provisionally connects this id.
@@ -3205,6 +3211,24 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         let err_context = || format!("failed to focus pane {pane_id:?}");
+        let pane_id = if let Some(mother) = self.live_mother() {
+            let presentation = self.mother_presentation(mother);
+            if pane_id == mother || presentation == Some(pane_id) {
+                let Some(presentation) = presentation else {
+                    return Ok(());
+                };
+                if self.tab_containing_overlay(presentation).is_some() {
+                    return self
+                        .show_and_focus_mother(presentation, client_id)
+                        .with_context(err_context);
+                }
+                presentation
+            } else {
+                pane_id
+            }
+        } else {
+            pane_id
+        };
         let tab_index = self.tab_position_containing_pane(pane_id);
         match tab_index {
             Some(tab_index) => {

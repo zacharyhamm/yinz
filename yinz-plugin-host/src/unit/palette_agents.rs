@@ -389,6 +389,7 @@ fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane(
                     };
                     completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(42)));
                     completion.set_affected_tab_id(TabId::new(2));
+                    assert!(completion.is_mother);
                     launches.push((command, placement, target));
                 }
                 launches
@@ -420,10 +421,9 @@ fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane(
         *target,
         ClientTabIndexOrPaneId::ClientIdNoFocus(ClientId::new(1))
     );
-    assert!(screen.iter().any(|instruction| matches!(
-        instruction,
-        ScreenInstruction::MotherSpawned(PaneId::Terminal(id)) if *id == TerminalId::new(42)
-    )));
+    assert!(!screen
+        .iter()
+        .any(|instruction| matches!(instruction, ScreenInstruction::MotherSpawned(_))));
     assert!(!screen
         .iter()
         .any(|instruction| matches!(instruction, ScreenInstruction::GetPaneInfo { .. })));
@@ -807,6 +807,66 @@ fn palette_history_run_search_orders_events_and_keeps_time_and_hit_navigation() 
                     .count(),
                 3
             );
+        }
+    }
+}
+
+#[test]
+fn mother_launch_errors_preserve_the_placement_marker_pane_and_resources() {
+    let start = tempfile::tempdir().unwrap();
+    for failure in ["known pane", "missing pane", "registration"] {
+        let request = request(
+            start.path(),
+            AgentAction::Mother {
+                kind: "claude".into(),
+            },
+        );
+        let (screen_tx, screen_rx) = unbounded();
+        drop(screen_rx);
+        let (pty_tx, pty_rx) = unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(screen_tx)),
+            to_pty: Some(SenderWithContext::new(pty_tx)),
+            ..Default::default()
+        };
+        let reply = thread::scope(|scope| {
+            scope.spawn(move || {
+                let (instruction, _) = pty_rx.recv().unwrap();
+                let PtyInstruction::SpawnTerminal(_, _, _, _, _, Some(mut completion), _) =
+                    instruction
+                else {
+                    panic!("expected a launch");
+                };
+                assert!(completion.is_mother);
+                if failure != "missing pane" {
+                    completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(42)));
+                    completion.complete_pane_placement(TabId::new(2));
+                }
+                if failure != "registration" {
+                    completion.set_error_message(failure.into());
+                }
+            });
+            mother(&request, "claude", start.path(), &senders).unwrap()
+        });
+        let AgentReply::Launched(response) = reply else {
+            panic!("expected a launch reply")
+        };
+        assert_eq!(response.outcome, AgentOutcome::Failed);
+        assert!(
+            response.message.as_ref().unwrap().contains(failure),
+            "{response:?}"
+        );
+        if failure == "missing pane" {
+            assert!(response.spawned.is_none());
+            assert_eq!(
+                response.launch_resources.unwrap().cwd.as_deref(),
+                Some(start.path())
+            );
+        } else {
+            let spawned = response.spawned.unwrap();
+            assert_eq!(spawned.pane_id, PaneId::Terminal(TerminalId::new(42)));
+            assert_eq!(spawned.tab_id, Some(TabId::new(2)));
+            assert_eq!(spawned.cwd.as_deref(), Some(start.path()));
         }
     }
 }

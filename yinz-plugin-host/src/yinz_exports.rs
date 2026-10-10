@@ -3374,16 +3374,24 @@ fn spawn_agent_for_control(
         direction: None,
         borderless: None,
     };
-    spawn_agent_prepared(placement, surface, spec, client_id, senders, |spec| {
-        agent_control::prepare_automation_agent(
-            spec,
-            cwd,
-            project,
-            remote_host,
-            automatic_firecracker_vm,
-            data_access,
-        )
-    })
+    spawn_agent_prepared(
+        placement,
+        surface,
+        false,
+        spec,
+        client_id,
+        senders,
+        |spec| {
+            agent_control::prepare_automation_agent(
+                spec,
+                cwd,
+                project,
+                remote_host,
+                automatic_firecracker_vm,
+                data_access,
+            )
+        },
+    )
 }
 
 /// `placement` picks the tab; `surface` says where in it the pane goes. Only a tiled pane may
@@ -3391,6 +3399,7 @@ fn spawn_agent_for_control(
 fn spawn_agent_prepared(
     placement: yinz_types::agent::control::AgentPlacement,
     surface: NewPanePlacement,
+    is_mother: bool,
     mut spec: AgentSpawnSpec,
     client_id: crate::ClientId,
     senders: &ThreadSenders,
@@ -3457,6 +3466,7 @@ fn spawn_agent_prepared(
     let (completion_tx, completion_rx) = oneshot::channel();
     let mut completion = NotificationEnd::new(completion_tx);
     completion.wait_for_agent_start = true;
+    completion.is_mother = is_mother;
     completion.agent_tab = destination.clone();
     completion.created_tab_id = resources.created_tab_id;
     let target = destination.as_ref().map_or(

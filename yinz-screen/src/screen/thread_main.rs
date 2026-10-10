@@ -813,11 +813,15 @@ pub fn screen_thread_main(
                     screen.render()?;
                 },
                 ScreenInstruction::ToggleMother(client_id, _completion) => {
-                    screen.toggle_mother(client_id)?;
+                    screen
+                        .toggle_mother(client_id)
+                        .context("failed to toggle mother")?;
                     screen.render()?;
                 },
                 ScreenInstruction::MotherSpawned(pane_id) => {
-                    screen.mother_spawned(pane_id)?;
+                    screen
+                        .mother_spawned(pane_id)
+                        .context("failed to register mother")?;
                     screen.render()?;
                 },
                 ScreenInstruction::ResetAgentEscape(client_id) => {

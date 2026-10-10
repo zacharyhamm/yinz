@@ -489,6 +489,14 @@ impl Screen {
             };
             Ok(())
         })();
+        // Placement owns registration even when its reply receiver has gone away or reflow failed.
+        if completion_tx.as_ref().is_some_and(|c| c.is_mother)
+            && self.tab_containing_pane(pid).is_some()
+        {
+            self.mother_spawned(pid)
+                .context("failed to register mother")
+                .non_fatal();
+        }
         if let Err(error) = insertion {
             if let Some(completion) = completion_tx.as_mut() {
                 completion.set_error_message(format!("cannot place agent pane: {error:#}"));
