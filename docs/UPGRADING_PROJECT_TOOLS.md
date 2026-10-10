@@ -14,8 +14,6 @@ This release removes the built-in Hocus chat agent. External agents, project pan
 | `hocus-agents` | `agents` |
 | `hocus-agentd` | `agent-service` |
 | `hocus-todos` | `todos` |
-| `hocus-vms` | `vms` |
-| `hocus-swamp` | `swamp-issues` |
 | `hocus-new-agent` | `new-agent` |
 | `hocus-store` | `project-store` |
 | `hocus-proto` | `agent-proto` |
@@ -32,4 +30,4 @@ The store migrates `shared:hocus` to `shared:yinz` in one transaction. It also u
 
 The migration preserves entity tables, rows, IDs, revisions, timestamps, indexes, links, import markers, and host/session ownership. Unrelated plugins keep their namespaces. If a destination entity already exists, the migration fails and rolls back. Resolve the collision before you retry. It never overwrites or merges records.
 
-The Agents panel contains Agents, Todos, VMs, and Swamp. Use `Ctrl e a` to open it and `Ctrl o` to move it clockwise. Tab and Shift+Tab move between the tab bar and the active view. Esc dismisses the panel. Swamp triage opens New agent with the issue context in its editable prompt.
+The Agents panel contains Agents and Todos. Use `Ctrl e a` to open it and `Ctrl o` to move it clockwise. Tab and Shift+Tab move between the tab bar and the active view. Esc dismisses the panel.

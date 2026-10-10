@@ -26,7 +26,7 @@ pub fn control_agent(
             cwd,
             project,
             remote_host,
-            automatic_firecracker_vm,
+
             placement,
         } = request
         {
@@ -36,7 +36,6 @@ pub fn control_agent(
                 cwd,
                 project,
                 remote_host,
-                automatic_firecracker_vm,
                 client,
                 senders,
                 data,
@@ -257,11 +256,6 @@ fn filter_project(
                 return project_data::projects::for_repository(&registry, &repository)
                     .is_some_and(|owner| owner.name == project.name);
             },
-            yinz_types::command::PaneTarget::Firecracker {
-                worktree: Some(path),
-                ..
-            } => path.to_str(),
-            yinz_types::command::PaneTarget::Firecracker { .. } => return false,
             _ => status.cwd.as_deref(),
         };
         cwd.is_some_and(|cwd| {
@@ -289,13 +283,10 @@ pub(super) fn prepare_automation_agent(
     cwd: Option<PathBuf>,
     project: Option<String>,
     remote_host: Option<String>,
-    automatic_firecracker_vm: bool,
     data: &DataAccess,
 ) -> Result<PreparedAgent, AgentSpawnError> {
-    if spec.bubblewrap
-        && (remote_host.is_some() || spec.firecracker.is_some() || automatic_firecracker_vm)
-    {
-        return Err("Bubblewrap cannot be combined with SSH or Firecracker".into());
+    if spec.bubblewrap && remote_host.is_some() {
+        return Err("Bubblewrap cannot be combined with SSH".into());
     }
     let guidance = || {
         let kinds = yinz_types::agent::KINDS
@@ -331,10 +322,8 @@ pub(super) fn prepare_automation_agent(
             || spec.base.is_some()
             || spec.worktree_dir.is_some()
             || spec.worktree.is_some()
-            || spec.firecracker.is_some()
-            || spec.firecracker_image.is_some()
         {
-            return Err("SSH agents use an existing remote checkout: pass cwd without project, branch, worktree or VM options".into());
+            return Err("SSH agents use an existing remote checkout: pass cwd without project, branch or worktree options".into());
         }
         if spec.allow_outside_worktree != Some(true) {
             return Err("the local worktree guard cannot inspect SSH paths; verify the remote worktree and explicitly allow outside worktree".into());
@@ -345,8 +334,7 @@ pub(super) fn prepare_automation_agent(
         command = yinz_runtime::agent::launch::plan(spec)?.0;
         // SSH uses the remote installation, never the local extension placeholder.
         yinz_runtime::agent::pi::strip_extension(&mut command.args);
-        command.target =
-            yinz_types::command::PaneTarget::from_parts(Some(&host), None, None, None)?;
+        command.target = yinz_types::command::PaneTarget::ssh(&host)?;
         command.cwd = Some(cwd.clone());
         return Ok(PreparedAgent {
             command,
@@ -386,9 +374,6 @@ pub(super) fn prepare_automation_agent(
     if spec.worktree_dir.is_none() && spec.branch.is_some() && spec.worktree != Some(false) {
         spec.worktree_dir = project.and_then(|p| p.worktree_dir.clone());
     }
-    if spec.firecracker_image.is_none() && spec.firecracker.is_some() {
-        spec.firecracker_image = project.and_then(|p| p.firecracker_image.clone());
-    }
     let cwd = match cwd {
         Some(cwd) => Some(cwd),
         None => project
@@ -399,25 +384,11 @@ pub(super) fn prepare_automation_agent(
             })
             .transpose()?,
     };
-    let (_, checkout) = yinz_runtime::agent::launch::plan(spec)?;
-    let current = matches!(checkout, GitCheckout::Current);
-    let vm = spec.firecracker.is_some();
-    if vm && current && project.is_none() && cwd.is_some() {
-        return Err("a Firecracker cwd must come from a mirrored project".into());
-    }
     let source = cwd.unwrap_or_else(|| PathBuf::from("/"));
     if !source.is_dir() {
         return Err("agent cwd is not a directory".into());
     }
-    prepare_agent(
-        spec,
-        source,
-        None,
-        automatic_firecracker_vm && vm && (!current || project.is_some()),
-        project.is_some(),
-        false,
-        data,
-    )
+    prepare_agent(spec, source, None, false, data)
 }
 
 /// Other live agents whose folder is the one a reused worktree put this agent in.

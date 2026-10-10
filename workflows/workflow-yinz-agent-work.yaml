@@ -64,14 +64,6 @@
           "type": "string"
         },
         "default": []
-      },
-      "firecracker": {
-        "type": "string",
-        "default": ""
-      },
-      "firecrackerImage": {
-        "type": "string",
-        "default": ""
       }
     },
     "required": [
@@ -123,10 +115,7 @@
                 "cwd": "${{ inputs.checkout }}",
                 "source_directory": "${{ inputs.checkout }}",
                 "command": "${{ inputs.agentCommand }}",
-                "args": "${{ inputs.agentArgs }}",
-                "firecracker": "${{ inputs.firecracker }}",
-                "firecracker_image": "${{ inputs.firecrackerImage }}",
-                "automatic_firecracker_vm": "${{ inputs.firecracker == \"\" }}"
+                "args": "${{ inputs.agentArgs }}"
               }
             }
           },
@@ -203,49 +192,6 @@
           "dependsOn": [
             {
               "step": "completion",
-              "condition": {
-                "type": "succeeded"
-              }
-            }
-          ]
-        },
-        {
-          "name": "sync",
-          "task": {
-            "type": "model_method",
-            "modelType": "@hammz/yinz",
-            "modelName": "${{ inputs.launch + \"-worker-sync\" }}",
-            "methodName": "vm_sync",
-            "globalArgs": {
-              "session": "${{ inputs.session }}",
-              "binary": "${{ inputs.binary }}"
-            },
-            "inputs": {
-              "work": "${{ inputs.launch }}",
-              "key": "initial-sync",
-              "agent": "worker"
-            }
-          },
-          "dependsOn": [
-            {
-              "step": "completed",
-              "condition": {
-                "type": "succeeded"
-              }
-            }
-          ]
-        },
-        {
-          "name": "synced",
-          "task": {
-            "type": "assert",
-            "expr": "data.latest(inputs.launch + \"-worker-sync\", \"operation-current\").attributes.clean == true",
-            "message": "Guest changes or sync conflicts remain unresolved; resolve them before review.",
-            "severity": "high"
-          },
-          "dependsOn": [
-            {
-              "step": "sync",
               "condition": {
                 "type": "succeeded"
               }

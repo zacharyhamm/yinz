@@ -122,7 +122,6 @@ print(json.dumps(dict(result=result)))
         source: revision,
         target: revision,
         gate: ["true"],
-        vmSync: { mode: "local" as const },
     };
     const input = methods.continue_flow.arguments.parse({
         work: "work",
@@ -150,12 +149,9 @@ print(json.dumps(dict(result=result)))
                 ["reviewAgent", "reviewFixAgent", "rebaseAgent", "testFixAgent"]
                     .map((role) => [role, { kind: "claude", model: role }]),
             ),
-            firecracker: "",
-            firecrackerImage: "",
             sourcePane: -1,
             phase: "failed-tests",
             state: {
-                vmSync: { mode: "local" },
                 evidence,
                 review: null,
                 test: {

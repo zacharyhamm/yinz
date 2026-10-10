@@ -59,14 +59,6 @@ impl RunPluginOrAlias {
                 });
             run_plugin_alias.run_plugin = merged_run_plugin;
         }
-        match self {
-            Self::RunPlugin(plugin) => plugin.normalize_agent_panel(),
-            Self::Alias(alias) => {
-                if let Some(plugin) = &mut alias.run_plugin {
-                    plugin.normalize_agent_panel();
-                }
-            },
-        }
     }
     pub fn get_run_plugin(&self) -> Option<RunPlugin> {
         match self {
@@ -331,15 +323,8 @@ impl Run {
     }
     /// Prefix a layout, tab or template `cwd` onto this pane's own.
     ///
-    /// A Firecracker pane is left alone: its `cwd` names a directory in the
-    /// guest, so joining a host path onto it would produce a path that exists
-    /// nowhere, and when it has no `cwd` at all it must stay `None` so the
-    /// provider's own guest cwd (the mirrored worktree) applies. An ssh pane
-    /// gets the join like a local one: the layout author names the directory
-    /// the pane starts in on that machine, and nothing else knows a better one.
     pub fn add_cwd(&mut self, cwd: &Path) {
         match self {
-            Run::Command(run_command) if run_command.target.is_firecracker() => {},
             Run::Command(run_command) => match run_command.cwd.as_mut() {
                 Some(run_cwd) => {
                     *run_cwd = cwd.join(&run_cwd);
@@ -451,23 +436,6 @@ pub struct RunPlugin {
     pub declared_path: Option<PathBuf>,
 }
 
-/// Consume the legacy panel selector only for the builtin that used to own those views.
-pub fn normalize_agent_panel(
-    location: &str,
-    configuration: &mut BTreeMap<String, String>,
-) -> Option<&'static str> {
-    if location != "yinz:agents" {
-        return None;
-    }
-    let location = match configuration.get("view").map(String::as_str) {
-        Some("vms") => "yinz:vms",
-        Some("swamp") => "yinz:swamp-issues",
-        _ => return None,
-    };
-    configuration.remove("view");
-    Some(location)
-}
-
 impl RunPlugin {
     /// Keep plugin-directory fallback when the cwd-resolved file is confirmed missing.
     pub fn location_for_serialization(&self) -> String {
@@ -483,15 +451,6 @@ impl RunPlugin {
                 .unwrap_or_else(|_| format!("file:{}", path.display()));
         }
         self.location.display()
-    }
-
-    pub fn normalize_agent_panel(&mut self) {
-        if let Some(location) =
-            normalize_agent_panel(&self.location.display(), &mut self.configuration.0)
-        {
-            self.location =
-                RunPluginLocation::Yinz(PluginTag::new(location.trim_start_matches("yinz:")));
-        }
     }
 
     pub fn with_configuration(mut self, configuration: BTreeMap<String, String>) -> Self {

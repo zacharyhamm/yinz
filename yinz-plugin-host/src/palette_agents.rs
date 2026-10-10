@@ -122,18 +122,15 @@ fn execute(
     let choices = |title: String, choices| Ok(AgentReply::Choices { title, choices });
     match &request.action {
         History(_) | Mother { .. } => unreachable!("handled above"),
-        Start { kind, vm, project } => {
+        Start { kind, project } => {
             let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let action = match project.as_ref().filter(|name| registry.contains_key(*name)) {
                 Some(name) => Worktrees {
                     kind: kind.clone(),
-                    vm: *vm,
+
                     project: AgentProject::Registered(name.clone()),
                 },
-                None => Projects {
-                    kind: kind.clone(),
-                    vm: *vm,
-                },
+                None => Projects { kind: kind.clone() },
             };
             execute(
                 &AgentRequest {
@@ -145,7 +142,7 @@ fn execute(
                 session_cwd,
             )
         },
-        Projects { kind, vm } => {
+        Projects { kind } => {
             let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let mut entries: Vec<_> = registry
                 .values()
@@ -155,13 +152,13 @@ fn execute(
                         p.root.clone(),
                         Worktrees {
                             kind: kind.clone(),
-                            vm: *vm,
+
                             project: AgentProject::Registered(p.name.clone()),
                         },
                     )
                 })
                 .collect();
-            if !vm && !request.source.target.is_remote() {
+            if !request.source.target.is_remote() {
                 if let Some(cwd) = request.source.cwd.as_deref() {
                     if let Ok(root) = primary_worktree(Path::new(cwd)) {
                         entries.push(choice(
@@ -169,7 +166,6 @@ fn execute(
                             root.display().to_string(),
                             Worktrees {
                                 kind: kind.clone(),
-                                vm: false,
                                 project: AgentProject::Repository(root),
                             },
                         ));
@@ -178,7 +174,7 @@ fn execute(
             }
             choices("Choose project".into(), entries)
         },
-        Worktrees { kind, vm, project } => {
+        Worktrees { kind, project } => {
             let (root, registered) = project_root(project, data)?;
             let name = registered
                 .map(|p| p.name)
@@ -188,7 +184,7 @@ fn execute(
                 String::new(),
                 Checkout {
                     kind: kind.clone(),
-                    vm: *vm,
+
                     project: project.clone(),
                     path: None,
                 },
@@ -203,7 +199,7 @@ fn execute(
                             w.path.display().to_string(),
                             Checkout {
                                 kind: kind.clone(),
-                                vm: *vm,
+
                                 project: project.clone(),
                                 path: Some(w.path),
                             },
@@ -213,16 +209,13 @@ fn execute(
             entries.push(choice(
                 "Change project…".into(),
                 String::new(),
-                Projects {
-                    kind: kind.clone(),
-                    vm: *vm,
-                },
+                Projects { kind: kind.clone() },
             ));
             choices(format!("{name} · Worktrees"), entries)
         },
         Checkout {
             kind,
-            vm,
+
             project,
             path,
         } => {
@@ -241,15 +234,12 @@ fn execute(
             } else {
                 None
             };
-            let (_, registered) = project_root(project, data)?;
-            let image = registered.and_then(|p| p.firecracker_image);
             let action = Launch {
                 kind: kind.clone(),
-                vm: *vm,
+
                 project: project.clone(),
                 path: path.clone(),
                 branch,
-                image,
             };
             execute(
                 &AgentRequest {
@@ -264,26 +254,12 @@ fn execute(
         },
         Launch {
             kind,
-            vm,
+
             project,
             path,
             branch,
-            image,
         } => {
             let (root, registered) = project_root(project, data)?;
-            let image = image
-                .clone()
-                .or_else(|| request.value.clone().filter(|v| !v.trim().is_empty()));
-            if *vm && image.is_none() && !default_vm_image_available() {
-                if request.value.is_some() {
-                    return Err("Image name is required".into());
-                }
-                return Ok(AgentReply::Form {
-                    title: "Firecracker image".into(),
-                    label: "Image name".into(),
-                    action: request.action.clone(),
-                });
-            }
             let cwd = if let Some(path) = path {
                 let selected = worktree_at(&root, path)?
                     .ok_or("Selected worktree no longer belongs to this project")?;
@@ -310,14 +286,12 @@ fn execute(
                     .as_ref()
                     .filter(|_| branch.is_some())
                     .and_then(|p| p.worktree_dir.clone()),
-                firecracker: vm.then(|| "palette-agent".into()),
-                firecracker_image: image.filter(|_| *vm),
                 // An explicitly selected checkout is reused exactly, including detached HEAD.
                 allow_outside_worktree: Some(path.is_some()),
                 ..Default::default()
             };
             launch(request, senders, spec, |spec| {
-                prepare_agent(spec, cwd, None, *vm, registered.is_some(), false, data)
+                prepare_agent(spec, cwd, None, false, data)
             })
         },
         Current { kind } => {
@@ -465,23 +439,6 @@ fn launch(
         Err(error) => error.into_response(),
     };
     Ok(AgentReply::Launched(response))
-}
-
-// The provider's default is a local rootfs, independent of project image names.
-fn default_vm_image_available() -> bool {
-    let config = std::env::var_os("YINZ_FIRECRACKER_CONFIG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| yinz_runtime::home::xdg_config_dir().join("firecracker.json"));
-    fs::read(config)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|config| {
-            config
-                .get("rootfs")
-                .and_then(|p| p.as_str())
-                .map(PathBuf::from)
-        })
-        .is_some_and(|path| path.is_file())
 }
 
 #[cfg(test)]

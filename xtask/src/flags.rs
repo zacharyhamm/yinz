@@ -120,18 +120,6 @@ xflags::xflags! {
             repeated args: OsString
         }
 
-        /// Build and run the ignored tests against a real Firecracker VM
-        cmd firecracker-test {
-            /// Build the guest image and provider (requires Docker)
-            optional --build
-            /// Run the tests with a temporary sudo-managed host network
-            optional --test
-            /// Remove generated images and test state
-            optional --clean
-            /// Additional arguments for `--test`
-            repeated args: OsString
-        }
-
         /// Run the plugin-data store suite against a real Postgres in a container
         cmd postgres-test {
             /// Bring the container up
@@ -189,7 +177,6 @@ pub enum XtaskCmd {
     Test(Test),
     IntegrationTest(IntegrationTest),
     RemoteTest(RemoteTest),
-    FirecrackerTest(FirecrackerTest),
     PostgresTest(PostgresTest),
     Bench(Bench),
     Build(Build),
@@ -289,15 +276,6 @@ pub struct RemoteTest {
 
     pub build: bool,
     pub native: bool,
-    pub test: bool,
-    pub clean: bool,
-}
-
-#[derive(Debug)]
-pub struct FirecrackerTest {
-    pub args: Vec<OsString>,
-
-    pub build: bool,
     pub test: bool,
     pub clean: bool,
 }

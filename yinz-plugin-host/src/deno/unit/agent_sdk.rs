@@ -124,26 +124,6 @@ fn all_agent_identities_use_paste_and_unbounded_event_waits() {
 }
 
 #[test]
-fn agent_spawn_preserves_spec_and_host_defaults() {
-    let mut runtime = sdk();
-    run(&mut runtime, r#"
-      bind({load() {
-        check(yinz.agent.spawn({kind:'codex'}).Terminal === 7);
-        check(yinz.agent.spawnDetails({kind:'claude',permission_mode:'plan',worktree_dir:'.trees',sourceDirectory:'/host/project',startSuppressed:true,automaticFirecrackerVm:true,context:{key:'value'}}).pane_id.Terminal === 7);
-      }});bridge('load',{},2);
-    "#);
-    capture_commands(&mut runtime);
-    run(&mut runtime, r#"
-      const commands = sent.map(([c])=>c.SpawnAgent);
-      check(commands[0].spec.kind === 'codex' && Object.keys(commands[0].spec).length === 1 && commands[0].source_directory === null && commands[0].start_suppressed === false);
-      check(commands[1].spec.permission_mode === 'plan' && commands[1].source_directory === '/host/project' && commands[1].automatic_firecracker_vm && commands[1].start_suppressed && commands[1].context.key === 'value');
-    "#);
-    for (command, _) in &runtime.op_state().borrow().borrow::<TestHost>().commands {
-        serde_json::from_value::<yinz_types::data::PluginCommand>(command.clone()).unwrap();
-    }
-}
-
-#[test]
 fn provider_registration_and_explicit_control_do_not_write_raw_input() {
     let mut runtime = sdk();
     runtime.op_state().borrow_mut().borrow_mut::<TestHost>().pane_info = json!({"agent":{"kind":"fixture-agent"}});
@@ -167,6 +147,26 @@ fn provider_registration_and_explicit_control_do_not_write_raw_input() {
       for (const [i,request] of requests.entries()) bridge('update', {CustomMessage:['agent-response',JSON.stringify({id:request.id,response:{outcome:i === 0 ? 'submitted':'completed',message:'done',agents:[]}})]},2);
     "#);
     run(&mut runtime, "check(JSON.stringify(answers) === '[\"submitted\",\"done\"]')");
+    for (command, _) in &runtime.op_state().borrow().borrow::<TestHost>().commands {
+        serde_json::from_value::<yinz_types::data::PluginCommand>(command.clone()).unwrap();
+    }
+}
+
+#[test]
+fn agent_spawn_preserves_spec_and_host_defaults() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      bind({load() {
+        check(yinz.agent.spawn({kind:'codex'}).Terminal === 7);
+        check(yinz.agent.spawnDetails({kind:'claude',permission_mode:'plan',worktree_dir:'.trees',sourceDirectory:'/host/project',startSuppressed:true,context:{key:'value'}}).pane_id.Terminal === 7);
+      }});bridge('load',{},2);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const commands = sent.map(([c])=>c.SpawnAgent);
+      check(commands[0].spec.kind === 'codex' && Object.keys(commands[0].spec).length === 1 && commands[0].source_directory === null && commands[0].start_suppressed === false);
+      check(commands[1].spec.permission_mode === 'plan' && commands[1].source_directory === '/host/project' && commands[1].start_suppressed && commands[1].context.key === 'value');
+    "#);
     for (command, _) in &runtime.op_state().borrow().borrow::<TestHost>().commands {
         serde_json::from_value::<yinz_types::data::PluginCommand>(command.clone()).unwrap();
     }

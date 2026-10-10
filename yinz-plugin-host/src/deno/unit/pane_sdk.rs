@@ -76,27 +76,6 @@ fn pane_sequence_validation_failure_policies_and_observation_cancellation() {
 }
 
 #[test]
-fn pane_sequence_cwd_preserves_targets_and_resolves_only_at_dispatch() {
-    let mut runtime = sdk();
-    run(&mut runtime, r#"
-      bind({load(){globalThis.seq=yinz.paneSequence({steps:[{path:'true'},
-        {path:'pwd',cwd:'inherit',target:{Ssh:{host:'host'}},remote_host:'legacy',remote_default_shell:false},
-        {path:'pwd',cwd:'inherit',target:{Firecracker:{vm:'vm',image:'image',worktree:'/work'}},firecracker_vm:'vm',firecracker_image:'image',firecracker_worktree:'/work'}]});seq.done.catch(()=>{});}});bridge('load',{},2);
-    "#);
-    runtime.op_state().borrow_mut().borrow_mut::<TestHost>().pane_info = json!({"cwd":"/latest","target":{"Ssh":{"host":"host"}}});
-    pane_context(&mut runtime);
-    run(&mut runtime, "event('CommandPaneExited')");
-    pane_context(&mut runtime);
-    run(&mut runtime, "check(sent.at(-1)[0].RunCommandInPane.command.cwd==='/latest');check(sent.at(-1)[0].RunCommandInPane.command.remote_host==='legacy');event('CommandPaneExited')");
-    pane_context(&mut runtime);
-    run(&mut runtime, r#"
-      const cmd=sent.at(-1)[0].RunCommandInPane.command;
-      check(cmd.cwd===null && cmd.target.Firecracker.vm==='vm' && cmd.firecracker_image==='image' && cmd.firecracker_worktree==='/work');
-      event('PaneClosed');check(seq.status==='pane_closed');
-    "#);
-}
-
-#[test]
 fn pane_sequence_timeout_cancel_grace_refusal_and_cleanup() {
     let mut runtime = sdk();
     run(&mut runtime, "globalThis.now=100;Date.now=()=>now;globalThis.results=[];globalThis.errors=[];");
@@ -270,4 +249,22 @@ fn pane_commands_ignore_metadata_from_previous_exits() {
         run(&mut runtime, "check(results.length===0);event('CommandPaneExited',0);");
         run(&mut runtime, "check(results.length===1)");
     }
+}
+
+#[test]
+fn pane_sequence_cwd_preserves_targets_and_resolves_only_at_dispatch() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      bind({load(){globalThis.seq=yinz.paneSequence({steps:[{path:'true'},
+        {path:'pwd',cwd:'inherit',target:{Ssh:{host:'host'}},remote_host:'legacy',remote_default_shell:false}]});seq.done.catch(()=>{});}});bridge('load',{},2);
+    "#);
+    runtime.op_state().borrow_mut().borrow_mut::<TestHost>().pane_info = json!({"cwd":"/latest","target":{"Ssh":{"host":"host"}}});
+    pane_context(&mut runtime);
+    run(&mut runtime, "event('CommandPaneExited')");
+    pane_context(&mut runtime);
+    run(&mut runtime, "check(sent.at(-1)[0].RunCommandInPane.command.cwd==='/latest');check(sent.at(-1)[0].RunCommandInPane.command.remote_host==='legacy')");
+    pane_context(&mut runtime);
+    run(&mut runtime, r#"
+      event('PaneClosed');check(seq.status==='pane_closed');
+    "#);
 }

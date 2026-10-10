@@ -1,12 +1,6 @@
 /** Checkout evidence and cooperating kernel locks, shared with the pane worker. @module */
 import { z } from "npm:zod@4.3.6";
 import { checked, Context, digest, exec, Key, Literal } from "./workflow.ts";
-import { Operation } from "./bridge.ts";
-const VmSync = Operation.extend({
-    outcome: z.literal("completed"),
-    clean: z.literal(true),
-});
-export const Sync = z.union([VmSync, z.object({ mode: z.literal("local") })]);
 const Ref = Literal.min(1).refine((s) => !s.startsWith("-"));
 const Revision = z.object({
     checkout: z.string(),
@@ -21,7 +15,6 @@ export const Evidence = z.object({
     source: Revision,
     target: Revision,
     gate: z.array(Literal).min(1),
-    vmSync: Sync,
 });
 export const Args = z.object({
     source: Literal.min(1),
@@ -29,7 +22,6 @@ export const Args = z.object({
     target: Literal.min(1),
     targetBranch: Ref.default("main"),
     gate: z.array(Literal).min(1).default(["cargo", "x", "ci", "check"]),
-    vmSync: Sync,
 });
 export const Mutation = Args.extend({ key: Key });
 export const CommitAndRebase = Mutation.extend({
@@ -186,7 +178,6 @@ export async function evidence(
         source,
         target,
         gate: args.gate,
-        vmSync: args.vmSync,
     });
 }
 /** Identity a lock holder leaves in the lock file so waiters can name it. */

@@ -3186,7 +3186,7 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
         screen.command_palette_handles_input(&enter, b"", false, CLIENT);
         let request = next();
         assert!(
-            matches!(&request.action, AgentAction::Start { kind: selected, vm: false, project: Some(project) } if selected == kind && project == "current")
+            matches!(&request.action, AgentAction::Start { kind: selected, project: Some(project) } if selected == kind && project == "current")
         );
         // Repeated Enter cannot submit the request twice.
         screen.command_palette_handles_input(&enter, b"", false, CLIENT);
@@ -3215,7 +3215,6 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
     let request = next();
     let action = AgentAction::Checkout {
         kind: "claude".into(),
-        vm: false,
         project: AgentProject::Registered("current".into()),
         path: None,
     };

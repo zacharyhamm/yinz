@@ -170,7 +170,7 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
                 "Integration completed locally. No commits were pushed.",
             ) ||
             !kept.json.summary.includes(
-                "Worktree, branch and VM resources kept.",
+                "Worktree and branch kept.",
             ) || kept.json.summary.some((line) => line.startsWith("Next:"))
         ) throw new Error("Cleanup report recommended already completed work");
         for (const phase of ["commit", "review-agent", "tests"]) {

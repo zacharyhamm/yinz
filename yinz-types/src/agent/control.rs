@@ -99,8 +99,6 @@ pub enum AgentRequest {
         cwd: Option<PathBuf>,
         project: Option<String>,
         remote_host: Option<String>,
-        #[serde(default)]
-        automatic_firecracker_vm: bool,
     },
     Prompt {
         pane_id: PaneId,

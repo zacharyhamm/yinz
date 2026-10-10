@@ -75,12 +75,8 @@ fn setup_with_size(
     (screen, messages, writes)
 }
 
-fn pane_targets() -> [PaneTarget; 3] {
-    [
-        PaneTarget::Local,
-        PaneTarget::ssh("test-host").unwrap(),
-        PaneTarget::firecracker("test-vm", None, None).unwrap(),
-    ]
+fn pane_targets() -> [PaneTarget; 2] {
+    [PaneTarget::Local, PaneTarget::ssh("test-host").unwrap()]
 }
 
 fn replies(messages: &CapturedClientMessages, client: ClientId) -> Vec<AgentResponse> {

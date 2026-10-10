@@ -41,18 +41,6 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
         .with_context(err_context)
 }
 
-/// Generate a runnable executable and install its builtin plugins.
-///
-/// Runs the following steps in sequence:
-///
-/// - [`build`](build::build) (the chosen profile, plugins only)
-/// - [`build`](build::build) (the chosen profile, without plugins)
-/// - Copy the executable to [target file](flags::Install::destination)
-/// - Copy the builtin plugin wasm to the directory the binary will look in
-///
-/// The profile is `release` unless `--profile` names another one; everything the install
-/// touches - the binary, the firecracker provider, the builtin wasm - comes from that profile's
-/// target directory.
 pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     let err_context = || format!("failed to run pipeline 'install' with args {flags:?}");
 
@@ -122,51 +110,6 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     sh.copy_file(&binary, &tmp).with_context(err_context)?;
     std::fs::rename(&tmp, &destination).with_context(err_context)?;
 
-    #[cfg(target_os = "linux")]
-    {
-        // The provider is an implicit bin of the root crate, so the build just run produced it -
-        // but cargo links the two bins in whatever order it finishes them (the smaller provider
-        // usually first), so no comparison of what is on disk can say whether the provider there
-        // is this build's or a leftover. Ask cargo instead: building it by name is a no-op after
-        // the root build and current by construction. Only a `--bin` filter the user forwarded
-        // can legitimately leave it out, and then we honour that rather than building a bin they
-        // excluded.
-        if provider_excluded_by_args(&flags.args) {
-            println!(
-                "Skipping yinz-firecracker: not part of this build \
-                 (build it with 'cargo x build --profile {profile}')"
-            );
-        } else {
-            println!();
-            let msg = ">> Building 'yinz-firecracker'";
-            crate::status(msg);
-            println!("{}", msg);
-            let cargo = crate::cargo().with_context(err_context)?;
-            match cmd!(
-                sh,
-                "{cargo} build --profile {profile} --bin yinz-firecracker"
-            )
-            .args(&flags.args)
-            .run()
-            {
-                Ok(()) => {
-                    let provider = crate::target_dir()
-                        .join(profile_dir)
-                        .join("yinz-firecracker");
-                    let provider_destination = destination.with_file_name("yinz-firecracker");
-                    let provider_tmp = provider_destination.with_extension("xtask-install-tmp");
-                    sh.copy_file(&provider, &provider_tmp)
-                        .with_context(err_context)?;
-                    std::fs::rename(provider_tmp, &provider_destination)
-                        .with_context(err_context)?;
-                },
-                // The provider is an optional companion: a yinz that built and installed fine
-                // should not be held back by it.
-                Err(err) => println!("Skipping yinz-firecracker: {err}"),
-            }
-        }
-    }
-
     let (user, system) = builtin_dirs_of(sh, &binary)?;
     crate::authoring::install(
         sh,
@@ -183,33 +126,6 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Whether forwarded `cargo build` args restrict the build to bins other than the provider.
-///
-/// A `--bin` filter is the only way an `install` can legitimately not want a `yinz-firecracker`
-/// beside its `yinz`: a forwarded `--target` moves the `yinz` binary too, and copying that
-/// fails before this question is asked. The profile is not forwarded here - `install --profile`
-/// picks it, and the provider follows it.
-#[cfg(target_os = "linux")]
-fn provider_excluded_by_args(args: &[std::ffi::OsString]) -> bool {
-    let mut filtered = false;
-    let mut names = Vec::new();
-    let mut expecting_name = false;
-    for arg in args {
-        let arg = arg.to_string_lossy();
-        if expecting_name {
-            expecting_name = false;
-            names.push(arg.into_owned());
-        } else if arg == "--bin" {
-            filtered = true;
-            expecting_name = true;
-        } else if let Some(name) = arg.strip_prefix("--bin=") {
-            filtered = true;
-            names.push(name.to_owned());
-        }
-    }
-    filtered && !names.iter().any(|name| name == "yinz-firecracker")
 }
 
 /// Where the binary at `binary` looks for its installed builtins: `(user, system)`.
@@ -510,42 +426,6 @@ mod tests {
         assert_eq!(fs::read(legacy.join("tab-bar.wasm")).unwrap(), b"current");
         assert!(!legacy.join("status-bar.wasm").exists());
         assert_eq!(fs::read(legacy.join("custom.wasm")).unwrap(), b"custom");
-    }
-
-    #[cfg(target_os = "linux")]
-    mod provider_args_tests {
-        use std::ffi::OsString;
-
-        fn excluded(args: &[&str]) -> bool {
-            super::super::provider_excluded_by_args(
-                &args.iter().map(OsString::from).collect::<Vec<_>>(),
-            )
-        }
-
-        #[test]
-        fn a_plain_install_builds_the_provider() {
-            assert!(!excluded(&[]));
-            assert!(!excluded(&["--locked", "--features", "foo"]));
-        }
-
-        #[test]
-        fn a_bin_filter_without_the_provider_excludes_it() {
-            assert!(excluded(&["--bin", "yinz"]));
-            assert!(excluded(&["--bin=yinz"]));
-        }
-
-        #[test]
-        fn a_bin_filter_naming_the_provider_does_not() {
-            assert!(!excluded(&["--bin", "yinz-firecracker"]));
-            assert!(!excluded(&["--bin=yinz-firecracker"]));
-            assert!(!excluded(&["--bin", "yinz", "--bin", "yinz-firecracker"]));
-            assert!(!excluded(&["--bin=yinz", "--bin=yinz-firecracker"]));
-        }
-
-        #[test]
-        fn building_all_bins_is_not_a_filter() {
-            assert!(!excluded(&["--bins"]));
-        }
     }
 }
 

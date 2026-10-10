@@ -41,7 +41,6 @@ fn pi_launch_resolves_extension_and_correlates_a_prompt_end_to_end() {
             cwd: Some(cwd.path().into()),
             project: None,
             remote_host: None,
-            automatic_firecracker_vm: false,
         }))
         .unwrap();
     let response = loop {

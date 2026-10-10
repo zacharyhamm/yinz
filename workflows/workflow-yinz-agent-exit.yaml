@@ -74,12 +74,6 @@ inputs:
       default: []
       items:
         type: string
-    firecracker:
-      type: string
-      default: ''
-    firecrackerImage:
-      type: string
-      default: ''
     sourcePane:
       type: integer
       default: -1
@@ -125,7 +119,6 @@ inputs:
     state:
       type: object
       default:
-        vmSync: null
         evidence: null
         review: null
         test: null
@@ -297,8 +290,6 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}

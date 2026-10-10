@@ -273,12 +273,6 @@ pub struct Options {
     /// work without a running session.
     #[serde(default)]
     pub detachable_panes: Option<bool>,
-    /// Executable implementing the Firecracker provider JSON protocol.
-    #[serde(default)]
-    pub firecracker_provider: Option<PathBuf>,
-    /// Maximum time to wait for one Firecracker provider request.
-    #[serde(default)]
-    pub firecracker_provider_timeout_secs: Option<ElapsedSeconds>,
     #[serde(default)]
     /// Set display of the pane frames (true or false)
     pub pane_frames: Option<bool>,
@@ -532,12 +526,7 @@ impl Options {
         let agent_double_escape = other.agent_double_escape.or(self.agent_double_escape);
         let mouse_mode = other.mouse_mode.or(self.mouse_mode);
         let detachable_panes = other.detachable_panes.or(self.detachable_panes);
-        let firecracker_provider = other
-            .firecracker_provider
-            .or_else(|| self.firecracker_provider.clone());
-        let firecracker_provider_timeout_secs = other
-            .firecracker_provider_timeout_secs
-            .or(self.firecracker_provider_timeout_secs);
+
         let background_opacity = other.background_opacity.or(self.background_opacity);
         let pane_animations = other.pane_animations.or(self.pane_animations);
         let pane_frames = other.pane_frames.or(self.pane_frames);
@@ -654,8 +643,7 @@ impl Options {
             agent_double_escape,
             mouse_mode,
             detachable_panes,
-            firecracker_provider,
-            firecracker_provider_timeout_secs,
+
             pane_frames,
             pane_animations,
             background_opacity,

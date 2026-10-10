@@ -413,8 +413,6 @@ plugins {
         // pad "3"
     }
     todos location="yinz:todos"
-    vms location="yinz:vms"
-    swamp-issues location="yinz:swamp-issues"
     new-agent location="yinz:new-agent"
     duplicate-agent location="yinz:new-agent" {
         duplicate_focused true

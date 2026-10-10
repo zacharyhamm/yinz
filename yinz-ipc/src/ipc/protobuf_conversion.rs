@@ -1008,10 +1008,6 @@ impl From<yinz_types::input::options::Options>
             builtin_plugins_dir: options
                 .builtin_plugins_dir
                 .map(|p| p.to_string_lossy().to_string()),
-            firecracker_provider: options
-                .firecracker_provider
-                .map(|p| p.to_string_lossy().to_string()),
-            firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs.map(yinz_types::units::ElapsedSeconds::get),
             mouse_mode: options.mouse_mode,
             agent_double_escape: options.agent_double_escape,
             pane_frames: options.pane_frames,
@@ -1124,8 +1120,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             theme_dir: options.theme_dir.map(std::path::PathBuf::from),
             user_plugin_dir: options.user_plugin_dir.map(std::path::PathBuf::from),
             builtin_plugins_dir: options.builtin_plugins_dir.map(std::path::PathBuf::from),
-            firecracker_provider: options.firecracker_provider.map(std::path::PathBuf::from),
-            firecracker_provider_timeout_secs: options.firecracker_provider_timeout_secs.map(yinz_types::units::ElapsedSeconds::new),
             mouse_mode: options.mouse_mode,
             agent_double_escape: options.agent_double_escape,
             // Not on the wire: the server reads this straight out of the config
@@ -1522,23 +1516,10 @@ fn remote_handoff_from_protobuf(
 fn pane_target_to_protobuf(
     target: &yinz_types::command::PaneTarget,
 ) -> crate::client_server_contract::client_server_contract::PaneTarget {
-    use crate::client_server_contract::client_server_contract::{
-        pane_target::Kind, FirecrackerTarget, PaneTarget,
-    };
+    use crate::client_server_contract::client_server_contract::{pane_target::Kind, PaneTarget};
     let kind = match target {
         yinz_types::command::PaneTarget::Local => Kind::Local(true),
         yinz_types::command::PaneTarget::Ssh { host } => Kind::SshHost(host.clone()),
-        yinz_types::command::PaneTarget::Firecracker {
-            vm,
-            image,
-            worktree,
-        } => Kind::Firecracker(FirecrackerTarget {
-            vm: vm.clone(),
-            image: image.clone(),
-            worktree: worktree
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string()),
-        }),
         yinz_types::command::PaneTarget::Bubblewrap { root } => {
             Kind::BubblewrapRoot(root.to_string_lossy().to_string())
         },
@@ -1553,11 +1534,6 @@ fn pane_target_from_protobuf(
     Ok(match target.and_then(|target| target.kind) {
         None | Some(Kind::Local(_)) => yinz_types::command::PaneTarget::Local,
         Some(Kind::SshHost(host)) => yinz_types::command::PaneTarget::Ssh { host },
-        Some(Kind::Firecracker(firecracker)) => yinz_types::command::PaneTarget::Firecracker {
-            vm: firecracker.vm,
-            image: firecracker.image,
-            worktree: firecracker.worktree.map(std::path::PathBuf::from),
-        },
         Some(Kind::BubblewrapRoot(root)) => {
             yinz_types::command::PaneTarget::bubblewrap(std::path::Path::new(&root))
                 .map_err(|error| anyhow!(error))?

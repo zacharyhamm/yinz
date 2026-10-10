@@ -136,24 +136,6 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "mouse_mode").map(|(v, _)| v);
     let detachable_panes =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "detachable_panes").map(|(v, _)| v);
-    let firecracker_provider =
-        match kdl_property_first_arg_as_string_or_error!(kdl_options, "firecracker_provider") {
-            Some((value, entry)) => {
-                let path = yinz_runtime::shared::expand_path(value).map_err(|error| {
-                    kdl_parsing_error!(format!("firecracker_provider: {error}"), entry)
-                })?;
-                if !path.is_absolute() {
-                    return Err(kdl_parsing_error!(
-                        format!("firecracker_provider must be an absolute path, got {value:?}"),
-                        entry
-                    ));
-                }
-                Some(path)
-            },
-            None => None,
-        };
-    let firecracker_provider_timeout_secs =
-        unsigned_option(kdl_options, "firecracker_provider_timeout_secs", 1)?;
     let scroll_buffer_size = unsigned_option(kdl_options, "scroll_buffer_size", 0)?;
     let locked_escape_timeout_ms = unsigned_option(kdl_options, "locked_escape_timeout_ms", 0)?;
     let copy_command = kdl_property_first_arg_as_string_or_error!(kdl_options, "copy_command")
@@ -333,9 +315,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         mouse_mode,
         agent_double_escape,
         detachable_panes,
-        firecracker_provider,
-        firecracker_provider_timeout_secs: firecracker_provider_timeout_secs
-            .map(yinz_types::units::ElapsedSeconds::new),
+
         pane_frames,
         pane_animations,
         pane_frame_style,
@@ -805,41 +785,6 @@ fn detachable_panes_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNod
         Some(node)
     } else {
         None
-    }
-}
-fn firecracker_provider_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
-    let create_node = |value: &str| {
-        let mut node = KdlNode::new("firecracker_provider");
-        node.push(value.to_owned());
-        node
-    };
-    match &value.firecracker_provider {
-        Some(path) => Some(create_node(&path.display().to_string())),
-        None if add_comments => {
-            let mut node = create_node("/absolute/path/to/provider");
-            node.set_leading("\n// Firecracker VM provider executable\n// ".to_owned());
-            Some(node)
-        },
-        None => None,
-    }
-}
-fn firecracker_provider_timeout_secs_to_kdl(
-    value: &Options,
-    add_comments: bool,
-) -> Option<KdlNode> {
-    let create_node = |value: u64| {
-        let mut node = KdlNode::new("firecracker_provider_timeout_secs");
-        node.push(value as i64);
-        node
-    };
-    match value.firecracker_provider_timeout_secs {
-        Some(timeout) => Some(create_node((timeout).get())),
-        None if add_comments => {
-            let mut node = create_node(60);
-            node.set_leading("\n// Firecracker provider request timeout\n// ".to_owned());
-            Some(node)
-        },
-        None => None,
     }
 }
 fn locked_escape_timeout_ms_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
@@ -2193,12 +2138,6 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
     }
     if let Some(detachable_panes) = detachable_panes_to_kdl(value, add_comments) {
         nodes.push(detachable_panes);
-    }
-    if let Some(provider) = firecracker_provider_to_kdl(value, add_comments) {
-        nodes.push(provider);
-    }
-    if let Some(timeout) = firecracker_provider_timeout_secs_to_kdl(value, add_comments) {
-        nodes.push(timeout);
     }
     if let Some(node) = agent_double_escape_to_kdl(value, add_comments) {
         nodes.push(node);

@@ -1233,24 +1233,19 @@ impl Predecessors {
 
 impl State {
     fn composition_tabs(&self) -> Vec<PaneTabDescriptor> {
-        [
-            ("Agents", "agents", "agents"),
-            ("Todos", "todos", ""),
-            ("VMs", "vms", ""),
-            ("Swamp", "swamp-issues", ""),
-        ]
-        .into_iter()
-        .map(|(label, plugin, view)| PaneTabDescriptor {
-            label: label.into(),
-            location: format!("yinz:{plugin}"),
-            initial_cwd: Some(self.initial_cwd.clone()),
-            configuration: if view.is_empty() {
-                BTreeMap::new()
-            } else {
-                BTreeMap::from([("view".into(), view.into())])
-            },
-        })
-        .collect()
+        [("Agents", "agents", "agents"), ("Todos", "todos", "")]
+            .into_iter()
+            .map(|(label, plugin, view)| PaneTabDescriptor {
+                label: label.into(),
+                location: format!("yinz:{plugin}"),
+                initial_cwd: Some(self.initial_cwd.clone()),
+                configuration: if view.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    BTreeMap::from([("view".into(), view.into())])
+                },
+            })
+            .collect()
     }
 
     fn mount_composition(&mut self) {
@@ -1810,7 +1805,7 @@ impl State {
     /// that work through it.
     ///
     /// `?` is the sheet's only while nobody is typing, where it is a character (`typing`). Every
-    /// armed question stays armed under it, the VMs tab's close and sync among them: the sheet
+    /// armed question stays armed under it: the sheet
     /// says how to answer, and shutting it leaves the question where it was. A key the sheet
     /// lets through then reaches the question as it would have without the sheet - `y`
     /// answers it, and anything else cancels it and does its job.
@@ -1952,7 +1947,7 @@ impl State {
                 },
             }
         }
-        // The arrows follow the focus, the way `j`/`k` do and the way they do on VMs: in the
+        // The arrows follow the focus, the way `j`/`k` do and the way they do on Todos: in the
         // history half they walk its events. They used to steer the list from either half and
         // take the keys back with them, which made the half's `>` a cursor the arrows every
         // other list moves could not move - and dropped the user's place in it besides, since
@@ -4512,7 +4507,7 @@ impl State {
     /// `AGENT_STRIP_TAKE`: the ring arrived at this view, on `stop`.
     fn take_ring_stop(&mut self, stop: Option<&str>) -> bool {
         let tabs_focused =
-            stop == Some(agent_proto::vms::STOP_TABS) || stop == Some(wire::STOP_TABS);
+            stop == Some(agent_proto::tabs::STOP_TABS) || stop == Some(wire::STOP_TABS);
         let tabs_changed = self.tabs_focused != tabs_focused;
         self.tabs_focused = tabs_focused;
         self.bar_focused
@@ -4525,7 +4520,7 @@ impl State {
         }
         let focus = match stop {
             Some(wire::STOP_HISTORY) if self.last_history_rows > 0 => Focus::History,
-            Some(wire::STOP_TABS) | Some(agent_proto::vms::STOP_TABS) => self.focus,
+            Some(wire::STOP_TABS) | Some(agent_proto::tabs::STOP_TABS) => self.focus,
             _ => Focus::List,
         };
         let changed = tabs_changed || self.focus != focus;

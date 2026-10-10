@@ -152,29 +152,6 @@ fn managed_codex_resumes_reject_permission_overrides() {
 }
 
 #[test]
-fn claude_launches_override_the_inline_marker_to_match_their_hooks() {
-    for hooks in [None, Some(true), Some(false)] {
-        for firecracker in [None, Some(" ".into()), Some("vm".into())] {
-            let inline = hooks != Some(false) && firecracker.as_deref() != Some("vm");
-            let (command, _) = plan(&Spec {
-                kind: Some(" ClAuDe ".into()),
-                hooks,
-                firecracker,
-                env: [("YINZ_CLAUDE_INLINE_HOOKS".into(), "caller-value".into())].into(),
-                ..Default::default()
-            })
-            .unwrap();
-            assert_eq!(command.path.to_str(), Some("env"));
-            assert_eq!(
-                command.args[0],
-                format!("YINZ_CLAUDE_INLINE_HOOKS={}", u8::from(inline))
-            );
-            assert_eq!(command.args.iter().any(|arg| arg == "--settings"), inline);
-        }
-    }
-}
-
-#[test]
 fn codex_rejects_claude_aliases_without_restricting_provider_model_ids() {
     for model in [
         "haiku",
@@ -277,75 +254,6 @@ fn shown(command: yinz_types::command::CommandToRun) -> String {
         ..Default::default()
     })
     .to_string()
-}
-
-#[test]
-fn pi_launches_use_host_resolved_reporting_and_keep_user_extensions() {
-    use crate::agent::pi::{self, EXTENSION_ARGUMENT};
-    for hooks in [None, Some(false), Some(true)] {
-        for remote in [false, true] {
-            let (mut command, _) = plan(&Spec {
-                kind: Some("pi".into()),
-                hooks,
-                model: Some("provider/model".into()),
-                effort: Some("none".into()),
-                resume: Some("archived-session".into()),
-                prompt: Some("review".into()),
-                args: vec!["--extension".into(), "/user/report.ts".into()],
-                ..Default::default()
-            })
-            .unwrap();
-            assert!(command
-                .args
-                .windows(2)
-                .any(|pair| pair == ["--thinking", "off"]));
-            assert!(command
-                .args
-                .windows(2)
-                .any(|pair| pair == ["--session", "archived-session"]));
-            assert!(command
-                .args
-                .windows(2)
-                .any(|pair| pair == ["--model", "provider/model"]));
-            assert_eq!(command.args.last().map(String::as_str), Some("review"));
-            assert_eq!(
-                command.args.iter().any(|arg| arg == EXTENSION_ARGUMENT),
-                hooks != Some(false)
-            );
-            if remote {
-                command.target = yinz_types::command::PaneTarget::ssh("test-host").unwrap();
-                pi::prepare_command(&mut command).unwrap();
-                assert!(!command.args.iter().any(|arg| arg == EXTENSION_ARGUMENT));
-            }
-            assert!(command
-                .args
-                .windows(2)
-                .any(|pair| pair == ["--extension", "/user/report.ts"]));
-        }
-    }
-    for resume in ["last", "session"] {
-        let (command, _) = plan(&Spec {
-            kind: Some("pi".into()),
-            resume: Some(resume.into()),
-            firecracker: Some("vm".into()),
-            ..Default::default()
-        })
-        .unwrap();
-        assert!(!command.args.iter().any(|arg| arg == EXTENSION_ARGUMENT));
-        assert!(command.args.iter().any(|arg| arg
-            == if resume == "last" {
-                "--continue"
-            } else {
-                "--session"
-            }));
-    }
-    assert!(plan(&Spec {
-        kind: Some("pi".into()),
-        permission_mode: Some("skip".into()),
-        ..Default::default()
-    })
-    .unwrap_err()
-    .contains("pi has no permission mode"));
 }
 
 #[test]

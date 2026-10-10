@@ -99,31 +99,25 @@ pub enum AgentAction {
     History(HistoryAction),
     Start {
         kind: String,
-        vm: bool,
         project: Option<String>,
     },
     Projects {
         kind: String,
-        vm: bool,
     },
     Worktrees {
         kind: String,
-        vm: bool,
         project: AgentProject,
     },
     Checkout {
         kind: String,
-        vm: bool,
         project: AgentProject,
         path: Option<std::path::PathBuf>,
     },
     Launch {
         kind: String,
-        vm: bool,
         project: AgentProject,
         path: Option<std::path::PathBuf>,
         branch: Option<String>,
-        image: Option<String>,
     },
     Current {
         kind: String,

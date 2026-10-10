@@ -4,7 +4,7 @@ use yinz_tile::prelude::DataValue;
 #[test]
 fn conversation_focus_enters_the_host_panel_bar() {
     let mut state = State::default();
-    state.take_ring_stop(Some(agent_proto::vms::STOP_TABS));
+    state.take_ring_stop(Some(agent_proto::tabs::STOP_TABS));
     assert!(state.tabs_focused);
     assert_eq!(state.bar_focused, [state.own_client_id]);
     state.take_ring_stop(Some(wire::STOP_LIST));
@@ -54,7 +54,7 @@ fn project(name: &str, root: &str) -> projects::Project {
     projects::Project {
         name: name.into(),
         root: root.into(),
-        firecracker_image: None,
+
         worktree_dir: None,
         remote: None,
         worktree_status: None,
@@ -242,7 +242,7 @@ fn two_todos() -> State {
     state
 }
 
-/// Leaving the tab drops a delete or complete question armed there, as a VMs question is
+/// Leaving the tab drops a delete or complete question armed there, as a Todos question is
 /// dropped: left armed, it answered the first key of the next visit, and a `y` then deleted
 /// or completed what was asked about a list the user had long stopped looking at.
 #[test]

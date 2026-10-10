@@ -464,7 +464,7 @@ fn agent_exit_captures_the_custom_title_with_host_and_checkout_prefixes() {
     let fired = hooks_fired_by(vec![
         new_pane(2, None),
         ScreenInstruction::RenamePane(pane, b"Review topic".to_vec(), None),
-        ScreenInstruction::UpdatePaneHost(TERMINAL_2, Some("build-box".to_owned()), None),
+        ScreenInstruction::UpdatePaneHost(TERMINAL_2, Some("build-box".to_owned())),
         ScreenInstruction::SetPaneTitlePrefix(pane, Some("topic".to_owned())),
         hold(2, agent_command("/work/topic")),
     ]);
@@ -479,44 +479,6 @@ fn agent_exit_captures_the_custom_title_with_host_and_checkout_prefixes() {
         payload.get("agent_pane_title").unwrap(),
         "build-box topic: Review topic"
     );
-}
-
-#[test]
-fn a_firecracker_worktree_agent_exit_identifies_the_vm_to_the_hook() {
-    let mut command = agent_command("/workspace");
-    command.cwd = None;
-    command.target = yinz_types::command::PaneTarget::firecracker(
-        "review",
-        Some("rust-dev"),
-        Some(Path::new("/work/.worktrees/topic")),
-    )
-    .unwrap();
-    let fired = hooks_fired_by_with_config(
-        vec![new_pane(2, None), hold(2, command)],
-        Some(PathBuf::from("/config/config.kdl")),
-        Some(PathBuf::from("/config")),
-    );
-    let payload = config(
-        &fired
-            .iter()
-            .find(|(point, _, _)| *point == HookPoint::AgentExit)
-            .unwrap()
-            .2,
-    );
-
-    assert_eq!(payload.get("agent_cwd").unwrap(), "");
-    assert_eq!(payload.get("agent_firecracker_vm").unwrap(), "review");
-    assert_eq!(
-        payload.get("agent_firecracker_worktree").unwrap(),
-        "/work/.worktrees/topic"
-    );
-    assert_eq!(payload.get("agent_session").unwrap(), "yinz-test");
-    assert!(payload.contains_key("agent_yinz_executable"));
-    assert_eq!(
-        payload.get("agent_yinz_config_file").unwrap(),
-        "/config/config.kdl"
-    );
-    assert_eq!(payload.get("agent_yinz_config_dir").unwrap(), "/config");
 }
 
 #[test]

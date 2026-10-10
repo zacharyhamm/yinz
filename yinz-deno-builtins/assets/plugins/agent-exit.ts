@@ -8,13 +8,6 @@ function required<T>(value: T): NonNullable<T> {
 import { view } from "./workflow-view.ts";
 type Worktree = { path: string; head: string; branch?: string };
 type Checkout = Worktree & { primary: string };
-type Vm = Readonly<{
-  session?: unknown;
-  name?: unknown;
-  vm_id?: unknown;
-  worktree?: unknown;
-  metrics?: Readonly<{ generation?: unknown }>;
-}>;
 let acting = false,
   busy = false,
   cleanupStarted = false,
@@ -29,16 +22,6 @@ let checkout: Checkout | undefined,
   failureStatus: string | undefined,
   launchToken: string | undefined,
   pane: number | undefined;
-let firecracker:
-  | {
-      env: Record<string, string>;
-      executable: string;
-      identity?: string;
-      name: string;
-      session: string;
-    }
-  | undefined;
-
 async function command(
   argv: readonly string[],
   envVariables: Readonly<Record<string, string>> = {},
@@ -152,79 +135,6 @@ function close(): void {
   if (pane != null) z.command("CloseTerminalPane", pane);
   z.command("CloseSelf");
 }
-function vmIdentity(vm: Readonly<Vm>): string {
-  const generation = vm.metrics?.generation;
-  if (
-    typeof vm.session !== "string" ||
-    typeof vm.name !== "string" ||
-    typeof vm.vm_id !== "string" ||
-    !vm.vm_id ||
-    typeof generation !== "string" ||
-    !generation ||
-    typeof vm.worktree !== "string"
-  )
-    throw new Error("Firecracker did not report a complete VM identity.");
-  return JSON.stringify({
-    session: vm.session,
-    name: vm.name,
-    vm_id: vm.vm_id,
-    generation,
-    worktree: vm.worktree,
-  });
-}
-async function listVms(): Promise<Vm[]> {
-  const configured = required(firecracker);
-  const parsed: unknown = JSON.parse(
-    await command([configured.executable, "firecracker", "list", "--json"], configured.env),
-  );
-  if (
-    typeof parsed !== "object" ||
-    parsed == null ||
-    !("vms" in parsed) ||
-    !Array.isArray(parsed.vms)
-  )
-    throw new Error("Firecracker returned an invalid VM listing.");
-  return parsed.vms.filter((entry): entry is Vm => typeof entry === "object" && entry != null);
-}
-async function closeVm(): Promise<void> {
-  const configured = required(firecracker);
-  const original = required(checkout);
-  if (!configured.identity) {
-    const before = await listVms();
-    const vm = before.find(
-      (entry) => entry.session === configured.session && entry.name === configured.name,
-    );
-    if (vm && vm.worktree !== original.path)
-      throw new Error("The Firecracker VM identity changed; deletion was refused.");
-    if (!vm) {
-      const remaining = before.filter((entry) => entry.worktree === original.path);
-      if (remaining.length > 0)
-        throw new Error(
-          `Worktree is still leased by ${remaining.map((entry) => String(entry.session)).join(", ")}.`,
-        );
-      throw new Error("The Firecracker VM lease disappeared; deletion was refused.");
-    }
-    configured.identity = vmIdentity(vm);
-  }
-  await command(
-    [
-      configured.executable,
-      "firecracker",
-      "close",
-      configured.name,
-      "--session",
-      configured.session,
-      "--expected-identity",
-      configured.identity,
-      "--expected-worktree",
-      original.path,
-      "--expected-head",
-      original.head,
-      ...(original.branch ? ["--expected-branch", original.branch] : []),
-    ],
-    configured.env,
-  );
-}
 // oxlint-disable-next-line eslint/max-lines-per-function -- Keep identity and preservation checks before both destructive cleanup paths.
 async function deleteCheckout(): Promise<void> {
   const original = required(checkout);
@@ -300,8 +210,7 @@ async function deleteCheckout(): Promise<void> {
       throw new Error(
         `Cannot verify commits merged into local ${base} or freshly fetched origin/${base}; worktree and branch preserved.\n${diagnostics.join("\n")}`,
       );
-    if (firecracker) await closeVm();
-    else await command(["git", "-C", original.primary, "worktree", "remove", "--", original.path]);
+    await command(["git", "-C", original.primary, "worktree", "remove", "--", original.path]);
     removedWorktree = true;
   }
   if (original.branch) {
@@ -397,7 +306,6 @@ async function launch(config: Record<string, string>): Promise<void> {
         inputs: {
           sourcePane: pane ?? null,
           kind: config["agent_kind"] ?? "",
-          firecracker: config["agent_firecracker_vm"] ?? "",
         },
       },
     });
@@ -413,7 +321,7 @@ export default definePlugin({
   load(config) {
     launchToken = config["agent_exit_token"];
     pane = config["agent_pane_id"] == null ? undefined : Number(config["agent_pane_id"]);
-    directory = config["agent_firecracker_worktree"] ?? config["agent_cwd"];
+    directory = config["agent_cwd"];
     z.subscribe(["Key"]);
     if (config["swamp_owner"] || config["agent_workflow_owner"]) {
       status = "Managed helper exited. Its owning operation receives the exit event.";
@@ -426,26 +334,10 @@ export default definePlugin({
     const inspect = (): void => {
       if (
         config["agent_target"] !== "local" &&
-        config["agent_target"] !== "firecracker" &&
         config["agent_target"] !== "bubblewrap"
       ) {
         status = "Checkout identity is unavailable.";
         return;
-      }
-      if (config["agent_target"] === "firecracker") {
-        const executable = config["agent_yinz_executable"] ?? z.serverBinary;
-        const name = config["agent_firecracker_vm"];
-        const session = config["agent_session"];
-        if (!executable || !name || !session) {
-          status = "Firecracker identity is unavailable.";
-          return;
-        }
-        const env: Record<string, string> = {};
-        if (config["agent_yinz_config_file"])
-          env["YINZ_CONFIG_FILE"] = config["agent_yinz_config_file"];
-        if (config["agent_yinz_config_dir"])
-          env["YINZ_CONFIG_DIR"] = config["agent_yinz_config_dir"];
-        firecracker = { env, executable, name, session };
       }
 
       void inspectCheckout().catch((error: unknown) => {
@@ -577,7 +469,7 @@ export default definePlugin({
   pipe: (message) => {
     view.pipe(message);
   },
-  // oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep confirmation visibility and its deletion guard together with the rendered controls.
+  // oxlint-disable-next-line eslint/max-lines-per-function -- Keep confirmation visibility and its deletion guard together with the rendered controls.
   render(rows, cols) {
     const destructive = checkout ? "Delete: Delete worktree & branch and close pane" : "";
     if (workflow && !workflowHidden())
@@ -608,7 +500,6 @@ export default definePlugin({
         `Worktree: ${checkout.path}`,
         `Branch: ${checkout.branch ?? "detached HEAD (checkout only)"}`,
         `Revision: ${checkout.head}`,
-        ...(firecracker ? [`VM: ${firecracker.name}`] : []),
         "This cancels the workflow.",
         "Deletion requires a clean worktree and commits merged into the local base branch or its freshly fetched origin branch.",
         "Delete again: confirm deletion. Esc: cancel.",

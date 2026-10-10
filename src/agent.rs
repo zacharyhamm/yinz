@@ -99,18 +99,16 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
     let explicit = explicit.map(|session| session.into_string());
     let session = match explicit {
         Some(session) => session,
-        None => crate::commands::resolve_firecracker_session(
-            None,
-            None,
-            yinz_cli::sessions::get_active_session(),
-        )
-        .map_err(|error| {
-            if yinz_cli::sessions::sessions_denied() {
-                anyhow!(yinz_cli::sessions::no_active_session_message())
-            } else {
-                error
-            }
-        })?,
+        None => {
+            crate::commands::resolve_session(None, None, yinz_cli::sessions::get_active_session())
+                .map_err(|error| {
+                if yinz_cli::sessions::sessions_denied() {
+                    anyhow!(yinz_cli::sessions::no_active_session_message())
+                } else {
+                    error
+                }
+            })?
+        },
     };
     yinz_session::sessions::validate_session_name(&session).map_err(|error| anyhow!(error))?;
     let action = match &command {
@@ -177,8 +175,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             file,
             project,
             remote_host,
-            firecracker,
-            firecracker_image,
+
             worktree,
             cwd,
             branch,
@@ -215,7 +212,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                 bail!("spawn does not accept prompt or reuse_prompt; spawn, wait, then prompt");
             }
             let overrides = serde_json::json!({"kind":kind,"project":project,"remote_host":remote_host,
-                "firecracker":firecracker,"firecracker_image":firecracker_image,"worktree":worktree,
+                "worktree":worktree,
                 "cwd":cwd,"branch":branch,"base":base,"worktree_dir":worktree_dir,"model":model,
                 "effort":effort,"permission_mode":permission_mode,"resume":resume});
             fields.extend(
@@ -245,13 +242,17 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                     fields.insert("new_tab".into(), name.map_or(true.into(), Into::into));
                 }
             }
+            let mut spec_fields = fields.clone();
+            for field in ["tab", "new_tab", "project", "remote_host", "cwd"] {
+                spec_fields.remove(field);
+            }
             let placement = yinz_types::agent::control::AgentPlacement::from_launch_fields(
                 &input["tab"],
                 &input["new_tab"],
             )
             .map_err(|error| anyhow!(error))?;
             let mut spec: AgentSpawnSpec =
-                serde_json::from_value(input.clone()).context("parse launch options")?;
+                serde_json::from_value(spec_fields.into()).context("parse launch options")?;
             if allow_yinz {
                 allow_sandboxed_yinz(&mut spec)?;
             }
@@ -264,16 +265,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             if remote_host.is_none() {
                 if let Some(path) = cwd {
                     cwd = Some(std::path::absolute(path).context("resolve cwd")?);
-                } else if project.is_none()
-                    && (spec
-                        .firecracker
-                        .as_deref()
-                        .is_none_or(|vm| vm.trim().is_empty())
-                        || spec
-                            .branch
-                            .as_deref()
-                            .is_some_and(|branch| !branch.trim().is_empty()))
-                {
+                } else if project.is_none() {
                     cwd = Some(std::env::current_dir().context("read cwd")?);
                 }
             }
@@ -281,7 +273,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             (
                 AgentRequest::Spawn {
                     placement,
-                    automatic_firecracker_vm: false,
+
                     spec,
                     cwd,
                     project,

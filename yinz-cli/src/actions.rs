@@ -422,9 +422,7 @@ pub fn actions_from_cli(
             direction,
             command,
             remote_host,
-            firecracker,
-            firecracker_image,
-            firecracker_worktree,
+
             plugin,
             cwd,
             floating,
@@ -456,15 +454,11 @@ pub fn actions_from_cli(
             tab_id,
         } => {
             let configuration = select_configuration(configuration, configuration_json)?;
-            // The same rules a layout's `firecracker_*` properties are held to,
-            // checked here for the same reason: a CLI error names the flag, a
-            // spawn error is a banner in a pane that already exists.
-            let target = yinz_types::command::PaneTarget::from_parts(
-                remote_host.as_deref(),
-                firecracker.as_deref(),
-                firecracker_image.as_deref(),
-                firecracker_worktree.as_deref(),
-            )?;
+            let target = remote_host
+                .as_deref()
+                .map(yinz_types::command::PaneTarget::ssh)
+                .transpose()?
+                .unwrap_or_default();
             let pane_id_to_replace = match pane_id {
                     Some(pane_id_str) => match PaneId::from_str(&pane_id_str) {
                         Ok(parsed_pane_id) => Some(parsed_pane_id),
@@ -1822,7 +1816,7 @@ fn select_configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use yinz_types::data::KeyModifier;
     use yinz_types::data::{BareKey, InputMode};
     use yinz_types::geometry::{Direction, Resize};
@@ -2761,9 +2755,7 @@ mod tests {
     fn remote_new_pane(command: Vec<String>, cwd: Option<PathBuf>) -> CliAction {
         CliAction::NewPane {
             remote_host: Some("build-box".to_owned()),
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: None,
             command,
             plugin: None,
@@ -2796,20 +2788,6 @@ mod tests {
             borderless: None,
             tab_id: None,
         }
-    }
-
-    fn firecracker_new_pane(command: Vec<String>, cwd: Option<PathBuf>) -> CliAction {
-        let mut action = remote_new_pane(command, cwd);
-        if let CliAction::NewPane {
-            remote_host,
-            firecracker,
-            ..
-        } = &mut action
-        {
-            *remote_host = None;
-            *firecracker = Some("review.vm-1".to_owned());
-        }
-        action
     }
 
     fn tiled_run_command(cli_action: CliAction) -> RunCommandAction {
@@ -2863,121 +2841,6 @@ mod tests {
         assert_eq!(with_command.command, PathBuf::from("htop"));
     }
 
-    #[test]
-    fn a_firecracker_pane_preserves_its_vm_name_command_and_guest_cwd() {
-        let shell = tiled_run_command(firecracker_new_pane(vec![], None));
-        assert!(shell.remote_default_shell);
-        assert_eq!(shell.target.firecracker_vm(), Some("review.vm-1"));
-        assert_eq!(shell.target.ssh_host(), None);
-
-        let command = tiled_run_command(firecracker_new_pane(
-            vec!["pwd".to_owned()],
-            Some(PathBuf::from("workspace/repo")),
-        ));
-        assert_eq!(command.command, PathBuf::from("pwd"));
-        assert_eq!(command.cwd, Some(PathBuf::from("workspace/repo")));
-        assert_eq!(command.target.firecracker_vm(), Some("review.vm-1"));
-    }
-
-    #[test]
-    fn an_invalid_firecracker_vm_name_is_rejected() {
-        let mut action = firecracker_new_pane(vec![], None);
-        if let CliAction::NewPane { firecracker, .. } = &mut action {
-            *firecracker = Some("bad/name".to_owned());
-        }
-        let error =
-            crate::actions::actions_from_cli(action, Box::new(|| PathBuf::from("/tmp")), None)
-                .unwrap_err();
-        assert!(error.contains("letters, digits"));
-    }
-
-    /// Give a `firecracker_new_pane` action an image and a worktree, the way the two new
-    /// flags do.
-    fn with_image_and_worktree(
-        mut action: CliAction,
-        image: Option<&str>,
-        worktree: Option<&str>,
-    ) -> CliAction {
-        if let CliAction::NewPane {
-            firecracker_image,
-            firecracker_worktree,
-            ..
-        } = &mut action
-        {
-            *firecracker_image = image.map(ToOwned::to_owned);
-            *firecracker_worktree = worktree.map(PathBuf::from);
-        }
-        action
-    }
-
-    #[test]
-    fn a_firecracker_pane_carries_its_image_and_worktree() {
-        let shell = tiled_run_command(with_image_and_worktree(
-            firecracker_new_pane(vec![], None),
-            Some("rust-dev"),
-            Some("/home/me/src/project"),
-        ));
-        assert!(shell.remote_default_shell);
-        assert_eq!(shell.target.firecracker_image(), Some("rust-dev"));
-        assert_eq!(
-            shell.target.firecracker_worktree(),
-            Some(Path::new("/home/me/src/project"))
-        );
-
-        let command = tiled_run_command(with_image_and_worktree(
-            firecracker_new_pane(vec!["pwd".to_owned()], None),
-            Some("rust-dev"),
-            Some("/home/me/src/project"),
-        ));
-        assert_eq!(command.command, PathBuf::from("pwd"));
-        assert_eq!(command.target.firecracker_image(), Some("rust-dev"));
-        assert_eq!(
-            command.target.firecracker_worktree(),
-            Some(Path::new("/home/me/src/project"))
-        );
-    }
-
-    #[test]
-    fn a_firecracker_image_without_a_vm_is_rejected() {
-        let mut action = firecracker_new_pane(vec![], None);
-        if let CliAction::NewPane {
-            firecracker,
-            firecracker_image,
-            ..
-        } = &mut action
-        {
-            *firecracker = None;
-            *firecracker_image = Some("rust-dev".to_owned());
-        }
-        let error =
-            crate::actions::actions_from_cli(action, Box::new(|| PathBuf::from("/tmp")), None)
-                .expect_err("an image needs a vm");
-        assert!(error.contains("needs a firecracker_vm"), "{error}");
-    }
-
-    #[test]
-    fn an_invalid_firecracker_image_or_worktree_is_rejected() {
-        let bad_image =
-            with_image_and_worktree(firecracker_new_pane(vec![], None), Some("bad/image"), None);
-        let error =
-            crate::actions::actions_from_cli(bad_image, Box::new(|| PathBuf::from("/tmp")), None)
-                .unwrap_err();
-        assert!(error.contains("letters, digits"), "{error}");
-
-        let relative_worktree = with_image_and_worktree(
-            firecracker_new_pane(vec![], None),
-            None,
-            Some("src/project"),
-        );
-        let error = crate::actions::actions_from_cli(
-            relative_worktree,
-            Box::new(|| PathBuf::from("/tmp")),
-            None,
-        )
-        .unwrap_err();
-        assert!(error.contains("absolute path"), "{error}");
-    }
-
     /// Without a host, no command still means no command — the local pane keeps
     /// getting its shell from the server, not from an empty `RunCommandAction`.
     #[test]
@@ -3001,9 +2864,7 @@ mod tests {
     fn test_new_pane_tiled_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: Some(Direction::Right),
             command: vec![],
             plugin: None,
@@ -3053,9 +2914,7 @@ mod tests {
     fn test_new_pane_tiled_without_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: None,
             command: vec![],
             plugin: None,
@@ -3105,9 +2964,7 @@ mod tests {
     fn test_new_in_place_pane_with_pane_id_to_replace() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: None,
             command: vec![],
             plugin: None,
@@ -3164,9 +3021,7 @@ mod tests {
     fn test_new_in_place_pane_with_malformed_pane_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: None,
             command: vec![],
             plugin: None,
@@ -3209,9 +3064,7 @@ mod tests {
     fn test_new_pane_floating_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: None,
             command: vec![],
             plugin: None,
@@ -3261,9 +3114,7 @@ mod tests {
     fn test_new_pane_stacked_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: None,
             command: vec!["ls".into()],
             plugin: None,
@@ -3688,9 +3539,7 @@ mod tests {
         let build = |success: bool, failure: bool, any: bool, direct: Option<UnblockCondition>| {
             let cli_action = CliAction::NewPane {
                 remote_host: None,
-                firecracker: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+
                 direction: None,
                 command: vec!["ls".into()],
                 plugin: None,
@@ -3759,9 +3608,7 @@ mod tests {
     fn test_new_pane_blocking_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: None,
             command: vec!["ls".into()],
             plugin: None,
@@ -3881,9 +3728,7 @@ mod tests {
     fn test_new_pane_plugin_tiled_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: None,
             command: vec![],
             plugin: Some("yinz:strider".into()),
@@ -3933,9 +3778,7 @@ mod tests {
     fn test_new_pane_plugin_floating_with_tab_id() {
         let cli_action = CliAction::NewPane {
             remote_host: None,
-            firecracker: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
+
             direction: None,
             command: vec![],
             plugin: Some("yinz:strider".into()),

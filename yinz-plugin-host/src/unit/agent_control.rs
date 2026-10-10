@@ -196,306 +196,6 @@ fn project_event_membership_recovers_after_failed_probes_with_identical_inputs()
 }
 
 #[test]
-fn project_filter_respects_host_session_assignment_and_remote_paths() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    git(&root, &["init", "-b", "main"]);
-    let data = DataAccess::sqlite(temp.path());
-    let store = data.plugin_data();
-    for def in project_data::store::shared_defs() {
-        store
-            .define_entity(project_data::store::SHARED, "test", &def, false)
-            .unwrap();
-    }
-    let mut project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
-    project.remote = Some("git@example.com:team/repo.git".into());
-    let id = store
-        .apply(
-            project_data::store::SHARED,
-            &[project_data::projects::to_mutation(&project)],
-        )
-        .unwrap()
-        .report
-        .ids[0];
-    let status = agent_status(&root);
-    let listed = |status: AgentStatus| {
-        let mut response = AgentResponse::new(AgentOutcome::Ok);
-        response.agents.push(status);
-        filter_project(&mut response, "work", &data, |_, _| {
-            yinz_types::data::GetPaneGitProbeResponse::Pending
-        })
-        .unwrap();
-        !response.agents.is_empty()
-    };
-    assert!(listed(status.clone()));
-    assert!(!listed(AgentStatus {
-        target: PaneTarget::ssh("other-host").unwrap(),
-        ..status.clone()
-    }));
-    assert!(listed(AgentStatus {
-        target: PaneTarget::firecracker("vm", None, Some(&root)).unwrap(),
-        cwd: Some("/workspace".into()),
-        ..status.clone()
-    }));
-    let remote = AgentStatus {
-        target: PaneTarget::ssh("server").unwrap(),
-        cwd: Some("/work/src".into()),
-        ..status.clone()
-    };
-    let probe = yinz_types::data::PaneGitProbe {
-        host: "server".into(),
-        cwd: "/work/src".into(),
-        exit_code: Some(0),
-        metadata: b"/work\n/work/.git\n/work/.git\nmain\n".to_vec(),
-        config: b"remote.origin.url\nhttps://example.com/team/repo\0".to_vec(),
-    };
-    use yinz_types::data::GetPaneGitProbeResponse as Probe;
-    let remote_listed = |probe: Probe| {
-        let mut response = AgentResponse::new(AgentOutcome::Ok);
-        response.agents.push(remote.clone());
-        let pending = filter_project(&mut response, "work", &data, |pane, cwd| {
-            assert_eq!(pane, remote.pane_id);
-            assert_eq!(cwd, "/work/src");
-            probe.clone()
-        })
-        .unwrap();
-        (!response.agents.is_empty(), pending)
-    };
-    assert_eq!(remote_listed(Probe::Ok(probe.clone())), (true, false));
-    assert_eq!(remote_listed(Probe::Pending), (false, true));
-    assert_eq!(
-        remote_listed(Probe::Err("unavailable".into())),
-        (false, true)
-    );
-    for unavailable in [
-        Probe::Ok(yinz_types::data::PaneGitProbe {
-            host: "stale".into(),
-            ..probe.clone()
-        }),
-        Probe::Ok(yinz_types::data::PaneGitProbe {
-            cwd: "/old".into(),
-            ..probe.clone()
-        }),
-        Probe::Ok(yinz_types::data::PaneGitProbe {
-            metadata: vec![],
-            ..probe.clone()
-        }),
-        Probe::Ok(yinz_types::data::PaneGitProbe {
-            exit_code: None,
-            metadata: vec![],
-            ..probe.clone()
-        }),
-        Probe::Ok(yinz_types::data::PaneGitProbe {
-            config: vec![],
-            ..probe.clone()
-        }),
-        Probe::Ok(yinz_types::data::PaneGitProbe {
-            config: b"remote.origin.url\nhttps://example.com/team/other\0".to_vec(),
-            ..probe.clone()
-        }),
-    ] {
-        assert_eq!(remote_listed(unavailable), (false, false));
-    }
-    // An explicit assignment wins in both directions and never needs a probe.
-    for (project_id, expected) in [(id.get() + 1, false), (id.get(), true)] {
-        store
-            .apply(
-                project_data::store::SHARED,
-                &[Mutation::put("agent_assignment")
-                    .uid("remote-override")
-                    .set("host_id", "host")
-                    .set("yinz_session_name", "session")
-                    .set("tab_id", 3i64)
-                    .set("project", "assigned")
-                    .set("project_id", project_id)
-                    .build()],
-            )
-            .unwrap();
-        let mut response = AgentResponse::new(AgentOutcome::Ok);
-        response.agents.push(remote.clone());
-        let pending = filter_project(&mut response, "work", &data, |_, _| {
-            panic!("explicit assignment wins")
-        })
-        .unwrap();
-        assert!(!pending);
-        assert_eq!(!response.agents.is_empty(), expected);
-    }
-    store
-        .apply(
-            project_data::store::SHARED,
-            &[Mutation::delete(
-                "agent_assignment",
-                yinz_types::plugin_data::Pred::eq("uid", "remote-override"),
-            )],
-        )
-        .unwrap();
-    let outside = AgentStatus {
-        cwd: Some("/other".into()),
-        ..status
-    };
-    for (host, session, expected) in [
-        ("other", "session", false),
-        ("host", "other", false),
-        ("host", "session", true),
-    ] {
-        store
-            .apply(
-                project_data::store::SHARED,
-                &[Mutation::put("agent_assignment")
-                    .uid(format!("{host}/{session}"))
-                    .set("host_id", host)
-                    .set("yinz_session_name", session)
-                    .set("tab_id", 3i64)
-                    .set("project", "work")
-                    .set("project_id", id.get())
-                    .build()],
-            )
-            .unwrap();
-        assert_eq!(listed(outside.clone()), expected);
-    }
-}
-
-#[test]
-fn project_launch_defaults_and_firecracker_placement_are_shared() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    for args in [
-        vec!["init", "-b", "main"],
-        vec![
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "initial",
-        ],
-    ] {
-        assert!(process::Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(args)
-            .output()
-            .unwrap()
-            .status
-            .success());
-    }
-    let data = DataAccess::sqlite(&root.join("data"));
-    let store = data.plugin_data();
-    for def in project_data::store::shared_defs() {
-        store
-            .define_entity(project_data::store::SHARED, "test", &def, false)
-            .unwrap();
-    }
-    let mut project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
-    project.worktree_dir = Some("custom-trees".into());
-    project.firecracker_image = Some("rust".into());
-    store
-        .apply(
-            project_data::store::SHARED,
-            &[project_data::projects::to_mutation(&project)],
-        )
-        .unwrap();
-    for (reuse, branch) in [(false, "topic"), (false, "topic-2"), (true, "topic")] {
-        let mut spec = AgentSpawnSpec {
-            kind: Some("codex".into()),
-            branch: Some("topic".into()),
-            reuse: Some(reuse),
-            ..Default::default()
-        };
-        let prepared =
-            prepare_automation_agent(&mut spec, None, Some("work".into()), None, false, &data)
-                .unwrap();
-        assert_eq!(prepared.cwd, root.join("custom-trees").join(branch));
-        assert_eq!(prepared.branch.as_deref(), Some(branch));
-    }
-    let mut spec = AgentSpawnSpec {
-        kind: Some("codex".into()),
-        firecracker: Some("vm".into()),
-        allow_outside_worktree: Some(true),
-        ..Default::default()
-    };
-    let prepared =
-        prepare_automation_agent(&mut spec, None, Some("work".into()), None, false, &data).unwrap();
-    assert!(
-        matches!(prepared.command.target, PaneTarget::Firecracker { vm, image: Some(image), worktree: Some(path) } if vm == "vm" && image == "rust" && path == root)
-    );
-    assert!(prepare_automation_agent(
-        &mut spec,
-        Some("/elsewhere".into()),
-        Some("work".into()),
-        None,
-        false,
-        &data
-    )
-    .is_err());
-}
-
-#[test]
-fn branch_vm_names_are_explicit_unless_automatic() {
-    let temp = tempfile::tempdir().unwrap();
-    for args in [
-        vec!["init", "-b", "main"],
-        vec![
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "initial",
-        ],
-    ] {
-        assert!(process::Command::new("git")
-            .arg("-C")
-            .arg(temp.path())
-            .args(args)
-            .output()
-            .unwrap()
-            .status
-            .success());
-    }
-    let root = temp.path().canonicalize().unwrap();
-    let data = DataAccess::sqlite(&root.join("data"));
-    for (automatic, branch) in [(false, "topic"), (true, "topic-2")] {
-        let mut spec = AgentSpawnSpec {
-            kind: Some("codex".into()),
-            branch: Some("topic".into()),
-            firecracker: Some("review".into()),
-            ..Default::default()
-        };
-        let prepared =
-            prepare_automation_agent(&mut spec, Some(root.clone()), None, None, automatic, &data)
-                .unwrap();
-        let folder = root.join(".worktrees").join(branch);
-        assert_eq!(prepared.cwd, folder);
-        let PaneTarget::Firecracker { vm, worktree, .. } = prepared.command.target else {
-            panic!("VM");
-        };
-        assert_eq!(worktree, Some(folder.clone()));
-        assert_eq!(
-            vm,
-            if automatic {
-                crate::firecracker::worktree_vm_name(&folder)
-            } else {
-                "review".into()
-            }
-        );
-    }
-    let mut spec = AgentSpawnSpec {
-        kind: Some("codex".into()),
-        firecracker: Some("standalone".into()),
-        ..Default::default()
-    };
-    let prepared = prepare_automation_agent(&mut spec, None, None, None, true, &data).unwrap();
-    assert!(
-        matches!(prepared.command.target, PaneTarget::Firecracker { vm, worktree: None, .. } if vm == "standalone")
-    );
-}
-
-#[test]
 fn project_containment_uses_canonical_paths() {
     let temp = tempfile::tempdir().unwrap();
     let base = temp.path().canonicalize().unwrap();
@@ -526,15 +226,9 @@ fn project_containment_uses_canonical_paths() {
                 allow_outside_worktree: Some(true),
                 ..Default::default()
             };
-            let prepared = prepare_automation_agent(
-                &mut spec,
-                Some(cwd),
-                Some("work".into()),
-                None,
-                false,
-                &data,
-            )
-            .unwrap();
+            let prepared =
+                prepare_automation_agent(&mut spec, Some(cwd), Some("work".into()), None, &data)
+                    .unwrap();
             assert_eq!(prepared.cwd, root.join("src"));
         }
         for (cwd, error) in [
@@ -547,14 +241,8 @@ fn project_containment_uses_canonical_paths() {
                 allow_outside_worktree: Some(true),
                 ..Default::default()
             };
-            let result = prepare_automation_agent(
-                &mut spec,
-                Some(cwd),
-                Some("work".into()),
-                None,
-                false,
-                &data,
-            );
+            let result =
+                prepare_automation_agent(&mut spec, Some(cwd), Some("work".into()), None, &data);
             assert!(result.err().unwrap().to_string().contains(error));
         }
     }
@@ -725,17 +413,11 @@ fn spawn_guidance_lists_recognized_kinds_before_any_checkout_work() {
             branch: Some("must-not-exist".into()),
             ..Default::default()
         };
-        let error = prepare_automation_agent(
-            &mut spec,
-            Some(directory.path().into()),
-            None,
-            None,
-            false,
-            &data,
-        )
-        .err()
-        .unwrap()
-        .to_string();
+        let error =
+            prepare_automation_agent(&mut spec, Some(directory.path().into()), None, None, &data)
+                .err()
+                .unwrap()
+                .to_string();
         for kind in yinz_types::agent::KINDS {
             assert!(error.contains(kind), "{error}");
         }
@@ -762,7 +444,6 @@ fn spawn_guidance_lists_recognized_kinds_before_any_checkout_work() {
             Some(directory.path().into()),
             None,
             None,
-            false,
             &data
         )
         .is_ok());
@@ -787,7 +468,7 @@ fn spawn_reports_renamed_and_reused_worktrees_and_keeps_them_out_of_git_status()
             reuse: reuse.then_some(true),
             ..Default::default()
         };
-        prepare_automation_agent(&mut spec, Some(root.clone()), None, None, false, &data).unwrap()
+        prepare_automation_agent(&mut spec, Some(root.clone()), None, None, &data).unwrap()
     };
 
     let first = spawn(false);
@@ -839,7 +520,6 @@ fn a_nested_worktree_dir_excludes_only_the_worktree() {
         Some(root.clone()),
         None,
         None,
-        false,
         &DataAccess::sqlite(&base.join("data")),
     )
     .unwrap();
@@ -880,7 +560,6 @@ fn a_worktree_ignored_by_the_project_adds_no_exclude_entry() {
         Some(root.clone()),
         None,
         None,
-        false,
         &DataAccess::sqlite(&base.join("data")),
     )
     .unwrap();
@@ -961,15 +640,10 @@ fn spawn_notes_explain_renames_and_stay_quiet_otherwise() {
 fn bubblewrap_rejects_remote_targets_before_checkout_changes() {
     let temp = tempfile::tempdir().unwrap();
     let data = DataAccess::sqlite(temp.path());
-    for (remote, vm, automatic) in [
-        (Some("host"), None, false),
-        (None, Some("vm"), false),
-        (None, None, true),
-    ] {
+    for remote in [Some("host")] {
         let mut spec = AgentSpawnSpec {
             kind: Some("codex".into()),
             bubblewrap: true,
-            firecracker: vm.map(Into::into),
             allow_outside_worktree: Some(true),
             ..Default::default()
         };
@@ -978,7 +652,6 @@ fn bubblewrap_rejects_remote_targets_before_checkout_changes() {
             Some(temp.path().into()),
             None,
             remote.map(Into::into),
-            automatic,
             &data,
         );
         assert!(result

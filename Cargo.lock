@@ -630,7 +630,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "serde",
  "wasm-bindgen",
  "windows-targets 0.52.6",
 ]
@@ -4442,21 +4441,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
 
 [[package]]
-name = "swamp-issues"
-version = "0.1.0"
-dependencies = [
- "agent-proto",
- "chrono",
- "isahc",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "unicode-width 0.2.2",
- "yinz-tile",
-]
-
-[[package]]
 name = "swamp-lab"
 version = "0.1.0"
 dependencies = [
@@ -5486,17 +5470,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 
 [[package]]
-name = "vms"
-version = "0.1.0"
-dependencies = [
- "agent-proto",
- "chrono",
- "serde_json",
- "unicode-width 0.2.2",
- "yinz-tile",
-]
-
-[[package]]
 name = "vsimd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6353,7 +6326,6 @@ dependencies = [
  "yinz-client",
  "yinz-codex",
  "yinz-config",
- "yinz-firecracker-provider",
  "yinz-ipc",
  "yinz-muse",
  "yinz-plugin-api",
@@ -6518,23 +6490,6 @@ version = "0.1.0"
 dependencies = [
  "include_dir",
  "yinz-runtime",
-]
-
-[[package]]
-name = "yinz-firecracker-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "highway",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "yinz-config",
- "yinz-process",
- "yinz-runtime",
- "yinz-session",
- "yinz-types",
 ]
 
 [[package]]

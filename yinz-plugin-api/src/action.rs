@@ -2432,12 +2432,7 @@ impl TryFrom<ProtobufRunCommandAction> for RunCommandAction {
         let hold_on_start = protobuf_run_command_action.hold_on_start;
         let target = crate::command::pane_target_from_wire(
             protobuf_run_command_action.target,
-            crate::command::FlatPaneTarget {
-                remote_host: None,
-                firecracker_vm: protobuf_run_command_action.firecracker_vm,
-                firecracker_image: protobuf_run_command_action.firecracker_image,
-                firecracker_worktree: protobuf_run_command_action.firecracker_worktree,
-            },
+            crate::command::FlatPaneTarget { remote_host: None },
         )?;
         Ok(RunCommandAction {
             command,
@@ -2464,7 +2459,6 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
         });
         let hold_on_close = run_command_action.hold_on_close;
         let hold_on_start = run_command_action.hold_on_start;
-        let flat = crate::command::FlatPaneTarget::from(&run_command_action.target);
         let target = Some(crate::command::ProtobufPaneTarget::from(
             &run_command_action.target,
         ));
@@ -2476,9 +2470,7 @@ impl TryFrom<RunCommandAction> for ProtobufRunCommandAction {
             hold_on_close,
             hold_on_start,
             pane_name: None,
-            firecracker_vm: flat.firecracker_vm,
-            firecracker_image: flat.firecracker_image,
-            firecracker_worktree: flat.firecracker_worktree,
+
             target,
         })
     }

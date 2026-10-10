@@ -326,7 +326,7 @@ export interface CommandArgs {
   ReplaceMultipaneChild: ReplaceMultipaneChild;
   ChangeOverlayCoordinates: {placements: [PaneId, FloatingPaneCoordinates][]; override_user_placement: boolean};
   TogglePaneBorderless: PaneId; SetPaneBorderless: [PaneId, boolean];
-  OpenCommandPaneNearPlugin: [CommandToRun, StringMap]; OpenCommandPaneInGitCheckoutNearPlugin: [CommandToRun, string, GitCheckout, boolean?];
+  OpenCommandPaneNearPlugin: [CommandToRun, StringMap]; OpenCommandPaneInGitCheckoutNearPlugin: [CommandToRun, string, GitCheckout];
   OpenTerminalNearPlugin: FileToOpen; OpenTerminalFloatingNearPlugin: [FileToOpen, FloatingPaneCoordinates | null];
   OpenTerminalInPlaceOfPlugin: [FileToOpen, boolean]; OpenCommandPaneFloatingNearPlugin: [CommandToRun, FloatingPaneCoordinates | null, StringMap];
   OpenCommandPaneInPlaceOfPlugin: [CommandToRun, boolean, StringMap]; OpenFileNearPlugin: [FileToOpen, StringMap];
@@ -364,7 +364,7 @@ export interface CommandArgs {
   FinishQueueJob: {success: boolean; payload: string | null};
   SetPaneAgent: {pane_id: PaneId; agent: AgentInfo | null}; SetPaneAgentRun: {pane_id: PaneId; run_id: string | null};
   ProjectConfigRead: {directory: string}; ProjectConfigWrite: {directory: string; source: string; expected: string | null};
-  SpawnAgent: {spec: AgentSpawnSpec; source_directory?: string | null; cwd?: string | null; name?: string | null; context?: StringMap; automatic_firecracker_vm?: boolean; start_suppressed?: boolean};
+  SpawnAgent: {spec: AgentSpawnSpec; source_directory?: string | null; cwd?: string | null; name?: string | null; context?: StringMap; start_suppressed?: boolean};
   SetQuitNotice: {notice: string | null; guard: boolean}; ReloadPluginByUrl: string;
   ReadPluginLog: {name: string; lines: Integer}; GetLocalUtcOffset: {epoch_ms: Integer};
 }
@@ -477,8 +477,8 @@ export type PercentOrFixed = {Percent: Integer} | {Fixed: Integer};
 export interface FloatingPaneCoordinates {x: PercentOrFixed | null; y: PercentOrFixed | null; width: PercentOrFixed | null; height: PercentOrFixed | null; pinned: boolean | null; borderless: boolean | null;}
 export interface OverlayPlacement {kind: 'Dismissible' | 'Modal'; coordinates?: FloatingPaneCoordinates | null; /** Below 100 opts into global background_opacity; the percentage does not override it. 100 or omitted means opaque. */ background_opacity?: number | null;}
 export interface ResizeStrategy {resize: Resize; direction: Direction | null; invert_on_boundaries: boolean;}
-export type PaneTarget = 'Local' | {Ssh: {host: string}} | {Firecracker: {vm: string; image: string | null; worktree: string | null}} | {Bubblewrap: {root: string}};
-export interface CommandToRun {path?: string; args?: string[]; cwd?: string | null; target?: PaneTarget | null; remote_host?: string | null; firecracker_vm?: string | null; firecracker_image?: string | null; firecracker_worktree?: string | null; remote_default_shell?: boolean;}
+export type PaneTarget = 'Local' | {Ssh: {host: string}} | {Bubblewrap: {root: string}};
+export interface CommandToRun {path?: string; args?: string[]; cwd?: string | null; target?: PaneTarget | null; remote_host?: string | null; remote_default_shell?: boolean;}
 export interface FileToOpen {path?: string; line_number?: Integer | null; cwd?: string | null;}
 export interface PluginMessage {name?: string; payload?: string; worker_name?: string | null;}
 export interface NotifyClick {message: string; payload: string;}
@@ -596,7 +596,7 @@ export interface AgentSpawnSpec {
   bubblewrap?: boolean;
   kind?: string | null; command?: string | null; args?: string[]; model?: string | null; effort?: string | null; prompt?: string | null;
   branch?: string | null; base?: string | null; worktree?: boolean | null; worktree_dir?: string | null; env?: StringMap; permission_mode?: string | null;
-  resume?: string | null; hooks?: boolean | null; firecracker?: string | null; firecracker_image?: string | null; reuse?: boolean | null; reuse_prompt?: string | null; allow_outside_worktree?: boolean | null;
+  resume?: string | null; hooks?: boolean | null; reuse?: boolean | null; reuse_prompt?: string | null; allow_outside_worktree?: boolean | null;
 }
 export interface SpawnedAgent {pane_id: PaneId; branch: string | null; cwd: string | null;}
 export interface AgentEvent {pane_id: number; kind: string; hook: string; session_id: string | null; state: AgentState | null; detail: string | null; prompt: string | null; last_message: string | null; tool_name: string | null; cwd: string | null; raw: string;}
@@ -940,7 +940,7 @@ export type AgentPane = number | {Terminal: number};
 export type AgentStateFilter = AgentState | Lowercase<AgentState>;
 export interface AgentSpawnOptions extends AgentSpawnSpec {
   sourceDirectory?: string; cwd?: string; name?: string; context?: StringMap;
-  automaticFirecrackerVm?: boolean; startSuppressed?: boolean;
+  startSuppressed?: boolean;
 }
 export interface AgentTurnOptions {fallback?: 'idle';}
 export interface AgentTurn {message: string | null; hook: string | null; state: AgentState | null; sessionId: string | null;}
@@ -963,7 +963,7 @@ export interface AgentHookArtifact {base?: "config" | "home"; path: string; cont
 export type AgentRequest =
   | {List: {project?: string | null}}
   | {Status: {pane_id: PaneId; expected_session_id?: string | null}}
-  | {Spawn: {spec: AgentSpawnSpec; cwd?: string | null; project?: string | null; remote_host?: string | null; automatic_firecracker_vm?: boolean}}
+  | {Spawn: {spec: AgentSpawnSpec; cwd?: string | null; project?: string | null; remote_host?: string | null}}
   | {Prompt: {pane_id: PaneId; expected_session_id?: string | null; prompt: string; wait: boolean; timeout_ms: number}}
   | {Wait: {pane_id: PaneId; expected_session_id?: string | null; until: AgentState; timeout_ms: number}}
   | {Read: {pane_id: PaneId; expected_session_id?: string | null; lines: number}}

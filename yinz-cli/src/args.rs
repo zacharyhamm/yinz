@@ -481,10 +481,6 @@ pub enum Command {
     #[clap(subcommand)]
     Hooks(Hooks),
 
-    /// Manage session-scoped Firecracker VMs.
-    #[clap(subcommand)]
-    Firecracker(Firecracker),
-
     /// Inspect and clean up detached pane supervisors. Panes outlive a server
     /// that was killed rather than shut down, and this is how you find them.
     #[cfg(unix)]
@@ -663,14 +659,8 @@ pub enum Agent {
         #[clap(long)]
         project: Option<String>,
         /// Run over SSH in an existing absolute --cwd; requires --allow-outside-worktree.
-        #[clap(long, conflicts_with = "firecracker")]
+        #[clap(long)]
         remote_host: Option<String>,
-        /// Run in a named session Firecracker VM; a branch supplies a host worktree.
-        #[clap(long)]
-        firecracker: Option<String>,
-        /// Select the immutable image for --firecracker.
-        #[clap(long)]
-        firecracker_image: Option<String>,
         /// Put --branch in a separate worktree (default: true); false switches the checkout.
         #[clap(long)]
         worktree: Option<bool>,
@@ -901,69 +891,6 @@ pub enum WorkflowServer {
     Status,
     Restart,
     Stop,
-}
-
-fn parse_vm_identity(value: &str) -> Result<yinz_types::firecracker::Identity, serde_json::Error> {
-    serde_json::from_str(value)
-}
-
-#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
-pub enum Firecracker {
-    /// List VMs known to the configured provider.
-    List {
-        #[clap(long)]
-        session: Option<String>,
-        #[clap(long)]
-        json: bool,
-    },
-    /// Close matching panes in the owning session, then release its VM lease.
-    Close {
-        name: String,
-        #[clap(long)]
-        session: Option<String>,
-        /// JSON identity from the confirmed VM listing.
-        #[clap(long, value_parser = parse_vm_identity)]
-        #[serde(default)]
-        expected_identity: Option<yinz_types::firecracker::Identity>,
-        /// Absolute secondary checkout path confirmed by the caller.
-        #[clap(long, requires_all = ["expected_identity", "expected_head"])]
-        #[serde(default)]
-        expected_worktree: Option<PathBuf>,
-        /// HEAD confirmed with the checkout path.
-        #[clap(long, requires = "expected_worktree")]
-        #[serde(default)]
-        expected_head: Option<String>,
-        /// Branch confirmed with the checkout path; omit for a detached checkout.
-        #[clap(long, requires = "expected_worktree")]
-        #[serde(default)]
-        expected_branch: Option<String>,
-    },
-    /// Stop one VM.
-    Stop {
-        name: String,
-        #[clap(long)]
-        session: Option<String>,
-    },
-    /// Merge a running VM's guest changes into its host worktree; host copies win conflicts.
-    Sync {
-        name: String,
-        #[clap(long)]
-        session: Option<String>,
-        /// JSON identity from the confirmed VM listing.
-        #[clap(long, value_parser = parse_vm_identity)]
-        #[serde(default)]
-        expected_identity: Option<yinz_types::firecracker::Identity>,
-    },
-    /// Count paths changed in a running VM since its last worktree sync.
-    Changes {
-        name: String,
-        #[clap(long)]
-        session: Option<String>,
-        /// JSON identity from the confirmed VM listing.
-        #[clap(long, value_parser = parse_vm_identity)]
-        #[serde(default)]
-        expected_identity: Option<yinz_types::firecracker::Identity>,
-    },
 }
 
 #[derive(Debug, Parser, Clone, Serialize, Deserialize)]
@@ -1739,19 +1666,8 @@ pub enum CliAction {
         /// (a host, an alias from your ssh config, or user@host). Needs a yinz
         /// of the same version on its PATH there. With no command, opens that
         /// machine's default login shell, like a plain ssh would.
-        #[clap(long, value_parser, conflicts_with_all(["plugin", "firecracker"]))]
+        #[clap(long, value_parser, conflicts_with("plugin"))]
         remote_host: Option<String>,
-        /// Run the pane in a named Firecracker VM owned by this session.
-        #[clap(long, value_parser, conflicts_with_all(["plugin", "remote_host"]))]
-        firecracker: Option<String>,
-        /// Boot the VM from a named image built with
-        /// `yinz-firecracker image build --name`, rather than this machine's default
-        /// image. Only meaningful the first time a VM is started.
-        #[clap(long, value_parser, requires("firecracker"))]
-        firecracker_image: Option<String>,
-        /// Absolute path to a host worktree to mirror into the VM.
-        #[clap(long, value_parser, requires("firecracker"))]
-        firecracker_worktree: Option<PathBuf>,
         #[clap(long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
         /// Plugin configuration as a JSON object of strings. Mutually exclusive with
@@ -2709,204 +2625,6 @@ mod tests {
                 ..
             }))
         ));
-    }
-
-    #[test]
-    fn firecracker_commands_and_pane_flags_parse() {
-        let pane = try_parse_cli([
-            "yinz",
-            "action",
-            "new-pane",
-            "--firecracker",
-            "review",
-            "--",
-            "pwd",
-        ])
-        .unwrap();
-        assert!(matches!(
-            pane.command,
-            Some(Command::Action(action))
-                if matches!(*action, CliAction::NewPane {
-                    firecracker: Some(ref name),
-                    ref command,
-                    ..
-                } if name == "review" && command == &["pwd"])
-        ));
-        assert!(try_parse_cli([
-            "yinz",
-            "action",
-            "new-pane",
-            "--firecracker",
-            "review",
-            "--remote-host",
-            "build-box",
-        ])
-        .is_err());
-
-        let with_image = try_parse_cli([
-            "yinz",
-            "action",
-            "new-pane",
-            "--firecracker",
-            "review",
-            "--firecracker-image",
-            "rust-dev",
-            "--firecracker-worktree",
-            "/home/me/src/project",
-        ])
-        .unwrap();
-        assert!(matches!(
-            with_image.command,
-            Some(Command::Action(action))
-                if matches!(*action, CliAction::NewPane {
-                    firecracker: Some(ref name),
-                    firecracker_image: Some(ref image),
-                    firecracker_worktree: Some(ref worktree),
-                    ..
-                } if name == "review"
-                    && image == "rust-dev"
-                    && worktree.to_str() == Some("/home/me/src/project"))
-        ));
-        // An image or a worktree names how to start a VM, so it needs one to start.
-        assert!(try_parse_cli([
-            "yinz",
-            "action",
-            "new-pane",
-            "--firecracker-image",
-            "rust-dev",
-        ])
-        .is_err());
-        assert!(try_parse_cli([
-            "yinz",
-            "action",
-            "new-pane",
-            "--firecracker-worktree",
-            "/home/me/src/project",
-        ])
-        .is_err());
-
-        let list = try_parse_cli(["yinz", "firecracker", "list", "--json"]).unwrap();
-        assert!(matches!(
-            list.command,
-            Some(Command::Firecracker(Firecracker::List {
-                session: None,
-                json: true,
-            }))
-        ));
-        let stop =
-            try_parse_cli(["yinz", "firecracker", "stop", "review", "--session", "work"]).unwrap();
-        assert!(matches!(
-            stop.command,
-            Some(Command::Firecracker(Firecracker::Stop {
-                ref name,
-                session: Some(ref session),
-            })) if name == "review" && session == "work"
-        ));
-        let changes = try_parse_cli([
-            "yinz",
-            "firecracker",
-            "changes",
-            "review",
-            "--session",
-            "work",
-        ])
-        .unwrap();
-        assert!(matches!(
-            changes.command,
-            Some(Command::Firecracker(Firecracker::Changes {
-                expected_identity: None,
-                ref name,
-                session: Some(ref session),
-            })) if name == "review" && session == "work"
-        ));
-    }
-
-    #[test]
-    fn firecracker_guarded_commands_preserve_the_confirmed_identity() {
-        let expected = serde_json::json!({
-            "session": "work", "name": "review", "vm_id": "/vm/api.socket",
-            "generation": "42:100", "worktree": "/repo with spaces",
-        });
-        for action in ["close", "sync", "changes"] {
-            let cli = try_parse_cli([
-                "yinz",
-                "firecracker",
-                action,
-                "review",
-                "--session",
-                "work",
-                "--expected-identity",
-                &expected.to_string(),
-            ])
-            .unwrap();
-            let encoded = serde_json::to_string(&cli).unwrap();
-            let decoded: CliArgs = serde_json::from_str(&encoded).unwrap();
-            let Some(Command::Firecracker(command)) = decoded.command else {
-                panic!("firecracker command")
-            };
-            let identity = match command {
-                Firecracker::Close {
-                    expected_identity, ..
-                }
-                | Firecracker::Sync {
-                    expected_identity, ..
-                }
-                | Firecracker::Changes {
-                    expected_identity, ..
-                } => expected_identity.unwrap(),
-                _ => panic!("guarded action"),
-            };
-            assert_eq!(serde_json::to_value(identity).unwrap(), expected);
-            assert!(try_parse_cli([
-                "yinz",
-                "firecracker",
-                action,
-                "review",
-                "--expected-identity",
-                "not JSON"
-            ])
-            .is_err());
-        }
-
-        let guarded_remove = try_parse_cli([
-            "yinz",
-            "firecracker",
-            "close",
-            "review",
-            "--session",
-            "work",
-            "--expected-identity",
-            &expected.to_string(),
-            "--expected-worktree",
-            "/repo with spaces",
-            "--expected-head",
-            "0123456789",
-            "--expected-branch",
-            "topic",
-        ])
-        .unwrap();
-        assert!(matches!(
-            guarded_remove.command,
-            Some(Command::Firecracker(Firecracker::Close {
-                expected_worktree: Some(ref worktree),
-                expected_head: Some(ref head),
-                expected_branch: Some(ref branch),
-                ..
-            })) if worktree == std::path::Path::new("/repo with spaces")
-                && head == "0123456789"
-                && branch == "topic"
-        ));
-        assert!(try_parse_cli([
-            "yinz",
-            "firecracker",
-            "close",
-            "review",
-            "--expected-identity",
-            &expected.to_string(),
-            "--expected-worktree",
-            "/repo",
-        ])
-        .is_err());
     }
 
     /// Every field of a `yinz subscribe` invocation survives the argv round-trip, with

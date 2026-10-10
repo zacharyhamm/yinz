@@ -655,7 +655,6 @@ message OpenCommandPaneInGitCheckoutPayload {
     NewBranchGitCheckout new_branch = 4;
     NewWorktreeGitCheckout new_worktree = 5;
   }
-  bool automatic_firecracker_vm = 6;
 }
 
 message CurrentGitCheckout {}
@@ -694,8 +693,6 @@ message AgentSpawnSpec {
   optional string permission_mode = 11;
   optional string resume = 12;
   optional bool hooks = 13;
-  optional string firecracker = 14;
-  optional string firecracker_image = 15;
   optional string effort = 16;
   optional bool reuse = 17;
   optional bool allow_outside_worktree = 18;
@@ -709,7 +706,6 @@ message SpawnAgentPayload {
   optional string cwd = 3;
   optional string name = 4;
   repeated ContextItem context = 5;
-  bool automatic_firecracker_vm = 6;
   bool start_suppressed = 7;
 }
 

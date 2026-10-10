@@ -20,8 +20,6 @@ pub mod session_serialization;
 pub mod sessions;
 pub mod warped_tab;
 
-pub mod firecracker;
-
 #[cfg(test)]
 #[path = "unit/git_plugins.rs"]
 mod git_plugins;

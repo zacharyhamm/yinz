@@ -99,16 +99,6 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "yinz-firecracker-provider",
-        &[
-            "yinz-types",
-            "yinz-runtime",
-            "yinz-config",
-            "yinz-session",
-            "yinz-process",
-        ],
-    ),
-    (
         "yinz-bus",
         &[
             "yinz-types",

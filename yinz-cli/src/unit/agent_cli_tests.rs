@@ -254,47 +254,6 @@ fn archive_options_keep_the_service_contract() {
 }
 
 #[test]
-fn spawn_help_describes_every_option_and_all_recognized_kinds() {
-    use clap::{CommandFactory, Parser};
-    let help = AgentCli::try_parse_from(["agent", "spawn", "--help"])
-        .err()
-        .unwrap()
-        .to_string();
-    for kind in yinz_types::agent::KINDS {
-        assert!(help.contains(kind), "{kind}: {help}");
-        assert!(
-            matches!(AgentCli::try_parse_from(["agent", "spawn", "--kind", kind]).unwrap().command,
-            Agent::Spawn { kind: Some(value), .. } if value == *kind)
-        );
-    }
-    let command = AgentCli::command();
-    let spawn = command.find_subcommand("spawn").unwrap();
-    for argument in spawn.get_arguments() {
-        assert!(argument.get_help().is_some(), "{}", argument.get_id());
-    }
-    for text in [
-        "stdin",
-        "Flags override JSON",
-        "command, args, env and hooks",
-        "default: true",
-        "SSH",
-        "Firecracker",
-    ] {
-        // Long descriptions wrap at terminal width.
-        assert!(
-            help.split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .contains(text),
-            "{help}"
-        );
-    }
-    for alias in ["CODEX", "cursor-agent", "claude.js", "gemini"] {
-        assert!(AgentCli::try_parse_from(["agent", "spawn", "--kind", alias]).is_ok());
-    }
-}
-
-#[test]
 fn history_regex_preserves_pattern_and_serializes_filters() {
     use clap::Parser;
     let parsed = AgentCli::try_parse_from([

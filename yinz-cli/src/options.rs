@@ -81,14 +81,6 @@ pub struct CliOptions {
     #[clap(skip)]
     #[serde(default)]
     pub detachable_panes: Option<bool>,
-    /// Executable implementing the Firecracker provider JSON protocol.
-    #[clap(skip)]
-    #[serde(default)]
-    pub firecracker_provider: Option<PathBuf>,
-    /// Maximum time to wait for one Firecracker provider request.
-    #[clap(skip)]
-    #[serde(default)]
-    pub firecracker_provider_timeout_secs: Option<u64>,
     #[clap(long, value_parser)]
     #[serde(default)]
     /// Set display of the pane frames (true or false)
@@ -376,10 +368,6 @@ impl From<CliOptions> for Options {
             mouse_mode: value.mouse_mode,
             agent_double_escape: value.agent_double_escape,
             detachable_panes: value.detachable_panes,
-            firecracker_provider: value.firecracker_provider,
-            firecracker_provider_timeout_secs: value
-                .firecracker_provider_timeout_secs
-                .map(yinz_types::units::ElapsedSeconds::new),
             pane_frames: value.pane_frames,
             pane_animations: None,
             background_opacity: None,
@@ -455,10 +443,6 @@ impl From<Options> for CliOptions {
             mouse_mode: value.mouse_mode,
             agent_double_escape: value.agent_double_escape,
             detachable_panes: value.detachable_panes,
-            firecracker_provider: value.firecracker_provider,
-            firecracker_provider_timeout_secs: value
-                .firecracker_provider_timeout_secs
-                .map(yinz_types::units::ElapsedSeconds::get),
             pane_frames: value.pane_frames,
             pane_frame_style: value.pane_frame_style,
             notification_position: value.notification_position,
@@ -528,12 +512,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
     let agent_double_escape = merge_bool(other.agent_double_escape, base.agent_double_escape);
     let mouse_mode = merge_bool(other.mouse_mode, base.mouse_mode);
     let detachable_panes = merge_bool(other.detachable_panes, base.detachable_panes);
-    let firecracker_provider = other
-        .firecracker_provider
-        .or_else(|| base.firecracker_provider.clone());
-    let firecracker_provider_timeout_secs = other
-        .firecracker_provider_timeout_secs
-        .or(base.firecracker_provider_timeout_secs);
+
     let pane_frames = merge_bool(other.pane_frames, base.pane_frames);
     let pane_frame_style = other.pane_frame_style.or(base.pane_frame_style);
     let notification_position = other.notification_position.or(base.notification_position);
@@ -649,8 +628,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         agent_double_escape,
         mouse_mode,
         detachable_panes,
-        firecracker_provider,
-        firecracker_provider_timeout_secs,
+
         pane_frames,
         pane_animations: other.pane_animations.or(base.pane_animations),
         background_opacity: other.background_opacity.or(base.background_opacity),

@@ -248,7 +248,7 @@ pub enum ScreenInstruction {
     UpdatePaneForegroundCommand(TerminalId, Vec<String>, Option<String>),
     /// The machine a pane's process runs on, for panes that are not local.
     /// Sent once when the pane is created and once when it closes.
-    UpdatePaneHost(TerminalId, Option<String>, Option<PathBuf>),
+    UpdatePaneHost(TerminalId, Option<String>),
     /// A decoration to compose in front of a pane's title, or `None` to drop it.
     ///
     /// Separate from every rename instruction on purpose: this does not touch the

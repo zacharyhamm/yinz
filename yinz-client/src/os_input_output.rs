@@ -27,6 +27,10 @@ pub(crate) const DISABLE_MOUSE_SUPPORT: &str =
     "\u{1b}[?1006l\u{1b}[?1015l\u{1b}[?1003l\u{1b}[?1002l\u{1b}[?1000l";
 
 /// Trait for async stdin reading, allowing for testable implementations
+#[expect(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to the generated future"
+)]
 #[async_trait]
 pub trait AsyncStdin: Send {
     #[expect(
@@ -71,6 +75,10 @@ pub enum SignalEvent {
 }
 
 /// Trait for async signal listening, allowing for testable implementations
+#[expect(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to the generated future"
+)]
 #[async_trait]
 pub trait AsyncSignals: Send {
     #[expect(

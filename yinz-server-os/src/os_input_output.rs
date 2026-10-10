@@ -36,10 +36,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Condvar, LockResult, Mutex, MutexGuard, RwLock,
-    },
+    sync::{Arc, Condvar, LockResult, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
@@ -724,95 +721,6 @@ impl Drop for ClientSender {
     }
 }
 
-/// The Firecracker session renames waiting to be told to the provider.
-///
-/// One slot, one worker: a rename that arrives while an earlier one is still
-/// being applied replaces it, since the provider only needs to end up on the
-/// name the session has now. The worker starts with the first rename and runs
-/// until `close`, so two renames can never reach the provider out of order.
-#[derive(Default)]
-pub(crate) struct FirecrackerRenames {
-    state: Mutex<FirecrackerRenameState>,
-    wake: Condvar,
-    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
-}
-
-#[derive(Default)]
-struct FirecrackerRenameState {
-    pending: Option<String>,
-    closed: bool,
-}
-
-impl FirecrackerRenames {
-    /// Queue `session` as the name to rename to, starting the worker if this
-    /// is the first rename. `apply` runs on the worker for each name it takes.
-    fn push(
-        self: &Arc<Self>,
-        session: String,
-        apply: impl Fn(String) + Send + 'static,
-    ) -> Result<()> {
-        {
-            let mut state = self.state.lock().to_anyhow()?;
-            if state.closed {
-                return Ok(());
-            }
-            state.pending = Some(session);
-        }
-        self.wake.notify_one();
-        let mut worker = self.worker.lock().to_anyhow()?;
-        if worker.as_ref().is_some_and(|handle| !handle.is_finished()) {
-            return Ok(());
-        }
-        let renames = Arc::clone(self);
-        *worker = Some(
-            std::thread::Builder::new()
-                .name("firecracker-rename".to_owned())
-                .spawn(move || renames.run(apply))
-                .context("failed to start the Firecracker rename thread")?,
-        );
-        Ok(())
-    }
-
-    fn run(&self, apply: impl Fn(String)) {
-        loop {
-            let session = {
-                let Ok(mut state) = self.state.lock() else {
-                    return;
-                };
-                while state.pending.is_none() && !state.closed {
-                    match self.wake.wait(state) {
-                        Ok(next) => state = next,
-                        Err(_) => return,
-                    }
-                }
-                match state.pending.take() {
-                    Some(session) => session,
-                    None => return,
-                }
-            };
-            apply(session);
-        }
-    }
-
-    /// Stop taking renames; the worker exits after the one it is on.
-    fn close(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.closed = true;
-        }
-        self.wake.notify_all();
-    }
-
-    fn close_and_join(&self) {
-        self.close();
-        let handle = self.worker.lock().ok().and_then(|mut worker| worker.take());
-        if let Some(handle) = handle {
-            if handle.join().is_err() {
-                Err::<(), _>(anyhow!("the Firecracker rename thread panicked")).non_fatal();
-            }
-        }
-    }
-}
-
 /// A resize held back while resizes are being cached: columns, rows, and the pixel width
 /// and height when the client reported them.
 type CachedResize = (u16, u16, Option<u16>, Option<u16>);
@@ -827,15 +735,6 @@ pub struct ServerOsInputOutput {
     /// ssh forwards to the machines this session has remote panes on. One per
     /// host and option set, shared by every matching pane.
     remote_hosts: Arc<RemoteHosts>,
-    /// The provider and the session name it keys this session's VMs on. A read
-    /// guard is held across `ensure`, which can take minutes, so a rename (the
-    /// only writer of the name) orders after every boot in flight and no boot
-    /// ever runs under a stale name; a stop takes a read guard too, and relies
-    /// on `firecracker_stopping` to cut a running `ensure` short.
-    firecracker: Arc<RwLock<Option<(crate::firecracker::Provider, String)>>>,
-    firecracker_stopping: Arc<AtomicBool>,
-    /// Renames, applied in order by one thread. See `rename_firecracker_session`.
-    firecracker_renames: Arc<FirecrackerRenames>,
 }
 
 #[cfg(not(windows))]
@@ -856,22 +755,14 @@ impl ServerOsInputOutput {
             .get(&client_id)
             .map(|sender| sender.queue.clone())
     }
-    /// Resolve where a command runs: this binary for a local Codex wrapper, the ssh host for an
-    /// ssh one, a checked Bubblewrap environment, and for a Firecracker one the endpoint the
-    /// provider hands back once the VM is up. The returned command is the one to send there
-    /// (a Firecracker command gets the guest cwd filled in); the second is the command as asked for,
-    /// kept so a re-run can resolve it again - plus the identity the provider resolved,
-    /// which is the VM's worktree and only when the caller named none. That much is not
-    /// "where it ran this time" but what the pane *is*, and the pane outlives the run:
-    /// it is what the restart hook names and what the held pane serializes. See the
-    /// comment on the adoption below.
+    /// Resolve a local launcher, SSH endpoint, or checked Bubblewrap environment.
     fn resolve_target(
         &self,
         mut cmd: RunCommand,
         report_progress: Option<&mut dyn FnMut(&str)>,
     ) -> Result<(RunCommand, RunCommand, Option<RemoteEndpoint>)> {
         let rerun_cmd = cmd.clone();
-        let (name, image, worktree) = match &cmd.target {
+        match &cmd.target {
             PaneTarget::Local => {
                 yinz_process::command::resolve_agent_launcher(
                     yinz_runtime::own_binary::server_binary()
@@ -879,14 +770,14 @@ impl ServerOsInputOutput {
                     &mut cmd.command,
                     &mut cmd.args,
                 )?;
-                return Ok((cmd, rerun_cmd, None));
+                Ok((cmd, rerun_cmd, None))
             },
             PaneTarget::Ssh { host } => {
                 let endpoint = RemoteEndpoint {
                     host: host.clone(),
                     ssh_options: SshOptions::default(),
                 };
-                return Ok((cmd, rerun_cmd, Some(endpoint)));
+                Ok((cmd, rerun_cmd, Some(endpoint)))
             },
             // The command is left as asked for: the sandbox is entered where it is exec'd
             // (`exec_program_and_args`). What happens here is everything that can refuse
@@ -896,103 +787,9 @@ impl ServerOsInputOutput {
                     report_progress("running launch checks");
                 }
                 check_bubblewrap_launch(root, &cmd)?;
-                return Ok((cmd, rerun_cmd, None));
+                Ok((cmd, rerun_cmd, None))
             },
-            PaneTarget::Firecracker {
-                vm,
-                image,
-                worktree,
-            } => (vm.clone(), image.clone(), worktree.clone()),
-        };
-        let firecracker = self.firecracker.read().to_anyhow()?;
-        if self.firecracker_stopping.load(Ordering::Acquire) {
-            return Err(anyhow!("the Firecracker session is shutting down"));
         }
-        let (provider, session) = firecracker
-            .as_ref()
-            .context(crate::firecracker::NOT_CONFIGURED)?;
-        let ensured = match report_progress {
-            Some(report_progress) => provider.ensure_with_progress(
-                session,
-                &name,
-                image.as_deref(),
-                worktree.as_deref(),
-                &self.firecracker_stopping,
-                report_progress,
-            ),
-            None => provider.ensure(
-                session,
-                &name,
-                image.as_deref(),
-                worktree.as_deref(),
-                &self.firecracker_stopping,
-            ),
-        }?;
-        if self.firecracker_stopping.load(Ordering::Acquire) {
-            return Err(anyhow!("the Firecracker session is shutting down"));
-        }
-        if cmd.cwd.is_none() {
-            cmd.cwd = ensured.cwd;
-        }
-        // The same adoption for the worktree the VM mirrors. A pane that joins a VM
-        // somebody else provisioned names no worktree, and without one nothing downstream
-        // can say which checkout its guest folder is a copy of: not the daemon working out
-        // the pane's project, not the layout serializer writing `firecracker_worktree=`,
-        // not a duplicate of the pane. The provider has it on record, so ask rather than
-        // guess - and only when the caller named none, since what the caller named is what
-        // the VM was ensured with.
-        //
-        // Both commands, because the two halves reach different readers and neither covers
-        // the other. `cmd` is the transport's, which `remote_pane_worktree` reads back for
-        // the manifest. `rerun_cmd` is the one `HoldPane` carries: it becomes the held
-        // pane's `invoked_with`, which is what the layout serializer writes
-        // `firecracker_worktree=` from, and it is what the agent restart hook reads its
-        // `agent_firecracker_*` payload off - all-or-nothing on the worktree being there.
-        let mut rerun_cmd = rerun_cmd;
-        if let Some(worktree) = &ensured.worktree {
-            for target in [&mut cmd.target, &mut rerun_cmd.target] {
-                if let PaneTarget::Firecracker {
-                    worktree: named, ..
-                } = target
-                {
-                    if named.is_none() {
-                        *named = Some(worktree.clone());
-                    }
-                }
-            }
-        }
-        let endpoint = RemoteEndpoint {
-            host: ensured.ssh_host,
-            ssh_options: SshOptions {
-                identity_file: ensured.ssh_identity_file,
-                known_hosts_file: ensured.ssh_known_hosts_file,
-            },
-        };
-        Ok((cmd, rerun_cmd, Some(endpoint)))
-    }
-
-    /// Tell the provider the session's new name and adopt it as the key for every later
-    /// request. A provider that refuses leaves both sides on the old name, so they still
-    /// agree with each other - only the CLI's view differs, which the error says.
-    fn rename_firecracker_session_now(&self, session: &str) -> Result<()> {
-        let mut firecracker = self.firecracker.write().to_anyhow()?;
-        if self.firecracker_stopping.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let Some((provider, current)) = firecracker.as_mut() else {
-            return Ok(());
-        };
-        if current == session {
-            return Ok(());
-        }
-        provider.rename_session(current, session).with_context(|| {
-            format!(
-                "failed to rename the Firecracker session {current:?} to {session:?}; \
-                     its VMs stay under {current:?}"
-            )
-        })?;
-        *current = session.to_owned();
-        Ok(())
     }
 
     fn resolve_spawn(
@@ -1231,7 +1028,7 @@ fn resolve_failed(
     if !target.is_bubblewrap() {
         return pane_start_failed(
             terminal_id,
-            target.display().as_deref().unwrap_or("firecracker"),
+            target.display().as_deref().unwrap_or("remote"),
             err,
         );
     }
@@ -1387,9 +1184,6 @@ impl ServerOsApi for ServerOsInputOutput {
     fn is_remote_pane(&self, terminal_id: TerminalId) -> bool {
         self.pty_backend.is_remote(terminal_id)
     }
-    fn is_firecracker_pane(&self, terminal_id: TerminalId) -> bool {
-        self.pty_backend.is_firecracker(terminal_id)
-    }
     fn remote_pane_status(&self, terminal_id: TerminalId) -> Option<RemoteStatus> {
         self.pty_backend.remote_status(terminal_id)
     }
@@ -1413,9 +1207,6 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn remote_pane_host(&self, terminal_id: TerminalId) -> Option<String> {
         self.pty_backend.remote_host(terminal_id)
-    }
-    fn remote_pane_worktree(&self, terminal_id: TerminalId) -> Option<PathBuf> {
-        self.pty_backend.remote_worktree(terminal_id)
     }
     fn box_clone(&self) -> Box<dyn ServerOsApi> {
         Box::new((*self).clone())
@@ -1691,53 +1482,6 @@ impl ServerOsApi for ServerOsInputOutput {
     fn set_pty_host_enabled(&self, enabled: bool) {
         self.pty_backend.set_pty_host_enabled(enabled);
     }
-    fn set_firecracker_provider(
-        &self,
-        provider: Option<PathBuf>,
-        timeout_secs: Option<yinz_types::units::ElapsedSeconds>,
-        session: String,
-    ) -> Result<()> {
-        let configured = provider
-            .as_deref()
-            .map(|path| crate::firecracker::provider_from_options(Some(path), timeout_secs))
-            .transpose()?
-            .map(|provider| (provider, session));
-        *self.firecracker.write().to_anyhow()? = configured;
-        self.firecracker_stopping.store(false, Ordering::Release);
-        Ok(())
-    }
-    fn stop_firecracker_session(&self) -> Result<()> {
-        self.firecracker_stopping.store(true, Ordering::Release);
-        // Nothing queued behind the flag can still change the name, and the
-        // worker exits once it sees the queue closed; joining it here keeps
-        // its provider call from racing the stop below.
-        self.firecracker_renames.close_and_join();
-        let guard = self.firecracker.read().to_anyhow()?;
-        if let Some((provider, session)) = guard.as_ref() {
-            // The clients are gone by the time this runs, so the log is the only place a
-            // merge conflict can be told; the `.guest` copies in the worktree are the other.
-            for warning in provider.stop_session(session)? {
-                log::warn!("Firecracker worktree merge: {warning}");
-            }
-        }
-        Ok(())
-    }
-    fn rename_firecracker_session(&self, session: String) {
-        // `resolve_target` holds the provider lock across an `ensure`, which can
-        // take minutes, and this is called from the screen thread. One worker
-        // applies renames in the order they were asked for; two quick renames
-        // collapse to the last name, which is the only one that matters.
-        let server = self.clone();
-        self.firecracker_renames
-            .push(session, move |session| {
-                server.rename_firecracker_session_now(&session).non_fatal()
-            })
-            .non_fatal();
-    }
-    fn begin_firecracker_shutdown(&self) {
-        self.firecracker_stopping.store(true, Ordering::Release);
-        self.firecracker_renames.close();
-    }
     #[cfg(not(windows))]
     fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {
         self.pty_backend.begin_confirmed_pty_host_shutdown()
@@ -1750,11 +1494,6 @@ impl ServerOsApi for ServerOsInputOutput {
     }
     fn shutdown_pty_hosts(&self) {
         self.pty_backend.shutdown_pty_hosts();
-        // The ssh forwards go with them. The brokers and their panes on the far
-        // side survive by design — only an explicit terminate ends those, which
-        // `Pty::drop` sends for Firecracker panes alone, since their VM stops
-        // with the session — but leaving forwards behind would leak ssh
-        // processes and bound sockets on the way out.
         self.remote_hosts.shutdown();
     }
     #[cfg(not(windows))]
@@ -1906,9 +1645,6 @@ fn server_os_input_with_backend(
     Ok(ServerOsInputOutput {
         pty_backend,
         remote_hosts: Arc::new(RemoteHosts::new()),
-        firecracker: Arc::new(RwLock::new(None)),
-        firecracker_stopping: Arc::new(AtomicBool::new(false)),
-        firecracker_renames: Arc::new(FirecrackerRenames::default()),
         client_senders: Arc::new(Mutex::new(HashMap::new())),
         live_writers: Arc::new(LiveWriters::default()),
         cached_resizes: Arc::new(Mutex::new(None)),

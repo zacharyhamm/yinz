@@ -342,10 +342,6 @@ fn command_cwd(
     default_to_plugin_cwd: bool,
 ) -> Option<PathBuf> {
     if command.target.is_remote() {
-        // The cwd of a remote or Firecracker command is a path on that machine, so the
-        // plugin mounts have nothing to say about it. A plugin that sends one of them anyway
-        // asked for a directory that does not exist over there, and the far side would
-        // silently start the command wherever the broker happens to be.
         if let Some(cwd) = command.cwd.as_deref() {
             if ["/host", "/data", "/cache"]
                 .iter()
@@ -519,7 +515,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 let mut request: yinz_types::agent::control::AgentRequest =
                     serde_json::from_str(&request).context("decode agent request")?;
                 if let yinz_types::agent::control::AgentRequest::Spawn {
-                    spec,
                     cwd,
                     project,
                     remote_host,
@@ -531,11 +526,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                             *path = translate_plugin_path(env, path.clone());
                         }
                     }
-                    if cwd.is_none()
-                        && project.is_none()
-                        && remote_host.is_none()
-                        && (spec.firecracker.is_none() || spec.branch.is_some())
-                    {
+                    if cwd.is_none() && project.is_none() && remote_host.is_none() {
                         *cwd = Some(env.plugin_cwd.clone());
                     }
                 }
@@ -643,7 +634,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 cwd,
                 name,
                 context,
-                automatic_firecracker_vm,
+
                 start_suppressed,
             } => spawn_agent(
                 env,
@@ -652,7 +643,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 cwd,
                 name,
                 context,
-                automatic_firecracker_vm,
                 start_suppressed,
             ),
             PluginCommand::SetQuitNotice { notice, guard } => set_quit_notice(env, notice, guard),
@@ -705,13 +695,11 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 command_to_run,
                 source_directory,
                 checkout,
-                automatic_firecracker_vm,
             ) => open_command_pane_in_git_checkout_near_plugin(
                 env,
                 command_to_run,
                 source_directory,
                 checkout,
-                automatic_firecracker_vm,
             ),
             PluginCommand::OpenCommandPaneFloating(
                 command_to_run,
@@ -2992,11 +2980,10 @@ fn open_command_pane_in_git_checkout_near_plugin(
     mut command_to_run: CommandToRun,
     source_directory: PathBuf,
     checkout: GitCheckout,
-    automatic_firecracker_vm: bool,
 ) {
     let result: OpenCommandPaneInGitCheckoutResponse =
         prepare_git_checkout(env, source_directory, checkout).and_then(|cwd| {
-            apply_git_checkout_to_command(&mut command_to_run, cwd, automatic_firecracker_vm)?;
+            command_to_run.cwd = Some(cwd);
             // The marker's value is the agent's kind - the program - which is what the pane's
             // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
             let kind = yinz_types::agent::agent_kind_of(&command_to_run.path, &command_to_run.args)
@@ -3026,7 +3013,6 @@ fn spawn_agent(
     cwd: Option<PathBuf>,
     name: Option<String>,
     mut context: BTreeMap<String, String>,
-    automatic_firecracker_vm: bool,
     start_suppressed: bool,
 ) {
     let result: SpawnAgentResponse = (|| {
@@ -3047,7 +3033,7 @@ fn spawn_agent(
                     "workflow helpers require a run identifier and message or repair role".into(),
                 );
             }
-            if spec.branch.is_some() || spec.firecracker.is_some() || spec.worktree == Some(true) {
+            if spec.branch.is_some() || spec.worktree == Some(true) {
                 return Err("workflow helpers must run in the existing host checkout".into());
             }
             context.insert("agent_workflow_owner".into(), env.plugin_id.to_string());
@@ -3075,16 +3061,8 @@ fn spawn_agent(
                 translate_plugin_path(env, path)
             }
         });
-        let prepared = prepare_agent(
-            &spec,
-            source,
-            cwd,
-            automatic_firecracker_vm,
-            false,
-            host_workflow,
-            &env.data_access,
-        )
-        .map_err(|error| error.to_string())?;
+        let prepared = prepare_agent(&spec, source, cwd, host_workflow, &env.data_access)
+            .map_err(|error| error.to_string())?;
         let resources = prepared.resources();
         let kind = yinz_types::agent::agent_kind_of(&prepared.command.path, &prepared.command.args)
             .unwrap_or_else(|| "true".to_owned());
@@ -3120,14 +3098,10 @@ struct PreparedAgent {
 
 impl PreparedAgent {
     fn resources(&self) -> AgentLaunchResources {
-        let guest_only = matches!(
-            self.command.target,
-            PaneTarget::Firecracker { worktree: None, .. }
-        );
         AgentLaunchResources {
             tab_id: None,
             created_tab_id: None,
-            cwd: (!guest_only).then(|| self.cwd.clone()),
+            cwd: Some(self.cwd.clone()),
             branch: self.branch.clone(),
             requested_branch: self.requested_branch.clone(),
             reused: self.reused,
@@ -3179,8 +3153,6 @@ fn prepare_agent(
     spec: &AgentSpawnSpec,
     source: PathBuf,
     cwd: Option<PathBuf>,
-    automatic_firecracker_vm: bool,
-    mirror_project: bool,
     host_workflow: bool,
     data_access: &DataAccess,
 ) -> Result<PreparedAgent, AgentSpawnError> {
@@ -3188,8 +3160,8 @@ fn prepare_agent(
     let bubblewrap = if spec.bubblewrap {
         yinz_config::project_config::bubblewrap::validate_spawn_env(&spec.env)
             .map_err(|error| format!("{error:#}"))?;
-        if !command.target.is_local() || automatic_firecracker_vm {
-            return Err("Bubblewrap cannot be combined with SSH or Firecracker".into());
+        if !command.target.is_local() {
+            return Err("Bubblewrap cannot be combined with SSH".into());
         }
         let validated_cwd = match &checkout {
             GitCheckout::Current => cwd.as_deref().unwrap_or(&source),
@@ -3214,21 +3186,12 @@ fn prepare_agent(
             &FetchRequest::entity("project").limit(project_data::store::LIST_FETCH_LIMIT),
         )
     })?;
-    let checkout_made = !matches!(checkout, GitCheckout::Current);
     let requested_branch = match &checkout {
         GitCheckout::NewBranch { branch, .. } | GitCheckout::NewWorktree { branch, .. } => {
             Some(branch.clone())
         },
         GitCheckout::Current => None,
     };
-    // A Firecracker pane with nothing of this machine in it does not run in `folder` at
-    // all - `place_agent` leaves the guest's own workspace alone - so there is no host
-    // checkout for the guard to have an opinion about. Computed once, here, so the two
-    // cannot come to disagree about which case this is.
-    let guest_only = command.target.is_firecracker()
-        && !automatic_firecracker_vm
-        && !checkout_made
-        && !mirror_project;
     // An agent loose in the checkout the user is working in - or in a folder that is no
     // repository at all - is a thing to ask for, not a thing to fall into by leaving
     // `branch` out. The resolved folder is what is checked, not the spec: a branch held
@@ -3237,7 +3200,7 @@ fn prepare_agent(
     // Workflow helpers are the exception, and were before this: they are *required* to
     // run in the existing host checkout (see above), so refusing them for it would leave
     // them nowhere to run.
-    let guard = if spec.allow_outside_worktree.unwrap_or(false) || host_workflow || guest_only {
+    let guard = if spec.allow_outside_worktree.unwrap_or(false) || host_workflow {
         WorktreeGuard::Waived
     } else {
         WorktreeGuard::Required
@@ -3264,7 +3227,7 @@ fn prepare_agent(
     let resources = AgentLaunchResources {
         tab_id: None,
         created_tab_id: None,
-        cwd: (!guest_only).then(|| prepared.path.clone()),
+        cwd: Some(prepared.path.clone()),
         branch: prepared.branch.clone(),
         requested_branch: requested_branch
             .clone()
@@ -3280,23 +3243,13 @@ fn prepare_agent(
     }
     let reused = prepared.reused_worktree;
     let branch = prepared.branch.or_else(|| {
-        if guest_only {
-            None
-        } else {
-            worktree_at(&prepared.path, &prepared.path)
-                .ok()
-                .flatten()
-                .and_then(|worktree| worktree.branch)
-        }
+        worktree_at(&prepared.path, &prepared.path)
+            .ok()
+            .flatten()
+            .and_then(|worktree| worktree.branch)
     });
     let folder = prepared.path;
-    place_agent(
-        &mut command,
-        folder.clone(),
-        automatic_firecracker_vm,
-        checkout_made || mirror_project,
-    )
-    .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?;
+    command.cwd = Some(folder.clone());
     if let Some((environment, validated_cwd)) = bubblewrap {
         // Only a different destination needs another check here; launch and exec revalidate it.
         if folder.canonicalize().ok().as_ref() != Some(&validated_cwd) {
@@ -3353,7 +3306,6 @@ pub fn spawn_agent_for_cli(
     cwd: Option<PathBuf>,
     project: Option<String>,
     remote_host: Option<String>,
-    automatic_firecracker_vm: bool,
     client_id: crate::ClientId,
     senders: &ThreadSenders,
     data_access: &DataAccess,
@@ -3364,7 +3316,6 @@ pub fn spawn_agent_for_cli(
         cwd,
         project,
         remote_host,
-        automatic_firecracker_vm,
         client_id,
         senders,
         data_access,
@@ -3384,20 +3335,12 @@ fn spawn_agent_for_control(
     cwd: Option<PathBuf>,
     project: Option<String>,
     remote_host: Option<String>,
-    automatic_firecracker_vm: bool,
     client_id: crate::ClientId,
     senders: &ThreadSenders,
     data_access: &DataAccess,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
     spawn_agent_prepared(placement, false, spec, client_id, senders, |spec| {
-        agent_control::prepare_automation_agent(
-            spec,
-            cwd,
-            project,
-            remote_host,
-            automatic_firecracker_vm,
-            data_access,
-        )
+        agent_control::prepare_automation_agent(spec, cwd, project, remote_host, data_access)
     })
 }
 
@@ -3804,46 +3747,6 @@ impl WorktreeGuard {
             path.display()
         ))
     }
-}
-
-/// Put the agent's pane in `folder` - or, for a Firecracker pane, decide what the guest sees
-/// of it.
-///
-/// A local pane simply runs there. A Firecracker pane mirrors the folder into the guest when
-/// the folder is the agent's to work in: a checkout the host just made, a selected project, or any folder when
-/// the VM is `automatic` - named after that folder, so that agents on one checkout share one
-/// VM. A named VM with no host checkout is the other case, and the one `agent_spawn
-/// firecracker=true` outside a project asks for: nothing of this machine goes into the guest,
-/// the name stands, and the pane starts in the VM's own workspace - a VM of the agent's own.
-fn place_agent(
-    command: &mut CommandToRun,
-    folder: PathBuf,
-    automatic_firecracker_vm: bool,
-    mirror_checkout: bool,
-) -> Result<(), String> {
-    if command.target.is_firecracker() && !automatic_firecracker_vm && !mirror_checkout {
-        return Ok(());
-    }
-    apply_git_checkout_to_command(command, folder, automatic_firecracker_vm)
-}
-
-fn apply_git_checkout_to_command(
-    command: &mut CommandToRun,
-    cwd: PathBuf,
-    automatic_firecracker_vm: bool,
-) -> Result<(), String> {
-    if let PaneTarget::Firecracker { vm, worktree, .. } = &mut command.target {
-        let cwd = cwd
-            .canonicalize()
-            .map_err(|error| format!("failed to resolve checkout {}: {error}", cwd.display()))?;
-        if automatic_firecracker_vm {
-            *vm = crate::firecracker::worktree_vm_name(&cwd);
-        }
-        *worktree = Some(cwd);
-    } else {
-        command.cwd = Some(cwd);
-    }
-    Ok(())
 }
 
 fn prepare_git_checkout(
@@ -6608,58 +6511,6 @@ mod validation_tests {
             );
         }
         assert!(outside.join("sentinel").exists());
-    }
-
-    /// The three things a Firecracker spawn can mean by its folder: an automatic VM is named
-    /// after it and gets it mirrored in; a named VM gets a checkout the host made mirrored in
-    /// and keeps its name; a named VM with no checkout gets nothing of this machine - it is
-    /// the agent's own VM, and its pane starts in the guest's workspace. A local pane just
-    /// runs in the folder, whatever was asked.
-    #[test]
-    fn a_named_firecracker_vm_without_a_checkout_keeps_its_name_and_mirrors_nothing() {
-        let temp = tempfile::tempdir().unwrap();
-        let folder = temp.path().canonicalize().unwrap();
-        let firecracker = || CommandToRun {
-            path: PathBuf::from("claude"),
-            target: PaneTarget::Firecracker {
-                vm: "yinz-agent-1".to_owned(),
-                image: None,
-                worktree: None,
-            },
-            ..Default::default()
-        };
-
-        let mut isolated = firecracker();
-        place_agent(&mut isolated, folder.clone(), false, false).unwrap();
-        assert_eq!(isolated.target.firecracker_vm(), Some("yinz-agent-1"));
-        assert_eq!(isolated.target.firecracker_worktree(), None);
-        assert_eq!(isolated.cwd, None);
-
-        let mut automatic = firecracker();
-        place_agent(&mut automatic, folder.clone(), true, false).unwrap();
-        assert_eq!(
-            automatic.target.firecracker_vm(),
-            Some(crate::firecracker::worktree_vm_name(&folder).as_str())
-        );
-        assert_eq!(
-            automatic.target.firecracker_worktree(),
-            Some(folder.as_path())
-        );
-
-        let mut named_checkout = firecracker();
-        place_agent(&mut named_checkout, folder.clone(), false, true).unwrap();
-        assert_eq!(named_checkout.target.firecracker_vm(), Some("yinz-agent-1"));
-        assert_eq!(
-            named_checkout.target.firecracker_worktree(),
-            Some(folder.as_path())
-        );
-
-        let mut local = CommandToRun {
-            path: PathBuf::from("claude"),
-            ..Default::default()
-        };
-        place_agent(&mut local, folder.clone(), false, false).unwrap();
-        assert_eq!(local.cwd, Some(folder));
     }
 
     #[test]
@@ -10550,17 +10401,6 @@ mod permission_tests {
         std::fs::canonicalize(path).unwrap()
     }
 
-    fn firecracker_command(name: &str) -> CommandToRun {
-        CommandToRun {
-            target: PaneTarget::Firecracker {
-                vm: name.to_owned(),
-                image: None,
-                worktree: None,
-            },
-            ..Default::default()
-        }
-    }
-
     /// With no branch there is no git work: the pane runs in the folder the caller named,
     /// else in the source as given - a subfolder of a checkout stays that subfolder, and is
     /// not swapped for the repository root the way a checkout request resolves it.
@@ -10593,65 +10433,6 @@ mod permission_tests {
         };
         let switched = agent_folder_reusing(checkout, Some(elsewhere), subdirectory).unwrap();
         assert_eq!(resolved(&switched), resolved(repository.path()));
-    }
-
-    #[test]
-    fn automatic_firecracker_names_follow_the_resolved_checkout() {
-        let repository = repository();
-        let subdirectory = repository.path().join("src/nested");
-        std::fs::create_dir_all(&subdirectory).unwrap();
-        let checkout = reusing_checkout_in(subdirectory, GitCheckout::Current).unwrap();
-        let expected = crate::firecracker::worktree_vm_name(&resolved(repository.path()));
-
-        for placeholder in ["first", "second"] {
-            let mut command = firecracker_command(placeholder);
-            apply_git_checkout_to_command(&mut command, checkout.clone(), true).unwrap();
-            assert_eq!(command.target.firecracker_vm(), Some(expected.as_str()));
-            assert_eq!(
-                command.target.firecracker_worktree(),
-                Some(resolved(repository.path()).as_path())
-            );
-        }
-
-        let mut manual = firecracker_command("review");
-        apply_git_checkout_to_command(&mut manual, checkout, false).unwrap();
-        assert_eq!(manual.target.firecracker_vm(), Some("review"));
-    }
-
-    #[test]
-    fn automatic_firecracker_names_follow_reused_branch_worktrees() {
-        let primary_repository = repository();
-        let checkout = GitCheckout::NewBranch {
-            branch: "topic".to_owned(),
-            base: "main".to_owned(),
-        };
-        let first =
-            reusing_checkout_in(primary_repository.path().to_owned(), checkout.clone()).unwrap();
-        let second = reusing_checkout_in(primary_repository.path().to_owned(), checkout).unwrap();
-        let expected = crate::firecracker::worktree_vm_name(&resolved(primary_repository.path()));
-        for cwd in [first, second] {
-            let mut command = firecracker_command("placeholder");
-            apply_git_checkout_to_command(&mut command, cwd, true).unwrap();
-            assert_eq!(command.target.firecracker_vm(), Some(expected.as_str()));
-        }
-
-        let repository = repository();
-        let existing = worktree(repository.path(), "first", "topic");
-        let checkout = GitCheckout::NewBranch {
-            branch: "topic".to_owned(),
-            base: "main".to_owned(),
-        };
-        let first = reusing_checkout_in(repository.path().to_owned(), checkout.clone()).unwrap();
-        let second = reusing_checkout_in(repository.path().to_owned(), checkout).unwrap();
-        assert_eq!(resolved(&first), resolved(&existing));
-        assert_eq!(resolved(&second), resolved(&existing));
-
-        let mut command = firecracker_command("placeholder");
-        apply_git_checkout_to_command(&mut command, first, true).unwrap();
-        assert_eq!(
-            command.target.firecracker_vm(),
-            Some(crate::firecracker::worktree_vm_name(&resolved(&existing)).as_str())
-        );
     }
 
     #[test]

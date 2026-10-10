@@ -21,7 +21,7 @@ import {
     ReportFields,
     testReport,
 } from "./test_report.ts";
-import { Evidence, Finding, mergeCheckProblem, Sync } from "../git_workflow.ts";
+import { Evidence, Finding, mergeCheckProblem } from "../git_workflow.ts";
 const Agent = Request.extend({ agent: Key });
 const Spawn = Request.extend({
     spec: AgentSpec,
@@ -148,10 +148,6 @@ export const resources = {
     checks: resource(
         Checks,
         "Current revision and required check results",
-    ),
-    checkoutSync: resource(
-        Sync,
-        "Local checkout or verified original VM synchronization",
     ),
     assessment: resource(Assessment, "Current review and gate disposition"),
     operation: resource(
@@ -282,8 +278,6 @@ const FlowInputs = z.object({
     rebasePrompt: Literal.refine((s) => s.trim().length > 0).default(
         "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done.",
     ),
-    firecracker: Literal,
-    firecrackerImage: Literal,
     sourcePane: z.number().int().min(-1),
     phase: z.enum([
         "prepare",
@@ -314,7 +308,6 @@ const FlowInputs = z.object({
         phase: "review",
     }),
     state: z.object({
-        vmSync: Sync.nullable(),
         evidence: Evidence.nullable(),
         review: Review.nullable(),
         test: Test.nullable(),
@@ -649,40 +642,6 @@ export const methods = {
         Request,
         "step_ready",
     ),
-    checkout_sync: {
-        description:
-            "Sync and verify the original VM, or record explicit local checkout evidence",
-        arguments: Request.extend({ previous: Sync.nullable().optional() }),
-        execute: async (
-            input: z.infer<typeof Request> & {
-                previous?: z.infer<typeof Sync> | null;
-            },
-            c: Context,
-        ) => {
-            const result = await operation(c, {
-                ...Request.parse(input),
-                method: "source_sync",
-            });
-            await save(c, "operation", result);
-            if (result.outcome !== "completed" || !result.clean) {
-                throw new Error(
-                    "Original VM has unresolved changes or sync conflicts",
-                );
-            }
-            const previous = input.previous;
-            // A fresh sync must not stale identical VM contents merely by changing its operation key.
-            const sameVm = previous && !("mode" in previous) &&
-                result.vm === previous.vm &&
-                JSON.stringify(result.owner) === JSON.stringify(previous.owner);
-            return save(
-                c,
-                "checkoutSync",
-                result.vm
-                    ? (sameVm ? previous : Sync.parse(result))
-                    : { mode: "local" },
-            );
-        },
-    },
     workflow_attach: {
         description:
             "Record the actual Swamp run identity against its durable launch token",
@@ -853,16 +812,6 @@ export const methods = {
             );
         },
     },
-    vm_inspect: method(
-        "Inspect guest changes through the existing provider",
-        Agent,
-        "vm_inspect",
-    ),
-    vm_sync: method(
-        "Sync an owned VM and report unresolved changes",
-        Agent,
-        "vm_sync",
-    ),
     cancel_step: method(
         "Interrupt one owned operation and verify termination before another step",
         Request.extend({ operation: Key }),

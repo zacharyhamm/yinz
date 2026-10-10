@@ -21,8 +21,6 @@ Options {
     mouse_mode: None,
     agent_double_escape: None,
     detachable_panes: None,
-    firecracker_provider: None,
-    firecracker_provider_timeout_secs: None,
     pane_frames: None,
     pane_animations: None,
     background_opacity: Some(

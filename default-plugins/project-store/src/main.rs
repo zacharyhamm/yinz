@@ -416,15 +416,6 @@ fn discover_from(
             let location = pane.checkout_location()?;
             reply.repositories.get(&location).cloned()
         })
-        // A checkout on another machine makes no project: every path a project
-        // row holds is a path on *this* one. `projects::discover` refuses these
-        // too, and is the guarantee; this is the same rule said where the panes
-        // are, so a reader here is not left wondering.
-        //
-        // A Firecracker pane passes it. Its location is the host worktree its VM
-        // mirrors — a folder on this machine, probed here — so the checkout it
-        // names is one a project row can hold, exactly as it would be for a pane
-        // sitting in that worktree without a VM.
         .filter(|repository| repository.host.is_none())
         .collect();
 
@@ -764,8 +755,6 @@ mod tests {
             command: command.map(str::to_owned),
             cwd: Some(cwd.to_owned()),
             host: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
             bubblewrap: None,
             status: agents::AgentStatus::Running,
             tab: None,
@@ -791,9 +780,6 @@ mod tests {
         let repositories = panes
             .iter()
             .filter_map(|pane| {
-                // Keyed the way every reader looks a folder up, so a Firecracker
-                // pane's checkout is filed under the host worktree it mirrors and
-                // not under its guest folder.
                 let location = pane.checkout_location()?;
                 let repository = checkout(&location.path).on_host(location.host.clone());
                 Some((location, repository))
@@ -1143,186 +1129,8 @@ mod tests {
             .is_empty());
     }
 
-    /// A folder Git does not claim names nothing. Without this line every `cd`
-    /// would put a folder name on the tab bar.
-    #[test]
-    fn a_plain_folder_names_no_tab() {
-        let backend = backend();
-        let payload = snapshot_with(
-            pane_on_tab(3, "zsh", "/home/me/Downloads", TabId::new(1)),
-            projects::Repository::folder("/home/me/Downloads"),
-            BTreeMap::new(),
-        );
-
-        let state = apply(&backend, &payload);
-
-        assert!(state.published_tab_names.as_ref().unwrap().is_empty());
-    }
-
-    /// Manual assignments remain project metadata, independent of tab names.
-    #[test]
-    fn a_hand_made_assignment_does_not_override_the_folder() {
-        let backend = backend();
-
-        let state = apply(
-            &backend,
-            &snapshot_of_panes(
-                vec![pane_on_tab(3, "zsh", "/work/agent", TabId::new(1))],
-                BTreeMap::from([(TabId::new(1), "notes".to_owned())]),
-            ),
-        );
-
-        assert_eq!(
-            state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "agent:main"
-        );
-    }
-
-    /// A tab whose panes have all gone simply has no entry in the next map, and
-    /// the host replaces the whole map, so it goes back to its own name.
-    #[test]
-    fn a_tab_whose_panes_closed_is_named_no_longer() {
-        let backend = backend();
-        let mut state = State::default();
-
-        state.on_snapshot(
-            &backend,
-            &snapshot_of_panes(
-                vec![pane_on_tab(3, "zsh", "/work/agent", TabId::new(1))],
-                BTreeMap::new(),
-            ),
-        );
-        assert_eq!(
-            state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "agent:main"
-        );
-
-        state.on_snapshot(&backend, &snapshot_of_panes(Vec::new(), BTreeMap::new()));
-
-        assert!(state.published_tab_names.as_ref().unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_initial_empty_snapshot_clears_names_from_a_previous_instance() {
-        let backend = backend();
-        let mut state = State::default();
-        assert!(state.published_tab_names.is_none());
-        let payload = snapshot_of_panes(Vec::new(), BTreeMap::new());
-        state.on_snapshot(&backend, &payload);
-        assert_eq!(state.published_tab_names, Some(BTreeMap::new()));
-        state.on_snapshot(&backend, &payload);
-        assert_eq!(state.published_tab_names, Some(BTreeMap::new()));
-    }
-
-    #[test]
-    fn names_follow_current_panes_including_hidden_and_exited_ones() {
-        let backend = backend();
-        backend
-            .apply(vec![
-                projects::to_mutation(&projects::validate("A", "/work/a").unwrap()),
-                projects::to_mutation(&projects::validate("B", "/work/b").unwrap()),
-            ])
-            .unwrap();
-        let mut state = State::default();
-        let mut reply: PollReply = serde_json::from_str(&snapshot_of_panes(
-            vec![
-                pane_on_tab(3, "zsh", "/work/a", TabId::new(1)),
-                pane_on_tab(4, "zsh", "/work/a", TabId::new(1)),
-            ],
-            BTreeMap::from([
-                (TabId::new(1), "manual".into()),
-                (TabId::new(99), "gone".into()),
-            ]),
-        ))
-        .unwrap();
-        // Explicit plain folders name the tabs without waiting for any Git result.
-        reply.repositories.clear();
-        let check = |state: &mut State, reply: &PollReply, expected: &[(usize, &str)]| {
-            state.on_snapshot(&backend, &serde_json::to_string(reply).unwrap());
-            assert_eq!(
-                state.published_tab_names.as_ref().unwrap(),
-                &expected
-                    .iter()
-                    .map(|(id, name)| (TabId::new(*id), (*name).to_owned()))
-                    .collect()
-            );
-        };
-        check(&mut state, &reply, &[(1, "A")]);
-        let mut b = pane_on_tab(5, "zsh", "/work/b", TabId::new(1));
-        b.status = agents::AgentStatus::Held;
-        reply.panes.as_mut().unwrap().push(b);
-        check(&mut state, &reply, &[(1, "A + B")]);
-        reply.panes.as_mut().unwrap().remove(0);
-        check(&mut state, &reply, &[(1, "A + B")]);
-        reply.panes.as_mut().unwrap()[0].cwd = Some("/unknown".into());
-        check(&mut state, &reply, &[(1, "B")]);
-
-        let mut hidden = reply.panes.as_mut().unwrap().pop().unwrap();
-        hidden.tab = Some((TabId::new(2), "another tab".into()));
-        reply.suppressed_panes.push(hidden);
-        check(&mut state, &reply, &[(2, "B")]);
-        reply.suppressed_panes[0].agent =
-            Some(agents::registered_agent("codex", Some("/work/a".into())));
-        check(&mut state, &reply, &[(2, "A")]);
-        reply.suppressed_panes[0].host = Some("remote".into());
-        check(&mut state, &reply, &[]);
-        reply.suppressed_panes[0].host = Some("firecracker:review".into());
-        reply.suppressed_panes[0].firecracker_worktree = Some("/work/b".into());
-        check(&mut state, &reply, &[(2, "B")]);
-        reply
-            .panes
-            .as_mut()
-            .unwrap()
-            .push(reply.suppressed_panes.pop().unwrap());
-        check(&mut state, &reply, &[(2, "B")]);
-        reply.panes.as_mut().unwrap().pop();
-        check(&mut state, &reply, &[]);
-    }
-
-    #[test]
-    fn branches_follow_checkout_probes_without_changing_project_assignments() {
-        let backend = backend();
-        backend
-            .apply(vec![projects::to_mutation(
-                &projects::validate("registered", "/work/repo").unwrap(),
-            )])
-            .unwrap();
-        let mut reply: PollReply = serde_json::from_str(&snapshot_of_panes(
-            vec![pane_on_tab(3, "zsh", "/work/repo", TabId::new(1))],
-            BTreeMap::new(),
-        ))
-        .unwrap();
-        // Hidden panes use the same checkout resolution as visible ones, including VMs.
-        let mut hidden = reply.panes.as_mut().unwrap().pop().unwrap();
-        hidden.host = Some("firecracker:review".into());
-        hidden.firecracker_worktree = Some("/work/repo".into());
-        hidden.cwd = Some("/workspace".into());
-        reply.suppressed_panes.push(hidden);
-        let mut state = State::default();
-        for (branch, expected) in [(Some("topic"), "registered:topic"), (None, "registered")] {
-            reply.repositories.values_mut().next().unwrap().branch = branch.map(str::to_owned);
-            state.on_snapshot(&backend, &serde_json::to_string(&reply).unwrap());
-            assert_eq!(
-                state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-                expected
-            );
-            assert_eq!(
-                state.published_project_context.as_ref().unwrap().1[0].1,
-                "registered"
-            );
-        }
-        reply.repositories.clear();
-        state.on_snapshot(&backend, &serde_json::to_string(&reply).unwrap());
-        assert_eq!(
-            state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "registered"
-        );
-    }
-
     /// A snapshot with one pane in one checkout, as the daemon sends it.
     fn snapshot(pane: agents::AgentPane, manual_kinds: BTreeMap<u32, String>) -> String {
-        // The folder the daemon would have probed, which for a Firecracker pane is the
-        // host worktree its VM mirrors rather than the guest copy.
         let location = pane.checkout_location().expect("the pane is somewhere");
         let repository = checkout(&location.path);
         snapshot_with(pane, repository, manual_kinds)
@@ -1411,44 +1219,6 @@ mod tests {
             "{:?}",
             project_names(&backend)
         );
-    }
-
-    /// The exception, and the pair the rule above reads with. A Firecracker VM mirrors a
-    /// folder on *this* machine, and the agent in it is working on that folder — so the
-    /// project it makes is the same one a local agent there would make, named after the
-    /// host worktree and not after the guest copy.
-    #[test]
-    fn a_firecracker_agents_worktree_becomes_the_project_its_guest_copy_came_from() {
-        let backend = backend();
-        let mut pane = pane_in(3, "claude", Some("claude"), "/workspace");
-        pane.host = Some("firecracker:review".to_owned());
-        pane.firecracker_worktree = Some("/tmp/work".to_owned());
-
-        apply(&backend, &snapshot(pane, BTreeMap::new()));
-
-        assert_eq!(project_names(&backend), vec!["work"]);
-    }
-
-    /// And makes no second project when the worktree is already inside one — the
-    /// ordinary case, since a VM is usually a copy of a checkout the user is in.
-    #[test]
-    fn a_firecracker_agent_inside_a_known_project_starts_no_new_one() {
-        let backend = backend();
-        apply(
-            &backend,
-            &snapshot(
-                pane_in(3, "codex", Some("codex"), "/tmp/work"),
-                BTreeMap::new(),
-            ),
-        );
-        assert_eq!(project_names(&backend), vec!["work"]);
-
-        let mut vm = pane_in(4, "claude", Some("claude"), "/workspace");
-        vm.host = Some("firecracker:review".to_owned());
-        vm.firecracker_worktree = Some("/tmp/work/sub".to_owned());
-        apply(&backend, &snapshot(vm, BTreeMap::new()));
-
-        assert_eq!(project_names(&backend), vec!["work"]);
     }
 
     /// A worktree nested inside the checkout it came from makes no second
@@ -1574,5 +1344,171 @@ mod tests {
         apply(&backend, &snapshot(shelled_out, BTreeMap::new()));
 
         assert_eq!(project_names(&backend), vec!["latched"]);
+    }
+
+    #[test]
+    fn a_plain_folder_names_no_tab() {
+        let backend = backend();
+        let payload = snapshot_with(
+            pane_on_tab(3, "zsh", "/home/me/Downloads", TabId::new(1)),
+            projects::Repository::folder("/home/me/Downloads"),
+            BTreeMap::new(),
+        );
+
+        let state = apply(&backend, &payload);
+
+        assert!(state.published_tab_names.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_hand_made_assignment_does_not_override_the_folder() {
+        let backend = backend();
+
+        let state = apply(
+            &backend,
+            &snapshot_of_panes(
+                vec![pane_on_tab(3, "zsh", "/work/agent", TabId::new(1))],
+                BTreeMap::from([(TabId::new(1), "notes".to_owned())]),
+            ),
+        );
+
+        assert_eq!(
+            state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
+            "agent:main"
+        );
+    }
+
+    #[test]
+    fn a_tab_whose_panes_closed_is_named_no_longer() {
+        let backend = backend();
+        let mut state = State::default();
+
+        state.on_snapshot(
+            &backend,
+            &snapshot_of_panes(
+                vec![pane_on_tab(3, "zsh", "/work/agent", TabId::new(1))],
+                BTreeMap::new(),
+            ),
+        );
+        assert_eq!(
+            state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
+            "agent:main"
+        );
+
+        state.on_snapshot(&backend, &snapshot_of_panes(Vec::new(), BTreeMap::new()));
+
+        assert!(state.published_tab_names.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_initial_empty_snapshot_clears_names_from_a_previous_instance() {
+        let backend = backend();
+        let mut state = State::default();
+        assert!(state.published_tab_names.is_none());
+        let payload = snapshot_of_panes(Vec::new(), BTreeMap::new());
+        state.on_snapshot(&backend, &payload);
+        assert_eq!(state.published_tab_names, Some(BTreeMap::new()));
+        state.on_snapshot(&backend, &payload);
+        assert_eq!(state.published_tab_names, Some(BTreeMap::new()));
+    }
+
+    #[test]
+    fn names_follow_current_panes_including_hidden_and_exited_ones() {
+        let backend = backend();
+        backend
+            .apply(vec![
+                projects::to_mutation(&projects::validate("A", "/work/a").unwrap()),
+                projects::to_mutation(&projects::validate("B", "/work/b").unwrap()),
+            ])
+            .unwrap();
+        let mut state = State::default();
+        let mut reply: PollReply = serde_json::from_str(&snapshot_of_panes(
+            vec![
+                pane_on_tab(3, "zsh", "/work/a", TabId::new(1)),
+                pane_on_tab(4, "zsh", "/work/a", TabId::new(1)),
+            ],
+            BTreeMap::from([
+                (TabId::new(1), "manual".into()),
+                (TabId::new(99), "gone".into()),
+            ]),
+        ))
+        .unwrap();
+        // Explicit plain folders name the tabs without waiting for any Git result.
+        reply.repositories.clear();
+        let check = |state: &mut State, reply: &PollReply, expected: &[(usize, &str)]| {
+            state.on_snapshot(&backend, &serde_json::to_string(reply).unwrap());
+            assert_eq!(
+                state.published_tab_names.as_ref().unwrap(),
+                &expected
+                    .iter()
+                    .map(|(id, name)| (TabId::new(*id), (*name).to_owned()))
+                    .collect()
+            );
+        };
+        check(&mut state, &reply, &[(1, "A")]);
+        let mut b = pane_on_tab(5, "zsh", "/work/b", TabId::new(1));
+        b.status = agents::AgentStatus::Held;
+        reply.panes.as_mut().unwrap().push(b);
+        check(&mut state, &reply, &[(1, "A + B")]);
+        reply.panes.as_mut().unwrap().remove(0);
+        check(&mut state, &reply, &[(1, "A + B")]);
+        reply.panes.as_mut().unwrap()[0].cwd = Some("/unknown".into());
+        check(&mut state, &reply, &[(1, "B")]);
+
+        let mut hidden = reply.panes.as_mut().unwrap().pop().unwrap();
+        hidden.tab = Some((TabId::new(2), "another tab".into()));
+        reply.suppressed_panes.push(hidden);
+        check(&mut state, &reply, &[(2, "B")]);
+        reply.suppressed_panes[0].agent =
+            Some(agents::registered_agent("codex", Some("/work/a".into())));
+        check(&mut state, &reply, &[(2, "A")]);
+        reply.suppressed_panes[0].host = Some("remote".into());
+        check(&mut state, &reply, &[]);
+        reply.suppressed_panes[0].host = None;
+        check(&mut state, &reply, &[(2, "A")]);
+        reply
+            .panes
+            .as_mut()
+            .unwrap()
+            .push(reply.suppressed_panes.pop().unwrap());
+        check(&mut state, &reply, &[(2, "A")]);
+        reply.panes.as_mut().unwrap().pop();
+        check(&mut state, &reply, &[]);
+    }
+
+    #[test]
+    fn branches_follow_checkout_probes_without_changing_project_assignments() {
+        let backend = backend();
+        backend
+            .apply(vec![projects::to_mutation(
+                &projects::validate("registered", "/work/repo").unwrap(),
+            )])
+            .unwrap();
+        let mut reply: PollReply = serde_json::from_str(&snapshot_of_panes(
+            vec![pane_on_tab(3, "zsh", "/work/repo", TabId::new(1))],
+            BTreeMap::new(),
+        ))
+        .unwrap();
+        let hidden = reply.panes.as_mut().unwrap().pop().unwrap();
+        reply.suppressed_panes.push(hidden);
+        let mut state = State::default();
+        for (branch, expected) in [(Some("topic"), "registered:topic"), (None, "registered")] {
+            reply.repositories.values_mut().next().unwrap().branch = branch.map(str::to_owned);
+            state.on_snapshot(&backend, &serde_json::to_string(&reply).unwrap());
+            assert_eq!(
+                state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
+                expected
+            );
+            assert_eq!(
+                state.published_project_context.as_ref().unwrap().1[0].1,
+                "registered"
+            );
+        }
+        reply.repositories.clear();
+        state.on_snapshot(&backend, &serde_json::to_string(&reply).unwrap());
+        assert_eq!(
+            state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
+            "registered"
+        );
     }
 }

@@ -8,7 +8,6 @@ The integration targets the installed Pi 1.0.0 interactive CLI.
   writes the shared template atomically into Yinz's native data directory and resolves it.
   Creation failures reject the spawn. Server startup does not provision Pi.
 - Remote launches remove only Yinz's generated extension argument. SSH uses hooks
-  installed remotely. Firecracker does not provision Pi automatically.
 - The hook installer honors `PI_CODING_AGENT_DIR`, with `~/.pi/agent` as its default.
   It supports user-level install, status, uninstall, backups, dry-run, and foreign-file protection.
 - The extension shares ownership and an ordered report queue across copies and reloads.

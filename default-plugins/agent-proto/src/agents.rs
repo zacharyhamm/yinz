@@ -78,10 +78,6 @@ pub struct AgentPane {
     /// send input to is on one of them specifically.
     #[serde(default)]
     pub host: Option<String>,
-    #[serde(default)]
-    pub firecracker_image: Option<String>,
-    #[serde(default)]
-    pub firecracker_worktree: Option<String>,
     /// The primary checkout whose Bubblewrap environment the pane runs in, when it is in
     /// one. A duplicate or fork of the pane starts in the same environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,7 +106,6 @@ impl AgentPane {
     /// The folder this pane's work is *identified* by. See [`checkout_location`].
     pub fn checkout_location(&self) -> Option<Location> {
         checkout_location(
-            self.firecracker_worktree.as_deref(),
             self.host.as_deref(),
             self.agent
                 .as_ref()
@@ -121,32 +116,8 @@ impl AgentPane {
     }
 }
 
-/// The folder that answers "what is this pane working on", which is not always the folder
-/// its process is in.
-///
-/// A Firecracker pane's cwd is a guest path inside a *copy* of a host worktree - the
-/// provider clones the worktree into the guest and rsyncs over it, so the guest checkout's
-/// common directory is a guest path and its only remote points at the host worktree's own
-/// path. Nothing about that identity can be matched to a project here, and matching it by
-/// path would be worse: `/workspace` on this machine is somebody else's folder. The
-/// checkout that identifies the work is the worktree the VM mirrors, which is the same rule
-/// `yinz firecracker list` resolves a VM's branch by.
-///
-/// Taken apart rather than off an [`AgentPane`] because the daemon applies it to its own
-/// per-pane maps: a suppressed pane is not in the pane list and still has a folder.
-///
-/// The worktree is read *before* the cwd, so a VM pane whose guest folder has not been
-/// reported yet still has an identity. Without that it would have none, and a folder with
-/// no identity is evicted and re-probed on every host event.
-pub fn checkout_location(
-    worktree: Option<&str>,
-    host: Option<&str>,
-    cwd: Option<&str>,
-) -> Option<Location> {
-    match worktree {
-        Some(worktree) => Some(Location::local(worktree)),
-        None => Some(Location::new(host, cwd?)),
-    }
+pub fn checkout_location(host: Option<&str>, cwd: Option<&str>) -> Option<Location> {
+    Some(Location::new(host, cwd?))
 }
 
 /// The checkout an archived run worked in, as the archive table draws it: the folder's leaf
@@ -165,11 +136,8 @@ pub fn worktree_cell(run: &AgentRunHeader) -> String {
     fn some(value: Option<&str>) -> Option<&str> {
         value.filter(|value| !value.is_empty())
     }
-    let Some(location) = checkout_location(
-        some(run.worktree.as_deref()),
-        some(run.host.as_deref()),
-        some(run.cwd.as_deref()),
-    ) else {
+    let Some(location) = checkout_location(some(run.host.as_deref()), some(run.cwd.as_deref()))
+    else {
         return String::new();
     };
     // A path with no final component is a root, which is its own best name.
@@ -960,15 +928,6 @@ pub struct AgentRun {
     /// written before this field existed, which reads as local and is what those runs were.
     #[serde(default)]
     pub host: Option<String>,
-    /// The host worktree a Firecracker run's VM mirrors, when it is one.
-    ///
-    /// `cwd` for such a run is a guest path in a copy of this folder, so this is the one
-    /// thing here a project on this machine can be worked out from — the rule
-    /// [`checkout_location`] states for a pane, kept on the run because an archived run has
-    /// no pane left to ask. Absent on every run written before this field existed and on
-    /// every run that is not in a VM, which reads as "the cwd is the identity".
-    #[serde(default)]
-    pub worktree: Option<String>,
     /// The primary checkout whose Bubblewrap environment the run's pane was in, when it
     /// was in one. The conversation lives in that environment's private home, so a resume
     /// has to go back into it to find it - and must not quietly run the agent on the host.
@@ -1044,7 +1003,6 @@ impl AgentRun {
             kind: self.kind.clone(),
             cwd: self.cwd.clone(),
             host: self.host.clone(),
-            worktree: self.worktree.clone(),
             bubblewrap: self.bubblewrap.clone(),
             started_at_ms: self.started_at_ms,
             ended_at_ms: self.ended_at_ms,
@@ -1079,9 +1037,6 @@ pub struct AgentRunHeader {
     /// The machine `cwd` is on, absent for this one. See [`AgentRun::host`].
     #[serde(default)]
     pub host: Option<String>,
-    /// The host worktree a Firecracker run's VM mirrors. See [`AgentRun::worktree`].
-    #[serde(default)]
-    pub worktree: Option<String>,
     /// The checkout whose Bubblewrap environment the run was in. See [`AgentRun::bubblewrap`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bubblewrap: Option<String>,
@@ -1917,7 +1872,6 @@ pub mod rows {
             kind: run.kind.clone(),
             cwd: run.cwd.clone(),
             host: run.host.clone(),
-            worktree: run.worktree.clone(),
             bubblewrap: run.bubblewrap.clone(),
             started_at_ms: run.started_at_ms,
             ended_at_ms: run.ended_at_ms,
@@ -3846,15 +3800,8 @@ pub fn list_json(
             if let Some(cwd) = &pane.cwd {
                 item["cwd"] = json!(cwd);
             }
-            // The machine that folder is on, and — for a Firecracker pane — the host
-            // worktree the guest folder is a copy of. Both matter to whoever reads
-            // `cwd`: an agent in a VM has a project on this machine and a folder that
-            // is not on it, so a `cwd` taken for a path here is a path to nothing.
             if let Some(host) = &pane.host {
                 item["host"] = json!(host);
-            }
-            if let Some(worktree) = &pane.firecracker_worktree {
-                item["worktree"] = json!(worktree);
             }
             if let Some(owner) = owners.get(&pane.pane_id) {
                 item["project"] = json!(owner);
@@ -3983,8 +3930,6 @@ mod tests {
             command: command.map(str::to_owned),
             cwd: None,
             host: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
             bubblewrap: None,
             status: AgentStatus::Running,
             tab: None,
@@ -4000,175 +3945,6 @@ mod tests {
             detected: Some(kind.to_owned()),
             ..pane(pane_id, "zsh", Some(command))
         }
-    }
-
-    #[test]
-    fn agent_pane_serialization_keeps_firecracker_location() {
-        let pane = AgentPane {
-            firecracker_image: Some("rust-dev".to_owned()),
-            firecracker_worktree: Some("/host/work".to_owned()),
-            ..pane(7, "codex", Some("codex"))
-        };
-        let json = serde_json::to_string(&pane).unwrap();
-        assert_eq!(serde_json::from_str::<AgentPane>(&json).unwrap(), pane);
-    }
-
-    /// The archive table's worktree column: the leaf of whatever folder identifies the run,
-    /// and the machine it is on where that is not this one.
-    #[test]
-    fn the_worktree_cell_names_the_checkout_a_run_worked_in() {
-        let run = |cwd: Option<&str>, host: Option<&str>, worktree: Option<&str>| AgentRunHeader {
-            id: "claude:session-1".to_owned(),
-            pane_id: 7,
-            yinz_session_name: "main".into(),
-            host_id: HostId::new(HOST),
-            session_id: "session-1".to_owned(),
-            origin_run_id: None,
-            previous_run_id: None,
-            kind: "claude".to_owned(),
-            cwd: cwd.map(str::to_owned),
-            host: host.map(str::to_owned),
-            worktree: worktree.map(str::to_owned),
-            bubblewrap: None,
-            started_at_ms: 10,
-            ended_at_ms: None,
-            outcome: RunOutcome::Active,
-            revision: 1,
-            summary: None,
-            title: "hook history".to_owned(),
-        };
-        assert_eq!(
-            worktree_cell(&run(Some("/work/agent"), None, None)),
-            "agent"
-        );
-        assert_eq!(
-            worktree_cell(&run(
-                Some("/work/agent/.claude/worktrees/topic"),
-                None,
-                None
-            )),
-            "topic",
-            "two worktrees of one project are told apart by the leaf, which is why it is the leaf",
-        );
-        assert_eq!(
-            worktree_cell(&run(Some("/work/agent"), Some("build-box"), None)),
-            "build-box:agent",
-            "another machine's agent is not this one",
-        );
-        assert_eq!(
-            worktree_cell(&run(
-                Some("/workspace"),
-                Some("firecracker:review"),
-                Some("/work/agent"),
-            )),
-            "agent",
-            "a VM run is named by the host worktree it mirrors, not by its guest copy",
-        );
-        assert_eq!(worktree_cell(&run(None, None, None)), "");
-        assert_eq!(
-            worktree_cell(&run(Some(""), Some("build-box"), None)),
-            "",
-            "a run that reported no folder names none, rather than a bare `build-box:`",
-        );
-    }
-
-    /// The whole point: a pane in a VM is identified by the folder on *this* machine
-    /// that the VM mirrors, not by the guest copy of it.
-    #[test]
-    fn a_firecracker_panes_checkout_is_the_worktree_its_vm_mirrors() {
-        let pane = AgentPane {
-            host: Some("firecracker:review".to_owned()),
-            cwd: Some("/workspace".to_owned()),
-            firecracker_worktree: Some("/work/agent".to_owned()),
-            ..pane(7, "claude", Some("claude"))
-        };
-        assert_eq!(
-            pane.checkout_location(),
-            Some(Location::local("/work/agent"))
-        );
-    }
-
-    /// The worktree is read before the folder, so a VM pane the host has not reported a
-    /// folder for yet still has an identity — and so is probed once rather than probed
-    /// and forgotten on every event.
-    #[test]
-    fn a_firecracker_pane_has_a_checkout_before_its_guest_folder_is_reported() {
-        let pane = AgentPane {
-            host: Some("firecracker:review".to_owned()),
-            cwd: None,
-            firecracker_worktree: Some("/work/agent".to_owned()),
-            ..pane(7, "claude", Some("claude"))
-        };
-        assert_eq!(
-            pane.checkout_location(),
-            Some(Location::local("/work/agent"))
-        );
-    }
-
-    /// A VM with no mirrored checkout answers for no folder on this machine, and an ssh
-    /// pane is untouched: its folder is over there, and saying otherwise would file it
-    /// under whichever local project sits at the same path.
-    #[test]
-    fn a_pane_without_a_mirrored_worktree_keeps_its_own_folder() {
-        let isolated = AgentPane {
-            host: Some("firecracker:review".to_owned()),
-            cwd: Some("/workspace".to_owned()),
-            ..pane(7, "claude", Some("claude"))
-        };
-        assert_eq!(
-            isolated.checkout_location(),
-            Some(Location::new(Some("firecracker:review"), "/workspace"))
-        );
-
-        let ssh = AgentPane {
-            host: Some("build-box".to_owned()),
-            cwd: Some("/work/agent".to_owned()),
-            ..pane(8, "claude", Some("claude"))
-        };
-        assert_eq!(
-            ssh.checkout_location(),
-            Some(Location::new(Some("build-box"), "/work/agent"))
-        );
-
-        let local = AgentPane {
-            cwd: Some("/work/agent".to_owned()),
-            ..pane(9, "claude", Some("claude"))
-        };
-        assert_eq!(
-            local.checkout_location(),
-            Some(Location::local("/work/agent"))
-        );
-
-        // Nothing said about either half is no location at all, which is what keeps a
-        // pane from being probed under a half-known one.
-        assert_eq!(pane(10, "zsh", None).checkout_location(), None);
-    }
-
-    /// A VM agent's guest folder is not a path on this machine, and once it has a project
-    /// here the difference stops being obvious. Both halves are on the row that says so.
-    #[test]
-    fn a_listed_agent_names_the_machine_it_is_on_and_the_worktree_it_mirrors() {
-        let vm = AgentPane {
-            host: Some("firecracker:review".to_owned()),
-            cwd: Some("/workspace".to_owned()),
-            firecracker_worktree: Some("/work/agent".to_owned()),
-            ..pane(7, "claude", Some("claude"))
-        };
-        let json = list_json(
-            &[vm],
-            &BTreeMap::new(),
-            &Activity::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &Summaries::new(),
-            &HookFeeds::new(),
-            |_| String::new(),
-        );
-        let listed: Value = serde_json::from_str(&json).unwrap();
-        let agent = &listed[0];
-        assert_eq!(agent["cwd"], json!("/workspace"));
-        assert_eq!(agent["host"], json!("firecracker:review"));
-        assert_eq!(agent["worktree"], json!("/work/agent"));
     }
 
     fn manual(pairs: &[(u32, &str)]) -> BTreeMap<u32, String> {
@@ -5157,7 +4933,6 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: None,
             host: None,
-            worktree: None,
             bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
@@ -5320,7 +5095,6 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: None,
             host: None,
-            worktree: None,
             bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
@@ -5409,7 +5183,6 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: None,
             host: None,
-            worktree: None,
             bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
@@ -5468,7 +5241,6 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: None,
             host: None,
-            worktree: None,
             bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
@@ -5562,7 +5334,6 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
             host: None,
-            worktree: None,
             bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
@@ -5905,7 +5676,6 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: Some("/work".to_owned()),
             host: None,
-            worktree: None,
             bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: None,
@@ -8786,7 +8556,6 @@ mod tests {
             kind: "claude".to_owned(),
             cwd: None,
             host: None,
-            worktree: None,
             bubblewrap: None,
             started_at_ms: 10,
             ended_at_ms: Some(20),
@@ -9444,5 +9213,70 @@ mod tests {
             entry_event_id(&stored).as_deref(),
             Some("UserPromptSubmit:given")
         );
+    }
+
+    #[test]
+    fn the_worktree_cell_names_the_checkout_a_run_worked_in() {
+        let run = |cwd: Option<&str>, host: Option<&str>| AgentRunHeader {
+            id: "claude:session-1".to_owned(),
+            pane_id: 7,
+            yinz_session_name: "main".into(),
+            host_id: HostId::new(HOST),
+            session_id: "session-1".to_owned(),
+            origin_run_id: None,
+            previous_run_id: None,
+            kind: "claude".to_owned(),
+            cwd: cwd.map(str::to_owned),
+            host: host.map(str::to_owned),
+            started_at_ms: 10,
+            ended_at_ms: None,
+            outcome: RunOutcome::Active,
+            revision: 1,
+            summary: None,
+            title: "hook history".to_owned(),
+        };
+        assert_eq!(worktree_cell(&run(Some("/work/agent"), None,)), "agent");
+        assert_eq!(
+            worktree_cell(&run(Some("/work/agent/.claude/worktrees/topic"), None,)),
+            "topic",
+            "two worktrees of one project are told apart by the leaf, which is why it is the leaf",
+        );
+        assert_eq!(
+            worktree_cell(&run(Some("/work/agent"), Some("build-box"),)),
+            "build-box:agent",
+            "another machine's agent is not this one",
+        );
+        assert_eq!(worktree_cell(&run(None, None,)), "");
+        assert_eq!(
+            worktree_cell(&run(Some(""), Some("build-box"),)),
+            "",
+            "a run that reported no folder names none, rather than a bare `build-box:`",
+        );
+    }
+
+    #[test]
+    fn panes_keep_their_checkout_location() {
+        let ssh = AgentPane {
+            host: Some("build-box".to_owned()),
+            cwd: Some("/work/agent".to_owned()),
+            ..pane(8, "claude", Some("claude"))
+        };
+        assert_eq!(
+            ssh.checkout_location(),
+            Some(Location::new(Some("build-box"), "/work/agent"))
+        );
+
+        let local = AgentPane {
+            cwd: Some("/work/agent".to_owned()),
+            ..pane(9, "claude", Some("claude"))
+        };
+        assert_eq!(
+            local.checkout_location(),
+            Some(Location::local("/work/agent"))
+        );
+
+        // Nothing said about either half is no location at all, which is what keeps a
+        // pane from being probed under a half-known one.
+        assert_eq!(pane(10, "zsh", None).checkout_location(), None);
     }
 }

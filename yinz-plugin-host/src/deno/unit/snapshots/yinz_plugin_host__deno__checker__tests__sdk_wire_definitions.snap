@@ -625,7 +625,6 @@ CurrentGitCheckout current = 3;
 NewBranchGitCheckout new_branch = 4;
 NewWorktreeGitCheckout new_worktree = 5;
 }
-bool automatic_firecracker_vm = 6;
 }
 message CurrentGitCheckout {}
 message NewBranchGitCheckout {
@@ -657,8 +656,6 @@ repeated EnvVariable env = 10;
 optional string permission_mode = 11;
 optional string resume = 12;
 optional bool hooks = 13;
-optional string firecracker = 14;
-optional string firecracker_image = 15;
 optional string effort = 16;
 optional bool reuse = 17;
 optional bool allow_outside_worktree = 18;
@@ -671,7 +668,6 @@ optional string source_directory = 2;
 optional string cwd = 3;
 optional string name = 4;
 repeated ContextItem context = 5;
-bool automatic_firecracker_vm = 6;
 bool start_suppressed = 7;
 }
 message SpawnAgentResponse {
@@ -2266,8 +2262,6 @@ reserved 26, 27;
 optional string cwd = 28;
 optional string host = 29;
 optional AgentInfo agent = 30;
-optional string firecracker_image = 31;
-optional string firecracker_worktree = 32;
 optional command.PaneTarget target = 33;
 bool is_stack_list_member = 34;
 optional string restart_error = 35;
@@ -3223,9 +3217,6 @@ optional string pane_name = 5;
 bool hold_on_close = 6;
 bool hold_on_start = 7;
 reserved 8;
-optional string firecracker_vm = 9;
-optional string firecracker_image = 10;
-optional string firecracker_worktree = 11;
 optional command.PaneTarget target = 12;
 }
 message PluginConfiguration {

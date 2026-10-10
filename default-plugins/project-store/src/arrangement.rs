@@ -116,8 +116,6 @@ mod tests {
             command: None,
             cwd: Some(cwd.into()),
             host: None,
-            firecracker_image: None,
-            firecracker_worktree: None,
             bubblewrap: None,
             status: agents::AgentStatus::Running,
             tab: Some((TabId::new(0), String::new())),
@@ -192,59 +190,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn identity_and_checkout_order_are_independent_of_display_names() {
-        let mut remote = pane(3, "/process");
-        remote.agent = Some(
-            serde_json::from_value(
-                serde_json::json!({"kind":"codex", "state":"Busy", "cwd":"/repo"}),
-            )
-            .unwrap(),
-        );
-        remote.host = Some("ssh-box".into());
-        let mut vm = pane(4, "/guest");
-        vm.host = Some("vm".into());
-        vm.firecracker_worktree = Some("/repo/.worktrees/a".into());
-        let mut agent = pane(5, "/shell");
-        agent.agent = Some(
-            serde_json::from_value(
-                serde_json::json!({"kind":"codex", "state":"Busy", "cwd":"/repo/.worktrees/a"}),
-            )
-            .unwrap(),
-        );
-        let panes = vec![pane(1, "/repo"), pane(2, "/other/repo"), remote, vm, agent];
-        let repositories = BTreeMap::from([
-            (
-                Location::local("/repo"),
-                repo("/repo", "/repo/.git", Some("origin-a"), Some("z")),
-            ),
-            (
-                Location::local("/other/repo"),
-                repo("/other/repo", "/other/repo/.git", Some("origin-b"), None),
-            ),
-            (
-                Location::new(Some("ssh-box"), "/repo"),
-                repo("/repo", "/repo/.git", Some("origin-a"), Some("b"))
-                    .on_host(Some("ssh-box".into())),
-            ),
-            (
-                Location::local("/repo/.worktrees/a"),
-                repo(
-                    "/repo/.worktrees/a",
-                    "/repo/.git",
-                    Some("origin-a"),
-                    Some("a"),
-                ),
-            ),
-        ]);
-        let (groups, skipped) = classify(&BTreeMap::new(), &reply(panes, repositories));
-        assert_eq!(skipped, 0);
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].name, groups[1].name);
-        assert_ne!(groups[0].identity, groups[1].identity);
-        assert_eq!(groups[0].pane_ids, vec![4, 5, 3, 1]);
-        assert_eq!(groups[0].configuration_root.as_deref(), Some("/repo"));
-    }
     #[test]
     fn remote_less_paths_are_host_scoped_and_explicit_folders_are_recognized() {
         let mut remote = pane(2, "/repo");

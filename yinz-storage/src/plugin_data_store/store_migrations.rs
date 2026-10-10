@@ -149,8 +149,6 @@ fn rename_builtin_project_entities(exec: &mut dyn Executor) -> Result<(), DataEr
         ("yinz:hocus-agents", "yinz:agents"),
         ("yinz:hocus-agentd", "yinz:agent-service"),
         ("yinz:hocus-todos", "yinz:todos"),
-        ("yinz:hocus-vms", "yinz:vms"),
-        ("yinz:hocus-swamp", "yinz:swamp-issues"),
         ("yinz:hocus-new-agent", "yinz:new-agent"),
         ("yinz:hocus-store", "yinz:project-store"),
         ("yinz:hocus-proto", "yinz:agent-proto"),

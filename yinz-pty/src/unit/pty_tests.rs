@@ -89,10 +89,6 @@ struct MockOsApi {
     transport_release: Arc<Barrier>,
     next_terminal_id: Arc<AtomicU32>,
     resolved_spawns: Arc<Mutex<Vec<TerminalId>>>,
-    /// The remote panes that run in a Firecracker VM rather than on an ssh host.
-    firecracker_panes: Arc<Mutex<std::collections::HashSet<TerminalId>>>,
-    /// When set, every local spawn fails with an ordinary error (not a pane
-    /// start failure), the way an `openpty` that ran out of ptys would.
     fail_local_spawns: Arc<Mutex<bool>>,
     /// How many local spawns still succeed before they start failing the way
     /// `fail_local_spawns` makes them fail, so a test can spawn a pane for real
@@ -131,7 +127,6 @@ impl MockOsApi {
             transport_release: Arc::new(Barrier::new(1)),
             next_terminal_id: Arc::new(AtomicU32::new(0)),
             resolved_spawns: Arc::new(Mutex::new(vec![])),
-            firecracker_panes: Arc::new(Mutex::new(std::collections::HashSet::new())),
             fail_local_spawns: Arc::new(Mutex::new(false)),
             local_spawns_to_allow: Arc::new(Mutex::new(0)),
             adopted_command: Arc::new(Mutex::new(None)),
@@ -139,10 +134,6 @@ impl MockOsApi {
             exit_check_release: Arc::new(Barrier::new(1)),
             exit_check_error: None,
         }
-    }
-    fn mark_firecracker(&self, terminal_id: TerminalId) {
-        self.mark_remote(terminal_id);
-        self.firecracker_panes.lock().unwrap().insert(terminal_id);
     }
     fn rerun_commands(&self) -> Vec<RunCommand> {
         self.rerun_commands.lock().unwrap().clone()
@@ -271,7 +262,7 @@ impl ServerOsApi for MockOsApi {
             command,
             rerun_command,
             endpoint: Some(crate::os_input_output::RemoteEndpoint {
-                host: "resolved-vm".to_owned(),
+                host: "resolved-host".to_owned(),
                 ssh_options: Default::default(),
             }),
         })
@@ -310,7 +301,7 @@ impl ServerOsApi for MockOsApi {
             command,
             rerun_command,
             endpoint: Some(crate::os_input_output::RemoteEndpoint {
-                host: "resolved-vm".to_owned(),
+                host: "resolved-host".to_owned(),
                 ssh_options: Default::default(),
             }),
         })
@@ -357,12 +348,6 @@ impl ServerOsApi for MockOsApi {
     }
     fn is_remote_pane(&self, terminal_id: TerminalId) -> bool {
         self.remote_panes.lock().unwrap().contains(&terminal_id)
-    }
-    fn is_firecracker_pane(&self, terminal_id: TerminalId) -> bool {
-        self.firecracker_panes
-            .lock()
-            .unwrap()
-            .contains(&terminal_id)
     }
     fn signal_remote_child(
         &self,
@@ -577,7 +562,7 @@ fn make_pty_with_screen_receiver(mock: MockOsApi) -> (Pty, PluginReceiver, Scree
 fn collect_pane_host_instructions(rx: &ScreenReceiver) -> Vec<(TerminalId, Option<String>)> {
     let mut updates = Vec::new();
     while let Ok((instruction, _)) = rx.try_recv() {
-        if let ScreenInstruction::UpdatePaneHost(terminal_id, host, _) = instruction {
+        if let ScreenInstruction::UpdatePaneHost(terminal_id, host) = instruction {
             updates.push((terminal_id, host));
         }
     }
@@ -1121,278 +1106,6 @@ fn a_failed_remote_termination_does_not_fail_the_close() {
 }
 
 #[test]
-fn a_firecracker_preflight_does_not_block_other_pty_work() {
-    let mut os_api = MockOsApi::new();
-    os_api.spawn_started = Arc::new(Barrier::new(2));
-    os_api.spawn_release = Arc::new(Barrier::new(2));
-    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    let command = RunCommand {
-        command: PathBuf::from("claude"),
-        target: PaneTarget::Firecracker {
-            vm: "review".to_owned(),
-            image: None,
-            worktree: None,
-        },
-        ..Default::default()
-    };
-    finish_pane_spawn(
-        &mut pty,
-        PendingPaneSpawn {
-            run_command: Some(command.clone()),
-            pane_title: None,
-            open_file_payload: None,
-            invoked_with: Some(Run::Command(command.clone())),
-            client_or_tab_index: ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1)),
-            completion_tx: None,
-            placement: PanePlacement::New {
-                new_pane_placement: NewPanePlacement::default(),
-                start_suppressed: false,
-                set_blocking: false,
-            },
-        },
-        Ok((crate::TerminalId::new(41), false)),
-    )
-    .unwrap();
-    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-        terminal_id: crate::TerminalId::new(41),
-        terminal_action: TerminalAction::RunCommand(command),
-    }))
-    .unwrap();
-    os_api.spawn_started.wait();
-    let instructions = screen_rx
-        .try_iter()
-        .map(|(instruction, _)| instruction)
-        .collect::<Vec<_>>();
-    assert!(matches!(
-        instructions.first(),
-        Some(ScreenInstruction::NewPane(
-            PaneId::Terminal(TERMINAL_41),
-            ..
-        ))
-    ));
-    assert!(matches!(
-        instructions.get(1),
-        Some(ScreenInstruction::PtyBytes(TERMINAL_41, loading))
-            if String::from_utf8_lossy(loading).contains("Starting Firecracker VM")
-    ));
-    assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
-        .is_ok());
-    os_api.spawn_release.wait();
-}
-
-#[test]
-fn closing_a_new_remote_pane_while_it_connects_tears_down_the_late_transport() {
-    let mut os_api = MockOsApi::new();
-    os_api.transport_started = Arc::new(Barrier::new(2));
-    os_api.transport_release = Arc::new(Barrier::new(2));
-    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    let (pty_tx, pty_rx) = channels::unbounded();
-    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
-
-    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-        terminal_id: crate::TerminalId::new(41),
-        terminal_action: TerminalAction::RunCommand(firecracker_command()),
-    }))
-    .unwrap();
-    os_api.transport_started.wait();
-    pty.close_pane(PaneId::Terminal(crate::TerminalId::new(41)))
-        .unwrap();
-    let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
-    os_api.transport_release.wait();
-
-    let (instruction, _) = pty_rx
-        .recv_timeout(std::time::Duration::from_secs(1))
-        .unwrap();
-    let PtyInstruction::SpawnResolved(PendingSpawn::Terminal(pending, spawned)) = instruction
-    else {
-        panic!("expected a resolved remote pane")
-    };
-    pty.handle_remote_spawned(pending, spawned).unwrap();
-
-    assert_eq!(
-        os_api.cleared_terminal_ids.lock().unwrap()[closed_at..],
-        [TerminalId::new(41)]
-    );
-}
-
-#[test]
-fn a_remote_spawn_after_the_pty_exits_clears_its_terminal_id() {
-    let mut os_api = MockOsApi::new();
-    os_api.transport_started = Arc::new(Barrier::new(2));
-    os_api.transport_release = Arc::new(Barrier::new(2));
-    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    let shutdown = Shutdown::default();
-    let (pty_tx, pty_rx) = channels::unbounded();
-    pty.bus.senders.to_pty = Some(shutdown.sender(pty_tx));
-    pty.bus.senders.should_silently_fail = false;
-
-    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-        terminal_id: TERMINAL_41,
-        terminal_action: TerminalAction::RunCommand(firecracker_command()),
-    }))
-    .unwrap();
-    os_api.transport_started.wait();
-    // The worker must observe the failed handback and clean up the transport itself.
-    shutdown.begin();
-    drop(pty_rx);
-    os_api.transport_release.wait();
-    pty.spawn_workers.pop().unwrap().join().unwrap();
-
-    assert_eq!(*os_api.resolved_spawns.lock().unwrap(), [TERMINAL_41]);
-    assert_eq!(*os_api.cleared_terminal_ids.lock().unwrap(), [TERMINAL_41]);
-}
-
-#[test]
-fn a_firecracker_layout_appears_before_preflight_finishes() {
-    let mut os_api = MockOsApi::new();
-    os_api.spawn_started = Arc::new(Barrier::new(2));
-    os_api.spawn_release = Arc::new(Barrier::new(2));
-    os_api.transport_started = Arc::new(Barrier::new(2));
-    os_api.transport_release = Arc::new(Barrier::new(2));
-    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    let (pty_tx, _pty_rx) = channels::unbounded();
-    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
-    let command = RunCommand {
-        command: PathBuf::from("claude"),
-        target: PaneTarget::Firecracker {
-            vm: "review".to_owned(),
-            image: None,
-            worktree: None,
-        },
-        ..Default::default()
-    };
-    let layout = TiledPaneLayout {
-        run: Some(Run::Command(command.clone())),
-        ..Default::default()
-    };
-
-    pty.spawn_terminals_for_layout(
-        None,
-        layout,
-        vec![],
-        Some(TerminalAction::RunCommand(command)),
-        HashMap::new(),
-        None,
-        TabId::new(0),
-        false,
-        true,
-        crate::ClientId::new(1),
-        None,
-    )
-    .unwrap();
-    assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
-        instruction,
-        ScreenInstruction::ApplyLayout(_, _, tiled, _, _, _, _, _, _, _, _)
-            if tiled == vec![(TerminalId::new(0), None)]
-    )));
-    os_api.spawn_started.wait();
-    assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
-        .is_ok());
-    os_api.spawn_release.wait();
-    os_api.transport_started.wait();
-    assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
-        .is_ok());
-    os_api.transport_release.wait();
-}
-
-#[test]
-fn dropping_pty_does_not_wait_for_a_firecracker_worker() {
-    let mut os_api = MockOsApi::new();
-    os_api.spawn_started = Arc::new(Barrier::new(2));
-    os_api.spawn_release = Arc::new(Barrier::new(2));
-    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    let command = RunCommand {
-        command: PathBuf::from("claude"),
-        target: PaneTarget::Firecracker {
-            vm: "review".to_owned(),
-            image: None,
-            worktree: None,
-        },
-        ..Default::default()
-    };
-    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
-        terminal_id: crate::TerminalId::new(41),
-        terminal_action: TerminalAction::RunCommand(command),
-    }))
-    .unwrap();
-    os_api.spawn_started.wait();
-
-    let (dropped_tx, dropped_rx) = channels::bounded(1);
-    let dropper = std::thread::spawn(move || {
-        drop(pty);
-        dropped_tx.send(()).unwrap();
-    });
-    let returned = dropped_rx
-        .recv_timeout(std::time::Duration::from_millis(100))
-        .is_ok();
-    os_api.spawn_release.wait();
-    dropper.join().unwrap();
-    assert!(returned, "Pty::drop waited for the Firecracker worker");
-}
-
-#[test]
-fn a_firecracker_layout_override_appears_before_transport() {
-    let mut os_api = MockOsApi::new();
-    os_api.spawn_started = Arc::new(Barrier::new(2));
-    os_api.spawn_release = Arc::new(Barrier::new(2));
-    os_api.transport_started = Arc::new(Barrier::new(2));
-    os_api.transport_release = Arc::new(Barrier::new(2));
-    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    let (pty_tx, _pty_rx) = channels::unbounded();
-    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
-    let command = RunCommand {
-        command: PathBuf::from("claude"),
-        target: PaneTarget::Firecracker {
-            vm: "review".to_owned(),
-            image: None,
-            worktree: None,
-        },
-        ..Default::default()
-    };
-    let pending = PendingLayoutOverride {
-        cwd: None,
-        default_shell: None,
-        tabs_to_close: vec![],
-        tabs: vec![(
-            TabId::new(7),
-            TabLayoutInfo {
-                tab_index: TabPosition::new(0),
-                tab_name: None,
-                tiled_layout: TiledPaneLayout {
-                    run: Some(Run::Command(command)),
-                    ..Default::default()
-                },
-                floating_layouts: vec![],
-                swap_tiled_layouts: None,
-                swap_floating_layouts: None,
-            },
-            HashMap::new(),
-        )],
-        retain_existing_terminal_panes: false,
-        retain_existing_plugin_panes: false,
-        client_id: crate::ClientId::new(1),
-        completion_tx: None,
-    };
-
-    pty.finish_layout_override(pending).unwrap();
-    assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
-        instruction,
-        ScreenInstruction::OverrideLayoutComplete(tabs, failed_tabs, _, false, false, CLIENT_1, _)
-            if failed_tabs.is_empty() && tabs.len() == 1 && tabs[0].tab_index == TabId::new(7) && tabs[0].new_terminal_pids == vec![(TerminalId::new(0), None)]
-    )));
-    os_api.spawn_started.wait();
-    assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
-        .is_ok());
-    os_api.spawn_release.wait();
-    os_api.transport_started.wait();
-    os_api.transport_release.wait();
-}
-
-#[test]
 fn layout_override_completion_reports_failed_tabs_alongside_successes() {
     for successful_tabs in [0, 1] {
         let os_api = MockOsApi::new();
@@ -1455,37 +1168,6 @@ fn layout_override_completion_reports_failed_tabs_alongside_successes() {
     }
 }
 
-fn firecracker_command() -> RunCommand {
-    RunCommand {
-        command: PathBuf::from("claude"),
-        target: PaneTarget::Firecracker {
-            vm: "review".to_owned(),
-            image: None,
-            worktree: None,
-        },
-        ..Default::default()
-    }
-}
-
-#[test]
-fn a_firecracker_loading_screen_names_the_vm_image_worktree_and_phase() {
-    let command = RunCommand {
-        target: PaneTarget::Firecracker {
-            vm: "review".to_owned(),
-            image: Some("rust".to_owned()),
-            worktree: Some(PathBuf::from("/work/repo")),
-        },
-        ..Default::default()
-    };
-    let screen = String::from_utf8(remote_loading_screen(&command, "booting the guest")).unwrap();
-
-    assert!(screen.contains("Starting Firecracker VM"));
-    assert!(screen.contains("VM: review"));
-    assert!(screen.contains("Image: rust"));
-    assert!(screen.contains("Worktree: /work/repo"));
-    assert!(screen.contains("Status: booting the guest"));
-}
-
 #[test]
 fn remote_loading_details_cannot_write_terminal_control_sequences() {
     let command = RunCommand {
@@ -1515,7 +1197,7 @@ fn resolved_rerun(
 }
 
 #[test]
-fn a_firecracker_rerun_does_not_block_the_pty_during_transport() {
+fn a_remote_rerun_does_not_block_the_pty_during_transport() {
     let mut os_api = MockOsApi::new();
     os_api.spawn_started = Arc::new(Barrier::new(2));
     os_api.spawn_release = Arc::new(Barrier::new(2));
@@ -1528,7 +1210,7 @@ fn a_firecracker_rerun_does_not_block_the_pty_during_transport() {
     assert!(pty
         .request_rerun(
             PaneId::Terminal(crate::TerminalId::new(41)),
-            firecracker_command(),
+            ssh_command(),
             None
         )
         .unwrap()
@@ -1582,7 +1264,7 @@ fn suspended_sandbox_and_remote_reruns_use_the_worker() {
         PaneTarget::Bubblewrap {
             root: "/repo".into(),
         },
-        firecracker_command().target,
+        ssh_command().target,
     ] {
         let mut os_api = MockOsApi::new();
         os_api.spawn_started = Arc::new(Barrier::new(2));
@@ -1593,7 +1275,7 @@ fn suspended_sandbox_and_remote_reruns_use_the_worker() {
         let command = RunCommand {
             target,
             hold_on_start: true,
-            ..firecracker_command()
+            ..ssh_command()
         };
         assert!(
             !command.defers_spawn(),
@@ -1629,7 +1311,7 @@ fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
     assert!(pty
         .request_rerun(
             PaneId::Terminal(crate::TerminalId::new(41)),
-            firecracker_command(),
+            ssh_command(),
             None
         )
         .unwrap()
@@ -1640,7 +1322,7 @@ fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
     assert!(pty
         .request_rerun(
             PaneId::Terminal(crate::TerminalId::new(41)),
-            firecracker_command(),
+            ssh_command(),
             None
         )
         .unwrap()
@@ -1683,7 +1365,7 @@ fn a_failed_spawn_for_a_closed_pane_does_not_fail_the_pty_thread() {
     assert!(pty
         .request_rerun(
             PaneId::Terminal(crate::TerminalId::new(41)),
-            firecracker_command(),
+            ssh_command(),
             None
         )
         .unwrap()
@@ -1725,7 +1407,7 @@ fn an_empty_spawn_slot_for_a_closed_pane_does_not_fail_the_pty_thread() {
     assert!(pty
         .request_rerun(
             PaneId::Terminal(crate::TerminalId::new(41)),
-            firecracker_command(),
+            ssh_command(),
             None
         )
         .unwrap()
@@ -1765,7 +1447,7 @@ fn a_local_rerun_during_a_deferred_one_is_queued_not_run_twice() {
     assert!(pty
         .request_rerun(
             PaneId::Terminal(crate::TerminalId::new(41)),
-            firecracker_command(),
+            ssh_command(),
             None
         )
         .unwrap()
@@ -1808,13 +1490,13 @@ fn a_second_deferred_rerun_is_queued_and_the_first_result_is_kept() {
     assert!(pty
         .request_rerun(
             PaneId::Terminal(crate::TerminalId::new(41)),
-            firecracker_command(),
+            ssh_command(),
             None
         )
         .unwrap()
         .is_none());
     os_api.spawn_started.wait();
-    let mut second = firecracker_command();
+    let mut second = ssh_command();
     second.args = vec!["--second".to_owned()];
     assert!(pty
         .request_rerun(PaneId::Terminal(crate::TerminalId::new(41)), second, None)
@@ -1851,7 +1533,7 @@ fn a_second_deferred_rerun_is_queued_and_the_first_result_is_kept() {
 }
 
 /// An ssh pane's connect and bootstrap take as long as the network does, and
-/// they now run where a VM boot does: on a worker, with the pty thread free.
+/// they now run where an SSH connection does: on a worker, with the pty thread free.
 #[test]
 fn an_ssh_spawn_does_not_block_the_pty_thread() {
     let mut os_api = MockOsApi::new();
@@ -1999,59 +1681,6 @@ fn layout_handoffs_after_screen_shutdown_close_panes_without_starting_remote_com
     }
 }
 
-/// A layout that fails before it reaches Screen must release remote ids it reserved.
-#[test]
-fn a_failing_layout_pane_clears_its_reserved_remote_panes() {
-    let os_api = MockOsApi::new();
-    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    let (pty_tx, _pty_rx) = channels::unbounded();
-    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
-    let local = RunCommand {
-        command: PathBuf::from("sh"),
-        ..Default::default()
-    };
-    let layout = TiledPaneLayout {
-        children: vec![
-            TiledPaneLayout {
-                run: Some(Run::Command(firecracker_command())),
-                ..Default::default()
-            },
-            TiledPaneLayout {
-                run: Some(Run::Command(local)),
-                ..Default::default()
-            },
-            TiledPaneLayout {
-                run: Some(Run::Command(firecracker_command())),
-                ..Default::default()
-            },
-        ],
-        ..Default::default()
-    };
-    *os_api.fail_local_spawns.lock().unwrap() = true;
-
-    let result = pty.spawn_terminals_for_layout(
-        None,
-        layout,
-        vec![],
-        Some(TerminalAction::RunCommand(RunCommand::default())),
-        HashMap::new(),
-        None,
-        TabId::new(0),
-        false,
-        true,
-        crate::ClientId::new(1),
-        None,
-    );
-
-    assert!(result.is_err(), "the local failure is still reported");
-    assert_eq!(
-        *os_api.cleared_terminal_ids.lock().unwrap(),
-        vec![TerminalId::new(0)],
-        "the reservation made before the local failure is released"
-    );
-    assert!(pty.task_handles.is_empty());
-}
-
 /// A layout that fails part-way through must not leave the panes it already
 /// started running with nobody to close them: Screen never hears of a layout
 /// that does not reach `ApplyLayout`.
@@ -2175,68 +1804,6 @@ fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
         })
         .collect();
     assert_eq!(unloaded, vec![PluginId::new(100), PluginId::new(101)]);
-}
-
-#[test]
-fn a_failed_firecracker_rerun_is_shown_and_held_without_hold_on_close() {
-    let os_api = MockOsApi::new();
-    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api);
-    let command = RunCommand {
-        command: PathBuf::from("claude"),
-        target: PaneTarget::Firecracker {
-            vm: "review".to_owned(),
-            image: None,
-            worktree: None,
-        },
-        hold_on_close: false,
-        ..Default::default()
-    };
-    let error = YinzError::PaneStartFailed {
-        terminal_id: yinz_types::internal_ids::TerminalId::new(41),
-        message: "provider failed".to_owned(),
-    }
-    .into();
-
-    finish_command_rerun(
-        &mut pty,
-        PaneId::Terminal(crate::TerminalId::new(41)),
-        command,
-        Err(error),
-    )
-    .unwrap();
-
-    let instructions = screen_rx
-        .try_iter()
-        .map(|(instruction, _)| instruction)
-        .collect::<Vec<_>>();
-    assert!(instructions.iter().any(|instruction| matches!(
-        instruction,
-        ScreenInstruction::PtyBytes(TERMINAL_41, message) if message == b"provider failed"
-    )));
-    assert!(instructions.iter().any(|instruction| matches!(
-        instruction,
-        ScreenInstruction::HoldPane(PaneId::Terminal(TERMINAL_41), Some(2), _)
-    )));
-}
-
-/// A Firecracker pane has no local pid, and its VM stops with the session, so
-/// teardown terminates it on its broker like a local child.
-#[test]
-fn pty_teardown_closes_firecracker_panes_without_local_pids() {
-    let os_api = MockOsApi::new();
-    let (pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    os_api.mark_firecracker(crate::TerminalId::new(7));
-
-    drop(pty);
-
-    assert_eq!(
-        os_api.remote_signals(),
-        vec![(TerminalId::new(7), ChildSignal::Hup)]
-    );
-    assert_eq!(
-        os_api.cleared_terminal_ids.lock().unwrap().clone(),
-        vec![TerminalId::new(7)]
-    );
 }
 
 /// An ssh pane's process is the point: it survives the session on its broker,
@@ -2992,7 +2559,7 @@ fn a_failed_host_change_retracts_the_old_host_and_cwd() {
     for (instruction, _) in screen_rx.try_iter() {
         match instruction {
             ScreenInstruction::UpdatePaneCwd(id, cwd) => cwd_updates.push((id, cwd)),
-            ScreenInstruction::UpdatePaneHost(id, host, _) => host_updates.push((id, host)),
+            ScreenInstruction::UpdatePaneHost(id, host) => host_updates.push((id, host)),
             _ => {},
         }
     }
@@ -3770,7 +3337,10 @@ fn failing_three_slot_layout() -> TiledPaneLayout {
                 ..Default::default()
             },
             TiledPaneLayout {
-                run: Some(Run::Command(firecracker_command())),
+                run: Some(Run::Command(RunCommand {
+                    target: PaneTarget::ssh("build-box").unwrap(),
+                    ..Default::default()
+                })),
                 ..Default::default()
             },
             TiledPaneLayout {
@@ -4467,92 +4037,6 @@ fn warp_held_reader_joins_remove_completed_handles_and_refuse_failed_tasks() {
 }
 
 #[test]
-fn warp_held_terminals_need_no_supervisor_and_do_not_spawn_on_adoption() {
-    use yinz_types::data::HeldTerminal;
-    for first_run in [true, false] {
-        for (target, expected_host, expected_worktree) in [
-            (PaneTarget::Local, None, None),
-            (
-                PaneTarget::ssh("build-box").unwrap(),
-                Some("build-box"),
-                None,
-            ),
-            (
-                PaneTarget::firecracker("vm", None, Some(std::path::Path::new("/worktree")))
-                    .unwrap(),
-                Some("firecracker:vm"),
-                Some(PathBuf::from("/worktree")),
-            ),
-            (
-                PaneTarget::firecracker("vm", None, None).unwrap(),
-                Some("firecracker:vm"),
-                None,
-            ),
-        ] {
-            let mock = MockOsApi::new();
-            let (mut pty, _, screen) = make_pty_with_screen_receiver(mock.clone());
-            let live = TerminalId::new(3);
-            let held_id = TerminalId::new(8);
-            set_warpable_terminal(&mut pty, live);
-            mock.refuse_to_warp(held_id, "no supervisor");
-            let held = HeldTerminal {
-                command: RunCommand {
-                    command: "/usr/bin/true".into(),
-                    cwd: Some("/tmp".into()),
-                    originating_plugin: Some(step_origin("source")),
-                    target,
-                    ..Default::default()
-                },
-                first_run,
-                exit_status: (!first_run).then_some(17),
-            };
-            let released = release_tab_with_held_for_warp(
-                &mut pty,
-                vec![live, held_id],
-                HashMap::from([(held_id, held.clone())]),
-                test_warp_deadline(),
-            );
-            assert!(released.iter().all(|(_, result)| result.is_ok()));
-            assert_eq!(mock.release_attempts(), vec![live]);
-            let adopted = pty
-                .adopt_terminal(&WarpedPane {
-                    held: Some(held.clone()),
-                    ..Default::default()
-                })
-                .unwrap();
-            let mut expected_command = held.command;
-            expected_command.originating_plugin = None;
-            assert_eq!(adopted.cmd, expected_command);
-            assert_eq!(
-                adopted.child_exit_status,
-                (!first_run).then_some(held.exit_status)
-            );
-            let hosts: Vec<_> = screen
-                .try_iter()
-                .filter_map(|(instruction, _)| match instruction {
-                    ScreenInstruction::UpdatePaneHost(id, host, worktree)
-                        if id == adopted.terminal_id =>
-                    {
-                        Some((host, worktree))
-                    },
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                hosts,
-                vec![(expected_host.map(str::to_owned), expected_worktree)]
-            );
-            assert!(adopted.buffered.is_empty());
-            assert!(!pty.task_handles.contains_key(&adopted.terminal_id));
-            assert!(!pty.id_to_child_pid.contains_key(&adopted.terminal_id));
-            assert!(pty.pending_remote_spawns.is_empty());
-            assert!(mock.resolved_spawns.lock().unwrap().is_empty());
-            assert!(mock.rerun_commands().is_empty());
-        }
-    }
-}
-
-#[test]
 fn warp_revalidates_pending_restarts_before_releasing_any_pane() {
     let mock = MockOsApi::new();
     let (mut pty, _, _) = make_pty_with_screen_receiver(mock.clone());
@@ -4636,11 +4120,6 @@ fn direct_agent_remote_startup_waits_before_placement_and_late_cancelled_starts_
     for target in [
         PaneTarget::Ssh {
             host: "host".into(),
-        },
-        PaneTarget::Firecracker {
-            vm: "review".into(),
-            image: None,
-            worktree: None,
         },
         // Its launch checks run in the same worker, so the spawner waits on them too.
         PaneTarget::Bubblewrap {
@@ -4939,4 +4418,387 @@ fn note_editor_forced_close_reports_teardown_and_confirmation_errors() {
     assert!(error.contains("closed"), "{error}");
     assert!(error.contains("injected clear failure"), "{error}");
     assert!(error.contains("process exit unconfirmed"), "{error}");
+}
+
+#[test]
+fn closing_a_new_remote_pane_while_it_connects_tears_down_the_late_transport() {
+    let mut os_api = MockOsApi::new();
+    os_api.transport_started = Arc::new(Barrier::new(2));
+    os_api.transport_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+
+    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
+        terminal_id: crate::TerminalId::new(41),
+        terminal_action: TerminalAction::RunCommand(ssh_command()),
+    }))
+    .unwrap();
+    os_api.transport_started.wait();
+    pty.close_pane(PaneId::Terminal(crate::TerminalId::new(41)))
+        .unwrap();
+    let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
+    os_api.transport_release.wait();
+
+    let (instruction, _) = pty_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    let PtyInstruction::SpawnResolved(PendingSpawn::Terminal(pending, spawned)) = instruction
+    else {
+        panic!("expected a resolved remote pane")
+    };
+    pty.handle_remote_spawned(pending, spawned).unwrap();
+
+    assert_eq!(
+        os_api.cleared_terminal_ids.lock().unwrap()[closed_at..],
+        [TerminalId::new(41)]
+    );
+}
+
+#[test]
+fn a_remote_spawn_after_the_pty_exits_clears_its_terminal_id() {
+    let mut os_api = MockOsApi::new();
+    os_api.transport_started = Arc::new(Barrier::new(2));
+    os_api.transport_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let shutdown = Shutdown::default();
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(shutdown.sender(pty_tx));
+    pty.bus.senders.should_silently_fail = false;
+
+    pty.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
+        terminal_id: TERMINAL_41,
+        terminal_action: TerminalAction::RunCommand(ssh_command()),
+    }))
+    .unwrap();
+    os_api.transport_started.wait();
+    // The worker must observe the failed handback and clean up the transport itself.
+    shutdown.begin();
+    drop(pty_rx);
+    os_api.transport_release.wait();
+    pty.spawn_workers.pop().unwrap().join().unwrap();
+
+    assert_eq!(*os_api.resolved_spawns.lock().unwrap(), [TERMINAL_41]);
+    assert_eq!(*os_api.cleared_terminal_ids.lock().unwrap(), [TERMINAL_41]);
+}
+
+#[test]
+fn a_ssh_rerun_does_not_block_the_pty_during_transport() {
+    let mut os_api = MockOsApi::new();
+    os_api.spawn_started = Arc::new(Barrier::new(2));
+    os_api.spawn_release = Arc::new(Barrier::new(2));
+    os_api.transport_started = Arc::new(Barrier::new(2));
+    os_api.transport_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+
+    assert!(pty
+        .request_rerun(
+            PaneId::Terminal(crate::TerminalId::new(41)),
+            ssh_command(),
+            None
+        )
+        .unwrap()
+        .is_none());
+    os_api.spawn_started.wait();
+    assert!(pty
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
+        .is_ok());
+    os_api.spawn_release.wait();
+    os_api.transport_started.wait();
+    assert!(pty
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
+        .is_ok());
+    assert!(pty_rx.try_recv().is_err());
+    os_api.transport_release.wait();
+
+    let (pending, spawned) = resolved_rerun(&pty_rx);
+    pty.handle_rerun_spawned(pending, spawned).unwrap();
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
+    assert_eq!(
+        *os_api.resolved_spawns.lock().unwrap(),
+        vec![TerminalId::new(41)]
+    );
+}
+
+#[test]
+fn closing_a_pane_mid_transport_tears_down_the_late_spawn() {
+    let mut os_api = MockOsApi::new();
+    os_api.transport_started = Arc::new(Barrier::new(2));
+    os_api.transport_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+
+    assert!(pty
+        .request_rerun(
+            PaneId::Terminal(crate::TerminalId::new(41)),
+            ssh_command(),
+            None
+        )
+        .unwrap()
+        .is_none());
+    os_api.transport_started.wait();
+    // A rerun asked for while the spawn is off-thread is parked behind it; it must go
+    // with the pane rather than being started against a closed one.
+    assert!(pty
+        .request_rerun(
+            PaneId::Terminal(crate::TerminalId::new(41)),
+            ssh_command(),
+            None
+        )
+        .unwrap()
+        .is_none());
+    assert_eq!(pty.reruns[&TerminalId::new(41)].queued.len(), 1);
+    assert!(pty
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(41)))
+        .is_ok());
+    let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
+    os_api.transport_release.wait();
+
+    let (pending, spawned) = resolved_rerun(&pty_rx);
+    pty.handle_rerun_spawned(pending, spawned).unwrap();
+
+    assert_eq!(
+        os_api.cleared_terminal_ids.lock().unwrap()[closed_at..],
+        [TerminalId::new(41)],
+        "the late spawn must be torn down through the funnel"
+    );
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
+    assert!(
+        pty_rx.try_recv().is_err(),
+        "no rerun may be started for a closed pane"
+    );
+}
+
+#[test]
+fn a_failed_spawn_for_a_closed_pane_does_not_fail_the_pty_thread() {
+    let mut os_api = MockOsApi::new();
+    os_api.spawn_started = Arc::new(Barrier::new(2));
+    os_api.spawn_release = Arc::new(Barrier::new(2));
+    os_api.fail_rerun_of(crate::TerminalId::new(41));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+
+    assert!(pty
+        .request_rerun(
+            PaneId::Terminal(crate::TerminalId::new(41)),
+            ssh_command(),
+            None
+        )
+        .unwrap()
+        .is_none());
+    os_api.spawn_started.wait();
+    assert!(pty
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(41)))
+        .is_ok());
+    let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
+    os_api.spawn_release.wait();
+
+    let (pending, spawned) = resolved_rerun(&pty_rx);
+    pty.handle_rerun_spawned(pending, spawned)
+        .expect("a stale failure must not reach the pty thread");
+
+    assert!(
+        os_api.cleared_terminal_ids.lock().unwrap()[closed_at..].is_empty(),
+        "nothing started, so there is nothing to tear down"
+    );
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
+    assert!(
+        pty_rx.try_recv().is_err(),
+        "no rerun may be started for a closed pane"
+    );
+}
+
+#[test]
+fn an_empty_spawn_slot_for_a_closed_pane_does_not_fail_the_pty_thread() {
+    let mut os_api = MockOsApi::new();
+    os_api.transport_started = Arc::new(Barrier::new(2));
+    os_api.transport_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+
+    assert!(pty
+        .request_rerun(
+            PaneId::Terminal(crate::TerminalId::new(41)),
+            ssh_command(),
+            None
+        )
+        .unwrap()
+        .is_none());
+    os_api.transport_started.wait();
+    assert!(pty
+        .close_pane(PaneId::Terminal(crate::TerminalId::new(41)))
+        .is_ok());
+    let closed_at = os_api.cleared_terminal_ids.lock().unwrap().len();
+    os_api.transport_release.wait();
+
+    let (pending, spawned) = resolved_rerun(&pty_rx);
+    // Drain the slot behind the handler's back, the way a double delivery would.
+    assert!(spawned.clone().take().is_ok());
+    pty.handle_rerun_spawned(pending, spawned)
+        .expect("an empty slot must not reach the pty thread");
+    assert!(
+        os_api.cleared_terminal_ids.lock().unwrap()[closed_at..].is_empty(),
+        "there is no reader to tear down when the slot is empty"
+    );
+}
+
+#[test]
+fn a_local_rerun_during_a_deferred_one_is_queued_not_run_twice() {
+    let mut os_api = MockOsApi::new();
+    os_api.spawn_started = Arc::new(Barrier::new(2));
+    os_api.spawn_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    os_api.mark_remote(crate::TerminalId::new(41));
+
+    assert!(pty
+        .request_rerun(
+            PaneId::Terminal(crate::TerminalId::new(41)),
+            ssh_command(),
+            None
+        )
+        .unwrap()
+        .is_none());
+    os_api.spawn_started.wait();
+    let local = RunCommand {
+        command: PathBuf::from("sh"),
+        ..Default::default()
+    };
+    assert!(
+        pty.request_rerun(PaneId::Terminal(crate::TerminalId::new(41)), local, None)
+            .unwrap()
+            .is_none(),
+        "a local rerun of a pane with one in flight is queued, not handed back"
+    );
+    assert!(os_api.rerun_commands().is_empty());
+    os_api.spawn_release.wait();
+
+    let (pending, spawned) = resolved_rerun(&pty_rx);
+    pty.handle_rerun_spawned(pending, spawned).unwrap();
+
+    let reruns = os_api.rerun_commands();
+    assert_eq!(reruns.len(), 1, "the queued local rerun runs once, after");
+    assert_eq!(reruns[0].command, PathBuf::from("sh"));
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
+    assert!(os_api.cleared_terminal_ids.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_second_deferred_rerun_is_queued_and_the_first_result_is_kept() {
+    let mut os_api = MockOsApi::new();
+    os_api.spawn_started = Arc::new(Barrier::new(2));
+    os_api.spawn_release = Arc::new(Barrier::new(2));
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+
+    assert!(pty
+        .request_rerun(
+            PaneId::Terminal(crate::TerminalId::new(41)),
+            ssh_command(),
+            None
+        )
+        .unwrap()
+        .is_none());
+    os_api.spawn_started.wait();
+    let mut second = ssh_command();
+    second.args = vec!["--second".to_owned()];
+    assert!(pty
+        .request_rerun(PaneId::Terminal(crate::TerminalId::new(41)), second, None)
+        .unwrap()
+        .is_none());
+    os_api.spawn_release.wait();
+
+    let (pending, spawned) = resolved_rerun(&pty_rx);
+    assert!(
+        pending.run_command.args.is_empty(),
+        "the first request lands first"
+    );
+    pty.handle_rerun_spawned(pending, spawned).unwrap();
+    assert!(
+        pty.reruns.contains_key(&TerminalId::new(41)),
+        "the second is off-thread now"
+    );
+
+    os_api.spawn_started.wait();
+    os_api.spawn_release.wait();
+    let (pending, spawned) = resolved_rerun(&pty_rx);
+    assert_eq!(pending.run_command.args, vec!["--second".to_owned()]);
+    pty.handle_rerun_spawned(pending, spawned).unwrap();
+
+    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
+    assert_eq!(
+        *os_api.resolved_spawns.lock().unwrap(),
+        vec![TerminalId::new(41), TerminalId::new(41)]
+    );
+    assert!(
+        os_api.cleared_terminal_ids.lock().unwrap().is_empty(),
+        "neither result was thrown away"
+    );
+}
+
+#[test]
+fn a_failing_layout_pane_clears_its_reserved_remote_panes() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (pty_tx, _pty_rx) = channels::unbounded();
+    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let local = RunCommand {
+        command: PathBuf::from("sh"),
+        ..Default::default()
+    };
+    let layout = TiledPaneLayout {
+        children: vec![
+            TiledPaneLayout {
+                run: Some(Run::Command(ssh_command())),
+                ..Default::default()
+            },
+            TiledPaneLayout {
+                run: Some(Run::Command(local)),
+                ..Default::default()
+            },
+            TiledPaneLayout {
+                run: Some(Run::Command(ssh_command())),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    *os_api.fail_local_spawns.lock().unwrap() = true;
+
+    let result = pty.spawn_terminals_for_layout(
+        None,
+        layout,
+        vec![],
+        Some(TerminalAction::RunCommand(RunCommand::default())),
+        HashMap::new(),
+        None,
+        TabId::new(0),
+        false,
+        true,
+        crate::ClientId::new(1),
+        None,
+    );
+
+    assert!(result.is_err(), "the local failure is still reported");
+    assert_eq!(
+        *os_api.cleared_terminal_ids.lock().unwrap(),
+        vec![TerminalId::new(0)],
+        "the reservation made before the local failure is released"
+    );
+    assert!(pty.task_handles.is_empty());
+}
+
+fn ssh_command() -> RunCommand {
+    RunCommand {
+        command: PathBuf::from("claude"),
+        target: PaneTarget::ssh("build-box").unwrap(),
+        ..Default::default()
+    }
 }

@@ -681,44 +681,20 @@ pub fn open_command_pane_near_plugin(
     >(plugin_command))
 }
 
-/// Perform local Git checkout setup on the host, then open a command pane in its root.
 pub fn open_command_pane_in_git_checkout_near_plugin(
     command_to_run: CommandToRun,
     source_directory: PathBuf,
     checkout: GitCheckout,
 ) -> Result<PaneId, String> {
-    open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_vm(
-        command_to_run,
-        source_directory,
-        checkout,
-        false,
-    )
-}
-
-/// Perform local Git checkout setup on the host, name a Firecracker VM from the resolved
-/// worktree when requested, then open a command pane in its root.
-pub fn open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_vm(
-    command_to_run: CommandToRun,
-    source_directory: PathBuf,
-    checkout: GitCheckout,
-    automatic_firecracker_vm: bool,
-) -> Result<PaneId, String> {
     let plugin_command = PluginCommand::OpenCommandPaneInGitCheckoutNearPlugin(
         command_to_run,
         source_directory,
         checkout,
-        automatic_firecracker_vm,
     );
     let response: ProtobufOpenCommandPaneInGitCheckoutResponse = call(plugin_command)?;
     OpenCommandPaneInGitCheckoutResponse::try_from(response).map_err(|error| error.to_owned())?
 }
 
-/// Start a coding agent in a command pane near this plugin: the launch planner
-/// (`yinz_runtime::agent::launch::plan`) decides the argv, the host makes the branch or
-/// worktree `spec` names, opens the pane there and records it as an agent pane. Answers with
-/// the pane and what it got - the branch and folder it actually landed on, which are not
-/// always the ones asked for - or the error text. See `PluginCommand::SpawnAgent` for the arguments, and for
-/// what `automatic_firecracker_vm` decides about a Firecracker spec's VM.
 pub fn agent_control(
     id: String,
     request: &yinz_types::agent::control::AgentRequest,
@@ -734,7 +710,6 @@ pub fn spawn_agent(
     cwd: Option<PathBuf>,
     name: Option<String>,
     context: BTreeMap<String, String>,
-    automatic_firecracker_vm: bool,
     start_suppressed: bool,
 ) -> Result<SpawnedAgent, String> {
     let plugin_command = PluginCommand::SpawnAgent {
@@ -743,7 +718,7 @@ pub fn spawn_agent(
         cwd,
         name,
         context,
-        automatic_firecracker_vm,
+
         start_suppressed,
     };
     let response: ProtobufSpawnAgentResponse = call(plugin_command)?;

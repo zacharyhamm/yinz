@@ -29,7 +29,6 @@ fn repository() -> (tempfile::TempDir, DataAccess) {
         project_data::projects::validate("project", temp.path().to_str().unwrap()).unwrap();
     project.remote = Some("git@example.com:team/repository.git".into());
     project.worktree_dir = Some("custom-checkouts".into());
-    project.firecracker_image = Some("rust-dev".into());
     data.plugin_data()
         .apply(
             project_data::store::SHARED,
@@ -136,7 +135,6 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
         repo.path(),
         AgentAction::Start {
             kind: "claude".into(),
-            vm: false,
             project: Some("project".into()),
         },
     );
@@ -164,7 +162,6 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
         repo.path(),
         AgentAction::Checkout {
             kind: "codex".into(),
-            vm: false,
             project,
             path: None,
         },
@@ -195,7 +192,6 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
             repo.path(),
             AgentAction::Projects {
                 kind: "claude".into(),
-                vm: false,
             },
         ),
         &data,
@@ -208,7 +204,6 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
             repo.path(),
             AgentAction::Worktrees {
                 kind: "claude".into(),
-                vm: false,
                 project: AgentProject::Registered("missing".into()),
             },
         ),
@@ -221,7 +216,7 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
 #[test]
 fn palette_worktree_base_prefers_main_and_falls_back_to_primary_head() {
     for base in ["main", "master", "trunk", "detached"] {
-        for vm in [false, true] {
+        for registered in [false, true] {
             let (repo, data) = repository();
             match base {
                 "main" => {
@@ -252,7 +247,7 @@ fn palette_worktree_base_prefers_main_and_falls_back_to_primary_head() {
                 repo.path(),
                 &["rev-parse", if base == "main" { "main" } else { "HEAD" }],
             );
-            let project = if vm {
+            let project = if registered {
                 AgentProject::Registered("project".into())
             } else {
                 AgentProject::Repository(repo.path().to_owned())
@@ -261,7 +256,6 @@ fn palette_worktree_base_prefers_main_and_falls_back_to_primary_head() {
                 repo.path(),
                 AgentAction::Checkout {
                     kind: "codex".into(),
-                    vm,
                     project,
                     path: None,
                 },
@@ -270,7 +264,7 @@ fn palette_worktree_base_prefers_main_and_falls_back_to_primary_head() {
             let (reply, commands) = run(&create, &data);
             assert!(
                 matches!(&reply, Ok(AgentReply::Launched(r)) if r.outcome == AgentOutcome::Ok),
-                "base={base}, vm={vm}: {reply:?}"
+                "base={base}, registered={registered}: {reply:?}"
             );
             assert_eq!(commands.len(), 1);
             assert_eq!(git(repo.path(), &["rev-parse", "review"]), expected);
@@ -290,26 +284,11 @@ fn palette_current_directory_vm_defaults_and_fresh_duplicate_targets() {
     let (reply, commands) = run(&current, &data);
     assert!(!commands.is_empty(), "{reply:?}");
     assert_eq!(commands[0].cwd.as_deref(), Some(repo.path()));
-    let vm = request(
-        repo.path(),
-        AgentAction::Checkout {
-            kind: "claude".into(),
-            vm: true,
-            project: AgentProject::Registered("project".into()),
-            path: Some(repo.path().to_owned()),
-        },
-    );
-    let (reply, commands) = run(&vm, &data);
-    assert!(!commands.is_empty(), "{reply:?}");
-    assert!(
-        matches!(&commands[0].target, PaneTarget::Firecracker { image: Some(image), worktree: Some(path), .. } if image == "rust-dev" && path == &repo.path().canonicalize().unwrap())
-    );
     for target in [
         PaneTarget::Local,
         PaneTarget::Ssh {
             host: "host".into(),
         },
-        commands[0].target.clone(),
         // A sandboxed agent's duplicate is sandboxed: the target is the sandbox.
         PaneTarget::Bubblewrap {
             root: repo.path().to_owned(),
@@ -446,7 +425,6 @@ fn recorded_run(root: &Path) -> agent_proto::agents::AgentRun {
         kind: "codex".into(),
         cwd: Some(root.to_string_lossy().into_owned()),
         host: None,
-        worktree: None,
         bubblewrap: None,
         started_at_ms: 100,
         ended_at_ms: Some(200),
@@ -546,12 +524,12 @@ fn palette_history_search_exact_event_predecessor_and_resume() {
         ),
         (
             agent_proto::agents::RunOutcome::Completed,
-            Some("firecracker:vm-1".into()),
+            Some("build-box".into()),
             recorded.host_id.clone(),
             "codex",
             "archived",
             recorded.cwd.clone(),
-            "Firecracker",
+            "SSH",
         ),
         (
             agent_proto::agents::RunOutcome::Completed,

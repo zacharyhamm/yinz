@@ -1,6 +1,6 @@
 pub use super::generated_api::api::command::{
     pane_target::Kind as ProtobufPaneTargetKind, Command as ProtobufCommand,
-    FirecrackerTarget as ProtobufFirecrackerTarget, PaneTarget as ProtobufPaneTarget,
+    PaneTarget as ProtobufPaneTarget,
 };
 use yinz_types::command::{CommandToRun, PaneTarget};
 
@@ -12,15 +12,6 @@ impl From<&PaneTarget> for ProtobufPaneTarget {
         let kind = match target {
             PaneTarget::Local => ProtobufPaneTargetKind::Local(true),
             PaneTarget::Ssh { host } => ProtobufPaneTargetKind::SshHost(host.clone()),
-            PaneTarget::Firecracker {
-                vm,
-                image,
-                worktree,
-            } => ProtobufPaneTargetKind::Firecracker(ProtobufFirecrackerTarget {
-                vm: vm.clone(),
-                image: image.clone(),
-                worktree: worktree.as_ref().map(|path| path.display().to_string()),
-            }),
             PaneTarget::Bubblewrap { root } => {
                 ProtobufPaneTargetKind::BubblewrapRoot(root.display().to_string())
             },
@@ -35,11 +26,6 @@ impl TryFrom<ProtobufPaneTarget> for PaneTarget {
         Ok(match target.kind {
             None | Some(ProtobufPaneTargetKind::Local(_)) => PaneTarget::Local,
             Some(ProtobufPaneTargetKind::SshHost(host)) => PaneTarget::Ssh { host },
-            Some(ProtobufPaneTargetKind::Firecracker(firecracker)) => PaneTarget::Firecracker {
-                vm: firecracker.vm,
-                image: firecracker.image,
-                worktree: firecracker.worktree.map(PathBuf::from),
-            },
             Some(ProtobufPaneTargetKind::BubblewrapRoot(root)) => {
                 PaneTarget::bubblewrap(Path::new(&root)).map_err(|_| "invalid pane target")?
             },
@@ -52,9 +38,6 @@ impl TryFrom<ProtobufPaneTarget> for PaneTarget {
 #[derive(Default)]
 pub struct FlatPaneTarget {
     pub remote_host: Option<String>,
-    pub firecracker_vm: Option<String>,
-    pub firecracker_image: Option<String>,
-    pub firecracker_worktree: Option<String>,
 }
 
 impl From<&PaneTarget> for FlatPaneTarget {
@@ -65,17 +48,6 @@ impl From<&PaneTarget> for FlatPaneTarget {
             PaneTarget::Local | PaneTarget::Bubblewrap { .. } => FlatPaneTarget::default(),
             PaneTarget::Ssh { host } => FlatPaneTarget {
                 remote_host: Some(host.clone()),
-                ..Default::default()
-            },
-            PaneTarget::Firecracker {
-                vm,
-                image,
-                worktree,
-            } => FlatPaneTarget {
-                remote_host: None,
-                firecracker_vm: Some(vm.clone()),
-                firecracker_image: image.clone(),
-                firecracker_worktree: worktree.as_ref().map(|path| path.display().to_string()),
             },
         }
     }
@@ -90,13 +62,13 @@ pub fn pane_target_from_wire(
 ) -> Result<PaneTarget, &'static str> {
     match target {
         Some(target) => PaneTarget::try_from(target),
-        None => PaneTarget::from_parts(
-            flat.remote_host.as_deref(),
-            flat.firecracker_vm.as_deref(),
-            flat.firecracker_image.as_deref(),
-            flat.firecracker_worktree.as_deref().map(Path::new),
-        )
-        .map_err(|_| "invalid pane target"),
+        None => flat
+            .remote_host
+            .as_deref()
+            .map(PaneTarget::ssh)
+            .transpose()
+            .map(|target| target.unwrap_or_default())
+            .map_err(|_| "invalid pane target"),
     }
 }
 
@@ -111,9 +83,6 @@ impl TryFrom<ProtobufCommand> for CommandToRun {
             protobuf_command.target,
             FlatPaneTarget {
                 remote_host: protobuf_command.remote_host,
-                firecracker_vm: protobuf_command.firecracker_vm,
-                firecracker_image: protobuf_command.firecracker_image,
-                firecracker_worktree: protobuf_command.firecracker_worktree,
             },
         )?;
         Ok(CommandToRun {
@@ -136,9 +105,7 @@ impl TryFrom<CommandToRun> for ProtobufCommand {
             cwd: command_to_run.cwd.map(|c| c.display().to_string()),
             remote_host: flat.remote_host,
             remote_default_shell: command_to_run.remote_default_shell,
-            firecracker_vm: flat.firecracker_vm,
-            firecracker_image: flat.firecracker_image,
-            firecracker_worktree: flat.firecracker_worktree,
+
             target: Some(ProtobufPaneTarget::from(&command_to_run.target)),
         })
     }
@@ -198,44 +165,16 @@ mod tests {
         assert_eq!(round_tripped.path, PathBuf::new());
         assert_eq!(round_tripped.target, command_to_run.target);
     }
-
-    /// A plugin built before `PaneTarget` fills only the flat fields; they
-    /// still describe the target.
     #[test]
-    fn the_flat_fields_still_describe_the_target_when_the_structured_one_is_unset() {
-        let protobuf_command = ProtobufCommand {
-            path: "/usr/bin/cargo".to_owned(),
-            firecracker_vm: Some("review".to_owned()),
-            firecracker_image: Some("rust-dev".to_owned()),
-            firecracker_worktree: Some("/work".to_owned()),
-            ..Default::default()
-        };
-        let command_to_run = CommandToRun::try_from(protobuf_command).unwrap();
-        assert_eq!(
-            command_to_run.target,
-            PaneTarget::Firecracker {
-                vm: "review".to_owned(),
-                image: Some("rust-dev".to_owned()),
-                worktree: Some(PathBuf::from("/work")),
-            }
-        );
-        let ssh = ProtobufCommand {
+    fn a_flat_ssh_host_describes_the_target() {
+        let command = ProtobufCommand {
             path: "/usr/bin/htop".to_owned(),
             remote_host: Some("build-box".to_owned()),
             ..Default::default()
         };
         assert_eq!(
-            CommandToRun::try_from(ssh).unwrap().target,
-            PaneTarget::Ssh {
-                host: "build-box".to_owned()
-            }
+            CommandToRun::try_from(command).unwrap().target,
+            PaneTarget::ssh("build-box").unwrap()
         );
-        let both = ProtobufCommand {
-            path: "/usr/bin/htop".to_owned(),
-            remote_host: Some("build-box".to_owned()),
-            firecracker_vm: Some("review".to_owned()),
-            ..Default::default()
-        };
-        assert!(CommandToRun::try_from(both).is_err());
     }
 }

@@ -87,11 +87,6 @@ pub fn agent_pane(pane: &PaneInfo, tab: Option<(TabId, String)>) -> agents::Agen
         // once, and never again by anyone who missed it.
         cwd: pane.cwd.clone(),
         host: pane.host.clone(),
-        firecracker_image: pane.target.firecracker_image().map(str::to_owned),
-        firecracker_worktree: pane
-            .target
-            .firecracker_worktree()
-            .map(|path| path.display().to_string()),
         bubblewrap: pane
             .target
             .bubblewrap_root()
@@ -156,7 +151,7 @@ pub fn focused_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yinz_tile::prelude::{PaneInfo, PaneTarget};
+    use yinz_tile::prelude::PaneInfo;
 
     #[test]
     fn terminal_discovery_includes_hidden_list_members_only() {
@@ -235,42 +230,6 @@ mod tests {
         let reply: crate::wire::PollReply =
             serde_json::from_str(r#"{"panes":[],"activity":{}}"#).unwrap();
         assert!(reply.suppressed_panes.is_empty());
-    }
-
-    #[test]
-    fn terminal_panes_carry_the_reported_firecracker_location() {
-        let mut manifest = PaneManifest::default();
-        manifest.panes.insert(
-            TabPosition::new(0),
-            vec![
-                PaneInfo {
-                    id: yinz_tile::prelude::PaneId::from_legacy(3, false),
-                    cwd: Some("/work/agent".to_owned()),
-                    host: Some("firecracker:review".to_owned()),
-                    target: PaneTarget::Firecracker {
-                        vm: "review".to_owned(),
-                        image: Some("rust-dev".to_owned()),
-                        worktree: Some("/host/agent".into()),
-                    },
-                    ..PaneInfo::default()
-                },
-                PaneInfo {
-                    id: yinz_tile::prelude::PaneId::from_legacy(4, false),
-                    cwd: None,
-                    ..PaneInfo::default()
-                },
-            ],
-        );
-
-        let panes = terminal_panes(&manifest, &[]);
-
-        assert_eq!(panes[0].cwd.as_deref(), Some("/work/agent"));
-        assert_eq!(panes[0].firecracker_image.as_deref(), Some("rust-dev"));
-        assert_eq!(
-            panes[0].firecracker_worktree.as_deref(),
-            Some("/host/agent")
-        );
-        assert_eq!(panes[1].cwd, None);
     }
 
     /// A suppressed pane is hidden, not gone. It keeps its id and its process,

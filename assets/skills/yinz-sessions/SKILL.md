@@ -1,6 +1,6 @@
 ---
 name: yinz-sessions
-description: Discover Yinz context and manage sessions, tabs, panes, remote terminals, VMs, and bounded output waits through the Yinz CLI.
+description: Discover Yinz context and manage sessions, tabs, panes, remote terminals, and bounded output waits through the Yinz CLI.
 ---
 
 Use the installed `yinz` CLI. Inside a Yinz pane, inherited `YINZ_PANE_REF` resolves
@@ -23,8 +23,8 @@ yinz action dump-screen --pane-id terminal_3
 ```
 
 Use the existing `action new-pane`, `new-tab`, `write-chars`, `close-pane`,
-`close-tab-by-id`, `warp-pane`, `warp-tab`, `dump-layout`, `pty-host`,
-and `firecracker` commands. Read the relevant `--help` for flags.
+`close-tab-by-id`, `warp-pane`, `warp-tab`, `dump-layout`, and `pty-host`
+commands. Read the relevant `--help` for flags.
 Use native file and shell tools to prepare layouts.
 
 Additional explicit-target operations:

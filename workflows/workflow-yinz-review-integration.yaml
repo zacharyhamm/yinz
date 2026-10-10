@@ -74,12 +74,6 @@ inputs:
       default: []
       items:
         type: string
-    firecracker:
-      type: string
-      default: ''
-    firecrackerImage:
-      type: string
-      default: ''
     sourcePane:
       type: integer
       default: -1
@@ -125,7 +119,6 @@ inputs:
     state:
       type: object
       default:
-        vmSync: null
         evidence: null
         review: null
         test: null
@@ -286,28 +279,6 @@ jobs:
         conditions:
         - type: succeeded
         - type: skipped
-  - name: sync
-    task:
-      type: model_method
-      modelType: '@hammz/yinz'
-      modelName: ${{ run.id + "-sync" }}
-      methodName: checkout_sync
-      globalArgs:
-        session: ${{ inputs.session }}
-        binary: ${{ inputs.binary }}
-      inputs:
-        session: ${{ inputs.session }}
-        binary: ${{ inputs.binary }}
-        work: ${{ inputs.launch }}
-        key: ${{ run.id + "-sync" }}
-        previous: ${{ inputs.state.vmSync }}
-    dependsOn:
-    - step: step-ready
-      condition:
-        type: or
-        conditions:
-        - type: succeeded
-        - type: skipped
   - name: inspect
     task:
       type: model_method
@@ -322,9 +293,8 @@ jobs:
         targetBranch: ${{ inputs.targetBranch }}
         gate: ${{ inputs.gate }}
         binary: ${{ inputs.binary }}
-        vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
     dependsOn:
-    - step: sync
+    - step: step-ready
       condition:
         type: or
         conditions:
@@ -448,8 +418,6 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
@@ -458,7 +426,6 @@ jobs:
             ? "review-fix" : inputs.answer == "fix-tests-with-agent" ? "fix" : inputs.answer == "resolve-with-agent" ? "resolve" : inputs.answer
             == "continue-rebase" ? "continue" : data.latest(run.id + "-checks", "checks-current").attributes.ready ? "confirm" : "prepare" }}'
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ inputs.state.review }}
             test: ${{ inputs.state.test }}
@@ -548,14 +515,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: prepare
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ inputs.state.review }}
             test: ${{ inputs.state.test }}
@@ -682,14 +646,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: prepare
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ inputs.state.review }}
             test: ${{ inputs.state.test }}
@@ -837,7 +798,6 @@ jobs:
         targetBranch: ${{ inputs.targetBranch }}
         gate: ${{ inputs.gate }}
         binary: ${{ inputs.binary }}
-        vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
         session: ${{ inputs.session }}
         work: ${{ inputs.launch }}
         key: ${{ run.id + "-commit-and-rebase" }}
@@ -953,14 +913,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: prepare
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ inputs.state.review }}
             test: ${{ inputs.state.test }}
@@ -1040,8 +997,6 @@ jobs:
           cwd: ${{ inputs.checkout }}
           source_directory: ${{ inputs.checkout }}
           reuse: true
-          firecracker: '${{ inputs.phase == "review-agent" ? "" : inputs.firecracker }}'
-          firecracker_image: '${{ inputs.phase == "review-agent" ? "" : inputs.firecrackerImage }}'
     dependsOn:
     - step: prepare-helper-prompt
       condition:
@@ -1141,14 +1096,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: prepare
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ data.latest(run.id + "-review-result", "review-current").attributes }}
             test: ${{ inputs.state.test }}
@@ -1193,14 +1145,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: prepare
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ inputs.state.review }}
             test: ${{ inputs.state.test }}
@@ -1227,7 +1176,6 @@ jobs:
         targetBranch: ${{ inputs.targetBranch }}
         gate: ${{ inputs.gate }}
         binary: ${{ inputs.binary }}
-        vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
         session: ${{ inputs.session }}
         work: ${{ inputs.launch }}
         key: ${{ run.id + "-continue-rebase" }}
@@ -1273,14 +1221,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: prepare
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ inputs.state.review }}
             test: ${{ inputs.state.test }}
@@ -1470,14 +1415,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: prepare
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ inputs.state.review }}
             test: ${{ data.latest(run.id + "-test-result", "test-current").attributes }}
@@ -1522,14 +1464,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: prepare
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ inputs.state.review }}
             test: ${{ inputs.state.test }}
@@ -1643,14 +1582,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: prepare
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-inspect", "evidence-current").attributes }}
             review: ${{ inputs.state.review }}
             test: ${{ inputs.state.test }}
@@ -1678,7 +1614,6 @@ jobs:
         targetBranch: ${{ inputs.targetBranch }}
         gate: ${{ inputs.gate }}
         binary: ${{ inputs.binary }}
-        vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
         session: ${{ inputs.session }}
         work: ${{ inputs.launch }}
         key: ${{ run.id + "-integrate" }}
@@ -1727,14 +1662,11 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}
           phase: '${{ data.latest(run.id + "-integrate", "integrationDecision-current").attributes.integrated ? "cleanup" : "prepare" }}'
           state:
-            vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
             evidence: ${{ data.latest(run.id + "-integrate", "integrationDecision-current").attributes.evidence }}
             review: ${{ inputs.state.review }}
             test: ${{ inputs.state.test }}
@@ -1764,7 +1696,7 @@ jobs:
         step: cleanup-approval
         kind: cleanup
         prompt: '${{ inputs.phase == "cleanup" ? "Integrated " + inputs.state.evidence.source.commit + " into local " + inputs.targetBranch + ". Worktree: " + inputs.checkout
-          + ". Remove clean worktree or Keep? The branch is retained." + (inputs.firecracker != "" ? " VM " + inputs.firecracker + " is retained." : "") : "" }}'
+          + ". Remove clean worktree or Keep? The branch is retained." : "" }}'
         answers:
         - remove-clean-worktree
         - keep
@@ -1825,7 +1757,6 @@ jobs:
         targetBranch: ${{ inputs.targetBranch }}
         gate: ${{ inputs.gate }}
         binary: ${{ inputs.binary }}
-        vmSync: ${{ data.latest(run.id + "-sync", "checkoutSync-current").attributes }}
         session: ${{ inputs.session }}
         work: ${{ inputs.launch }}
         key: ${{ run.id + "-cleanup" }}
@@ -1871,8 +1802,6 @@ jobs:
           rebaseAgent: ${{ inputs.rebaseAgent }}
           testFixAgent: ${{ inputs.testFixAgent }}
           rebasePrompt: ${{ inputs.rebasePrompt }}
-          firecracker: ${{ inputs.firecracker }}
-          firecrackerImage: ${{ inputs.firecrackerImage }}
           sourcePane: ${{ inputs.sourcePane }}
           flowVersion: ${{ inputs.flowVersion }}
           testReturn: ${{ inputs.testReturn }}

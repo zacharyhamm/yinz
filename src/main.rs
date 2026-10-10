@@ -197,21 +197,6 @@ fn main() {
         std::process::exit(0);
     }
 
-    if let Some(Command::Firecracker(command)) = opts.command.clone() {
-        let config = match yinz_cli::setup::load_config(&opts) {
-            Ok(config) => config,
-            Err(error) => {
-                eprintln!("Error: {error}");
-                std::process::exit(1);
-            },
-        };
-        if let Err(error) = commands::firecracker(command, &config) {
-            eprintln!("Error: {error:#}");
-            std::process::exit(1);
-        }
-        std::process::exit(0);
-    }
-
     // Local file work only - a hook is installed into Claude Code's settings, not
     // into a session - so it branches here beside the other two commands that need
     // neither a client nor a server.
@@ -313,9 +298,7 @@ fn main() {
                 // `yinz run`/`edit` stay local for now; remote panes are
                 // reached through `yinz action new-pane --remote-host`.
                 remote_host: None,
-                firecracker: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+
                 plugin: None,
                 direction,
                 cwd,
@@ -377,9 +360,7 @@ fn main() {
             let command_cli_action = CliAction::NewPane {
                 command: vec![],
                 remote_host: None,
-                firecracker: None,
-                firecracker_image: None,
-                firecracker_worktree: None,
+
                 plugin: Some(url),
                 direction: None,
                 cwd,

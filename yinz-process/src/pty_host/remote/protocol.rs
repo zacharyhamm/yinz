@@ -44,7 +44,7 @@ use crate::pty_host::protocol::{SpawnFailureKind, WireWinsize};
 /// wait on; without the bump the adopting side would race that and be told the
 /// pane already has a server attached.
 /// v4 carries the pane's `PaneTarget` on `Spawn` in place of the loose
-/// `remote_host`/`firecracker_*` fields; a v3 broker would read every pane as
+/// `remote_host` field; a v3 broker would read every pane as
 /// local and refuse a `remote_default_shell` request it cannot see the host for.
 /// v5 adds `AgentReport`: a coding agent's hook inside a remote pane hands its
 /// event to the broker over its socket, and the broker relays it on the pane's

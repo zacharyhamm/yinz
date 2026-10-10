@@ -13,7 +13,6 @@ use crate::ClientId;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use yinz_runtime::consts::YINZ_SOCK_DIR;
-use yinz_types::command::PaneTarget;
 use {
     yinz_types::data::Event, yinz_types::data::EventType, yinz_types::data::LayoutInfo,
     yinz_types::data::LayoutWithError, yinz_types::data::ListPanesResponse,
@@ -160,24 +159,6 @@ impl Screen {
                 .get(&terminal_id)
                 .map(|cwd| cwd.to_string_lossy().into_owned());
             pane_info.host = self.terminal_hosts.get(&terminal_id).cloned();
-            // The worktree the pane's VM actually mirrors, for a pane that named none of
-            // its own: `pane_info.target` is what the pane was *asked* for, and a pane
-            // that joined an existing VM asked for a VM by name and nothing else. Only
-            // filled in, never overridden - a pane that named a worktree was ensured with
-            // that one.
-            if let (
-                Some(worktree),
-                PaneTarget::Firecracker {
-                    worktree: named, ..
-                },
-            ) = (
-                self.terminal_firecracker_worktrees.get(&terminal_id),
-                &mut pane_info.target,
-            ) {
-                if named.is_none() {
-                    *named = Some(worktree.clone());
-                }
-            }
         }
         let mut plugin_updates = vec![];
         let client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();

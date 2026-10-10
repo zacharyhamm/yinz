@@ -8032,8 +8032,6 @@ Config {
         mouse_mode: None,
         agent_double_escape: None,
         detachable_panes: None,
-        firecracker_provider: None,
-        firecracker_provider_timeout_secs: None,
         pane_frames: None,
         pane_animations: None,
         background_opacity: Some(
@@ -10111,20 +10109,6 @@ Config {
                 relative_path: None,
                 declared_path: None,
             },
-            "swamp-issues": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "swamp-issues",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-                relative_path: None,
-                declared_path: None,
-            },
             "tab-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
@@ -10144,20 +10128,6 @@ Config {
                 location: Yinz(
                     PluginTag(
                         "todos",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-                relative_path: None,
-                declared_path: None,
-            },
-            "vms": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "vms",
                     ),
                 ),
                 configuration: PluginUserConfiguration(

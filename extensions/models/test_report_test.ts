@@ -18,7 +18,6 @@ const evidence = {
     source: revision,
     target: revision,
     gate: ["cargo", "x", "ci", "check"],
-    vmSync: { mode: "local" as const },
 };
 const base = { evidence, outcome: "failed", exitCode: 1, outputComplete: true };
 const nextest = (name: string, state = "FAIL") =>

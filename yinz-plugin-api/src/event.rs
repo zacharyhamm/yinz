@@ -2441,17 +2441,7 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
             cwd: protobuf_pane_info.cwd,
             target: match protobuf_pane_info.target {
                 Some(target) => PaneTarget::try_from(target)?,
-                None => {
-                    let mut target = PaneTarget::parse_display(protobuf_pane_info.host.as_deref());
-                    if let PaneTarget::Firecracker {
-                        image, worktree, ..
-                    } = &mut target
-                    {
-                        *image = protobuf_pane_info.firecracker_image;
-                        *worktree = protobuf_pane_info.firecracker_worktree.map(PathBuf::from);
-                    }
-                    target
-                },
+                None => PaneTarget::parse_display(protobuf_pane_info.host.as_deref()),
             },
             host: protobuf_pane_info.host,
             agent: protobuf_pane_info
@@ -2518,11 +2508,6 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             default_bg: pane_info.default_bg,
             cwd: pane_info.cwd,
             host: pane_info.host,
-            firecracker_image: pane_info.target.firecracker_image().map(ToOwned::to_owned),
-            firecracker_worktree: pane_info
-                .target
-                .firecracker_worktree()
-                .map(|path| path.display().to_string()),
             target: Some(ProtobufPaneTarget::from(&pane_info.target)),
             agent: pane_info
                 .agent
@@ -3523,11 +3508,9 @@ fn serialize_session_update_event_with_non_default_values() {
         PaneInfo {
             pane_tabs: None,
             multipane: None,
-            host: Some("firecracker:review".to_owned()),
-            target: PaneTarget::Firecracker {
-                vm: "review".to_owned(),
-                image: Some("rust-dev".to_owned()),
-                worktree: Some(PathBuf::from("/work/agent")),
+            host: Some("build-box".to_owned()),
+            target: PaneTarget::Ssh {
+                host: "build-box".to_owned(),
             },
             agent: None,
             id: yinz_types::pane_id::PaneId::from_legacy(1, false),
@@ -4743,4 +4726,81 @@ fn notification_events_and_decisions_round_trip_through_wasm_wire() {
         let wire: crate::plugin_command::ProtobufNotificationInfo = info.clone().into();
         assert_eq!(yinz_types::data::NotificationInfo::from(wire), info);
     }
+}
+
+#[test]
+fn serialize_key_event() {
+    use prost::Message;
+    use yinz_types::data::BareKey;
+    let key_event = Event::Key(KeyWithModifier::new(BareKey::Char('a')).with_ctrl_modifier());
+    let protobuf_event: ProtobufEvent = key_event.clone().try_into().unwrap();
+    let serialized_protobuf_event = protobuf_event.encode_to_vec();
+    let deserialized_protobuf_event: ProtobufEvent =
+        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
+    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
+    assert_eq!(
+        key_event, deserialized_event,
+        "Event properly serialized/deserialized without change"
+    );
+}
+
+#[test]
+fn serialize_mouse_event() {
+    use prost::Message;
+    let mouse_event = Event::Mouse(Mouse::LeftClick(1, 1));
+    let protobuf_event: ProtobufEvent = mouse_event.clone().try_into().unwrap();
+    let serialized_protobuf_event = protobuf_event.encode_to_vec();
+    let deserialized_protobuf_event: ProtobufEvent =
+        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
+    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
+    assert_eq!(
+        mouse_event, deserialized_event,
+        "Event properly serialized/deserialized without change"
+    );
+}
+
+#[test]
+fn serialize_mouse_event_without_position() {
+    use prost::Message;
+    let mouse_event = Event::Mouse(Mouse::ScrollUp(17));
+    let protobuf_event: ProtobufEvent = mouse_event.clone().try_into().unwrap();
+    let serialized_protobuf_event = protobuf_event.encode_to_vec();
+    let deserialized_protobuf_event: ProtobufEvent =
+        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
+    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
+    assert_eq!(
+        mouse_event, deserialized_event,
+        "Event properly serialized/deserialized without change"
+    );
+}
+
+#[test]
+fn serialize_timer_event() {
+    use prost::Message;
+    let timer_event = Event::Timer(yinz_types::units::FractionalSeconds::new(1.5));
+    let protobuf_event: ProtobufEvent = timer_event.clone().try_into().unwrap();
+    let serialized_protobuf_event = protobuf_event.encode_to_vec();
+    assert_eq!(serialized_protobuf_event, vec![8, 5, 61, 0, 0, 192, 63]);
+    let deserialized_protobuf_event: ProtobufEvent =
+        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
+    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
+    assert_eq!(
+        timer_event, deserialized_event,
+        "Event properly serialized/deserialized without change"
+    );
+}
+
+#[test]
+fn serialize_session_update_event() {
+    use prost::Message;
+    let session_update_event = Event::SessionUpdate(Default::default(), Default::default());
+    let protobuf_event: ProtobufEvent = session_update_event.clone().try_into().unwrap();
+    let serialized_protobuf_event = protobuf_event.encode_to_vec();
+    let deserialized_protobuf_event: ProtobufEvent =
+        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
+    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
+    assert_eq!(
+        session_update_event, deserialized_event,
+        "Event properly serialized/deserialized without change"
+    );
 }

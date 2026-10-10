@@ -123,9 +123,7 @@ pub fn send_cli_new_pane_action_with_tab_id() {
     );
     let cli_new_pane_action = CliAction::NewPane {
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         direction: Some(Direction::Right),
         command: vec![],
         plugin: None,
@@ -195,9 +193,7 @@ pub fn send_cli_new_floating_pane_action_with_tab_id() {
     );
     let cli_new_pane_action = CliAction::NewPane {
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         direction: None,
         command: vec![],
         plugin: None,
@@ -320,9 +316,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_direction() {
     );
     let cli_new_pane_action = CliAction::NewPane {
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         direction: Some(Direction::Right),
         command: vec![],
         plugin: None,
@@ -391,9 +385,7 @@ pub fn send_cli_new_pane_action_with_tab_id_and_stacked() {
     );
     let cli_new_pane_action = CliAction::NewPane {
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         direction: None,
         command: vec!["ls".into()],
         plugin: None,

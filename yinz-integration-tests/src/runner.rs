@@ -174,9 +174,7 @@ fn new_pane_cli_action(
         // to be on, neither of which this in-process harness has — that is what
         // `yinz-server/tests/remote_pane_ssh.rs` is for.
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         configuration: None,
         configuration_json: None,
         skip_plugin_cache: false,
@@ -477,13 +475,6 @@ impl TestSession {
         self.fake_server_os_api.shared_ptys.remote_warp_counts()
     }
 
-    /// How many times the server has asked the OS layer to release the session's
-    /// Firecracker VMs. It does so once, on its way out; `quit` joins the server
-    /// thread, so the count read after it is final.
-    pub fn firecracker_session_stops(&self) -> usize {
-        self.fake_server_os_api.firecracker_session_stops()
-    }
-
     /// The session names whose orphaned pane supervisors the server asked to
     /// have swept on its way out — one entry per `KillSession` exit, none for
     /// any other exit. `quit` joins the server thread, so the list read after it
@@ -494,16 +485,6 @@ impl TestSession {
 
     pub fn orphan_sweeps(&self) -> Vec<String> {
         self.fake_server_os_api.orphan_sweeps()
-    }
-
-    /// How many of those stops happened while a pane was still open.
-    pub fn firecracker_stops_with_live_panes(&self) -> usize {
-        self.fake_server_os_api.firecracker_stops_with_live_panes()
-    }
-
-    /// Make shutdown wait for the same file lock a guarded VM close holds.
-    pub fn set_firecracker_provider_lock(&self, path: PathBuf) {
-        self.fake_server_os_api.set_firecracker_provider_lock(path);
     }
 
     /// A handle on the next pane this session took over from another one.

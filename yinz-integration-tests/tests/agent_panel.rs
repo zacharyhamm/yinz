@@ -26,7 +26,7 @@ load_plugins clear-defaults=true { "agent-service"; "project-store"; }
 "#;
 
 #[test]
-fn four_panel_tabs_open_and_dismiss_without_chat() {
+fn panel_tabs_open_and_dismiss_without_chat() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config(CONFIG)
         .with_layout(LayoutInfo::Stringified(
@@ -36,19 +36,12 @@ fn four_panel_tabs_open_and_dismiss_without_chat() {
     let _agent = yinz.expect_pty_spawn();
     yinz.send_stdin(&keys::ctrl('b'));
     let initial = yinz.wait_until("the agents panel receives the service snapshot", |s| {
-        s.contains("Agents")
-            && s.contains("Todos")
-            && s.contains("VMs")
-            && s.contains("Swamp")
-            && s.contains("claude")
+        s.contains("Agents") && s.contains("Todos") && s.contains("claude")
     });
     assert!(!initial.contains("Hocus"));
+    assert_eq!(panel(&yinz).pane_info.pane_tabs.unwrap().tabs.len(), 2);
     // The native tab bar owns navigation; activate each lazily loaded companion.
-    for (name, content) in [
-        ("Todos", "no projects"),
-        ("VMs", "Firecracker"),
-        ("Swamp", "Swamp needs permission"),
-    ] {
+    for (name, content) in [("Todos", "no projects")] {
         yinz.send_stdin(&keys::SHIFT_TAB);
         yinz.send_stdin(b"\x1b[C");
         yinz.send_stdin(&keys::ENTER);
@@ -89,11 +82,7 @@ fn creating_an_agent_dismisses_each_companion_panel() {
 }
 
 fn companion_panel_dismisses(create_agent: bool) {
-    for (index, name, content) in [
-        (1, "Todos", "no projects"),
-        (2, "VMs", "Firecracker"),
-        (3, "Swamp", "Swamp needs permission"),
-    ] {
+    for (index, name, content) in [(1, "Todos", "no projects")] {
         let mut yinz = TestRunner::new(Size {
             cols: 120,
             rows: 40,
@@ -106,7 +95,7 @@ fn companion_panel_dismisses(create_agent: bool) {
         let _agent = yinz.expect_pty_spawn();
         yinz.send_stdin(&keys::ctrl('b'));
         yinz.wait_until("the panel tab bar is ready", |s| {
-            s.contains("Agents") && s.contains("Todos") && s.contains("Swamp")
+            s.contains("Agents") && s.contains("Todos")
         });
         click_text(&mut yinz, name);
         yinz.wait_until(&format!("{name} is active"), |s| {
@@ -143,7 +132,7 @@ fn companion_panel_dismisses(create_agent: bool) {
 
         yinz.send_stdin(&keys::ctrl('b'));
         yinz.wait_until("the dismissed panel can be reopened", |s| {
-            s.contains("Agents") && s.contains("Todos") && s.contains("VMs") && s.contains("Swamp")
+            s.contains("Agents") && s.contains("Todos")
         });
         yinz.quit();
     }

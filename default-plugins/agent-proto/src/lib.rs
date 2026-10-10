@@ -32,8 +32,6 @@ pub mod tabs;
 pub mod text;
 pub mod wire;
 
-pub mod vms;
-
 pub mod panel_text;
 
 pub use project_data::{git_probe, location, notes, paths, projects, store, todos};

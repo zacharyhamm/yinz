@@ -21,8 +21,6 @@ pub enum NotesTodos {
         root: String,
         #[clap(long)]
         worktree_dir: Option<String>,
-        #[clap(long)]
-        firecracker_image: Option<String>,
     },
     /// Forget a project name, preserving its notes and todos.
     ProjectForget { name: String },

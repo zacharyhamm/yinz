@@ -47,7 +47,6 @@ Deno.test("review and gate evidence cannot be inferred from missing findings, pr
         source: revision,
         target: { ...revision, checkout: "/tmp/main", branch: "main" },
         gate: ["true"],
-        vmSync: { ...op, clean: true as const, vm: null },
     };
     const message =
         "Describe 'quoted' changes — é\n\nPreserve the body and literal $(text).";

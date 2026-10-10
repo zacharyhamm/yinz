@@ -898,7 +898,7 @@ fn the_hidden_half_of_a_scrollback_editor_pair_cannot_be_warped_refused() {
     assert_eq!(screen.tabs[&TabId::new(0)].get_all_pane_ids(), before);
 }
 
-/// A pane spawned to replace one that closed meanwhile (a VM boot later, say)
+/// A pane spawned to replace one that closed meanwhile (after a slow SSH connection, say)
 /// has nowhere to go. Screen never owned it, so it tells the pty thread to
 /// close it rather than leaving its process, transport and reader running
 /// until the session ends.

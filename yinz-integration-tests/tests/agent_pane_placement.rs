@@ -90,7 +90,6 @@ fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
                 cwd: Some(cwd.path().into()),
                 project: None,
                 remote_host: None,
-                automatic_firecracker_vm: false,
             }))
             .unwrap();
         let IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _) = receiver.recv_server_msg()
@@ -159,9 +158,7 @@ fn new_pane_action(command: &[&str]) -> CliAction {
         direction: None,
         command: command.iter().map(|part| part.to_string()).collect(),
         remote_host: None,
-        firecracker: None,
-        firecracker_image: None,
-        firecracker_worktree: None,
+
         plugin: None,
         cwd: None,
         floating: false,

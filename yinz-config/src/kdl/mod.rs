@@ -57,32 +57,6 @@ use {
     yinz_types::input::actions::SearchOption,
 };
 
-/// The `firecracker_*` children of a `Run` action, the counterpart of the
-/// `firecracker_vm`/`firecracker_image`/`firecracker_worktree` pane properties.
-fn push_firecracker_nodes(run_command_action: &RunCommandAction, children: &mut KdlDocument) {
-    let PaneTarget::Firecracker {
-        vm,
-        image,
-        worktree,
-    } = &run_command_action.target
-    else {
-        return;
-    };
-    let mut vm_node = KdlNode::new("firecracker_vm");
-    vm_node.push(KdlValue::String(vm.clone()));
-    children.nodes_mut().push(vm_node);
-    if let Some(image) = image {
-        let mut image_node = KdlNode::new("firecracker_image");
-        image_node.push(KdlValue::String(image.clone()));
-        children.nodes_mut().push(image_node);
-    }
-    if let Some(worktree) = worktree {
-        let mut worktree_node = KdlNode::new("firecracker_worktree");
-        worktree_node.push(KdlValue::String(worktree.display().to_string()));
-        children.nodes_mut().push(worktree_node);
-    }
-}
-
 #[macro_export]
 macro_rules! parse_kdl_action_arguments {
     ( $action_name:expr, $action_arguments:expr, $action_node:expr ) => {{

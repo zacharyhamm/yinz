@@ -147,7 +147,7 @@ impl AgentSource {
 /// fields, a tool call with omitted keys, a TypeScript object naming two of them - and the defaults
 /// belong in `agent::launch::plan`, where all of them get the same ones.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AgentSpawnSpec {
     /// Run in the explicitly prepared project Bubblewrap environment.
     pub bubblewrap: bool,
@@ -197,10 +197,6 @@ pub struct AgentSpawnSpec {
     /// Whether a `claude` pane reports its state through its hooks. Defaults to true; the
     /// hooks are handed to it inline, so nothing needs installing.
     pub hooks: Option<bool>,
-    /// Named session-scoped Firecracker VM to run in.
-    pub firecracker: Option<String>,
-    /// Immutable project image selected for the Firecracker VM.
-    pub firecracker_image: Option<String>,
     /// Whether an existing branch, or an existing worktree at the name this spec asks for, is
     /// the work the caller means. Defaults to *false*: a taken name is a collision, and the
     /// host cuts the next free one (`<branch>-2`, `<branch>-3`, …) for the branch and its

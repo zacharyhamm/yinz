@@ -56,30 +56,6 @@ fn agent_records_preserve_defaults_and_explicit_waits() {
 }
 
 #[test]
-fn command_targets_preserve_legacy_input_and_canonical_output() {
-    let command: CommandToRun =
-        serde_json::from_str(r#"{"path":"sh","remote_host":"build","remote_default_shell":true}"#)
-            .unwrap();
-    assert_eq!(
-        command.target,
-        PaneTarget::Ssh {
-            host: "build".into()
-        }
-    );
-    let json = r#"{"path":"sh","args":[],"cwd":null,"target":{"Ssh":{"host":"build"}},"remote_default_shell":true}"#;
-    assert_eq!(serde_json::to_string(&command).unwrap(), json);
-    assert_eq!(serde_json::from_str::<CommandToRun>(json).unwrap(), command);
-    assert!(serde_json::from_str::<CommandToRun>(
-        r#"{"remote_host":"build","firecracker_vm":"vm"}"#,
-    )
-    .is_err());
-    assert!(serde_json::from_str::<CommandToRun>(
-        r#"{"firecracker_vm":"vm","firecracker_worktree":"relative"}"#,
-    )
-    .is_err());
-}
-
-#[test]
 fn geometry_reports_rejected_operations_without_changing_dimensions() {
     let mut fixed = Dimension::fixed(80);
     assert!(fixed.reduce_by(10.0, 10).is_err());
@@ -264,6 +240,55 @@ fn pane_tabs_cwd_propagation_tolerates_invalid_selection() {
                 .tabs
                 .iter()
                 .all(|tab| tab.initial_cwd.as_deref() == Some(Path::new("/tmp/origin"))));
+        }
+    }
+}
+
+#[test]
+fn command_targets_preserve_legacy_input_and_canonical_output() {
+    let command: CommandToRun =
+        serde_json::from_str(r#"{"path":"sh","remote_host":"build","remote_default_shell":true}"#)
+            .unwrap();
+    assert_eq!(
+        command.target,
+        PaneTarget::Ssh {
+            host: "build".into()
+        }
+    );
+    let json = r#"{"path":"sh","args":[],"cwd":null,"target":{"Ssh":{"host":"build"}},"remote_default_shell":true}"#;
+    assert_eq!(serde_json::to_string(&command).unwrap(), json);
+    assert_eq!(serde_json::from_str::<CommandToRun>(json).unwrap(), command);
+    assert!(serde_json::from_str::<CommandToRun>(r#"{"path":"sh","remote_host":" "}"#).is_err());
+}
+
+#[test]
+fn commands_reject_retired_vm_fields_even_with_an_explicit_local_target() {
+    for target in [serde_json::Value::Null, serde_json::json!("Local")] {
+        let mut input = serde_json::json!({"path":"sh", "target":target});
+        assert_eq!(
+            serde_json::from_value::<CommandToRun>(input.clone())
+                .unwrap()
+                .target,
+            PaneTarget::Local
+        );
+        for value in [serde_json::Value::Null, serde_json::json!("vm")] {
+            input["firecracker_vm"] = value;
+            let error = serde_json::from_value::<CommandToRun>(input.clone()).unwrap_err();
+            assert!(error.to_string().contains("unknown field `firecracker_vm`"));
+        }
+    }
+}
+
+#[test]
+fn agent_specs_reject_retired_vm_fields_regardless_of_permissions() {
+    use crate::agent::AgentSpawnSpec;
+    for permission in [serde_json::Value::Null, serde_json::json!("skip")] {
+        let mut input = serde_json::json!({"kind":"codex", "permission_mode":permission});
+        assert!(serde_json::from_value::<AgentSpawnSpec>(input.clone()).is_ok());
+        for value in [serde_json::Value::Null, serde_json::json!({})] {
+            input["firecracker"] = value;
+            let error = serde_json::from_value::<AgentSpawnSpec>(input.clone()).unwrap_err();
+            assert!(error.to_string().contains("unknown field `firecracker`"));
         }
     }
 }
