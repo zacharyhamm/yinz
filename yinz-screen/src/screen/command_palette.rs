@@ -990,8 +990,8 @@ impl Screen {
             let is_target = |action: &Action| {
                 target.as_ref() == Some(action) || original.as_ref() == Some(action)
             };
-            entry.shortcut = shortcut_for_action(regular_keybinds, InputMode::Locked, is_target)
-                .or_else(|| shortcut_for_action(&mode_info.keybinds, InputMode::Locked, is_target))
+            entry.shortcut = shortcut_for_action(regular_keybinds, InputMode::Normal, is_target)
+                .or_else(|| shortcut_for_action(&mode_info.keybinds, InputMode::Normal, is_target))
                 .map(|keys| {
                     keys.iter()
                         .map(ToString::to_string)

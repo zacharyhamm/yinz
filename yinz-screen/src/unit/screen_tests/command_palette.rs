@@ -1469,15 +1469,17 @@ fn palette_default_shortcuts_prefer_regular_modes() {
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     for (query, hint) in [
-        ("Fullscreen", "Ctrl g → Ctrl p → f"),
-        ("New tab", "Ctrl g → Ctrl t → n"),
-        ("Split right", "Ctrl g → Ctrl p → r"),
-        ("Split down", "Ctrl g → Ctrl p → d"),
+        ("Fullscreen", "Ctrl p → f"),
+        ("New pane", "Alt n"),
+        ("New tab", "Ctrl t → n"),
+        ("Split right", "Ctrl p → r"),
+        ("Split down", "Ctrl p → d"),
     ] {
         screen.toggle_command_palette(CLIENT);
         screen.command_palette_handles_input(&None, query.as_bytes(), false, CLIENT);
         let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(rendered.contains(hint), "{query}: {rendered}");
+        assert!(!rendered.contains("Ctrl g →"), "{query}: {rendered}");
         screen.close_command_palette(CLIENT);
     }
 }
@@ -1490,7 +1492,7 @@ fn palette_shows_client_shortcuts_and_refreshes_reconfigured_bindings() {
     let mode_info = screen.mode_info.get_mut(&CLIENT).unwrap();
     mode_info.keybinds = vec![
         (
-            InputMode::Locked,
+            InputMode::Normal,
             vec![(
                 KeyWithModifier::new(BareKey::Char('g')).with_ctrl_modifier(),
                 vec![Action::SwitchToMode {
@@ -1517,7 +1519,7 @@ fn palette_shows_client_shortcuts_and_refreshes_reconfigured_bindings() {
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(rendered.contains("Ctrl g → f"), "{rendered}");
     screen.mode_info.get_mut(&CLIENT).unwrap().keybinds = vec![(
-        InputMode::Locked,
+        InputMode::Normal,
         vec![(
             KeyWithModifier::new(BareKey::Char('z')).with_alt_modifier(),
             vec![Action::ToggleFocusFullscreen],
@@ -1545,7 +1547,7 @@ fn palette_shortcut_cache_reuses_hits_and_misses_and_tracks_live_targets() {
     new_tab(&mut screen, 2, TabId::new(1));
     screen.update_client_tab_focus(CLIENT, TabId::new(0));
     screen.default_mode_info.keybinds = vec![(
-        InputMode::Locked,
+        InputMode::Normal,
         vec![(
             KeyWithModifier::new(BareKey::Char('x')).with_alt_modifier(),
             vec![Action::GoToTab {
@@ -1635,7 +1637,7 @@ fn palette_shortcut_caches_use_independent_client_bindings() {
     for (client, letter) in [(CLIENT, 'x'), (other, 'y')] {
         screen.change_mode(InputMode::Locked, None, client).unwrap();
         screen.mode_info.get_mut(&client).unwrap().keybinds = vec![(
-            InputMode::Locked,
+            InputMode::Normal,
             vec![(
                 KeyWithModifier::new(BareKey::Char(letter)).with_alt_modifier(),
                 vec![Action::ToggleFocusFullscreen],
@@ -1672,7 +1674,8 @@ fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
     screen.toggle_command_palette(CLIENT);
     screen.command_palette_handles_input(&None, b"New pane", false, CLIENT);
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(rendered.contains("Ctrl g → Alt n"), "{rendered}");
+    assert!(rendered.contains("Alt n"), "{rendered}");
+    assert!(!rendered.contains("Ctrl g →"), "{rendered}");
     let lookups = screen.command_palettes[&CLIENT].shortcut_lookups;
     screen
         .get_active_tab_mut(CLIENT)
@@ -1688,7 +1691,8 @@ fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
         )
         .unwrap();
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(rendered.contains("Ctrl g → Alt n"), "{rendered}");
+    assert!(rendered.contains("Alt n"), "{rendered}");
+    assert!(!rendered.contains("Ctrl g →"), "{rendered}");
     assert_eq!(
         screen.command_palettes[&CLIENT].shortcut_lookups,
         lookups + 3,
@@ -1702,7 +1706,7 @@ fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
     screen.toggle_command_palette(CLIENT);
     screen.command_palette_handles_input(&None, b"New floating pane", false, CLIENT);
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(!rendered.contains("Ctrl g → Alt n"), "{rendered}");
+    assert!(!rendered.contains("Alt n"), "{rendered}");
 }
 
 #[test]
