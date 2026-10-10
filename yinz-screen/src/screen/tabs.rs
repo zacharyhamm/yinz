@@ -588,7 +588,6 @@ impl Screen {
                 self.active_tab_ids.insert(client_id, new_tab_index);
                 if old_active_index != new_tab_index {
                     self.close_command_palette(client_id);
-                    self.mother_follows(client_id, old_active_index, new_tab_index);
                     self.repaint_after_leaving_tab(old_active_index, new_tab_index);
                 }
                 let client_tab_history = self.tab_history.entry(client_id).or_default();
@@ -725,6 +724,13 @@ impl Screen {
                         }
                         self.update_client_tab_focus(client_id, new_tab_index);
                     }
+
+                    self.mother_follows(
+                        client_id,
+                        current_tab_index,
+                        new_tab_index,
+                        &old_focused_panes,
+                    );
 
                     if let Some(current_tab) = self.get_tab_by_id_mut(current_tab_index) {
                         if current_tab.has_no_connected_clients() {

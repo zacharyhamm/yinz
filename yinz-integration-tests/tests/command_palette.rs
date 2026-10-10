@@ -719,6 +719,34 @@ fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
 }
 
 #[test]
+fn mother_launches_in_the_configured_session_directory() {
+    // Where the session's panes open, which is not where the server process happens to run.
+    let start = tempfile::tempdir().unwrap();
+    let start = start.path().canonicalize().unwrap();
+    assert_ne!(start, std::env::current_dir().unwrap());
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!(
+            "load_plugins clear-defaults=true {{}}\npane_animations false\ndefault_cwd {:?}",
+            start.to_str().unwrap()
+        ))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("session ready", |snapshot| snapshot.contains("$"));
+    yinz.send_stdin(&keys::ctrl('e'));
+    yinz.send_stdin(b"m");
+    yinz.wait_until("mother picker opened", |snapshot| {
+        snapshot.contains("Launch mother") && snapshot.contains("codex")
+    });
+    yinz.send_stdin(b"claude");
+    yinz.wait_until("claude selected", |snapshot| snapshot.contains("> claude"));
+    yinz.send_stdin(&keys::ENTER);
+    let mother = yinz.expect_pty_spawn();
+    assert_eq!(mother.run_command().cwd, Some(start));
+    yinz.quit();
+}
+
+#[test]
 fn command_palette_launches_agent_in_selected_worktree_and_focuses_it() {
     let repository = tempfile::tempdir().unwrap();
     let root = repository.path().canonicalize().unwrap();

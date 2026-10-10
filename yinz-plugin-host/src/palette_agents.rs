@@ -418,23 +418,9 @@ fn mother(
             None,
             None,
         )));
-    let reply = launch(request, senders, spec, surface, |_| {
+    launch(request, senders, spec, surface, |_| {
         existing_command(kind, &cwd, PaneTarget::Local)
-    })?;
-    if let AgentReply::Launched(AgentResponse {
-        outcome: AgentOutcome::Ok,
-        spawned: Some(spawned),
-        ..
-    }) = &reply
-    {
-        // The screen records mother from this, not from the palette reply, which it drops
-        // when the palette was dismissed while the agent started.
-        senders
-            .send_to_screen(ScreenInstruction::MotherSpawned(spawned.pane_id))
-            .context("registering mother")
-            .non_fatal();
-    }
-    Ok(reply)
+    })
 }
 
 fn launch(
@@ -470,6 +456,7 @@ fn launch(
     let response = match spawn_agent_prepared(
         AgentPlacement::Automatic,
         surface,
+        matches!(request.action, AgentAction::Mother { .. }),
         spec,
         request.client,
         senders,

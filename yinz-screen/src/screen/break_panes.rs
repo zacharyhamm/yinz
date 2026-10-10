@@ -382,6 +382,30 @@ impl Screen {
             .senders
             .send_to_pty(PtyInstruction::ClosePane(pane_id, None));
     }
+    /// Move the overlay container holding `pane_id` into `destination`, as the overlay it is,
+    /// and return every pane that went with it. `None` when the pane is not an overlay in
+    /// another tab. The destination is checked first: a container taken with nowhere to put it
+    /// would be dropped, panes and all.
+    pub(super) fn move_overlay_container(
+        &mut self,
+        pane_id: PaneId,
+        destination: TabId,
+    ) -> Option<Vec<PaneId>> {
+        let source = self.tab_containing_overlay(pane_id)?.id;
+        if source == destination || !self.tabs.contains_key(&destination) {
+            return None;
+        }
+        let container = self
+            .tabs
+            .get_mut(&source)?
+            .take_overlay_container(pane_id)?;
+        let members = container.pane_ids().collect();
+        // Present: checked above, and nothing since has removed a tab.
+        self.tabs
+            .get_mut(&destination)?
+            .accept_overlay_container(container);
+        Some(members)
+    }
     /// Move `pane_ids` into the tab with the given **stable id**.
     ///
     /// `tab_id` is an ID - the `Screen::tabs` BTreeMap key - and never a display
@@ -440,27 +464,13 @@ impl Screen {
             }
         }
 
-        let mut containers = vec![];
         let mut moved_members = std::collections::HashSet::new();
         for pane_id in &to_extract {
             if moved_members.contains(pane_id) {
                 continue;
             }
-            if let Some(source) = self
-                .tabs
-                .values_mut()
-                .find(|tab| tab.pane_is_overlay(*pane_id))
-            {
-                if let Some(container) = source.take_overlay_container(*pane_id) {
-                    moved_members.extend(container.pane_ids());
-                    containers.push(container);
-                }
-            }
-        }
-        // The destination was preflighted before any ownership moved.
-        if let Some(destination) = self.tabs.get_mut(&tab_id) {
-            for container in containers {
-                destination.accept_overlay_container(container);
+            if let Some(members) = self.move_overlay_container(*pane_id, tab_id) {
+                moved_members.extend(members);
             }
         }
         outcome.moved.extend(moved_members.iter().copied());
