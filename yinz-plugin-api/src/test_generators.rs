@@ -121,6 +121,7 @@ pub(crate) fn agent_spawn_specs(tc: &hegel::TestCase) -> AgentSpawnSpec {
         reuse: optional_booleans(tc),
         reuse_prompt: optional_strings(tc),
         allow_outside_worktree: optional_booleans(tc),
+        bubblewrap: booleans(tc),
     }
 }
 

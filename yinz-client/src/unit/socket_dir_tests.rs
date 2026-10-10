@@ -12,6 +12,17 @@ fn prepare_socket_dir_creates_the_directory_with_mode_0700() {
 }
 
 #[test]
+fn prepare_socket_dir_preserves_secure_modes_and_tightens_insecure_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    for mode in [0o700, 0o755, 0o2700] {
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+        crate::prepare_socket_dir(dir.path()).unwrap();
+        let permissions = std::fs::metadata(dir.path()).unwrap().permissions();
+        assert_eq!(permissions.mode() & 0o7777, 0o700);
+    }
+}
+
+#[test]
 fn prepare_socket_dir_reports_a_parent_that_is_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("not-a-dir");

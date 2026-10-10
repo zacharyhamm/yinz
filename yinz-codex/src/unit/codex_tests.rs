@@ -2002,3 +2002,93 @@ async fn bridge_reports_only_failures_locally_and_remotely_without_changing_traf
         );
     }
 }
+
+#[test]
+fn bubblewrap_private_backend_uses_its_socket_and_dies_with_its_owner() {
+    const TEST: &str = "tests::bubblewrap_private_backend_uses_its_socket_and_dies_with_its_owner";
+    if let Ok(socket) = std::env::var("YINZ_TEST_PRIVATE_SOCKET") {
+        let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        loop {
+            let _ = listener.accept().unwrap();
+        }
+    }
+    if std::env::var_os("YINZ_TEST_PRIVATE_PROXY").is_some() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                use tokio::io::AsyncReadExt;
+                let (mut child, mut stream) = daemon_connection(Path::new(
+                    &std::env::var("YINZ_TEST_PRIVATE_PROGRAM").unwrap(),
+                ))
+                .unwrap();
+                let mut args = String::new();
+                stream.read_to_string(&mut args).await.unwrap();
+                assert_eq!(
+                    args,
+                    format!("app-server\nproxy\n--sock\n{PRIVATE_BACKEND}\n")
+                );
+                assert!(child.wait().await.unwrap().success());
+            });
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let program = root.path().join("codex");
+    yinz_test_support::write_warm_script(
+        &program,
+        &format!(
+            r#"
+if [ "$2" = proxy ]; then
+    printf '%s\n' "$@"
+    exit 0
+fi
+[ "$1" = app-server ] && [ "$2" = --listen ] || exit 99
+export YINZ_TEST_PRIVATE_SOCKET="${{3#unix://}}"
+exec '{}' --exact '{}' --nocapture
+"#,
+            std::env::current_exe().unwrap().display(),
+            TEST
+        ),
+    );
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let socket = root.path().join("private.sock");
+            let child = private_backend(&program, &socket).await.unwrap();
+            let pid = child.id().unwrap();
+            drop(child);
+            // SIGKILL on drop is observed through waitpid, without a scheduling-dependent sleep.
+            let status = tokio::task::spawn_blocking(move || {
+                nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(pid as i32), None)
+            })
+            .await
+            .unwrap();
+            assert!(
+                matches!(
+                    status,
+                    Ok(nix::sys::wait::WaitStatus::Signaled(
+                        _,
+                        nix::sys::signal::Signal::SIGKILL,
+                        _
+                    )) | Err(nix::errno::Errno::ECHILD)
+                ),
+                "{status:?}"
+            );
+        });
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST, "--nocapture"])
+        .env("YINZ_TEST_PRIVATE_PROXY", "1")
+        .env("YINZ_TEST_PRIVATE_PROGRAM", &program)
+        .env("YINZ_BUBBLEWRAP", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

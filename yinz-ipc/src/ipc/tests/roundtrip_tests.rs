@@ -5525,6 +5525,9 @@ fn agent_spawn_placement_and_failure_resources_roundtrip() {
     test_client_roundtrip!(ClientToServerMsg::AgentControl(
         AgentRequest::SpawnPlacementSupport
     ));
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::SpawnBubblewrapSupport
+    ));
     test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
         outcome: AgentOutcome::Failed,
         launch_resources: Some(yinz_types::agent::AgentLaunchResources {

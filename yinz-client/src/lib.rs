@@ -231,6 +231,8 @@ fn spawn_server_error_message(e: io::Error) -> String {
 /// show the user: both failures mean the directory is owned by someone else or is not writable,
 /// and `YINZ_SOCKET_DIR` is the way out.
 fn prepare_socket_dir(sock_dir: &Path) -> std::result::Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
     if let Err(e) = std::fs::create_dir_all(sock_dir) {
         return Err(format!(
             "Error: failed to create the Yinz socket directory:\n  {}\n\n\
@@ -243,6 +245,12 @@ fn prepare_socket_dir(sock_dir: &Path) -> std::result::Result<(), String> {
             sock_dir.display(),
             e
         ));
+    }
+    // An already secured directory can be a read-only mount in a Bubblewrap client.
+    if std::fs::metadata(sock_dir).is_ok_and(|metadata| {
+        metadata.uid() == nix::unistd::geteuid().as_raw() && metadata.mode() & 0o7777 == 0o700
+    }) {
+        return Ok(());
     }
     if let Err(e) = set_permissions(sock_dir, 0o700) {
         return Err(format!(

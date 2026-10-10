@@ -401,8 +401,12 @@ async fn proxy(
 fn daemon_connection(
     program: &Path,
 ) -> Result<(tokio::process::Child, impl AsyncRead + AsyncWrite + Unpin)> {
-    let mut backend = tokio::process::Command::new(program)
-        .args(["app-server", "proxy"])
+    let mut command = tokio::process::Command::new(program);
+    command.args(["app-server", "proxy"]);
+    if sandboxed() {
+        command.args(["--sock", PRIVATE_BACKEND]);
+    }
+    let mut backend = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -766,7 +770,42 @@ fn bridge_options(args: &[String]) -> Option<BridgeOptions> {
     Some(options)
 }
 
-/// Run the ordinary Codex UI through a pane-aware connection to its shared daemon.
+const PRIVATE_BACKEND: &str = "/run/user/codex-backend.sock";
+
+fn sandboxed() -> bool {
+    std::env::var("YINZ_BUBBLEWRAP").as_deref() == Ok("1")
+}
+
+async fn private_backend(program: &Path, socket: &Path) -> Result<tokio::process::Child> {
+    let mut child = tokio::process::Command::new(program)
+        .args([
+            "app-server",
+            "--listen",
+            &format!("unix://{}", socket.display()),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("start private Codex backend")?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut poll = tokio::time::interval(std::time::Duration::from_millis(20));
+        loop {
+            if let Some(status) = child.try_wait().context("inspect private Codex backend")? {
+                bail!("private Codex backend exited: {status}");
+            }
+            if tokio::net::UnixStream::connect(socket).await.is_ok() {
+                return Ok(());
+            }
+            poll.tick().await;
+        }
+    })
+    .await
+    .context("private Codex backend did not become ready")??;
+    Ok(child)
+}
+
+/// Run the ordinary Codex UI through a pane-aware connection to its backend.
 pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
     let env: HashMap<_, _> = ROUTE_ENV
         .iter()
@@ -792,19 +831,26 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
     let worktree = worktree_roots(&cwd);
     let mut registration = Registration::new(&directory(), env)?;
     registration.reporter = Some(std::env::current_exe().context("find this yinz binary")?);
-    let status = Command::new(program)
-        .args(["app-server", "daemon", "start"])
-        .stdout(Stdio::null())
-        .status()
-        .context("start the Codex daemon")?;
-    if !status.success() {
-        return Err(anyhow!("Codex could not start its shared daemon"));
+    if !sandboxed() {
+        let status = Command::new(program)
+            .args(["app-server", "daemon", "start"])
+            .stdout(Stdio::null())
+            .status()
+            .context("start the Codex daemon")?;
+        if !status.success() {
+            return Err(anyhow!("Codex could not start its shared daemon"));
+        }
     }
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("start Codex pane bridge")?
         .block_on(async {
+            let _backend = if sandboxed() {
+                Some(private_backend(program, Path::new(PRIVATE_BACKEND)).await?)
+            } else {
+                None
+            };
             if let Some((root, primary)) = &worktree {
                 // --remote skips Codex's folder-access prompt, so establish trust first.
                 if !register_worktree_trust(program, root, primary)

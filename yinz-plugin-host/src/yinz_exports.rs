@@ -3154,6 +3154,24 @@ fn prepare_agent(
     data_access: &DataAccess,
 ) -> Result<PreparedAgent, AgentSpawnError> {
     let (mut command, mut checkout) = yinz_runtime::agent::launch::plan(spec)?;
+    let bubblewrap = if spec.bubblewrap {
+        yinz_config::project_config::bubblewrap::validate_spawn_env(&spec.env)
+            .map_err(|error| format!("{error:#}"))?;
+        if !command.target.is_local() || automatic_firecracker_vm {
+            return Err("Bubblewrap cannot be combined with SSH or Firecracker".into());
+        }
+        let environment = yinz_config::project_config::bubblewrap::Environment::for_project(
+            cwd.as_deref().unwrap_or(&source),
+        )
+        .map_err(|error| format!("{error:#}"))?;
+        environment
+            .preflight()
+            .map_err(|error| format!("{error:#}"))?;
+        Some(environment)
+    } else {
+        None
+    };
+
     apply_project_worktree_dir(&mut checkout, spec.worktree_dir.as_deref(), &source, || {
         data_access.plugin_data().fetch(
             project_data::store::SHARED,
@@ -3239,7 +3257,12 @@ fn prepare_agent(
         automatic_firecracker_vm,
         checkout_made || mirror_project,
     )
-    .map_err(|error| AgentSpawnError::failed(error, Some(resources)))?;
+    .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?;
+    if let Some(environment) = bubblewrap {
+        environment
+            .wrap(&mut command)
+            .map_err(|error| AgentSpawnError::failed(format!("{error:#}"), Some(resources)))?;
+    }
     let requested_branch = requested_branch.filter(|requested| branch.as_ref() != Some(requested));
     Ok(PreparedAgent {
         command,

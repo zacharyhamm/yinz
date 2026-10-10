@@ -1110,6 +1110,12 @@ impl Screen {
                 self.agent_reply(&client, response);
                 return;
             },
+            SpawnBubblewrapSupport => {
+                let mut response = AgentResponse::new(AgentOutcome::Ok);
+                response.output = Some("agent-bubblewrap-v1".into());
+                self.agent_reply(&client, response);
+                return;
+            },
             List { .. } => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.agents = self
@@ -1805,7 +1811,11 @@ impl Screen {
                 });
                 self.refresh_agent_controls();
             },
-            SetControlAgent { .. } | List { .. } | Spawn { .. } | SpawnPlacementSupport => {},
+            SetControlAgent { .. }
+            | List { .. }
+            | Spawn { .. }
+            | SpawnPlacementSupport
+            | SpawnBubblewrapSupport => {},
         }
     }
 

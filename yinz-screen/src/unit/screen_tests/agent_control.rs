@@ -97,6 +97,15 @@ fn replies(messages: &CapturedClientMessages, client: ClientId) -> Vec<AgentResp
         .collect()
 }
 
+#[test]
+fn bubblewrap_support_probe_confirms_the_exact_token() {
+    let (mut screen, messages, _writes) = setup("bash");
+    screen.agent_control(AgentRequest::SpawnBubblewrapSupport, CLIENT);
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Ok);
+    assert_eq!(response.output.as_deref(), Some("agent-bubblewrap-v1"));
+}
+
 fn hook(name: &str) -> HookEvent {
     HookEvent {
         hook_event_name: name.into(),

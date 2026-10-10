@@ -426,6 +426,9 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
+    /// Prepare a persistent project Bubblewrap environment (Linux).
+    #[clap(subcommand)]
+    Bubblewrap(Bubblewrap),
     /// Find, launch and control agents in explicit terminal panes.
     // Running servers from before the rename still launch `yinz hocus codex`.
     #[clap(subcommand, alias = "hocus")]
@@ -585,6 +588,15 @@ pub struct AgentWatchFilters {
     pub cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Subcommand)]
+pub enum Bubblewrap {
+    /// Accept the current declaration and rerun its provisioning and checks.
+    Prepare {
+        #[clap(long)]
+        project: Option<PathBuf>,
+    },
+}
+
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Agent {
     /// Run Codex with pane tracking while retaining its shared background daemon.
@@ -712,6 +724,9 @@ pub enum Agent {
         /// Permit launching outside a linked Git worktree.
         #[clap(long)]
         allow_outside_worktree: bool,
+        /// Use the project environment accepted by `yinz bubblewrap prepare`.
+        #[clap(long)]
+        bubblewrap: bool,
         /// Let a sandboxed Codex run `yinz` commands. Codex's sandbox blocks Unix socket
         /// connections unless it has network access, so this also allows the internet.
         #[clap(long)]

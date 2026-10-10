@@ -292,6 +292,11 @@ pub(super) fn prepare_automation_agent(
     automatic_firecracker_vm: bool,
     data: &DataAccess,
 ) -> Result<PreparedAgent, AgentSpawnError> {
+    if spec.bubblewrap
+        && (remote_host.is_some() || spec.firecracker.is_some() || automatic_firecracker_vm)
+    {
+        return Err("Bubblewrap cannot be combined with SSH or Firecracker".into());
+    }
     let guidance = || {
         let kinds = yinz_types::agent::KINDS
             .iter()

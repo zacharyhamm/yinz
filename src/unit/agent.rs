@@ -667,3 +667,177 @@ fn spawn_placement_waits_for_support_reply_before_sending_spawn() {
         }
     }
 }
+
+#[test]
+fn bubblewrap_negotiation_requires_confirmation_before_spawn() {
+    use interprocess::{
+        local_socket::{prelude::*, GenericFilePath, ListenerOptions, Stream},
+        TryClone,
+    };
+    use yinz_types::agent::control::AgentPlacement;
+
+    for placement in [AgentPlacement::Automatic, AgentPlacement::NewTab(None)] {
+        for reply in [
+            "success",
+            "wrong token",
+            "missing token",
+            "rejected",
+            "disconnect",
+            "malformed",
+            "timeout",
+            "placement rejected",
+        ] {
+            if reply == "placement rejected" && placement == AgentPlacement::Automatic {
+                continue;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.sock");
+            let listener = ListenerOptions::new()
+                .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+                .create_sync()
+                .unwrap();
+            // Exercise the finalized JSON request, as well as combined placement negotiation.
+            let mut request: AgentRequest = serde_json::from_value(json!({
+                "Spawn": spawn_args(&[], json!({"bubblewrap": true})),
+            }))
+            .unwrap();
+            let AgentRequest::Spawn {
+                placement: target, ..
+            } = &mut request
+            else {
+                panic!("expected spawn");
+            };
+            *target = placement.clone();
+            let expected = request.clone();
+            let explicit_placement = placement != AgentPlacement::Automatic;
+            let server = std::thread::spawn(move || {
+                let mut raw = listener.accept().unwrap();
+                let mut sender =
+                    IpcSenderWithContext::<ServerToClientMsg>::new(raw.try_clone().unwrap());
+                let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+                receiver
+                    .set_recv_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                if explicit_placement {
+                    assert!(matches!(
+                        receiver.recv_client_msg(),
+                        IpcRecv::Msg(
+                            ClientToServerMsg::AgentControl(AgentRequest::SpawnPlacementSupport),
+                            _
+                        )
+                    ));
+                    let mut response = AgentResponse::new(AgentOutcome::Ok);
+                    response.output =
+                        (reply != "placement rejected").then(|| "agent-tab-placement-v1".into());
+                    sender
+                        .send_server_msg(ServerToClientMsg::AgentControl(response))
+                        .unwrap();
+                    if reply == "placement rejected" {
+                        assert!(matches!(receiver.recv_client_msg(), IpcRecv::Eof));
+                        return;
+                    }
+                    sender
+                        .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                        .unwrap();
+                }
+                assert!(matches!(
+                    receiver.recv_client_msg(),
+                    IpcRecv::Msg(
+                        ClientToServerMsg::AgentControl(AgentRequest::SpawnBubblewrapSupport),
+                        _
+                    )
+                ));
+                sender
+                    .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                    .unwrap();
+                match reply {
+                    "disconnect" => {
+                        let Stream::UdSocket(socket) = &raw;
+                        // Close only replies so we can still prove that no spawn arrives.
+                        socket.inner().shutdown(std::net::Shutdown::Write).unwrap();
+                    },
+                    "malformed" => {
+                        raw.write_all(&1u32.to_le_bytes()).unwrap();
+                        raw.write_all(&[0xff]).unwrap();
+                    },
+                    "timeout" => {}, // Keep the connection open until the client's deadline.
+                    _ => {
+                        let mut response = AgentResponse::new(if reply == "rejected" {
+                            AgentOutcome::Rejected
+                        } else {
+                            AgentOutcome::Ok
+                        });
+                        response.output = match reply {
+                            "missing token" => None,
+                            "wrong token" => Some("agent-bubblewrap-v2".into()),
+                            _ => Some("agent-bubblewrap-v1".into()),
+                        };
+                        sender
+                            .send_server_msg(ServerToClientMsg::AgentControl(response))
+                            .unwrap();
+                    },
+                }
+                if reply == "success" {
+                    assert!(matches!(receiver.recv_client_msg(), IpcRecv::Msg(
+                        ClientToServerMsg::AgentControl(request), _
+                    ) if request == expected));
+                    sender
+                        .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                        .unwrap();
+                    sender
+                        .send_server_msg(ServerToClientMsg::AgentControl(AgentResponse::new(
+                            AgentOutcome::Submitted,
+                        )))
+                        .unwrap();
+                    assert!(matches!(
+                        receiver.recv_client_msg(),
+                        IpcRecv::Msg(ClientToServerMsg::ClientExited, _)
+                    ));
+                } else {
+                    assert!(
+                        matches!(receiver.recv_client_msg(), IpcRecv::Eof),
+                        "{reply}: failed negotiation must not send a spawn"
+                    );
+                }
+            });
+            let socket = yinz_ipc::consts::ipc_connect(&path).unwrap();
+            let started = Instant::now();
+            let result = exchange_on_socket(socket, request, Duration::from_secs(5));
+            server.join().unwrap();
+            if reply == "success" {
+                assert_eq!(result.unwrap().outcome, AgentOutcome::Submitted);
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("spawn was not sent"), "{reply}: {error}");
+                assert!(error.contains("restart the session"), "{reply}: {error}");
+                if reply == "timeout" {
+                    assert!(started.elapsed() >= Duration::from_secs(5));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn bubblewrap_spawn_cli_and_json_keep_the_opt_in() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Agent,
+    }
+    for (extra, input, expected) in [
+        (vec![], "{}", false),
+        (vec![], r#"{"bubblewrap":true}"#, true),
+        (vec!["--bubblewrap"], r#"{"bubblewrap":false}"#, true),
+    ] {
+        let mut args = vec!["agent", "spawn", "--kind", "codex", "--file", "-"];
+        args.extend(extra);
+        let parsed = Cli::try_parse_from(args).unwrap();
+        let (request, _, _) = request(parsed.command, &mut input.as_bytes()).unwrap();
+        let AgentRequest::Spawn { spec, .. } = request else {
+            panic!("expected spawn");
+        };
+        assert_eq!(spec.bubblewrap, expected);
+    }
+}

@@ -149,6 +149,8 @@ impl AgentSource {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSpawnSpec {
+    /// Run in the explicitly prepared project Bubblewrap environment.
+    pub bubblewrap: bool,
     /// The agent to run, by kind: `claude`, `codex`, `pi`, `cursor`, `muse`, `opencode`,
     /// or any other name the agent detection would recognise. Resolved to a program by
     /// `agent::launch::binary_for`.

@@ -431,3 +431,20 @@ fn spawn_tab_flags_accept_stable_zero_and_optional_new_tab_name() {
         Agent::Spawn { new_tab: Some(Some(name)), .. } if name == "review")
     );
 }
+
+#[test]
+fn bubblewrap_is_an_explicit_spawn_option() {
+    use clap::Parser;
+    for (args, expected) in [
+        (vec!["agent", "spawn", "--kind", "codex"], false),
+        (
+            vec!["agent", "spawn", "--kind", "codex", "--bubblewrap"],
+            true,
+        ),
+    ] {
+        let parsed = AgentCli::try_parse_from(args).unwrap();
+        assert!(
+            matches!(parsed.command, Agent::Spawn { bubblewrap, .. } if bubblewrap == expected)
+        );
+    }
+}

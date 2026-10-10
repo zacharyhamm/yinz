@@ -495,3 +495,7 @@ fn named_actions_and_commands_wait_for_readiness_without_probing_other_sessions(
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+#[path = "bubblewrap_cli.rs"]
+mod bubblewrap_cli;
