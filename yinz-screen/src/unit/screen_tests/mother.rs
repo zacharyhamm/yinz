@@ -201,6 +201,51 @@ fn mother_survives_a_new_conversation_and_ends_with_its_process() {
 }
 
 #[test]
+fn an_exited_mother_is_not_listed_as_mother_among_the_live_agents() {
+    let mut screen = screen_with_mother();
+    let agent = yinz_types::agent::AgentInfo {
+        kind: "claude".into(),
+        state: yinz_types::agent::AgentState::Idle,
+        source: yinz_types::agent::AgentSource::Reported,
+        detail: None,
+        waiting_on: None,
+        wait_needs_a_person: false,
+        cwd: None,
+        session_id: None,
+        run_id: None,
+    };
+    let listed_as_mother = |screen: &Screen| {
+        screen
+            .live_palette_agents()
+            .iter()
+            .find(|agent| agent.pane.id == MOTHER)
+            .map(|agent| agent.metadata["mother"].clone())
+    };
+    assert!(screen
+        .tab_containing_pane_mut(MOTHER)
+        .unwrap()
+        .set_pane_agent(MOTHER, Some(agent.clone())));
+    assert_eq!(listed_as_mother(&screen).as_deref(), Some("true"));
+
+    // Held for a rerun: the pane and its record remain, mother does not.
+    screen.tab_containing_pane_mut(MOTHER).unwrap().hold_pane(
+        MOTHER,
+        Some(0),
+        true,
+        yinz_types::input::command::RunCommand {
+            command: "/usr/bin/true".into(),
+            ..Default::default()
+        },
+    );
+    screen
+        .tab_containing_pane_mut(MOTHER)
+        .unwrap()
+        .set_pane_agent(MOTHER, Some(agent));
+    assert_eq!(screen.live_mother(), None);
+    assert_eq!(listed_as_mother(&screen).as_deref(), Some("false"));
+}
+
+#[test]
 fn mother_is_forgotten_when_its_pane_closes() {
     let mut screen = screen_with_mother();
     let (pty_sender, _pty) = channels::unbounded();
@@ -351,6 +396,26 @@ fn another_client_cannot_carry_or_hide_a_focused_mother() {
 }
 
 #[test]
+fn clients_sharing_mother_let_go_one_at_a_time_and_the_last_one_hides_it() {
+    let mut screen = screen_with_mother();
+    screen.add_client(OTHER).unwrap();
+    screen.toggle_mother(OTHER).unwrap();
+    screen.toggle_mother(CLIENT).unwrap();
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
+
+    screen.toggle_mother(CLIENT).unwrap();
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(SHELL));
+    assert_eq!(screen.get_active_pane_id(&OTHER), Some(MOTHER));
+    assert!(!hidden(&screen));
+
+    screen.toggle_mother(OTHER).unwrap();
+    assert!(hidden(&screen));
+    screen.toggle_mother(CLIENT).unwrap();
+    assert!(!hidden(&screen));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
+}
+
+#[test]
 fn a_disconnected_client_does_not_pin_mother_to_its_tab() {
     let mut screen = screen_with_mother();
     screen.add_client(OTHER).unwrap();
@@ -485,7 +550,7 @@ fn mothers_replacements_toggle_travel_and_restore_as_overlays() {
 }
 
 #[test]
-fn a_parked_mother_is_not_unsuppressed_by_a_toggle() {
+fn a_toggle_fetches_a_parked_mother_like_any_parked_pane() {
     let mut screen = screen_with_mother();
     screen
         .tab_containing_pane_mut(MOTHER)
@@ -493,8 +558,9 @@ fn a_parked_mother_is_not_unsuppressed_by_a_toggle() {
         .suppress_pane(MOTHER, Some(CLIENT));
     screen.toggle_mother(CLIENT).unwrap();
     let tab = screen.tab_containing_pane(MOTHER).unwrap();
-    assert_eq!(tab.get_suppressed_panes().count(), 1);
-    assert!(!tab.has_non_suppressed_pane_with_pid(&MOTHER));
+    assert_eq!(tab.get_suppressed_panes().count(), 0);
+    assert!(tab.has_non_suppressed_pane_with_pid(&MOTHER));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
     assert_eq!(screen.live_mother(), Some(MOTHER));
 }
 
@@ -506,6 +572,9 @@ fn toggling_an_unselectable_mother_keeps_the_screen_thread_running() {
     let logger = log_actions_in_thread!(received, ServerInstruction::KillSession, server);
     let screen_thread = mock.run(None, vec![]);
     let client = mock.main_client_id;
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    let mut completion = crate::route::NotificationEnd::new(tx);
+    completion.is_mother = true;
     for instruction in [
         ScreenInstruction::NewPane(
             MOTHER,
@@ -515,10 +584,9 @@ fn toggling_an_unselectable_mother_keeps_the_screen_thread_running() {
             NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
             false,
             ClientTabIndexOrPaneId::ClientId(client),
-            None,
+            Some(completion),
             false,
         ),
-        ScreenInstruction::MotherSpawned(MOTHER),
         ScreenInstruction::SetSelectable(MOTHER, false),
         ScreenInstruction::ToggleMother(client, None),
         ScreenInstruction::SetSelectable(MOTHER, true),
@@ -676,7 +744,7 @@ fn generic_focus_fetches_hidden_mother_and_its_replacement_without_toggling_or_s
 }
 
 #[test]
-fn generic_mother_focus_respects_other_clients_invalid_tabs_and_parked_panes() {
+fn generic_mother_focus_respects_other_clients_and_invalid_tabs_and_fetches_a_parked_mother() {
     let mut screen = screen_with_mother();
     screen.add_client(OTHER).unwrap();
     screen.toggle_mother(OTHER).unwrap();
@@ -702,14 +770,16 @@ fn generic_mother_focus_respects_other_clients_invalid_tabs_and_parked_panes() {
         .tab_containing_pane_mut(MOTHER)
         .unwrap()
         .suppress_pane(MOTHER, Some(OTHER));
+    // Parked with nothing standing in for it, mother answers to the caller's flags.
     screen
         .focus_pane_with_id(MOTHER, true, true, CLIENT)
         .unwrap();
-    assert!(!screen
+    assert!(screen
         .tab_containing_pane(MOTHER)
         .unwrap()
         .has_non_suppressed_pane_with_pid(&MOTHER));
-    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(0));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(MOTHER));
 }
 
 #[test]
@@ -767,36 +837,66 @@ fn saved_mother_matches_reported_live_hidden_replaced_held_and_missing_metadata(
     }
 }
 
+fn place_mother(
+    screen: &mut Screen,
+    id: u32,
+    set_blocking: bool,
+) -> tokio::sync::oneshot::Receiver<crate::route::ActionCompletionResult> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut completion = crate::route::NotificationEnd::new(tx);
+    completion.is_mother = true;
+    completion.wait_for_agent_start = true;
+    screen
+        .place_new_pane(
+            PaneId::Terminal(TerminalId::new(id)),
+            None,
+            None,
+            None,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            false,
+            ClientTabIndexOrPaneId::ClientIdNoFocus(CLIENT),
+            Some(completion),
+            set_blocking,
+            &mut Default::default(),
+        )
+        .unwrap();
+    rx
+}
+
 #[test]
-fn mother_registration_survives_late_placement_and_closes_duplicate_arrivals() {
+fn mother_registration_survives_late_placement_and_refuses_duplicate_arrivals() {
     let mut screen = screen();
-    let (sender, _messages) = channels::unbounded();
+    let (sender, messages) = channels::unbounded();
     screen.bus.senders.to_pty = Some(SenderWithContext::new(sender));
-    for id in [2, 3] {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let mut completion = crate::route::NotificationEnd::new(tx);
-        completion.is_mother = true;
-        completion.wait_for_agent_start = true;
-        drop(rx);
-        screen
-            .place_new_pane(
-                PaneId::Terminal(TerminalId::new(id)),
-                None,
-                None,
-                None,
-                NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
-                false,
-                ClientTabIndexOrPaneId::ClientIdNoFocus(CLIENT),
-                Some(completion),
-                false,
-                &mut Default::default(),
-            )
-            .unwrap();
-        assert_eq!(screen.live_mother(), Some(MOTHER));
-    }
-    assert!(screen
-        .tab_containing_pane(PaneId::Terminal(TerminalId::new(3)))
-        .is_none());
+    // The launcher gave up before its pane arrived; registration belongs to the screen.
+    drop(place_mother(&mut screen, 2, false));
+    assert_eq!(screen.live_mother(), Some(MOTHER));
+
+    let late = PaneId::Terminal(TerminalId::new(3));
+    let reply = place_mother(&mut screen, 3, false).blocking_recv().unwrap();
+    assert_eq!(
+        reply.error_message.as_deref(),
+        Some("Mother is already running")
+    );
+    // The pane was never shown, so the launcher is not told about one.
+    assert_eq!(reply.affected_pane_id, None);
+    assert_eq!(screen.live_mother(), Some(MOTHER));
+    assert!(screen.tab_containing_pane(late).is_none());
+    assert_eq!(
+        messages
+            .try_iter()
+            .filter(|(instruction, _)| matches!(instruction,
+                PtyInstruction::ClosePane(pane, _) if *pane == late))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_blocking_mother_launch_is_still_registered() {
+    let mut screen = screen();
+    let _reply = place_mother(&mut screen, 2, true);
+    assert_eq!(screen.live_mother(), Some(MOTHER));
 }
 
 #[test]

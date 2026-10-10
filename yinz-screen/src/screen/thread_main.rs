@@ -818,12 +818,6 @@ pub fn screen_thread_main(
                         .context("failed to toggle mother")?;
                     screen.render()?;
                 },
-                ScreenInstruction::MotherSpawned(pane_id) => {
-                    screen
-                        .mother_spawned(pane_id)
-                        .context("failed to register mother")?;
-                    screen.render()?;
-                },
                 ScreenInstruction::ResetAgentEscape(client_id) => {
                     for tab in screen.tabs.values_mut() {
                         tab.pending_agent_escapes

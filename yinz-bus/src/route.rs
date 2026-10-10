@@ -32,7 +32,8 @@ pub struct NotificationEnd {
     channel: Option<oneshot::Sender<ActionCompletionResult>>,
     /// Direct agent control waits for remote startup before placing its pane.
     pub wait_for_agent_start: bool,
-    /// Register a mother launch when the screen retains its pane.
+    /// Register a mother launch when the screen retains its pane. Placement reads this as the
+    /// pane arrives, before the handle can be handed to a blocking pane.
     pub is_mother: bool,
     placement_pending: bool,
     pub agent_tab: Option<AgentTabPlacement>,

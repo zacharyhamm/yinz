@@ -13,11 +13,11 @@ use yinz_types::{
 };
 
 #[derive(Clone)]
-pub(super) struct LiveAgent {
+pub(in crate::screen) struct LiveAgent {
     session: SessionName,
     host: String,
-    pub(super) pane: PaneInfo,
-    pub(super) metadata: BTreeMap<String, String>,
+    pub(in crate::screen) pane: PaneInfo,
+    pub(in crate::screen) metadata: BTreeMap<String, String>,
 }
 impl LiveAgent {
     pub(super) fn id(&self) -> String {
@@ -100,7 +100,7 @@ pub(super) struct Browser {
 }
 
 impl Screen {
-    pub(super) fn live_palette_agents(&self) -> Vec<LiveAgent> {
+    pub(in crate::screen) fn live_palette_agents(&self) -> Vec<LiveAgent> {
         let mut agents = Vec::new();
         let mut add = |session: &SessionName, pane: PaneInfo, mother: bool| {
             let Some(a) = &pane.agent else {
@@ -147,9 +147,11 @@ impl Screen {
                 metadata,
             });
         };
+        // An exited mother is kept only until the next toggle closes it, and is reported nowhere.
+        let live_mother = self.live_mother();
         for tab in self.tabs.values() {
             for pane in tab.pane_infos() {
-                let mother = matches!(pane.id, PaneId::Terminal(id) if self.mother == Some(id));
+                let mother = live_mother == Some(pane.id);
                 add(&self.session_name, pane, mother);
             }
         }

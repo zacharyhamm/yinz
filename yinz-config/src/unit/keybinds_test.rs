@@ -549,10 +549,6 @@ fn session_pane_selector_checks_kdl_range() {
     }
 }
 
-/// `example/default.kdl` is the config people copy to start their own, and nothing else loads
-/// it, so a key the shipped config gains can go missing from it without anything failing.
-/// `Ctrl e o` did: the example's comments said Ctrl o moved the panel, and its Agent mode had
-/// no `o`.
 #[test]
 fn shipped_and_example_agent_modes_toggle_mother_then_leave_the_mode() {
     for (name, config) in [
@@ -579,6 +575,10 @@ fn shipped_and_example_agent_modes_toggle_mother_then_leave_the_mode() {
     }
 }
 
+/// `example/default.kdl` is the config people copy to start their own, and nothing else loads
+/// it, so a key the shipped config gains can go missing from it without anything failing.
+/// `Ctrl e o` did: the example's comments said Ctrl o moved the panel, and its Agent mode had
+/// no `o`.
 #[test]
 fn example_agent_mode_moves_the_panel() {
     let config = Config::from_kdl(include_str!("../../../example/default.kdl"), None)

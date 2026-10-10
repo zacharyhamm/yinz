@@ -458,16 +458,11 @@ impl Screen {
     fn report_session_info(&mut self, mut session_info: SessionInfo) -> Result<()> {
         // Mother is its pane: gone once the pane closes or leaves the session. An exited one
         // is kept only so the next toggle can close what it left behind.
-        let mother = self.mother.and_then(|id| {
-            session_info
-                .panes
-                .panes
-                .values()
-                .flatten()
-                .find(|pane| pane.id == PaneId::Terminal(id))
-        });
-        self.mother = self.mother.filter(|_| mother.is_some());
-        session_info.mother = self.live_mother().and(self.mother);
+        let live = self
+            .mother_in(&session_info.panes)
+            .map(super::mother::mother_is_live);
+        self.mother = self.mother.filter(|_| live.is_some());
+        session_info.mother = self.mother.filter(|_| live == Some(true));
         let err_context = || "Failed to report session info".to_string();
 
         self.bus
