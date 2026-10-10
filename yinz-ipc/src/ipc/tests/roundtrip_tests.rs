@@ -228,14 +228,6 @@ fn test_client_messages() {
     let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
     for expected_session_id in [None, Some("conversation-7".to_owned())] {
         for request in [
-            AgentRequest::SetControlAgent {
-                pane_id,
-                enabled: true,
-            },
-            AgentRequest::SetControlAgent {
-                pane_id,
-                enabled: false,
-            },
             AgentRequest::List { project: None },
             AgentRequest::Status {
                 pane_id,
@@ -1802,6 +1794,12 @@ fn test_client_messages() {
         terminal_id: Some(yinz_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
         is_cli_client: true,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::ToggleMother,
+        terminal_id: None,
+        client_id: Some(ClientId::new(100)),
+        is_cli_client: false,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleActiveSyncTab,

@@ -122,7 +122,7 @@ fn serialize_and_deserialize_session_info_with_data() {
     let mut panes = HashMap::new();
     panes.insert(TabPosition::new(0), panes_list);
     let session_info = SessionInfo {
-        control_agents: Default::default(),
+        mother: None,
         name: "my session name".to_owned().into(),
         tabs: vec![
             TabInfo {
@@ -277,26 +277,29 @@ fn manifest_coordinates_preserve_kdl_and_reject_out_of_range_values() {
 }
 
 #[test]
-fn control_agents_metadata_is_optional_and_checks_terminal_ids() {
+fn mother_metadata_is_optional_and_checks_the_terminal_id() {
     use yinz_types::internal_ids::TerminalId;
-    let session = SessionInfo {
-        control_agents: vec![TerminalId::new(0), TerminalId::new(u32::MAX)],
-        ..Default::default()
-    };
+    let mut session = SessionInfo::default();
+    let decode = |text: &str| crate::metadata::session_info::from_string(text, &"".into());
+    for id in [0, u32::MAX] {
+        session.mother = Some(TerminalId::new(id));
+        let encoded = crate::metadata::session_info::to_string(&session).unwrap();
+        assert_eq!(decode(&encoded).unwrap().mother, session.mother);
+    }
     let encoded = crate::metadata::session_info::to_string(&session).unwrap();
-    let decode = |text: &str| crate::metadata::session_info::from_string(text, &session.name);
-    assert_eq!(
-        decode(&encoded).unwrap().control_agents,
-        session.control_agents
-    );
     let old = encoded
         .lines()
-        .filter(|line| !line.starts_with("control_agents"))
+        .filter(|line| !line.starts_with("mother"))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(decode(&old).unwrap().control_agents.is_empty());
-    for invalid in ["-1", "4294967296", "\"terminal_1\""] {
-        assert!(decode(&format!("{old}\ncontrol_agents {invalid}\n")).is_err());
+    assert!(decode(&old).unwrap().mother.is_none());
+    // Metadata written before mother replaced control agents still loads.
+    assert!(decode(&format!("{old}\ncontrol_agents 1 2\n"))
+        .unwrap()
+        .mother
+        .is_none());
+    for invalid in ["", "-1", "4294967296", "\"terminal_1\""] {
+        assert!(decode(&format!("{old}\nmother {invalid}\n")).is_err());
     }
 }
 

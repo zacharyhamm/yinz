@@ -1755,6 +1755,7 @@ impl TryFrom<yinz_types::input::actions::Action>
             ToggleFullscreenByPaneIdAction,
             ToggleGroupMarkingAction,
             ToggleHostFullscreenAction,
+            ToggleMotherAction,
             ToggleMouseModeAction,
             ToggleNoUiFullscreenByPaneIdAction,
             ToggleNotificationDetailAction,
@@ -1973,6 +1974,9 @@ impl TryFrom<yinz_types::input::actions::Action>
             },
             yinz_types::input::actions::Action::ToggleCommandPalette => {
                 ActionType::ToggleCommandPalette(ToggleCommandPaletteAction {})
+            },
+            yinz_types::input::actions::Action::ToggleMother => {
+                ActionType::ToggleMother(ToggleMotherAction {})
             },
             yinz_types::input::actions::Action::TogglePaneFrames => {
                 ActionType::TogglePaneFrames(TogglePaneFramesAction {})
@@ -3058,6 +3062,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::ToggleCommandPalette(_) => {
                 Ok(yinz_types::input::actions::Action::ToggleCommandPalette)
             },
+            ActionType::ToggleMother(_) => Ok(yinz_types::input::actions::Action::ToggleMother),
             ActionType::TogglePaneFrames(_) => {
                 Ok(yinz_types::input::actions::Action::TogglePaneFrames)
             },

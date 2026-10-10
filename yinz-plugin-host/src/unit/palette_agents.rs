@@ -352,6 +352,88 @@ fn palette_current_directory_vm_defaults_and_fresh_duplicate_targets() {
     assert!(commands.is_empty());
 }
 
+#[test]
+fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane() {
+    let start = tempfile::tempdir().unwrap();
+    let launch = |active: bool| {
+        // The pane the palette opened from is somewhere else, and may be gone by now.
+        let request = request(
+            Path::new("/nonexistent/source"),
+            AgentAction::Mother {
+                kind: "claude".into(),
+            },
+        );
+        request.active.store(active, atomic::Ordering::Release);
+        let (screen_tx, screen_rx) = unbounded();
+        let (pty_tx, pty_rx) = unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(screen_tx)),
+            to_pty: Some(SenderWithContext::new(pty_tx)),
+            ..Default::default()
+        };
+        let (reply, launches) = thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                let mut launches = Vec::new();
+                while let Ok((instruction, _)) = pty_rx.recv() {
+                    let PtyInstruction::SpawnTerminal(
+                        Some(TerminalAction::RunCommand(command)),
+                        _,
+                        placement,
+                        _,
+                        target,
+                        Some(mut completion),
+                        _,
+                    ) = instruction
+                    else {
+                        panic!("unexpected pty instruction");
+                    };
+                    completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(42)));
+                    completion.set_affected_tab_id(TabId::new(2));
+                    launches.push((command, placement, target));
+                }
+                launches
+            });
+            let reply = mother(&request, "claude", start.path(), &senders);
+            drop(senders);
+            (reply, worker.join().unwrap())
+        });
+        let screen: Vec<_> = screen_rx.try_iter().map(|(i, _)| i).collect();
+        (reply, launches, screen)
+    };
+
+    let (reply, launches, screen) = launch(true);
+    assert!(
+        matches!(&reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok),
+        "{reply:?}"
+    );
+    let [(command, placement, target)] = launches.as_slice() else {
+        panic!("expected one launch, got {launches:?}");
+    };
+    assert_eq!(command.cwd.as_deref(), Some(start.path()));
+    assert_eq!(command.target, PaneTarget::Local);
+    assert!(command.args.iter().any(|arg| arg == "claude"));
+    assert!(
+        matches!(placement, NewPanePlacement::Overlay(overlay) if !overlay.is_modal() && overlay.coordinates.is_some()),
+        "{placement:?}"
+    );
+    assert_eq!(
+        *target,
+        ClientTabIndexOrPaneId::ClientIdNoFocus(ClientId::new(1))
+    );
+    assert!(screen.iter().any(|instruction| matches!(
+        instruction,
+        ScreenInstruction::MotherSpawned(PaneId::Terminal(id)) if *id == TerminalId::new(42)
+    )));
+    assert!(!screen
+        .iter()
+        .any(|instruction| matches!(instruction, ScreenInstruction::GetPaneInfo { .. })));
+
+    let (reply, launches, screen) = launch(false);
+    assert!(reply.unwrap_err().contains("cancelled"));
+    assert!(launches.is_empty());
+    assert!(screen.is_empty());
+}
+
 fn recorded_run(root: &Path) -> agent_proto::agents::AgentRun {
     agent_proto::agents::AgentRun {
         id: "codex:archived".into(),

@@ -94,14 +94,8 @@ impl std::fmt::Display for RequestFailed {
 impl std::error::Error for RequestFailed {}
 
 fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
-    let (explicit, caller) = if matches!(command, Agent::Control(_)) {
-        let (owner, pane) = yinz_process::pane_context::current_pane()?
-            .context("control registration requires YINZ_PANE_REF from the calling pane")?;
-        validate_control_session(opts.session.as_deref(), owner.as_str())?;
-        (Some(owner), Some(pane))
-    } else {
-        yinz_process::pane_context::target(opts.session.clone().map(Into::into))?
-    };
+    let (explicit, caller) =
+        yinz_process::pane_context::target(opts.session.clone().map(Into::into))?;
     let explicit = explicit.map(|session| session.into_string());
     let session = match explicit {
         Some(session) => session,
@@ -135,20 +129,7 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
         )?;
         return Ok(0);
     }
-    let (request, json, timeout) = if let Agent::Control(ref control) = command {
-        (
-            AgentRequest::SetControlAgent {
-                pane_id: yinz_types::pane_id::PaneId::Terminal(
-                    caller.context("missing calling pane")?,
-                ),
-                enabled: matches!(control, yinz_cli::args::AgentControl::Register { .. }),
-            },
-            command.json(),
-            Duration::from_secs(30),
-        )
-    } else {
-        request(command, &mut std::io::stdin())?
-    };
+    let (request, json, timeout) = request(command, &mut std::io::stdin())?;
     let response =
         exchange(&session, request, timeout).map_err(|error| anyhow!(RequestFailed(error)))?;
     print_response(&response, json, &mut std::io::stdout().lock())?;
@@ -164,13 +145,6 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
     )
 }
 
-fn validate_control_session(explicit: Option<&str>, owner: &str) -> Result<()> {
-    if explicit.is_some_and(|session| session != owner) {
-        bail!("--session conflicts with the calling pane's owning session {owner}");
-    }
-    Ok(())
-}
-
 fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool, Duration)> {
     submission_id(&mut command);
     let mut timeout = Duration::from_secs(30);
@@ -180,7 +154,6 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
         | Agent::CodexReport
         | Agent::Muse { .. }
         | Agent::MuseReport
-        | Agent::Control(_)
         | Agent::Watch { .. }
         | Agent::Archive(_)
         | Agent::Register { .. } => {

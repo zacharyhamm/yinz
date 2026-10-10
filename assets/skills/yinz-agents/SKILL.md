@@ -1,6 +1,6 @@
 ---
 name: yinz-agents
-description: Launch, inspect, and coordinate Yinz agents with guarded prompts and correlated outcomes, register control agents, and inspect their durable archives.
+description: Launch, inspect, and coordinate Yinz agents with guarded prompts and correlated outcomes, find the session's mother agent, and inspect their durable archives.
 ---
 
 Inside a Yinz pane, inherited `YINZ_PANE_REF` resolves the current session and caller. Start with `yinz agent list --json`.
@@ -144,13 +144,11 @@ Register an existing pane with `agent register PANE_ID KIND --json` for tracking
 `agent list` also shows an agent started by hand in a shell as source `detected` with `not_ready_reason: unmanaged`.
 Yinz cannot prompt it; relaunch it with `agent spawn` to control it.
 
-To mark yourself as a control agent, run `yinz agent control register --json` from your own pane. `yinz agent control unregister --json` removes the mark.
-Both act on the calling pane's live tracked agent through inherited `YINZ_PANE_REF`, take no pane argument, and fail outside a pane. An explicit `--session` must match the pane's owning session.
-This is separate from `agent register PANE_ID KIND`: control registration goes to the live server and does not need `agent-service`.
-Registration grants no additional permissions. Repeating either command is safe, including unregistration after automatic cleanup.
-Users find control agents through the command palette's **Focus control agent** entry, which spans all live sessions on this host, searches pane title, pane ID, session, or tab, and ignores the current project.
-Registration ends when the agent exits, its conversation changes or clears (including `/clear` or `/new`), or its pane closes or leaves the session. A replacement agent must register again; session resurrection does not restore registrations.
-Plugins see registered terminal pane IDs in `SessionInfo.control_agents`.
+A session has at most one mother: an agent in an overlay pane that the user toggles with `Ctrl e`, then `m`, on any tab.
+Only the user launches it, from that key or the command palette's **Launch mother…** entry. No CLI command creates, registers, or toggles a mother.
+Mother starts in the session's starting directory, is listed by `agent list` like any managed agent, and has no additional permissions.
+It stays mother across `/clear`, `/new`, and conversation changes. After its agent exits, the user's next toggle closes the pane and offers a new mother; closing the pane or moving it to another session also ends it. Session resurrection does not restore it.
+Plugins see its terminal pane ID in `SessionInfo.mother`, which is `null` when none is running.
 
 ```sh
 yinz agent runs --project work --limit 20 --offset 0

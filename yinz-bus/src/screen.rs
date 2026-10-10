@@ -206,6 +206,9 @@ pub enum ScreenInstruction {
     ToggleActiveTerminalNoUiFullscreen(ClientId, Option<NotificationEnd>),
     TogglePaneFrames(Option<NotificationEnd>),
     ToggleCommandPalette(ClientId, Option<NotificationEnd>),
+    ToggleMother(ClientId, Option<NotificationEnd>),
+    /// The plugin host launched this pane as the session's mother agent.
+    MotherSpawned(PaneId),
     CommandPalette(crate::command_palette::Instruction),
     SetPaneFrameStyle(PaneFrameStyle, Option<NotificationEnd>),
     SetSelectable(PaneId, bool),

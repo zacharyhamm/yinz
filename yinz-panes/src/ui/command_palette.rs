@@ -25,8 +25,7 @@ use crate::ui::damage::CellRect;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {
     Agent,
-    ControlAgent,
-    SetControlAgent,
+    Mother,
     Command,
     Plugin,
     Pane,
@@ -52,8 +51,7 @@ impl EntryKind {
             Self::Project => Some("Switch current project"),
             Self::Command | Self::Plugin => None,
             Self::Agent => Some("Agents"),
-            Self::ControlAgent => Some("Focus control agent"),
-            Self::SetControlAgent => Some("Set control agent"),
+            Self::Mother => Some("Launch mother"),
             Self::Pane => Some("Focus pane"),
             Self::Tab => Some("Switch tab"),
             Self::Session => Some("Switch session"),
@@ -468,8 +466,7 @@ impl CommandPalette {
                         entry.kind,
                         EntryKind::Theme
                             | EntryKind::Project
-                            | EntryKind::ControlAgent
-                            | EntryKind::SetControlAgent
+                            | EntryKind::Mother
                             | EntryKind::WarpTabSession
                             | EntryKind::WarpPaneSession
                             | EntryKind::WarpTab
@@ -1395,20 +1392,10 @@ impl CommandPalette {
                                 && !self.entries.iter().any(|e| e.kind == EntryKind::Project)
                             {
                                 "No projects".into()
-                            } else if self.picker == Some(EntryKind::ControlAgent)
-                                && !self
-                                    .entries
-                                    .iter()
-                                    .any(|e| e.kind == EntryKind::ControlAgent)
+                            } else if self.picker == Some(EntryKind::Mother)
+                                && !self.entries.iter().any(|e| e.kind == EntryKind::Mother)
                             {
-                                "No control agents".into()
-                            } else if self.picker == Some(EntryKind::SetControlAgent)
-                                && !self
-                                    .entries
-                                    .iter()
-                                    .any(|e| e.kind == EntryKind::SetControlAgent)
-                            {
-                                "No agent panes".into()
+                                "No agents available".into()
                             } else {
                                 "No matches".into()
                             }

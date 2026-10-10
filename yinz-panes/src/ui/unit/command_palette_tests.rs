@@ -899,59 +899,55 @@ fn root_discovery_dismisses_but_nested_discovery_and_execution_cancel() {
 }
 
 #[test]
-fn control_agent_pickers_are_scoped_and_preserve_navigation_and_project() {
-    for (kind, empty) in [
-        (EntryKind::ControlAgent, "No control agents"),
-        (EntryKind::SetControlAgent, "No agent panes"),
-    ] {
-        let mut palette = palette();
-        palette.current_project = Some("project".into());
-        let mut entries = palette.native_entries.clone();
-        entries.extend([
-            entry("control:a:1", "agent one", kind),
-            entry("control:b:1", "agent two", kind),
-        ]);
-        palette.set_entries(entries.clone());
-        assert!(!ids(&palette).contains(&"control:a:1"));
-        palette.insert_text("New");
-        let selected = palette.selected_entry().unwrap().id.clone();
-        palette.open_picker(kind);
-        assert_eq!(ids(&palette), vec!["control:a:1", "control:b:1"]);
-        palette.push_view(42, "Plugin view".into());
-        palette.set_sections(vec![PluginSection {
-            title: "Plugin".into(),
-            entries: vec![entry("plugin-child", "child", EntryKind::Plugin)],
-            semantic: false,
-            status: None,
-        }]);
-        assert_eq!(ids(&palette), vec!["plugin-child"]);
-        assert_eq!(palette.current_project.as_deref(), Some("project"));
-        assert_eq!(palette.back(), Outcome::None);
-        assert_eq!(ids(&palette), vec!["control:a:1", "control:b:1"]);
-        key(&mut palette, BareKey::Down);
-        entries.reverse();
-        palette.set_entries(entries);
-        assert_eq!(palette.selected_entry().unwrap().id, "control:b:1");
-        let surface = Viewport {
-            cols: 80,
-            rows: 24,
-            ..Default::default()
-        };
-        palette.insert_text("absent");
-        assert!(rendered_lines(&palette, &palette.layout(surface))
-            .join("\n")
-            .contains("No matches"));
-        key(&mut palette, BareKey::Esc);
-        assert_eq!(palette.query(), "New");
-        assert_eq!(palette.selected_entry().unwrap().id, selected);
-        palette.open_picker(kind);
-        palette.set_entries(vec![entry("pane", "ordinary", EntryKind::Pane)]);
-        let text = rendered_lines(&palette, &palette.layout(surface)).join("\n");
-        assert!(text.contains(empty));
-        assert!(text.contains("Project: project"));
-        assert_eq!(palette.back(), Outcome::None);
-        assert_eq!(palette.query(), "New");
-    }
+fn mother_picker_is_scoped_and_preserves_navigation_and_project() {
+    let (kind, empty) = (EntryKind::Mother, "No agents available");
+    let mut palette = palette();
+    palette.current_project = Some("project".into());
+    let mut entries = palette.native_entries.clone();
+    entries.extend([
+        entry("mother:claude", "claude", kind),
+        entry("mother:codex", "codex", kind),
+    ]);
+    palette.set_entries(entries.clone());
+    assert!(!ids(&palette).contains(&"mother:claude"));
+    palette.insert_text("New");
+    let selected = palette.selected_entry().unwrap().id.clone();
+    palette.open_picker(kind);
+    assert_eq!(ids(&palette), vec!["mother:claude", "mother:codex"]);
+    palette.push_view(42, "Plugin view".into());
+    palette.set_sections(vec![PluginSection {
+        title: "Plugin".into(),
+        entries: vec![entry("plugin-child", "child", EntryKind::Plugin)],
+        semantic: false,
+        status: None,
+    }]);
+    assert_eq!(ids(&palette), vec!["plugin-child"]);
+    assert_eq!(palette.current_project.as_deref(), Some("project"));
+    assert_eq!(palette.back(), Outcome::None);
+    assert_eq!(ids(&palette), vec!["mother:claude", "mother:codex"]);
+    key(&mut palette, BareKey::Down);
+    entries.reverse();
+    palette.set_entries(entries);
+    assert_eq!(palette.selected_entry().unwrap().id, "mother:codex");
+    let surface = Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    };
+    palette.insert_text("absent");
+    assert!(rendered_lines(&palette, &palette.layout(surface))
+        .join("\n")
+        .contains("No matches"));
+    key(&mut palette, BareKey::Esc);
+    assert_eq!(palette.query(), "New");
+    assert_eq!(palette.selected_entry().unwrap().id, selected);
+    palette.open_picker(kind);
+    palette.set_entries(vec![entry("pane", "ordinary", EntryKind::Pane)]);
+    let text = rendered_lines(&palette, &palette.layout(surface)).join("\n");
+    assert!(text.contains(empty));
+    assert!(text.contains("Project: project"));
+    assert_eq!(palette.back(), Outcome::None);
+    assert_eq!(palette.query(), "New");
 }
 
 #[test]

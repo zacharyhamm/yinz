@@ -8,10 +8,21 @@ use yinz_bus::command_palette::{
 use yinz_types::agent::control::AgentPlacement;
 use yinz_types::data::PaneInfo;
 
-pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &DataAccess) {
+/// `session_cwd` is the directory the session was started in, where mother runs.
+pub(crate) fn handle(
+    mut request: AgentRequest,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+    session_cwd: &Path,
+) {
     // A newly opened shell can precede the first cwd broadcast. Query the captured
     // pane, never whichever pane happens to be focused when this worker runs.
-    if request.source.cwd.is_none() && !matches!(request.action, AgentAction::History(_)) {
+    if request.source.cwd.is_none()
+        && !matches!(
+            request.action,
+            AgentAction::History(_) | AgentAction::Mother { .. }
+        )
+    {
         let (tx, rx) = crossbeam::channel::bounded(1);
         if senders
             .send_to_pty(PtyInstruction::GetPaneCwd {
@@ -25,7 +36,10 @@ pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &
             }
         }
     }
-    let reply = execute(&request, senders, data);
+    let reply = match &request.action {
+        AgentAction::Mother { kind } => mother(&request, kind, session_cwd, senders),
+        _ => execute(&request, senders, data),
+    };
     senders
         .send_to_screen(ScreenInstruction::CommandPalette(Instruction::AgentReply {
             client: request.client,
@@ -37,10 +51,16 @@ pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &
         .non_fatal();
 }
 
-fn current_source(request: &AgentRequest, senders: &ThreadSenders) -> Result<PaneInfo, String> {
-    if !request.active.load(atomic::Ordering::Acquire) {
-        return Err("Agent action cancelled".into());
+fn still_wanted(request: &AgentRequest) -> Result<(), String> {
+    if request.active.load(atomic::Ordering::Acquire) {
+        Ok(())
+    } else {
+        Err("Agent action cancelled".into())
     }
+}
+
+fn current_source(request: &AgentRequest, senders: &ThreadSenders) -> Result<PaneInfo, String> {
+    still_wanted(request)?;
     let (tx, rx) = crossbeam::channel::bounded(1);
     senders
         .send_to_screen(ScreenInstruction::GetPaneInfo {
@@ -103,6 +123,7 @@ fn execute(
     let choices = |title: String, choices| Ok(AgentReply::Choices { title, choices });
     match &request.action {
         History(_) => unreachable!("handled above"),
+        Mother { .. } => unreachable!("handled by `handle`"),
         Start { kind, vm, project } => {
             let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let action = match project.as_ref().filter(|name| registry.contains_key(*name)) {
@@ -295,7 +316,7 @@ fn execute(
                 allow_outside_worktree: Some(path.is_some()),
                 ..Default::default()
             };
-            launch(request, senders, spec, |spec| {
+            launch(request, senders, spec, TILED, |spec| {
                 prepare_agent(spec, cwd, None, *vm, registered.is_some(), false, data)
             })
         },
@@ -311,7 +332,7 @@ fn execute(
                 allow_outside_worktree: Some(true),
                 ..Default::default()
             };
-            launch(request, senders, spec, |_| {
+            launch(request, senders, spec, TILED, |_| {
                 existing_command(kind, cwd, target)
             })
         },
@@ -338,7 +359,7 @@ fn execute(
                 kind: Some(kind.clone()),
                 ..Default::default()
             };
-            launch(request, senders, spec, |_| {
+            launch(request, senders, spec, TILED, |_| {
                 existing_command(kind, cwd, source.target.clone())
             })
         },
@@ -369,16 +390,69 @@ fn existing_command(
     })
 }
 
+const TILED: NewPanePlacement = NewPanePlacement::Tiled {
+    direction: None,
+    borderless: None,
+};
+
+/// Launch the session's mother agent: a fresh conversation in the directory the session
+/// started in, on the session surface instead of in a tab's tiled layout.
+fn mother(
+    request: &AgentRequest,
+    kind: &str,
+    session_cwd: &Path,
+    senders: &ThreadSenders,
+) -> Result<AgentReply, String> {
+    let cwd = session_cwd.to_string_lossy();
+    let spec = AgentSpawnSpec {
+        kind: Some(kind.to_owned()),
+        allow_outside_worktree: Some(true),
+        ..Default::default()
+    };
+    let surface =
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(FloatingPaneCoordinates::new(
+            Some("10%".into()),
+            Some("10%".into()),
+            Some("80%".into()),
+            Some("80%".into()),
+            None,
+            None,
+        )));
+    let reply = launch(request, senders, spec, surface, |_| {
+        existing_command(kind, &cwd, PaneTarget::Local)
+    })?;
+    if let AgentReply::Launched(AgentResponse {
+        outcome: AgentOutcome::Ok,
+        spawned: Some(spawned),
+        ..
+    }) = &reply
+    {
+        // The screen records mother from this, not from the palette reply, which it drops
+        // when the palette was dismissed while the agent started.
+        senders
+            .send_to_screen(ScreenInstruction::MotherSpawned(spawned.pane_id))
+            .context("registering mother")
+            .non_fatal();
+    }
+    Ok(reply)
+}
+
 fn launch(
     request: &AgentRequest,
     senders: &ThreadSenders,
     spec: AgentSpawnSpec,
+    surface: NewPanePlacement,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
 ) -> Result<AgentReply, String> {
-    current_source(request, senders)?;
+    // Mother belongs to the session, so the pane the palette opened from may come and go.
+    let still_valid = || match request.action {
+        AgentAction::Mother { .. } => still_wanted(request),
+        _ => current_source(request, senders).map(drop),
+    };
+    still_valid()?;
     let prepare = |spec: &mut AgentSpawnSpec| {
         let mut prepared = prepare(spec)?;
-        current_source(request, senders)
+        still_valid()
             .map_err(|error| AgentSpawnError::failed(error, Some(prepared.resources())))?;
         if prepared.command.path != Path::new("env") {
             prepared
@@ -395,6 +469,7 @@ fn launch(
     };
     let response = match spawn_agent_prepared(
         AgentPlacement::Automatic,
+        surface,
         spec,
         request.client,
         senders,

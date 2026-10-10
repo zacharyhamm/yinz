@@ -508,7 +508,7 @@ message PaneManifest {
 }
 
 message SessionManifest {
-  reserved 8, 9, 13;
+  reserved 8, 9, 13, 14;
   string name = 1;
   repeated TabInfo tabs = 2;
   repeated PaneManifest panes = 3;
@@ -519,7 +519,7 @@ message SessionManifest {
   repeated ClientTabHistory tab_history = 10;
   repeated ClientPaneHistory pane_history = 11;
   uint64 creation_time = 12;
-  repeated uint32 control_agents = 14;
+  optional uint32 mother = 15;
 }
 
 message ClientTabHistory {

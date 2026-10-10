@@ -477,11 +477,6 @@ impl Screen {
                 "agent identity invalidated".into(),
             ));
         }
-        if let PaneId::Terminal(id) = pane {
-            if self.control_agents.remove(&id) {
-                self.report_pane_state().non_fatal();
-            }
-        }
         self.remove_agent_lifecycle(pane, reason);
         self.agent_dialog_inputs.remove(&pane);
         self.agent_clear_inputs.remove(&pane);
@@ -1037,57 +1032,6 @@ impl Screen {
         response
     }
 
-    pub(super) fn set_control_agent(&mut self, pane: PaneId, enabled: bool) -> AgentResponse {
-        let PaneId::Terminal(id) = pane else {
-            return self.agent_result(
-                pane,
-                AgentOutcome::Rejected,
-                Some("target must be a terminal pane".into()),
-            );
-        };
-        if enabled {
-            let error = match self.get_pane_info(pane) {
-                None => Some((
-                    AgentOutcome::TargetNotFound,
-                    "calling pane no longer exists",
-                )),
-                Some(info)
-                    if info.exited
-                        || info.is_held
-                        || info
-                            .agent
-                            .as_ref()
-                            .is_some_and(|agent| agent.state == AgentState::Exited) =>
-                {
-                    Some((
-                        AgentOutcome::TargetExited,
-                        "agent process has exited; launch a new agent and register again",
-                    ))
-                },
-                Some(info) if info.agent.is_none() => Some((
-                    AgentOutcome::NotAgent,
-                    "calling pane has no tracked agent; launch it with yinz agent spawn",
-                )),
-                _ => None,
-            };
-            if let Some((outcome, message)) = error {
-                return self.agent_result(pane, outcome, Some(message.into()));
-            }
-        }
-        let changed = if enabled {
-            self.control_agents.insert(id)
-        } else {
-            self.control_agents.remove(&id)
-        };
-        if changed {
-            self.report_pane_state().non_fatal();
-            if !self.command_palettes.is_empty() {
-                self.render().non_fatal();
-            }
-        }
-        self.agent_result(pane, AgentOutcome::Ok, None)
-    }
-
     pub(super) fn agent_control(&mut self, request: AgentRequest, client: ClientId) {
         self.agent_control_with_reply(request, Reply::Client(client));
     }
@@ -1099,11 +1043,6 @@ impl Screen {
     pub(super) fn agent_control_at(&mut self, request: AgentRequest, client: Reply, now: Instant) {
         use AgentRequest::*;
         let (pane, expected) = match &request {
-            SetControlAgent { pane_id, enabled } => {
-                let response = self.set_control_agent(*pane_id, *enabled);
-                self.agent_reply(&client, response);
-                return;
-            },
             SpawnPlacementSupport => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.output = Some("agent-tab-placement-v1".into());
@@ -1811,11 +1750,7 @@ impl Screen {
                 });
                 self.refresh_agent_controls();
             },
-            SetControlAgent { .. }
-            | List { .. }
-            | Spawn { .. }
-            | SpawnPlacementSupport
-            | SpawnBubblewrapSupport => {},
+            List { .. } | Spawn { .. } | SpawnPlacementSupport | SpawnBubblewrapSupport => {},
         }
     }
 

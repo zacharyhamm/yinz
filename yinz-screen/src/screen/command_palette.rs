@@ -167,6 +167,17 @@ impl Screen {
         }
     }
 
+    /// Open the palette, if it is not already, at the agent kinds a mother can be launched as.
+    pub(super) fn open_mother_picker(&mut self, client_id: ClientId) {
+        if !self.command_palettes.contains_key(&client_id) {
+            self.toggle_command_palette(client_id);
+        }
+        if let Some(state) = self.command_palettes.get_mut(&client_id) {
+            state.widget.open_picker(EntryKind::Mother);
+            self.refresh_plugin_palette(client_id, false);
+        }
+    }
+
     pub(crate) fn close_command_palette(&mut self, client_id: ClientId) -> bool {
         self.take_command_palette(client_id, true).is_some()
     }
@@ -442,8 +453,6 @@ enum Builtin {
     Inspect(history::LiveAgent),
     Archive,
     AgentFilters,
-    ControlAgent(Action),
-    SetControlAgent(PaneId),
     Agent(yinz_bus::command_palette::AgentAction),
     Action(Action),
     Picker(EntryKind),
@@ -562,24 +571,21 @@ impl Screen {
             &["filter agents"],
             Builtin::AgentFilters,
         );
-        command(
-            "focus-control-agent",
-            "Focus control agent",
-            &["controller agent"],
-            Builtin::Picker(EntryKind::ControlAgent),
-        );
-        command(
-            "set-control-agent",
-            "Set control agent…",
-            &["mark agent as controller"],
-            Builtin::Picker(EntryKind::SetControlAgent),
-        );
-        command(
-            "set-focused-control-agent",
-            "Set focused pane as control agent",
-            &["mark focused agent as controller"],
-            Builtin::SetControlAgent(pane_id),
-        );
+        if self.live_mother().is_some() {
+            command(
+                "mother",
+                "Toggle mother",
+                &["show hide mother agent"],
+                Builtin::Action(ToggleMother),
+            );
+        } else {
+            command(
+                "mother",
+                "Launch mother…",
+                &["start mother agent"],
+                Builtin::Picker(EntryKind::Mother),
+            );
+        }
         command(
             "floating",
             "New floating pane",
@@ -725,6 +731,19 @@ impl Screen {
                 Builtin::Picker(kind),
             ));
         }
+        for kind in yinz_runtime::agent::launch::offered() {
+            entries.push((
+                Entry {
+                    id: format!("mother:{kind}"),
+                    label: kind.clone(),
+                    description: String::new(),
+                    shortcut: String::new(),
+                    aliases: vec![],
+                    kind: EntryKind::Mother,
+                },
+                Builtin::Agent(yinz_bus::command_palette::AgentAction::Mother { kind }),
+            ));
+        }
         entries.extend(self.warp_palette_entries(state.warp_source.as_ref()));
         for name in &self.projects {
             entries.push((
@@ -763,30 +782,6 @@ impl Screen {
                 .into_iter()
                 .filter(|pane| !pane.is_suppressed && pane.is_selectable)
             {
-                if matches!(pane.id, PaneId::Terminal(_))
-                    && !pane.exited
-                    && !pane.is_held
-                    && pane
-                        .agent
-                        .as_ref()
-                        .is_some_and(|agent| agent.state != yinz_types::agent::AgentState::Exited)
-                {
-                    entries.push((
-                        Entry {
-                            id: format!("set-control-agent:{}", pane.id),
-                            label: pane_label(&pane),
-                            shortcut: String::new(),
-                            description: tab_label.clone(),
-                            aliases: vec![
-                                pane.title.clone(),
-                                pane.id.to_string(),
-                                tab.name.clone(),
-                            ],
-                            kind: EntryKind::SetControlAgent,
-                        },
-                        Builtin::SetControlAgent(pane.id),
-                    ));
-                }
                 entries.push((
                     Entry {
                         id: format!("pane:{}", pane.id),
@@ -829,11 +824,6 @@ impl Screen {
                 Builtin::Inspect(agent),
             )
         }));
-        entries.extend(
-            self.control_agent_entries()
-                .into_iter()
-                .map(|(entry, action)| (entry, Builtin::ControlAgent(action))),
-        );
         let mut sessions: Vec<_> = self.peer_sessions_cache.values().collect();
         sessions.sort_by_key(|session| (session.creation_time, &session.name));
         for session in sessions {
@@ -1184,71 +1174,6 @@ impl Screen {
         }
     }
 
-    fn control_agent_entries(&self) -> Vec<(Entry, Action)> {
-        let mut entries = Vec::new();
-        let mut add = |session: &SessionName, tab: &str, pane: &yinz_types::data::PaneInfo| {
-            if pane.exited
-                || pane.is_suppressed
-                || !pane.is_selectable
-                || pane
-                    .agent
-                    .as_ref()
-                    .is_none_or(|agent| agent.state == yinz_types::agent::AgentState::Exited)
-            {
-                return;
-            }
-            let action = if session == &self.session_name {
-                Action::FocusPaneByPaneId { pane_id: pane.id }
-            } else {
-                Action::SwitchSession {
-                    name: session.clone(),
-                    pane_id: Some(pane.id),
-                    tab_position: None,
-                    layout: None,
-                    cwd: None,
-                }
-            };
-            entries.push((
-                Entry {
-                    id: format!("control-agent:{session}:{}", pane.id),
-                    label: pane_label(pane),
-                    description: format!("{session} · {tab}"),
-                    aliases: vec![
-                        pane.title.clone(),
-                        pane.id.to_string(),
-                        session.to_string(),
-                        tab.to_owned(),
-                    ],
-                    shortcut: String::new(),
-                    kind: EntryKind::ControlAgent,
-                },
-                action,
-            ));
-        };
-        for tab in self.tabs.values() {
-            for pane in tab.pane_infos() {
-                if matches!(pane.id, PaneId::Terminal(id) if self.control_agents.contains(&id)) {
-                    add(&self.session_name, &tab.name, &pane);
-                }
-            }
-        }
-        for session in self
-            .peer_sessions_cache
-            .values()
-            .filter(|session| session.name != self.session_name)
-        {
-            for tab in &session.tabs {
-                for pane in session.panes.panes.get(&tab.position).into_iter().flatten() {
-                    if matches!(pane.id, PaneId::Terminal(id) if session.control_agents.contains(&id))
-                    {
-                        add(&session.name, &tab.name, pane);
-                    }
-                }
-            }
-        }
-        entries
-    }
-
     fn refresh_command_palettes(&mut self) {
         self.reconcile_project_contexts();
         let clients: Vec<_> = self
@@ -1393,32 +1318,16 @@ impl Screen {
                 self.open_agent_filters(client);
                 return;
             },
-            Builtin::SetControlAgent(target) => {
-                if self
-                    .get_pane_info(target)
-                    .is_some_and(|pane| pane.is_suppressed || !pane.is_selectable)
-                {
-                    if let Some(state) = self.command_palettes.get_mut(&client) {
-                        state
-                            .widget
-                            .set_error("Agent pane is no longer available".into());
-                    }
-                    return;
-                }
-                let response = self.set_control_agent(target, true);
-                if response.outcome == yinz_types::agent::control::AgentOutcome::Ok {
-                    self.close_command_palette(client);
-                } else if let Some(state) = self.command_palettes.get_mut(&client) {
-                    state.widget.set_error(
-                        response
-                            .message
-                            .unwrap_or_else(|| "Could not set control agent".into()),
-                    );
-                }
-                return;
-            },
             Builtin::SearchNotes => {
                 self.open_note_search(client);
+                return;
+            },
+            Builtin::Agent(yinz_bus::command_palette::AgentAction::Mother { .. })
+                if self.live_mother().is_some() =>
+            {
+                if let Some(state) = self.command_palettes.get_mut(&client) {
+                    state.widget.set_error("Mother is already running".into());
+                }
                 return;
             },
             Builtin::Agent(action) => {
@@ -1487,18 +1396,6 @@ impl Screen {
                     }
                     self.refresh_plugin_palette(client, false);
                     return;
-                }
-            },
-            Builtin::ControlAgent(action) => {
-                if self
-                    .control_agent_entries()
-                    .iter()
-                    .any(|(entry, _)| entry.id == id)
-                    && self.palette_target_exists(pane, tab, &action)
-                {
-                    Ok(action)
-                } else {
-                    Err("Control agent is no longer available".into())
                 }
             },
             Builtin::Action(action) => {

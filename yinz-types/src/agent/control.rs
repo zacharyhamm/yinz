@@ -81,10 +81,6 @@ impl AgentPlacement {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
-    SetControlAgent {
-        pane_id: PaneId,
-        enabled: bool,
-    },
     /// Read-only feature negotiation before sending placement to an older server.
     SpawnPlacementSupport,
     /// Read-only feature negotiation before sending a sandboxed spawn to an older server.

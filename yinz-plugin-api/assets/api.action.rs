@@ -1233,6 +1233,7 @@ pub enum ActionName {
     ToggleNotificationDetail = 121,
     Copy = 122,
     ToggleCommandPalette = 126,
+    ToggleMother = 127,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1364,6 +1365,7 @@ impl ActionName {
             ActionName::ToggleNotificationDetail => "ToggleNotificationDetail",
             ActionName::Copy => "Copy",
             ActionName::ToggleCommandPalette => "ToggleCommandPalette",
+            ActionName::ToggleMother => "ToggleMother",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1492,6 +1494,7 @@ impl ActionName {
             "ToggleNotificationDetail" => Some(Self::ToggleNotificationDetail),
             "Copy" => Some(Self::Copy),
             "ToggleCommandPalette" => Some(Self::ToggleCommandPalette),
+            "ToggleMother" => Some(Self::ToggleMother),
             _ => None,
         }
     }

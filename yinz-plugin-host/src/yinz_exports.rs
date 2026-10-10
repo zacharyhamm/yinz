@@ -3370,7 +3370,11 @@ fn spawn_agent_for_control(
     senders: &ThreadSenders,
     data_access: &DataAccess,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
-    spawn_agent_prepared(placement, spec, client_id, senders, |spec| {
+    let surface = NewPanePlacement::Tiled {
+        direction: None,
+        borderless: None,
+    };
+    spawn_agent_prepared(placement, surface, spec, client_id, senders, |spec| {
         agent_control::prepare_automation_agent(
             spec,
             cwd,
@@ -3382,8 +3386,11 @@ fn spawn_agent_for_control(
     })
 }
 
+/// `placement` picks the tab; `surface` says where in it the pane goes. Only a tiled pane may
+/// be redirected to a roomier tab (`Screen::agent_pane_target`).
 fn spawn_agent_prepared(
     placement: yinz_types::agent::control::AgentPlacement,
+    surface: NewPanePlacement,
     mut spec: AgentSpawnSpec,
     client_id: crate::ClientId,
     senders: &ThreadSenders,
@@ -3460,10 +3467,7 @@ fn spawn_agent_prepared(
         .send_to_pty(PtyInstruction::SpawnTerminal(
             Some(TerminalAction::RunCommand(action)),
             title,
-            NewPanePlacement::Tiled {
-                direction: None,
-                borderless: None,
-            },
+            surface,
             false,
             target,
             Some(completion),

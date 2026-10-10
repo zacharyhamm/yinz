@@ -127,6 +127,7 @@ mod command_palette;
 mod context_menu;
 mod host_query;
 mod input_modes;
+mod mother;
 mod mouse;
 mod nested;
 mod notification_browser;
@@ -577,7 +578,8 @@ pub(crate) struct Screen {
     agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
-    control_agents: std::collections::BTreeSet<TerminalId>,
+    /// The terminal pane running this session's mother agent. See `mother.rs`.
+    mother: Option<TerminalId>,
     warped_agent_inputs: HashMap<PaneId, (yinz_types::data::WarpedAgentInput, u64)>,
     agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
     agent_dialog_inputs: HashMap<PaneId, agent_control::DialogInput>,
@@ -1332,7 +1334,7 @@ impl Screen {
             agent_draft_clears: HashMap::new(),
             agent_submissions: HashMap::new(),
             agent_launches: HashMap::new(),
-            control_agents: Default::default(),
+            mother: None,
             warped_agent_inputs: HashMap::new(),
             agent_lifecycle: HashMap::new(),
             agent_dialog_inputs: HashMap::new(),
