@@ -409,7 +409,7 @@ pub(crate) struct SessionMetaData {
     pub session_configuration: SessionConfiguration,
     pub key_passthrough_clients: HashMap<ClientId, PaneId>,
     pub locked_escapes: HashMap<ClientId, locked_escape::LockedEscape>,
-    // Presence holds this client in Locked; dismissal also resumes notification browsing.
+    // Holds Locked through palette note editing; final dismissal resumes notification browsing.
     command_palette_restore_modes: HashMap<ClientId, InputMode>,
     screen_thread: Option<thread::JoinHandle<()>>,
     pty_thread: Option<thread::JoinHandle<()>>,

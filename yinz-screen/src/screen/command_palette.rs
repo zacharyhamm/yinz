@@ -186,6 +186,24 @@ impl Screen {
         self.take_command_palette(client_id, true).is_some()
     }
 
+    pub(super) fn palette_owns_input(&self, client_id: ClientId) -> bool {
+        self.command_palettes.contains_key(&client_id)
+            || self
+                .note_edit_palettes
+                .values()
+                .any(|(client, _)| *client == client_id)
+    }
+
+    fn release_palette_input(&self, client_id: ClientId) {
+        if !self.palette_owns_input(client_id) {
+            self.bus
+                .senders
+                .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, false))
+                .context("failed to restore input mode when closing command palette")
+                .non_fatal();
+        }
+    }
+
     fn take_command_palette(
         &mut self,
         client_id: ClientId,
@@ -200,15 +218,11 @@ impl Screen {
         state.notes.cancel();
         if dismiss_plugins {
             self.dismiss_plugin_palette(client_id, &mut state);
+            self.release_palette_input(client_id);
         } else {
             // Keep the plugin opening alive while the native editor owns input.
             state.cancel_requests(&self.bus.senders, client_id);
         }
-        self.bus
-            .senders
-            .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, false))
-            .context("failed to restore input mode when closing command palette")
-            .non_fatal();
         if self.command_palettes.is_empty() {
             self.bus
                 .senders
