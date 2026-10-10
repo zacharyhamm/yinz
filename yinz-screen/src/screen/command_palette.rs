@@ -168,13 +168,17 @@ impl Screen {
     }
 
     /// Open the palette, if it is not already, at the agent kinds a mother can be launched as.
+    /// A palette that is already somewhere else - this picker included - is left as it is.
     pub(super) fn open_mother_picker(&mut self, client_id: ClientId) {
-        if !self.command_palettes.contains_key(&client_id) {
+        let opened = !self.command_palettes.contains_key(&client_id);
+        if opened {
             self.toggle_command_palette(client_id);
         }
         if let Some(state) = self.command_palettes.get_mut(&client_id) {
-            state.widget.open_picker(EntryKind::Mother);
-            self.refresh_plugin_palette(client_id, false);
+            if opened || (state.widget.is_root() && !state.widget.busy) {
+                state.widget.open_picker(EntryKind::Mother);
+                self.refresh_plugin_palette(client_id, false);
+            }
         }
     }
 

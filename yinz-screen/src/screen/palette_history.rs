@@ -147,7 +147,7 @@ impl Screen {
                 metadata,
             });
         };
-        // An exited mother is kept only until the next toggle closes it, and is reported nowhere.
+        // An exited mother is kept only until its replacement is placed, and is reported nowhere.
         let live_mother = self.live_mother();
         for tab in self.tabs.values() {
             for pane in tab.pane_infos() {

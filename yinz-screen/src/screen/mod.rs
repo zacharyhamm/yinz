@@ -3346,6 +3346,7 @@ impl Screen {
         }
         self.clear_nested_guest(id);
         self.pane_output_activity.remove(&id);
+        self.forget_mother(id);
     }
 
     pub(crate) fn close_pane_explicitly(

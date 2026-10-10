@@ -2561,6 +2561,18 @@ impl OverlayPlacement {
     pub fn dismissible(coordinates: Option<FloatingPaneCoordinates>) -> Self {
         OverlayPlacement::new(OverlayKind::Dismissible, coordinates)
     }
+    /// Where a session's mother agent sits, both when it is launched and when a toggle puts it
+    /// back on the surface.
+    pub fn mother() -> Self {
+        OverlayPlacement::dismissible(FloatingPaneCoordinates::new(
+            Some("10%".into()),
+            Some("10%".into()),
+            Some("80%".into()),
+            Some("80%".into()),
+            None,
+            None,
+        ))
+    }
     pub fn is_modal(&self) -> bool {
         self.kind.is_modal()
     }
