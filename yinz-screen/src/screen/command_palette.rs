@@ -664,7 +664,8 @@ impl Screen {
         ] {
             command(id, label, &[], Builtin::Action(action));
         }
-        for kind in yinz_runtime::agent::launch::offered() {
+        let offered_agents = yinz_runtime::agent::launch::offered();
+        for kind in &offered_agents {
             for (suffix, label, aliases, action) in [
                 (
                     "worktree",
@@ -735,18 +736,20 @@ impl Screen {
                 Builtin::Picker(kind),
             ));
         }
-        for kind in yinz_runtime::agent::launch::offered() {
-            entries.push((
-                Entry {
-                    id: format!("mother:{kind}"),
-                    label: kind.clone(),
-                    description: String::new(),
-                    shortcut: String::new(),
-                    aliases: vec![],
-                    kind: EntryKind::Mother,
-                },
-                Builtin::Agent(yinz_bus::command_palette::AgentAction::Mother { kind }),
-            ));
+        if self.live_mother().is_none() {
+            for kind in offered_agents {
+                entries.push((
+                    Entry {
+                        id: format!("mother:{kind}"),
+                        label: kind.clone(),
+                        description: String::new(),
+                        shortcut: String::new(),
+                        aliases: vec![],
+                        kind: EntryKind::Mother,
+                    },
+                    Builtin::Agent(yinz_bus::command_palette::AgentAction::Mother { kind }),
+                ));
+            }
         }
         entries.extend(self.warp_palette_entries(state.warp_source.as_ref()));
         for name in &self.projects {

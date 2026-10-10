@@ -21,6 +21,14 @@ use yinz_types::input::layout::{
 };
 use {yinz_types::data::Event, yinz_types::data::ModeInfo};
 
+pub(super) struct TabTransition {
+    client: ClientId,
+    source: Option<TabId>,
+    destination: TabId,
+    clients: Option<Vec<(ClientId, ModeInfo)>>,
+    pub old_focus: Vec<(ClientId, Option<PaneId>)>,
+}
+
 impl Screen {
     /// Switches the client to the tab called `tab_name`, creating it first when `create` is set
     /// and no tab has that name. A client that is not connected falls back to the first one.
@@ -542,42 +550,84 @@ impl Screen {
         }
     }
 
-    fn move_clients_between_tabs(
+    pub(super) fn begin_tab_transition(
         &mut self,
-        source_tab_index: TabId,
-        destination_tab_index: TabId,
-        update_mode_infos: bool,
-        clients_to_move: Option<Vec<ClientId>>,
-    ) -> Result<()> {
-        let err_context = || {
-            format!(
-                "failed to move clients from tab {source_tab_index} to tab {destination_tab_index}"
-            )
+        client: ClientId,
+        destination: TabId,
+    ) -> TabTransition {
+        let source = self.active_tab_ids.get(&client).copied();
+        let affected: Vec<_> = if self.session_is_mirrored {
+            self.connected_clients.borrow().iter().copied().collect()
+        } else {
+            vec![client]
         };
-
-        // None ==> move all clients
-        let drained_clients = self
-            .get_tab_by_id_mut(source_tab_index)
-            .map(|t| t.drain_connected_clients(clients_to_move));
-
-        if let Some(client_mode_info_in_source_tab) = drained_clients {
-            let destination_tab = self
-                .get_tab_by_id_mut(destination_tab_index)
-                .context("failed to get destination tab by index")
-                .with_context(err_context)?;
-            destination_tab
-                .add_multiple_clients(client_mode_info_in_source_tab)
-                .with_context(err_context)?;
-            if update_mode_infos {
-                destination_tab
-                    .update_input_modes()
-                    .with_context(err_context)?;
+        let old_focus = affected
+            .iter()
+            .map(|id| (*id, self.get_active_pane_id(id)))
+            .collect();
+        let clients = source
+            .and_then(|source| self.tabs.get_mut(&source))
+            .map(|tab| {
+                let clients = tab.drain_connected_clients(if self.session_is_mirrored {
+                    None
+                } else {
+                    Some(vec![client])
+                });
+                if tab.has_no_connected_clients() {
+                    tab.visible(false)
+                        .context("failed to hide departed tab")
+                        .non_fatal();
+                }
+                clients
+            });
+        if clients.is_some() || self.session_is_mirrored {
+            for id in affected {
+                self.update_client_tab_focus(id, destination);
             }
-            destination_tab.set_force_render();
-            if destination_tab.has_stack_lists() {
-                destination_tab.set_should_clear_display_before_rendering();
+        }
+        TabTransition {
+            client,
+            source,
+            destination,
+            clients,
+            old_focus,
+        }
+    }
+
+    pub(super) fn finish_tab_transition(
+        &mut self,
+        transition: &mut TabTransition,
+        direction: Option<Direction>,
+    ) -> Result<()> {
+        if let Some(clients) = transition.clients.take() {
+            let tab = self
+                .tabs
+                .get_mut(&transition.destination)
+                .context("failed to find destination tab")?;
+            tab.add_multiple_clients(clients)
+                .context("failed to attach clients")?;
+            tab.visible(true)
+                .context("failed to show destination tab")?;
+            tab.set_force_render();
+            if tab.has_stack_lists() {
+                tab.set_should_clear_display_before_rendering();
             }
-            destination_tab.visible(true).with_context(err_context)?;
+            if let Some(direction) = direction {
+                for (client, _) in &transition.old_focus {
+                    tab.focus_pane_on_edge(direction, *client);
+                }
+            }
+        }
+        if let Some(source) = transition
+            .source
+            .filter(|source| *source != transition.destination)
+        {
+            self.mother_follows(
+                transition.client,
+                source,
+                transition.destination,
+                &transition.old_focus,
+            );
         }
         Ok(())
     }
@@ -680,66 +730,13 @@ impl Screen {
 
                     let current_tab_index = current_tab.id;
                     let new_tab_index = new_tab.id;
-                    let affected_client_ids: Vec<ClientId> = if self.session_is_mirrored {
-                        self.connected_clients.borrow().iter().copied().collect()
-                    } else {
-                        vec![client_id]
-                    };
-                    let old_focused_panes: Vec<(ClientId, Option<PaneId>)> = affected_client_ids
-                        .iter()
-                        .map(|c| (*c, self.get_active_pane_id(c)))
-                        .collect();
-                    if self.session_is_mirrored {
-                        self.move_clients_between_tabs(
-                            current_tab_index,
-                            new_tab_index,
-                            update_mode_infos,
-                            None,
-                        )
+                    let mut transition = self.begin_tab_transition(client_id, new_tab_index);
+                    self.finish_tab_transition(&mut transition, should_change_pane_focus)
                         .with_context(err_context)?;
-                        let all_connected_clients: Vec<ClientId> =
-                            self.connected_clients.borrow().iter().copied().collect();
-                        for client_id in all_connected_clients {
-                            self.update_client_tab_focus(client_id, new_tab_index);
-                            if let (Some(direction), Some(new_tab)) = (
-                                should_change_pane_focus,
-                                self.get_tab_by_id_mut(new_tab_index),
-                            ) {
-                                new_tab.focus_pane_on_edge(direction, client_id);
-                            }
+                    if update_mode_infos {
+                        if let Some(tab) = self.tabs.get_mut(&new_tab_index) {
+                            tab.update_input_modes().with_context(err_context)?;
                         }
-                    } else {
-                        self.move_clients_between_tabs(
-                            current_tab_index,
-                            new_tab_index,
-                            update_mode_infos,
-                            Some(vec![client_id]),
-                        )
-                        .with_context(err_context)?;
-                        if let (Some(direction), Some(new_tab)) = (
-                            should_change_pane_focus,
-                            self.get_tab_by_id_mut(new_tab_index),
-                        ) {
-                            new_tab.focus_pane_on_edge(direction, client_id);
-                        }
-                        self.update_client_tab_focus(client_id, new_tab_index);
-                    }
-
-                    self.mother_follows(
-                        client_id,
-                        current_tab_index,
-                        new_tab_index,
-                        &old_focused_panes,
-                    );
-
-                    if let Some(current_tab) = self.get_tab_by_id_mut(current_tab_index) {
-                        if current_tab.has_no_connected_clients() {
-                            current_tab.visible(false).with_context(err_context)?;
-                        }
-                    } else {
-                        Err::<(), _>(anyhow!("Tab index {:?} not found", current_tab_index))
-                            .with_context(err_context)
-                            .non_fatal();
                     }
 
                     // Clear tab bell notification for the newly active tab
@@ -759,7 +756,7 @@ impl Screen {
 
                     self.log_and_report_session_state()
                         .with_context(err_context)?;
-                    for (affected_client_id, old_pane_id) in old_focused_panes {
+                    for (affected_client_id, old_pane_id) in transition.old_focus {
                         let new_pane_id = self.get_active_pane_id(&affected_client_id);
                         if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
                             self.report_key_passthrough_state(affected_client_id, old, new);

@@ -13,7 +13,7 @@
 //! can fetch it for reading or a re-run while it offers the next one.
 use super::Screen;
 use crate::panes::OverlayCarry;
-use crate::tab::{AcceptedPane, ExtractedPanePlacement};
+use crate::tab::ExtractedPanePlacement;
 use crate::ClientId;
 use std::collections::HashSet;
 use yinz_runtime::errors::prelude::*;
@@ -84,6 +84,22 @@ impl Screen {
         })
     }
 
+    pub(super) fn hide_mother_for_pane_focus(&mut self, requested: PaneId, client: ClientId) {
+        let Some(pane) = self
+            .mother
+            .map(PaneId::Terminal)
+            .and_then(|pane| self.mother_presentation(pane))
+        else {
+            return;
+        };
+        if pane == requested || self.mother_used_by_another_client(pane, client) {
+            return;
+        }
+        if let Some(tab) = self.tab_containing_pane_mut(pane) {
+            tab.hide_overlay_pane(pane);
+        }
+    }
+
     pub(super) fn toggle_mother(&mut self, client: ClientId) -> Result<()> {
         let Some(tab_id) = self.active_tab_ids.get(&client).copied() else {
             return Ok(());
@@ -146,7 +162,8 @@ impl Screen {
 
     /// Fetch without toggling: ordinary focus requests share this with the show half of a toggle.
     pub(super) fn show_and_focus_mother(&mut self, pane: PaneId, client: ClientId) -> Result<()> {
-        self.fetch_mother(pane, client)?;
+        self.fetch_mother(pane, client)
+            .context("failed to show mother")?;
         self.sync_scroll_mode_on_focus(client)
             .context("failed to sync scroll mode for mother")?;
         self.log_and_report_session_state()
@@ -206,47 +223,13 @@ impl Screen {
             return false;
         }
         let source = source.id;
-        let Some(tab) = self.tabs.get_mut(&source) else {
+        let Some(extracted) = self.extract_pane_for_transfer(source, pane) else {
             return false;
         };
-        let respawn = tab.take_pending_respawn(pane);
-        let Some(extracted) = tab.extract_pane(pane, true) else {
-            if let Some(entry) = respawn {
-                tab.restore_pending_respawn(pane, entry);
-            }
-            return false;
-        };
-        // No early return until the pane has a tab again: dropping the box destroys the pane
-        // and leaves its process running.
         let overlay =
             ExtractedPanePlacement::Overlay(OverlayPlacement::mother(), OverlayCarry::default());
-        let accepted = match self.tabs.get_mut(&destination) {
-            Some(tab) => tab.accept_extracted_pane(extracted, overlay),
-            None => AcceptedPane::NoRoom(extracted),
-        };
-        let home = match accepted {
-            AcceptedPane::Accepted => Some(destination),
-            AcceptedPane::NoRoom(extracted) => self
-                .tabs
-                .get_mut(&source)
-                .is_some_and(|tab| {
-                    matches!(
-                        tab.accept_extracted_pane(extracted, original),
-                        AcceptedPane::Accepted
-                    )
-                })
-                .then_some(source),
-            AcceptedPane::LostInAdd => None,
-        };
-        match home.and_then(|home| self.tabs.get_mut(&home)) {
-            Some(tab) => {
-                if let Some(entry) = respawn {
-                    tab.restore_pending_respawn(pane, entry);
-                }
-            },
-            None => self.close_homeless_pane(pane),
-        }
-        if home != Some(destination) {
+        let outcome = self.accept_transferred_panes(vec![(extracted, overlay)], destination, false);
+        if !outcome.moved.contains(&pane) {
             return false;
         }
         if let Some(tab) = self.tabs.get_mut(&destination) {

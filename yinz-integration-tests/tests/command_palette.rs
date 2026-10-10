@@ -689,8 +689,9 @@ fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
     mother.wait_for_stdin("mother kept the keyboard across tabs", |bytes| {
         bytes.ends_with(b"after-switch")
     });
+    mother.output(b"MOTHER AFTER SWITCH\r\n");
     yinz.wait_until("mother is drawn on the second tab", |snapshot| {
-        snapshot.contains("MOTHER READY")
+        snapshot.contains("MOTHER AFTER SWITCH")
     });
     toggle();
     yinz.wait_until("mother hidden on the second tab", |snapshot| {

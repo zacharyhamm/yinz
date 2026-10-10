@@ -95,7 +95,7 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
                 let PtyInstruction::SpawnTerminal(
                     Some(TerminalAction::RunCommand(command)),
                     _,
-                    _,
+                    placement,
                     _,
                     target,
                     Some(mut completion),
@@ -108,6 +108,8 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
                     target,
                     ClientTabIndexOrPaneId::ClientIdNoFocus(ClientId::new(1))
                 );
+                assert_eq!(placement, TILED);
+                assert!(!completion.is_mother);
                 commands.push(command);
                 completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(42)));
                 completion.set_affected_tab_id(TabId::new(2));
@@ -867,4 +869,33 @@ fn mother_launch_errors_preserve_the_placement_marker_pane_and_resources() {
             assert_eq!(spawned.cwd.as_deref(), Some(start.path()));
         }
     }
+}
+
+#[test]
+fn mother_directory_is_resolved_again_for_each_launch() {
+    let start = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let directory = start.path().to_path_buf();
+    assert_eq!(mother_directory(&directory, None).unwrap(), directory);
+    assert_eq!(
+        mother_directory(&directory, Some(home.path().into())).unwrap(),
+        directory
+    );
+    start.close().unwrap();
+    assert_eq!(
+        mother_directory(&directory, Some(home.path().into())).unwrap(),
+        home.path()
+    );
+    std::fs::write(home.path().join("file"), "not a directory").unwrap();
+    for fallback in [
+        None,
+        Some(directory.clone()),
+        Some(home.path().join("file")),
+    ] {
+        assert_eq!(
+            mother_directory(&directory, fallback).unwrap_err(),
+            "Mother cannot launch: neither the session directory nor the home directory is available"
+        );
+    }
+    assert!(existing_command("claude", &directory.to_string_lossy(), PaneTarget::Local).is_err());
 }

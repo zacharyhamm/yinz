@@ -31,7 +31,7 @@ pub(crate) const DISABLE_MOUSE_SUPPORT: &str =
 pub trait AsyncStdin: Send {
     #[expect(
         clippy::double_must_use,
-        reason = "async_trait adds must_use to its boxed Future"
+        reason = "async_trait adds must_use to an already must-use future"
     )]
     async fn read(&mut self) -> io::Result<Vec<u8>>;
 }
@@ -75,7 +75,7 @@ pub enum SignalEvent {
 pub trait AsyncSignals: Send {
     #[expect(
         clippy::double_must_use,
-        reason = "async_trait adds must_use to its boxed Future"
+        reason = "async_trait adds must_use to an already must-use future"
     )]
     async fn recv(&mut self) -> Option<SignalEvent>;
 }
