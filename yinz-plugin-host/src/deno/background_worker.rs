@@ -31,7 +31,7 @@ pub(super) fn post_job(
         .and_then(|bytes| bytes.checked_add(POST_OVERHEAD))
         .context("Deno worker post exceeds the 64 MiB queue budget")?;
     queued_bytes
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
             used.checked_add(bytes)
                 .filter(|total| *total <= POST_BUDGET)
         })

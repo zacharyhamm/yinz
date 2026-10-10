@@ -29,6 +29,10 @@ pub(crate) const DISABLE_MOUSE_SUPPORT: &str =
 /// Trait for async stdin reading, allowing for testable implementations
 #[async_trait]
 pub trait AsyncStdin: Send {
+    #[expect(
+        clippy::double_must_use,
+        reason = "async_trait adds must_use to its boxed Future"
+    )]
     async fn read(&mut self) -> io::Result<Vec<u8>>;
 }
 
@@ -69,6 +73,10 @@ pub enum SignalEvent {
 /// Trait for async signal listening, allowing for testable implementations
 #[async_trait]
 pub trait AsyncSignals: Send {
+    #[expect(
+        clippy::double_must_use,
+        reason = "async_trait adds must_use to its boxed Future"
+    )]
     async fn recv(&mut self) -> Option<SignalEvent>;
 }
 

@@ -106,7 +106,6 @@ use {
     yinz_types::data::OpenCommandPaneInPlaceOfPaneIdResponse,
     yinz_types::data::OpenCommandPaneInPlaceOfPluginResponse,
     yinz_types::data::OpenCommandPaneInPlaceResponse,
-    yinz_types::data::OpenCommandPaneNearPluginResponse,
     yinz_types::data::OpenCommandPaneOverlayResponse, yinz_types::data::OpenCommandPaneResponse,
     yinz_types::data::OpenEditPaneInPlaceOfPaneIdResponse,
     yinz_types::data::OpenFileFloatingNearPluginResponse,
@@ -2910,7 +2909,8 @@ fn open_command_pane_near_plugin(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
-    let pane_id = spawn_command_pane_near_plugin(env, command_to_run, context, None, false, false);
+    let pane_id =
+        spawn_command_pane_near_plugin(env, command_to_run, context, None, false, false).ok();
     let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
@@ -2924,10 +2924,12 @@ fn spawn_command_pane_near_plugin(
     name: Option<String>,
     cwd_already_resolved: bool,
     start_suppressed: bool,
-) -> OpenCommandPaneNearPluginResponse {
+) -> Result<PaneId, String> {
+    let agent = context.contains_key(AGENT_PANE_CONTEXT);
     let preserve_cwd = cwd_already_resolved && !command_to_run.target.is_remote();
     let resolved_cwd = preserve_cwd.then(|| command_to_run.cwd.take());
-    let mut run_command_action = run_command_action(env, command_to_run, false, context)?;
+    let mut run_command_action = run_command_action(env, command_to_run, false, context)
+        .ok_or_else(|| "invalid pane command".to_owned())?;
     // Checkout launchers already resolved host paths, including names like /tmp and /host.
     if let Some(cwd) = resolved_cwd {
         run_command_action.cwd = cwd;
@@ -2936,22 +2938,40 @@ fn spawn_command_pane_near_plugin(
 
     // Create completion channel
     let (completion_tx, completion_rx) = oneshot::channel();
-    let _ = env.senders.send_to_pty(PtyInstruction::SpawnTerminal(
-        Some(run_cmd),
-        name,
-        NewPanePlacement::Tiled {
-            direction: None,
-            borderless: None,
-        },
-        start_suppressed,
-        ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(env.plugin_id), env.client_id),
-        Some(NotificationEnd::new(completion_tx)),
-        false, // set_blocking
-    ));
+    let mut completion = NotificationEnd::new(completion_tx);
+    completion.wait_for_agent_start = agent;
+    env.senders
+        .send_to_pty(PtyInstruction::SpawnTerminal(
+            Some(run_cmd),
+            name,
+            NewPanePlacement::Tiled {
+                direction: None,
+                borderless: None,
+            },
+            start_suppressed,
+            ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(env.plugin_id), env.client_id),
+            Some(completion),
+            false, // set_blocking
+        ))
+        .map_err(|error| format!("failed to request pane: {error:#}"))?;
 
     // Wait for completion
-    let result = wait_for_action_completion(completion_rx, "open_command_pane_near_plugin", false);
-    result.affected_pane_id
+    let result = if agent {
+        wait_for_agent_placement(
+            completion_rx,
+            &AgentLaunchResources::default(),
+            Duration::from_secs(120),
+        )
+        .map_err(|error| error.to_string())?
+    } else {
+        wait_for_action_completion(completion_rx, "open_command_pane_near_plugin", false)
+    };
+    if let Some(error) = result.error_message {
+        return Err(error);
+    }
+    result
+        .affected_pane_id
+        .ok_or_else(|| "Yinz did not open the agent pane".to_owned())
 }
 
 fn open_command_pane_in_git_checkout_near_plugin(
@@ -2976,7 +2996,6 @@ fn open_command_pane_in_git_checkout_near_plugin(
                 true,
                 false,
             )
-            .ok_or_else(|| "Yinz did not open the agent pane".to_owned())
         });
     let response = ProtobufOpenCommandPaneInGitCheckoutResponse::from(result);
     wasi_write_object(env, &response.encode_to_vec())
@@ -3069,7 +3088,6 @@ fn spawn_agent(
                     ..Default::default()
                 }
             })
-            .ok_or_else(|| "Yinz did not open the agent pane".to_owned())
     })();
     let response = ProtobufSpawnAgentResponse::from(result);
     wasi_write_object(env, &response.encode_to_vec())
@@ -3160,16 +3178,19 @@ fn prepare_agent(
         if !command.target.is_local() || automatic_firecracker_vm {
             return Err("Bubblewrap cannot be combined with SSH or Firecracker".into());
         }
+        let validated_cwd = match &checkout {
+            GitCheckout::Current => cwd.as_deref().unwrap_or(&source),
+            _ => &source,
+        }
+        .canonicalize()
+        .map_err(|error| format!("resolve Bubblewrap launch directory: {error}"))?;
         let environment =
-            yinz_config::project_config::bubblewrap::Environment::for_project(match &checkout {
-                GitCheckout::Current => cwd.as_deref().unwrap_or(&source),
-                _ => &source,
-            })
-            .map_err(|error| format!("{error:#}"))?;
+            yinz_config::project_config::bubblewrap::Environment::for_project(&validated_cwd)
+                .map_err(|error| format!("{error:#}"))?;
         environment
             .preflight()
             .map_err(|error| format!("{error:#}"))?;
-        Some(environment)
+        Some((environment, validated_cwd))
     } else {
         None
     };
@@ -3219,7 +3240,9 @@ fn prepare_agent(
         spec.reuse.unwrap_or(false),
         guard,
         &mut attempted,
-        bubblewrap.as_ref().map(|environment| environment.root()),
+        bubblewrap
+            .as_ref()
+            .map(|(environment, _)| environment.root()),
     )
     .map_err(|error| match attempted {
         Some(resources) => AgentSpawnError::failed(error, Some(resources)),
@@ -3261,12 +3284,13 @@ fn prepare_agent(
         checkout_made || mirror_project,
     )
     .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?;
-    if let Some(environment) = bubblewrap {
-        // Reused worktrees and the caller's own directory were not checked on the way here:
-        // only a Git write is refused early. The folder the agent lands in is.
-        environment
-            .validate_cwd(&folder)
-            .map_err(|error| AgentSpawnError::failed(format!("{error:#}"), Some(resources)))?;
+    if let Some((environment, validated_cwd)) = bubblewrap {
+        // Only a different destination needs another check here; launch and exec revalidate it.
+        if folder.canonicalize().ok().as_ref() != Some(&validated_cwd) {
+            environment
+                .validate_cwd(&folder)
+                .map_err(|error| AgentSpawnError::failed(format!("{error:#}"), Some(resources)))?;
+        }
         command.target = PaneTarget::Bubblewrap {
             root: environment.root().to_path_buf(),
         };

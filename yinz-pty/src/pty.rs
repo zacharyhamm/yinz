@@ -1598,6 +1598,7 @@ impl Pty {
         mut run_command: RunCommand,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<Option<(RunCommand, Option<NotificationEnd>)>> {
+        run_command.hold_on_start = false;
         let PaneId::Terminal(terminal_id) = pane_id else {
             return Ok(Some((run_command, completion_tx)));
         };

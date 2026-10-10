@@ -321,20 +321,22 @@ test("agent-exit confirms and cancels secondary worktree deletion", async () => 
   await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
   assert(!(await plugin.render()).includes("Delete again"));
 });
-test("agent-exit revalidates then removes the worktree and branch", async () => {
-  const plugin = await checkout();
-  await confirmDeletion(plugin);
-  await reply(plugin, listing());
-  await cleanCheckout(plugin);
-  await reply(plugin, "");
-  await reply(plugin, "");
-  const commands = JSON.stringify(plugin.commands);
-  assert(commands.includes('"worktree","remove","--","/repo/topic"'));
-  assert(commands.includes(`"update-ref","-d","refs/heads/topic","${head}"`));
-  assertEquals(plugin.commands.at(-2), { CloseTerminalPane: 7 });
-  assertEquals(plugin.commands.at(-1), "CloseSelf");
-});
-for (const target of ["local", "firecracker"]) {
+for (const target of ["local", "bubblewrap"]) {
+  test(`agent-exit revalidates then removes the ${target} worktree and branch`, async () => {
+    const plugin = await checkout({ agent_target: target });
+    await confirmDeletion(plugin);
+    await reply(plugin, listing());
+    await cleanCheckout(plugin);
+    await reply(plugin, "");
+    await reply(plugin, "");
+    const commands = JSON.stringify(plugin.commands);
+    assert(commands.includes('"worktree","remove","--","/repo/topic"'));
+    assert(commands.includes(`"update-ref","-d","refs/heads/topic","${head}"`));
+    assertEquals(plugin.commands.at(-2), { CloseTerminalPane: 7 });
+    assertEquals(plugin.commands.at(-1), "CloseSelf");
+  });
+}
+for (const target of ["local", "firecracker", "bubblewrap"]) {
   for (const changes of [" M tracked\n", "?? untracked\n", "M  staged\n"]) {
     test(`agent-exit preserves ${target} dirty worktree and branch: ${changes.trim()}`, async () => {
       const plugin = await checkout({

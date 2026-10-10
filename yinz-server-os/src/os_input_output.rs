@@ -1022,7 +1022,7 @@ impl ServerOsInputOutput {
     ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
         let terminal_id = resolved.terminal_id;
         if resolved.endpoint.is_none() {
-            let (reader, child_pid) = self.spawn_resolved_here(resolved, quit_cb)?;
+            let (reader, child_pid) = self.spawn_resolved_here(resolved, None, quit_cb)?;
             return Ok((terminal_id, reader, Some(child_pid)));
         }
         let reader = self.open_remote(resolved, quit_cb)?;
@@ -1040,6 +1040,7 @@ impl ServerOsInputOutput {
     fn spawn_resolved_here(
         &self,
         resolved: ResolvedSpawn,
+        failover_command: Option<RunCommand>,
         quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     ) -> Result<(Box<dyn AsyncReader>, ProcessId)> {
         let ResolvedSpawn {
@@ -1055,7 +1056,7 @@ impl ServerOsInputOutput {
             quit_cb
         };
         self.pty_backend
-            .spawn_terminal(command, None, quit_cb, terminal_id)
+            .spawn_terminal(command, failover_command, quit_cb, terminal_id)
             .context("failed to spawn terminal")
     }
 
@@ -1112,7 +1113,7 @@ impl ServerOsInputOutput {
         // id has to be reserved again once cleared, or the next spawn takes it.
         self.clear_terminal_id(resolved.terminal_id).non_fatal();
         if resolved.endpoint.is_none() {
-            let (reader, child_pid) = self.spawn_resolved_here(resolved, quit_cb)?;
+            let (reader, child_pid) = self.spawn_resolved_here(resolved, None, quit_cb)?;
             return Ok((reader, Some(child_pid)));
         }
         self.pty_backend.reserve_terminal_id(resolved.terminal_id);
@@ -1332,15 +1333,17 @@ impl ServerOsApi for ServerOsInputOutput {
             return Ok((terminal_id, async_reader, None));
         }
 
-        let quit_cb = if cmd != rerun_cmd {
-            Box::new(move |pane_id, status, _| quit_cb(pane_id, status, rerun_cmd.clone()))
-                as Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>
-        } else {
-            quit_cb
-        };
         let (async_reader, child_pid) = self
-            .pty_backend
-            .spawn_terminal(cmd, failover_cmd, quit_cb, terminal_id)
+            .spawn_resolved_here(
+                ResolvedSpawn {
+                    terminal_id,
+                    command: cmd,
+                    rerun_command: rerun_cmd,
+                    endpoint,
+                },
+                failover_cmd,
+                quit_cb,
+            )
             .with_context(err_context)?;
 
         Ok((terminal_id, async_reader, Some(child_pid)))
@@ -1654,15 +1657,16 @@ impl ServerOsApi for ServerOsInputOutput {
         }
 
         self.clear_terminal_id(terminal_id).non_fatal();
-        let quit_cb = if run_command != rerun_command {
-            Box::new(move |pane_id, status, _| quit_cb(pane_id, status, rerun_command.clone()))
-                as Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>
-        } else {
-            quit_cb
-        };
-        let (async_reader, child_pid) =
-            self.pty_backend
-                .spawn_terminal(run_command, None, quit_cb, terminal_id)?;
+        let (async_reader, child_pid) = self.spawn_resolved_here(
+            ResolvedSpawn {
+                terminal_id,
+                command: run_command,
+                rerun_command,
+                endpoint,
+            },
+            None,
+            quit_cb,
+        )?;
         Ok((async_reader, Some(child_pid)))
     }
     fn resolve_rerun(

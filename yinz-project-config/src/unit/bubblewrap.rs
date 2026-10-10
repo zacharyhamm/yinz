@@ -650,6 +650,59 @@ fn minimum_bubblewrap_version() {
     .is_err());
 }
 
+// Only the descendant owns the FIFO writer: EOF proves it died, not just its parent.
+fn blocked_descendant(directory: &Path) -> (Vec<String>, std::sync::mpsc::Receiver<&'static str>) {
+    use std::io::Read;
+    use std::os::unix::ffi::OsStrExt;
+
+    let ready = directory.join("descendant-ready");
+    let gate = directory.join("descendant-gate");
+    for path in [&ready, &gate] {
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader_path = ready.clone();
+    std::thread::spawn(move || {
+        let mut reader = File::open(reader_path).unwrap();
+        let mut message = [0; 5];
+        reader.read_exact(&mut message).unwrap();
+        assert_eq!(&message, b"ready");
+        let _ = sender.send("ready");
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+        let _ = sender.send("closed");
+    });
+    (
+        vec![
+            "sh".into(),
+            "-c".into(),
+            r#"sh -c 'exec 3>"$1"; printf ready >&3; read -r reply <"$2"' sh "$1" "$2" & wait"#
+                .into(),
+            "sh".into(),
+            ready.to_str().unwrap().into(),
+            gate.to_str().unwrap().into(),
+        ],
+        receiver,
+    )
+}
+
+fn assert_descendant_killed(events: std::sync::mpsc::Receiver<&'static str>, directory: &Path) {
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(30)).unwrap(),
+        "ready"
+    );
+    let closed = events.recv_timeout(Duration::from_secs(30));
+    if closed.is_err() {
+        // Release a surviving descendant before reporting a broken process-group kill.
+        let _ = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(directory.join("descendant-gate"))
+            .and_then(|mut gate| gate.write_all(b"release\n"));
+    }
+    assert_eq!(closed.unwrap(), "closed");
+}
+
 #[test]
 fn check_wait_handles_success_failure_and_kills_descendants() {
     let mut success = Command::new("/usr/bin/true");
@@ -664,21 +717,16 @@ fn check_wait_handles_success_failure_and_kills_descendants() {
             .contains("7")
     );
     let temp = tempfile::tempdir().unwrap();
-    let marker = temp.path().join("survived");
-    let mut hanging = Command::new("sh");
-    hanging
-        .args(["-c", r#"sleep 1; touch "$1" & wait"#, "sh"])
-        .arg(&marker)
-        .process_group(0);
-    // Both the shell and its descendant must die before the delayed write.
+    let (args, events) = blocked_descendant(temp.path());
+    let mut hanging = Command::new(&args[0]);
+    hanging.args(&args[1..]).process_group(0);
     assert!(
-        wait_check(&mut hanging, Instant::now() + Duration::from_millis(100))
+        wait_check(&mut hanging, Instant::now() + Duration::from_secs(10))
             .unwrap_err()
             .to_string()
             .contains("timed out")
     );
-    std::thread::sleep(Duration::from_millis(1100));
-    assert!(!marker.exists());
+    assert_descendant_killed(events, temp.path());
 }
 
 #[cfg(target_os = "linux")]
@@ -809,12 +857,9 @@ fn real_bubblewrap_checks_run_once_capture_output_and_share_deadline() {
         .unwrap_err()
     )
     .contains("timed out"));
+    let (args, events) = blocked_descendant(&env.root);
     let declaration = Declaration {
-        checks: vec![vec![
-            "sh".into(),
-            "-c".into(),
-            "sleep 1; touch survived & wait".into(),
-        ]],
+        checks: vec![args],
         ..Default::default()
     };
     let lease = env.lock(false).unwrap();
@@ -823,14 +868,13 @@ fn real_bubblewrap_checks_run_once_capture_output_and_share_deadline() {
             &declaration,
             &env.root,
             &log,
-            Instant::now() + Duration::from_millis(200),
+            Instant::now() + Duration::from_secs(10),
         )
         .unwrap_err();
     assert!(format!("{error:#}").contains("timed out"));
     drop(lease);
     assert!(env.lock(true).is_ok());
-    std::thread::sleep(Duration::from_millis(1100));
-    assert!(!env.root.join("survived").exists());
+    assert_descendant_killed(events, &env.root);
 }
 
 #[cfg(target_os = "linux")]

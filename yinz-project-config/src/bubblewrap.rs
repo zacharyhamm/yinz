@@ -97,6 +97,21 @@ fn bind_binary(command: &mut Command, root: &Path, binary: &Path) {
         .arg("/run/yinz-bin/yinz");
 }
 
+#[cfg(target_os = "linux")]
+fn open_mount_source(src: &Path) -> Result<File> {
+    // O_PATH pins sockets and execute-only files without reading or blocking on FIFOs.
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open(src)
+        .context("open accepted Bubblewrap source")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_mount_source(_src: &Path) -> Result<File> {
+    bail!("Bubblewrap agent environments require Linux")
+}
+
 fn platform() -> Result<()> {
     // Only success is remembered. A later downgrade still fails closed: an older bwrap
     // rejects the options every launch passes.
@@ -451,21 +466,27 @@ impl Environment {
         {
             bail!("repository conflicts with a mandatory sandbox mount");
         }
-        for flag in ["--absolute-git-dir", "--git-common-dir"] {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&cwd)
-                .args(["rev-parse", "--path-format=absolute", flag])
-                .output()
-                .context("locate Git metadata")?;
-            if !output.status.success() {
-                bail!("cannot resolve required Git metadata");
-            }
-            let path = PathBuf::from(
-                String::from_utf8(output.stdout)
-                    .context("decode Git path")?
-                    .trim(),
-            );
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&cwd)
+            .args([
+                "rev-parse",
+                "--path-format=absolute",
+                "--absolute-git-dir",
+                "--git-common-dir",
+            ])
+            .output()
+            .context("locate Git metadata")?;
+        if !output.status.success() {
+            bail!("cannot resolve required Git metadata");
+        }
+        let output = String::from_utf8(output.stdout).context("decode Git paths")?;
+        let paths: Vec<_> = output.lines().collect();
+        if paths.len() != 2 || paths.iter().any(|path| !Path::new(path).is_absolute()) {
+            bail!("Git returned invalid metadata paths");
+        }
+        for path in paths {
+            let path = Path::new(path);
             if !path
                 .canonicalize()
                 .context("resolve Git metadata")?
@@ -617,13 +638,7 @@ impl Environment {
         command.arg("--bind").arg(&self.home).arg(HOME);
         let mut mount_files = Vec::new();
         for (src, dst) in &declaration.mounts {
-            // `O_PATH` pins the source without opening it for reading, which a socket,
-            // an execute-only file or a search-only directory refuses and a FIFO blocks on.
-            let file = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_PATH)
-                .open(src)
-                .context("open accepted Bubblewrap source")?;
+            let file = open_mount_source(src)?;
             let fd = file.as_raw_fd();
             if fs::read_link(format!("/proc/self/fd/{fd}")).context("verify opened mount source")?
                 != *src

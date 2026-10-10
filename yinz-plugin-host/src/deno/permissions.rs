@@ -74,7 +74,7 @@ impl Permissions {
             bail!("Deno permission completion ID exceeds 128 bytes");
         }
         self.outstanding
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 (used < MAX_REQUESTS).then_some(used + 1)
             })
             .map_err(|_| {

@@ -238,15 +238,12 @@ impl Run {
                     merged.args = base_run_command.args.clone();
                 }
                 merged.target.merge_from(&base_run_command.target);
-                // A consumer that names only a VM parses as that VM's login
-                // shell; when its template names a command, the consumer
-                // meant that command in the VM, not a shell beside it.
+                // A target-only consumer runs the template's command in that target.
                 if merged.command.as_os_str().is_empty()
-                    && merged.remote_default_shell
+                    && (merged.remote_default_shell || merged.target.is_bubblewrap())
                     && !base_run_command.command.as_os_str().is_empty()
                 {
                     merged.command = base_run_command.command.clone();
-                    merged.args = base_run_command.args.clone();
                     merged.remote_default_shell = false;
                     merged.hold_on_close = base_run_command.hold_on_close;
                 }

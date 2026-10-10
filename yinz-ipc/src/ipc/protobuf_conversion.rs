@@ -1548,9 +1548,9 @@ fn pane_target_to_protobuf(
 
 fn pane_target_from_protobuf(
     target: Option<crate::client_server_contract::client_server_contract::PaneTarget>,
-) -> yinz_types::command::PaneTarget {
+) -> Result<yinz_types::command::PaneTarget> {
     use crate::client_server_contract::client_server_contract::pane_target::Kind;
-    match target.and_then(|target| target.kind) {
+    Ok(match target.and_then(|target| target.kind) {
         None | Some(Kind::Local(_)) => yinz_types::command::PaneTarget::Local,
         Some(Kind::SshHost(host)) => yinz_types::command::PaneTarget::Ssh { host },
         Some(Kind::Firecracker(firecracker)) => yinz_types::command::PaneTarget::Firecracker {
@@ -1558,10 +1558,11 @@ fn pane_target_from_protobuf(
             image: firecracker.image,
             worktree: firecracker.worktree.map(std::path::PathBuf::from),
         },
-        Some(Kind::BubblewrapRoot(root)) => yinz_types::command::PaneTarget::Bubblewrap {
-            root: std::path::PathBuf::from(root),
+        Some(Kind::BubblewrapRoot(root)) => {
+            yinz_types::command::PaneTarget::bubblewrap(std::path::Path::new(&root))
+                .map_err(|error| anyhow!(error))?
         },
-    }
+    })
 }
 
 fn run_command_to_protobuf(
@@ -1596,7 +1597,7 @@ fn run_command_from_protobuf(
         originating_plugin: cmd.originating_plugin.and_then(|op| op.try_into().ok()),
         use_terminal_title: cmd.use_terminal_title,
         remote_default_shell: cmd.remote_default_shell,
-        target: pane_target_from_protobuf(cmd.target),
+        target: pane_target_from_protobuf(cmd.target).ok()?,
     })
 }
 
@@ -5558,7 +5559,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
                         .transpose()?,
                     use_terminal_title: cmd.use_terminal_title,
                     remote_default_shell: cmd.remote_default_shell,
-                    target: pane_target_from_protobuf(cmd.target),
+                    target: pane_target_from_protobuf(cmd.target)?,
                 },
             )),
             RunType::EditFile(edit) => Ok(yinz_types::input::layout::Run::EditFile(
@@ -5669,7 +5670,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunCommandAc
                 .transpose()?,
             use_terminal_title: action.use_terminal_title,
             remote_default_shell: action.remote_default_shell,
-            target: pane_target_from_protobuf(action.target),
+            target: pane_target_from_protobuf(action.target)?,
         })
     }
 }
@@ -6036,3 +6037,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunPluginOrA
         }
     }
 }
+
+#[cfg(test)]
+#[path = "unit/bubblewrap_decode.rs"]
+mod bubblewrap_decode;

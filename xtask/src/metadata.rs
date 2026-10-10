@@ -127,6 +127,8 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         &[
             "yinz-types",
             "yinz-runtime",
+            // The OS backend runs accepted Bubblewrap environment launch checks.
+            "yinz-project-config",
             "yinz-ipc",
             "yinz-process",
             "yinz-bus",
