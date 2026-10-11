@@ -400,14 +400,18 @@ impl CharacterStyles {
         *self = new_styles.enable_styled_underlines(self.styled_underlines_enabled);
 
         if let Some(changed_colors) = changed_colors {
-            if let Some(AnsiCode::ColorIndex(color_index)) = diff.foreground {
-                if let Some(changed_color) = changed_colors[color_index as usize] {
-                    diff.foreground = Some(changed_color);
-                }
-            }
-            if let Some(AnsiCode::ColorIndex(color_index)) = diff.background {
-                if let Some(changed_color) = changed_colors[color_index as usize] {
-                    diff.background = Some(changed_color);
+            for color in [
+                &mut diff.foreground,
+                &mut diff.background,
+                &mut diff.underline_color,
+            ] {
+                let index = match *color {
+                    Some(AnsiCode::ColorIndex(index)) => index,
+                    Some(AnsiCode::NamedColor(named)) => named as u8,
+                    _ => continue,
+                };
+                if let Some(changed_color) = changed_colors[index as usize] {
+                    *color = Some(changed_color);
                 }
             }
         }
