@@ -1,0 +1,994 @@
+//! One writer owns Mother's durable inbox; screen-thread guards own terminal input.
+use super::{agent_control::Reply, Screen};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
+    time::{Duration, Instant},
+};
+use yinz_bus::{screen::ScreenInstruction, thread_bus::ThreadSenders};
+use yinz_ipc::ipc::{
+    ClientToServerMsg, EventSubscription, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext,
+    ServerToClientMsg,
+};
+use yinz_runtime::errors::prelude::*;
+use yinz_types::{
+    agent::{
+        control::{AgentOutcome, AgentRequest, AgentResponse},
+        mother::{MotherRequest, MotherStatus},
+    },
+    pane_id::PaneId,
+};
+
+const JOURNAL_RECORDS: usize = 4096;
+const JOURNAL_BYTES: usize = 8 * 1024 * 1024;
+const TICK: Duration = Duration::from_millis(200);
+
+pub(super) struct Supervisor {
+    pub generation: String,
+    pane: PaneId,
+    commands: Option<mpsc::Sender<(MotherRequest, Reply)>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    observations: mpsc::SyncSender<Value>,
+    observation_gap: Arc<AtomicBool>,
+}
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        self.commands.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Batch {
+    id: String,
+    summary: Vec<String>,
+    events: usize,
+    urgent: bool,
+    attempted: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Receipt {
+    batch: String,
+    conversation: String,
+    submission: String,
+    response: Option<AgentResponse>,
+    settled: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Memory {
+    revision: u64,
+    checkpoint: Value,
+    filters: EventSubscription,
+    cursor: Option<String>,
+    paused: bool,
+    roster: BTreeMap<String, Value>,
+    journal: VecDeque<Value>,
+    pending: VecDeque<Batch>,
+    receipts: VecDeque<Receipt>,
+    conversation: Option<String>,
+    gap: bool,
+    #[serde(default)]
+    alerts: VecDeque<String>,
+    #[serde(default)]
+    snapshotting: bool,
+    #[serde(default)]
+    delivery_blocked: Option<String>,
+}
+
+impl Memory {
+    fn load(path: &Path) -> Result<Self> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).context("read Mother checkpoint"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(e).context("read Mother checkpoint"),
+        }
+    }
+
+    fn save(&self, path: &Path) -> Result<()> {
+        yinz_runtime::mother::replace(
+            path,
+            &serde_json::to_vec(self).context("encode Mother checkpoint")?,
+        )
+    }
+
+    fn batch(&mut self, summary: String, urgent: bool) {
+        if self.pending.back().is_none_or(|b| b.attempted) {
+            self.pending.push_back(Batch {
+                id: uuid::Uuid::new_v4().to_string(),
+                summary: vec![],
+                events: 0,
+                urgent,
+                attempted: false,
+            });
+        }
+        if let Some(batch) = self.pending.back_mut() {
+            batch.events += 1;
+            batch.urgent |= urgent;
+            if batch.summary.len() < 32 {
+                batch.summary.push(summary);
+            }
+        }
+        // Unacknowledged old batches remain explicit in the journal, but cannot grow forever.
+        if self.pending.len() > 256 {
+            self.pending.pop_front();
+            self.gap = true;
+        }
+    }
+
+    fn event(&mut self, event: Value, mother: PaneId) -> bool {
+        let cursor = event["cursor"].as_str().map(str::to_owned);
+        let kind = event["event_type"].as_str().unwrap_or_default();
+        if cursor == self.cursor && !matches!(kind, "snapshot" | "snapshot_begin" | "ready" | "gap")
+        {
+            return false;
+        }
+        if !matches!(kind, "snapshot" | "snapshot_begin" | "ready" | "gap") {
+            if let Some(previous) = self
+                .cursor
+                .as_deref()
+                .and_then(|c| serde_json::from_str::<Value>(c).ok())
+            {
+                if previous["epoch"] == event["server_epoch"]
+                    && event["sequence"]
+                        .as_u64()
+                        .zip(previous["sequence"].as_u64())
+                        .is_some_and(|(next, last)| next <= last)
+                {
+                    return false;
+                }
+            }
+        }
+        let own = event["pane_id"] == mother.to_string();
+        match kind {
+            "gap" => {
+                self.gap = true;
+                self.batch(
+                    "Observation gap: reconcile live agents and retained results before acting"
+                        .into(),
+                    true,
+                );
+            },
+            "snapshot_begin" => {
+                self.roster.clear();
+                self.snapshotting = true;
+                self.cursor = None;
+            },
+            "ready" => {
+                self.snapshotting = false;
+            },
+            "checkpoint" => {},
+            _ if own => {
+                let conversation = event["conversation_id"].as_str().map(str::to_owned);
+                if kind != "conversation_replaced"
+                    && conversation.is_some()
+                    && conversation != self.conversation
+                {
+                    self.conversation = conversation;
+                    self.batch(
+                        "Bootstrap Mother: load durable memory and reconcile this session".into(),
+                        false,
+                    );
+                }
+            },
+            _ => {
+                if let Some(pane) = event["pane_id"].as_str() {
+                    let state_changed = self.roster.get(pane).is_none_or(|old| {
+                        ["state", "conversation_id", "needs_input"]
+                            .iter()
+                            .any(|key| old[key] != event[key])
+                    });
+                    if kind == "pane_closed" || kind == "pane_transferred" {
+                        self.roster.remove(pane);
+                    } else if !event["kind"].is_null() {
+                        let mut row = event.clone();
+                        if let Some(old) = self
+                            .roster
+                            .get(pane)
+                            .filter(|old| old["conversation_id"] == event["conversation_id"])
+                        {
+                            for key in [
+                                "assignment",
+                                "last_outcome",
+                                "current_activity",
+                                "waiting_on",
+                                "last_message",
+                                "control",
+                            ] {
+                                if row[key].is_null() {
+                                    row[key] = old[key].clone();
+                                }
+                            }
+                        }
+                        if kind == "submission_acknowledged" {
+                            row["last_outcome"] = Value::Null;
+                        }
+                        if kind == "observation_uncertain"
+                            || kind == "turn_completed"
+                            || kind == "turn_failed"
+                            || kind == "turn_interrupted"
+                        {
+                            row["last_outcome"] = event.clone();
+                        }
+                        if !event["detail"].is_null() {
+                            row["current_activity"] = event["detail"].clone();
+                        }
+                        self.roster.insert(pane.to_owned(), row);
+                    }
+                    let urgent = kind == "needs_input"
+                        || kind == "turn_failed"
+                        || kind == "observation_uncertain";
+                    if !matches!(kind, "snapshot" | "activity" | "state_changed")
+                        || urgent
+                        || (kind == "state_changed" && state_changed)
+                    {
+                        self.batch(
+                            format!(
+                                "{pane}: {kind} ({})",
+                                event["kind"].as_str().unwrap_or("unknown provider")
+                            ),
+                            urgent,
+                        );
+                    }
+                }
+            },
+        }
+        if own {
+            if !self.snapshotting {
+                self.cursor = cursor.or(self.cursor.take());
+            }
+            return true;
+        }
+        self.journal.push_back(event);
+        let mut bytes: usize = self.journal.iter().map(|v| v.to_string().len()).sum();
+        let overflow = self.journal.len() > JOURNAL_RECORDS || bytes > JOURNAL_BYTES;
+        while overflow && (self.journal.len() > JOURNAL_RECORDS / 2 || bytes > JOURNAL_BYTES / 2) {
+            if let Some(old) = self.journal.pop_front() {
+                bytes -= old.to_string().len();
+            }
+            self.gap = true;
+        }
+        if overflow {
+            self.journal
+                .push_back(json!({"event_type":"gap","reason":"mother_journal_overflow"}));
+            self.batch(
+                "Journal overflow: reconcile live agents and retained results".into(),
+                true,
+            );
+        }
+        if !self.snapshotting {
+            self.cursor = cursor.or(self.cursor.take());
+        }
+        true
+    }
+
+    fn receipt_response(&mut self, result: AgentResponse, delivery: bool) {
+        let Some(receipt) = self.receipts.back_mut() else {
+            return;
+        };
+        // Only the delivery path can prove rejection happened before any terminal write.
+        if delivery && result.submission_id.is_none() && receipt.response.is_none() {
+            self.delivery_blocked = result.message.clone();
+            if let Some(batch) = self.pending.iter_mut().find(|b| b.id == receipt.batch) {
+                batch.attempted = false;
+            }
+            self.receipts.pop_back();
+        } else {
+            self.delivery_blocked = None;
+            receipt.settled = matches!(
+                result.outcome,
+                AgentOutcome::Completed
+                    | AgentOutcome::TargetChanged
+                    | AgentOutcome::TargetClosed
+                    | AgentOutcome::TargetExited
+            ) || (result.outcome == AgentOutcome::Failed && result.acknowledged);
+            receipt.response = Some(result);
+        }
+    }
+
+    fn status(&self, ready: bool, error: bool) -> MotherStatus {
+        let blockers = self
+            .roster
+            .values()
+            .filter(|r| {
+                r["needs_input"] == true || r["last_outcome"]["event_type"] == "turn_failed"
+            })
+            .count();
+        let unsettled = self.receipts.back().is_some_and(|r| !r.settled);
+        MotherStatus {
+            state: if error || !ready {
+                "degraded"
+            } else if self.paused {
+                "paused"
+            } else if blockers > 0
+                || self.gap
+                || self.receipts.back().is_some_and(|r| {
+                    !r.settled
+                        && r.response.as_ref().is_some_and(|result| {
+                            matches!(
+                                result.outcome,
+                                AgentOutcome::Rejected
+                                    | AgentOutcome::NeedsInput
+                                    | AgentOutcome::Failed
+                                    | AgentOutcome::Interrupted
+                                    | AgentOutcome::StatusUnavailable
+                            )
+                        })
+                })
+            {
+                "needs_attention"
+            } else if unsettled {
+                "processing"
+            } else if self.pending.iter().any(|b| !b.attempted) {
+                "queued"
+            } else {
+                "watching"
+            }
+            .into(),
+            pending: self.pending.len(),
+            blockers,
+        }
+    }
+
+    fn command(&mut self, request: MotherRequest) -> Result<Value> {
+        Ok(match request {
+            MotherRequest::Status => json!(self.status(true, false)),
+            MotherRequest::Inbox => {
+                json!({"batches":self.pending,"roster":self.roster,"receipts":self.receipts,"gap":self.gap,"cursor":self.cursor,"delivery_blocked":self.delivery_blocked})
+            },
+            MotherRequest::Checkpoint { expect_rev, value } => {
+                if let Some(value) = value {
+                    if expect_rev != Some(self.revision) {
+                        bail!("checkpoint revision conflict; read and merge before updating");
+                    }
+                    if !value.is_object() || value.to_string().len() > 1024 * 1024 {
+                        bail!("checkpoint must be an object of at most 1 MiB");
+                    }
+                    self.checkpoint = value;
+                    self.revision = self
+                        .revision
+                        .checked_add(1)
+                        .context("checkpoint revision exhausted")?;
+                } else if expect_rev.is_some() {
+                    bail!("expect-rev requires a checkpoint value");
+                }
+                json!({"revision":self.revision,"value":self.checkpoint})
+            },
+            MotherRequest::Ack { batch } => {
+                if !self.pending.iter().any(|b| b.id == batch) {
+                    bail!("unknown batch ID");
+                }
+                self.pending.retain(|b| b.id != batch);
+                json!({"acknowledged":batch})
+            },
+            MotherRequest::Configure {
+                panes,
+                projects,
+                kinds,
+                lifecycle_types,
+            } => {
+                let mut filters = EventSubscription {
+                    panes,
+                    projects,
+                    kinds,
+                    lifecycle_types,
+                    cursor: None,
+                };
+                super::agent_events::canonicalize(&mut filters)?;
+                self.filters = filters;
+                self.cursor = None;
+                json!(self.filters)
+            },
+            MotherRequest::Pause => {
+                self.paused = true;
+                json!({"paused":true})
+            },
+            MotherRequest::Resume => {
+                self.paused = false;
+                json!({"paused":false})
+            },
+        })
+    }
+}
+
+struct Stream {
+    sender: IpcSenderWithContext<ClientToServerMsg>,
+    receiver: IpcReceiverWithContext<ServerToClientMsg>,
+}
+
+impl Stream {
+    fn connect(session: &str, memory: &Memory) -> Result<Self> {
+        let socket =
+            yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(session))
+                .context("connect Mother lifecycle stream")?;
+        let mut sender = IpcSenderWithContext::new(socket);
+        let receiver = sender
+            .get_receiver()
+            .context("receive Mother lifecycle stream")?;
+        receiver
+            .set_recv_timeout(Some(TICK))
+            .context("bound Mother lifecycle read")?;
+        let mut options = memory.filters.clone();
+        options.cursor = memory.cursor.clone();
+        sender
+            .send_client_msg(ClientToServerMsg::SubscribeToEvents {
+                event_types: vec!["agent_lifecycle".into()],
+                options,
+            })
+            .context("subscribe Mother lifecycle stream")?;
+        Ok(Self { sender, receiver })
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        let _ = self.sender.send_client_msg(ClientToServerMsg::ClientExited);
+    }
+}
+
+fn reply(senders: &ThreadSenders, target: Reply, response: AgentResponse) {
+    match target {
+        Reply::Host(tx) => {
+            let _ = tx.send(response);
+        },
+        Reply::Client(client) => {
+            senders
+                .send_to_screen(ScreenInstruction::MotherCommandReply(client, response))
+                .context("reply to Mother command")
+                .non_fatal();
+        },
+    }
+}
+
+// Hook prose stays private; lifecycle facts remain the authority for ordering and outcomes.
+fn merge_activity(old: &mut Value, new: &Value) {
+    if old["conversation_id"] != new["conversation_id"] || !old.is_object() {
+        *old = new.clone();
+    } else {
+        if !new["assignment"].is_null() {
+            old["last_message"] = Value::Null;
+        }
+        for key in ["assignment", "last_message"] {
+            if !new[key].is_null() {
+                old[key] = new[key].clone();
+            }
+        }
+        old["current_activity"] = new["current_activity"].clone();
+        old["waiting_on"] = new["waiting_on"].clone();
+    }
+}
+
+fn enrich_row(row: &mut Value, observation: &Value) -> bool {
+    if row["conversation_id"].is_null() || row["conversation_id"] != observation["conversation_id"]
+    {
+        return false;
+    }
+    let mut changed = false;
+    for key in [
+        "assignment",
+        "current_activity",
+        "waiting_on",
+        "last_message",
+    ] {
+        if row[key] != observation[key] {
+            row[key] = observation[key].clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn run(
+    session: String,
+    pane: PaneId,
+    generation: String,
+    senders: ThreadSenders,
+    commands: mpsc::Receiver<(MotherRequest, Reply)>,
+    observations: mpsc::Receiver<Value>,
+    observation_gap: Arc<AtomicBool>,
+) -> Result<()> {
+    let work = yinz_config::project_config::bubblewrap::mother_directory(
+        &yinz_runtime::consts::YINZ_CACHE_DIR,
+        &session,
+    )?;
+    let path: PathBuf = work
+        .parent()
+        .context("Mother workspace has no parent")?
+        .join("supervision.json");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("lock"))
+        .context("open Mother writer lock")?;
+    lock.try_lock()
+        .context("Mother supervisor already owns this workspace")?;
+    let mut memory = Memory::load(&path)?;
+    memory.conversation = None;
+    if memory.snapshotting {
+        memory.cursor = None;
+    }
+    memory.save(&path)?;
+    let mut stream = None;
+    let mut ready = false;
+    let mut due = Instant::now() + Duration::from_secs(2);
+    let mut retry = Instant::now();
+    let mut response: Option<mpsc::Receiver<AgentResponse>> = None;
+    let mut status_reply: Option<mpsc::Receiver<AgentResponse>> = None;
+    let mut status_due = Instant::now();
+    let mut reconcile = VecDeque::new();
+    let mut reconcile_reply: Option<(String, mpsc::Receiver<AgentResponse>)> = None;
+    let mut input_revision = None;
+    let mut response_delivery = false;
+    let mut last_status = None;
+    let mut failed = false;
+    let mut activity = BTreeMap::<String, Value>::new();
+    loop {
+        match commands.try_recv() {
+            Ok((request, target)) => {
+                let reconnect = matches!(request, MotherRequest::Configure { .. });
+                let mut next = memory.clone();
+                let result = if matches!(request, MotherRequest::Status) {
+                    Ok(json!(memory.status(ready, failed)))
+                } else {
+                    next.command(request)
+                }
+                .and_then(|value| {
+                    next.save(&path)?;
+                    Ok(value)
+                });
+                let mut response = AgentResponse::new(if result.is_ok() {
+                    AgentOutcome::Ok
+                } else {
+                    AgentOutcome::Rejected
+                });
+                match result {
+                    Ok(value) => {
+                        memory = next;
+                        response.output = Some(value.to_string());
+                        if reconnect {
+                            stream = None;
+                            ready = false;
+                        }
+                    },
+                    Err(error) => response.message = Some(format!("{error:#}")),
+                }
+                reply(&senders, target, response);
+            },
+            Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+            Err(mpsc::TryRecvError::Empty) => {},
+        }
+        let mut enriched = false;
+        while let Ok(observation) = observations.try_recv() {
+            if let Some(pane) = observation["pane_id"].as_str() {
+                let old = activity.entry(pane.to_owned()).or_default();
+                merge_activity(old, &observation);
+            }
+            if activity.len() > JOURNAL_RECORDS {
+                activity.clear();
+                observation_gap.store(true, Ordering::Relaxed);
+            }
+        }
+        for (pane, row) in &mut memory.roster {
+            if let Some(observation) = activity.get(pane) {
+                enriched |= enrich_row(row, observation);
+            }
+        }
+        if observation_gap.swap(false, Ordering::Relaxed) {
+            memory.gap = true;
+            memory.cursor = None;
+            memory.batch(
+                "Private activity observation gap: reconcile live agents and archives".into(),
+                true,
+            );
+            stream = None;
+            ready = false;
+            enriched = true;
+        }
+        if enriched {
+            memory.save(&path)?;
+        }
+        if stream.is_none() && Instant::now() >= retry {
+            match Stream::connect(&session, &memory) {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    ready = false;
+                },
+                Err(error) => {
+                    log::error!("Mother stream: {error:#}");
+                    retry = Instant::now() + Duration::from_secs(2);
+                },
+            }
+        }
+        if let Some(connected) = stream.as_mut() {
+            match connected.receiver.recv_server_msg() {
+                IpcRecv::Msg(ServerToClientMsg::EventUpdate { event_json, .. }, _) => {
+                    let event: Value = serde_json::from_str(&event_json)
+                        .context("decode Mother lifecycle fact")?;
+                    let was_ready = event["event_type"] == "ready";
+                    let urgent = event["pane_id"] != pane.to_string()
+                        && matches!(
+                            event["event_type"].as_str(),
+                            Some("needs_input" | "turn_failed")
+                        );
+                    let alert_id = format!(
+                        "{}:{}:{}:{}:{}:{}:{}",
+                        event["server_epoch"],
+                        event["sequence"],
+                        event["pane_generation"],
+                        event["conversation_id"],
+                        event["event_type"],
+                        event["submission_id"],
+                        event["turn_id"]
+                    );
+                    let alert = urgent && !memory.alerts.contains(&alert_id);
+                    let alert_text = format!(
+                        "Mother: {} {}",
+                        event["pane_id"].as_str().unwrap_or("agent"),
+                        event["event_type"].as_str().unwrap_or("needs attention")
+                    );
+                    let had_queued = memory.pending.iter().any(|b| !b.attempted);
+                    let mut next = memory.clone();
+                    if next.event(event, pane) {
+                        if alert {
+                            next.alerts.push_back(alert_id);
+                        }
+                        while next.alerts.len() > 256 {
+                            next.alerts.pop_front();
+                        }
+                        match next.save(&path) {
+                            Ok(()) => {
+                                if !had_queued && next.pending.iter().any(|b| !b.attempted) {
+                                    due = Instant::now() + Duration::from_secs(2);
+                                }
+                                if urgent {
+                                    due = Instant::now();
+                                }
+                                let overflow = next.gap && !memory.gap;
+                                memory = next;
+                                failed = false;
+                                if alert {
+                                    senders
+                                        .send_to_screen(ScreenInstruction::Notify(
+                                            alert_text,
+                                            Some(pane),
+                                            None,
+                                            None,
+                                        ))
+                                        .context("notify Mother blocker")?;
+                                }
+                                if overflow && !was_ready {
+                                    memory.cursor = None;
+                                    memory.save(&path)?;
+                                    stream = None;
+                                    ready = false;
+                                }
+                            },
+                            Err(error) => {
+                                log::error!("Mother persistence: {error:#}");
+                                failed = true;
+                                stream = None;
+                                ready = false;
+                                retry = Instant::now() + Duration::from_secs(2);
+                            },
+                        }
+                    }
+                    if was_ready && !failed {
+                        ready = true;
+                        reconcile.clear();
+                        for (pane, row) in &memory.roster {
+                            if let (Ok(pane_id), Some(submission)) =
+                                (pane.parse::<PaneId>(), row["submission_id"].as_str())
+                            {
+                                reconcile.push_back((
+                                    pane.clone(),
+                                    AgentRequest::WaitTurn {
+                                        pane_id,
+                                        expected_session_id: row["conversation_id"]
+                                            .as_str()
+                                            .map(str::to_owned),
+                                        submission_id: submission.to_owned(),
+                                        timeout_ms: 1,
+                                    },
+                                ));
+                            }
+                        }
+                        memory.gap = false;
+                        memory.save(&path)?;
+                    }
+                },
+                IpcRecv::Idle => {},
+                IpcRecv::Msg(ServerToClientMsg::LogError { lines }, _) => {
+                    log::error!("Mother subscription: {}", lines.join("; "));
+                    stream = None;
+                    ready = false;
+                    retry = Instant::now() + Duration::from_secs(2);
+                },
+                IpcRecv::Eof | IpcRecv::Malformed => {
+                    stream = None;
+                    ready = false;
+                    retry = Instant::now() + Duration::from_secs(2);
+                },
+                _ => {},
+            }
+        } else {
+            std::thread::sleep(TICK);
+        }
+        if ready && reconcile_reply.is_none() {
+            if let Some((pane, request)) = reconcile.pop_front() {
+                let (tx, rx) = mpsc::channel();
+                senders
+                    .send_to_screen(ScreenInstruction::AgentControlReply(request, tx))
+                    .context("reconcile roster submission")?;
+                reconcile_reply = Some((pane, rx));
+            }
+        }
+        if let Some((pane, rx)) = &reconcile_reply {
+            if let Ok(result) = rx.try_recv() {
+                if let Some(row) = memory.roster.get_mut(pane) {
+                    row["retained_result"] = json!({"outcome":result.outcome,"acknowledged":result.acknowledged,"submission_id":result.submission_id,"turn_id":result.turn_id,"message":result.message.as_ref().map(|s| s.chars().take(4096).collect::<String>()),"background_tasks":result.background_tasks});
+                    memory.save(&path)?;
+                }
+                reconcile_reply = None;
+            }
+        }
+        if status_reply.is_none() && Instant::now() >= status_due {
+            let (tx, rx) = mpsc::channel();
+            senders
+                .send_to_screen(ScreenInstruction::AgentControlReply(
+                    AgentRequest::Status {
+                        pane_id: pane,
+                        expected_session_id: None,
+                    },
+                    tx,
+                ))
+                .context("inspect Mother identity")?;
+            status_reply = Some(rx);
+        }
+        if let Some(rx) = &status_reply {
+            if let Ok(result) = rx.try_recv() {
+                if let Some(status) = result.agents.first() {
+                    input_revision = status.input_revision;
+                    if status.agent.session_id.is_some()
+                        && memory.conversation != status.agent.session_id
+                    {
+                        let mut next = memory.clone();
+                        next.conversation = status.agent.session_id.clone();
+                        next.batch(
+                            "Bootstrap Mother: load memory and reconcile live agents".into(),
+                            false,
+                        );
+                        next.save(&path)?;
+                        memory = next;
+                        due = Instant::now() + Duration::from_secs(2);
+                    }
+                }
+                status_reply = None;
+                status_due = Instant::now() + Duration::from_secs(2);
+            }
+        }
+        if let Some(rx) = &response {
+            let received = match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let mut result = AgentResponse::new(AgentOutcome::StatusUnavailable);
+                    result.submission_id = memory.receipts.back().map(|r| r.submission.clone());
+                    Some(result)
+                },
+                Err(mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(result) = received {
+                let mut next = memory.clone();
+                next.receipt_response(result, response_delivery);
+                next.save(&path)?;
+                memory = next;
+                response = None;
+                due = Instant::now() + Duration::from_secs(2);
+            }
+        }
+        if ready
+            && !failed
+            && reconcile.is_empty()
+            && reconcile_reply.is_none()
+            && response.is_none()
+            && Instant::now() >= due
+        {
+            if let Some(receipt) = memory.receipts.back().filter(|r| !r.settled) {
+                let (tx, rx) = mpsc::channel();
+                senders
+                    .send_to_screen(ScreenInstruction::AgentControlReply(
+                        AgentRequest::WaitTurn {
+                            pane_id: pane,
+                            expected_session_id: Some(receipt.conversation.clone()),
+                            submission_id: receipt.submission.clone(),
+                            timeout_ms: 1000,
+                        },
+                        tx,
+                    ))
+                    .context("reconcile Mother submission")?;
+                response = Some(rx);
+                response_delivery = false;
+            } else if !memory.paused {
+                if let (Some(batch), Some(conversation), Some(input_revision)) = (
+                    memory.pending.iter().find(|b| !b.attempted).cloned(),
+                    memory.conversation.clone(),
+                    input_revision,
+                ) {
+                    let submission = format!("mother-{}", batch.id);
+                    let prompt = format!("Mother supervision batch {} ({} changes): {}. Read the local yinz-mother skill, inspect `yinz mother inbox`, reconcile correlated results and archives, update `yinz mother checkpoint`, report meaningful changes here, and ack this batch after saving memory. Continue only authorized assignments. Missing evidence is unknown.", batch.id, batch.events, batch.summary.join("; "));
+                    let mut next = memory.clone();
+                    next.delivery_blocked = None;
+                    if let Some(b) = next.pending.iter_mut().find(|b| b.id == batch.id) {
+                        b.attempted = true;
+                    }
+                    next.receipts.push_back(Receipt {
+                        batch: batch.id,
+                        conversation: conversation.clone(),
+                        submission: submission.clone(),
+                        response: None,
+                        settled: false,
+                    });
+                    while next.receipts.len() > 128 {
+                        next.receipts.pop_front();
+                    }
+                    next.save(&path)?;
+                    memory = next;
+                    let (tx, rx) = mpsc::channel();
+                    senders
+                        .send_to_screen(ScreenInstruction::MotherWake {
+                            generation: generation.clone(),
+                            conversation,
+                            input_revision,
+                            submission,
+                            prompt,
+                            reply: tx,
+                        })
+                        .context("deliver Mother batch")?;
+                    response = Some(rx);
+                    response_delivery = true;
+                }
+            }
+        }
+        let status = memory.status(ready, failed);
+        if last_status.as_ref() != Some(&status) {
+            senders
+                .send_to_screen(ScreenInstruction::MotherStatus(
+                    generation.clone(),
+                    status.clone(),
+                ))
+                .context("publish Mother status")?;
+            last_status = Some(status);
+        }
+    }
+}
+
+impl Screen {
+    pub(super) fn sync_mother_supervisor(&mut self) {
+        let pane = self.live_mother();
+        if self.mother_supervisor.as_ref().map(|s| s.pane) == pane {
+            return;
+        }
+        self.mother_supervisor = None;
+        self.mother_status = None;
+        let Some(pane) = pane else {
+            return;
+        };
+        let generation = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = mpsc::channel();
+        let (observations, observed) = mpsc::sync_channel(256);
+        let observation_gap = Arc::new(AtomicBool::new(false));
+        let worker_gap = observation_gap.clone();
+        let session = self.session_name.to_string();
+        let senders = self.bus.senders.clone();
+        let id = generation.clone();
+        match std::thread::Builder::new()
+            .name("mother-supervisor".into())
+            .spawn(move || {
+                if let Err(error) = run(
+                    session,
+                    pane,
+                    id.clone(),
+                    senders.clone(),
+                    rx,
+                    observed,
+                    worker_gap,
+                ) {
+                    log::error!("Mother supervisor stopped: {error:#}");
+                    senders
+                        .send_to_screen(ScreenInstruction::MotherStatus(
+                            id,
+                            MotherStatus {
+                                state: "degraded".into(),
+                                ..Default::default()
+                            },
+                        ))
+                        .context("report Mother failure")
+                        .non_fatal();
+                }
+            }) {
+            Ok(thread) => {
+                self.mother_supervisor = Some(Supervisor {
+                    generation,
+                    pane,
+                    commands: Some(tx),
+                    thread: Some(thread),
+                    observations,
+                    observation_gap,
+                })
+            },
+            Err(error) => log::error!("Cannot start Mother supervisor: {error}"),
+        }
+    }
+
+    pub(super) fn observe_mother_activity(
+        &self,
+        event: &yinz_types::agent::AgentEvent,
+        worker: bool,
+    ) {
+        let pane = PaneId::Terminal(event.pane_id);
+        let Some(supervisor) = self.mother_supervisor.as_ref().filter(|s| s.pane != pane) else {
+            return;
+        };
+        if worker {
+            return;
+        }
+        let observation = json!({
+            "pane_id":pane.to_string(), "conversation_id":event.session_id,
+            "assignment":event.prompt.as_ref().map(|s| s.chars().take(2048).collect::<String>()),
+            "current_activity":event.detail.as_ref().map(|s| s.chars().take(2048).collect::<String>()),
+            "last_message":event.last_message.as_ref().map(|s| s.chars().take(4096).collect::<String>()),
+            "waiting_on":self.get_pane_info(pane).and_then(|p| p.agent).filter(|a| a.session_id == event.session_id).and_then(|a| a.waiting_on).map(|s| s.chars().take(2048).collect::<String>()),
+        });
+        if let Err(mpsc::TrySendError::Full(_)) = supervisor.observations.try_send(observation) {
+            supervisor.observation_gap.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(super) fn mother_command(&mut self, request: MotherRequest, target: Reply) {
+        let result = self
+            .mother_supervisor
+            .as_ref()
+            .context("Mother is not running")
+            .and_then(|s| {
+                s.commands
+                    .as_ref()
+                    .context("Mother supervisor stopped")?
+                    .send((request, target.clone()))
+                    .context("Mother supervisor is unavailable")
+            });
+        if let Err(error) = result {
+            let mut response = AgentResponse::new(AgentOutcome::Rejected);
+            response.message = Some(format!("{error:#}"));
+            self.agent_reply(&target, response);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../unit/mother_supervisor.rs"]
+mod tests;
+
+#[cfg(test)]
+impl Supervisor {
+    pub(super) fn for_test(pane: PaneId) -> Self {
+        let (tx, _) = mpsc::channel();
+        Self {
+            generation: "test-generation".into(),
+            pane,
+            commands: Some(tx),
+            thread: None,
+            observations: mpsc::sync_channel(1).0,
+            observation_gap: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}

@@ -7931,3 +7931,106 @@ fn disconnect_before_prompt_delivery_finishes_cancels_enter() {
         );
     }
 }
+
+#[test]
+fn mother_delivery_refuses_drafts_focus_busy_input_and_replacements_without_writes() {
+    for kind in ["claude", "codex"] {
+        for blocked in [
+            "draft",
+            "focused",
+            "busy",
+            "waiting",
+            "input",
+            "conversation",
+            "generation",
+            "unknown_composer",
+        ] {
+            let (mut screen, _, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            screen.mother = Some(TerminalId::new(7));
+            screen.mother_supervisor =
+                Some(crate::screen::mother_supervisor::Supervisor::for_test(PANE));
+            if blocked != "focused" {
+                screen.connected_clients.borrow_mut().clear();
+            }
+            if blocked != "unknown_composer" {
+                draft_frame(
+                    &mut screen,
+                    kind,
+                    if blocked == "draft" {
+                        "keep this draft"
+                    } else {
+                        ""
+                    },
+                    0,
+                    Instant::now(),
+                );
+            }
+            if blocked == "busy" {
+                report_kind(&mut screen, kind, hook("UserPromptSubmit"));
+            }
+            if blocked == "waiting" {
+                report_kind(&mut screen, kind, permission_wait(kind));
+            }
+            let revision = screen.agent_status_for_test().input_revision.unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            screen.deliver_mother(
+                if blocked == "generation" {
+                    "old-generation"
+                } else {
+                    "test-generation"
+                }
+                .into(),
+                if blocked == "conversation" {
+                    "old-conversation"
+                } else {
+                    "conversation"
+                }
+                .into(),
+                revision + u64::from(blocked == "input"),
+                "mother-batch".into(),
+                "Check the inbox".into(),
+                tx,
+            );
+            let result = rx.try_recv().unwrap();
+            assert_ne!(result.outcome, AgentOutcome::Submitted, "{kind}/{blocked}");
+            assert!(!result.acknowledged);
+            assert!(
+                finish_paste(&writes).is_empty(),
+                "{kind}/{blocked} wrote to the composer"
+            );
+            assert!(screen.agent_draft_clears.is_empty());
+        }
+    }
+}
+
+#[test]
+fn mother_focus_race_after_paste_never_sends_enter_or_clears_the_composer() {
+    for kind in ["claude", "codex"] {
+        let (mut screen, _, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        screen.mother = Some(TerminalId::new(7));
+        screen.mother_supervisor =
+            Some(crate::screen::mother_supervisor::Supervisor::for_test(PANE));
+        screen.connected_clients.borrow_mut().clear();
+        draft_frame(&mut screen, kind, "", 0, Instant::now());
+        let (tx, rx) = std::sync::mpsc::channel();
+        screen.deliver_mother(
+            "test-generation".into(),
+            "conversation".into(),
+            screen.agent_status_for_test().input_revision.unwrap(),
+            "mother-batch".into(),
+            "Check the inbox".into(),
+            tx,
+        );
+        assert!(!finish_paste(&writes).is_empty());
+        screen.connected_clients.borrow_mut().insert(CLIENT);
+        screen.refresh_agent_controls_at(Instant::now());
+        let result = rx.try_recv().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Interrupted);
+        assert_eq!(result.submission_id.as_deref(), Some("mother-batch"));
+        screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(2));
+        assert!(finish_paste(&writes).is_empty());
+        assert!(screen.agent_draft_clears.is_empty());
+    }
+}

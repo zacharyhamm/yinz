@@ -6880,6 +6880,7 @@ dependencies = [
  "insta",
  "interprocess",
  "log",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

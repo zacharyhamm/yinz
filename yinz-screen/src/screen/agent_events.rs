@@ -73,7 +73,7 @@ impl Default for AgentEvents {
     }
 }
 
-fn canonicalize(options: &mut EventSubscription) -> Result<()> {
+pub(super) fn canonicalize(options: &mut EventSubscription) -> Result<()> {
     for values in [
         &mut options.panes,
         &mut options.projects,
@@ -497,6 +497,8 @@ impl Screen {
                     json!({"pane_id":pane.to_string(),"kind":agent.as_ref().map(|a| &a.kind),
                     "conversation_id":agent.as_ref().and_then(|a| a.session_id.as_ref()),
                     "run_id":agent.as_ref().and_then(|a| a.run_id.as_ref()),
+                    "source":agent.as_ref().map(|a| a.source.to_string()),
+                    "control":self.agent_status(pane, None).map(|s| json!({"prompt_supported":s.prompt_supported,"status_available":s.status_available,"not_ready_reason":s.not_ready_reason})),
                     "state":agent.as_ref().map(|a| a.state.to_string().to_lowercase()),
                     "needs_input":agent.as_ref().is_some_and(|a| a.is_waiting_on_a_person()),
                     "submission_id":null,"turn_id":null,"background_tasks":tasks,"projects":[]}),

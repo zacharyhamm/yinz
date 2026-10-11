@@ -22,3 +22,24 @@ fn mother_roundtrips_and_defaults_when_absent() {
         .mother
         .is_none());
 }
+
+#[test]
+fn supervision_roundtrips_and_is_additive() {
+    let session = SessionInfo {
+        mother_supervision: Some(yinz_types::agent::mother::MotherStatus {
+            state: "queued".into(),
+            pending: 3,
+            blockers: 1,
+        }),
+        ..Default::default()
+    };
+    let wire: ProtobufSessionManifest = session.clone().try_into().unwrap();
+    let decoded: SessionInfo = wire.try_into().unwrap();
+    assert_eq!(decoded.mother_supervision, session.mother_supervision);
+    let mut value = serde_json::to_value(session).unwrap();
+    value.as_object_mut().unwrap().remove("mother_supervision");
+    assert!(serde_json::from_value::<SessionInfo>(value)
+        .unwrap()
+        .mother_supervision
+        .is_none());
+}

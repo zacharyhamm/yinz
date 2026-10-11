@@ -48,3 +48,6 @@ pub use yinz_plugin_location as plugin_location;
 
 #[cfg(target_os = "windows")]
 compile_error!("Yinz does not support Windows");
+
+#[cfg(not(target_family = "wasm"))]
+pub mod mother;

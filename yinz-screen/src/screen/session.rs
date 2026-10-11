@@ -157,6 +157,9 @@ impl Screen {
         };
         let session_info = SessionInfo {
             mother: self.reported_mother(&pane_manifest),
+            mother_supervision: self
+                .reported_mother(&pane_manifest)
+                .and(self.mother_status.clone()),
             name: self.session_name.clone(),
             tabs: tab_infos,
             panes: pane_manifest,

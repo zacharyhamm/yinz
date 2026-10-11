@@ -871,6 +871,10 @@ fn generic_mother_focus_goes_to_a_shared_mother_and_fetches_a_parked_one() {
 fn saved_mother_matches_reported_live_hidden_replaced_held_and_missing_metadata() {
     for state in ["live", "hidden", "replaced", "held", "exited", "missing"] {
         let mut screen = screen_with_mother();
+        screen.mother_status = Some(yinz_types::agent::mother::MotherStatus {
+            state: "watching".into(),
+            ..Default::default()
+        });
         match state {
             "hidden" => {
                 screen.toggle_mother(CLIENT).unwrap();
@@ -911,11 +915,21 @@ fn saved_mother_matches_reported_live_hidden_replaced_held_and_missing_metadata(
             .unwrap();
         assert_eq!(saved.mother, expected, "{state}");
         assert_eq!(
+            saved.mother_supervision.is_some(),
+            expected.is_some(),
+            "{state}"
+        );
+        assert_eq!(
             serde_json::to_value(&saved).unwrap()["mother"].is_null(),
             expected.is_none()
         );
         screen.log_and_report_session_state().unwrap();
         assert_eq!(saved.mother, reported_mother(&screen), "{state}");
+        assert_eq!(
+            screen.peer_sessions_cache[&screen.session_name].mother_supervision,
+            saved.mother_supervision,
+            "{state}"
+        );
         if matches!(state, "held" | "exited") {
             assert_eq!(screen.mother, Some(TerminalId::new(2)));
         }
