@@ -1204,6 +1204,8 @@ message RunCommandAction {
 
 // Where a pane's process runs; unset or `local` means this machine.
 message PaneTarget {
+  // Outside the oneof so a supported target cannot hide a retired VM request.
+  optional bytes firecracker = 3;
   oneof kind {
     bool local = 1;
     string ssh_host = 2;

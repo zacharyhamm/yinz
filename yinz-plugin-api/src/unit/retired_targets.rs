@@ -87,3 +87,63 @@ fn supported_targets_round_trip_without_retired_markers() {
         assert_eq!(RunCommandAction::try_from(decoded).unwrap(), action);
     }
 }
+
+#[test]
+fn retired_agent_spawn_fields_are_rejected() {
+    use crate::generated_api::api::plugin_command::{
+        plugin_command::Payload, AgentSpawnSpec, CommandName, PluginCommand, SpawnAgentPayload,
+    };
+    use yinz_types::data::PluginCommand as NativeCommand;
+
+    // Original AgentSpawnSpec string fields: firecracker=14, firecracker_image=15.
+    for key in [0x72, 0x7a] {
+        for value in [vec![], vec![b'v']] {
+            for guards in [vec![], vec![0x32, 1, b'b', 0x40, 1], vec![0x90, 1, 1]] {
+                let bytes = [vec![key, value.len() as u8], value.clone(), guards].concat();
+                let spec = AgentSpawnSpec::decode(bytes.as_slice()).unwrap();
+                assert_eq!(
+                    yinz_types::agent::AgentSpawnSpec::try_from(spec.clone()).unwrap_err(),
+                    "Firecracker execution is no longer supported."
+                );
+                let wire = PluginCommand {
+                    name: CommandName::SpawnAgent as i32,
+                    payload: Some(Payload::SpawnAgentPayload(SpawnAgentPayload {
+                        spec: Some(spec),
+                        ..Default::default()
+                    })),
+                };
+                let decoded = PluginCommand::decode(wire.encode_to_vec().as_slice()).unwrap();
+                assert_eq!(
+                    NativeCommand::try_from(decoded).unwrap_err(),
+                    "Firecracker execution is no longer supported."
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn supported_agent_specs_round_trip_without_retired_markers() {
+    use crate::generated_api::api::plugin_command::AgentSpawnSpec as WireSpec;
+    use yinz_types::agent::AgentSpawnSpec;
+
+    for spec in [
+        AgentSpawnSpec::default(),
+        AgentSpawnSpec {
+            branch: Some("feature".into()),
+            worktree: Some(true),
+            ..Default::default()
+        },
+        AgentSpawnSpec {
+            allow_outside_worktree: Some(true),
+            bubblewrap: true,
+            ..Default::default()
+        },
+    ] {
+        let wire = WireSpec::from(spec.clone());
+        assert!(wire.firecracker.is_none());
+        assert!(wire.firecracker_image.is_none());
+        let decoded = WireSpec::decode(wire.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(AgentSpawnSpec::try_from(decoded).unwrap(), spec);
+    }
+}

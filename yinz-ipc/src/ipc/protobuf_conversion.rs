@@ -1524,13 +1524,22 @@ fn pane_target_to_protobuf(
             Kind::BubblewrapRoot(root.to_string_lossy().to_string())
         },
     };
-    PaneTarget { kind: Some(kind) }
+    PaneTarget {
+        kind: Some(kind),
+        firecracker: None,
+    }
 }
 
 fn pane_target_from_protobuf(
     target: Option<crate::client_server_contract::client_server_contract::PaneTarget>,
 ) -> Result<yinz_types::command::PaneTarget> {
     use crate::client_server_contract::client_server_contract::pane_target::Kind;
+    if target
+        .as_ref()
+        .is_some_and(|target| target.firecracker.is_some())
+    {
+        return Err(anyhow!("Firecracker execution is no longer supported."));
+    }
     Ok(match target.and_then(|target| target.kind) {
         None | Some(Kind::Local(_)) => yinz_types::command::PaneTarget::Local,
         Some(Kind::SshHost(host)) => yinz_types::command::PaneTarget::Ssh { host },
@@ -6022,3 +6031,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunPluginOrA
 #[cfg(test)]
 #[path = "unit/bubblewrap_decode.rs"]
 mod bubblewrap_decode;
+
+#[cfg(test)]
+#[path = "unit/retired_targets.rs"]
+mod retired_targets;

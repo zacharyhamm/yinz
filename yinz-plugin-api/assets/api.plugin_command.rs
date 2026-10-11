@@ -790,6 +790,11 @@ pub struct AgentSpawnSpec {
     pub resume: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="13")]
     pub hooks: ::core::option::Option<bool>,
+    /// Decode-only markers: reject retired execution requests.
+    #[prost(string, optional, tag="14")]
+    pub firecracker: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="15")]
+    pub firecracker_image: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="16")]
     pub effort: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="17")]

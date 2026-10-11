@@ -1975,6 +1975,9 @@ pub struct RunCommandAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PaneTarget {
+    /// Outside the oneof so a supported target cannot hide a retired VM request.
+    #[prost(bytes="vec", optional, tag="3")]
+    pub firecracker: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     #[prost(oneof="pane_target::Kind", tags="1, 2, 4")]
     pub kind: ::core::option::Option<pane_target::Kind>,
 }
