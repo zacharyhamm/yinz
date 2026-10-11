@@ -6,7 +6,7 @@ use crate::ui::damage::CellRect;
 
 use crate::panes::Selection;
 use crate::{
-    panes::kitty_graphics::store::{InternalImageId, KittyImageStore},
+    panes::kitty_graphics::store::{InternalImageId, KittyImageStore, ScaledImageKey},
     panes::sixel::SixelImageStore,
     panes::terminal_character::{AnsiCode, CharacterStyles, RcCharacterStyles},
     panes::{LinkHandler, PaneId, TerminalCharacter, DEFAULT_STYLES, EMPTY_TERMINAL_CHARACTER},
@@ -441,8 +441,8 @@ pub struct KittyChunkKey {
     pub sub_index: u32,
 }
 
-/// An image as the host holds it: the internal image and the size variant it was transmitted as.
-pub type HostImageKey = (InternalImageId, Option<(u16, u16)>);
+/// An image as the host holds it: the internal image and the crop/size variant it was transmitted as.
+pub type HostImageKey = (InternalImageId, Option<ScaledImageKey>);
 
 #[derive(Debug, Clone)]
 pub struct HostPlacementRecord {
@@ -542,7 +542,13 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
         // A full repaint may erase placements without freeing host image data. Delete our
         // old host IDs before forgetting them and transmitting replacement IDs.
         .filter(|(image_key, _)| {
-            host_display_cleared || kitty_image_store.get(image_key.0).is_none()
+            host_display_cleared
+                || kitty_image_store.get(image_key.0).is_none()
+                || image_key.1.is_some_and(|variant| {
+                    kitty_image_store
+                        .scaled_variant(image_key.0, variant)
+                        .is_none()
+                })
         })
         .map(|(image_key, host_id)| (*image_key, *host_id))
         .collect();
@@ -623,12 +629,9 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
                 Some(host_image_id) => *host_image_id,
                 None => {
                     let raster_dims = match variant {
-                        Some(cells) => {
-                            match kitty_image_store.scaled_variant(chunk.internal_image_id, cells) {
-                                Some(_) => chunk.scaled_px,
-                                None => None,
-                            }
-                        },
+                        Some(variant) => kitty_image_store
+                            .ensure_scaled_variant(chunk.internal_image_id, variant)
+                            .then_some(variant.size),
                         None => kitty_image_store
                             .get(chunk.internal_image_id)
                             .map(|image| (image.width as usize, image.height as usize)),

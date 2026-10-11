@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use sixel_image::{SixelDeserializer, SixelImage};
@@ -79,6 +79,7 @@ pub struct SixelGrid {
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     currently_parsing: Option<SixelDeserializer>,
     image_ids_to_reap: Vec<usize>,
+    images_to_check_for_emptiness: HashSet<usize>,
     sixel_parser: Option<sixel_tokenizer::Parser>,
     pub sixel_image_store: Rc<RefCell<SixelImageStore>>,
 }
@@ -96,6 +97,7 @@ impl SixelGrid {
             sixel_image_locations: HashMap::new(),
             currently_parsing: None,
             image_ids_to_reap: Vec::new(),
+            images_to_check_for_emptiness: HashSet::new(),
             sixel_parser: None,
         }
     }
@@ -231,6 +233,16 @@ impl SixelGrid {
         }
     }
     pub fn drain_image_ids_to_reap(&mut self) -> Option<Vec<usize>> {
+        let store = self.sixel_image_store.borrow();
+        for image_id in self.images_to_check_for_emptiness.drain() {
+            let has_lit_pixels = store
+                .sixel_images
+                .get(&image_id)
+                .is_some_and(|(image, _)| image.pixels.iter().flatten().any(|pixel| pixel.on));
+            if !has_lit_pixels && self.sixel_image_locations.remove(&image_id).is_some() {
+                self.image_ids_to_reap.push(image_id);
+            }
+        }
         let images_to_reap = self.image_ids_to_reap.drain(..);
         if images_to_reap.len() > 0 {
             Some(images_to_reap.collect())
@@ -261,6 +273,7 @@ impl SixelGrid {
             .map(|(image_id, _image_rect)| image_id)
             .collect();
         image_ids.append(&mut self.image_ids_to_reap);
+        self.images_to_check_for_emptiness.clear();
         if !image_ids.is_empty() {
             Some(image_ids)
         } else {
@@ -273,6 +286,7 @@ impl SixelGrid {
             .insert_image(Rc::new(sixel_image))
     }
     pub fn remove_pixels_from_image(&mut self, image_id: usize, pixel_rect: PixelRect) {
+        self.images_to_check_for_emptiness.insert(image_id);
         if let Some((sixel_image, sixel_image_cache)) = self
             .sixel_image_store
             .borrow_mut()

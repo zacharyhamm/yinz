@@ -549,7 +549,7 @@ fn kitty_c_r_scaling_produces_exact_cell_rect_and_variant() {
     assert_eq!(
         kitty_image_store
             .borrow()
-            .scaled_variant(internal_id, (3, 2))
+            .scaled_variant(internal_id, placement.variant_key)
             .unwrap()
             .len(),
         30 * 40 * 4
@@ -583,7 +583,7 @@ fn kitty_cell_resize_keeps_the_last_scaled_raster_when_regeneration_cannot_fit()
     assert_eq!(
         kitty_image_store
             .borrow()
-            .scaled_variant(internal_id, (2, 2))
+            .scaled_variant(internal_id, grid.kitty_placements()[0].variant_key)
             .unwrap()
             .len(),
         20 * 40 * 4

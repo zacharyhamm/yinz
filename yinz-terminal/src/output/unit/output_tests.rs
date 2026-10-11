@@ -1735,7 +1735,10 @@ pub(super) fn kitty_chunk(
         cell_offset_y: 0,
         z_index: 0,
         dest_cells: (3, 2),
-        variant_key: (3, 2),
+        variant_key: crate::panes::kitty_graphics::store::ScaledImageKey {
+            source: crate::panes::sixel::PixelRect::new(0, 0, 40, 30),
+            size: (30, 40),
+        },
         scaled_px: None,
         placement_uid,
     }

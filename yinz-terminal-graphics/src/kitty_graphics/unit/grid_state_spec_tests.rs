@@ -740,3 +740,298 @@ fn pending_virtual_placements_preserve_omitted_axes_replacement_and_deletion() {
         assert_eq!(delayed.store.borrow().total_bytes(), 0);
     }
 }
+
+#[test]
+fn raster_keys_distinguish_crops_and_virtual_fits_and_share_identical_pixels() {
+    // Spec: "The image will eventually be fit to the specified rectangle, its aspect ratio preserved".
+    let mut model = Model::new();
+    let pixels: Vec<u8> = (0..8).flat_map(|i| [i, 0, 0, 255]).collect();
+    model.ok("a=t,f=32,s=4,v=2,i=1", &pixels);
+    model.ok("a=p,i=1,p=1,x=0,y=0,w=2,h=2,c=1,r=1", &[]);
+    model.ok("a=p,i=1,p=2,x=2,y=0,w=2,h=2,c=1,r=1", &[]);
+    model.ok("a=p,i=1,p=3,x=0,y=0,w=2,h=2,c=1,r=1", &[]);
+    model.ok("a=p,i=1,p=4,U=1,x=0,y=0,w=2,h=2,c=1,r=1", &[]);
+    let placements = model.kitty.placements();
+    let id = placements[0].internal_id;
+    let a = placements[0].variant_key;
+    let b = placements[1].variant_key;
+    assert_ne!(a, b);
+    assert_eq!(a, placements[2].variant_key);
+    let virtual_key = model.kitty.virtual_placements()[0].variant_key();
+    assert_ne!(a, virtual_key);
+    let store = model.store.borrow();
+    assert_eq!(store.get(id).unwrap().scaled_variants.len(), 3);
+    assert_eq!(&store.scaled_variant(id, a).unwrap()[..4], &[0, 0, 0, 255]);
+    assert_eq!(&store.scaled_variant(id, b).unwrap()[..4], &[2, 0, 0, 255]);
+    assert_eq!(virtual_key.size, (10, 10));
+}
+
+#[test]
+fn resize_replaces_variants_with_quota_credit_and_commits_geometry_only_on_success() {
+    let mut model = Model::new();
+    *model.store.borrow_mut() = KittyImageStore::with_quota(4 * 2 * 4 + 2 * 12 * 24 * 4);
+    model.ok("a=t,f=32,s=4,v=2,i=1", &rgba_block(4, 2));
+    model.at_cell(2, 2).ok("a=p,i=1,p=1,c=1,r=1", &[]);
+    model.ok("a=p,i=1,p=2,U=1,c=1,r=1", &[]);
+    let id = model.kitty.placements()[0].internal_id;
+    for width in [12, 10, 12] {
+        *model.kitty.character_cell_size.borrow_mut() = Some(SizeInPixels {
+            width,
+            height: width * 2,
+        });
+        model.kitty.character_cell_size_possibly_changed();
+        let p = &model.kitty.placements()[0];
+        assert_eq!(p.variant_key.size, (width, width * 2));
+        assert_eq!(p.display_rect.x, 2 * width);
+        let virtual_key = model.kitty.virtual_placements()[0].variant_key();
+        let mut store = model.store.borrow_mut();
+        assert_eq!(store.get(id).unwrap().scaled_variants.len(), 2);
+        let expected = 32 + width * width * 2 * 4 + width * (width / 2) * 4;
+        assert_eq!(store.total_bytes(), expected);
+        store.zlib_base64_for(id, Some(p.variant_key)).unwrap();
+        store.zlib_base64_for(id, Some(virtual_key)).unwrap();
+    }
+    let old = model.kitty.placements().to_vec();
+    let old_virtual = model.kitty.virtual_placements().to_vec();
+    *model.kitty.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 100,
+        height: 200,
+    });
+    model.kitty.character_cell_size_possibly_changed();
+    assert_eq!(model.kitty.placements(), old);
+    assert_eq!(model.kitty.virtual_placements(), old_virtual);
+    assert!(model
+        .store
+        .borrow()
+        .scaled_variant(id, old[0].variant_key)
+        .is_some());
+}
+
+#[test]
+fn repeated_crop_replacement_reclaims_rasters_for_ordinary_and_virtual_placements() {
+    // Spec: "If an image with the same id and placement id already exists, it must be replaced."
+    for virtual_placement in [false, true] {
+        let mut model = Model::new();
+        *model.store.borrow_mut() = KittyImageStore::with_quota(32 + 800);
+        let pixels: Vec<u8> = (0..8).flat_map(|i| [i, 0, 0, 255]).collect();
+        model.ok("a=t,f=32,s=4,v=2,i=1", &pixels);
+        let id = model.kitty.pane_image_id_map()[&1];
+        for x in [0, 1, 2, 3, 0, 2, 1] {
+            model.ok(
+                &format!(
+                    "a=p,i=1,p=1,U={},x={x},w=1,h=2,c=1,r=1",
+                    u8::from(virtual_placement)
+                ),
+                &[],
+            );
+            let key = if virtual_placement {
+                model.kitty.virtual_placements()[0].variant_key()
+            } else {
+                model.kitty.placements()[0].variant_key
+            };
+            let store = model.store.borrow();
+            assert_eq!(store.total_bytes(), 832);
+            assert_eq!(store.get(id).unwrap().scaled_variants.len(), 1);
+            assert_eq!(
+                &store.scaled_variant(id, key).unwrap()[..4],
+                &[x, 0, 0, 255]
+            );
+            assert_eq!(store.refcount(id), Some(1));
+        }
+    }
+}
+
+#[test]
+fn shared_crop_survives_until_its_last_ordinary_or_virtual_owner_is_deleted() {
+    let mut model = Model::new();
+    *model.store.borrow_mut() = KittyImageStore::with_quota(32 + 1600);
+    model.ok("a=t,f=32,s=4,v=2,i=1", &rgba_block(4, 2));
+    for placement in ["p=1", "p=2", "p=3,U=1"] {
+        model.ok(&format!("a=p,i=1,{placement},w=1,h=2,c=1,r=1"), &[]);
+    }
+    let id = model.kitty.placements()[0].internal_id;
+    let old_key = model.kitty.placements()[0].variant_key;
+    model.ok("a=p,i=1,p=1,x=1,w=1,h=2,c=1,r=1", &[]);
+    for placement in [2, 3] {
+        assert!(model.store.borrow().scaled_variant(id, old_key).is_some());
+        model.ok(&format!("a=d,d=i,i=1,p={placement}"), &[]);
+    }
+    assert!(model.store.borrow().scaled_variant(id, old_key).is_none());
+    assert_eq!(model.store.borrow().total_bytes(), 832);
+    model.ok("a=d,d=i,i=1,p=1", &[]);
+    assert_eq!(model.store.borrow().total_bytes(), 32);
+    assert_eq!(model.store.borrow().refcount(id), Some(0));
+}
+
+#[test]
+fn virtual_replacement_discards_old_placeholder_slices_and_keeps_the_new_prototype() {
+    let mut model = Model::new();
+    *model.store.borrow_mut() = KittyImageStore::with_quota(32 + 800);
+    model.ok("a=t,f=32,s=4,v=2,i=1", &rgba_block(4, 2));
+    model.ok("a=p,i=1,p=1,w=1,h=2,c=1,r=1", &[]);
+    let mut slice = model.kitty.placements()[0].clone();
+    model.ok("a=p,i=1,p=2,U=1,w=1,h=2,c=1,r=1", &[]);
+    model.ok("a=d,d=i,i=1,p=1", &[]);
+    slice.placement_id = 2;
+    slice.is_placeholder = true;
+    model.kitty.set_placeholder_placements(vec![slice.clone()]);
+    let id = slice.internal_id;
+    let old_key = slice.variant_key;
+    let prototypes = model.kitty.virtual_placements().to_vec();
+    assert_eq!(
+        model.err("a=p,i=1,p=2,U=1,x=1,w=1,h=2,c=2,r=2", &[]).code,
+        KittyErrorCode::Enospc
+    );
+    assert_eq!(model.kitty.placements(), &[slice.clone()]);
+    assert_eq!(model.kitty.virtual_placements(), prototypes);
+    model.ok("a=p,i=1,p=2,U=1,x=1,w=1,h=2,c=1,r=1", &[]);
+    assert!(model.kitty.placements().is_empty());
+    assert!(model.store.borrow().scaled_variant(id, old_key).is_none());
+    slice.variant_key = model.kitty.virtual_placements()[0].variant_key();
+    model.kitty.set_placeholder_placements(vec![slice.clone()]);
+    model.kitty.set_placeholder_placements(Vec::new());
+    assert!(model
+        .store
+        .borrow()
+        .scaled_variant(id, slice.variant_key)
+        .is_some());
+    assert_eq!(model.store.borrow().total_bytes(), 832);
+    assert_eq!(model.store.borrow().refcount(id), Some(1));
+}
+
+#[test]
+fn failed_crop_replacement_preserves_placements_pixels_and_accounting() {
+    for virtual_placement in [false, true] {
+        let mut model = Model::new();
+        *model.store.borrow_mut() = KittyImageStore::with_quota(32 + 800 + 100);
+        model.ok("a=t,f=32,s=4,v=2,i=1", &rgba_block(4, 2));
+        model.ok(
+            &format!(
+                "a=p,i=1,p=1,U={},w=1,h=2,c=1,r=1",
+                u8::from(virtual_placement)
+            ),
+            &[],
+        );
+        let old = model.kitty.placements().to_vec();
+        let prototypes = model.kitty.virtual_placements().to_vec();
+        let id = model.kitty.pane_image_id_map()[&1];
+        let key = if virtual_placement {
+            prototypes[0].variant_key()
+        } else {
+            old[0].variant_key
+        };
+        let encoded = model
+            .store
+            .borrow_mut()
+            .zlib_base64_for(id, Some(key))
+            .unwrap()
+            .unwrap();
+        let total = model.store.borrow().total_bytes();
+        let pixels = model
+            .store
+            .borrow()
+            .scaled_variant(id, key)
+            .unwrap()
+            .to_vec();
+        let error = model.at_cell(3, 2).err(
+            &format!(
+                "a=p,i=1,p=1,U={},x=1,w=1,h=2,c=2,r=2",
+                u8::from(virtual_placement)
+            ),
+            &[],
+        );
+        assert_eq!(error.code, KittyErrorCode::Enospc);
+        assert_eq!(model.kitty.placements(), old);
+        assert_eq!(model.kitty.virtual_placements(), prototypes);
+        assert_eq!(
+            model.store.borrow().scaled_variant(id, key).unwrap(),
+            pixels
+        );
+        assert_eq!(model.store.borrow().total_bytes(), total);
+        assert!(Rc::ptr_eq(
+            &encoded,
+            &model
+                .store
+                .borrow_mut()
+                .zlib_base64_for(id, Some(key))
+                .unwrap()
+                .unwrap()
+        ));
+    }
+}
+
+#[test]
+fn scaled_to_unscaled_replacement_releases_pixels_and_compressed_cache() {
+    let mut model = Model::new();
+    model.ok("a=t,f=32,s=4,v=2,i=1", &rgba_block(4, 2));
+    model.ok("a=p,i=1,p=1,c=1,r=1", &[]);
+    let old = model.kitty.placements()[0].clone();
+    let encoded = model
+        .store
+        .borrow_mut()
+        .zlib_base64_for(old.internal_id, Some(old.variant_key))
+        .unwrap()
+        .unwrap();
+    assert_eq!(model.store.borrow().total_bytes(), 832 + encoded.len());
+    model.ok("a=p,i=1,p=1,x=1,w=1,h=2", &[]);
+    assert_eq!(model.kitty.placements()[0].placement_uid, old.placement_uid);
+    assert_eq!(model.store.borrow().total_bytes(), 32);
+    assert!(model
+        .store
+        .borrow_mut()
+        .zlib_base64_for(old.internal_id, Some(old.variant_key))
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn scroll_clear_and_retain_release_only_the_removed_placements_variants() {
+    for removal in 0..6 {
+        let mut model = Model::new();
+        model.ok("a=t,f=32,s=4,v=2,i=1", &rgba_block(4, 2));
+        model.ok("a=p,i=1,p=1,w=1,h=2,c=1,r=1", &[]);
+        model
+            .at_cell(0, 3)
+            .ok("a=p,i=1,p=2,x=1,w=1,h=2,c=1,r=1", &[]);
+        let old = model.kitty.placements()[0].clone();
+        model
+            .store
+            .borrow_mut()
+            .zlib_base64_for(old.internal_id, Some(old.variant_key))
+            .unwrap();
+        match removal {
+            0 => model.kitty.offset_grid_top(),
+            1 => model.kitty.drop_scrollback_rows(1),
+            2 => model.kitty.apply_region_scroll(0, 40, 20, 0, 0, false),
+            3 => model.kitty.retain_placements(|p| p.placement_id == 2),
+            4 => {
+                model.kitty.placements[0].display_rect.y = 100;
+                model.kitty.placements[1].display_rect.y = 0;
+                model.kitty.clear_visible_placements(3);
+            },
+            _ => model.kitty.clear_all_placements(),
+        }
+        let store = model.store.borrow();
+        assert!(store
+            .scaled_variant(old.internal_id, old.variant_key)
+            .is_none());
+        if removal == 5 {
+            assert!(store.get(old.internal_id).is_none());
+        } else {
+            assert_eq!(store.total_bytes(), 832);
+            assert_eq!(store.get(old.internal_id).unwrap().scaled_variants.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn relative_delete_cascade_reclaims_the_child_variant_without_freeing_its_image() {
+    let mut model = Model::new();
+    model.ok("a=t,f=32,s=4,v=2,i=1", &rgba_block(4, 2));
+    model.ok("a=p,i=1,p=1,c=1,r=1", &[]);
+    model.ok("a=p,i=1,p=2,P=1,Q=1,x=1,w=1,h=2,c=1,r=1", &[]);
+    model.ok("a=d,d=i,i=1,p=1", &[]);
+    assert!(model.kitty.placements().is_empty());
+    assert_eq!(model.store.borrow().total_bytes(), 32);
+    assert_eq!(model.image_count(), 1);
+}

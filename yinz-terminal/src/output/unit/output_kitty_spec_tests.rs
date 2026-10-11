@@ -329,7 +329,10 @@ fn kitty_placeholder_crops_share_a_raster_across_render_frames_and_drop_stale_re
         |chunks| run_kitty_frame_with_cell_size(&parts, chunks, None, cell.borrow().unwrap());
     let mut parser = vte::Parser::new();
     let mut interceptor = KittyApcInterceptor::new();
-    let mut bytes = apc_b64("a=T,f=24,s=20,v=20,i=1,U=1,c=10,r=6,q=2", &[255; 1200]);
+    let mut bytes = apc_b64(
+        "a=T,f=24,s=20,v=20,i=1,U=1,x=4,y=2,w=10,h=10,c=10,r=6,q=2",
+        &[255; 1200],
+    );
     let placeholder_start = bytes.len();
     for row in 0..6 {
         bytes.extend_from_slice(format!("\x1b[{};1H", row + 1).as_bytes());
@@ -347,6 +350,13 @@ fn kitty_placeholder_crops_share_a_raster_across_render_frames_and_drop_stale_re
     feed_bytes(&mut grid, &mut parser, &mut interceptor, &bytes);
     let chunks = grid.read_changes(0, 0).2;
     assert_eq!(chunks.len(), 6);
+    for chunk in &chunks {
+        assert_eq!(
+            chunk.variant_key.source,
+            crate::panes::sixel::PixelRect::new(4, 2, 10, 10)
+        );
+        assert_eq!(chunk.variant_key.size, (100, 100));
+    }
     let uids: Vec<_> = chunks.iter().map(|chunk| chunk.placement_uid).collect();
     for (row, chunk) in chunks.iter().enumerate() {
         assert_eq!((chunk.cell_x, chunk.cell_y), (0, row));
@@ -463,6 +473,52 @@ fn kitty_placeholder_crops_share_a_raster_across_render_frames_and_drop_stale_re
     for (key, expected) in [("x", "20"), ("y", "25"), ("w", "80"), ("h", "25")] {
         assert_eq!(value_of(&shifted_placements[0], key), Some(expected));
     }
+
+    // A wider cell changes the fitted raster itself and must replace the host's old pixels.
+    *cell.borrow_mut() = Some(SizeInPixels {
+        width: 12,
+        height: 25,
+    });
+    grid.character_cell_size_possibly_changed();
+    let resized = extract_kitty_commands(&run_frame(grid.read_changes(0, 0).2));
+    assert!(resized.iter().any(
+        |command| action_of(command) == "d" && value_of(&control_of(command), "d") == Some("I")
+    ));
+    let mut decoder = crate::panes::kitty_graphics::KittyCommandParser::new();
+    let mut decoded = None;
+    for command in resized.iter().filter(|command| action_of(command) == "t") {
+        if let Some(command) = decoder.parse(command) {
+            decoded = command.unwrap().image;
+        }
+    }
+    let image = decoded.expect("resize uploads the replacement raster");
+    assert_eq!((image.width, image.height), (120, 120));
+    assert_eq!(image.bytes, vec![255; 120 * 120 * 4]);
+
+    // Spec: c selects "the 1-based frame number of the frame that should be made current".
+    let frame_pixels: Vec<u8> = (0..400).flat_map(|_| [12, 34, 56, 255]).collect();
+    feed_bytes(
+        &mut grid,
+        &mut parser,
+        &mut interceptor,
+        &apc_b64("a=f,f=32,s=20,v=20,i=1,q=2", &frame_pixels),
+    );
+    feed_bytes(
+        &mut grid,
+        &mut parser,
+        &mut interceptor,
+        &apc_b64("a=a,i=1,c=2,q=2", &[]),
+    );
+    let animated = extract_kitty_commands(&run_frame(grid.read_changes(0, 0).2));
+    let mut decoded = None;
+    for command in animated.iter().filter(|command| action_of(command) == "t") {
+        if let Some(command) = decoder.parse(command) {
+            decoded = command.unwrap().image;
+        }
+    }
+    let image = decoded.expect("frame selection rebuilds and uploads the fitted crop");
+    assert_eq!((image.width, image.height), (120, 120));
+    assert_eq!(image.bytes, [12, 34, 56, 255].repeat(120 * 120));
 }
 
 #[test]
@@ -505,4 +561,86 @@ fn compressed_transmissions_decode_to_exact_original_and_scaled_pixels() {
             if scaled { (30, 40) } else { (200, 200) }
         );
     }
+}
+
+#[test]
+fn crop_replacement_withdraws_obsolete_host_rasters_and_emits_the_new_pixels() {
+    use crate::panes::kitty_graphics::{KittyCommandParser, KittyGrid, KittyVerticalAnchor};
+    use crate::panes::kitty_test_support::{apc_b64, unwrap_apc};
+    use std::{cell::RefCell, rc::Rc};
+    use yinz_types::pane_size::SizeInPixels;
+
+    // Spec: "If an image with the same id and placement id already exists, it must be replaced."
+    let parts = create_test_kitty_parts();
+    let cell = SizeInPixels {
+        width: 10,
+        height: 20,
+    };
+    let mut grid = KittyGrid::new(Rc::new(RefCell::new(Some(cell))), parts.0.clone());
+    let mut parser = KittyCommandParser::new();
+    let pixels: Vec<u8> = (0..8).flat_map(|i| [i, 0, 0, 255]).collect();
+    let command = parser
+        .parse(unwrap_apc(&apc_b64("a=t,f=32,s=4,v=2,i=1", &pixels)))
+        .unwrap()
+        .unwrap();
+    grid.transmit(&command, command.image.clone().unwrap())
+        .unwrap();
+    let internal = grid.pane_image_id_map()[&1];
+    let mut first_frame = None;
+    let mut old_host_id: Option<String> = None;
+    for x in [0, 1, 2, 0] {
+        let command = parser
+            .parse(unwrap_apc(&apc_b64(
+                &format!("a=p,i=1,p=1,x={x},w=1,h=2,c=1,r=1"),
+                &[],
+            )))
+            .unwrap()
+            .unwrap();
+        grid.place(
+            1,
+            internal,
+            &command,
+            (0, 0),
+            Some(cell),
+            KittyVerticalAnchor {
+                canonical_line: 0,
+                offset_px_from_line_start: 0,
+            },
+        )
+        .unwrap();
+        let frame = run_kitty_frame(&parts, grid.viewport_kitty_chunks(10, 0, 20, 0, 0), None);
+        let commands = extract_kitty_commands(&frame);
+        if let Some(host_id) = &old_host_id {
+            assert!(commands.iter().any(|command| {
+                let control = control_of(command);
+                value_of(&control, "a") == Some("d")
+                    && value_of(&control, "d") == Some("I")
+                    && value_of(&control, "i") == Some(host_id.as_str())
+            }));
+        }
+        let mut decoder = KittyCommandParser::new();
+        let mut decoded = None;
+        for command in commands.iter().filter(|command| action_of(command) == "t") {
+            old_host_id = value_of(&control_of(command), "i").map(str::to_owned);
+            if let Some(command) = decoder.parse(command) {
+                decoded = command.unwrap().image;
+            }
+        }
+        let image = decoded.expect("replacement raster is transmitted");
+        assert_eq!((image.width, image.height), (10, 20));
+        assert_eq!(&image.bytes[..4], &[x, 0, 0, 255]);
+        if first_frame.is_none() {
+            first_frame = Some(frame);
+        }
+    }
+    let mut decoder = KittyCommandParser::new();
+    let mut decoded = None;
+    for command in extract_kitty_commands(&first_frame.unwrap()) {
+        if action_of(&command) == "t" {
+            if let Some(command) = decoder.parse(&command) {
+                decoded = command.unwrap().image;
+            }
+        }
+    }
+    assert_eq!(&decoded.unwrap().bytes[..4], &[0, 0, 0, 255]);
 }

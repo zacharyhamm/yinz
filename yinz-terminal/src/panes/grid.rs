@@ -1552,7 +1552,7 @@ impl Grid {
                 emit_y: slice_y,
                 scaled_px: Some(run.fitted_px),
                 dest_cells: (run.span as u16, 1),
-                variant_key: (run.columns, run.rows),
+                variant_key: run.variant_key,
                 cell_offset: (0, 0),
                 z_index: run.z_index,
                 vertical_anchor,
@@ -1604,8 +1604,7 @@ impl Grid {
                                 image_id: cell.image_id,
                                 placement_id: cell.placement_id,
                                 internal_id: virtual_placement.internal_id,
-                                columns: virtual_placement.columns,
-                                rows: virtual_placement.rows,
+                                variant_key: virtual_placement.variant_key(),
                                 fitted_px: virtual_placement.fitted_px,
                                 z_index: virtual_placement.z_index,
                                 row_in_image: cell.row_in_image,
@@ -2146,6 +2145,9 @@ impl Grid {
         let changed_rects = self
             .output_buffer
             .changed_rects_in_viewport(self.viewport.len());
+        if let Some(image_ids_to_reap) = self.sixel_grid.drain_image_ids_to_reap() {
+            self.sixel_grid.reap_images(image_ids_to_reap);
+        }
         let changed_sixel_image_chunks = self.sixel_grid.changed_sixel_chunks_in_viewport(
             changed_rects,
             self.lines_above.len(),
@@ -2153,9 +2155,6 @@ impl Grid {
             x_offset,
             y_offset,
         );
-        if let Some(image_ids_to_reap) = self.sixel_grid.drain_image_ids_to_reap() {
-            self.sixel_grid.reap_images(image_ids_to_reap);
-        }
         if self.kitty_settle_placements_below_the_viewport() {
             self.kitty_reanchor_all_from_pixels();
         }
@@ -6587,8 +6586,7 @@ struct KittyPlaceholderRun {
     image_id: u32,
     placement_id: u32,
     internal_id: crate::panes::kitty_graphics::InternalImageId,
-    columns: u16,
-    rows: u16,
+    variant_key: super::kitty_graphics::store::ScaledImageKey,
     fitted_px: (usize, usize),
     z_index: i32,
     row_in_image: u16,
