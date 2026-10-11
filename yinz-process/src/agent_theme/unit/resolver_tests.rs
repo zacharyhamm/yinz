@@ -240,7 +240,7 @@ done"#,
 }
 
 #[test]
-fn codex_uses_provider_resolved_theme_and_preserves_syntax_collisions() {
+fn codex_uses_provider_resolved_theme_and_overrides_shared_syntax_colors() {
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -270,6 +270,10 @@ fn codex_uses_provider_resolved_theme_and_preserves_syntax_collisions() {
         pair: Some((SourceColor::Rgb(17, 34, 51), SourceColor::Rgb(34, 51, 68))),
     };
     assert_eq!(mapping[&pair], Some(Role::Success.into()));
+    assert_eq!(
+        mapping[&MatchKey { pair: None, ..pair }],
+        Some(Role::Accent.into())
+    );
     assert!(collisions
         .iter()
         .any(|c| c.tokens == ["codex.accent", "markup.inserted", "string"]));
@@ -310,6 +314,19 @@ fn codex_builtins_include_model_palettes_and_custom_files_override_them() {
         serde_json::json!({"config":{"tui":{"theme":"ada"}},"layers":[]}),
     );
     let first = resolve("codex", &launch).unwrap();
+    let accent = first
+        .definitions
+        .iter()
+        .find(|d| d.token == "codex.accent")
+        .unwrap();
+    assert_eq!(
+        first.compile().0[&MatchKey {
+            channel: accent.channel,
+            color: accent.color,
+            pair: None,
+        }],
+        Some(Role::Accent.into())
+    );
     assert!(first
         .definitions
         .iter()
@@ -337,9 +354,29 @@ fn codex_builtins_include_model_palettes_and_custom_files_override_them() {
 }
 
 #[test]
+fn claude_empty_remote_policy_preserves_user_palette() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), ".claude.json", r#"{"theme":"light"}"#);
+    let launch = context(dir.path());
+    let mut expected = snapshot();
+    claude::resolve(&launch, &mut expected).unwrap();
+
+    write(dir.path(), ".claude/remote-settings.json", "{}");
+    let mut actual = snapshot();
+    claude::resolve(&launch, &mut actual).unwrap();
+    assert_eq!(actual.theme, "light");
+    assert_eq!(actual.definitions, expected.definitions);
+    assert!(!actual.definitions.is_empty());
+}
+
+#[test]
 fn uncertain_claude_layers_and_codex_automatic_palettes_are_explicit() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), ".claude/remote-settings.json", "{}");
+    write(
+        dir.path(),
+        ".claude/remote-settings.json",
+        r#"{"theme":"light"}"#,
+    );
     assert!(claude::resolve(&context(dir.path()), &mut snapshot()).is_err());
     let launch = fake_codex(dir.path(), serde_json::json!({"config":{},"layers":[]}));
     let result = resolve("codex", &launch).unwrap();

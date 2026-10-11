@@ -261,14 +261,14 @@ fn diff_pairs_underline_and_blank_backgrounds_follow_dark_and_light_terminal_the
             mapped.underline_color,
             Some(AnsiCode::RgbCode((99, 88, 77)))
         );
-        let ambiguous = diff
+        let shared = diff
             .terminal_characters
             .iter()
             .find(|c| c.character == 'A')
             .unwrap();
         assert_eq!(
-            diff.application_styles(*ambiguous.styles).foreground,
-            Some(AnsiCode::NamedColor(NamedColor::Green))
+            diff.application_styles(*shared.styles).foreground,
+            Some(AnsiCode::RgbCode((0, 255, 255)))
         );
         let blank = chunks.iter().find(|c| c.y == 1).unwrap();
         assert_eq!(

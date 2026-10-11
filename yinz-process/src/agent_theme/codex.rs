@@ -98,8 +98,8 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
     Ok(())
 }
 
-// Palette data normalized from rust-v0.162.1/tui/assets/themes. No syntax role is
-// promoted by its color, including a keyword sharing a model theme's accent.
+// Palette data normalized from rust-v0.162.1/tui/assets/themes. Syntax tokens
+// retain their source definitions; compilation gives shared UI colors priority.
 fn model_theme(name: &str) -> Result<Option<Theme>> {
     let descriptors: BTreeMap<String, Vec<Value>> =
         serde_json::from_str(include_str!("descriptors/codex-0.162.1.json"))
@@ -447,7 +447,7 @@ fn scope_role(scope: &str) -> Option<Role> {
         "markup.inserted" | "diff.inserted" => Role::Success,
         "markup.deleted" | "diff.deleted" => Role::Error,
         "codex.accent" | "markup.heading" | "markup.underline.link" | "markup.link" => Role::Accent,
-        // Syntax roles, including comments, deliberately remain unmapped.
+        // Syntax-only colors remain unmapped; shared UI colors map at compilation.
         _ => return None,
     })
 }
