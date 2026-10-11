@@ -1,10 +1,17 @@
 use prost::Message;
 use yinz_types::{
     command::{CommandToRun, PaneTarget},
-    input::command::RunCommandAction,
+    data::NewPanePlacement,
+    input::{actions::Action, command::RunCommandAction},
 };
 
-use crate::{action::ProtobufRunCommandAction, command::ProtobufCommand};
+use crate::{
+    action::{
+        NewBlockingPanePayload, OptionalPayload, ProtobufAction, ProtobufActionName,
+        ProtobufRunCommandAction,
+    },
+    command::ProtobufCommand,
+};
 
 #[test]
 fn retired_wire_targets_are_rejected_before_target_precedence() {
@@ -16,10 +23,24 @@ fn retired_wire_targets_are_rejected_before_target_precedence() {
                 CommandToRun::try_from(ProtobufCommand::decode(bytes.as_slice()).unwrap())
                     .unwrap_err()
             } else {
-                RunCommandAction::try_from(
-                    ProtobufRunCommandAction::decode(bytes.as_slice()).unwrap(),
-                )
-                .unwrap_err()
+                let command = ProtobufRunCommandAction::decode(bytes.as_slice()).unwrap();
+                let wire = ProtobufAction {
+                    name: ProtobufActionName::NewBlockingPane as i32,
+                    optional_payload: Some(OptionalPayload::NewBlockingPanePayload(
+                        NewBlockingPanePayload {
+                            placement: Some(NewPanePlacement::default().try_into().unwrap()),
+                            command: Some(command.clone()),
+                            ..Default::default()
+                        },
+                    )),
+                };
+                let decoded = ProtobufAction::decode(wire.encode_to_vec().as_slice()).unwrap();
+                assert_eq!(
+                    Action::try_from(decoded).unwrap_err(),
+                    "Firecracker execution is no longer supported.",
+                    "{bytes:?}"
+                );
+                RunCommandAction::try_from(command).unwrap_err()
             };
             assert_eq!(
                 error, "Firecracker execution is no longer supported.",
@@ -51,6 +72,32 @@ fn retired_wire_targets_are_rejected_before_target_precedence() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn blocking_panes_preserve_supported_and_absent_commands() {
+    for target in [
+        None,
+        Some(PaneTarget::Local),
+        Some(PaneTarget::ssh("build-box").unwrap()),
+    ] {
+        let action = Action::NewBlockingPane {
+            placement: NewPanePlacement::default(),
+            pane_name: None,
+            command: target.map(|target| RunCommandAction {
+                command: "/usr/bin/true".into(),
+                target,
+                ..Default::default()
+            }),
+            unblock_condition: None,
+            near_current_pane: false,
+            no_focus: false,
+            tab_id: None,
+        };
+        let wire = ProtobufAction::try_from(action.clone()).unwrap();
+        let decoded = ProtobufAction::decode(wire.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(Action::try_from(decoded).unwrap(), action);
     }
 }
 

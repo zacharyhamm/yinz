@@ -525,6 +525,29 @@ Deno.test("Yinz methods preserve argv, validate snapshots, and fail without writ
         for (const [key, value] of Object.entries(operation)) {
             equal(savedOperation[key], value);
         }
+        for (const key of ["firecracker", "firecracker_image"]) {
+            for (const value of ["review", "", null]) {
+                const count = calls.length;
+                let rejected = false;
+                try {
+                    await model.methods.agent_spawn.execute({
+                        work: "typed",
+                        key: "retired-target",
+                        spec: {
+                            command: "/stub agent",
+                            args: ["--dangerously-skip-permissions"],
+                            [key]: value,
+                        },
+                    }, ownedContext);
+                } catch (error) {
+                    rejected = error instanceof Error &&
+                        error.message.includes(key);
+                }
+                equal(rejected, true);
+                equal(calls.length, count);
+                equal(writes.length, 0);
+            }
+        }
         const startupPrompts = [
             'Resolve "quoted" conflicts.\nStage, then exit.',
             "x".repeat(131071),

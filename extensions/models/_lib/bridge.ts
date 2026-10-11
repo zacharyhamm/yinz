@@ -117,6 +117,8 @@ export const AgentSpec = z.object({
     base: Literal.optional(),
     worktree: z.boolean().optional(),
     worktree_dir: Literal.optional(),
+    firecracker: z.never().optional(),
+    firecracker_image: z.never().optional(),
     source_directory: Literal.optional(),
     cwd: Literal.optional(),
     name: Literal.optional(),
