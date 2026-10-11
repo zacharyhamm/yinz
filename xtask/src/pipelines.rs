@@ -41,6 +41,18 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
         .with_context(err_context)
 }
 
+/// Generate a runnable executable and install its builtin plugins.
+///
+/// Runs the following steps in sequence:
+///
+/// - [`build`](build::build) (the chosen profile, plugins only)
+/// - [`build`](build::build) (the chosen profile, without plugins)
+/// - Copy the executable to [target file](flags::Install::destination)
+/// - Copy the builtin plugin wasm to the directory the binary will look in
+///
+/// The profile is `release` unless `--profile` names another one; everything the install
+/// touches - the binary and the builtin wasm - comes from that profile's
+/// target directory.
 pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     let err_context = || format!("failed to run pipeline 'install' with args {flags:?}");
 

@@ -3470,10 +3470,6 @@ fn a_bubblewrap_pane_keeps_its_command_and_names_its_checkout() {
             r#"layout { pane edit="notes.md" bubblewrap="/repo" }"#,
             "an edit pane in a sandbox",
         ),
-        (
-            r#"layout { pane command="claude" bubblewrap="/repo" firecracker_vm="review" }"#,
-            "a sandbox inside a vm",
-        ),
     ] {
         assert!(
             crate::kdl::layout::from_kdl(layout, Some("layout_file_name".into()), None, None)

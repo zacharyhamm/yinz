@@ -117,7 +117,6 @@ impl Screen {
             self.log_and_report_session_state()
                 .with_context(err_context)?;
 
-            if let Some(_os_input) = &self.bus.os_input {}
             let connected_client_ids: Vec<ClientId> = self.active_tab_ids.keys().copied().collect();
             for client_id in connected_client_ids {
                 if let Some(os_input) = &mut self.bus.os_input {

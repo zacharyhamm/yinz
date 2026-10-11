@@ -240,6 +240,29 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(str::trim).filter(|v| !v.is_empty())
 }
 
+/// Whether a run's folder is inside a project's root.
+///
+/// A prefix on path boundaries rather than `starts_with` on the raw string, so `/work/agent`
+/// does not claim `/work/agent-fork`. A run with no `cwd` at all — one recorded before the
+/// field existed — belongs to no project rather than to every one.
+///
+/// A run on another machine matches nothing, which is `projects::contains`' rule and is here
+/// for its reason: `/home/me/work` on a build box and `/home/me/work` here are two different
+/// folders, and a project is a folder on *this* machine. Filing a remote agent's run under a
+/// local project because the two spell the same path would put work nobody did here into the
+/// answer to "what has been done on this".
+///
+/// `host_id` is a second, independent way a run can be on another machine, checked for every
+/// run: `host` is the SSH target the *pane* was opened on, which the run
+/// has always carried, while `host_id` is the machine whose server recorded the run, which only
+/// matters once the store is shared. With `plugin_data_url` pointing at Postgres, a laptop and
+/// a build box writing to one database both record runs whose `host` is empty, and only the
+/// row's own machine tells them apart.
+///
+/// An **empty** `host_id` matches. It is a row from before the column, and for a run `""` reads
+/// as "this machine" — the same accommodation `agents::rows::owned_or_unclaimed` makes, and for
+/// the same reason: there was only one machine when it was written, so refusing it would hide a
+/// project's whole history from before the upgrade.
 pub fn matches_root(
     cwd: Option<&str>,
     host: Option<&str>,

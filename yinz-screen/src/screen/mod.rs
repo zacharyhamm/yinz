@@ -602,6 +602,9 @@ pub(crate) struct Screen {
     /// The machine each remote pane runs on. Absent for local panes, which is
     /// nearly all of them.
     terminal_hosts: HashMap<TerminalId, String>,
+    /// The name each tab last showed a plugin, so a change to one that no other
+    /// event reports — a lone pane retitling itself, a project arriving, a
+    /// collision forming or clearing — still redraws the tab bar.
     last_plugin_tab_names: HashMap<TabId, String>,
     /// The project each tab is working on, as the last `SetTabProjects` had it.
     ///

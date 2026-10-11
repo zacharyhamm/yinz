@@ -629,3 +629,301 @@ fn plugin_agent_launch_waits_for_checks_and_rejects_errors_with_pane_ids() {
         }
     }
 }
+
+#[test]
+fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
+    let (_directory, root, data_access) = launch_failure_repository();
+    let (to_pty, pty_rx) = channels::unbounded();
+    let senders = ThreadSenders {
+        to_pty: Some(SenderWithContext::new(to_pty)),
+        ..Default::default()
+    };
+    // Both launch preparations must reject before touching Git or the pty.
+    for worktree in [false, true] {
+        let response = agent_control::control_agent(
+            yinz_types::agent::control::AgentRequest::Spawn {
+                placement: Default::default(),
+                spec: AgentSpawnSpec {
+                    kind: Some("codex".into()),
+                    branch: Some("rejected".into()),
+                    worktree: Some(worktree),
+                    resume: Some("last".into()),
+                    permission_mode: Some("skip".into()),
+                    ..Default::default()
+                },
+                cwd: Some(root.clone()),
+                project: None,
+                remote_host: None,
+            },
+            crate::ClientId::new(99),
+            &senders,
+            &data_access,
+        );
+        assert_eq!(
+            response.outcome,
+            yinz_types::agent::control::AgentOutcome::Rejected
+        );
+        assert!(response.message.unwrap().contains("omit --permission-mode"));
+        assert!(response.spawned.is_none());
+        assert!(pty_rx.try_recv().is_err());
+        assert!(!root.join(".worktrees").exists());
+        let refs = process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["branch", "--format=%(refname:short)"])
+            .output()
+            .unwrap();
+        assert!(refs.status.success());
+        assert_eq!(String::from_utf8(refs.stdout).unwrap(), "main\n");
+    }
+    let worker_root = root.clone();
+    let worker = thread::spawn(move || {
+        for (pane, branch) in [(7, "review"), (8, "review-2")] {
+            let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let PtyInstruction::SpawnTerminal(
+                Some(TerminalAction::RunCommand(command)),
+                title,
+                _,
+                _,
+                placement,
+                Some(mut completion),
+                _,
+            ) = instruction
+            else {
+                panic!("expected an agent command pane");
+            };
+            assert_eq!(
+                placement,
+                ClientTabIndexOrPaneId::ClientIdNoFocus(crate::ClientId::new(1))
+            );
+            assert_eq!(title.as_deref(), Some("codex (gpt-test)"));
+            assert_eq!(
+                command.cwd,
+                Some(worker_root.join(".worktrees").join(branch))
+            );
+            assert!(command.originating_plugin.is_none());
+            assert_eq!(command.command, PathBuf::from("env"));
+            assert!(command
+                .args
+                .contains(&format!("{}=1", yinz_types::agent::AGENT_PANE_ENV)));
+            assert_eq!(
+                yinz_types::agent::agent_kind_of(&command.command, &command.args).as_deref(),
+                Some("codex")
+            );
+            completion.set_affected_tab_id(yinz_types::internal_ids::TabId::new(0));
+            completion.set_affected_pane_id(PaneId::Terminal(crate::TerminalId::new(pane)));
+        }
+    });
+    for (pane, branch) in [(7, "review"), (8, "review-2")] {
+        let spawned = spawn_agent_for_cli(
+            AgentSpawnSpec {
+                kind: Some(" Codex ".into()),
+                model: Some("gpt-test".into()),
+                branch: Some("review".into()),
+                ..Default::default()
+            },
+            Some(root.clone()),
+            None,
+            None,
+            crate::ClientId::new(1),
+            &senders,
+            &data_access,
+        )
+        .unwrap();
+        assert_eq!(
+            spawned.pane_id,
+            PaneId::Terminal(crate::TerminalId::new(pane))
+        );
+        assert_eq!(spawned.branch.as_deref(), Some(branch));
+        assert_eq!(spawned.cwd, Some(root.join(".worktrees").join(branch)));
+    }
+    worker.join().unwrap();
+    let refused = spawn_agent_for_cli(
+        AgentSpawnSpec {
+            kind: Some("codex".into()),
+            ..Default::default()
+        },
+        Some(root.clone()),
+        None,
+        None,
+        crate::ClientId::new(1),
+        &senders,
+        &data_access,
+    )
+    .unwrap_err();
+    assert!(refused.contains("not a linked git worktree"));
+    let refused = spawn_agent_for_cli(
+        AgentSpawnSpec {
+            kind: Some("zsh".into()),
+            branch: Some("invalid".into()),
+            ..Default::default()
+        },
+        Some(root.clone()),
+        None,
+        None,
+        crate::ClientId::new(1),
+        &senders,
+        &data_access,
+    )
+    .unwrap_err();
+    assert!(refused.contains("recognized agent command"));
+    assert!(!root.join(".worktrees/invalid").exists());
+}
+
+#[test]
+fn automation_spawn_rejects_prompts_and_local_options_for_ssh_before_opening_a_pane() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(directory.path());
+    for field in ["prompt", "reuse_prompt"] {
+        let spec =
+            serde_json::from_value(serde_json::json!({"kind":"codex",field:"work"})).unwrap();
+        let error = spawn_agent_for_cli(
+            spec,
+            None,
+            None,
+            None,
+            crate::ClientId::new(1),
+            &ThreadSenders::default(),
+            &data,
+        )
+        .unwrap_err();
+        assert!(error.contains("spawn does not accept"));
+    }
+    for input in [
+        serde_json::json!({"kind":"codex"}),
+        serde_json::json!({"kind":"codex","allow_outside_worktree":true,"branch":"topic"}),
+    ] {
+        let mut spec = serde_json::from_value(input).unwrap();
+        assert!(agent_control::prepare_automation_agent(
+            &mut spec,
+            Some("/remote".into()),
+            None,
+            Some("server".into()),
+            &data
+        )
+        .is_err());
+    }
+    let mut spec = AgentSpawnSpec {
+        kind: Some("codex".into()),
+        allow_outside_worktree: Some(true),
+        ..Default::default()
+    };
+    assert!(agent_control::prepare_automation_agent(
+        &mut spec,
+        Some("relative".into()),
+        None,
+        Some("server".into()),
+        &data
+    )
+    .is_err());
+    let prepared = agent_control::prepare_automation_agent(
+        &mut spec,
+        Some("/remote/not-on-this-host".into()),
+        None,
+        Some("server".into()),
+        &data,
+    )
+    .unwrap();
+    assert!(prepared.command.target.is_remote());
+    assert_eq!(
+        prepared.command.cwd,
+        Some("/remote/not-on-this-host".into())
+    );
+}
+
+#[test]
+fn agent_destination_is_carried_for_local_and_ssh_spawns() {
+    use yinz_types::agent::control::AgentPlacement;
+    use yinz_types::internal_ids::TabId;
+    for target in ["local", "ssh"] {
+        let (_directory, root, data) = launch_failure_repository();
+        for def in project_data::store::shared_defs() {
+            data.plugin_data()
+                .define_entity(project_data::store::SHARED, "test", &def, false)
+                .unwrap();
+        }
+        let project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &[project_data::projects::to_mutation(&project)],
+            )
+            .unwrap();
+        let (to_screen, screen_rx) = channels::unbounded();
+        let (to_pty, pty_rx) = channels::unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(to_screen)),
+            to_pty: Some(SenderWithContext::new(to_pty)),
+            ..Default::default()
+        };
+        let worker = thread::spawn(move || {
+            let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let ScreenInstruction::ResolveAgentTab {
+                reply,
+                invoked_with,
+                ..
+            } = instruction
+            else {
+                panic!("expected resolution");
+            };
+            assert!(invoked_with.is_none());
+            let lifetime = std::sync::Arc::new(());
+            reply
+                .send(Ok(yinz_bus::route::AgentTabPlacement {
+                    tab_id: TabId::new(7),
+                    lifetime: std::sync::Arc::downgrade(&lifetime),
+                    created: false,
+                }))
+                .unwrap();
+            let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let PtyInstruction::SpawnTerminal(
+                Some(TerminalAction::RunCommand(command)),
+                _,
+                _,
+                _,
+                destination,
+                Some(mut completion),
+                false,
+            ) = instruction
+            else {
+                panic!("expected nonblocking spawn");
+            };
+            assert_eq!(
+                destination,
+                ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(7))
+            );
+            assert!(completion
+                .agent_tab
+                .as_ref()
+                .unwrap()
+                .lifetime
+                .upgrade()
+                .is_some());
+            match target {
+                "ssh" => assert!(matches!(command.target, PaneTarget::Ssh { .. })),
+                _ => assert!(matches!(command.target, PaneTarget::Local)),
+            }
+            completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
+            completion.set_affected_tab_id(TabId::new(7));
+        });
+        let result = spawn_agent_for_control(
+            AgentPlacement::Tab(TabId::new(7)),
+            AgentSpawnSpec {
+                kind: Some("codex".into()),
+                allow_outside_worktree: Some(true),
+                ..Default::default()
+            },
+            (target == "ssh").then(|| root.clone()),
+            (target == "local").then(|| "work".into()),
+            (target == "ssh").then(|| "host".into()),
+            crate::ClientId::new(1),
+            &senders,
+            &data,
+        )
+        .unwrap();
+        assert_eq!(result.tab_id, Some(TabId::new(7)));
+        assert_eq!(result.cwd, Some(root));
+        assert_eq!(result.pane_id, PaneId::Terminal(TerminalId::new(17)));
+        worker.join().unwrap();
+    }
+}

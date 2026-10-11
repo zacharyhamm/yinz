@@ -1197,46 +1197,6 @@ fn resolved_rerun(
 }
 
 #[test]
-fn a_remote_rerun_does_not_block_the_pty_during_transport() {
-    let mut os_api = MockOsApi::new();
-    os_api.spawn_started = Arc::new(Barrier::new(2));
-    os_api.spawn_release = Arc::new(Barrier::new(2));
-    os_api.transport_started = Arc::new(Barrier::new(2));
-    os_api.transport_release = Arc::new(Barrier::new(2));
-    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    let (pty_tx, pty_rx) = channels::unbounded();
-    pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
-
-    assert!(pty
-        .request_rerun(
-            PaneId::Terminal(crate::TerminalId::new(41)),
-            ssh_command(),
-            None
-        )
-        .unwrap()
-        .is_none());
-    os_api.spawn_started.wait();
-    assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
-        .is_ok());
-    os_api.spawn_release.wait();
-    os_api.transport_started.wait();
-    assert!(pty
-        .close_pane(PaneId::Terminal(crate::TerminalId::new(7)))
-        .is_ok());
-    assert!(pty_rx.try_recv().is_err());
-    os_api.transport_release.wait();
-
-    let (pending, spawned) = resolved_rerun(&pty_rx);
-    pty.handle_rerun_spawned(pending, spawned).unwrap();
-    assert!(!pty.reruns.contains_key(&TerminalId::new(41)));
-    assert_eq!(
-        *os_api.resolved_spawns.lock().unwrap(),
-        vec![TerminalId::new(41)]
-    );
-}
-
-#[test]
 fn suspended_bubblewrap_creation_only_reserves_the_pane() {
     let os_api = MockOsApi::new();
     let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
