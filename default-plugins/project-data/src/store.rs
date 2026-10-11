@@ -116,6 +116,8 @@ pub fn project_def() -> EntityDef {
     EntityDef::new("project", 1)
         .attr(AttrDef::text("name").required())
         .attr(AttrDef::text("root").indexed().required())
+        // Retained because dropping an existing attribute requires a destructive migration.
+        .attr(AttrDef::text("firecracker_image"))
         .attr(AttrDef::text("worktree_dir"))
         .attr(AttrDef::text("remote"))
         // The snake_case strings serde already emits, rather than an integer
@@ -818,6 +820,10 @@ mod local {
 pub use local::{Joined, Local, LOCAL_WATCH_ID};
 
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[path = "unit/store.rs"]
+mod unit;
 
 #[cfg(test)]
 mod tests {

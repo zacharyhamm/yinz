@@ -1208,7 +1208,7 @@ impl TryFrom<ProtobufAction> for Action {
                         .ok_or("NewBlockingPanePayload must have a placement")?
                         .try_into()?;
                     let pane_name = payload.pane_name;
-                    let command = payload.command.and_then(|c| c.try_into().ok());
+                    let command = payload.command.map(TryInto::try_into).transpose()?;
                     let unblock_condition = payload
                         .unblock_condition
                         .and_then(|uc| ProtobufUnblockCondition::try_from(uc).ok())
