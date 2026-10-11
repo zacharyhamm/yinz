@@ -1514,7 +1514,11 @@ mod tests {
     /// is nothing in that to hand `--resume`, and saying so beats starting a fresh agent the
     /// user would take for their old conversation.
     #[test]
-    fn a_run_with_no_session_id_cannot_be_resumed() {}
+    fn a_run_with_no_session_id_cannot_be_resumed() {
+        let refused = resume_command("claude", "", None, None, None).unwrap_err();
+        assert!(refused.contains("no session id"), "{refused}");
+        assert!(resume_command("claude", "   ", None, None, None).is_err());
+    }
 
     /// The kinds with no resume spelling are refused by `shape_args`, which this goes
     /// through - so there is one list of what can be resumed, not two.
