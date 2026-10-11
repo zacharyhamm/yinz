@@ -132,7 +132,7 @@ fn waiting_pulse_repaints_idle_frames_boundaries_and_both_stack_headers() {
         assert!(
             grid.as_character_lines().iter().flatten().any(|cell| {
                 matches!(cell.character, '─' | '│' | '┌' | '└' | '┐' | '┘')
-                    && cell.styles.foreground == Some(AnsiCode::RgbCode((209, 224, 239)))
+                    && cell.styles.foreground == Some(AnsiCode::RgbCode((127, 142, 157)))
             }),
             "floating={floating}, stacked={stacked}, list={list}, style={style:?}"
         );
@@ -245,22 +245,13 @@ fn waiting_pulse_shared_boundary_loses_to_focus_and_stops_after_removing_frames(
 
 #[test]
 fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
-    for (floating, stacked, style, grouped) in [
-        (false, false, PaneFrameStyle::Full, false),
-        (true, false, PaneFrameStyle::Full, false),
-        (false, false, PaneFrameStyle::Titles, false),
-        (false, false, PaneFrameStyle::Full, true),
-        (true, false, PaneFrameStyle::Full, true),
-        (false, true, PaneFrameStyle::Full, true),
-        (false, false, PaneFrameStyle::Titles, true),
+    for (floating, stacked, style) in [
+        (false, false, PaneFrameStyle::Full),
+        (true, false, PaneFrameStyle::Full),
+        (false, true, PaneFrameStyle::Full),
+        (false, false, PaneFrameStyle::Titles),
     ] {
         let (mut screen, jobs) = pair(floating, stacked, false, style);
-        if grouped {
-            screen
-                .current_pane_group
-                .borrow_mut()
-                .add_pane_id_to_group(WAITING, SIZE, &CLIENT);
-        }
         apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
         let start = waiting_since(&screen).unwrap();
         let (server_tx, server_rx) = channels::unbounded();
@@ -272,15 +263,7 @@ fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
         let peak = grid.as_character_lines();
         let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
         let (x, y) = (pane.x(), pane.y());
-        let pulse_color = if grouped {
-            AnsiCode::from(yinz_types::animation::blend(
-                screen.style.colors.frame_highlight.emphasis_0,
-                PaletteColor::Rgb((255, 255, 255)),
-                0.7,
-            ))
-        } else {
-            AnsiCode::RgbCode((209, 224, 239))
-        };
+        let pulse_color = AnsiCode::RgbCode((127, 142, 157));
         let col = (x..x + pane.cols())
             .find(|col| peak[y][*col].styles.foreground == Some(pulse_color))
             .expect("waiting frame has a pulsing cell");
@@ -357,7 +340,7 @@ fn waiting_pulse_overrides_respect_other_viewers_and_watchers() {
             CLIENT,
             AnsiCode::from(screen.style.colors.frame_highlight.emphasis_0),
         ),
-        (other, AnsiCode::RgbCode((209, 224, 239))),
+        (other, AnsiCode::RgbCode((127, 142, 157))),
     ] {
         screen.tabs.get_mut(&TAB).unwrap().set_force_render();
         render_frame_into(&mut screen, &server_rx, client, &mut grid);
@@ -388,22 +371,26 @@ fn waiting_pulse_overrides_respect_other_viewers_and_watchers() {
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
     assert_eq!(
         grid.as_character_lines()[y][x].styles.foreground,
-        Some(AnsiCode::RgbCode((209, 224, 239)))
+        Some(AnsiCode::RgbCode((127, 142, 157)))
     );
     assert_eq!(waiting_since(&screen), Some(start));
     assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StartAnimationClock(PERIOD)));
 }
 
 #[test]
-fn waiting_pulse_grouped_boundaries_and_list_borders_keep_precedence_over_overrides() {
-    for (list, style, waiting_pane) in [
-        (false, PaneFrameStyle::None, WAITING),
-        (true, PaneFrameStyle::Full, WAITING),
-        (true, PaneFrameStyle::Full, FOCUSED),
-        (true, PaneFrameStyle::None, WAITING),
-        (true, PaneFrameStyle::None, FOCUSED),
+fn waiting_pulse_grouped_frames_boundaries_and_list_borders_keep_precedence_over_overrides() {
+    for (floating, stacked, list, style, waiting_pane) in [
+        (false, false, false, PaneFrameStyle::Full, WAITING),
+        (true, false, false, PaneFrameStyle::Full, WAITING),
+        (false, true, false, PaneFrameStyle::Full, WAITING),
+        (false, false, false, PaneFrameStyle::Titles, WAITING),
+        (false, false, false, PaneFrameStyle::None, WAITING),
+        (false, true, true, PaneFrameStyle::Full, WAITING),
+        (false, true, true, PaneFrameStyle::Full, FOCUSED),
+        (false, true, true, PaneFrameStyle::None, WAITING),
+        (false, true, true, PaneFrameStyle::None, FOCUSED),
     ] {
-        let (mut screen, jobs) = pair(false, list, list, style);
+        let (mut screen, jobs) = pair(floating, stacked, list, style);
         if list {
             screen
                 .tabs
@@ -447,15 +434,16 @@ fn waiting_pulse_grouped_boundaries_and_list_borders_keep_precedence_over_overri
         render_frame_into(&mut screen, &server_rx, CLIENT, &mut grid);
         let expected = AnsiCode::from(yinz_types::animation::blend(
             screen.style.colors.frame_highlight.emphasis_0,
-            PaletteColor::Rgb((255, 255, 255)),
+            screen.style.colors.text_unselected.base,
             0.7,
         ));
+        // Titles-only frames carry the pulse on title text rather than border strokes.
         assert!(grid
             .as_character_lines()
             .iter()
             .flatten()
-            .any(|cell| matches!(cell.character, '─' | '│')
-                && cell.styles.foreground == Some(expected)));
+            .any(|cell| cell.styles.foreground == Some(expected)),
+            "floating={floating}, stacked={stacked}, list={list}, style={style:?}, pane={waiting_pane:?}, expected={expected:?}");
         assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
         assert_eq!(
             screen.tabs[&TAB]
@@ -512,7 +500,7 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
         screen.tabs.get_mut(&TAB).unwrap().set_force_render();
         for (elapsed, expected) in [
             (0, (100, 150, 200)),
-            (900, (209, 224, 239)),
+            (900, (127, 142, 157)),
             (1800, (100, 150, 200)),
         ] {
             screen.pinned_now = Some(start + Duration::from_millis(elapsed));
@@ -662,7 +650,7 @@ fn waiting_pulse_survives_focus_for_any_client_until_waiting_clears() {
     screen.render_to_clients().unwrap();
     assert_eq!(waiting_since(&screen), Some(start));
     let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
-    assert_eq!(pane.waiting_pulse().unwrap().0, 0.7);
+    assert_eq!(pane.waiting_pulse().unwrap(), 0.7);
     assert!(pane.stack_list_entry_label().contains('🔔'));
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
     drain_background_jobs(&jobs);

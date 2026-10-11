@@ -127,6 +127,18 @@ pub struct Style {
     pub hide_session_name: bool,
 }
 
+impl Style {
+    /// Frame and divider defaults, independent of pane-local application colors.
+    pub fn chrome_colors(&self) -> Option<(PaletteColor, PaletteColor)> {
+        self.terminal.map(|terminal| {
+            (
+                PaletteColor::Rgb(terminal.foreground),
+                PaletteColor::Rgb(terminal.background),
+            )
+        })
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Coloration {
     NoStyling,

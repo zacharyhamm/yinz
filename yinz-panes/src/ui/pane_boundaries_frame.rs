@@ -184,7 +184,6 @@ pub struct PaneFrame {
     highlight_tooltip: Option<String>,
     omit_title: bool,
     stack_list_entry: Option<StackListEntry>,
-    color_override: Option<PaletteColor>,
     mouse_scroll_resize: bool,
     dimmed: bool,
     guest_choice_indicator: Option<GuestChoiceIndicator>,
@@ -227,7 +226,6 @@ impl PaneFrame {
             highlight_tooltip: frame_params.highlight_tooltip,
             omit_title: frame_params.omit_title,
             stack_list_entry: frame_params.stack_list_entry,
-            color_override: None,
             mouse_scroll_resize: frame_params.mouse_scroll_resize,
             dimmed: frame_params.dimmed,
             guest_choice_indicator: frame_params.guest_choice_indicator,
@@ -256,10 +254,6 @@ impl PaneFrame {
     }
     pub fn indicate_first_run(&mut self) {
         self.is_first_run = true;
-    }
-    pub fn override_color(&mut self, color: PaletteColor) {
-        self.color = Some(color);
-        self.color_override = Some(color);
     }
     fn client_cursor(&self, client_id: ClientId) -> Vec<TerminalCharacter> {
         let color = client_id_to_colors(client_id, self.style.colors.multiplayer_user_colors);
@@ -1401,11 +1395,10 @@ impl PaneFrame {
         let (mut chunks, output) = self
             .render_frame()
             .context("failed to render themed pane frame")?;
-        for chunk in &mut chunks {
-            chunk.add_pane_defaults(
-                Some(self.style.colors.text_unselected.base.into()),
-                Some(self.style.colors.text_unselected.background.into()),
-            );
+        if let Some((foreground, background)) = self.style.chrome_colors() {
+            for chunk in &mut chunks {
+                chunk.add_pane_defaults(Some(foreground.into()), Some(background.into()));
+            }
         }
         Ok((chunks, output))
     }

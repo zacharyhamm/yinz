@@ -262,6 +262,11 @@ pub trait Pane {
         None
     }
     fn update_terminal_theme(&mut self, _theme: Option<yinz_types::style::TerminalTheme>) {}
+    /// Host defaults for chrome animation, excluding application and pane overrides.
+    fn host_colors(&self) -> (PaletteColor, PaletteColor) {
+        let palette = yinz_types::style::Palette::default();
+        (palette.fg, palette.bg)
+    }
     fn set_pane_default_colors(&mut self, _fg: Option<String>, _bg: Option<String>) {}
     fn get_pane_default_colors(&self) -> (Option<String>, Option<String>) {
         (None, None)
@@ -645,9 +650,9 @@ pub trait Pane {
     fn waiting_pulse_started_at(&self) -> Option<Instant> {
         None
     }
-    /// Sample once per frame, using the host foreground when the border inherits its color.
-    fn sample_waiting_pulse(&mut self, _now: Instant, _enabled: bool, _foreground: PaletteColor) {}
-    fn waiting_pulse(&self) -> Option<(f32, PaletteColor)> {
+    /// Sample the pulse strength once per frame.
+    fn sample_waiting_pulse(&mut self, _now: Instant, _enabled: bool) {}
+    fn waiting_pulse(&self) -> Option<f32> {
         None
     }
     fn invoked_with(&self) -> &Option<Run>;

@@ -27,6 +27,10 @@ fn style_with_frame_unselected() -> Style {
 
 fn state() -> FrameColorState {
     FrameColorState {
+        host_colors: (
+            PaletteColor::Rgb((100, 150, 200)),
+            PaletteColor::Rgb((20, 30, 40)),
+        ),
         frame_color_override: None,
         waiting_pulse: None,
         pane_is_focused: false,
@@ -68,8 +72,7 @@ fn a_related_pane_is_coloured_where_an_ordinary_one_is_not() {
     );
 }
 
-/// The tint is derived from two colours every theme defines, so it does not quietly vanish
-/// on a theme that names one for ordinary frames.
+/// Naming an ordinary frame color does not change the related-pane tint.
 #[test]
 fn the_tint_does_not_depend_on_frame_unselected() {
     let bare = color_of(
@@ -222,7 +225,7 @@ fn a_hovered_panes_override_fades_back_to_the_tab_button_color() {
                     override_color,
                     strength
                 ),
-                10,
+                if strength == 0.0 { 4 } else { 10 },
             )),
         );
     }
@@ -303,8 +306,7 @@ fn an_override_at_full_strength_wins_outright() {
 }
 
 #[test]
-fn waiting_pulse_uses_the_ui_foreground_and_breaks_base_priority_ties() {
-    let foreground = PaletteColor::Rgb((100, 150, 200));
+fn waiting_pulse_uses_chrome_foreground_and_breaks_base_priority_ties() {
     let mut indexed = style_with_frame_unselected();
     indexed.colors.frame_unselected.as_mut().unwrap().base = PaletteColor::EightBit(24);
     for style in [default_style(), indexed] {
@@ -321,18 +323,18 @@ fn waiting_pulse_uses_the_ui_foreground_and_breaks_base_priority_ties() {
                 color_of(
                     &style,
                     FrameColorState {
-                        waiting_pulse: Some((0.0, foreground)),
+                        waiting_pulse: Some(0.0),
                         ..make_state()
                     }
                 ),
                 base
             );
-            let (color, precedence) = base.unwrap_or((style.colors.text_unselected.base, 0));
+            let (color, precedence) = base.unwrap_or((state().host_colors.0, 0));
             assert_eq!(
                 color_of(
                     &style,
                     FrameColorState {
-                        waiting_pulse: Some((0.4, foreground)),
+                        waiting_pulse: Some(0.4),
                         ..make_state()
                     }
                 ),
@@ -358,7 +360,7 @@ fn waiting_pulse_uses_the_ui_foreground_and_breaks_base_priority_ties() {
                     &style,
                     FrameColorState {
                         frame_color_override: override_,
-                        waiting_pulse: Some((0.4, foreground)),
+                        waiting_pulse: Some(0.4),
                         ..state()
                     }
                 ),
@@ -406,7 +408,7 @@ fn waiting_pulse_loses_to_every_higher_base_state() {
         let pulsed = color_of(
             &style,
             FrameColorState {
-                waiting_pulse: Some((0.4, PaletteColor::Rgb((100, 150, 200)))),
+                waiting_pulse: Some(0.4),
                 ..base
             },
         )
@@ -425,7 +427,11 @@ fn waiting_pulses_stay_theme_colored_on_opposite_host_palettes() {
         ((25, 25, 25), (220, 220, 220)),
     ] {
         let mut style = default_style();
-        style.colors.text_unselected.background = PaletteColor::Rgb(background);
+        style.terminal = Some(yinz_types::style::TerminalTheme {
+            foreground,
+            background,
+            ansi: [(0, 0, 0); 16],
+        });
         style.colors.text_unselected.base = PaletteColor::Rgb(foreground);
         style.colors.frame_selected.base = PaletteColor::Rgb((120, 90, 160));
         for focused in [false, true] {
@@ -443,7 +449,8 @@ fn waiting_pulses_stay_theme_colored_on_opposite_host_palettes() {
                     &style,
                     FrameColorState {
                         pane_is_focused: focused,
-                        waiting_pulse: Some((0.4, host)),
+                        host_colors: (host, host),
+                        waiting_pulse: Some(0.4),
                         ..state()
                     },
                 )
@@ -454,5 +461,130 @@ fn waiting_pulses_stay_theme_colored_on_opposite_host_palettes() {
             assert_eq!(light_host, pulse(PaletteColor::Rgb((255, 255, 255))));
             assert_ne!(light_host, normal);
         }
+    }
+}
+
+#[test]
+fn unfocused_bell_fades_to_the_ordinary_frame_color() {
+    let override_color = PaletteColor::Rgb((240, 50, 20));
+    for terminal in [
+        None,
+        Some(yinz_types::style::TerminalTheme {
+            foreground: (230, 240, 250),
+            background: (20, 30, 40),
+            ansi: [(0, 0, 0); 16],
+        }),
+    ] {
+        for unselected in [None, style_with_frame_unselected().colors.frame_unselected] {
+            let mut style = default_style();
+            style.terminal = terminal;
+            style.colors.frame_unselected = unselected;
+            let normal = color_of(&style, state());
+            let foreground = unselected
+                .map(|frame| frame.base)
+                .unwrap_or(style.chrome_colors().unwrap_or(state().host_colors).0);
+            for strength in [0.0, 0.5, 1.0] {
+                assert_eq!(
+                    color_of(
+                        &style,
+                        FrameColorState {
+                            frame_color_override: Some((override_color, strength)),
+                            ..state()
+                        }
+                    ),
+                    if strength == 0.0 {
+                        normal
+                    } else {
+                        Some((blend(foreground, override_color, strength), 10))
+                    }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn related_tint_uses_terminal_background_or_host_background() {
+    let mut style = default_style();
+    for terminal in [
+        None,
+        Some(yinz_types::style::TerminalTheme {
+            foreground: (230, 240, 250),
+            background: (210, 220, 230),
+            ansi: [(0, 0, 0); 16],
+        }),
+    ] {
+        style.terminal = terminal;
+        assert_eq!(
+            color_of(
+                &style,
+                FrameColorState {
+                    pane_is_related: true,
+                    ..state()
+                }
+            ),
+            Some((
+                blend(
+                    style.colors.frame_selected.base,
+                    style.chrome_colors().unwrap_or(state().host_colors).1,
+                    RELATED_FADE
+                ),
+                2
+            ))
+        );
+    }
+}
+
+#[test]
+fn coincident_pulse_targets_blend_toward_the_farther_black_or_white() {
+    use PaletteColor::{EightBit, Rgb};
+    let indexed_rgb = Rgb(yinz_types::colors::eightbit_to_rgb(245));
+    for (start, target, endpoint) in [
+        (Rgb((0, 0, 0)), Rgb((0, 0, 0)), Rgb((255, 255, 255))),
+        (Rgb((255, 255, 255)), Rgb((255, 255, 255)), Rgb((0, 0, 0))),
+        (
+            Rgb((127, 127, 128)),
+            Rgb((127, 127, 128)),
+            Rgb((255, 255, 255)),
+        ),
+        (Rgb((127, 128, 128)), Rgb((127, 128, 128)), Rgb((0, 0, 0))),
+        (indexed_rgb, EightBit(245), Rgb((0, 0, 0))),
+        (EightBit(245), indexed_rgb, Rgb((0, 0, 0))),
+    ] {
+        let mut style = default_style();
+        style.colors.text_unselected.base = target;
+        style.colors.frame_selected.base = target;
+        assert_eq!(
+            color_of(
+                &style,
+                FrameColorState {
+                    host_colors: (start, state().host_colors.1),
+                    waiting_pulse: Some(0.7),
+                    ..state()
+                }
+            ),
+            Some((blend(start, endpoint, 0.7), 1))
+        );
+    }
+}
+
+#[test]
+fn unthemed_pulses_start_at_the_host_foreground() {
+    let style = default_style();
+    for foreground in [
+        PaletteColor::Rgb((0, 0, 0)),
+        PaletteColor::Rgb((255, 255, 255)),
+    ] {
+        assert_eq!(
+            color_of(
+                &style,
+                FrameColorState {
+                    host_colors: (foreground, state().host_colors.1),
+                    waiting_pulse: Some(0.4),
+                    ..state()
+                }
+            ),
+            Some((blend(foreground, style.colors.text_unselected.base, 0.4), 1))
+        );
     }
 }

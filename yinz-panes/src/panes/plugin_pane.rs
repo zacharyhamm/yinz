@@ -220,6 +220,10 @@ impl PluginPane {
 }
 
 impl Pane for PluginPane {
+    fn host_colors(&self) -> (PaletteColor, PaletteColor) {
+        let palette = self.terminal_emulator_colors.borrow();
+        (palette.fg, palette.bg)
+    }
     fn content_header_rows(&self) -> usize {
         self.subtitle_rows() + self.tab_bar_rows()
     }
@@ -677,9 +681,6 @@ impl Pane for PluginPane {
         )
         .is_pinned(is_pinned);
         frame.subtitle = subtitle;
-        if let Some(override_) = frame_color_override {
-            frame.override_color(override_.color);
-        }
 
         if !is_pinned && self.frame.get(&client_id) == Some(&frame) {
             return Ok(None);

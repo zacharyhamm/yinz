@@ -1891,17 +1891,13 @@ impl OverlayPanes {
                 } else {
                     boundary_type::HORIZONTAL
                 })
-                .color(None)
+                .color(None, style.chrome_colors())
                 .as_terminal_character()?;
                 for y in divider.y..divider.y + divider.rows.as_usize() {
-                    let mut chunk = CharacterChunk::new(
+                    let chunk = CharacterChunk::new(
                         vec![symbol.clone(); divider.cols.as_usize()],
                         divider.x,
                         y,
-                    );
-                    chunk.add_pane_defaults(
-                        Some(style.colors.text_unselected.base.into()),
-                        Some(style.colors.text_unselected.background.into()),
                     );
                     output.add_character_chunks_to_multiple_clients(
                         vec![chunk],

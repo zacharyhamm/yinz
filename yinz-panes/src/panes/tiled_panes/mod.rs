@@ -1481,47 +1481,25 @@ impl TiledPanes {
                                 true,
                             )
                             .with_context(err_context)?;
-                    } else if (self.pane_frame_style.draws_titles() || pane_is_stacked)
-                        && (reserved_rows_for_pane == 0 || pane_has_subtitle)
-                    {
-                        pane_contents_and_ui
-                            .render_pane_frame(
-                                *client_id,
-                                client_mode,
-                                self.session_is_mirrored,
-                                is_floating,
-                                pane_is_selectable,
-                                true,
-                                true,
-                            )
-                            .with_context(err_context)?;
-                        let boundaries =
-                            client_id_to_boundaries
-                                .entry(*client_id)
-                                .or_insert_with(|| {
-                                    Boundaries::new(
-                                        boundary_viewport,
-                                        self.style.colors.text_unselected,
-                                    )
-                                });
-                        pane_contents_and_ui.render_pane_boundaries(
-                            *client_id,
-                            client_mode,
-                            boundaries,
-                            self.session_is_mirrored,
-                            pane_is_on_top_of_stack,
-                            pane_is_on_bottom_of_stack,
-                        );
                     } else {
-                        let boundaries =
-                            client_id_to_boundaries
-                                .entry(*client_id)
-                                .or_insert_with(|| {
-                                    Boundaries::new(
-                                        boundary_viewport,
-                                        self.style.colors.text_unselected,
-                                    )
-                                });
+                        if (self.pane_frame_style.draws_titles() || pane_is_stacked)
+                            && (reserved_rows_for_pane == 0 || pane_has_subtitle)
+                        {
+                            pane_contents_and_ui
+                                .render_pane_frame(
+                                    *client_id,
+                                    client_mode,
+                                    self.session_is_mirrored,
+                                    is_floating,
+                                    pane_is_selectable,
+                                    true,
+                                    true,
+                                )
+                                .with_context(err_context)?;
+                        }
+                        let boundaries = client_id_to_boundaries
+                            .entry(*client_id)
+                            .or_insert_with(|| Boundaries::new(boundary_viewport));
                         pane_contents_and_ui.render_pane_boundaries(
                             *client_id,
                             client_mode,

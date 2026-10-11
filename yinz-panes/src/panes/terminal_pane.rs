@@ -133,7 +133,7 @@ pub struct TerminalPane {
     agent: Option<AgentInfo>,
     // None after acknowledgment; the agent record still prevents re-arming until waiting ends.
     waiting_pulse_started_at: Option<Instant>,
-    waiting_pulse: Option<(f32, PaletteColor)>,
+    waiting_pulse: Option<f32>,
     agent_input_revision: u64,
     agent_input_at: Option<Instant>,
     /// Whether this pane has ever held an agent record, however it got there.
@@ -510,6 +510,9 @@ impl Pane for TerminalPane {
         self.style.terminal = theme;
         self.grid.update_terminal_theme(theme);
     }
+    fn host_colors(&self) -> (PaletteColor, PaletteColor) {
+        self.grid.host_colors()
+    }
     fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) {
         self.grid.set_pane_default_colors(fg, bg);
         self.set_should_render(true);
@@ -640,9 +643,6 @@ impl Pane for TerminalPane {
             } else {
                 frame.add_exit_status(exit_status.as_ref().copied());
             }
-        }
-        if let Some(override_) = frame_color_override {
-            frame.override_color(override_.color);
         }
 
         if self.borderless || self.frame.get(&client_id) == Some(&frame) {
@@ -1297,7 +1297,7 @@ impl Pane for TerminalPane {
     fn waiting_pulse_started_at(&self) -> Option<Instant> {
         self.waiting_pulse_started_at
     }
-    fn sample_waiting_pulse(&mut self, now: Instant, enabled: bool, foreground: PaletteColor) {
+    fn sample_waiting_pulse(&mut self, now: Instant, enabled: bool) {
         let pulse = self
             .waiting_pulse_started_at
             .filter(|_| enabled)
@@ -1306,17 +1306,14 @@ impl Pane for TerminalPane {
                 let phase = (now.saturating_duration_since(start).as_nanos() % 1_800_000_000)
                     as f32
                     / 900_000_000.0;
-                (
-                    0.7 * Easing::EaseInOut.apply(1.0 - (phase - 1.0).abs()),
-                    foreground,
-                )
+                0.7 * Easing::EaseInOut.apply(1.0 - (phase - 1.0).abs())
             });
         if self.waiting_pulse != pulse {
             self.waiting_pulse = pulse;
             self.set_should_render(true);
         }
     }
-    fn waiting_pulse(&self) -> Option<(f32, PaletteColor)> {
+    fn waiting_pulse(&self) -> Option<f32> {
         self.waiting_pulse
     }
     fn invoked_with(&self) -> &Option<Run> {
