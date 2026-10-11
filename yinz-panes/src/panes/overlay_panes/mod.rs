@@ -1501,6 +1501,15 @@ impl OverlayPanes {
     pub fn has_panes_outside_viewport(&self) -> bool {
         !self.geoms_outside_viewport().is_empty()
     }
+    pub fn update_agent_theme_mapping(
+        &mut self,
+        mapping: yinz_types::agent::theme::AgentThemeMapping,
+    ) {
+        self.style.agent_theme_mapping = mapping;
+        for pane in self.get_panes_mut().map(|(_, pane)| pane) {
+            pane.update_agent_theme_mapping(mapping);
+        }
+    }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         for (_, pane) in self.get_panes_mut() {

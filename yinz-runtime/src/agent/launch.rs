@@ -602,6 +602,27 @@ pub fn display_command(command: &str) -> String {
             words.remove(0);
         }
     }
+    let start = if words.first().is_some_and(|word| is_env(word)) {
+        words
+            .iter()
+            .skip(1)
+            .position(|word| !word.contains('='))
+            .map(|index| index + 1)
+    } else {
+        Some(0)
+    };
+    if let Some(start) = start {
+        if words.get(start..start + 6).is_some_and(|args| {
+            (args[0] == "yinz" || args[0].ends_with("/yinz"))
+                && args[1] == "agent"
+                && matches!(args[2], "claude" | "codex-untracked")
+                && args[3] == "--command"
+                && args[5] == "--"
+        }) {
+            let executable = words[start + 4];
+            words.splice(start..start + 6, [executable]);
+        }
+    }
     words.join(" ")
 }
 
@@ -720,6 +741,8 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
 
     let (program, args) = match kind.as_deref() {
         Some("codex") if spec.hooks.unwrap_or(true) => wrap_codex(program, args),
+        Some("codex") => wrap_agent_launcher("codex-untracked", program, args),
+        Some("claude") => wrap_agent_launcher("claude", program, args),
         Some("muse") if spec.hooks.unwrap_or(true) => wrap_muse(program, args),
         _ => (program, args),
     };
@@ -896,6 +919,11 @@ mod tests {
             (
                 "codex",
                 vec![
+                    "agent",
+                    "codex-untracked",
+                    "--command",
+                    "codex",
+                    "--",
                     "-c",
                     "model_reasoning_effort=\"high\"",
                     "--model",
@@ -906,7 +934,12 @@ mod tests {
                 "claude",
                 vec![
                     "YINZ_CLAUDE_INLINE_HOOKS=0",
+                    "yinz",
+                    "agent",
                     "claude",
+                    "--command",
+                    "claude",
+                    "--",
                     "--effort",
                     "high",
                     "--model",
@@ -954,7 +987,18 @@ mod tests {
         })
         .unwrap();
         assert_eq!(command.path, PathBuf::from("env"));
-        assert_eq!(command.args, ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"]);
+        assert_eq!(
+            command.args,
+            [
+                "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "yinz",
+                "agent",
+                "claude",
+                "--command",
+                "claude",
+                "--"
+            ]
+        );
         assert_eq!(
             checkout,
             GitCheckout::NewWorktree {
@@ -1061,7 +1105,12 @@ mod tests {
             command.args,
             vec![
                 "YINZ_CLAUDE_INLINE_HOOKS=0".to_owned(),
+                "yinz".to_owned(),
+                "agent".to_owned(),
                 "claude".to_owned(),
+                "--command".to_owned(),
+                "claude".to_owned(),
+                "--".to_owned(),
                 "--verbose".to_owned(),
                 "--model".to_owned(),
                 "opus".to_owned(),
@@ -1106,10 +1155,19 @@ mod tests {
     fn claude_spawns_carry_the_hook_settings() {
         let (command, _) = plan(&spec("claude")).unwrap();
         assert_eq!(
-            &command.args[..3],
-            ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude", "--settings"]
+            &command.args[..8],
+            [
+                "YINZ_CLAUDE_INLINE_HOOKS=1",
+                "yinz",
+                "agent",
+                "claude",
+                "--command",
+                "claude",
+                "--",
+                "--settings"
+            ]
         );
-        let settings: serde_json::Value = serde_json::from_str(&command.args[3]).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&command.args[8]).unwrap();
         let hooks = settings["hooks"].as_object().unwrap();
         for event in crate::agent::CLAUDE_HOOK_EVENTS {
             assert_eq!(
@@ -1124,7 +1182,18 @@ mod tests {
             ..spec("claude")
         })
         .unwrap();
-        assert_eq!(command.args, ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"]);
+        assert_eq!(
+            command.args,
+            [
+                "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "yinz",
+                "agent",
+                "claude",
+                "--command",
+                "claude",
+                "--"
+            ]
+        );
         let (command, _) = plan(&spec("codex")).unwrap();
         assert_eq!(command.path, PathBuf::from("yinz"));
         assert_eq!(command.args, ["agent", "codex", "--command", "codex", "--"]);
@@ -1138,8 +1207,19 @@ mod tests {
             ..spec("codex")
         })
         .unwrap();
-        assert_eq!(command.path, PathBuf::from("codex"));
-        assert_eq!(command.args, ["--no-daemon", "original prompt"]);
+        assert_eq!(command.path, PathBuf::from("yinz"));
+        assert_eq!(
+            command.args,
+            [
+                "agent",
+                "codex-untracked",
+                "--command",
+                "codex",
+                "--",
+                "--no-daemon",
+                "original prompt"
+            ]
+        );
     }
 
     fn without_hooks(kind: &str) -> Spec {
@@ -1167,7 +1247,12 @@ mod tests {
                 "ANTHROPIC_MODEL=opus",
                 "FOO=a=b",
                 "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "yinz",
+                "agent",
                 "claude",
+                "--command",
+                "claude",
+                "--",
                 "go"
             ]
         );
@@ -1192,7 +1277,12 @@ mod tests {
             command.args,
             vec![
                 "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "yinz",
+                "agent",
                 "claude",
+                "--command",
+                "claude",
+                "--",
                 "--model",
                 "opus",
                 "--permission-mode",
@@ -1212,7 +1302,12 @@ mod tests {
             command.args,
             vec![
                 "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "yinz",
+                "agent",
                 "claude",
+                "--command",
+                "claude",
+                "--",
                 "--dangerously-skip-permissions",
                 "--continue"
             ]
@@ -1234,6 +1329,11 @@ mod tests {
         assert_eq!(
             command.args,
             vec![
+                "agent",
+                "codex-untracked",
+                "--command",
+                "codex",
+                "--",
                 "resume",
                 "--last",
                 "--verbose",
@@ -1248,7 +1348,19 @@ mod tests {
             ..without_hooks("codex")
         })
         .unwrap();
-        assert_eq!(command.args, vec!["resume", "0192-abc", "--full-auto"]);
+        assert_eq!(
+            command.args,
+            vec![
+                "agent",
+                "codex-untracked",
+                "--command",
+                "codex",
+                "--",
+                "resume",
+                "0192-abc",
+                "--full-auto"
+            ]
+        );
         let (command, _) = plan(&Spec {
             permission_mode: Some("skip".to_owned()),
             ..without_hooks("codex")
@@ -1256,7 +1368,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             command.args,
-            vec!["--dangerously-bypass-approvals-and-sandbox"]
+            vec![
+                "agent",
+                "codex-untracked",
+                "--command",
+                "codex",
+                "--",
+                "--dangerously-bypass-approvals-and-sandbox"
+            ]
         );
     }
 
@@ -1449,7 +1568,18 @@ mod tests {
             ..spec("claude")
         })
         .unwrap();
-        assert_eq!(command.args, ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"]);
+        assert_eq!(
+            command.args,
+            [
+                "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "yinz",
+                "agent",
+                "claude",
+                "--command",
+                "claude",
+                "--"
+            ]
+        );
         assert_eq!(checkout, GitCheckout::Current);
     }
 
@@ -1473,7 +1603,12 @@ mod tests {
             command.args,
             vec![
                 "YINZ_CLAUDE_INLINE_HOOKS=1",
+                "yinz",
+                "agent",
                 "claude",
+                "--command",
+                "claude",
+                "--",
                 "--resume",
                 "9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f",
                 "--settings",

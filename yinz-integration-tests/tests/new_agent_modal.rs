@@ -111,8 +111,16 @@ load_plugins clear-defaults=true { "agent-service"; }
             let agent = yinz.expect_pty_spawn();
             assert_eq!(agent.run_command().command.to_str(), Some("env"));
             assert_eq!(
-                &agent.run_command().args[..2],
-                ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude"]
+                &agent.run_command().args[..7],
+                [
+                    "YINZ_CLAUDE_INLINE_HOOKS=1",
+                    "yinz",
+                    "agent",
+                    "claude",
+                    "--command",
+                    "claude",
+                    "--"
+                ]
             );
             let marker = format!("DUPLICATE {attempt} READY");
             agent.output(format!("{marker}\r\n").as_bytes());
@@ -383,7 +391,18 @@ load_plugins clear-defaults=true {{ "yinz:agent-service"; }}
         assert_eq!(command.args, ["agent", "codex", "--command", "codex", "--"]);
     } else if kind == "claude" {
         assert_eq!(command.command, std::path::PathBuf::from("env"));
-        assert_eq!(&command.args[..2], ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude"]);
+        assert_eq!(
+            &command.args[..7],
+            [
+                "YINZ_CLAUDE_INLINE_HOOKS=1",
+                "yinz",
+                "agent",
+                "claude",
+                "--command",
+                "claude",
+                "--"
+            ]
+        );
     } else {
         assert_eq!(command.command, std::path::PathBuf::from(kind));
     }

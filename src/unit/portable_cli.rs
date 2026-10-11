@@ -1341,3 +1341,6 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
     let builtin = success(session.run(&["plugins", "log", "yinz:agent-opencode", "--json"], None));
     assert!(builtin["runtime"].as_str().unwrap().starts_with("plugin_"));
 }
+
+#[path = "agent_theme_launch.rs"]
+mod agent_theme_launch;

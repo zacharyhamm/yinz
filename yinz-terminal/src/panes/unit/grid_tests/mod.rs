@@ -1638,3 +1638,5 @@ fn translucency_repaints_completed_rows_during_synchronized_output() {
 }
 
 mod copy_whitespace;
+
+mod agent_theme;

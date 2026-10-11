@@ -725,18 +725,6 @@ impl Screen {
         )))
     }
 
-    /// Keep a warped pane's screen dump inside something a message bus should be
-    /// asked to carry.
-    ///
-    /// A 10,000-line scrollback with heavy styling runs to tens of megabytes, and
-    /// it is copied several times between the two processes. Truncating from the
-    /// *front* is the safe end: the receiving side feeds this to a VTE parser,
-    /// which resumes mid-stream quite happily — what is lost is the styling state
-    /// established before the cut, not the integrity of what follows.
-    fn fit_to_warp_budget(contents: String) -> String {
-        Self::fit_to_budget(contents, Self::WARP_CONTENTS_BUDGET)
-    }
-
     /// Roughly 200 columns of styled text over a few thousand lines. Well inside
     /// `MAX_IPC_FRAME_LEN`, and far past what anyone reads back.
     pub(super) const WARP_CONTENTS_BUDGET: usize = 4 * 1024 * 1024;
@@ -757,22 +745,9 @@ impl Screen {
         (WARP_TAB_BUDGET / panes.max(1)).min(Self::WARP_CONTENTS_BUDGET)
     }
 
+    #[cfg(test)]
     pub(super) fn fit_to_budget(contents: String, budget: usize) -> String {
-        if contents.len() <= budget {
-            return contents;
-        }
-        let mut cut = contents.len() - budget;
-        // Never split a character; a lone continuation byte would desync the
-        // parser on the far side.
-        while cut < contents.len() && !contents.is_char_boundary(cut) {
-            cut += 1;
-        }
-        log::warn!(
-            "a warped pane's scrollback was {} bytes; keeping the most recent {}",
-            contents.len(),
-            contents.len() - cut
-        );
-        contents[cut..].to_owned()
+        yinz_terminal::agent_theme::fit_legacy_contents(contents, budget)
     }
 
     /// Check the ordinary terminal path after companion-group preparation.
@@ -886,7 +861,12 @@ impl Screen {
         let pane = tab
             .get_pane_with_id(pane_id)
             .ok_or_else(|| "warp pane vanished".to_owned())?;
+        let (contents, agent_theme) = pane
+            .serialize_handoff(scrollback_lines, Self::WARP_CONTENTS_BUDGET)
+            .map(|(c, m)| (Some(c), m))
+            .unwrap_or_default();
         let payload = Box::new(WarpedPane {
+            agent_theme,
             held: address.held,
             group: None,
             host_id: address.host_id,
@@ -894,9 +874,7 @@ impl Screen {
             remote: address.remote,
             title: carried_caption(pane),
             caption: default_caption(pane),
-            contents: pane
-                .serialize(scrollback_lines)
-                .map(Self::fit_to_warp_budget),
+            contents,
             borderless: pane.borderless(),
             bracketed_paste: pane.supports_bracketed_paste(),
             agent_input,
@@ -1153,7 +1131,13 @@ impl Screen {
                 PaneId::Plugin(_) => None,
             }
             .unwrap_or_default();
+            let (contents, agent_theme) = tab
+                .get_pane_with_id(*pane_id)
+                .and_then(|p| p.serialize_handoff(scrollback_lines, budget))
+                .map(|(c, m)| (Some(c), m))
+                .unwrap_or_default();
             WarpedPane {
+                agent_theme,
                 held: address.held,
                 group: None,
                 host_id: address.host_id,
@@ -1173,10 +1157,7 @@ impl Screen {
                 // Not gated on `serialize_pane_viewport`: that option governs
                 // automatic session serialization, and a warp is something the
                 // user asked for by name.
-                contents: tab
-                    .get_pane_with_id(*pane_id)
-                    .and_then(|pane| pane.serialize(scrollback_lines))
-                    .map(|contents| Self::fit_to_budget(contents, budget)),
+                contents,
                 agent: tab
                     .get_pane_with_id(*pane_id)
                     .and_then(|pane| pane.agent_info().cloned()),
@@ -1387,7 +1368,12 @@ impl Screen {
         // The transferred screen first, then whatever the supervisor caught during
         // the hand-off, then live output. `NewPane` is ahead of these on the same
         // channel, and `pending_events_waiting_for_pane` would buffer them anyway.
-        let replay = warp_replay(payload.contents.take(), payload.bracketed_paste, buffered);
+        let replay = warp_replay_with_theme(
+            payload.contents.take(),
+            payload.agent_theme.take(),
+            payload.bracketed_paste,
+            buffered,
+        );
         self.bus
             .senders
             .send_to_screen(ScreenInstruction::PtyBytes(terminal_id, replay))
@@ -1652,7 +1638,12 @@ impl Screen {
                 // The transferred screen first, then whatever the supervisor
                 // caught during the hand-off — the same order a single adopted
                 // pane is replayed in, and the same order it happened in.
-                let replay = warp_replay(pane.contents, pane.bracketed_paste, adopted.buffered);
+                let replay = warp_replay_with_theme(
+                    pane.contents,
+                    pane.agent_theme,
+                    pane.bracketed_paste,
+                    adopted.buffered,
+                );
                 AdoptedTabTerminal {
                     agent_input: pane.agent_input,
                     held: pane.held,
@@ -1669,12 +1660,23 @@ impl Screen {
 }
 
 /// Restore emulator mode after the screen dump; buffered PTY output is newer and wins.
+#[cfg(test)]
 pub(super) fn warp_replay(
     contents: Option<String>,
     bracketed_paste: bool,
     buffered: Vec<u8>,
 ) -> Vec<u8> {
-    let mut replay = contents.unwrap_or_default().into_bytes();
+    warp_replay_with_theme(contents, None, bracketed_paste, buffered)
+}
+
+fn warp_replay_with_theme(
+    contents: Option<String>,
+    metadata: Option<yinz_types::agent::theme::AgentThemeHandoff>,
+    bracketed_paste: bool,
+    buffered: Vec<u8>,
+) -> Vec<u8> {
+    let mut replay =
+        yinz_terminal::agent_theme::handoff_replay(contents.unwrap_or_default(), metadata);
     replay.extend_from_slice(if bracketed_paste {
         b"\x1b[?2004h"
     } else {

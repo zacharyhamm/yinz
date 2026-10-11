@@ -51,6 +51,7 @@ Layout {
                                         run: Some(
                                             Command(
                                                 RunCommand {
+                                                    agent_theme: None,
                                                     command: "htop",
                                                     args: [],
                                                     cwd: None,

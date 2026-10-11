@@ -45,6 +45,7 @@ Layout {
                         run: Some(
                             Command(
                                 RunCommand {
+                                    agent_theme: None,
                                     command: "tail",
                                     args: [],
                                     cwd: Some(

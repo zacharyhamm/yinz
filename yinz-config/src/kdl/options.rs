@@ -263,6 +263,11 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let mouse_click_through =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "mouse_click_through")
             .map(|(v, _)| v);
+    let agent_theme_mapping =
+        match kdl_property_first_arg_as_string_or_error!(kdl_options, "agent_theme_mapping") {
+            Some((value, entry)) => Some(value.parse().map_err(|e| kdl_parsing_error!(e, entry))?),
+            None => None,
+        };
     let osc133_command_selection =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "osc133_command_selection")
             .map(|(v, _)| v);
@@ -359,6 +364,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         mouse_click_through,
         context_menu_on_right_click,
         osc133_command_selection,
+        agent_theme_mapping,
         word_separators,
         post_command_discovery_hook,
         nested_session_handling,
@@ -2277,6 +2283,11 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
         context_menu_on_right_click_to_kdl(value, add_comments)
     {
         nodes.push(context_menu_on_right_click);
+    }
+    if let Some(mapping) = value.agent_theme_mapping {
+        let mut node = KdlNode::new("agent_theme_mapping");
+        node.push(mapping.to_string());
+        nodes.push(node);
     }
     if let Some(osc133_command_selection) = osc133_command_selection_to_kdl(value, add_comments) {
         nodes.push(osc133_command_selection);

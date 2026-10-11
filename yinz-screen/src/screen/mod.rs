@@ -1248,6 +1248,7 @@ impl Screen {
             // Painted from `client_attributes.style`, which the first client resolved against its
             // command line as well as the config; see the field's doc. Same for the two chrome
             // flags.
+            agent_theme_mapping: _,
             terminal_theme: _,
             terminal_themes,
             theme: _,
@@ -3953,6 +3954,7 @@ impl Screen {
             }
         }
         let ScreenConfig {
+            agent_theme_mapping,
             terminal_theme,
             terminal_themes,
             theme,
@@ -4017,6 +4019,7 @@ impl Screen {
         self.themes = themes;
         self.terminal_themes = terminal_themes;
         self.style.terminal = terminal_theme;
+        self.style.agent_theme_mapping = agent_theme_mapping;
         self.theme_name = theme_name;
         self.theme_dark_name = theme_dark_name;
         self.theme_light_name = theme_light_name;
@@ -4101,6 +4104,7 @@ impl Screen {
         self.support_kitty_graphics_protocol = support_kitty_graphics_protocol;
         for tab in self.tabs.values_mut() {
             tab.update_terminal_theme(self.style.terminal);
+            tab.update_agent_theme_mapping(self.style.agent_theme_mapping);
             tab.update_theme(theme);
             tab.update_rounded_corners(rounded_corners);
             tab.update_default_shell(default_shell.clone());
@@ -4259,6 +4263,7 @@ impl Screen {
         self.default_mode_info.update_theme(theme);
         for tab in self.tabs.values_mut() {
             tab.update_terminal_theme(self.style.terminal);
+            tab.update_agent_theme_mapping(self.style.agent_theme_mapping);
             tab.update_theme(theme);
             tab.set_force_render();
         }

@@ -37,6 +37,7 @@ libc = { workspace = true }
 nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
 
 [dev-dependencies]
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 criterion = { workspace = true }
 serde_json = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }

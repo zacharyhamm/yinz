@@ -514,9 +514,12 @@ impl Agent {
     /// replies are JSON either way.
     pub fn json(&self) -> bool {
         match self {
-            Agent::Codex { .. } | Agent::CodexReport | Agent::Muse { .. } | Agent::MuseReport => {
-                false
-            },
+            Agent::Claude { .. }
+            | Agent::CodexUntracked { .. }
+            | Agent::Codex { .. }
+            | Agent::CodexReport
+            | Agent::Muse { .. }
+            | Agent::MuseReport => false,
             Agent::Archive(archive) => archive.json(),
             Agent::Watch { json, .. }
             | Agent::Register { json, .. }
@@ -578,6 +581,20 @@ pub enum Bubblewrap {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Agent {
+    /// Run Claude with a launch-time source palette snapshot.
+    Claude {
+        #[clap(long, default_value = "claude")]
+        command: PathBuf,
+        #[clap(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    #[clap(hide = true)]
+    CodexUntracked {
+        #[clap(long, default_value = "codex")]
+        command: PathBuf,
+        #[clap(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Run Codex with pane tracking while retaining its shared background daemon.
     Codex {
         #[clap(long, default_value = "codex")]

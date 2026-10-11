@@ -1,5 +1,6 @@
 ---
 source: yinz-plugin-host/src/./unit/plugin_tests/pane_id_commands.rs
+assertion_line: 239
 expression: "format!(\"{:#?}\",\nnew_tab_event).replace(&format!(\"{:?}\", temp_folder.path()), \"\\\"CWD\\\"\")"
 ---
 Some(
@@ -7,6 +8,7 @@ Some(
         Some(
             RunCommand(
                 RunCommand {
+                    agent_theme: None,
                     command: "/path/to/my/file.rs",
                     args: [
                         "arg1",

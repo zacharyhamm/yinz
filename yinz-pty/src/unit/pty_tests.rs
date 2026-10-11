@@ -3168,6 +3168,7 @@ fn workflow_signals_refuse_changed_ownership_and_replacement_processes() {
     let process = yinz_types::internal_ids::ProcessId::new(4242);
     let adopted = pty
         .adopt_terminal(&WarpedPane {
+            agent_theme: None,
             bracketed_paste: false,
             agent_input: None,
             held: None,
@@ -4041,11 +4042,13 @@ fn warp_adoption_failure_cleans_up_held_reservations() {
     let payload = WarpedTab {
         tiled_panes: vec![
             WarpedPane {
+                agent_theme: None,
                 held: Some(held.clone()),
                 ..Default::default()
             },
             // An invalid handoff fails after the first reservation was acquired.
             WarpedPane {
+                agent_theme: None,
                 held: Some(held),
                 control_socket: "/invalid".into(),
                 ..Default::default()

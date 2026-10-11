@@ -1112,3 +1112,65 @@ fn serialization_remaps_sgr_colors_with_theme_and_application_palettes() {
         }
     }
 }
+
+#[test]
+fn semantic_backgrounds_remain_translucent_and_selection_wins() {
+    use yinz_types::agent::theme::*;
+    let snapshot = AgentThemeSnapshot {
+        version: SNAPSHOT_VERSION,
+        provider: "codex".into(),
+        provider_version: "fixture".into(),
+        theme: "fixture".into(),
+        provenance: vec![],
+        availability: Availability::Available,
+        collisions: vec![],
+        definitions: vec![Definition {
+            token: "background".into(),
+            channel: Channel::Background,
+            color: SourceColor::Rgb(1, 2, 3),
+            pair: None,
+            target: Some(Role::Background.into()),
+        }],
+    };
+    let mut over = chunk("  X  ", 0);
+    over.agent_theme = Some(Rc::new(crate::agent_theme::SourcePalette::new(
+        Some(snapshot),
+        yinz_types::style::Style::default(),
+    )));
+    for cell in &mut over.terminal_characters {
+        cell.styles = DEFAULT_STYLES
+            .background(Some(AnsiCode::RgbCode((1, 2, 3))))
+            .into();
+    }
+    let mapped = compose(50, chunk("abcde", 0), over.clone());
+    let expected = compose(50, chunk("abcde", 0), chunk("  X  ", 0));
+    assert_eq!(
+        serialize_and_parse_row(mapped, 5),
+        serialize_and_parse_row(expected, 5)
+    );
+
+    let mut selection = Selection::default();
+    selection.set_start_and_end_positions(
+        yinz_types::position::Position::new(0, 0),
+        yinz_types::position::Position::new(0, 1),
+    );
+    over.add_selection_and_colors(
+        HighlightSelection {
+            selection,
+            bg: Some(AnsiCode::RgbCode((4, 5, 6))),
+            fg: None,
+            bold: false,
+            italic: false,
+            underline: false,
+            layer: HighlightLayer::Hint,
+        },
+        0,
+        0,
+    );
+    let selected = serialize_and_parse_row(compose(0, chunk("abcde", 0), over), 5);
+    assert_eq!(selected[0].character, ' ');
+    assert_eq!(
+        selected[0].styles.background,
+        Some(AnsiCode::RgbCode((4, 5, 6)))
+    );
+}

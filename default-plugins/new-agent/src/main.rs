@@ -2080,12 +2080,22 @@ mod tests {
         let (command, checkout) = request(state.dialog.form()).unwrap();
         assert_eq!(command.path, PathBuf::from("env"));
         assert_eq!(
-            &command.args[..4],
-            ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude", "--model", "opus"]
+            &command.args[..9],
+            [
+                "YINZ_CLAUDE_INLINE_HOOKS=1",
+                "yinz",
+                "agent",
+                "claude",
+                "--command",
+                "claude",
+                "--",
+                "--model",
+                "opus"
+            ]
         );
         // A claude pane the modal starts reports its own state, like one agent starts.
-        assert_eq!(command.args[4], "--settings");
-        assert_eq!(command.args.len(), 6);
+        assert_eq!(command.args[9], "--settings");
+        assert_eq!(command.args.len(), 11);
         assert_eq!(checkout, GitCheckout::Current);
     }
 
@@ -2833,7 +2843,16 @@ mod tests {
         let command = command_in_context(&pane, "claude").unwrap();
         assert_eq!(command.path, PathBuf::from("env"));
         assert!(
-            command.args == ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"],
+            command.args
+                == [
+                    "YINZ_CLAUDE_INLINE_HOOKS=0",
+                    "yinz",
+                    "agent",
+                    "claude",
+                    "--command",
+                    "claude",
+                    "--"
+                ],
             "SSH forks preserve installed broker-aware hooks"
         );
         // The cwd of an ssh pane is a path on `builder`, so it is sent as-is.
@@ -2862,7 +2881,7 @@ mod tests {
             .args
         );
         assert_eq!(
-            local_command.args[2], "--settings",
+            local_command.args[7], "--settings",
             "local forks keep automatic reporting hooks"
         );
         assert_eq!(local_command.cwd, Some("/tmp/repo".into()));
@@ -2923,7 +2942,11 @@ mod tests {
                 assert_eq!(fork.path, PathBuf::from("yinz"));
                 assert_eq!(fork.args, ["agent", "codex", "--command", "codex", "--"]);
             } else {
-                assert_eq!(fork.path, PathBuf::from("codex"));
+                assert_eq!(fork.path, PathBuf::from("yinz"));
+                assert_eq!(
+                    fork.args,
+                    ["agent", "codex-untracked", "--command", "codex", "--"]
+                );
             }
             assert_eq!(
                 yinz_tile::agent::agent_kind_of(&fork.path, &fork.args).as_deref(),

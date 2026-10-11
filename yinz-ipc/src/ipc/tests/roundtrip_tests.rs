@@ -172,6 +172,7 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 
     let adopt_pane = |cmd| ProtoAction {
         action_type: Some(ActionType::AdoptPane(ProtoAdoptPaneAction {
+            agent_theme_json: None,
             bracketed_paste: false,
             agent_input: None,
             held: None,
@@ -738,6 +739,7 @@ fn test_client_messages() {
             config_dir: Some(PathBuf::from("/path/to/config/dir")),
             should_ignore_config: true,
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 simplified_ui: Some(true),
                 theme: Some("theme".to_owned()),
                 theme_dark: Some("theme_dark".to_owned()),
@@ -819,6 +821,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Normal),
                 ..Default::default()
             }),
@@ -831,6 +834,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Locked),
                 ..Default::default()
             }),
@@ -843,6 +847,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Resize),
                 ..Default::default()
             }),
@@ -855,6 +860,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Pane),
                 ..Default::default()
             }),
@@ -867,6 +873,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Tab),
                 ..Default::default()
             }),
@@ -879,6 +886,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Scroll),
                 ..Default::default()
             }),
@@ -891,6 +899,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::EnterSearch),
                 ..Default::default()
             }),
@@ -903,6 +912,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Search),
                 ..Default::default()
             }),
@@ -915,6 +925,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::RenameTab),
                 ..Default::default()
             }),
@@ -927,6 +938,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::RenamePane),
                 ..Default::default()
             }),
@@ -939,6 +951,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Session),
                 ..Default::default()
             }),
@@ -951,6 +964,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Move),
                 ..Default::default()
             }),
@@ -963,6 +977,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Prompt),
                 ..Default::default()
             }),
@@ -975,6 +990,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 default_mode: Some(InputMode::Tmux),
                 ..Default::default()
             }),
@@ -987,6 +1003,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 on_force_close: Some(OnForceClose::Detach),
                 ..Default::default()
             }),
@@ -999,6 +1016,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 copy_clipboard: Some(Clipboard::Primary),
                 ..Default::default()
             }),
@@ -1011,6 +1029,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 ..Default::default()
             }),
             host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
@@ -1022,6 +1041,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 ..Default::default()
             }),
             host_terminal_env: [("TERM".to_owned(), "xterm-256color".to_owned())]
@@ -1033,6 +1053,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 nested_session_handling: Some(NestedSessionHandling::Ask),
                 ..Default::default()
             }),
@@ -1045,6 +1066,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 nested_session_handling: Some(NestedSessionHandling::Fullscreen),
                 ..Default::default()
             }),
@@ -1057,6 +1079,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 nested_session_handling: Some(NestedSessionHandling::Descend),
                 ..Default::default()
             }),
@@ -1069,6 +1092,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::FirstClientConnected {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 nested_session_handling: Some(NestedSessionHandling::Never),
                 ..Default::default()
             }),
@@ -1101,6 +1125,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::AttachClient {
         cli_assets: CliAssets {
             configuration_options: Some(Options {
+                agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 nested_session_handling: Some(NestedSessionHandling::Descend),
                 ..Default::default()
             }),
@@ -1114,6 +1139,27 @@ fn test_client_messages() {
     });
     for first_run in [true, false] {
         let pane = WarpedPane {
+            agent_theme: Some(yinz_types::agent::theme::AgentThemeHandoff {
+                version: 1,
+                snapshots: vec![yinz_types::agent::theme::AgentThemeSnapshot {
+                    version: 1,
+                    provider: "claude".into(),
+                    provider_version: "fixture".into(),
+                    theme: "dark".into(),
+                    provenance: vec![],
+                    availability: yinz_types::agent::theme::Availability::Available,
+                    definitions: vec![],
+                    collisions: vec![],
+                }],
+                associations: vec![yinz_types::agent::theme::PaletteAssociation {
+                    offset: 0,
+                    palette: Some(0),
+                }],
+                active: Some(yinz_types::agent::theme::HandoffLaunch {
+                    launch_id: "launch".into(),
+                    palette: 0,
+                }),
+            }),
             held: Some(yinz_types::data::HeldTerminal {
                 command: yinz_types::input::command::RunCommand {
                     command: "/usr/bin/true".into(),
@@ -1194,6 +1240,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                agent_theme: None,
                 bracketed_paste: true,
                 agent_input: Some(yinz_types::data::WarpedAgentInput {
                     kind: "codex".into(),
@@ -1236,6 +1283,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                agent_theme: None,
                 bracketed_paste: true,
                 agent_input: Some(yinz_types::data::WarpedAgentInput {
                     kind: "codex".into(),
@@ -1278,6 +1326,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                agent_theme: None,
                 bracketed_paste: true,
                 agent_input: Some(yinz_types::data::WarpedAgentInput {
                     kind: "codex".into(),
@@ -1351,6 +1400,7 @@ fn test_client_messages() {
                     children: vec![
                         TiledPaneLayout {
                             run: Some(Run::Command(RunCommand {
+                                agent_theme: None,
                                 command: PathBuf::from("vim"),
                                 args: vec!["src/main.rs".to_owned()],
                                 ..Default::default()
@@ -1360,6 +1410,7 @@ fn test_client_messages() {
                         },
                         TiledPaneLayout {
                             run: Some(Run::Command(RunCommand {
+                                agent_theme: None,
                                 command: PathBuf::from("cargo"),
                                 args: vec!["watch".to_owned()],
                                 ..Default::default()
@@ -1379,6 +1430,7 @@ fn test_client_messages() {
                 }],
                 tiled_panes: vec![
                     WarpedPane {
+                        agent_theme: None,
                         bracketed_paste: true,
                         agent_input: Some(yinz_types::data::WarpedAgentInput {
                             kind: "codex".into(),
@@ -1401,6 +1453,7 @@ fn test_client_messages() {
                     // is warped whole, so both addressing shapes have to survive
                     // the same message.
                     WarpedPane {
+                        agent_theme: None,
                         bracketed_paste: true,
                         agent_input: Some(yinz_types::data::WarpedAgentInput {
                             kind: "codex".into(),
@@ -1434,6 +1487,7 @@ fn test_client_messages() {
                     },
                 ],
                 floating_panes: vec![WarpedPane {
+                    agent_theme: None,
                     bracketed_paste: true,
                     agent_input: Some(yinz_types::data::WarpedAgentInput {
                         kind: "codex".into(),
@@ -2731,6 +2785,7 @@ fn test_client_messages() {
             layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Command(RunCommand {
+                    agent_theme: None,
                     workflow_owner: None,
                     command: PathBuf::from("/path/to/command"),
                     args: vec![],
@@ -2762,6 +2817,7 @@ fn test_client_messages() {
             layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Command(RunCommand {
+                    agent_theme: None,
                     workflow_owner: None,
                     command: PathBuf::from("/path/to/command"),
                     args: vec!["arg1".to_owned(), "arg2".to_owned(), "arg3".to_owned()],
@@ -5309,6 +5365,7 @@ fn warp_companion_relationships_roundtrip_and_reject_malformed_groups() {
     let message = |payload| ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                agent_theme: None,
                 held: None,
                 group: Some(Box::new(payload)),
                 ..Default::default()

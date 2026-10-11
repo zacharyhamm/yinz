@@ -577,7 +577,19 @@ pub fn a_script_plugin_spawns_an_agent_pane_with_the_planned_argv_and_an_agent_m
     use yinz_types::data::AGENT_PANE_CONTEXT;
     let run = spawned_agent_command('s');
     assert_eq!(run.command, PathBuf::from("env"));
-    assert_eq!(run.args, ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude", "fix it"]);
+    assert_eq!(
+        run.args,
+        [
+            "YINZ_CLAUDE_INLINE_HOOKS=0",
+            "yinz",
+            "agent",
+            "claude",
+            "--command",
+            "claude",
+            "--",
+            "fix it"
+        ]
+    );
     let context = run
         .originating_plugin
         .as_ref()
@@ -596,11 +608,20 @@ pub fn a_spawned_agent_is_handed_its_hooks_inline_unless_told_not_to() {
     let run = spawned_agent_command('h');
     assert_eq!(run.command, PathBuf::from("env"));
     assert_eq!(
-        &run.args[..3],
-        ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude", "--settings"]
+        &run.args[..8],
+        [
+            "YINZ_CLAUDE_INLINE_HOOKS=1",
+            "yinz",
+            "agent",
+            "claude",
+            "--command",
+            "claude",
+            "--",
+            "--settings"
+        ]
     );
     assert!(
-        run.args[3].contains("agent-report"),
+        run.args[8].contains("agent-report"),
         "the inline settings wire the hooks: {:?}",
         run.args
     );

@@ -120,6 +120,9 @@ impl TerminalTheme {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Style {
+    // Renderer policy is carried by Options, not the plugin styling contract.
+    #[serde(skip)]
+    pub agent_theme_mapping: crate::agent::theme::AgentThemeMapping,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalTheme>,
     pub colors: Styling,

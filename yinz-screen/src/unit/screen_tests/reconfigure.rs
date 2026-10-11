@@ -19,6 +19,7 @@ fn styling(shade: u8) -> Styling {
 /// Every field of `ScreenConfig` set to something other than what `test_screen_config` holds.
 fn every_field_changed() -> ScreenConfig {
     ScreenConfig {
+        agent_theme_mapping: yinz_types::agent::theme::AgentThemeMapping::Off,
         terminal_theme: None,
         terminal_themes: Default::default(),
         theme: styling(1),
@@ -116,6 +117,7 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         .unwrap();
 
     let ScreenConfig {
+        agent_theme_mapping,
         terminal_theme,
         terminal_themes,
         theme,
@@ -180,6 +182,7 @@ fn a_reload_applies_every_field_of_the_screen_config() {
     assert_eq!(screen.theme_dark_name, theme_dark_name);
     assert_eq!(screen.theme_light_name, theme_light_name);
     assert_eq!(screen.style.terminal, terminal_theme);
+    assert_eq!(screen.style.agent_theme_mapping, agent_theme_mapping);
     assert_eq!(screen.terminal_themes, terminal_themes);
     assert_eq!(screen.host_theme_dark_styling, host_theme_dark);
     assert_eq!(screen.host_theme_light_styling, host_theme_light);

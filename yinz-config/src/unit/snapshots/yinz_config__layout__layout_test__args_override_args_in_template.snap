@@ -22,6 +22,7 @@ Layout {
                         run: Some(
                             Command(
                                 RunCommand {
+                                    agent_theme: None,
                                     command: "tail",
                                     args: [
                                         "-f",
@@ -60,6 +61,7 @@ Layout {
                         run: Some(
                             Command(
                                 RunCommand {
+                                    agent_theme: None,
                                     command: "tail",
                                     args: [
                                         "-f",

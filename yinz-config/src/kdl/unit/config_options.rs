@@ -659,3 +659,28 @@ fn unsigned_options_reject_negative_numbers_and_validate_zero() {
         crate::kdl::options::from_kdl(&document).unwrap();
     }
 }
+
+#[test]
+fn agent_theme_mapping_is_validated_and_round_trips() {
+    use yinz_types::agent::theme::AgentThemeMapping;
+    for (value, expected) in [
+        ("semantic", AgentThemeMapping::Semantic),
+        ("off", AgentThemeMapping::Off),
+    ] {
+        let document: KdlDocument = format!("agent_theme_mapping \"{value}\"").parse().unwrap();
+        let options = crate::kdl::options::from_kdl(&document).unwrap();
+        assert_eq!(options.agent_theme_mapping, Some(expected));
+        let mut document = KdlDocument::new();
+        document
+            .nodes_mut()
+            .extend(crate::kdl::options::to_kdl(&options, false));
+        assert_eq!(
+            crate::kdl::options::from_kdl(&document)
+                .unwrap()
+                .agent_theme_mapping,
+            Some(expected)
+        );
+    }
+    let invalid: KdlDocument = "agent_theme_mapping \"hue\"".parse().unwrap();
+    assert!(crate::kdl::options::from_kdl(&invalid).is_err());
+}

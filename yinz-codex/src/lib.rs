@@ -808,6 +808,13 @@ async fn private_backend(program: &Path, socket: &Path) -> Result<tokio::process
 
 /// Run the ordinary Codex UI through a pane-aware connection to its backend.
 pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
+    let _theme = yinz_process::agent_theme::LaunchGuard::start("codex", program, args);
+    let result = launch_inner(program, args);
+    drop(_theme);
+    result.map(yinz_process::agent_theme::exit_status)
+}
+
+fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitStatus> {
     let env: HashMap<_, _> = ROUTE_ENV
         .iter()
         .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
@@ -818,11 +825,8 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
             .any(|key| env.get(*key).is_some_and(|value| !value.is_empty()))
     });
     let Some(options) = options else {
-        return Command::new(program)
-            .args(args)
-            .status()
-            .map(exit_code)
-            .context("run Codex");
+        return yinz_process::agent_theme::AgentChild::spawn(Command::new(program).args(args))?
+            .wait();
     };
     let cwd = match &options.cd {
         Some(cd) => std::path::absolute(cd),
@@ -860,13 +864,13 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
                         "establish Codex worktree trust; inspect Codex config and retry the launch",
                     )?
                 {
-                    return Ok(1);
+                    return Ok(std::process::ExitStatus::from_raw(1 << 8));
                 }
             }
             let path = registration.dir.path().join("ui.sock");
             yinz_process::pty_host::protocol::check_socket_path_length(&path, 0)?;
             let listener = tokio::net::UnixListener::bind(&path).context("listen for Codex UI")?;
-            let mut command = tokio::process::Command::new(program);
+            let mut command = Command::new(program);
             command
                 .arg("--remote")
                 .arg(format!("unix://{}", path.display()));
@@ -874,11 +878,7 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
             if options.cd.is_none() {
                 command.arg("--cd").arg(&cwd);
             }
-            let mut ui = command
-                .args(args)
-                .kill_on_drop(true)
-                .spawn()
-                .context("start Codex UI")?;
+            let mut ui = yinz_process::agent_theme::AgentChild::spawn(command.args(args))?;
             let connections = async {
                 loop {
                     let (stream, _) = listener.accept().await.context("accept Codex UI")?;
@@ -889,7 +889,12 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
                 Ok::<(), anyhow::Error>(())
             };
             tokio::select! {
-                status = ui.wait() => status.map(exit_code).context("wait for Codex UI"),
+                status = async {
+                    loop {
+                        if let Some(status) = ui.poll()? { break Ok(status); }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                } => status,
                 result = connections => {
                     result?;
                     Err(anyhow!("Codex pane connection stopped"))
@@ -1108,12 +1113,6 @@ async fn inherit_worktree_trust<S: AsyncRead + AsyncWrite + Unpin>(
         }
     }
     unreachable!("the second write attempt returns")
-}
-
-fn exit_code(status: std::process::ExitStatus) -> i32 {
-    status
-        .code()
-        .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
 }
 
 /// Dispatch a hook by its conversation, never by the shared daemon's inherited pane.

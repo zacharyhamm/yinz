@@ -1,8 +1,10 @@
 ---
 source: yinz-cli/src/setup.rs
+assertion_line: 541
 expression: "format!(\"{:#?}\", options)"
 ---
 Options {
+    agent_theme_mapping: None,
     simplified_ui: None,
     theme: None,
     theme_dark: None,

@@ -839,3 +839,7 @@ background_opacity "85%"
 // Note: be sure to escape backslashes and similar characters properly
 //
 // post_command_discovery_hook "echo $RESURRECT_COMMAND | sed <your_regex_here>"
+
+// Map supported managed Claude/Codex launch palettes through the active Yinz theme.
+// Use "off" to show their original colors. Takes effect immediately, including scrollback.
+// agent_theme_mapping "semantic"

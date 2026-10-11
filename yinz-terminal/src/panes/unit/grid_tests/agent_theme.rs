@@ -1,0 +1,564 @@
+use super::*;
+use crate::panes::terminal_character::{AnsiCode, NamedColor};
+use yinz_types::agent::theme::*;
+use yinz_types::colors::PaletteColor;
+
+fn source(provider: &str, role: Role) -> AgentThemeSnapshot {
+    AgentThemeSnapshot {
+        version: SNAPSHOT_VERSION,
+        provider: provider.into(),
+        provider_version: "fixture".into(),
+        theme: "fixture".into(),
+        provenance: vec![],
+        availability: Availability::Available,
+        collisions: vec![],
+        definitions: vec![Definition {
+            token: "status".into(),
+            channel: Channel::Foreground,
+            color: SourceColor::Index(2),
+            pair: None,
+            target: Some(role.into()),
+        }],
+    }
+}
+
+fn style() -> Style {
+    let mut style = Style::default();
+    style.colors.exit_code_success.base = PaletteColor::Rgb((11, 22, 33));
+    style.colors.exit_code_error.base = PaletteColor::Rgb((99, 88, 77));
+    style
+}
+
+#[test]
+fn semantic_mapping_precedes_selection_and_keeps_cells_and_capture_original() {
+    for provider in ["claude", "codex"] {
+        let mut grid = create_grid_with_content("");
+        grid.update_theme(style().colors);
+        event(&mut grid, "fixture", Some(source(provider, Role::Success)));
+        feed_bytes(
+            &mut grid,
+            b"\x1b[1;3;4;7;32mX\x1b[0;38;5;2mY\x1b[38;2;1;2;3mZ",
+        );
+        let capture = grid.serialize(None).unwrap();
+        let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+        let original = *chunks[0].terminal_characters[0].styles;
+        assert_eq!(
+            original.foreground,
+            Some(AnsiCode::NamedColor(NamedColor::Green))
+        );
+        let mapped = chunks[0].application_styles(original);
+        assert_eq!(mapped.foreground, Some(AnsiCode::RgbCode((11, 22, 33))));
+        assert_eq!(
+            (mapped.bold, mapped.italic, mapped.underline, mapped.reverse),
+            (
+                original.bold,
+                original.italic,
+                original.underline,
+                original.reverse
+            )
+        );
+        assert_eq!(
+            chunks[0]
+                .application_styles(*chunks[0].terminal_characters[1].styles)
+                .foreground,
+            mapped.foreground
+        );
+        assert_eq!(
+            chunks[0]
+                .application_styles(*chunks[0].terminal_characters[2].styles)
+                .foreground,
+            Some(AnsiCode::RgbCode((1, 2, 3)))
+        );
+        grid.start_selection(&Position::new(0, 0));
+        grid.end_selection(&Position::new(0, 1));
+        let selected = grid.render(0, 0, &style()).unwrap().unwrap().0;
+        assert!(!selected[0].selection_and_colors().is_empty());
+        assert_eq!(grid.serialize(None).unwrap(), capture);
+        grid.set_agent_theme_mapping(AgentThemeMapping::Off);
+        let original_chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+        assert_eq!(original_chunks[0].application_styles(original), original);
+    }
+}
+
+#[test]
+fn theme_preview_and_cancellation_repaint_cached_frames_without_recoloring_twice() {
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style().colors);
+    event(&mut grid, "fixture", Some(source("codex", Role::Success)));
+    feed_bytes(&mut grid, b"\x1b[32mresult");
+    let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    let original = *chunks[0].terminal_characters[0].styles;
+    let mut preview = style();
+    preview.colors.exit_code_success.base = PaletteColor::Rgb((66, 55, 44));
+    grid.lock_renders();
+    grid.update_theme(preview.colors);
+    let changed = grid.render(0, 0, &preview).unwrap().unwrap().0;
+    assert_eq!(
+        changed[0].application_styles(original).foreground,
+        Some(AnsiCode::RgbCode((66, 55, 44)))
+    );
+    grid.update_theme(style().colors);
+    let cancelled = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    assert_eq!(
+        cancelled[0].application_styles(original).foreground,
+        Some(AnsiCode::RgbCode((11, 22, 33)))
+    );
+}
+
+#[test]
+fn preserved_scrollback_keeps_its_source_palette_across_restarts_and_reflow() {
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style().colors);
+    event(&mut grid, "fixture", Some(source("claude", Role::Success)));
+    feed_bytes(&mut grid, b"\x1b[32mold transcript");
+    grid.reset_terminal_state_preserving_scrollback();
+    grid.begin_agent_run();
+    event(&mut grid, "fixture", Some(source("codex", Role::Error)));
+    feed_bytes(&mut grid, b"\x1b[32mnew transcript");
+    grid.force_change_size(20, 8);
+    grid.move_viewport_up(2);
+    let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    let old = chunks
+        .iter()
+        .find(|chunk| {
+            chunk
+                .terminal_characters
+                .iter()
+                .map(|c| c.character)
+                .collect::<String>()
+                .contains("old")
+        })
+        .unwrap();
+    assert_eq!(
+        old.application_styles(*old.terminal_characters[0].styles)
+            .foreground,
+        Some(AnsiCode::RgbCode((11, 22, 33)))
+    );
+    grid.set_agent_theme_mapping(AgentThemeMapping::Off);
+    assert_eq!(
+        old.application_styles(*old.terminal_characters[0].styles)
+            .foreground,
+        Some(AnsiCode::NamedColor(NamedColor::Green))
+    );
+}
+
+#[test]
+fn snapshot_osc_is_versioned_and_plain_panes_remain_unchanged() {
+    let mut grid = create_grid_with_content("\x1b[32mplain");
+    let before = grid.serialize(None).unwrap();
+    let mut snapshot = source("claude", Role::Success);
+    snapshot.version += 1;
+    let encoded = BASE64_ENCODER.encode(
+        serde_json::to_vec(&AgentThemeEvent {
+            version: EVENT_VERSION,
+            launch_id: "bad-version".into(),
+            snapshot: Some(snapshot),
+        })
+        .unwrap(),
+    );
+    feed_bytes(
+        &mut grid,
+        format!("\x1b]777;yinz-agent-theme;{encoded}\x1b\\").as_bytes(),
+    );
+    let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    assert!(chunks.iter().all(|chunk| chunk.agent_theme.is_none()));
+    let original = *chunks[0].terminal_characters[0].styles;
+    assert_eq!(chunks[0].application_styles(original), original);
+    assert_eq!(grid.serialize(None).unwrap(), before);
+}
+
+#[test]
+fn a_run_keeps_its_first_snapshot_until_the_next_managed_launch() {
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style().colors);
+    event(&mut grid, "fixture", Some(source("claude", Role::Success)));
+    event(&mut grid, "fixture", Some(source("claude", Role::Error)));
+    feed_bytes(&mut grid, b"\x1b[32mfixed");
+    let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    assert_eq!(
+        chunks[0]
+            .application_styles(*chunks[0].terminal_characters[0].styles)
+            .foreground,
+        Some(AnsiCode::RgbCode((11, 22, 33)))
+    );
+    grid.reset_terminal_state();
+    grid.begin_agent_run();
+    feed_bytes(&mut grid, b"\x1b[32mshell");
+    let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    assert_eq!(
+        chunks[0]
+            .application_styles(*chunks[0].terminal_characters[0].styles)
+            .foreground,
+        Some(AnsiCode::NamedColor(NamedColor::Green))
+    );
+}
+
+#[test]
+fn diff_pairs_underline_and_blank_backgrounds_follow_dark_and_light_terminal_themes() {
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style().colors);
+    let mut snapshot = source("codex", Role::Accent);
+    let pair = Some((SourceColor::Index(2), SourceColor::Index(22)));
+    snapshot.definitions.extend([
+        Definition {
+            token: "addition.foreground".into(),
+            channel: Channel::Foreground,
+            color: SourceColor::Index(2),
+            pair,
+            target: Some(Role::Success.into()),
+        },
+        Definition {
+            token: "addition.background".into(),
+            channel: Channel::Background,
+            color: SourceColor::Index(22),
+            pair,
+            target: Some(Role::AdditionBackground.into()),
+        },
+        Definition {
+            token: "underline".into(),
+            channel: Channel::Underline,
+            color: SourceColor::Index(2),
+            pair: None,
+            target: Some(Role::Error.into()),
+        },
+        Definition {
+            token: "background".into(),
+            channel: Channel::Background,
+            color: SourceColor::Rgb(1, 2, 3),
+            pair: None,
+            target: Some(Role::Background.into()),
+        },
+    ]);
+    event(&mut grid, "fixture", Some(snapshot));
+    feed_bytes(
+        &mut grid,
+        b"\x1b[48;2;1;2;3m\x1b[2J\x1b[32;48;5;22;58;5;2m+\x1b[49mA",
+    );
+    let capture = grid.serialize(None).unwrap();
+    for (background, diff_background) in [
+        ((10, 20, 30), (10, 20, 31)),
+        ((250, 240, 230), (207, 201, 195)),
+    ] {
+        grid.update_terminal_theme(Some(yinz_types::style::TerminalTheme {
+            foreground: (200, 210, 220),
+            background,
+            ansi: [(66, 66, 66); 16],
+        }));
+        let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+        let diff = chunks
+            .iter()
+            .find(|c| c.terminal_characters.iter().any(|c| c.character == '+'))
+            .unwrap();
+        let cell = diff
+            .terminal_characters
+            .iter()
+            .find(|c| c.character == '+')
+            .unwrap();
+        let mapped = diff.application_styles(*cell.styles);
+        assert_eq!(mapped.foreground, Some(AnsiCode::RgbCode((11, 22, 33))));
+        assert_eq!(mapped.background, Some(AnsiCode::RgbCode(diff_background)));
+        assert_eq!(
+            mapped.underline_color,
+            Some(AnsiCode::RgbCode((99, 88, 77)))
+        );
+        let ambiguous = diff
+            .terminal_characters
+            .iter()
+            .find(|c| c.character == 'A')
+            .unwrap();
+        assert_eq!(
+            diff.application_styles(*ambiguous.styles).foreground,
+            Some(AnsiCode::NamedColor(NamedColor::Green))
+        );
+        let blank = chunks.iter().find(|c| c.y == 1).unwrap();
+        assert_eq!(
+            blank
+                .application_styles(*blank.terminal_characters[0].styles)
+                .background,
+            Some(AnsiCode::RgbCode(background))
+        );
+        assert_eq!(grid.serialize(None).unwrap(), capture);
+    }
+}
+
+fn event(grid: &mut Grid, id: &str, snapshot: Option<AgentThemeSnapshot>) {
+    let event = AgentThemeEvent {
+        version: EVENT_VERSION,
+        launch_id: id.into(),
+        snapshot,
+    };
+    let encoded = BASE64_ENCODER.encode(serde_json::to_vec(&event).unwrap());
+    feed_bytes(
+        grid,
+        format!("\x1b]777;yinz-agent-theme;{encoded}\x1b\\").as_bytes(),
+    );
+}
+
+fn painted(grid: &mut Grid) -> Vec<(char, Option<AnsiCode>, Option<AnsiCode>)> {
+    grid.output_buffer.update_all_lines();
+    grid.render(0, 0, &style())
+        .unwrap()
+        .unwrap()
+        .0
+        .into_iter()
+        .flat_map(|chunk| {
+            chunk
+                .terminal_characters
+                .iter()
+                .map(|cell| {
+                    let styles = chunk.application_styles(*cell.styles);
+                    (cell.character, styles.foreground, styles.background)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+const SUCCESS: Option<AnsiCode> = Some(AnsiCode::RgbCode((11, 22, 33)));
+const ERROR: Option<AnsiCode> = Some(AnsiCode::RgbCode((99, 88, 77)));
+const GREEN: Option<AnsiCode> = Some(AnsiCode::NamedColor(NamedColor::Green));
+
+#[test]
+fn successive_shell_launches_partial_redraws_and_stale_events() {
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style().colors);
+    feed_bytes(&mut grid, b"\x1b[32mS");
+    event(&mut grid, "one", Some(source("claude", Role::Success)));
+    feed_bytes(&mut grid, b"AAA");
+    event(&mut grid, "one", Some(source("claude", Role::Error))); // duplicate cannot change the palette
+    feed_bytes(&mut grid, b"A");
+    event(&mut grid, "one", None);
+    feed_bytes(&mut grid, b"s");
+    event(&mut grid, "two", Some(source("codex", Role::Error)));
+    event(&mut grid, "one", None); // stale end cannot clear the new run
+    feed_bytes(&mut grid, b"BBB");
+    assert_eq!(
+        painted(&mut grid)
+            .iter()
+            .take(9)
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![GREEN, SUCCESS, SUCCESS, SUCCESS, SUCCESS, GREEN, ERROR, ERROR, ERROR]
+    );
+    feed_bytes(&mut grid, b"\r\x1b[2CX"); // replace only one column of old output
+    assert_eq!(painted(&mut grid)[2].1, ERROR);
+    assert_eq!(painted(&mut grid)[3].1, SUCCESS);
+    event(&mut grid, "two", None);
+    feed_bytes(&mut grid, b"\r\x1b[32mshell-only");
+    assert!(painted(&mut grid).iter().take(10).all(|c| c.1 == GREEN));
+}
+
+#[test]
+fn column_ownership_survives_wide_overwrite_insert_delete_and_erase() {
+    let mut grid = create_grid_with_content("");
+    grid.update_theme(style().colors);
+    event(&mut grid, "one", Some(source("claude", Role::Success)));
+    feed_bytes(&mut grid, "\x1b[32mA界BC".as_bytes());
+    event(&mut grid, "two", Some(source("codex", Role::Error)));
+    feed_bytes(&mut grid, b"\r\x1b[2CX"); // second half of wide character
+    let cells = painted(&mut grid);
+    assert_eq!(cells[0].1, SUCCESS);
+    assert_eq!((cells[2].0, cells[2].1), ('X', ERROR));
+    assert_eq!(cells[3].1, SUCCESS);
+    feed_bytes(&mut grid, b"\r\x1b[1C\x1b[@"); // insert active blank before retained text
+    let cells = painted(&mut grid);
+    assert_eq!(cells[0].1, SUCCESS);
+    assert!(grid.viewport[0].palettes.at(1).is_some());
+    assert_eq!(cells[3].1, ERROR);
+    assert_eq!(cells[4].1, SUCCESS);
+    feed_bytes(&mut grid, b"\x1b[P");
+    assert_eq!(painted(&mut grid)[3].1, SUCCESS);
+    feed_bytes(&mut grid, b"\x1b[X");
+    assert_eq!(painted(&mut grid)[1].1, ERROR);
+    feed_bytes(&mut grid, b"\x1b[K");
+    assert_eq!(painted(&mut grid)[0].1, SUCCESS);
+    assert!(grid.viewport[0].palettes.at(40).is_some());
+    event(&mut grid, "two", None);
+    feed_bytes(&mut grid, b"\x1b[2K");
+    assert!(grid.viewport[0].palettes.at(40).is_none());
+}
+
+#[test]
+fn scrolling_reflow_and_alternate_screen_keep_content_owners() {
+    let mut grid = create_grid_with_content("");
+    grid.change_size(3, 8);
+    grid.update_theme(style().colors);
+    event(&mut grid, "one", Some(source("claude", Role::Success)));
+    feed_bytes(&mut grid, b"\x1b[32mAAAA");
+    event(&mut grid, "two", Some(source("codex", Role::Error)));
+    feed_bytes(&mut grid, b"BBBB\r\nCCCC\r\nDDDD\r\nEEEE");
+    grid.change_size(10, 4);
+    grid.reset_viewport();
+    let cells = painted(&mut grid);
+    assert!(cells.iter().any(|c| c.0 == 'A' && c.1 == SUCCESS));
+    assert!(cells
+        .iter()
+        .filter(|c| "BCDE".contains(c.0))
+        .all(|c| c.1 == ERROR));
+    feed_bytes(&mut grid, b"\x1b[?1049h\x1b[32mALT");
+    event(&mut grid, "two", None);
+    feed_bytes(&mut grid, b"\x1b[?1049l");
+    let cells = painted(&mut grid);
+    assert!(cells.iter().any(|c| c.0 == 'A' && c.1 == SUCCESS));
+    feed_bytes(&mut grid, b"\x1b[32mS");
+    assert!(painted(&mut grid)
+        .iter()
+        .any(|c| c.0 == 'S' && c.1 == GREEN));
+}
+
+#[test]
+fn mixed_handoff_restores_history_before_active_launch_and_recompiles_all_palettes() {
+    let mut source_grid = create_grid_with_content("");
+    source_grid.change_size(10, 12);
+    source_grid.update_theme(style().colors);
+    feed_bytes(&mut source_grid, b"\x1b[32mS");
+    event(
+        &mut source_grid,
+        "one",
+        Some(source("claude", Role::Success)),
+    );
+    feed_bytes(&mut source_grid, b"AAA");
+    event(&mut source_grid, "one", None);
+    feed_bytes(&mut source_grid, b"s");
+    event(&mut source_grid, "two", Some(source("codex", Role::Error)));
+    feed_bytes(&mut source_grid, b"BBB");
+    let (contents, metadata) = source_grid.serialize_handoff(Some(0), 100_000).unwrap();
+    assert!(!contents.contains("yinz-agent"));
+    assert_eq!(metadata.as_ref().unwrap().snapshots.len(), 2);
+    assert!(metadata.as_ref().unwrap().valid(&contents));
+    let replay = crate::agent_theme::handoff_replay(contents, metadata);
+    let mut adopted = create_grid_with_content("");
+    adopted.change_size(10, 12);
+    adopted.update_theme(style().colors);
+    feed_bytes(&mut adopted, &replay);
+    feed_bytes(&mut adopted, b"\r\n\x1b[32mN");
+    for (mapping, success, error) in [
+        (AgentThemeMapping::Semantic, SUCCESS, ERROR),
+        (AgentThemeMapping::Off, GREEN, GREEN),
+    ] {
+        adopted.set_agent_theme_mapping(mapping);
+        let cells = painted(&mut adopted);
+        for (character, expected) in [
+            ('S', GREEN),
+            ('A', success),
+            ('s', GREEN),
+            ('B', error),
+            ('N', error),
+        ] {
+            assert!(
+                cells.iter().any(|c| c.0 == character && c.1 == expected),
+                "{character}: {cells:?}"
+            );
+        }
+    }
+    adopted.set_agent_theme_mapping(AgentThemeMapping::Semantic);
+    let mut changed = style().colors;
+    changed.exit_code_success.base = PaletteColor::Rgb((55, 66, 77));
+    adopted.update_theme(changed);
+    assert!(painted(&mut adopted)
+        .iter()
+        .any(|c| c.0 == 'A' && c.1 == Some(AnsiCode::RgbCode((55, 66, 77)))));
+    event(&mut adopted, "one", None);
+    assert_eq!(adopted.agent_launch.as_ref().unwrap().launch_id, "two");
+    event(&mut adopted, "two", None);
+    feed_bytes(&mut adopted, b"\x1b[32mZ");
+    assert!(painted(&mut adopted)
+        .iter()
+        .any(|c| c.0 == 'Z' && c.1 == GREEN));
+}
+
+#[test]
+fn handoff_budget_trims_content_and_metadata_together_and_bad_metadata_is_ignored() {
+    let mut grid = create_grid_with_content("");
+    grid.change_size(4, 10);
+    for n in 0..20 {
+        event(
+            &mut grid,
+            &n.to_string(),
+            Some(source(
+                "claude",
+                if n % 2 == 0 {
+                    Role::Success
+                } else {
+                    Role::Error
+                },
+            )),
+        );
+        feed_bytes(&mut grid, format!("\x1b[32mrow{n:02}\r\n").as_bytes());
+    }
+    let (full, _) = grid.serialize_handoff(Some(0), 100_000).unwrap();
+    let (contents, metadata) = grid.serialize_handoff(Some(0), 2000).unwrap();
+    assert!(contents.len() < full.len());
+    let metadata = metadata.unwrap();
+    assert!(contents.len() + serde_json::to_vec(&metadata).unwrap().len() <= 2000);
+    assert!(metadata.valid(&contents));
+    assert!(contents.contains("row19"));
+    let mut adopted = create_grid_with_content("");
+    adopted.update_theme(style().colors);
+    feed_bytes(
+        &mut adopted,
+        &crate::agent_theme::handoff_replay(contents.clone(), Some(metadata.clone())),
+    );
+    assert!(painted(&mut adopted)
+        .iter()
+        .any(|c| c.0 == '9' && c.1 == ERROR));
+    let mut malformed = metadata;
+    malformed.associations[0].offset = usize::MAX;
+    assert_eq!(
+        crate::agent_theme::handoff_replay(contents.clone(), Some(malformed)),
+        contents.as_bytes()
+    );
+    assert_eq!(
+        crate::agent_theme::handoff_replay(contents.clone(), None),
+        contents.as_bytes()
+    );
+}
+
+#[test]
+fn blank_background_spans_and_locked_frames_recompile_without_reassigning_ownership() {
+    let mut grid = create_grid_with_content("");
+    grid.change_size(3, 8);
+    grid.update_theme(style().colors);
+    let palette = |role| {
+        let mut palette = source("claude", role);
+        palette.definitions.push(Definition {
+            token: "surface".into(),
+            channel: Channel::Background,
+            color: SourceColor::Index(2),
+            pair: None,
+            target: Some(role.into()),
+        });
+        palette
+    };
+    event(&mut grid, "one", Some(palette(Role::Success)));
+    feed_bytes(&mut grid, b"\x1b[32;42m\x1b[2JAAAA");
+    event(&mut grid, "two", Some(palette(Role::Error)));
+    feed_bytes(&mut grid, b"\x1b[K");
+    let cells = painted(&mut grid);
+    assert_eq!(cells[0].2, SUCCESS);
+    assert_eq!(cells[6].2, ERROR);
+    assert_eq!(cells[8].2, SUCCESS);
+    grid.lock_renders();
+    feed_bytes(&mut grid, b"\rBBBB");
+    let mut changed = style().colors;
+    changed.exit_code_success.base = PaletteColor::Rgb((1, 2, 3));
+    grid.update_theme(changed);
+    let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
+    assert_eq!(chunks[0].terminal_characters[0].character, 'A');
+    assert_eq!(
+        chunks[0]
+            .application_styles(*chunks[0].terminal_characters[0].styles)
+            .foreground,
+        Some(AnsiCode::RgbCode((1, 2, 3)))
+    );
+    let suffix = chunks
+        .iter()
+        .find(|chunk| chunk.y == 0 && chunk.x == 4)
+        .unwrap();
+    assert_eq!(
+        suffix
+            .application_styles(*suffix.terminal_characters[0].styles)
+            .background,
+        ERROR
+    );
+}

@@ -1,5 +1,6 @@
 ---
 source: yinz-plugin-host/src/./unit/plugin_tests/break_panes_commands.rs
+assertion_line: 154
 expression: "format!(\"{:#?}\", screen_instruction)"
 ---
 Some(
@@ -19,6 +20,7 @@ Some(
         default_shell: Some(
             RunCommand(
                 RunCommand {
+                    agent_theme: None,
                     command: ".",
                     args: [],
                     cwd: None,

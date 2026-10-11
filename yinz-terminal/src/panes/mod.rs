@@ -5,6 +5,7 @@ pub mod hyperlink_tracker;
 #[path = "./unit/kitty_test_support.rs"]
 pub mod kitty_test_support;
 pub mod link_handler;
+mod palette_spans;
 mod search;
 pub mod selection;
 pub mod terminal_character;

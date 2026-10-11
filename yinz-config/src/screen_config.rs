@@ -28,6 +28,7 @@ use crate::config::Config;
 /// resolved.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScreenConfig {
+    pub agent_theme_mapping: yinz_types::agent::theme::AgentThemeMapping,
     // theme and chrome
     /// Applied on a reload only. At startup `Screen` paints with the first client's
     /// `ClientAttributes.style`, which that client resolved against its command line as well as
@@ -135,6 +136,7 @@ impl ScreenConfig {
                 .iter()
                 .map(|(name, theme)| (name.clone(), theme.palette))
                 .collect(),
+            agent_theme_mapping: options.agent_theme_mapping.unwrap_or_default(),
             theme_name: options.theme.clone(),
             theme_dark_name: options.theme_dark.clone(),
             theme_light_name: options.theme_light.clone(),

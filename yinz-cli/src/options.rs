@@ -312,6 +312,11 @@ pub struct CliOptions {
     #[serde(default)]
     pub osc133_command_selection: Option<bool>,
 
+    /// Map managed agent palettes to the Yinz theme (semantic or off).
+    #[clap(long)]
+    #[serde(default)]
+    pub agent_theme_mapping: Option<yinz_types::agent::theme::AgentThemeMapping>,
+
     /// Characters that terminate a word when double-clicking to select it, in addition to
     /// whitespace (which is always a separator)
     /// default is "[]{}<>()"
@@ -413,6 +418,7 @@ impl From<CliOptions> for Options {
             mouse_click_through: value.mouse_click_through,
             context_menu_on_right_click: value.context_menu_on_right_click,
             osc133_command_selection: value.osc133_command_selection,
+            agent_theme_mapping: value.agent_theme_mapping,
             word_separators: value.word_separators,
             host_notification_protocol: value.host_notification_protocol,
             post_command_discovery_hook: value.post_command_discovery_hook,
@@ -486,6 +492,7 @@ impl From<Options> for CliOptions {
             mouse_click_through: value.mouse_click_through,
             context_menu_on_right_click: value.context_menu_on_right_click,
             osc133_command_selection: value.osc133_command_selection,
+            agent_theme_mapping: value.agent_theme_mapping,
             word_separators: value.word_separators,
             host_notification_protocol: value.host_notification_protocol,
             post_command_discovery_hook: value.post_command_discovery_hook,
@@ -671,6 +678,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         mouse_click_through,
         context_menu_on_right_click,
         osc133_command_selection,
+        agent_theme_mapping: other.agent_theme_mapping.or(base.agent_theme_mapping),
         word_separators,
         post_command_discovery_hook,
         nested_session_handling,

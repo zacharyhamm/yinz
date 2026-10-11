@@ -60,6 +60,9 @@ impl OpenFilePayload {
 
 #[derive(Clone, Debug, Deserialize, Default, Serialize, PartialEq, Eq)]
 pub struct RunCommand {
+    /// Launch-time palette retained by the supervisor across adoption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_theme: Option<crate::agent::theme::AgentThemeLaunch>,
     #[serde(alias = "cmd")]
     pub command: PathBuf,
     #[serde(default)]
@@ -165,6 +168,7 @@ pub struct RunCommandAction {
 impl From<RunCommandAction> for RunCommand {
     fn from(action: RunCommandAction) -> Self {
         RunCommand {
+            agent_theme: None,
             command: action.command,
             args: action.args,
             cwd: action.cwd,

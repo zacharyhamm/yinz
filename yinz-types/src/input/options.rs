@@ -218,6 +218,9 @@ pub const DEFAULT_AGENT_PANE_MIN_ROWS: usize = 24;
 /// Shared configuration options. Command-line parsing and conversion live in
 /// `yinz-cli`, keeping this model independent of clap.
 pub struct Options {
+    /// Map managed agent palettes to semantic theme colors.
+    #[serde(default)]
+    pub agent_theme_mapping: Option<crate::agent::theme::AgentThemeMapping>,
     /// Allow plugins to use a more simplified layout
     /// that is compatible with more fonts (true or false)
     #[serde(default)]
@@ -685,6 +688,7 @@ impl Options {
             focus_follows_mouse,
             mouse_click_through,
             context_menu_on_right_click,
+            agent_theme_mapping: other.agent_theme_mapping.or(self.agent_theme_mapping),
             osc133_command_selection,
             word_separators,
             post_command_discovery_hook,

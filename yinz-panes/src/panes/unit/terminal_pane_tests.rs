@@ -2318,6 +2318,75 @@ fn agent_double_escape_frame_prefix_restores_title_and_respects_geometry() {
 }
 
 #[test]
+fn agent_exit_notification_preserves_palette_for_pending_pty_output() {
+    use yinz_terminal::panes::terminal_character::AnsiCode;
+    use yinz_types::agent::theme::*;
+
+    let mut pane = agent_pane();
+    let mut style = Style::default();
+    style.colors.exit_code_success.base = PaletteColor::Rgb((11, 22, 33));
+    pane.grid.update_theme(style.colors);
+    let snapshot = AgentThemeSnapshot {
+        version: SNAPSHOT_VERSION,
+        provider: "claude".into(),
+        provider_version: "fixture".into(),
+        theme: "fixture".into(),
+        provenance: vec![],
+        availability: Availability::Available,
+        collisions: vec![],
+        definitions: vec![Definition {
+            token: "status".into(),
+            channel: Channel::Foreground,
+            color: SourceColor::Index(2),
+            pair: None,
+            target: Some(Role::Success.into()),
+        }],
+    };
+    pane.grid.apply_agent_theme_event(AgentThemeEvent {
+        version: EVENT_VERSION,
+        launch_id: "exiting".into(),
+        snapshot: Some(snapshot.clone()),
+    });
+    pane.hold(
+        Some(0),
+        false,
+        RunCommand {
+            agent_theme: Some(AgentThemeLaunch {
+                launch_id: "exiting".into(),
+                snapshot,
+            }),
+            ..Default::default()
+        },
+    );
+    pane.handle_pty_bytes(b"\x1b[32mL".to_vec());
+    pane.grid.apply_agent_theme_event(AgentThemeEvent {
+        version: EVENT_VERSION,
+        launch_id: "exiting".into(),
+        snapshot: None,
+    });
+    let chunks = pane.grid.render(0, 0, &style).unwrap().unwrap().0;
+    let chunk = chunks
+        .iter()
+        .find(|c| c.terminal_characters.iter().any(|c| c.character == 'L'))
+        .unwrap();
+    let character = chunk
+        .terminal_characters
+        .iter()
+        .find(|c| c.character == 'L')
+        .unwrap();
+    assert_eq!(
+        chunk.application_styles(*character.styles).foreground,
+        Some(AnsiCode::RgbCode((11, 22, 33)))
+    );
+    let (_, metadata) = pane.serialize_handoff(None, usize::MAX).unwrap();
+    assert!(metadata.unwrap().active.is_none());
+    let Some(super::Run::Command(command)) = &pane.invoked_with else {
+        panic!("held command missing")
+    };
+    assert!(command.agent_theme.is_none());
+}
+
+#[test]
 fn agent_restart_is_fresh_and_keeps_command_metadata() {
     let mut pane = agent_pane();
     pane.set_agent_info(Some(AgentInfo {

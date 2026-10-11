@@ -983,6 +983,7 @@ message WarpPaneAction {
 // the supervisor over its own socket, so only the terminal's presentation state
 // travels here.
 message AdoptPaneAction {
+  optional string agent_theme_json = 14;
   bool bracketed_paste = 12;
   optional WarpedAgentInput agent_input = 13;
   optional HeldTerminal held = 11;
@@ -1014,6 +1015,7 @@ message WarpedAgentInput {
 // pane-sized `AdoptPaneAction`, minus the placement — a pane inside a tab has
 // its place decided by the layout.
 message WarpedPane {
+  optional string agent_theme_json = 13;
   bool bracketed_paste = 11;
   optional WarpedAgentInput agent_input = 12;
   optional HeldTerminal held = 10;
@@ -1516,6 +1518,7 @@ message Options {
   optional bool agent_double_escape = 76;
   optional bool pane_animations = 77;
   optional uint32 background_opacity = 78;
+  optional string agent_theme_mapping = 79;
 }
 
 enum OnForceClose {

@@ -319,7 +319,10 @@ pub fn unwrapped_program_and_args<'a>(
     if program.file_name()? == "yinz" {
         if let [agent, launcher, flag, command, separator, rest @ ..] = args {
             if agent == "agent"
-                && matches!(launcher.as_str(), "codex" | "muse")
+                && matches!(
+                    launcher.as_str(),
+                    "codex" | "codex-untracked" | "claude" | "muse"
+                )
                 && flag == "--command"
                 && separator == "--"
             {
@@ -328,10 +331,18 @@ pub fn unwrapped_program_and_args<'a>(
         }
         if let [agent, launcher, separator, rest @ ..] = args {
             if agent == "agent"
-                && matches!(launcher.as_str(), "codex" | "muse")
+                && matches!(
+                    launcher.as_str(),
+                    "codex" | "codex-untracked" | "claude" | "muse"
+                )
                 && separator == "--"
             {
-                return Some((Path::new(launcher), rest));
+                let program = if launcher == "codex-untracked" {
+                    "codex"
+                } else {
+                    launcher
+                };
+                return Some((Path::new(program), rest));
             }
         }
     }
@@ -451,7 +462,8 @@ pub fn kind_from_command(command: &str) -> Option<String> {
     if program(first) == "yinz" && words.next() == Some("agent") {
         // The launchers only: `yinz hooks install` is maintenance, not an agent.
         match words.next() {
-            Some("codex") => return Some("codex".to_owned()),
+            Some("codex" | "codex-untracked") => return Some("codex".to_owned()),
+            Some("claude") => return Some("claude".to_owned()),
             Some("muse") => return Some("muse".to_owned()),
             _ => {},
         }
@@ -1657,6 +1669,22 @@ mod tests {
             Some("sh")
         );
         assert!(kind_from_program_and_args(Path::new("/bin/sh"), &args).is_none());
+    }
+
+    #[test]
+    fn palette_launchers_keep_provider_identity_with_default_and_explicit_commands() {
+        for (launcher, provider) in [("claude", "claude"), ("codex-untracked", "codex")] {
+            for arguments in [
+                vec!["agent", launcher, "--", "prompt"],
+                vec!["agent", launcher, "--command", provider, "--", "prompt"],
+            ] {
+                let args: Vec<String> = arguments.into_iter().map(str::to_owned).collect();
+                assert_eq!(
+                    kind_from_program_and_args(Path::new("yinz"), &args).as_deref(),
+                    Some(provider)
+                );
+            }
+        }
     }
 
     #[test]

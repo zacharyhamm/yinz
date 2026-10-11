@@ -145,6 +145,7 @@ fn serialize_chunks_with_newlines(
     styled_underlines: bool,
     osc8_hyperlinks: bool,
     max_size: Option<Size>,
+    mut handoff: Option<&mut yinz_types::agent::theme::AgentThemeHandoff>,
 ) -> Result<String> {
     let err_context = || "failed to serialize input chunks".to_string();
 
@@ -165,8 +166,23 @@ fn serialize_chunks_with_newlines(
         let chunk_changed_colors = character_chunk.changed_colors();
         let pane_default_fg = character_chunk.pane_default_fg;
         let pane_default_bg = character_chunk.pane_default_bg;
+        if let Some(handoff) = handoff.as_deref_mut() {
+            handoff.associate(
+                vte_output.len(),
+                character_chunk
+                    .agent_theme
+                    .as_ref()
+                    .and_then(|p| p.snapshot()),
+            );
+        }
         if is_canonical || vte_output.is_empty() {
             vte_output.push_str("\n\r");
+            if handoff.is_some() {
+                // A budget cut starts at a canonical row. Make its styles independent
+                // of the discarded prefix, just as its palette association is.
+                vte_output.push_str("\x1b[0m");
+                character_styles = DEFAULT_STYLES.enable_styled_underlines(styled_underlines);
+            }
         }
         let mut chunk_width = character_chunk.x;
         for t_character in character_chunk.terminal_characters.iter() {
@@ -180,7 +196,11 @@ fn serialize_chunks_with_newlines(
             let current_character_styles = adjust_styles_for_custom_bg_fg(
                 adjust_styles_for_possible_selection(
                     character_chunk.selection_and_colors(),
-                    *t_character.styles,
+                    if handoff.is_some() {
+                        *t_character.styles
+                    } else {
+                        character_chunk.application_styles(*t_character.styles)
+                    },
                     character_chunk.y,
                     chunk_width,
                 ),
@@ -265,7 +285,7 @@ fn serialize_chunks(
                 let current_character_styles = adjust_styles_for_custom_bg_fg(
                     adjust_styles_for_possible_selection(
                         character_chunk.selection_and_colors(),
-                        *t_character.styles,
+                        character_chunk.application_styles(*t_character.styles),
                         character_chunk.y,
                         chunk_width,
                     ),
@@ -1735,6 +1755,7 @@ impl FloatingPanesStack {
                 left_chunk.pane_default_bg = c_chunk.pane_default_bg;
                 left_chunk.theme_background = c_chunk.theme_background;
                 left_chunk.changed_colors = c_chunk.changed_colors;
+                left_chunk.agent_theme = c_chunk.agent_theme.clone();
                 if !c_chunk.selection_and_colors.is_empty() {
                     left_chunk.selection_and_colors = c_chunk.selection_and_colors.clone();
                 }
@@ -1944,6 +1965,7 @@ pub struct CharacterChunk {
     pub pane_default_bg: Option<AnsiCode>,
     /// Theme backgrounds remain eligible for the pane opacity setting.
     pub theme_background: bool,
+    pub agent_theme: Option<Rc<crate::agent_theme::SourcePalette>>,
     selection_and_colors: Vec<HighlightSelection>,
 }
 
@@ -1951,6 +1973,12 @@ pub use crate::panes::kitty_graphics::grid_state::KittyImageChunk;
 pub use crate::panes::sixel::SixelImageChunk;
 
 impl CharacterChunk {
+    pub fn application_styles(&self, styles: CharacterStyles) -> CharacterStyles {
+        self.agent_theme
+            .as_ref()
+            .map_or(styles, |mapping| mapping.apply(styles))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(terminal_characters: Vec<TerminalCharacter>, x: usize, y: usize) -> Self {
         CharacterChunk {
@@ -2215,6 +2243,32 @@ impl OutputBuffer {
             self.styled_underlines,
             osc8_hyperlinks,
             max_size,
+            None,
+        )
+    }
+    pub fn serialize_handoff(
+        &self,
+        rows: &[Row],
+        width: usize,
+        osc8_hyperlinks: bool,
+        handoff: &mut yinz_types::agent::theme::AgentThemeHandoff,
+    ) -> Result<String> {
+        let mut chunks = Vec::new();
+        for (y, row) in rows.iter().enumerate() {
+            // Include implicit background cells: these also have palette ownership.
+            let characters = self.extract_characters_from_row(row, row.width().max(width));
+            let parts = row.split_palette_chunks(CharacterChunk::new(characters, 0, y));
+            for (index, part) in parts.into_iter().enumerate() {
+                chunks.push((part, index == 0 && row.is_canonical));
+            }
+        }
+        serialize_chunks_with_newlines(
+            chunks,
+            None,
+            self.styled_underlines,
+            osc8_hyperlinks,
+            None,
+            Some(handoff),
         )
     }
     pub fn changed_chunks_in_viewport(
