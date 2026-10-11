@@ -1454,12 +1454,51 @@ impl Tab {
                     )?;
                 }
             }
-            let padding_geom =
-                Self::stack_list_header_geom(rect, visible_content_offset, list.members.len());
-            let padding_row = vec![EMPTY_TERMINAL_CHARACTER; padding_geom.cols.as_usize()];
-            let padding_chunk = CharacterChunk::new(padding_row, padding_geom.x, padding_geom.y);
+            // Tiled panes without full frames reserve the right offset for a shared divider.
+            let shared_divider_width = if !floating && !should_draw_pane_frames {
+                visible_content_offset.right
+            } else {
+                0
+            };
+            let mut padding_chunks = vec![CharacterChunk::new(
+                vec![
+                    EMPTY_TERMINAL_CHARACTER;
+                    rect.cols.as_usize().saturating_sub(shared_divider_width)
+                ],
+                rect.x,
+                rect.y + list.members.len(),
+            )];
+            // The title geometry omits the side offsets, and the frame starts below the list.
+            for rank in 0..list.members.len() {
+                for (x, width) in [
+                    (rect.x, visible_content_offset.left),
+                    (
+                        rect.x
+                            + rect
+                                .cols
+                                .as_usize()
+                                .saturating_sub(visible_content_offset.right),
+                        visible_content_offset
+                            .right
+                            .saturating_sub(shared_divider_width),
+                    ),
+                ] {
+                    if width > 0 {
+                        padding_chunks.push(CharacterChunk::new(
+                            vec![EMPTY_TERMINAL_CHARACTER; width],
+                            x,
+                            rect.y + rank,
+                        ));
+                    }
+                }
+            }
+            if let Some((foreground, background)) = self.style.chrome_colors() {
+                for chunk in &mut padding_chunks {
+                    chunk.add_pane_defaults(Some(foreground.into()), Some(background.into()));
+                }
+            }
             output.add_character_chunks_to_multiple_clients(
-                vec![padding_chunk],
+                padding_chunks,
                 connected_clients.iter().copied(),
                 z_index,
             )?;

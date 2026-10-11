@@ -1783,6 +1783,7 @@ mod pane_content;
 mod pane_creation;
 mod pane_tabs;
 mod rendering;
+mod stack_list_headers;
 mod stacked_panes;
 mod swap_layouts;
 mod translucency;
