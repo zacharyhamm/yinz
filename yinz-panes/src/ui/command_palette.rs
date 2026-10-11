@@ -934,6 +934,9 @@ impl CommandPalette {
             return vec![String::new()];
         }
         let mut lines = crate::ui::notification::wrapped_text_lines(&entry.label, width);
+        for line in lines.iter_mut().skip(1) {
+            line.insert_str(0, &" ".repeat(2.min(width.saturating_sub(1))));
+        }
         let truncated = lines.len() > max_lines || lines.iter().any(|line| line.width() > width);
         lines.truncate(max_lines);
         if let Some(last) = lines.last_mut() {
