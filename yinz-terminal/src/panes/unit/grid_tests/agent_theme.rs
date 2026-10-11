@@ -349,6 +349,74 @@ fn successive_shell_launches_partial_redraws_and_stale_events() {
 }
 
 #[test]
+fn insert_mode_assigns_ownership_beyond_the_materialized_row() {
+    for prefix in ["A", "界"] {
+        let mut grid = create_grid_with_content("");
+        grid.update_theme(style().colors);
+        feed_bytes(&mut grid, format!("\x1b[32m{prefix}").as_bytes());
+        event(&mut grid, "one", Some(source("claude", Role::Success)));
+        feed_bytes(&mut grid, b"\x1b[4h\x1b[4CX");
+        let column = if prefix == "A" { 5 } else { 6 };
+        assert!(grid.viewport[0].palettes.at(column).is_some());
+        assert!(grid.viewport[0].palettes.at(column - 1).is_none());
+        let cells = painted(&mut grid);
+        assert!(cells.iter().any(|c| c.0 == 'X' && c.1 == SUCCESS));
+        assert!(cells
+            .iter()
+            .any(|c| c.0 == prefix.chars().next().unwrap() && c.1 == GREEN));
+    }
+}
+
+#[test]
+fn handoff_padding_preserves_legacy_continuation_and_wrap() {
+    for content in [
+        "",
+        "Hello",
+        "0123456789",
+        "0123456789H",
+        "界Hi",
+        "Hi\r\nthere",
+    ] {
+        let mut source_grid = create_grid_with_content("");
+        source_grid.change_size(10, 10);
+        event(
+            &mut source_grid,
+            "one",
+            Some(source("claude", Role::Success)),
+        );
+        feed_bytes(&mut source_grid, b"\x1b[32m");
+        feed_bytes(&mut source_grid, content.as_bytes());
+        // Split the implicit padding between owners without materializing it.
+        // Save/restore must span palette chunks as well as styles.
+        event(&mut source_grid, "two", Some(source("codex", Role::Error)));
+        let row = source_grid.viewport.back_mut().unwrap();
+        row.palettes
+            .set(row.width() + 1..usize::MAX, Some(&source_grid.agent_theme));
+        let legacy = source_grid.serialize(Some(0)).unwrap();
+        let (contents, metadata) = source_grid.serialize_handoff(Some(0), 100_000).unwrap();
+        assert!(metadata.as_ref().unwrap().valid(&contents));
+        let replay = crate::agent_theme::handoff_replay(contents, metadata);
+        let mut expected = create_grid_with_content("");
+        let mut adopted = create_grid_with_content("");
+        for (grid, bytes) in [
+            (&mut expected, legacy.as_bytes()),
+            (&mut adopted, replay.as_slice()),
+        ] {
+            grid.change_size(10, 10);
+            grid.set_agent_theme_mapping(AgentThemeMapping::Off);
+            feed_bytes(grid, bytes);
+            feed_bytes(grid, b"!");
+        }
+        assert_eq!(
+            (adopted.cursor.x, adopted.cursor.y),
+            (expected.cursor.x, expected.cursor.y),
+            "{content:?}"
+        );
+        assert_eq!(painted(&mut adopted), painted(&mut expected), "{content:?}");
+    }
+}
+
+#[test]
 fn column_ownership_survives_wide_overwrite_insert_delete_and_erase() {
     let mut grid = create_grid_with_content("");
     grid.update_theme(style().colors);

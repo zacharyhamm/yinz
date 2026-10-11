@@ -140,7 +140,7 @@ fn write_changed_styles(
 }
 
 fn serialize_chunks_with_newlines(
-    character_chunks: Vec<(CharacterChunk, bool)>,
+    character_chunks: Vec<(CharacterChunk, bool, Option<usize>)>,
     link_handler: Option<&mut Rc<RefCell<LinkHandler>>>,
     styled_underlines: bool,
     osc8_hyperlinks: bool,
@@ -152,7 +152,12 @@ fn serialize_chunks_with_newlines(
     let mut vte_output = String::new();
     let link_handler = link_handler.map(|l_h| l_h.borrow());
     let mut character_styles = DEFAULT_STYLES.enable_styled_underlines(styled_underlines);
-    for (character_chunk, is_canonical) in character_chunks {
+    let mut padding_cursor = None;
+    for (character_chunk, is_canonical, padding_start) in character_chunks {
+        if let Some((_, styles)) = padding_cursor.take_if(|(y, _)| *y != character_chunk.y) {
+            vte_output.push_str("\x1b8");
+            character_styles = styles;
+        }
         // Skip chunks that are completely outside the size bounds
         if let Some(size) = max_size {
             if character_chunk.y >= size.rows {
@@ -193,6 +198,13 @@ fn serialize_chunks_with_newlines(
                 }
             }
 
+            if padding_start == Some(chunk_width) {
+                // Paint implicit cells without advancing the continuation cursor or
+                // changing its styles. DECSC/DECRC also preserve pending wrap.
+                vte_output.push_str("\x1b7");
+                padding_cursor = Some((character_chunk.y, character_styles));
+            }
+
             let current_character_styles = adjust_styles_for_custom_bg_fg(
                 adjust_styles_for_possible_selection(
                     character_chunk.selection_and_colors(),
@@ -224,6 +236,9 @@ fn serialize_chunks_with_newlines(
                 vte_output.push_str("\x1b]777;yinz;implicit-blank\x1b\\");
             }
         }
+    }
+    if padding_cursor.is_some() {
+        vte_output.push_str("\x1b8");
     }
     Ok(vte_output)
 }
@@ -2235,6 +2250,7 @@ impl OutputBuffer {
             chunks.push((
                 CharacterChunk::new(terminal_characters, x, y),
                 line.is_canonical,
+                None,
             ));
         }
         serialize_chunks_with_newlines(
@@ -2259,7 +2275,7 @@ impl OutputBuffer {
             let characters = self.extract_characters_from_row(row, row.width().max(width));
             let parts = row.split_palette_chunks(CharacterChunk::new(characters, 0, y));
             for (index, part) in parts.into_iter().enumerate() {
-                chunks.push((part, index == 0 && row.is_canonical));
+                chunks.push((part, index == 0 && row.is_canonical, Some(row.width())));
             }
         }
         serialize_chunks_with_newlines(

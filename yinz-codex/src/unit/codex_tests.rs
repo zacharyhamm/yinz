@@ -302,13 +302,34 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
     yinz_test_support::write_warm_script(
         &root.path().join("codex"),
         r#"
+if [ "$1" = --version ]; then
+    printf '%s\n' 'codex-cli 0.162.1'
+    exit 0
+fi
 if [ "$1" = app-server ]; then
     [ "$2" = daemon ] && exit 0
+    if [ "$YINZ_TEST_CODEX_THEME" = 1 ] && [ -z "$2" ]; then
+        theme=catppuccin-latte
+        [ -f "$YINZ_TEST_CODEX_OUTPUT.registered" ] && theme=dracula
+        while IFS= read -r line; do
+            case "$line" in
+                *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+                *'"id":2'*)
+                    printf '%s' "$theme" > "$YINZ_TEST_CODEX_OUTPUT.resolved"
+                    printf '{"id":2,"result":{"config":{"tui":{"theme":"%s"}},"layers":[]}}\n' "$theme"
+                    ;;
+            esac
+        done
+        exit 0
+    fi
     export YINZ_TEST_TRUST_BACKEND=1
     exec "$YINZ_TEST_TRUST_EXE" --exact "$YINZ_TEST_TRUST_TEST" --nocapture 2>&1 >/dev/null
 fi
 if [ "$YINZ_TEST_TRUST_EXPECTED" = 1 ]; then
     [ -f "$YINZ_TEST_CODEX_OUTPUT.registered" ] || exit 99
+fi
+if [ "$YINZ_TEST_CODEX_THEME" = 1 ]; then
+    [ "$(cat "$YINZ_TEST_CODEX_OUTPUT.resolved")" = dracula ] || exit 99
 fi
 printf '%s\0' "$@" > "$YINZ_TEST_CODEX_OUTPUT"
 exit 23
@@ -412,6 +433,55 @@ exit 23
                 "{args:?}"
             );
         }
+    }
+    // A terminal launch enables the palette guard. The provider's config/read
+    // exposes the project theme only after the trust backend writes registration.
+    for args in [vec![], vec!["--cd", worktree.to_str().unwrap()]] {
+        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_file(output.with_extension("registered"));
+        let _ = std::fs::remove_file(output.with_extension("resolved"));
+        let pty = nix::pty::openpty(None, None).unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut master = std::fs::File::from(pty.master);
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 8192];
+            loop {
+                match std::io::Read::read(&mut master, &mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => bytes.extend_from_slice(&buffer[..n]),
+                    Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+                    Err(error) => panic!("read terminal output: {error}"),
+                }
+            }
+            bytes
+        });
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .current_dir(&worktree)
+            .env(ARGS_ENV, serde_json::to_string(&args).unwrap())
+            .env(OUTPUT_ENV, &output)
+            .env("YINZ_TEST_CODEX_THEME", "1")
+            .env("YINZ_TEST_TRUST_EXPECTED", "1")
+            .env("YINZ_TEST_TRUST_PRIMARY", &cwd)
+            .env("YINZ_TEST_TRUST_WORKTREE", &worktree)
+            .env("YINZ_TEST_TRUST_EXE", std::env::current_exe().unwrap())
+            .env("YINZ_TEST_TRUST_TEST", TEST)
+            .env("YINZ_PANE_REF", "abcdef012345")
+            .env("CODEX_HOME", root.path().join("codex-home"))
+            .env_remove("YINZ_REMOTE_PANE_TOKEN")
+            .env_remove("YINZ_BUBBLEWRAP")
+            .stdout(std::fs::File::from(pty.slave))
+            .output()
+            .unwrap();
+        let bytes = reader.join().unwrap();
+        let stdout = String::from_utf8_lossy(&bytes);
+        assert!(result.status.success(), "{stdout}\n{result:?}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
+        assert!(stdout.contains("yinz-agent-theme;"), "{stdout}");
+        assert_eq!(
+            std::fs::read_to_string(output.with_extension("resolved")).unwrap(),
+            "dracula"
+        );
     }
     for (mode, input, expected) in [
         ("untrusted", "y\n", "approved"),

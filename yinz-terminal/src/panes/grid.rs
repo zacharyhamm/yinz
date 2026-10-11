@@ -6896,7 +6896,8 @@ impl Row {
             .iter()
             .take(insert_position)
             .map(|c| c.width())
-            .sum::<usize>();
+            .sum::<usize>()
+            + insert_position.saturating_sub(self.columns.len());
         self.palettes
             .insert(column, character_width, self.write_palette.as_ref());
         match self.columns.len().cmp(&insert_position) {

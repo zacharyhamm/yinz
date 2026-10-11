@@ -808,9 +808,7 @@ async fn private_backend(program: &Path, socket: &Path) -> Result<tokio::process
 
 /// Run the ordinary Codex UI through a pane-aware connection to its backend.
 pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
-    let _theme = yinz_process::agent_theme::LaunchGuard::start("codex", program, args);
     let result = launch_inner(program, args);
-    drop(_theme);
     result.map(yinz_process::agent_theme::exit_status)
 }
 
@@ -825,8 +823,10 @@ fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitSta
             .any(|key| env.get(*key).is_some_and(|value| !value.is_empty()))
     });
     let Some(options) = options else {
-        return yinz_process::agent_theme::AgentChild::spawn(Command::new(program).args(args))?
-            .wait();
+        let _theme = yinz_process::agent_theme::LaunchGuard::start("codex", program, args);
+        let mut ui =
+            yinz_process::agent_theme::AgentChild::spawn(Command::new(program).args(args))?;
+        return ui.wait();
     };
     let cwd = match &options.cd {
         Some(cd) => std::path::absolute(cd),
@@ -878,6 +878,7 @@ fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitSta
             if options.cd.is_none() {
                 command.arg("--cd").arg(&cwd);
             }
+            let _theme = yinz_process::agent_theme::LaunchGuard::start("codex", program, args);
             let mut ui = yinz_process::agent_theme::AgentChild::spawn(command.args(args))?;
             let connections = async {
                 loop {

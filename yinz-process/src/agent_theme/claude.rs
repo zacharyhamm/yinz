@@ -7,14 +7,18 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
         "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
     ]
     .iter()
-    .any(|key| context.environment.get(*key).is_some_and(|v| !v.is_empty()))
-    {
+    .any(|key| {
+        context
+            .environment
+            .get(OsStr::new(key))
+            .is_some_and(|v| !v.is_empty())
+    }) {
         bail!("Claude host-managed or cowork configuration cannot be resolved by this descriptor");
     }
     let home = context.home()?;
     let root = context
         .environment
-        .get("CLAUDE_CONFIG_DIR")
+        .get(OsStr::new("CLAUDE_CONFIG_DIR"))
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".claude"));
@@ -24,7 +28,7 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
     } else {
         context
             .environment
-            .get("CLAUDE_CONFIG_DIR")
+            .get(OsStr::new("CLAUDE_CONFIG_DIR"))
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
             .unwrap_or(home)
