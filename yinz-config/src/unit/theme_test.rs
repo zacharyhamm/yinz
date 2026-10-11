@@ -1,5 +1,6 @@
 use super::super::theme::*;
 use crate::consts::YINZ_DEFAULT_THEMES;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use yinz_types::{colors::eightbit_to_rgb, data::PaletteColor};
 
@@ -83,12 +84,12 @@ fn builtin_light_themes_have_readable_ui_colors() {
         let themes = Themes::from_string(file.contents_utf8().unwrap(), false).unwrap();
         let theme = themes.get_theme(name).unwrap();
         for host in [&DARK_HOST, &LIGHT_HOST] {
-            check_light_theme_contrast(name, theme, host);
+            check_ui_theme_contrast(name, theme, host);
         }
     }
 }
 
-fn check_light_theme_contrast(name: &str, theme: &Theme, host: &[(u8, u8, u8); 16]) {
+fn check_ui_theme_contrast(name: &str, theme: &Theme, host: &[(u8, u8, u8); 16]) {
     let colors = theme.palette;
     let rgb = |color| color_rgb(color, host);
     let panel = rgb(colors.text_unselected.background);
@@ -192,12 +193,74 @@ fn check_light_theme_contrast(name: &str, theme: &Theme, host: &[(u8, u8, u8); 1
             colors.table_cell_unselected,
         ),
         ("list", colors.list_selected, colors.list_unselected),
+        ("ribbon", colors.ribbon_selected, colors.ribbon_unselected),
     ] {
         assert_ne!(
             selected.background, unselected.background,
             "{name}: {role} selection is invisible"
         );
     }
+}
+
+#[test]
+fn ghostty_inventory_covers_every_source_theme_and_preserves_imported_palettes() {
+    let mut builtins = HashMap::new();
+    for file in YINZ_DEFAULT_THEMES.files() {
+        let themes = Themes::from_string(file.contents_utf8().unwrap(), false).unwrap();
+        for (name, theme) in themes.inner() {
+            assert!(
+                builtins.insert(name.clone(), theme.clone()).is_none(),
+                "duplicate builtin theme {name}"
+            );
+        }
+    }
+    let mut source_names = HashSet::new();
+    let mut yinz_names = HashSet::new();
+    let mut imported = 0;
+    let mut existing = 0;
+    for row in include_str!("fixtures/ghostty-themes.tsv")
+        .lines()
+        .filter(|row| !row.starts_with('#'))
+    {
+        let columns: Vec<_> = row.split('\t').collect();
+        assert_eq!(columns.len(), 4, "{row}");
+        let (source_name, name, disposition) = (columns[0], columns[1], columns[2]);
+        assert!(source_names.insert(source_name), "{source_name}");
+        assert!(yinz_names.insert(name), "{name}");
+        let theme = builtins
+            .get(name)
+            .unwrap_or_else(|| panic!("missing Ghostty port or existing equivalent: {row}"));
+        match disposition {
+            "existing" => existing += 1,
+            "imported" => {
+                imported += 1;
+                let file = YINZ_DEFAULT_THEMES
+                    .get_file(format!("{name}.kdl"))
+                    .unwrap_or_else(|| panic!("missing Ghostty asset: {name}"));
+                assert!(file.contents_utf8().unwrap().contains(
+                    "// Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/"
+                ));
+                let terminal = theme.terminal.unwrap();
+                let actual: Vec<_> = [terminal.foreground, terminal.background]
+                    .into_iter()
+                    .chain(terminal.ansi)
+                    .collect();
+                let expected: Vec<_> = columns[3]
+                    .split_whitespace()
+                    .map(|color| yinz_types::colors::parse_hex_rgb(color).unwrap())
+                    .collect();
+                assert_eq!(actual, expected, "{source_name}: terminal palette changed");
+                for host in [&DARK_HOST, &LIGHT_HOST] {
+                    check_ui_theme_contrast(name, theme, host);
+                }
+            },
+            _ => panic!("invalid Ghostty inventory disposition: {row}"),
+        }
+    }
+    assert_eq!(source_names.len(), 725);
+    assert_eq!(imported, 691);
+    assert_eq!(existing, 34);
+    assert_eq!(builtins.len(), 734);
 }
 
 #[test]
@@ -288,7 +351,7 @@ fn themes_without_terminal_blocks_keep_ui_contrast_checks() {
     let mut theme = themes.get_theme("ayu-light").unwrap().clone();
     theme.terminal = None;
     for host in [&DARK_HOST, &LIGHT_HOST] {
-        check_light_theme_contrast("ayu-light without terminal", &theme, host);
+        check_ui_theme_contrast("ayu-light without terminal", &theme, host);
         check_frame_contrast("ayu-light without terminal", &theme, host);
     }
 }
