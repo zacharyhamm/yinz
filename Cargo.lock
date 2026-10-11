@@ -6751,6 +6751,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "yinz-runtime",
+ "yinz-test-support",
  "yinz-types",
 ]
 

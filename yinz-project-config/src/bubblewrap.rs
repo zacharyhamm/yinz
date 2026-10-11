@@ -42,6 +42,13 @@ const ETC: &[&str] = &[
 const ACCOUNTS: &[&str] = &["/etc/passwd", "/etc/group"];
 const LOG_LIMIT: u64 = 1024 * 1024;
 
+/// Runtime probes may fall back locally only for a validated internal mother profile.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LaunchCheck {
+    Ready,
+    MotherFallback(String),
+}
+
 /// The launch program does not resolve on the sandbox's own `PATH`.
 #[derive(Debug)]
 pub struct ProgramNotFound;
@@ -54,7 +61,7 @@ impl std::fmt::Display for ProgramNotFound {
 
 impl std::error::Error for ProgramNotFound {}
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Declaration {
     mounts: Vec<(PathBuf, PathBuf)>,
     paths: Vec<String>,
@@ -99,6 +106,50 @@ fn bind_binary(command: &mut Command, root: &Path, binary: &Path) {
         .arg("--ro-bind")
         .arg(binary)
         .arg("/run/yinz-bin/yinz");
+}
+
+fn bind_mother_resolver(command: &mut Command, resolver: &Path) -> Result<()> {
+    let mut path = resolver.to_path_buf();
+    let mut mounted = Vec::new();
+    // Bound traversal even if a host service changes a link while we read it.
+    for _ in 0..40 {
+        let parent = path.parent().context("DNS configuration has no parent")?;
+        let directory = parent
+            .canonicalize()
+            .context("resolve mother DNS directory")?;
+        if ["/run", "/tmp"]
+            .iter()
+            .any(|root| directory.starts_with(root))
+        {
+            if directory == Path::new("/run") || directory == Path::new("/tmp") {
+                bail!(
+                    "mother DNS configuration requires a dedicated directory: {}",
+                    path.display()
+                );
+            }
+            if !mounted.contains(&directory) {
+                // Directory binds see atomic file replacements, unlike a resolver file bind.
+                command.arg("--ro-bind").arg(&directory).arg(&directory);
+                mounted.push(directory.clone());
+            }
+        }
+        let alias = yinz_runtime::home::absolute_lexical(parent);
+        if alias != directory && ["/run", "/tmp"].iter().any(|root| alias.starts_with(root)) {
+            command.arg("--symlink").arg(&directory).arg(alias);
+        }
+        path = directory.join(
+            path.file_name()
+                .context("DNS configuration has no filename")?,
+        );
+        if !fs::symlink_metadata(&path)
+            .context("inspect mother DNS configuration")?
+            .is_symlink()
+        {
+            return Ok(());
+        }
+        path = directory.join(fs::read_link(&path).context("read mother DNS symlink")?);
+    }
+    bail!("too many symlinks in mother DNS configuration")
 }
 
 #[cfg(target_os = "linux")]
@@ -430,7 +481,7 @@ pub fn mother_directory(cache: &Path, session: &str) -> Result<PathBuf> {
         .join("mother")
         .join(crate::root_key(Path::new(session)));
     for path in [cache.join("mother"), parent.clone(), parent.join("work")] {
-        if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        if path.is_symlink() {
             bail!("Mother directory must not be a symlink: {}", path.display());
         }
         yinz_runtime::shared::ensure_secure_dir(&path)
@@ -440,6 +491,38 @@ pub fn mother_directory(cache: &Path, session: &str) -> Result<PathBuf> {
         .join("work")
         .canonicalize()
         .context("resolve mother directory")
+}
+
+fn private_mounts(command: &mut Command) {
+    command.args([
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--tmpfs",
+        "/run",
+        "--dir",
+        "/run/user",
+        "--dir",
+        "/run/yinz-bin",
+    ]);
+}
+
+fn declared_environment(
+    declaration: &Declaration,
+    setenv: &mut impl FnMut(&str, &str) -> Result<()>,
+) -> Result<()> {
+    for (name, value) in &declaration.env {
+        setenv(name, value)?;
+    }
+    for name in &declaration.inherit {
+        let value =
+            std::env::var(name).with_context(|| format!("missing inherited variable {name}"))?;
+        setenv(name, &value)?;
+    }
+    Ok(())
 }
 
 fn mother_state(kind: &str) -> Result<Vec<PathBuf>> {
@@ -479,18 +562,17 @@ fn mother_state(kind: &str) -> Result<Vec<PathBuf>> {
 
 impl Environment {
     /// Prepare an internal profile without reading project configuration or requiring Git.
-    pub fn prepare_mother(&self, kind: &str, program: &Path) -> Result<Self> {
+    /// Runtime probes belong to the PTY spawn, where mother failures can fall back locally.
+    pub fn prepare_mother(&self, kind: &str) -> Result<Self> {
         platform()?;
-        let profile = self.accept_mother(kind)?;
-        profile.check_launch(&self.root, program)?;
-        Ok(profile)
+        self.accept_mother(kind)
     }
 
     fn accept_mother(&self, kind: &str) -> Result<Self> {
         let paths = mother_state(kind)?;
         // History records this target; switching providers must leave earlier profiles intact.
         let root = self.root.with_file_name(format!("profile-{kind}"));
-        if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        if root.is_symlink() {
             bail!(
                 "Mother profile directory must not be a symlink: {}",
                 root.display()
@@ -499,7 +581,6 @@ impl Environment {
         yinz_runtime::shared::ensure_secure_dir(&root)
             .context("create private mother profile directory")?;
         let profile = Self::at_root(&root);
-        let _lock = profile.lock(true)?;
         let mut state = Vec::new();
         for path in paths {
             absolute(path.to_str().context("agent state path is not UTF-8")?)?;
@@ -528,9 +609,41 @@ impl Environment {
             },
             ready: true,
         };
-        profile.validate_storage(&accepted.declaration)?;
-        profile.save(&accepted)?;
+        for exclusive in [false, true] {
+            let _lock = profile.lock(exclusive)?;
+            profile.validate_storage(&accepted.declaration)?;
+            if profile
+                .accepted()
+                .is_ok_and(|previous| previous.declaration == accepted.declaration)
+            {
+                return Ok(profile);
+            }
+            if exclusive {
+                profile.save(&accepted)?;
+            }
+        }
         Ok(profile)
+    }
+
+    /// Preserve project targets; a mother fork needs the destination provider's state mounts.
+    pub fn for_agent(&self, kind: &str, cwd: Option<&Path>) -> Result<Self> {
+        let _lock = self.lock(false)?;
+        let accepted = self.accepted()?;
+        let Some(state) = &accepted.declaration.mother else {
+            return Ok(Self::at_root(&self.root));
+        };
+        let cwd = cwd.context("Mother agent requires a working directory")?;
+        self.validate_launch_cwd(cwd, &accepted.declaration)?;
+        let desired = mother_state(kind)?
+            .into_iter()
+            .map(|path| path.canonicalize().unwrap_or(path))
+            .collect::<Vec<_>>();
+        // Legacy profiles have no mother_work; retain them when their mounts already match.
+        if *state == desired {
+            return Ok(Self::at_root(&self.root));
+        }
+        drop(_lock);
+        Self::at_root(self.writable_root(&accepted.declaration)).prepare_mother(kind)
     }
 
     fn writable_root<'a>(&'a self, declaration: &'a Declaration) -> &'a Path {
@@ -735,6 +848,87 @@ impl Environment {
         Ok(())
     }
 
+    fn project_command(
+        &self,
+        command: &mut Command,
+        declaration: &Declaration,
+        setenv: &mut impl FnMut(&str, &str) -> Result<()>,
+    ) -> Result<Vec<File>> {
+        let mut data_files = Vec::new();
+        for (path, contents) in ACCOUNTS.iter().zip(accounts()) {
+            let mut file = tempfile::tempfile().context("create sandbox account file")?;
+            file.write_all(contents.as_bytes())
+                .context("write sandbox account file")?;
+            command
+                .arg("--ro-bind-data")
+                .arg(file.as_raw_fd().to_string())
+                .arg(path);
+            data_files.push(file);
+        }
+        for path in SYSTEM.iter().chain(ETC) {
+            if Path::new(path).exists() {
+                command.args(["--ro-bind", path, path]);
+            }
+        }
+        private_mounts(command);
+        command.arg("--bind").arg(&self.root).arg(&self.root);
+        command.arg("--bind").arg(&self.home).arg(HOME);
+        declared_environment(declaration, setenv)?;
+        let mut paths = vec![
+            "/run/yinz-bin".to_owned(),
+            "/usr/local/bin".into(),
+            "/usr/bin".into(),
+            "/bin".into(),
+        ];
+        paths.extend(declaration.paths.iter().cloned());
+        for (name, value) in [
+            ("HOME", HOME),
+            ("PATH", &paths.join(":")),
+            ("XDG_CONFIG_HOME", "/home/yinz/.config"),
+            ("XDG_CACHE_HOME", "/home/yinz/.cache"),
+            ("XDG_DATA_HOME", "/home/yinz/.local/share"),
+        ] {
+            setenv(name, value)?;
+        }
+        Ok(data_files)
+    }
+
+    fn mother_command(
+        &self,
+        command: &mut Command,
+        declaration: &Declaration,
+        state: &[PathBuf],
+        setenv: &mut impl FnMut(&str, &str) -> Result<()>,
+    ) -> Result<Vec<File>> {
+        command.args(["--ro-bind", "/", "/"]);
+        private_mounts(command);
+        if Path::new("/etc/resolv.conf").exists() {
+            bind_mother_resolver(command, Path::new("/etc/resolv.conf"))?;
+        }
+        let work = self.writable_root(declaration);
+        command.arg("--bind").arg(work).arg(work);
+        for path in state {
+            command.arg("--bind").arg(path).arg(path);
+        }
+        for (name, value) in std::env::vars_os() {
+            let (Some(name), Some(value)) = (name.to_str(), value.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("YINZ_") {
+                setenv(name, value)?;
+            }
+        }
+        declared_environment(declaration, setenv)?;
+        setenv(
+            "PATH",
+            &format!(
+                "/run/yinz-bin:{}",
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )?;
+        Ok(Vec::new())
+    }
+
     fn command(&self, declaration: &Declaration, cwd: &Path, runtime: bool) -> Result<Command> {
         let mut command = Command::new("bwrap");
         command.args([
@@ -753,22 +947,6 @@ impl Environment {
         command
             .arg("--args")
             .arg(environment_args.as_raw_fd().to_string());
-        // Rewound and inherited with the environment arguments below.
-        let mut data_files = Vec::new();
-        for (path, contents) in ACCOUNTS
-            .iter()
-            .zip(accounts())
-            .filter(|_| declaration.mother.is_none())
-        {
-            let mut file = tempfile::tempfile().context("create sandbox account file")?;
-            file.write_all(contents.as_bytes())
-                .context("write sandbox account file")?;
-            command
-                .arg("--ro-bind-data")
-                .arg(file.as_raw_fd().to_string())
-                .arg(path);
-            data_files.push(file);
-        }
         let mut setenv = |name: &str, value: &str| -> Result<()> {
             if name.contains('\0') || value.contains('\0') {
                 bail!("NUL in Bubblewrap environment argument");
@@ -783,41 +961,10 @@ impl Environment {
             }
             Ok(())
         };
-        if declaration.mother.is_some() {
-            command.args(["--ro-bind", "/", "/"]);
-        }
-        for path in SYSTEM
-            .iter()
-            .chain(ETC)
-            .filter(|_| declaration.mother.is_none())
-        {
-            if Path::new(path).exists() {
-                command.args(["--ro-bind", path, path]);
-            }
-        }
-        command.args([
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-            "--tmpfs",
-            "/run",
-            "--dir",
-            "/run/user",
-            "--dir",
-            "/run/yinz-bin",
-        ]);
-        let work = self.writable_root(declaration);
-        command.arg("--bind").arg(work).arg(work);
-        if let Some(paths) = &declaration.mother {
-            for path in paths {
-                command.arg("--bind").arg(path).arg(path);
-            }
-        } else {
-            command.arg("--bind").arg(&self.home).arg(HOME);
-        }
+        let mut data_files = match &declaration.mother {
+            Some(state) => self.mother_command(&mut command, declaration, state, &mut setenv)?,
+            None => self.project_command(&mut command, declaration, &mut setenv)?,
+        };
         let mut mount_files = Vec::new();
         for (src, dst) in &declaration.mounts {
             let file = open_mount_source(src)?;
@@ -833,58 +980,12 @@ impl Environment {
             command.arg("--ro-bind-fd").arg(fd.to_string()).arg(dst);
             mount_files.push(file);
         }
-        let mut paths = vec![
-            "/run/yinz-bin".to_owned(),
-            "/usr/local/bin".into(),
-            "/usr/bin".into(),
-            "/bin".into(),
-        ];
-        paths.extend(declaration.paths.iter().cloned());
-        if declaration.mother.is_some() {
-            for (name, value) in std::env::vars_os() {
-                let name = name.to_str().context("non-UTF-8 mother environment name")?;
-                if !name.starts_with("YINZ_") {
-                    setenv(
-                        name,
-                        value
-                            .to_str()
-                            .context("non-UTF-8 mother environment value")?,
-                    )?;
-                }
-            }
-        }
-        for (name, value) in &declaration.env {
-            setenv(name, value)?;
-        }
-        for name in &declaration.inherit {
-            let value = std::env::var(name)
-                .with_context(|| format!("missing inherited variable {name}"))?;
-            setenv(name, &value)?;
-        }
         for (name, value) in [
-            ("HOME", HOME),
-            ("PATH", &paths.join(":")),
             ("TMPDIR", "/tmp"),
             ("XDG_RUNTIME_DIR", "/run/user"),
-            ("XDG_CONFIG_HOME", "/home/yinz/.config"),
-            ("XDG_CACHE_HOME", "/home/yinz/.cache"),
-            ("XDG_DATA_HOME", "/home/yinz/.local/share"),
             ("YINZ_BUBBLEWRAP", "1"),
         ] {
-            if declaration.mother.is_none()
-                || matches!(name, "TMPDIR" | "XDG_RUNTIME_DIR" | "YINZ_BUBBLEWRAP")
-            {
-                setenv(name, value)?;
-            }
-        }
-        if declaration.mother.is_some() {
-            setenv(
-                "PATH",
-                &format!(
-                    "/run/yinz-bin:{}",
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            )?;
+            setenv(name, value)?;
         }
         for name in ["TERM", "COLORTERM", "LANG"] {
             if declaration.env.contains_key(name)
@@ -896,7 +997,11 @@ impl Environment {
                 setenv(name, &value)?;
             }
         }
-        bind_binary(&mut command, work, yinz_binary()?);
+        bind_binary(
+            &mut command,
+            self.writable_root(declaration),
+            yinz_binary()?,
+        );
         if runtime {
             let session = std::env::var("YINZ_SESSION_NAME")
                 .context("Bubblewrap launch requires a Yinz session")?;
@@ -1098,22 +1203,28 @@ impl Environment {
     /// resolving on the sandbox's own `PATH`. Run by the server so a failure is the
     /// spawner's answer; [`Self::run`] repeats only what guards the exec itself.
     ///
-    /// A `program` that does not resolve is reported as [`ProgramNotFound`].
-    pub fn check_launch(&self, cwd: &Path, program: &Path) -> Result<()> {
-        platform()?;
+    /// Mother probe failures request local fallback; project lookup failures report [`ProgramNotFound`].
+    pub fn check_launch(&self, cwd: &Path, program: &Path) -> Result<LaunchCheck> {
         let _lock = self.lock(false)?;
         let accepted = self.accepted()?;
         self.validate_launch_cwd(cwd, &accepted.declaration)?;
+        match self.launch_probes(&accepted.declaration, cwd, program) {
+            Ok(()) => Ok(LaunchCheck::Ready),
+            Err(error) if accepted.declaration.mother.is_some() => {
+                Ok(LaunchCheck::MotherFallback(format!("{error:#}")))
+            },
+            Err(error) => Err(error),
+        }
+    }
+
+    fn launch_probes(&self, declaration: &Declaration, cwd: &Path, program: &Path) -> Result<()> {
+        platform()?;
         let path = self.metadata.join("launch.log");
         let log = open_log(&path).context("open launch check log")?;
         let deadline = Instant::now() + Duration::from_secs(10);
-        self.checks(&accepted.declaration, cwd, &log, deadline)
+        self.checks(declaration, cwd, &log, deadline)
             .with_context(|| format!("Launch checks failed; inspect {}", path.display()))?;
-        let mut command = self.command(
-            &accepted.declaration,
-            cwd,
-            accepted.declaration.mother.is_some(),
-        )?;
+        let mut command = self.command(declaration, cwd, declaration.mother.is_some())?;
         command
             .args([
                 "--",

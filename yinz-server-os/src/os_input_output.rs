@@ -786,7 +786,13 @@ impl ServerOsInputOutput {
                 if let Some(report_progress) = report_progress {
                     report_progress("running launch checks");
                 }
-                check_bubblewrap_launch(root, &cmd)?;
+                if let Some(reason) = check_bubblewrap_launch(root, &cmd)? {
+                    yinz_types::agent::mother_fallback(&mut cmd.command, &mut cmd.args, &reason);
+                    cmd.target = PaneTarget::Local;
+                    // Resolve portable launchers on the host, retaining the sandbox request for reruns.
+                    let (local, _, endpoint) = self.resolve_target(cmd, None)?;
+                    return Ok((local, rerun_cmd, endpoint));
+                }
                 Ok((cmd, rerun_cmd, None))
             },
         }
@@ -1048,12 +1054,13 @@ fn resolve_failed(
 
 /// Run a Bubblewrap launch's checks for the environment of the checkout at `root`.
 ///
-/// A program missing from the sandbox's `PATH` becomes the `CommandNotFound` a missing
+/// A mother probe failure returns its local-fallback warning. A project program missing
+/// from the sandbox's `PATH` becomes the `CommandNotFound` a missing
 /// local command already is. Its terminal id is a placeholder, as a broker's is:
 /// [`resolve_failed`] names the pane.
 #[cfg(unix)]
-fn check_bubblewrap_launch(root: &Path, cmd: &RunCommand) -> Result<()> {
-    use yinz_project_config::bubblewrap::{Environment, ProgramNotFound};
+fn check_bubblewrap_launch(root: &Path, cmd: &RunCommand) -> Result<Option<String>> {
+    use yinz_project_config::bubblewrap::{Environment, LaunchCheck, ProgramNotFound};
     let cwd = cmd
         .cwd
         .as_deref()
@@ -1062,6 +1069,10 @@ fn check_bubblewrap_launch(root: &Path, cmd: &RunCommand) -> Result<()> {
         .unwrap_or((&cmd.command, &cmd.args));
     Environment::at_root(root)
         .check_launch(cwd, program)
+        .map(|outcome| match outcome {
+            LaunchCheck::Ready => None,
+            LaunchCheck::MotherFallback(reason) => Some(reason),
+        })
         .map_err(|error| {
             if error.downcast_ref::<ProgramNotFound>().is_some() {
                 YinzError::CommandNotFound {
@@ -1076,7 +1087,7 @@ fn check_bubblewrap_launch(root: &Path, cmd: &RunCommand) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn check_bubblewrap_launch(_root: &Path, _cmd: &RunCommand) -> Result<()> {
+fn check_bubblewrap_launch(_root: &Path, _cmd: &RunCommand) -> Result<Option<String>> {
     Err(anyhow!("Bubblewrap agent environments require Linux"))
 }
 

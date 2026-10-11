@@ -8,13 +8,7 @@ use yinz_bus::command_palette::{
 use yinz_types::agent::control::AgentPlacement;
 use yinz_types::data::PaneInfo;
 
-/// `session_cwd` is the directory the session was started in.
-pub(crate) fn handle(
-    mut request: AgentRequest,
-    senders: &ThreadSenders,
-    data: &DataAccess,
-    session_cwd: &Path,
-) {
+pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &DataAccess) {
     // A newly opened shell can precede the first cwd broadcast. Query the captured
     // pane, never whichever pane happens to be focused when this worker runs.
     if request.source.cwd.is_none()
@@ -36,7 +30,7 @@ pub(crate) fn handle(
             }
         }
     }
-    let reply = execute(&request, senders, data, session_cwd);
+    let reply = execute(&request, senders, data);
     senders
         .send_to_screen(ScreenInstruction::CommandPalette(Instruction::AgentReply {
             client: request.client,
@@ -106,12 +100,11 @@ fn execute(
     request: &AgentRequest,
     senders: &ThreadSenders,
     data: &DataAccess,
-    session_cwd: &Path,
 ) -> Result<AgentReply, String> {
     use AgentAction::*;
     let source = match &request.action {
         History(action) => return history::execute(request, action, senders, data),
-        Mother { kind } => return mother(request, kind, session_cwd, senders),
+        Mother { kind } => return mother(request, kind, senders),
         _ => current_source(request, senders)?,
     };
     let choice = |label: String, description: String, action| AgentChoice {
@@ -139,7 +132,6 @@ fn execute(
                 },
                 senders,
                 data,
-                session_cwd,
             )
         },
         Projects { kind } => {
@@ -249,7 +241,6 @@ fn execute(
                 },
                 senders,
                 data,
-                session_cwd,
             )
         },
         Launch {
@@ -350,11 +341,7 @@ fn existing_command(
     }
     let mut command =
         yinz_runtime::agent::launch::command_in_context(kind, Some(cwd.into()), target)?;
-    if !command.target.is_remote() {
-        yinz_runtime::agent::pi::prepare_command(&mut command)?;
-    } else {
-        yinz_runtime::agent::pi::strip_extension(&mut command.args);
-    }
+    prepare_agent_command(&mut command)?;
     Ok(PreparedAgent {
         command,
         cwd: cwd.into(),
@@ -368,7 +355,6 @@ fn existing_command(
 fn mother(
     request: &AgentRequest,
     kind: &str,
-    _session_cwd: &Path,
     senders: &ThreadSenders,
 ) -> Result<AgentReply, String> {
     let session = yinz_runtime::envs::get_session_name()
@@ -387,13 +373,8 @@ fn mother(
         let kind = yinz_runtime::agent::launch::kind_for_spec(spec)
             .ok_or("mother requires an agent kind")?;
         let mut prepared = existing_command(&kind, &cwd.to_string_lossy(), PaneTarget::Local)?;
-        let (program, _) = yinz_types::agent::unwrapped_program_and_args(
-            &prepared.command.path,
-            &prepared.command.args,
-        )
-        .unwrap_or((&prepared.command.path, &prepared.command.args));
         let sandbox = yinz_config::project_config::bubblewrap::Environment::at_root(&cwd)
-            .prepare_mother(&kind, program);
+            .prepare_mother(&kind);
         mother_target(
             &mut prepared,
             sandbox
@@ -413,20 +394,7 @@ fn mother_target(
         Err(reason) => {
             // Print before exec, once. An agent that has started is never retried locally.
             let command = &mut prepared.command;
-            let message = format!(
-                "Mother is running unsandboxed (no filesystem isolation): {}",
-                yinz_types::text::clean_string_from_control_and_linebreak(&reason)
-            );
-            let mut args = vec![
-                "-c".into(),
-                yinz_types::agent::MOTHER_FALLBACK_SCRIPT.into(),
-                "mother".into(),
-                message,
-                command.path.to_string_lossy().into_owned(),
-            ];
-            args.append(&mut command.args);
-            command.path = "/bin/sh".into();
-            command.args = args;
+            yinz_types::agent::mother_fallback(&mut command.path, &mut command.args, &reason);
             command.target = PaneTarget::Local;
         },
     }

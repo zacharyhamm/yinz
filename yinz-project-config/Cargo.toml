@@ -24,3 +24,4 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+yinz-test-support = { path = "../yinz-test-support" }

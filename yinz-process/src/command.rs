@@ -21,13 +21,8 @@ pub fn resolve_agent_launcher(
         let index = if program == Path::new("env") {
             // Generated env wrappers contain assignments followed by the command.
             args.iter().position(|arg| !arg.contains('='))
-        } else if program.file_name().is_some_and(|name| name == "sh")
-            && matches!(args, [flag, script, name, _reason, _command, ..]
-                if flag == "-c" && script == yinz_types::agent::MOTHER_FALLBACK_SCRIPT && name == "mother")
-        {
-            Some(4)
         } else {
-            None
+            yinz_types::agent::mother_fallback_command_index(program, args)
         };
         if let Some(index) = index {
             let (assignments, rest) = args.split_at_mut(index + 1);

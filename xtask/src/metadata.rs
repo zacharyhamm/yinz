@@ -26,7 +26,10 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("yinz-key-codec", &["yinz-types"]),
     ("yinz-host-protocol", &["yinz-types"]),
     ("yinz-storage", &["yinz-types", "yinz-runtime"]),
-    ("yinz-project-config", &["yinz-types", "yinz-runtime"]),
+    (
+        "yinz-project-config",
+        &["yinz-types", "yinz-runtime", "yinz-test-support"],
+    ),
     (
         "yinz-config",
         &["yinz-types", "yinz-runtime", "yinz-project-config"],
@@ -227,6 +230,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// The TypeScript builtins' tests hold their files to the runtime's name list, but the builtins
 /// name no crate, so the sources the plugin host embeds never wait on or rebuild with the runtime.
 const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
+    ("yinz-project-config", &["yinz-test-support"]),
     ("yinz-plugin-authoring", &["yinz-test-support"]),
     ("yinz-ipc", &["yinz-plugin-api"]),
     ("yinz-cli", &["yinz-plugin-api"]),

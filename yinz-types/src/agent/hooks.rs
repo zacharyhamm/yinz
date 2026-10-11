@@ -10,7 +10,7 @@ use super::{AgentInfo, AgentSource, AgentState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The Claude Code hook events a record is read from, in the order Claude Code fires them.
 ///
@@ -260,6 +260,32 @@ pub const BUBBLEWRAP_RUN_FLAG: &str = "--bubblewrap-run";
 /// Generated mother banner wrapper, shared with detection so lifecycle hooks still see the agent.
 pub const MOTHER_FALLBACK_SCRIPT: &str = "printf '%s\\n' \"$1\"; shift; exec \"$@\"";
 
+/// Wrap a local mother command with its one-time fallback warning.
+pub fn mother_fallback(program: &mut PathBuf, args: &mut Vec<String>, reason: &str) {
+    let message = format!(
+        "Mother is running unsandboxed (no filesystem isolation): {}",
+        crate::text::clean_string_from_control_and_linebreak(reason)
+    );
+    let mut wrapped = vec![
+        "-c".into(),
+        MOTHER_FALLBACK_SCRIPT.into(),
+        "mother".into(),
+        message,
+        program.to_string_lossy().into_owned(),
+    ];
+    wrapped.append(args);
+    *program = "/bin/sh".into();
+    *args = wrapped;
+}
+
+/// Index of the executable in our generated banner wrapper, never arbitrary shell code.
+pub fn mother_fallback_command_index(program: &Path, args: &[String]) -> Option<usize> {
+    (program.file_name().is_some_and(|name| name == "sh")
+        && matches!(args, [flag, script, name, _reason, _command, ..]
+            if flag == "-c" && script == MOTHER_FALLBACK_SCRIPT && name == "mother"))
+    .then_some(4)
+}
+
 /// The command a Bubblewrap pane runs, read from the argv of the process holding its pty:
 /// this binary's launcher until it execs, then `bwrap`. Both end in `-- <command>`.
 ///
@@ -287,12 +313,8 @@ pub fn unwrapped_program_and_args<'a>(
     program: &'a Path,
     args: &'a [String],
 ) -> Option<(&'a Path, &'a [String])> {
-    if program.file_name()? == "sh" {
-        if let [flag, script, name, _reason, command, rest @ ..] = args {
-            if flag == "-c" && script == MOTHER_FALLBACK_SCRIPT && name == "mother" {
-                return unwrapped_program_and_args(Path::new(command), rest);
-            }
-        }
+    if let Some(index) = mother_fallback_command_index(program, args) {
+        return unwrapped_program_and_args(Path::new(&args[index]), &args[index + 1..]);
     }
     if program.file_name()? == "yinz" {
         if let [agent, launcher, flag, command, separator, rest @ ..] = args {
@@ -1635,6 +1657,28 @@ mod tests {
             Some("sh")
         );
         assert!(kind_from_program_and_args(Path::new("/bin/sh"), &args).is_none());
+    }
+
+    #[test]
+    fn mother_fallback_round_trip_and_exact_recognition() {
+        let mut program = PathBuf::from("env");
+        let mut args = vec!["SETTING=value".into(), "codex".into(), "--resume".into()];
+        mother_fallback(&mut program, &mut args, "failed\n\x1b[31mcheck");
+        assert_eq!(mother_fallback_command_index(&program, &args), Some(4));
+        assert!(!args[3].contains(['\n', '\x1b']));
+        let (inner, tail) = unwrapped_program_and_args(&program, &args).unwrap();
+        assert_eq!(inner, Path::new("codex"));
+        assert_eq!(tail, ["--resume"]);
+        for index in [0, 1, 2] {
+            let mut malformed = args.clone();
+            malformed[index] = "other".into();
+            assert_eq!(mother_fallback_command_index(&program, &malformed), None);
+        }
+        assert_eq!(mother_fallback_command_index(&program, &args[..4]), None);
+        assert_eq!(
+            mother_fallback_command_index(Path::new("bash"), &args),
+            None
+        );
     }
 
     #[test]
