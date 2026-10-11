@@ -5500,24 +5500,18 @@ impl Tab {
         }
         let groups = self.current_pane_group.borrow().clone_inner();
         let clients = self.connected_clients.borrow();
-        // TerminalPane applies overrides after computing the frame color, even for groups.
-        // Shared boundaries and stack-list borders retain the computed group color instead.
+        // Group colors take precedence over overrides in both frames and shared boundaries.
         let frame_can_pulse = clients
             .iter()
             .copied()
             .chain(client_id_override)
-            .any(|client_id| pane.frame_color_override(client_id).is_none());
-        if !frame_can_pulse
-            && !clients
-                .iter()
-                .copied()
-                .chain(client_id_override)
-                .any(|client_id| {
-                    groups
+            .any(|client_id| {
+                pane.frame_color_override(client_id).is_none()
+                    || groups
                         .get(&client_id)
                         .is_some_and(|group| group.contains(&pane_id))
-                })
-        {
+            });
+        if !frame_can_pulse {
             return false;
         }
         if let Some(list) = self
@@ -5573,7 +5567,7 @@ impl Tab {
         }
         let geom = pane.current_geom();
         if !self.tiled_panes.panes_contain(&pane_id) || self.pane_frame_style.draws_full_frames() {
-            return frame_can_pulse && self.waiting_border_is_uncovered(pane_id, &[geom]);
+            return self.waiting_border_is_uncovered(pane_id, &[geom]);
         }
 
         let viewport = *self.viewport.borrow();
@@ -5599,9 +5593,8 @@ impl Tab {
             (top, bottom, under)
         };
         // Titles and stack headers are rendered separately from shared boundaries.
-        if frame_can_pulse
-            && (geom.is_stacked()
-                || (self.pane_frame_style.draws_titles() && pane.get_content_offset().top > 0))
+        if geom.is_stacked()
+            || (self.pane_frame_style.draws_titles() && pane.get_content_offset().top > 0)
         {
             let (_, _, under) = stack_flags(pane);
             let header = PaneGeom {
@@ -5617,7 +5610,6 @@ impl Tab {
                 return true;
             }
         }
-        let foreground = self.terminal_emulator_colors.borrow().fg;
         self.connected_clients
             .borrow()
             .iter()
@@ -5630,8 +5622,8 @@ impl Tab {
                     .get(&client_id)
                     .unwrap_or(&self.default_mode_info)
                     .mode;
-                let mut unpulsed = Boundaries::new(viewport, self.style.colors.text_unselected);
-                let mut pulsed = Boundaries::new(viewport, self.style.colors.text_unselected);
+                let mut unpulsed = Boundaries::new(viewport);
+                let mut pulsed = Boundaries::new(viewport);
                 for (id, other) in self
                     .tiled_panes
                     .get_panes()
@@ -5642,13 +5634,13 @@ impl Tab {
                         let color = frame_color(
                             &self.style,
                             FrameColorState {
+                                host_colors: other.host_colors(),
                                 frame_color_override: other.frame_color_override(client_id).map(
                                     |color| (color, other.frame_color_override_strength(client_id)),
                                 ),
                                 // Test a positive pulse, even at the cycle's zero point or before
                                 // its first sample. Otherwise visibility could stop its own clock.
-                                waiting_pulse: (pulse && *id == pane_id)
-                                    .then_some((0.4, foreground)),
+                                waiting_pulse: (pulse && *id == pane_id).then_some(0.4),
                                 pane_is_focused: !self.floating_panes.panes_are_visible()
                                     && self.tiled_panes.get_active_pane_id(client_id) == Some(*id),
                                 pane_is_in_group: groups
@@ -5669,7 +5661,14 @@ impl Tab {
                             mode,
                             self.stack_list_session_is_mirrored,
                         );
-                        boundaries.add_rect(other.as_ref(), color, top, bottom, under);
+                        boundaries.add_rect(
+                            other.as_ref(),
+                            color,
+                            self.style.chrome_colors(),
+                            top,
+                            bottom,
+                            under,
+                        );
                     }
                 }
                 let cells: Vec<_> = pulsed
@@ -5742,7 +5741,6 @@ impl Tab {
         enabled: bool,
         client_id_override: Option<ClientId>,
     ) {
-        let foreground = self.terminal_emulator_colors.borrow().fg;
         for id in self.get_all_pane_ids() {
             if !self.get_pane_with_id(id).is_some_and(|pane| {
                 pane.waiting_pulse_started_at().is_some() || pane.waiting_pulse().is_some()
@@ -5751,7 +5749,7 @@ impl Tab {
             }
             let visible = enabled && self.waiting_border_is_visible(id, client_id_override);
             if let Some(pane) = self.get_pane_with_id_mut(id) {
-                pane.sample_waiting_pulse(now, visible, foreground);
+                pane.sample_waiting_pulse(now, visible);
             }
         }
     }

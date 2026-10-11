@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn every_frame_shape_uses_ui_defaults_and_preserves_indicator_backgrounds() {
+fn every_frame_shape_uses_terminal_defaults_and_preserves_indicator_backgrounds() {
     for (background, foreground) in [
         ((245, 240, 230), (40, 45, 50)),
         ((20, 25, 30), (220, 225, 230)),
@@ -21,11 +21,14 @@ fn every_frame_shape_uses_ui_defaults_and_preserves_indicator_backgrounds() {
                 other_focused_clients: vec![ClientId::new(2)],
                 ..Default::default()
             };
-            frame.style.colors.text_unselected.background = PaletteColor::Rgb(background);
-            frame.style.colors.text_unselected.base = PaletteColor::Rgb(foreground);
+            frame.style.terminal = Some(yinz_types::style::TerminalTheme {
+                foreground,
+                background,
+                ansi: [(0, 0, 0); 16],
+            });
             frame.style.colors.multiplayer_user_colors.player_2 = PaletteColor::Rgb((90, 130, 200));
             match shape {
-                1 => frame.pane_is_floating = true,
+                1 => frame.is_floating = true,
                 2 => {
                     frame.geom.rows = 1;
                     frame.should_draw_pane_frames = false;
@@ -66,6 +69,53 @@ fn every_frame_shape_uses_ui_defaults_and_preserves_indicator_backgrounds() {
             let (r, g, b) = foreground;
             assert!(serialized.contains(&format!("38;2;{r};{g};{b}")));
             assert!(serialized.contains("48;2;90;130;200"));
+        }
+    }
+}
+
+#[test]
+fn unthemed_and_ansi_frames_preserve_host_defaults_and_explicit_outlines() {
+    let themes = yinz_config::theme::Themes::from_string(
+        include_str!("../../../../yinz-config/assets/themes/ansi.kdl"),
+        false,
+    )
+    .unwrap();
+    let ansi = themes.get_theme("ansi").unwrap();
+    for style in [
+        Style::default(),
+        Style {
+            colors: ansi.palette,
+            terminal: ansi.terminal,
+            ..Style::default()
+        },
+    ] {
+        assert_eq!(style.chrome_colors(), None);
+        for color in [None, Some(style.colors.frame_selected.base)] {
+            let frame = PaneFrame {
+                geom: Viewport {
+                    x: 0,
+                    y: 0,
+                    cols: 20,
+                    rows: 4,
+                },
+                should_draw_pane_frames: true,
+                style,
+                color,
+                ..Default::default()
+            };
+            let (chunks, _) = frame.render().unwrap();
+            assert!(!chunks.is_empty());
+            for chunk in chunks {
+                assert_eq!(chunk.pane_default_fg, None);
+                assert_eq!(chunk.pane_default_bg, None);
+                for character in chunk.terminal_characters {
+                    assert_eq!(character.styles.background, Some(AnsiCode::Reset));
+                    assert_eq!(
+                        character.styles.foreground,
+                        Some(color.map(Into::into).unwrap_or(AnsiCode::Reset))
+                    );
+                }
+            }
         }
     }
 }

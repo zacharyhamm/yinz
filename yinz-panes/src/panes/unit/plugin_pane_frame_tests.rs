@@ -288,3 +288,26 @@ fn terminal_palette_does_not_remap_plugin_output() {
         && chunk.pane_default_bg.is_none()
         && chunk.changed_colors.is_none()));
 }
+
+#[test]
+fn plugin_frames_keep_the_calculated_fade_color() {
+    use crate::panes::terminal_character::AnsiCode;
+    use yinz_types::data::PaletteColor;
+
+    let mut pane = test_plugin_pane(5, 60, Offset::frame(1));
+    pane.flash_pane_frame_color_override(std::time::Instant::now());
+    for color in [Some(PaletteColor::Rgb((30, 40, 50))), None] {
+        let mut params = frame_params();
+        params.color = color;
+        let (frame, _) = pane
+            .render_frame(ClientId::new(1), params, InputMode::Normal)
+            .unwrap()
+            .unwrap();
+        assert!(!frame.is_empty());
+        assert!(frame
+            .iter()
+            .flat_map(|chunk| &chunk.terminal_characters)
+            .all(|character| character.styles.foreground
+                == Some(color.map(Into::into).unwrap_or(AnsiCode::Reset))));
+    }
+}

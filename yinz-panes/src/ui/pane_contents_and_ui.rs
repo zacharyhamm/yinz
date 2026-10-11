@@ -512,6 +512,7 @@ impl<'a> PaneContentsAndUi<'a> {
         boundaries.add_rect(
             self.pane.as_ref(),
             color,
+            self.style.chrome_colors(),
             pane_is_on_top_of_stack,
             pane_is_on_bottom_of_stack,
             self.pane_is_stacked_under,
@@ -526,6 +527,7 @@ impl<'a> PaneContentsAndUi<'a> {
         frame_color(
             &self.style,
             FrameColorState {
+                host_colors: self.pane.host_colors(),
                 frame_color_override: self
                     .pane
                     .frame_color_override(client_id)
@@ -552,14 +554,16 @@ impl<'a> PaneContentsAndUi<'a> {
 
 /// Everything about one pane, for one client, that decides the colour of that pane's frame.
 pub struct FrameColorState {
+    /// Host foreground/background, before any pane-local overrides.
+    pub host_colors: (PaletteColor, PaletteColor),
     /// The override colour and how strongly it applies right now - `1.0` fully, less while a bell
     /// flash is fading back out. A strength below `1.0` blends the override into the colour the
     /// pane would otherwise have, which is why the blend happens *here*: this function is the only
     /// place that knows what that colour is, and it differs per client with focus, group
     /// membership and hover.
     pub frame_color_override: Option<(PaletteColor, f32)>,
-    /// The sampled blend toward white and the host foreground for an inherited border color.
-    pub waiting_pulse: Option<(f32, PaletteColor)>,
+    /// The sampled pulse strength; colors are resolved from the current render context.
+    pub waiting_pulse: Option<f32>,
     pub pane_is_focused: bool,
     pub pane_is_in_group: bool,
     /// This pane is kin of the focused one - see `Pane::has_related_highlight`. The gentlest
@@ -570,19 +574,7 @@ pub struct FrameColorState {
     pub multiple_users_exist_in_session: bool,
 }
 
-/// How far a related pane's frame is faded from the focused frame's colour back towards the
-/// theme's background.
-///
-/// The hue is the *focused* frame's, because that is what the tint means: these panes are kin
-/// of the one you are looking at. The fade is what keeps it a hint - at full strength a room
-/// full of sibling agents would read as a room full of focused panes, which is worse than no
-/// hint at all.
-///
-/// Note which two colours are blended, and which one is not: `frame_unselected` is `None` in
-/// the default theme, and a frame with no colour is drawn in the *terminal's* own foreground -
-/// a colour independent of the theme. Easing away from a stand-in for it would make a
-/// related pane darker than an unrelated one on some terminals, turning the hint into a
-/// de-emphasis. Both ends here are defined in every theme.
+/// Fade the focused frame's hue toward the chrome background to mark related panes gently.
 const RELATED_FADE: f32 = 0.55;
 
 /// The colour a pane's frame and boundary cells are drawn in, and the precedence that colour wins
@@ -606,6 +598,7 @@ pub fn frame_color(
     session_is_mirrored: bool,
 ) -> Option<(PaletteColor, usize)> {
     let FrameColorState {
+        host_colors,
         frame_color_override,
         waiting_pulse,
         pane_is_focused,
@@ -614,12 +607,14 @@ pub fn frame_color(
         mouse_is_hovering_over_pane,
         multiple_users_exist_in_session,
     } = state;
+    let (foreground, background) = style.chrome_colors().unwrap_or(host_colors);
     if let Some((override_color, strength)) = frame_color_override.filter(|_| !pane_is_in_group) {
         // a fading override blends towards whatever this pane's frame would be without it, so a
         // bell settles back into the normal colour instead of snapping off it
         let settled = frame_color(
             style,
             FrameColorState {
+                host_colors,
                 frame_color_override: None,
                 waiting_pulse: None,
                 pane_is_focused,
@@ -632,10 +627,10 @@ pub fn frame_color(
             mode,
             session_is_mirrored,
         );
-        let base = settled
-            .map(|(color, _)| color)
-            .or_else(|| style.colors.frame_unselected.map(|frame| frame.base))
-            .unwrap_or(style.colors.frame_selected.base);
+        if strength <= 0.0 || strength.is_nan() {
+            return settled;
+        }
+        let base = settled.map(|(color, _)| color).unwrap_or(foreground);
         return Some((blend(base, override_color, strength), 10));
     }
     let base = if pane_is_in_group && !pane_is_focused {
@@ -662,24 +657,32 @@ pub fn frame_color(
         // most of the way back to the background, so it reads as "these belong with that one"
         // rather than as a second focus competing with the first.
         Some((
-            blend(
-                style.colors.frame_selected.base,
-                style.colors.text_unselected.background,
-                RELATED_FADE,
-            ),
+            blend(style.colors.frame_selected.base, background, RELATED_FADE),
             2,
         ))
     } else {
         style.colors.frame_unselected.map(|frame| (frame.base, 0))
     };
-    if let Some((strength, _)) = waiting_pulse.filter(|(strength, _)| *strength > 0.0) {
-        let (color, precedence) = base.unwrap_or((style.colors.text_unselected.base, 0));
-        // An unselected frame already uses the UI foreground; pulse it toward the focus color.
-        let target = if color == style.colors.text_unselected.base {
-            style.colors.frame_selected.base
-        } else {
-            style.colors.text_unselected.base
+    if let Some(strength) = waiting_pulse.filter(|strength| *strength > 0.0) {
+        let (color, precedence) = base.unwrap_or((foreground, 0));
+        let rgb = |color| match color {
+            PaletteColor::Rgb(rgb) => rgb,
+            PaletteColor::EightBit(index) => yinz_types::colors::eightbit_to_rgb(index),
         };
+        let start = rgb(color);
+        let mut target = style.colors.text_unselected.base;
+        if rgb(target) == start {
+            target = style.colors.frame_selected.base;
+        }
+        if rgb(target) == start {
+            let (r, g, b) = start;
+            let channel = if u16::from(r) + u16::from(g) + u16::from(b) <= 3 * 255 / 2 {
+                255
+            } else {
+                0
+            };
+            target = PaletteColor::Rgb((channel, channel, channel));
+        }
         Some((blend(color, target, strength), precedence + 1))
     } else {
         base

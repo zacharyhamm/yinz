@@ -2075,7 +2075,6 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
     };
     pane.set_agent_info(Some(waiting.clone()));
     let start = pane.waiting_pulse_started_at().unwrap();
-    let foreground = PaletteColor::Rgb((100, 150, 200));
     for (millis, strength) in [
         (0, 0.0),
         (450, 0.35),
@@ -2086,12 +2085,8 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
         (3600, 0.0),
     ] {
         pane.set_should_render(false);
-        pane.sample_waiting_pulse(
-            start + std::time::Duration::from_millis(millis),
-            true,
-            foreground,
-        );
-        assert_eq!(pane.waiting_pulse(), Some((strength, foreground)));
+        pane.sample_waiting_pulse(start + std::time::Duration::from_millis(millis), true);
+        assert_eq!(pane.waiting_pulse(), Some(strength));
         assert!(
             pane.should_render(),
             "an idle pane repaints when the sample changes"
@@ -2099,14 +2094,10 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
     }
     // Earlier, late and repeated samples never accumulate a per-tick step.
     for millis in [901, 12, 1377, 2700, 2700] {
-        pane.sample_waiting_pulse(
-            start + std::time::Duration::from_millis(millis),
-            true,
-            foreground,
-        );
+        pane.sample_waiting_pulse(start + std::time::Duration::from_millis(millis), true);
     }
-    assert_eq!(pane.waiting_pulse(), Some((0.7, foreground)));
-    pane.sample_waiting_pulse(start, false, foreground);
+    assert_eq!(pane.waiting_pulse(), Some(0.7));
+    pane.sample_waiting_pulse(start, false);
     assert_eq!(pane.waiting_pulse(), None);
     assert_eq!(
         pane.waiting_pulse_started_at(),
@@ -2119,16 +2110,12 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
     pane.set_agent_info(Some(waiting.clone()));
     assert_eq!(pane.waiting_pulse_started_at(), Some(start));
 
-    pane.sample_waiting_pulse(
-        start + std::time::Duration::from_millis(900),
-        true,
-        foreground,
-    );
+    pane.sample_waiting_pulse(start + std::time::Duration::from_millis(900), true);
     pane.set_agent_info(Some(waiting.clone()));
     waiting.cwd = Some("/work".into());
     pane.set_agent_info(Some(waiting.clone()));
     assert_eq!(pane.waiting_pulse_started_at(), Some(start));
-    assert_eq!(pane.waiting_pulse(), Some((0.7, foreground)));
+    assert_eq!(pane.waiting_pulse(), Some(0.7));
     assert!(pane.stack_list_entry_label().contains('🔔'));
 
     for next in [
@@ -2146,7 +2133,7 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
         assert_eq!(pane.waiting_pulse_started_at(), None);
         assert_eq!(pane.waiting_pulse(), None);
         assert!(!pane.stack_list_entry_label().contains('🔔'));
-        pane.sample_waiting_pulse(start, true, foreground);
+        pane.sample_waiting_pulse(start, true);
         assert_eq!(pane.waiting_pulse(), None);
         pane.set_agent_info(Some(waiting.clone()));
         assert!(
@@ -2156,9 +2143,8 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
         pane.sample_waiting_pulse(
             pane.waiting_pulse_started_at().unwrap() + std::time::Duration::from_millis(900),
             true,
-            foreground,
         );
-        assert_eq!(pane.waiting_pulse(), Some((0.7, foreground)));
+        assert_eq!(pane.waiting_pulse(), Some(0.7));
         assert!(pane.stack_list_entry_label().contains('🔔'));
     }
     pane.hold(Some(0), false, RunCommand::default());
@@ -2518,4 +2504,116 @@ fn dragging_a_selection_past_the_edge_scrolls_further_the_further_it_goes() {
         15,
         "three lines below the pane: three down"
     );
+}
+
+#[test]
+fn frame_and_boundary_backgrounds_match_terminal_themes_and_ignore_application_overrides() {
+    use crate::panes::terminal_character::AnsiCode;
+    use crate::ui::boundaries::Boundaries;
+    use yinz_types::pane_size::Viewport;
+
+    for (name, source) in [
+        (
+            "tokyo-night",
+            include_str!("../../../../yinz-config/assets/themes/tokyo-night.kdl"),
+        ),
+        (
+            "dracula",
+            include_str!("../../../../yinz-config/assets/themes/dracula.kdl"),
+        ),
+        (
+            "molokai-dark",
+            include_str!("../../../../yinz-config/assets/themes/molokai-dark.kdl"),
+        ),
+    ] {
+        let themes = yinz_config::theme::Themes::from_string(source, false).unwrap();
+        let theme = themes.get_theme(name).unwrap();
+        let style = Style {
+            terminal: theme.terminal,
+            colors: theme.palette,
+            ..Style::default()
+        };
+        let terminal = theme.terminal.unwrap();
+        let background = Some(AnsiCode::RgbCode(terminal.background));
+        let mut pane = agent_pane();
+        let host_colors = pane.host_colors();
+        pane.update_theme(theme.palette);
+        pane.update_terminal_theme(theme.terminal);
+        pane.set_content_offset(Offset::frame(1));
+        pane.handle_pty_bytes(b"content".to_vec());
+        let (chunks, _, _, _) = pane.render(None).unwrap().unwrap();
+        assert!(!chunks.is_empty(), "{name}");
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.pane_default_bg == background),
+            "{name}"
+        );
+
+        for application_override in [false, true] {
+            if application_override {
+                pane.handle_pty_bytes(b"\x1b]11;#010203\x07".to_vec());
+                let (chunks, _, _, _) = pane.render(None).unwrap().unwrap();
+                assert!(!chunks.is_empty());
+                assert!(chunks
+                    .iter()
+                    .all(|chunk| chunk.pane_default_bg == Some(AnsiCode::RgbCode((1, 2, 3)))));
+                pane.invalidate_frame(ClientId::new(1));
+            }
+            assert_eq!(pane.host_colors(), host_colors);
+            let mut params = frame_params(false);
+            params.style = style;
+            params.content_offset = pane.get_content_offset();
+            let (frame, _) = pane
+                .render_frame(ClientId::new(1), params, InputMode::Normal)
+                .unwrap()
+                .unwrap();
+            assert!(!frame.is_empty());
+            assert!(
+                frame
+                    .iter()
+                    .all(|chunk| chunk.pane_default_bg == background),
+                "{name}"
+            );
+
+            let mut boundaries = Boundaries::new(Viewport {
+                x: 0,
+                y: 0,
+                cols: 100,
+                rows: 30,
+            });
+            boundaries.add_rect(&pane, None, style.chrome_colors(), true, true, false);
+            let boundary = boundaries.render(None).unwrap();
+            assert!(!boundary.is_empty());
+            assert!(
+                boundary
+                    .iter()
+                    .flat_map(|chunk| &chunk.terminal_characters)
+                    .all(|character| character.styles.background == background),
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn terminal_frames_keep_the_calculated_fade_color() {
+    use crate::panes::terminal_character::AnsiCode;
+
+    let mut pane = agent_pane();
+    pane.flash_pane_frame_color_override(std::time::Instant::now());
+    for color in [Some(PaletteColor::Rgb((30, 40, 50))), None] {
+        let mut params = frame_params(false);
+        params.color = color;
+        let (frame, _) = pane
+            .render_frame(ClientId::new(1), params, InputMode::Normal)
+            .unwrap()
+            .unwrap();
+        assert!(!frame.is_empty());
+        assert!(frame
+            .iter()
+            .flat_map(|chunk| &chunk.terminal_characters)
+            .all(|character| character.styles.foreground
+                == Some(color.map(Into::into).unwrap_or(AnsiCode::Reset))));
+    }
 }

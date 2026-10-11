@@ -825,6 +825,10 @@ pub struct Grid {
 }
 
 impl Grid {
+    pub fn host_colors(&self) -> (PaletteColor, PaletteColor) {
+        let palette = self.terminal_emulator_colors.borrow();
+        (palette.fg, palette.bg)
+    }
     fn effective_foreground(&self) -> Option<(u8, u8, u8)> {
         self.application_fg
             .or(self.pane_default_fg)

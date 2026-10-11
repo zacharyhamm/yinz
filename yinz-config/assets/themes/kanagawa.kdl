@@ -128,14 +128,14 @@ themes {
         multiplayer_user_colors {
             player_1 149 127 184
             player_2 126 156 216
-            player_3 128 128 131
+            player_3 136 136 139
             player_4 255 158 59
             player_5 127 180 202
-            player_6 128 128 131
-            player_7 204 93 95
-            player_8 128 128 131
-            player_9 128 128 131
-            player_10 128 128 131
+            player_6 136 136 139
+            player_7 208 105 107
+            player_8 136 136 139
+            player_9 136 136 139
+            player_10 136 136 139
         }
     }
 }
