@@ -1055,6 +1055,7 @@ impl From<yinz_types::input::options::Options>
             focus_follows_mouse: options.focus_follows_mouse,
             mouse_click_through: options.mouse_click_through,
             context_menu_on_right_click: options.context_menu_on_right_click,
+            agent_theme_mapping: options.agent_theme_mapping.map(|value| value.to_string()),
             osc133_command_selection: options.osc133_command_selection,
             word_separators: options.word_separators,
             pane_frame_style: options.pane_frame_style.map(|s| match s {
@@ -1200,6 +1201,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             focus_follows_mouse: options.focus_follows_mouse,
             mouse_click_through: options.mouse_click_through,
             context_menu_on_right_click: options.context_menu_on_right_click,
+            agent_theme_mapping: options.agent_theme_mapping.map(|value| value.parse().map_err(anyhow::Error::msg)).transpose()?,
             osc133_command_selection: options.osc133_command_selection,
             word_separators: options.word_separators,
             host_notification_protocol: options
@@ -1428,6 +1430,10 @@ fn warped_pane_to_protobuf(
         title: pane.title.clone(),
         caption: pane.caption.clone(),
         contents: pane.contents.clone(),
+        agent_theme_json: pane
+            .agent_theme
+            .as_ref()
+            .and_then(|m| serde_json::to_string(m).ok()),
         borderless: pane.borderless,
         remote: pane.remote.as_ref().map(remote_handoff_to_protobuf),
         agent: pane.agent.clone().map(agent_info_to_proto),
@@ -1450,6 +1456,10 @@ fn warped_pane_from_protobuf(
         control_socket: std::path::PathBuf::from(pane.control_socket),
         title: pane.title,
         caption: pane.caption,
+        agent_theme: pane
+            .agent_theme_json
+            .as_deref()
+            .and_then(|m| serde_json::from_str(m).ok()),
         contents: pane.contents,
         borderless: pane.borderless,
         remote: pane.remote.and_then(remote_handoff_from_protobuf),
@@ -1573,6 +1583,7 @@ fn run_command_from_protobuf(
     cmd: crate::client_server_contract::client_server_contract::RunCommandAction,
 ) -> Option<yinz_types::input::command::RunCommand> {
     Some(yinz_types::input::command::RunCommand {
+        agent_theme: None,
         workflow_owner: None,
         command: std::path::PathBuf::from(cmd.command),
         args: cmd.args,
@@ -2268,6 +2279,10 @@ impl TryFrom<yinz_types::input::actions::Action>
                     title: payload.title.clone(),
                     caption: payload.caption.clone(),
                     contents: payload.contents.clone(),
+                    agent_theme_json: payload
+                        .agent_theme
+                        .as_ref()
+                        .and_then(|m| serde_json::to_string(m).ok()),
                     borderless: payload.borderless,
                     placement: ProtobufWarpPlacement::from(placement) as i32,
                     remote: payload.remote.as_ref().map(remote_handoff_to_protobuf),
@@ -3348,6 +3363,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                         title: adopt_pane_action.title.clone(),
                         caption: adopt_pane_action.caption.clone(),
                         contents: adopt_pane_action.contents.clone(),
+                        agent_theme: adopt_pane_action
+                            .agent_theme_json
+                            .as_deref()
+                            .and_then(|m| serde_json::from_str(m).ok()),
                         borderless: adopt_pane_action.borderless,
                         remote: adopt_pane_action
                             .remote
@@ -5537,6 +5556,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
         match run_type {
             RunType::Command(cmd) => Ok(yinz_types::input::layout::Run::Command(
                 yinz_types::input::command::RunCommand {
+                    agent_theme: None,
                     workflow_owner: None,
                     command: std::path::PathBuf::from(cmd.command),
                     args: cmd.args,

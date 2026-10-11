@@ -35,6 +35,8 @@ pub(super) const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServerToHostMsg {
+    /// Optional v1 palette metadata; older launchers and supervisors omit it.
+    AgentTheme(yinz_types::agent::theme::AgentThemeEvent),
     Hello {
         protocol_version: u32,
         yinz_version: String,

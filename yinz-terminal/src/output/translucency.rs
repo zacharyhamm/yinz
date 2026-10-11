@@ -199,11 +199,22 @@ impl Composition {
     ) -> (bool, RcCharacterStyles) {
         let styles = adjust_styles_for_possible_selection(
             chunk.selection_and_colors(),
-            *character.styles,
+            chunk.application_styles(*character.styles),
             chunk.y,
             x,
         );
-        let default_background = matches!(styles.background, None | Some(AnsiCode::Reset))
+        let selected_background = chunk
+            .selection_and_colors()
+            .iter()
+            .find(|highlight| highlight.selection.contains(chunk.y, x))
+            .is_some_and(|highlight| highlight.bg.is_some());
+        let mapped_theme_background = !selected_background
+            && chunk
+                .agent_theme
+                .as_ref()
+                .is_some_and(|palette| palette.theme_background(*character.styles));
+        let default_background = (matches!(styles.background, None | Some(AnsiCode::Reset))
+            || mapped_theme_background)
             && styles.reverse != Some(AnsiCode::On)
             && (chunk.pane_default_bg.is_none() || chunk.theme_background);
         let mut styles =

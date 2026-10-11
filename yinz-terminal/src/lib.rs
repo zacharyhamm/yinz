@@ -17,6 +17,7 @@
 //! `yinz-terminal-graphics` and the host query types in `yinz-host-protocol`; both are
 //! re-exported here.
 pub use yinz_host_protocol::host_query;
+pub mod agent_theme;
 pub mod output;
 pub mod panes;
 pub mod ui;

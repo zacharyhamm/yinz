@@ -1,6 +1,6 @@
 ---
 source: yinz-config/src/./unit/layout_test.rs
-assertion_line: 2515
+assertion_line: 2446
 expression: "normalize_layout_debug(format!(\"{:#?}\", layout))"
 ---
 Layout {
@@ -50,6 +50,7 @@ Layout {
                                 run: Some(
                                     Command(
                                         RunCommand {
+                                            agent_theme: None,
                                             command: "tail",
                                             args: [],
                                             cwd: Some(

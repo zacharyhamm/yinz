@@ -1,6 +1,6 @@
 ---
 source: yinz-config/src/./unit/layout_test.rs
-assertion_line: 3037
+assertion_line: 3057
 expression: "normalize_layout_debug(format!(\"{layout:#?}\"))"
 ---
 Layout {
@@ -117,6 +117,7 @@ Layout {
                         run: Some(
                             Command(
                                 RunCommand {
+                                    agent_theme: None,
                                     command: "ls",
                                     args: [],
                                     cwd: Some(
@@ -210,6 +211,7 @@ Layout {
                         run: Some(
                             Command(
                                 RunCommand {
+                                    agent_theme: None,
                                     command: "/home/aram/backup/executable",
                                     args: [],
                                     cwd: Some(
@@ -402,6 +404,7 @@ Layout {
                         run: Some(
                             Command(
                                 RunCommand {
+                                    agent_theme: None,
                                     command: "ls",
                                     args: [],
                                     cwd: Some(
@@ -495,6 +498,7 @@ Layout {
                         run: Some(
                             Command(
                                 RunCommand {
+                                    agent_theme: None,
                                     command: "/home/aram/backup/executable",
                                     args: [],
                                     cwd: Some(

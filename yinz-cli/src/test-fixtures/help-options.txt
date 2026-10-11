@@ -238,6 +238,9 @@ Options:
           
           [possible values: true, false]
 
+      --agent-theme-mapping <AGENT_THEME_MAPPING>
+          Map managed agent palettes to the Yinz theme (semantic or off)
+
       --word-separators <WORD_SEPARATORS>
           Characters that terminate a word when double-clicking to select it, in addition to
           whitespace (which is always a separator) default is "[]{}<>()"

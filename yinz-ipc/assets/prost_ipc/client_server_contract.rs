@@ -1629,6 +1629,8 @@ pub struct WarpPaneAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdoptPaneAction {
+    #[prost(string, optional, tag="14")]
+    pub agent_theme_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag="12")]
     pub bracketed_paste: bool,
     #[prost(message, optional, tag="13")]
@@ -1678,6 +1680,8 @@ pub struct WarpedAgentInput {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WarpedPane {
+    #[prost(string, optional, tag="13")]
+    pub agent_theme_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, tag="11")]
     pub bracketed_paste: bool,
     #[prost(message, optional, tag="12")]
@@ -2473,6 +2477,8 @@ pub struct Options {
     pub pane_animations: ::core::option::Option<bool>,
     #[prost(uint32, optional, tag="78")]
     pub background_opacity: ::core::option::Option<u32>,
+    #[prost(string, optional, tag="79")]
+    pub agent_theme_mapping: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

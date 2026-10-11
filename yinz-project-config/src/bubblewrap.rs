@@ -1028,6 +1028,7 @@ impl Environment {
 
             for name in [
                 "YINZ_PANE_REF",
+                "YINZ_AGENT_THEME_REF",
                 "YINZ_PANE_ID",
                 "YINZ_SESSION_NAME",
                 "YINZ_SWAMP_OWNER",

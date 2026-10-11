@@ -9908,6 +9908,18 @@ impl Tab {
     pub fn resize_pane_with_id(&mut self, strategy: ResizeStrategy, pane_id: PaneId) -> Result<()> {
         self.resize_pane_in_layer(PaneSubject::Pane(pane_id), strategy)
     }
+    pub fn update_agent_theme_mapping(
+        &mut self,
+        mapping: yinz_types::agent::theme::AgentThemeMapping,
+    ) {
+        self.style.agent_theme_mapping = mapping;
+        self.floating_panes.update_agent_theme_mapping(mapping);
+        self.overlay_panes.update_agent_theme_mapping(mapping);
+        self.tiled_panes.update_agent_theme_mapping(mapping);
+        for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
+            pane.update_agent_theme_mapping(mapping);
+        }
+    }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         self.floating_panes.update_terminal_theme(theme);

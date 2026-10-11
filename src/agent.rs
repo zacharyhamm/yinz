@@ -14,6 +14,10 @@ use yinz_types::agent::AgentSpawnSpec;
 
 pub(crate) fn run(mut command: Agent, opts: &CliArgs) -> Result<i32> {
     match &command {
+        Agent::Claude { command, args } => return launch_with_theme("claude", command, args),
+        Agent::CodexUntracked { command, args } => {
+            return launch_with_theme("codex", command, args)
+        },
         Agent::Codex { command, args } => return yinz_codex::launch(command, args),
         Agent::Muse { command, args } => return yinz_muse::launch(command, args),
         Agent::CodexReport => {
@@ -146,7 +150,9 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
     let mut timeout = Duration::from_secs(30);
     let (request, json) = match command {
         Agent::List { project, json } => (AgentRequest::List { project }, json),
-        Agent::Codex { .. }
+        Agent::Claude { .. }
+        | Agent::CodexUntracked { .. }
+        | Agent::Codex { .. }
         | Agent::CodexReport
         | Agent::Muse { .. }
         | Agent::MuseReport
@@ -758,3 +764,7 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
 #[cfg(test)]
 #[path = "unit/agent.rs"]
 mod tests;
+
+fn launch_with_theme(kind: &str, program: &Path, args: &[String]) -> Result<i32> {
+    yinz_process::agent_theme::launch(kind, program, args)
+}

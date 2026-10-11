@@ -358,6 +358,10 @@ pub fn serve(mut control: UnixStream, config: ServeConfig) -> Result<()> {
         install_signal_forwarder(event_tx.clone(), wake_tx.try_clone()?);
     }
 
+    // Spawn starts a new run; an adopted command may still carry its previous palette.
+    ctx.cmd.agent_theme = None;
+    let mut env = env;
+    env.push(("YINZ_AGENT_THEME_REF".into(), ctx.host_id.to_string()));
     match start_session(
         &ctx.cmd,
         failover_cmd.as_ref(),
@@ -699,7 +703,9 @@ fn handle_server_msg(
             );
             Ok(ControlOutcome::Continue)
         },
-        ServerToHostMsg::Hello { .. } | ServerToHostMsg::Spawn { .. } => {
+        ServerToHostMsg::AgentTheme(_)
+        | ServerToHostMsg::Hello { .. }
+        | ServerToHostMsg::Spawn { .. } => {
             log::warn!("pty-host {} got a duplicate handshake message", ctx.host_id);
             Ok(ControlOutcome::Continue)
         },
@@ -711,6 +717,7 @@ fn on_child_exited(
     status: Option<i32>,
     control: Option<&mut UnixStream>,
 ) -> Result<()> {
+    ctx.cmd.agent_theme = None;
     if let Some(session) = ctx.session.as_mut() {
         if session.exit_status.is_some() {
             return Ok(());
@@ -831,6 +838,17 @@ fn serve_cli_connection(ctx: &mut HostContext, mut stream: UnixStream) -> CliOut
     let _ = stream.set_read_timeout(Some(CLI_CONNECTION_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CLI_CONNECTION_TIMEOUT));
     match read_msg::<ServerToHostMsg, _>(&mut stream) {
+        Ok(Some(ServerToHostMsg::AgentTheme(event))) => {
+            if ctx
+                .session
+                .as_ref()
+                .is_some_and(|session| session.exit_status.is_none())
+            {
+                event.apply(&mut ctx.cmd.agent_theme);
+            }
+            let _ = write_msg(&mut stream, &HostToServerMsg::Status(ctx.status()));
+            CliOutcome::Done
+        },
         Ok(Some(ServerToHostMsg::Relabel {
             expected_session,
             session_name,

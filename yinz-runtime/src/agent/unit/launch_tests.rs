@@ -108,8 +108,17 @@ fn indirect_agent_resumes_reject_subcommands_that_would_precede_the_executable()
             .args
             .extend(resume_arguments.into_iter().map(str::to_owned));
         let (command, _) = plan(&exact).unwrap();
-        assert_eq!(command.path.to_str(), Some(program));
-        assert_eq!(command.args, exact.args);
+        if arguments.iter().any(|arg| arg.contains("codex")) {
+            assert_eq!(command.path.to_str(), Some("yinz"));
+            assert_eq!(
+                &command.args[..5],
+                ["agent", "codex-untracked", "--command", program, "--"]
+            );
+            assert_eq!(&command.args[5..], exact.args);
+        } else {
+            assert_eq!(command.path.to_str(), Some(program));
+            assert_eq!(command.args, exact.args);
+        }
     }
 }
 
@@ -127,8 +136,8 @@ fn managed_codex_resumes_reject_permission_overrides() {
                 };
                 if hooks == Some(false) {
                     let (command, _) = plan(&spec).unwrap();
-                    assert_eq!(command.path.to_str(), Some("codex"));
-                    assert_eq!(command.args[0], "resume");
+                    assert_eq!(command.path.to_str(), Some("yinz"));
+                    assert_eq!(command.args[5], "resume");
                 } else {
                     let error = plan(&spec).unwrap_err();
                     assert!(error.contains("omit --permission-mode"), "{error}");
@@ -190,7 +199,18 @@ fn codex_rejects_claude_aliases_without_restricting_provider_model_ids() {
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(command.args, ["--model", model]);
+        assert_eq!(
+            command.args,
+            [
+                "agent",
+                "codex-untracked",
+                "--command",
+                "codex",
+                "--",
+                "--model",
+                model
+            ]
+        );
     }
 }
 
@@ -238,6 +258,7 @@ fn display_command_drops_only_the_planners_hook_wiring() {
     );
 
     for kept in [
+        "echo yinz agent claude --command claude -- prompt",
         "claude --settings {\"hooks\":{}}",
         "env YINZ_CLAUDE_INLINE_HOOKS=1",
         "vim YINZ_CLAUDE_INLINE_HOOKS=1",

@@ -667,6 +667,7 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
         .place_adopted_pane(
             crate::TerminalId::new(50),
             WarpedPane {
+                agent_theme: None,
                 contents: Some("transferred screen".into()),
                 ..Default::default()
             },
@@ -3880,6 +3881,7 @@ fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
                 .place_adopted_pane(
                     TERMINAL_50,
                     WarpedPane {
+                        agent_theme: None,
                         agent: Some(agent.clone()),
                         held: held.clone(),
                         ..Default::default()
@@ -4657,6 +4659,7 @@ fn an_adopted_held_pane_restores_its_state_and_scrollback() {
             placed: crossbeam::channel::unbounded().0,
             terminal_id: TERMINAL_50,
             payload: Box::new(WarpedPane {
+                agent_theme: None,
                 held: Some(yinz_types::data::HeldTerminal {
                     command: cmd.clone(),
                     first_run: false,
@@ -4714,4 +4717,157 @@ fn an_adopted_held_pane_restores_its_state_and_scrollback() {
         .join("\n")
         .contains("RESTORED BEFORE ACK"));
     mock.teardown(vec![thread]);
+}
+
+#[test]
+fn agent_theme_history_travels_through_pane_and_tab_warps() {
+    use yinz_terminal::panes::terminal_character::{AnsiCode, NamedColor};
+    use yinz_types::agent::theme::*;
+    use yinz_types::colors::PaletteColor;
+    fn history(role: Role, id: &str, text: &str) -> Vec<u8> {
+        let snapshot = AgentThemeSnapshot {
+            version: SNAPSHOT_VERSION,
+            provider: "fixture".into(),
+            provider_version: "1".into(),
+            theme: "fixture".into(),
+            provenance: vec![],
+            availability: Availability::Available,
+            definitions: vec![Definition {
+                token: "status".into(),
+                channel: Channel::Foreground,
+                color: SourceColor::Index(2),
+                pair: None,
+                target: Some(role.into()),
+            }],
+            collisions: vec![],
+        };
+        yinz_terminal::agent_theme::handoff_replay(
+            text.into(),
+            Some(AgentThemeHandoff {
+                snapshots: vec![snapshot],
+                associations: vec![PaletteAssociation {
+                    offset: 0,
+                    palette: Some(0),
+                }],
+                active: Some(HandoffLaunch {
+                    launch_id: id.into(),
+                    palette: 0,
+                }),
+                ..Default::default()
+            }),
+        )
+    }
+    let mut theme = yinz_types::style::Style::default().colors;
+    theme.exit_code_success.base = PaletteColor::Rgb((11, 22, 33));
+    theme.exit_code_error.base = PaletteColor::Rgb((99, 88, 77));
+    let check = |pane: &mut dyn Pane, mapped: bool| {
+        pane.render_full_viewport();
+        pane.set_should_render(true);
+        let chunks = pane.render(None).unwrap().unwrap().0;
+        for (character, color) in [
+            ('S', None),
+            ('A', Some((11, 22, 33))),
+            ('s', None),
+            ('B', Some((99, 88, 77))),
+        ] {
+            let expected = if mapped {
+                color.map(AnsiCode::RgbCode)
+            } else {
+                None
+            }
+            .unwrap_or(AnsiCode::NamedColor(NamedColor::Green));
+            assert!(
+                chunks.iter().any(|chunk| chunk
+                    .terminal_characters
+                    .iter()
+                    .any(|cell| cell.character == character
+                        && chunk.application_styles(*cell.styles).foreground == Some(expected))),
+                "missing {character}"
+            );
+        }
+    };
+    for whole_tab in [false, true] {
+        let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+        new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
+        screen.scrollback_lines_to_serialize = Some(0);
+        let pane = screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(1)))
+            .unwrap();
+        pane.update_theme(theme);
+        pane.handle_pty_bytes(b"\x1b[32mS".to_vec());
+        pane.handle_pty_bytes(history(Role::Success, "first", "\x1b[32mAAA"));
+        pane.handle_pty_bytes(yinz_terminal::agent_theme::handoff_replay(
+            "\x1b[32ms".into(),
+            Some(AgentThemeHandoff::default()),
+        ));
+        pane.handle_pty_bytes(history(Role::Error, "second", "\x1b[32mBBB"));
+        check(pane.as_mut(), true);
+        let release = || {
+            Ok(ReleasedPane::Local(ReleasedPtyHost {
+                host_id: "fixture".into(),
+                host_pid: ProcessId::new(1),
+                control_socket: Some("/tmp/fixture.sock".into()),
+            }))
+        };
+        let payload = if whole_tab {
+            let (tab, ids, prepared) = screen
+                .check_tab_can_be_warped(Some(TabId::new(0)), ClientId::new(1))
+                .unwrap();
+            screen
+                .take_released_tab_for_warp(
+                    tab,
+                    ids.into_iter().map(|id| (id, release())).collect(),
+                    prepared,
+                )
+                .unwrap()
+                .tiled_panes
+                .remove(0)
+        } else {
+            *screen
+                .take_released_pane_for_warp(TerminalId::new(1), release())
+                .unwrap()
+        };
+        assert_eq!(payload.agent_theme.as_ref().unwrap().snapshots.len(), 2);
+        assert_eq!(
+            payload
+                .agent_theme
+                .as_ref()
+                .unwrap()
+                .active
+                .as_ref()
+                .unwrap()
+                .launch_id,
+            "second"
+        );
+        let pane = screen
+            .tabs
+            .get_mut(&TabId::new(1))
+            .unwrap()
+            .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(2)))
+            .unwrap();
+        pane.update_theme(theme);
+        pane.handle_pty_bytes(yinz_terminal::agent_theme::handoff_replay(
+            payload.contents.unwrap(),
+            payload.agent_theme,
+        ));
+        check(pane.as_mut(), true);
+        pane.update_agent_theme_mapping(AgentThemeMapping::Off);
+        check(pane.as_mut(), false);
+        pane.update_agent_theme_mapping(AgentThemeMapping::Semantic);
+        check(pane.as_mut(), true);
+        pane.handle_pty_bytes(b"\r\n\x1b[32mNEW".to_vec());
+        let chunks = pane.render(None).unwrap().unwrap().0;
+        assert!(chunks
+            .iter()
+            .any(|chunk| chunk
+                .terminal_characters
+                .iter()
+                .any(|cell| cell.character == 'N'
+                    && chunk.application_styles(*cell.styles).foreground
+                        == Some(AnsiCode::RgbCode((99, 88, 77))))));
+    }
 }

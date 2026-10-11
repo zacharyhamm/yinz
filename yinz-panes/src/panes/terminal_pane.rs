@@ -506,6 +506,10 @@ impl Pane for TerminalPane {
     fn set_selectable(&mut self, selectable: bool) {
         self.selectable = selectable;
     }
+    fn update_agent_theme_mapping(&mut self, mapping: yinz_types::agent::theme::AgentThemeMapping) {
+        self.style.agent_theme_mapping = mapping;
+        self.grid.set_agent_theme_mapping(mapping);
+    }
     fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         self.grid.update_terminal_theme(theme);
@@ -1192,7 +1196,11 @@ impl Pane for TerminalPane {
     fn is_alternate_mode_active(&self) -> bool {
         self.grid.is_alternate_mode_active()
     }
-    fn hold(&mut self, exit_status: Option<i32>, is_first_run: bool, run_command: RunCommand) {
+    fn hold(&mut self, exit_status: Option<i32>, is_first_run: bool, mut run_command: RunCommand) {
+        // Exit notifications travel separately from PTY bytes and can precede the
+        // final provider output. Let the ordered end event reset the grid palette;
+        // respawn also resets it before accepting a new process's output.
+        run_command.agent_theme = None;
         self.invoked_with = Some(Run::Command(run_command.clone()));
         // A held pane has no running process to be stopped, and a stale flag
         // would leave the resume hint up over a dead pane forever.
@@ -1502,6 +1510,13 @@ impl Pane for TerminalPane {
         self.pane_name = String::from_utf8_lossy(&buf).to_string();
         self.set_should_render(true);
     }
+    fn serialize_handoff(
+        &self,
+        scrollback: Option<usize>,
+        budget: usize,
+    ) -> Option<(String, Option<yinz_types::agent::theme::AgentThemeHandoff>)> {
+        self.grid.serialize_handoff(scrollback, budget)
+    }
     fn serialize(&self, scrollback_lines_to_serialize: Option<usize>) -> Option<String> {
         self.grid.serialize(scrollback_lines_to_serialize)
     }
@@ -1535,6 +1550,10 @@ impl Pane for TerminalPane {
         };
         let fresh_agent = cleaned.is_some();
         self.is_held.take().map(|(_, _, mut run_command)| {
+            run_command.agent_theme = None;
+            if let Some(Run::Command(command)) = self.invoked_with.as_mut() {
+                command.agent_theme = None;
+            }
             if let Some(args) = cleaned {
                 run_command.args = args;
                 self.invoked_with = Some(Run::Command(run_command.clone()));
@@ -1560,10 +1579,12 @@ impl Pane for TerminalPane {
             } else {
                 self.grid.reset_terminal_state();
             }
+            self.grid.begin_agent_run();
             self.set_should_render(true);
             self.remove_banner();
             match replacement {
-                Some(replacement) => {
+                Some(mut replacement) => {
+                    replacement.agent_theme = None;
                     // A pane re-run with a *different* command is not the same pane's work
                     // any more, and neither the record nor the memory of one says anything
                     // true about it. Left alone, a plugin reusing a held agent pane for `npm
@@ -1894,7 +1915,7 @@ impl TerminalPane {
             _ => format!("Pane #{}", pane_index),
         });
         let agent = agent_from_run(invoked_with.as_ref());
-        let grid = Grid::new(
+        let mut grid = Grid::new(
             position_and_size.rows.as_usize(),
             position_and_size.cols.as_usize(),
             terminal_emulator_colors,
@@ -1910,6 +1931,15 @@ impl TerminalPane {
             osc8_hyperlinks,
             explicitly_disable_keyboard_protocol,
         );
+        if let Some(Run::Command(command)) = &invoked_with {
+            if let Some(snapshot) = &command.agent_theme {
+                grid.apply_agent_theme_event(yinz_types::agent::theme::AgentThemeEvent {
+                    version: yinz_types::agent::theme::EVENT_VERSION,
+                    launch_id: snapshot.launch_id.clone(),
+                    snapshot: Some(snapshot.snapshot.clone()),
+                });
+            }
+        }
         if let Some(notification_end) = notification_end.as_mut() {
             notification_end.set_affected_pane_id(PaneId::Terminal(pid));
         }
@@ -2139,6 +2169,7 @@ impl TerminalPane {
             let working_dir = run_command.cwd.clone();
             self.is_held = None;
             self.grid.reset_terminal_state();
+            self.grid.begin_agent_run();
             self.set_should_render(true);
             self.remove_banner();
             AdjustedInput::DropToShellInThisPane { working_dir }

@@ -14,7 +14,7 @@ pub fn resolve_agent_launcher(
     args: &mut [String],
 ) -> Result<()> {
     if program == Path::new("yinz")
-        && matches!(args, [agent, launcher, ..] if agent == "agent" && matches!(launcher.as_str(), "codex" | "muse"))
+        && matches!(args, [agent, launcher, ..] if agent == "agent" && matches!(launcher.as_str(), "codex" | "codex-untracked" | "claude" | "muse"))
     {
         *program = host_bin.to_path_buf();
     } else {

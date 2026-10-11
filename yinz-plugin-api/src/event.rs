@@ -3155,6 +3155,7 @@ fn serialize_mode_update_event_with_non_default_values() {
             ),
         ],
         style: Style {
+            agent_theme_mapping: Default::default(),
             terminal: None,
             colors: Palette {
                 source: yinz_types::data::PaletteSource::Default,

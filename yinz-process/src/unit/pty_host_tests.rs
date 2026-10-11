@@ -147,6 +147,7 @@ impl TestHost {
 
 fn sh(script: &str) -> RunCommand {
     RunCommand {
+        agent_theme: None,
         workflow_owner: None,
         command: PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), script.to_owned()],
@@ -622,6 +623,7 @@ fn a_missing_command_is_reported_rather_than_panicking() {
         terminal_id: 0,
         session_name: None,
         cmd: RunCommand {
+            agent_theme: None,
             workflow_owner: None,
             command: PathBuf::from("/nonexistent/yinz-pty-host-no-such-binary"),
             args: vec![],
@@ -1344,6 +1346,82 @@ fn an_attach_is_refused_while_a_server_is_attached() {
     host.join();
 }
 
+#[test]
+fn agent_theme_retention_tracks_launches_and_rejects_duplicate_starts_and_stale_ends() {
+    use yinz_types::agent::theme::{
+        AgentThemeEvent, AgentThemeLaunch, AgentThemeSnapshot, Availability, EVENT_VERSION,
+        SNAPSHOT_VERSION,
+    };
+    let (mut host, _, socket) = TestHost::start();
+    let socket = socket.unwrap();
+    let snapshot = AgentThemeSnapshot {
+        version: SNAPSHOT_VERSION,
+        provider: "claude".into(),
+        provider_version: "2.1.296".into(),
+        theme: "custom:first".into(),
+        provenance: vec!["fixture-v1".into()],
+        availability: Availability::Available,
+        definitions: vec![],
+        collisions: vec![],
+    };
+    let mut command = sh("while read line; do echo \"$line\"; done");
+    let mut previous = snapshot.clone();
+    previous.theme = "previous-run".into();
+    command.agent_theme = Some(AgentThemeLaunch {
+        launch_id: "previous".into(),
+        snapshot: previous,
+    });
+    let (_, master) = host.spawn(command);
+    for (launch_id, theme) in [
+        ("old", Some("old")),
+        ("old", None),
+        ("first", Some("custom:first")),
+        ("first", Some("custom:later")),
+        ("old", None),
+    ] {
+        let snapshot = theme.map(|theme| {
+            let mut value = snapshot.clone();
+            value.theme = theme.into();
+            value
+        });
+        let mut report = UnixStream::connect(&socket).unwrap();
+        report.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+        write_msg(
+            &mut report,
+            &ServerToHostMsg::AgentTheme(AgentThemeEvent {
+                version: EVENT_VERSION,
+                launch_id: launch_id.into(),
+                snapshot,
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            read_msg::<HostToServerMsg, _>(&mut report).unwrap(),
+            Some(HostToServerMsg::Status(_))
+        ));
+    }
+    host.send(&ServerToHostMsg::Release);
+    let (reply, adopted_master) = attach_over_socket(
+        &socket,
+        yinz_types::internal_ids::TerminalId::new(42),
+        Some("new-owner"),
+    );
+    match reply {
+        HostToServerMsg::AttachAck { cmd, .. } => assert_eq!(
+            cmd.agent_theme,
+            Some(AgentThemeLaunch {
+                launch_id: "first".into(),
+                snapshot
+            })
+        ),
+        other => panic!("unexpected adoption response: {other:?}"),
+    }
+    drop(master);
+    drop(adopted_master);
+    crate::pty_host::client::terminate_via_socket(&socket).unwrap();
+    host.join();
+}
+
 /// A supervisor outlives the binary that spawned it, so an upgraded yinz can
 /// meet an older host. Refuse rather than misread its messages.
 #[test]
@@ -1943,4 +2021,59 @@ fn adoption_before_conditional_termination_keeps_the_pane_alive() {
     assert!(process_alive(pid));
     write_msg(&mut adopted, &ServerToHostMsg::Terminate).unwrap();
     host.join();
+}
+
+#[test]
+fn agent_theme_retention_clears_on_end_and_dedicated_child_exit() {
+    use yinz_types::agent::theme::*;
+    for teardown in [false, true] {
+        let (mut host, _, socket) = TestHost::start();
+        let socket = socket.unwrap();
+        let (_, mut master) = host.spawn(sh("read -r finish"));
+        let snapshot = AgentThemeSnapshot {
+            version: SNAPSHOT_VERSION,
+            provider: "fixture".into(),
+            provider_version: "1".into(),
+            theme: "test".into(),
+            provenance: vec![],
+            availability: Availability::Available,
+            definitions: vec![],
+            collisions: vec![],
+        };
+        let report = |snapshot| {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            write_msg(
+                &mut stream,
+                &ServerToHostMsg::AgentTheme(AgentThemeEvent {
+                    version: EVENT_VERSION,
+                    launch_id: "run".into(),
+                    snapshot,
+                }),
+            )
+            .unwrap();
+            assert!(matches!(
+                read_msg::<HostToServerMsg, _>(&mut stream).unwrap(),
+                Some(HostToServerMsg::Status(_))
+            ));
+        };
+        report(Some(snapshot));
+        if teardown {
+            master.write_all(b"finish\n").unwrap();
+            assert!(matches!(host.recv(), HostToServerMsg::ChildExited { .. }));
+        } else {
+            report(None);
+        }
+        host.send(&ServerToHostMsg::Release);
+        let (reply, adopted) =
+            attach_over_socket(&socket, yinz_types::internal_ids::TerminalId::new(42), None);
+        match reply {
+            HostToServerMsg::AttachAck { cmd, .. } => assert!(cmd.agent_theme.is_none()),
+            other => panic!("unexpected adoption: {other:?}"),
+        }
+        drop(adopted);
+        drop(master);
+        crate::pty_host::client::terminate_via_socket(&socket).unwrap();
+        host.join();
+    }
 }

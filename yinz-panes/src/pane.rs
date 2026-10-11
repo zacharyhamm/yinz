@@ -261,6 +261,11 @@ pub trait Pane {
     fn get_selected_text(&self, _client_id: ClientId) -> Option<String> {
         None
     }
+    fn update_agent_theme_mapping(
+        &mut self,
+        _mapping: yinz_types::agent::theme::AgentThemeMapping,
+    ) {
+    }
     fn update_terminal_theme(&mut self, _theme: Option<yinz_types::style::TerminalTheme>) {}
     /// Host defaults for chrome animation, excluding application and pane overrides.
     fn host_colors(&self) -> (PaletteColor, PaletteColor) {
@@ -759,6 +764,18 @@ pub trait Pane {
         None
     }
     fn rename(&mut self, _buf: Vec<u8>) {}
+    fn serialize_handoff(
+        &self,
+        scrollback: Option<usize>,
+        budget: usize,
+    ) -> Option<(String, Option<yinz_types::agent::theme::AgentThemeHandoff>)> {
+        self.serialize(scrollback).map(|contents| {
+            (
+                yinz_terminal::agent_theme::fit_legacy_contents(contents, budget),
+                None,
+            )
+        })
+    }
     fn serialize(&self, _scrollback_lines_to_serialize: Option<usize>) -> Option<String> {
         None
     }

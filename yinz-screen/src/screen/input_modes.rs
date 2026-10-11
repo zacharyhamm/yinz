@@ -261,6 +261,7 @@ impl Screen {
         }
 
         self.style = yinz_types::style::Style {
+            agent_theme_mapping: self.style.agent_theme_mapping,
             terminal: self.style.terminal,
             ..mode_info.style
         };

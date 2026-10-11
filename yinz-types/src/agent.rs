@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use strum_macros::{Display, EnumString};
 
+pub mod theme;
+
 /// Launch marker for direct agent panes, whose command has no originating plugin.
 pub const AGENT_PANE_ENV: &str = "YINZ_AGENT_PANE";
 

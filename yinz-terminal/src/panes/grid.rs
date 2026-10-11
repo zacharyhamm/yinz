@@ -743,7 +743,7 @@ pub struct Grid {
     pub should_render: bool,
     pub lock_renders: bool,
     // Completed content: synchronized output may mutate the viewport before a forced repaint.
-    completed_text: Vec<CharacterChunk>,
+    completed_text: Vec<Vec<CharacterChunk>>,
     completed_sixel: Vec<SixelImageChunk>,
     completed_kitty: Vec<KittyImageChunk>,
     repaint_completed_text: bool,
@@ -759,6 +759,13 @@ pub struct Grid {
     pub height: usize,
     pub pending_messages_to_pty: Vec<Vec<u8>>,
     pub selection: Selection,
+    agent_theme: Rc<crate::agent_theme::SourcePalette>,
+    agent_palettes: Vec<std::rc::Weak<crate::agent_theme::SourcePalette>>,
+    agent_launch: Option<yinz_types::agent::theme::AgentThemeLaunch>,
+    history_replay: Option<(
+        yinz_types::agent::theme::AgentThemeHandoff,
+        Vec<Rc<crate::agent_theme::SourcePalette>>,
+    )>,
     copied_text_selection: Option<Selection>,
     text_selection_active: bool,
     pub title: Option<String>,
@@ -859,11 +866,12 @@ impl Grid {
             return;
         }
         self.style.terminal = theme;
+        self.recompile_agent_theme();
         let colors = self.effective_colors();
         let fg = self.effective_foreground().map(AnsiCode::RgbCode);
         let bg = self.effective_background().map(AnsiCode::RgbCode);
         let theme_background = self.theme_background();
-        for chunk in &mut self.completed_text {
+        for chunk in self.completed_text.iter_mut().flatten() {
             chunk.theme_background = theme_background;
             chunk.add_changed_colors(colors);
             chunk.add_pane_defaults(fg, bg);
@@ -1206,6 +1214,10 @@ impl Grid {
             terminal_emulator_color_codes,
             output_buffer: Default::default(),
             selection: Default::default(),
+            agent_theme: Rc::new(crate::agent_theme::SourcePalette::new(None, style)),
+            agent_palettes: vec![],
+            agent_launch: None,
+            history_replay: None,
             title_stack: vec![],
             title: None,
             changed_colors: None,
@@ -1882,6 +1894,7 @@ impl Grid {
             // visible remainder is now a new line, including for cursor bookkeeping.
             if self.lines_above.is_empty() {
                 if let Some(first_row) = self.viewport.front_mut() {
+                    first_row.writing(&self.agent_theme);
                     first_row.is_canonical = true;
                 }
             }
@@ -2185,6 +2198,71 @@ impl Grid {
             },
         }
     }
+    pub fn serialize_handoff(
+        &self,
+        scrollback: Option<usize>,
+        budget: usize,
+    ) -> Option<(String, Option<yinz_types::agent::theme::AgentThemeHandoff>)> {
+        use yinz_types::agent::theme::{AgentThemeHandoff, HandoffLaunch};
+        if !self
+            .agent_palettes
+            .iter()
+            .any(|p| p.upgrade().is_some_and(|p| p.has_snapshot()))
+        {
+            return self
+                .serialize(scrollback)
+                .map(|c| (crate::agent_theme::fit_legacy_contents(c, budget), None));
+        }
+        let first = match scrollback {
+            None => self.lines_above.len(),
+            Some(0) => 0,
+            Some(n) => self.lines_above.len().saturating_sub(n),
+        };
+        let rows: Vec<_> = self
+            .lines_above
+            .iter()
+            .skip(first)
+            .chain(&self.viewport)
+            .chain(&self.lines_below)
+            .cloned()
+            .collect();
+        let mut metadata = AgentThemeHandoff::default();
+        if let Some(active) = &self.agent_launch {
+            metadata.active = Some(HandoffLaunch {
+                launch_id: active.launch_id.clone(),
+                palette: metadata.intern(&active.snapshot),
+            });
+        }
+        let mut contents = self
+            .output_buffer
+            .serialize_handoff(&rows, self.width, self.osc8_hyperlinks, &mut metadata)
+            .ok()?;
+        if metadata.snapshots.is_empty() {
+            return self
+                .serialize(scrollback)
+                .map(|c| (crate::agent_theme::fit_legacy_contents(c, budget), None));
+        }
+        // Cut at a serialized row boundary, never in an SGR/OSC or UTF-8 sequence.
+        loop {
+            let metadata_bytes = serde_json::to_vec(&metadata).ok()?.len();
+            if contents.len() + metadata_bytes <= budget {
+                return Some((contents, Some(metadata)));
+            }
+            if contents.is_empty() {
+                return Some((contents, None));
+            }
+            let minimum = (contents.len() + metadata_bytes)
+                .saturating_sub(budget)
+                .max(1);
+            let cut = contents
+                .match_indices("\n\r")
+                .map(|(i, _)| i)
+                .find(|i| *i >= minimum)
+                .unwrap_or(contents.len());
+            metadata.trim_prefix(cut);
+            contents = contents[cut..].to_owned();
+        }
+    }
     fn clear_completed_sixel(&mut self) {
         self.sixel_grid.reap_images(
             self.completed_sixel
@@ -2205,16 +2283,24 @@ impl Grid {
                 return Ok(None);
             }
             let chunks = (0..self.height)
-                .map(|y| {
-                    let mut chunk = self.completed_text.get(y).cloned().unwrap_or_default();
-                    chunk.y = y;
-                    chunk.retain_by_width(self.width);
-                    let padding = self.width.saturating_sub(chunk.width());
-                    chunk
-                        .terminal_characters
-                        .extend(std::iter::repeat_n(EMPTY_TERMINAL_CHARACTER, padding));
-                    chunk.offset(content_x, content_y);
-                    chunk
+                .flat_map(|y| {
+                    let mut row = self.completed_text.get(y).cloned().unwrap_or_default();
+                    if row.is_empty() {
+                        row.push(CharacterChunk::new(vec![], 0, y));
+                    }
+                    row.retain(|chunk| chunk.x < self.width);
+                    for chunk in &mut row {
+                        chunk.retain_by_width(self.width.saturating_sub(chunk.x));
+                    }
+                    if let Some(last) = row.last_mut() {
+                        let padding = self.width.saturating_sub(last.x + last.width());
+                        last.terminal_characters
+                            .extend(std::iter::repeat_n(EMPTY_TERMINAL_CHARACTER, padding));
+                    }
+                    for chunk in &mut row {
+                        chunk.offset(content_x, content_y);
+                    }
+                    row
                 })
                 .collect();
             let mut sixel = vec![];
@@ -2395,11 +2481,21 @@ impl Grid {
                 chunk
             })
             .collect();
-        // OutputBuffer emits complete rows, including for incremental updates.
-        self.completed_text
-            .resize_with(self.height, CharacterChunk::default);
+        // OutputBuffer emits complete rows. Cache all palette spans of each changed row.
+        self.completed_text.resize_with(self.height, Vec::new);
+        character_chunks = character_chunks
+            .into_iter()
+            .flat_map(|chunk| {
+                let y = chunk.y;
+                let chunks = self.viewport.get(y).map_or_else(
+                    || vec![chunk.clone()],
+                    |row| row.split_palette_chunks(chunk.clone()),
+                );
+                self.completed_text[y] = chunks.clone();
+                chunks
+            })
+            .collect();
         for chunk in &mut character_chunks {
-            self.completed_text[chunk.y] = chunk.clone();
             chunk.offset(content_x, content_y);
         }
         Ok(Some((
@@ -2513,7 +2609,9 @@ impl Grid {
             self.scroll_region_content_down(
                 scroll_region_top,
                 scroll_region_bottom,
-                Row::from_columns(columns).canonical(),
+                Row::from_columns(columns)
+                    .canonical()
+                    .with_agent_theme(Some(self.agent_theme.clone())),
             );
         }
         self.output_buffer
@@ -2530,7 +2628,9 @@ impl Grid {
                 scroll_region_top,
                 scroll_region_top,
                 scroll_region_bottom,
-                Row::from_columns(columns).canonical(),
+                Row::from_columns(columns)
+                    .canonical()
+                    .with_agent_theme(Some(self.agent_theme.clone())),
             );
         }
         self.output_buffer
@@ -2546,12 +2646,15 @@ impl Grid {
         for _ in 0..self.height {
             let columns = VecDeque::from(vec![character.clone(); self.width]);
             self.viewport.push_back(
-                Row::from_columns(columns).canonical().with_bg_color(
-                    character
-                        .styles
-                        .background
-                        .filter(|bg| *bg != AnsiCode::Reset),
-                ),
+                Row::from_columns(columns)
+                    .canonical()
+                    .with_agent_theme(Some(self.agent_theme.clone()))
+                    .with_bg_color(
+                        character
+                            .styles
+                            .background
+                            .filter(|bg| *bg != AnsiCode::Reset),
+                    ),
             );
         }
         self.output_buffer.update_all_lines();
@@ -2736,7 +2839,10 @@ impl Grid {
                 return;
             }
             let scroll_bg = self.cursor.pending_styles.background;
-            let new_row = Row::new().canonical().with_bg_color(scroll_bg);
+            let new_row = Row::new()
+                .canonical()
+                .with_bg_color(scroll_bg)
+                .with_agent_theme(Some(self.agent_theme.clone()));
             self.scroll_region_up_at_bottom(new_row, false);
             self.kitty_reanchor_all_from_pixels();
             return;
@@ -2775,6 +2881,7 @@ impl Grid {
         // width has been checked beforehand)
         match self.viewport.get_mut(self.cursor.y) {
             Some(row) => {
+                row.writing(&self.agent_theme);
                 if self.insert_mode || should_insert_character {
                     row.insert_character_at(terminal_character, self.cursor.x);
                     if row.width() > self.width {
@@ -2812,6 +2919,7 @@ impl Grid {
                     self.viewport.push_back(Row::new().canonical());
                 }
                 let mut new_row = Row::new().canonical();
+                new_row.writing(&self.agent_theme);
                 new_row.add_character_at(terminal_character, self.cursor.x);
                 self.viewport.push_back(new_row);
                 self.output_buffer.update_line(self.cursor.y);
@@ -2885,6 +2993,7 @@ impl Grid {
     }
     pub fn replace_characters_in_line_after_cursor(&mut self, replace_with: TerminalCharacter) {
         if let Some(row) = self.viewport.get_mut(self.cursor.y) {
+            row.writing(&self.agent_theme);
             row.bg_color = replace_with
                 .styles
                 .background
@@ -2895,6 +3004,7 @@ impl Grid {
     }
     pub fn replace_characters_in_line_before_cursor(&mut self, replace_with: TerminalCharacter) {
         let row = self.viewport.get_mut(self.cursor.y).unwrap();
+        row.writing(&self.agent_theme);
         // A prefix erase leaves the tail's padding colour intact unless it reaches the edge.
         if self.cursor.x >= self.width.saturating_sub(1) {
             row.bg_color = replace_with
@@ -2911,6 +3021,7 @@ impl Grid {
             .background
             .filter(|bg| !matches!(bg, AnsiCode::Reset));
         if let Some(cursor_row) = self.viewport.get_mut(self.cursor.y) {
+            cursor_row.writing(&self.agent_theme);
             cursor_row.truncate(self.cursor.x);
             // The erase's background is the padding colour of every row it touches from
             // now on, and a colourless erase takes an earlier one away: the rows are
@@ -2919,6 +3030,7 @@ impl Grid {
             let replace_with_columns = VecDeque::from(vec![replace_with.clone(); self.width]);
             self.replace_characters_in_line_after_cursor(replace_with);
             for row in self.viewport.iter_mut().skip(self.cursor.y + 1) {
+                row.writing(&self.agent_theme);
                 row.replace_columns(replace_with_columns.clone());
                 row.bg_color = erase_bg;
             }
@@ -2928,8 +3040,12 @@ impl Grid {
             // goes through `fill_viewport` and already covers the whole screen).
             if erase_bg.is_some() {
                 while self.viewport.len() < self.height {
-                    self.viewport
-                        .push_back(Row::new().canonical().with_bg_color(erase_bg));
+                    self.viewport.push_back(
+                        Row::new()
+                            .canonical()
+                            .with_bg_color(erase_bg)
+                            .with_agent_theme(Some(self.agent_theme.clone())),
+                    );
                 }
             }
             self.output_buffer
@@ -2945,6 +3061,7 @@ impl Grid {
             let replace_with_columns = VecDeque::from(vec![replace_with.clone(); self.width]);
             self.replace_characters_in_line_before_cursor(replace_with);
             for row in self.viewport.iter_mut().take(self.cursor.y) {
+                row.writing(&self.agent_theme);
                 row.replace_columns(replace_with_columns.clone());
                 row.bg_color = erase_bg;
             }
@@ -2953,6 +3070,7 @@ impl Grid {
     }
     pub fn clear_cursor_line(&mut self) {
         if let Some(viewport_line) = self.viewport.get_mut(self.cursor.y) {
+            viewport_line.writing(&self.agent_theme);
             viewport_line.replace_columns(VecDeque::new());
             viewport_line.bg_color = self
                 .cursor
@@ -2970,6 +3088,7 @@ impl Grid {
         let replace_with_columns = VecDeque::from(vec![replace_with.clone(); self.width]);
         self.replace_characters_in_line_after_cursor(replace_with);
         for row in &mut self.viewport {
+            row.writing(&self.agent_theme);
             row.replace_columns(replace_with_columns.clone());
             row.bg_color = erase_bg;
         }
@@ -2982,7 +3101,9 @@ impl Grid {
             if scroll_region_top >= self.viewport.len() {
                 return;
             }
-            let wrapped_row = Row::new().with_bg_color(self.cursor.pending_styles.background);
+            let wrapped_row = Row::new()
+                .with_bg_color(self.cursor.pending_styles.background)
+                .with_agent_theme(Some(self.agent_theme.clone()));
             self.scroll_region_up_at_bottom(wrapped_row, true);
         } else if self.cursor.y == self.height.saturating_sub(1) {
             // the cursor is on the last line of the screen but below the scroll region's
@@ -2998,6 +3119,7 @@ impl Grid {
                 self.viewport.push_back(line_wrapped_row);
                 self.output_buffer.update_line(self.cursor.y);
             } else if let Some(current_line) = self.viewport.get_mut(self.cursor.y) {
+                current_line.writing(&self.agent_theme);
                 current_line.is_canonical = false;
             }
         }
@@ -3012,6 +3134,7 @@ impl Grid {
             self.pad_lines_until(self.cursor.y, pad_character.clone());
         }
         if let Some(current_row) = self.viewport.get_mut(self.cursor.y) {
+            current_row.writing(&self.agent_theme);
             let mut effective_pad = pad_character;
             if let Some(bg_color) = current_row.bg_color {
                 if matches!(
@@ -3024,6 +3147,9 @@ impl Grid {
                 }
             }
             for _ in current_row.width()..position {
+                let column = current_row.width();
+                let existing = current_row.palettes.at(column).cloned();
+                current_row.write_palette = existing;
                 current_row.push(effective_pad.clone());
             }
             self.output_buffer.update_line(self.cursor.y);
@@ -3032,8 +3158,11 @@ impl Grid {
     fn pad_lines_until(&mut self, position: usize, pad_character: TerminalCharacter) {
         for _ in self.viewport.len()..=position {
             let columns = VecDeque::from(vec![pad_character.clone(); self.width]);
-            self.viewport
-                .push_back(Row::from_columns(columns).canonical());
+            self.viewport.push_back(
+                Row::from_columns(columns)
+                    .canonical()
+                    .with_agent_theme(Some(self.agent_theme.clone())),
+            );
             self.output_buffer.update_line(self.viewport.len() - 1);
         }
     }
@@ -3142,7 +3271,9 @@ impl Grid {
                     current_line_index,
                     scroll_region_top,
                     scroll_region_bottom,
-                    Row::from_columns(columns).canonical(),
+                    Row::from_columns(columns)
+                        .canonical()
+                        .with_agent_theme(Some(self.agent_theme.clone())),
                 );
             }
             self.output_buffer
@@ -3166,7 +3297,9 @@ impl Grid {
                 self.scroll_region_content_down(
                     current_line_index,
                     scroll_region_bottom,
-                    Row::from_columns(columns).canonical(),
+                    Row::from_columns(columns)
+                        .canonical()
+                        .with_agent_theme(Some(self.agent_theme.clone())),
                 );
             }
             self.output_buffer
@@ -3190,6 +3323,7 @@ impl Grid {
         let pad_until = std::cmp::min(self.width, self.cursor.x + count);
         self.pad_current_line_until(pad_until, empty_character.clone());
         if let Some(current_row) = self.viewport.get_mut(self.cursor.y) {
+            current_row.writing(&self.agent_theme);
             for i in 0..count {
                 current_row.replace_character_at(empty_character.clone(), self.cursor.x + i);
             }
@@ -3200,6 +3334,7 @@ impl Grid {
         let mut empty_character = EMPTY_TERMINAL_CHARACTER;
         empty_character.styles = empty_char_style;
         if let Some(current_row) = self.viewport.get_mut(self.cursor.y) {
+            current_row.writing(&self.agent_theme);
             // pad row if needed
             if current_row.width_cached() < self.width {
                 let padding_count = self.width - current_row.width_cached();
@@ -4742,7 +4877,52 @@ impl Grid {
     }
     pub fn update_theme(&mut self, theme: Styling) {
         self.style.colors = theme;
+        self.recompile_agent_theme();
     }
+    pub fn set_agent_theme_mapping(
+        &mut self,
+        mapping: yinz_types::agent::theme::AgentThemeMapping,
+    ) {
+        if self.style.agent_theme_mapping != mapping {
+            self.style.agent_theme_mapping = mapping;
+            self.recompile_agent_theme();
+        }
+    }
+    pub fn apply_agent_theme_event(&mut self, event: yinz_types::agent::theme::AgentThemeEvent) {
+        let previous = self.agent_launch.clone();
+        event.apply(&mut self.agent_launch);
+        if self.agent_launch != previous {
+            let snapshot = self.agent_launch.as_ref().map(|a| a.snapshot.clone());
+            self.install_agent_palette(snapshot);
+        }
+    }
+    fn install_agent_palette(
+        &mut self,
+        snapshot: Option<yinz_types::agent::theme::AgentThemeSnapshot>,
+    ) {
+        self.agent_theme = Rc::new(crate::agent_theme::SourcePalette::new(snapshot, self.style));
+        self.agent_palettes.retain(|p| p.strong_count() > 0);
+        self.agent_palettes.push(Rc::downgrade(&self.agent_theme));
+    }
+    pub fn begin_agent_run(&mut self) {
+        self.agent_launch = None;
+        self.install_agent_palette(None);
+    }
+    fn recompile_agent_theme(&mut self) {
+        self.agent_theme.recompile(self.style);
+        self.agent_palettes.retain(|palette| {
+            if let Some(palette) = palette.upgrade() {
+                palette.recompile(self.style);
+                true
+            } else {
+                false
+            }
+        });
+        self.output_buffer.update_all_lines();
+        self.repaint_completed_text = true;
+        self.should_render = true;
+    }
+
     pub fn update_arrow_fonts(&mut self, should_support_arrow_fonts: bool) {
         self.arrow_fonts = should_support_arrow_fonts;
     }
@@ -4926,6 +5106,7 @@ impl Perform for Grid {
             // everything from the cell to its left - distinguishable from an ordinary cell.
             let (x, y) = (self.cursor.x.saturating_sub(1), self.cursor.y);
             if let Some(row) = self.viewport.get_mut(y) {
+                row.writing(&self.agent_theme);
                 // Not unconditional: with linewrap disabled at the right edge `add_character`
                 // drops the character on the floor, and there is no cell to annotate.
                 if row.character_at(x).map(|character| character.character) == Some(PLACEHOLDER) {
@@ -5393,12 +5574,88 @@ impl Perform for Grid {
                 }
             },
 
+            b"777" if params.get(1) == Some(&b"yinz-agent-history".as_slice()) => {
+                use yinz_types::agent::theme::{AgentThemeHandoff, AgentThemeLaunch};
+                match params.get(2).copied() {
+                    Some(b"begin") => {
+                        self.history_replay = None;
+                        if let Some(encoded) = params.get(3).filter(|v| v.len() <= 8 * 1024 * 1024)
+                        {
+                            if let Ok(bytes) = BASE64_DECODER.decode(encoded) {
+                                if let Ok(metadata) =
+                                    serde_json::from_slice::<AgentThemeHandoff>(&bytes)
+                                {
+                                    if metadata.valid("") {
+                                        let palettes: Vec<_> = metadata
+                                            .snapshots
+                                            .iter()
+                                            .map(|s| {
+                                                Rc::new(crate::agent_theme::SourcePalette::new(
+                                                    Some(s.clone()),
+                                                    self.style,
+                                                ))
+                                            })
+                                            .collect();
+                                        self.agent_palettes
+                                            .extend(palettes.iter().map(Rc::downgrade));
+                                        self.begin_agent_run();
+                                        self.history_replay = Some((metadata, palettes));
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Some(b"select") => {
+                        if let Some((_, palettes)) = &self.history_replay {
+                            if params.get(3) == Some(&b"none".as_slice()) {
+                                self.install_agent_palette(None);
+                            } else if let Some(palette) = params
+                                .get(3)
+                                .and_then(|v| std::str::from_utf8(v).ok())
+                                .and_then(|v| v.parse::<usize>().ok())
+                                .and_then(|i| palettes.get(i))
+                            {
+                                self.agent_theme = palette.clone();
+                            }
+                        }
+                    },
+                    Some(b"end") => {
+                        if let Some((metadata, palettes)) = self.history_replay.take() {
+                            self.begin_agent_run();
+                            if let Some(active) = metadata.active {
+                                self.agent_theme = palettes[active.palette].clone();
+                                self.agent_launch = Some(AgentThemeLaunch {
+                                    launch_id: active.launch_id,
+                                    snapshot: metadata.snapshots[active.palette].clone(),
+                                });
+                            }
+                        }
+                    },
+                    _ => {},
+                }
+            },
+            b"777" if params.get(1) == Some(&b"yinz-agent-theme".as_slice()) => {
+                if let Some(encoded) = params
+                    .get(2)
+                    .filter(|value| value.len() <= yinz_types::agent::theme::MAX_SNAPSHOT_BYTES * 2)
+                {
+                    use base64::Engine;
+                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
+                        if bytes.len() <= yinz_types::agent::theme::MAX_SNAPSHOT_BYTES {
+                            if let Ok(event) = serde_json::from_slice(&bytes) {
+                                self.apply_agent_theme_event(event);
+                            }
+                        }
+                    }
+                }
+            },
             b"777"
                 if !bell_terminated
                     && params == [b"777".as_slice(), b"yinz", b"implicit-blank"] =>
             {
                 if let Some(x) = self.cursor.x.checked_sub(1) {
                     if let Some(row) = self.viewport.get_mut(self.cursor.y) {
+                        row.writing(&self.agent_theme);
                         let index = row.absolute_character_index(x);
                         if let Some(character) = row.columns.get_mut(index) {
                             character.mark_implicit_blank();
@@ -6226,6 +6483,8 @@ impl AlternateScreenState {
 
 #[derive(Clone)]
 pub struct Row {
+    palettes: super::palette_spans::PaletteSpans,
+    write_palette: Option<Rc<crate::agent_theme::SourcePalette>>,
     pub columns: VecDeque<TerminalCharacter>,
     pub is_canonical: bool,
     width: Option<usize>,
@@ -6320,6 +6579,8 @@ impl Row {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Row {
+            palettes: Default::default(),
+            write_palette: None,
             columns: VecDeque::new(),
             is_canonical: false,
             width: None,
@@ -6331,6 +6592,8 @@ impl Row {
     }
     pub fn from_columns(columns: VecDeque<TerminalCharacter>) -> Self {
         Row {
+            palettes: Default::default(),
+            write_palette: None,
             columns,
             is_canonical: false,
             width: None,
@@ -6359,6 +6622,50 @@ impl Row {
     pub fn canonical(mut self) -> Self {
         self.is_canonical = true;
         self
+    }
+    fn with_agent_theme(mut self, palette: Option<Rc<crate::agent_theme::SourcePalette>>) -> Self {
+        self.palettes.set(0..usize::MAX, palette.as_ref());
+        self.write_palette = palette;
+        self
+    }
+    fn writing(&mut self, palette: &Rc<crate::agent_theme::SourcePalette>) -> &mut Self {
+        self.write_palette = palette.has_snapshot().then(|| palette.clone());
+        self
+    }
+    pub(crate) fn split_palette_chunks(&self, mut chunk: CharacterChunk) -> Vec<CharacterChunk> {
+        if self.palettes.is_empty() {
+            return vec![chunk];
+        }
+        let mut chunks: Vec<CharacterChunk> = Vec::new();
+        let mut x = chunk.x;
+        let characters = std::mem::take(&mut chunk.terminal_characters);
+        for character in characters {
+            let palette = self.palettes.at(x);
+            let same = chunks
+                .last()
+                .is_some_and(|c| match (&c.agent_theme, palette) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+                    _ => false,
+                });
+            if !same {
+                let mut next = chunk.clone();
+                next.x = x;
+                next.terminal_characters.clear();
+                next.agent_theme = palette.cloned();
+                chunks.push(next);
+            }
+            chunks
+                .last_mut()
+                .unwrap()
+                .terminal_characters
+                .push(character.clone());
+            x += character.width();
+        }
+        if chunks.is_empty() {
+            chunks.push(chunk);
+        }
+        chunks
     }
     pub fn with_bg_color(mut self, bg_color: Option<AnsiCode>) -> Self {
         self.bg_color = bg_color;
@@ -6458,6 +6765,24 @@ impl Row {
         (absolute_index, position_inside_character)
     }
     pub fn add_character_at(&mut self, terminal_character: TerminalCharacter, x: usize) {
+        let width = self.width_cached();
+        let (start, end) =
+            if x < width && !(terminal_character.width() == 1 && self.all_single_width()) {
+                let (index, inside) = self.absolute_character_index_and_position_in_char(x);
+                let start = x - inside;
+                let mut end = start + terminal_character.width().max(self.columns[index].width());
+                if terminal_character.width() > self.columns[index].width() {
+                    end = end.max(
+                        start
+                            + self.columns[index].width()
+                            + self.columns.get(index + 1).map_or(0, |c| c.width()),
+                    );
+                }
+                (start, end)
+            } else {
+                (x, x + terminal_character.width())
+            };
+        self.palettes.set(start..end, self.write_palette.as_ref());
         match self.width_cached().cmp(&x) {
             Ordering::Equal => {
                 // this is unwrapped because this always happens after self.width_cached()
@@ -6566,6 +6891,14 @@ impl Row {
             }
         }
         let insert_position = self.absolute_character_index(x);
+        let column = self
+            .columns
+            .iter()
+            .take(insert_position)
+            .map(|c| c.width())
+            .sum::<usize>();
+        self.palettes
+            .insert(column, character_width, self.write_palette.as_ref());
         match self.columns.len().cmp(&insert_position) {
             Ordering::Equal => self.columns.push_back(terminal_character),
             Ordering::Less => {
@@ -6581,9 +6914,17 @@ impl Row {
     }
     pub fn replace_character_at(&mut self, terminal_character: TerminalCharacter, x: usize) {
         let absolute_x_index = self.absolute_character_index(x);
+        let start = self
+            .columns
+            .iter()
+            .take(absolute_x_index)
+            .map(|c| c.width())
+            .sum::<usize>();
         if let Some(character) = self.columns.get_mut(absolute_x_index) {
             let terminal_character_width = terminal_character.width();
-            let overwrite_end = x + character.width().max(terminal_character_width);
+            let overwrite_end = start + character.width().max(terminal_character_width);
+            self.palettes
+                .set(start..overwrite_end, self.write_palette.as_ref());
             // A narrower replacement leaves the wide character's trailing cells behind as
             // padding. That padding keeps the replacement's styles so an erased wide
             // character does not end up half pane-background, half terminal-default.
@@ -6602,12 +6943,19 @@ impl Row {
         self.invalidate_width_cache();
     }
     pub fn replace_columns(&mut self, columns: VecDeque<TerminalCharacter>) {
+        self.palettes
+            .set(0..usize::MAX, self.write_palette.as_ref());
         self.columns = columns;
         self.osc133_markers.clear();
         self.placeholder_marks.clear();
         self.invalidate_width_cache();
     }
     pub fn push(&mut self, terminal_character: TerminalCharacter) {
+        let start = self.width();
+        self.palettes.set(
+            start..start + terminal_character.width(),
+            self.write_palette.as_ref(),
+        );
         self.columns.push_back(terminal_character);
         self.invalidate_width_cache();
     }
@@ -6617,6 +6965,7 @@ impl Row {
         if truncate_position < self.columns.len() {
             self.columns.truncate(truncate_position);
         }
+        self.palettes.set(self.width()..usize::MAX, None);
         self.osc133_markers.retain(|marker| marker.column <= x);
         self.placeholder_marks.retain(|mark| mark.column < x);
         self.invalidate_width_cache();
@@ -6645,6 +6994,14 @@ impl Row {
         let to_position_accounting_for_widechars = self.position_accounting_for_widechars(to);
         let replacement_length = to_position_accounting_for_widechars
             .saturating_sub(from_position_accounting_for_widechars);
+        let start = self
+            .columns
+            .iter()
+            .take(from_position_accounting_for_widechars)
+            .map(|c| c.width())
+            .sum();
+        self.palettes
+            .set(start..usize::MAX, self.write_palette.as_ref());
         let mut replace_with = VecDeque::from(vec![terminal_character; replacement_length]);
         self.columns
             .truncate(from_position_accounting_for_widechars);
@@ -6653,6 +7010,7 @@ impl Row {
     }
     pub fn append(&mut self, to_append: &mut Row) {
         let column_offset = self.width();
+        self.palettes.append(&to_append.palettes, column_offset);
         self.columns.append(&mut to_append.columns);
         self.osc133_markers
             .extend(to_append.osc133_markers.drain(..).map(|mut marker| {
@@ -6681,6 +7039,7 @@ impl Row {
         }
         // Can't use split_off because it doesn't reduce capacity, causing OOM with long lines
         let drained_part = self.columns.drain(..split_pos).collect();
+        self.palettes = self.palettes.slice(drained_part_len..usize::MAX);
         self.placeholder_marks.retain_mut(|mark| {
             if mark.column < drained_part_len {
                 false
@@ -6700,6 +7059,8 @@ impl Row {
             .map(|character| character.width())
             .unwrap_or(1);
         let replaced_end = to + width_of_current_character;
+        self.palettes
+            .set(0..replaced_end, self.write_palette.as_ref());
         self.osc133_markers
             .retain(|marker| marker.column >= replaced_end);
         self.placeholder_marks
@@ -6729,6 +7090,13 @@ impl Row {
             self.invalidate_width_cache();
             let deleted = self.columns.remove(erase_position);
             if let Some(deleted) = &deleted {
+                let start = self
+                    .columns
+                    .iter()
+                    .take(erase_position)
+                    .map(|c| c.width())
+                    .sum::<usize>();
+                self.palettes.delete(start..start + deleted.width());
                 let end = x + deleted.width();
                 self.placeholder_marks.retain_mut(|mark| {
                     if (x..end).contains(&mark.column) {
@@ -6781,6 +7149,17 @@ impl Row {
         }
         if parts.is_empty() {
             parts.push(self.clone());
+        }
+        let mut offset = 0;
+        let last = parts.len().saturating_sub(1);
+        for (index, part) in parts.iter_mut().enumerate() {
+            let end = if index == last {
+                usize::MAX
+            } else {
+                offset + part.width()
+            };
+            part.palettes = self.palettes.slice(offset..end);
+            offset += part.width();
         }
         for mut marker in markers {
             let mut column_offset = 0;

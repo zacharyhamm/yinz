@@ -287,6 +287,7 @@ pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
         ));
     }
     Ok(WarpedPane {
+        agent_theme: None,
         bracketed_paste: false,
         agent_input: None,
         held: None,
@@ -438,6 +439,7 @@ fn warped_pane_from_entry(
         ));
     }
     Ok(WarpedPane {
+        agent_theme: None,
         bracketed_paste: false,
         agent_input: None,
         held: None,

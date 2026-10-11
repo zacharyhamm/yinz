@@ -2571,3 +2571,76 @@ fn agy_observer_confirms_api_idle_over_ssh() {
     pane.wait_until_ended(SETTLE).unwrap();
     pane.close();
 }
+
+#[test]
+#[ignore = "requires the remote SSH fixture"]
+fn managed_agent_palette_is_resolved_inside_the_remote_filesystem() {
+    use base64::Engine;
+    use yinz_types::agent::theme::{AgentThemeEvent, Availability, SourceColor};
+    let hosts = start();
+    let script = r##"
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' EXIT
+mkdir -p "$fixture/themes"
+printf '%s' '{"theme":"custom:remote"}' > "$fixture/.claude.json"
+printf '%s' '{"base":"light","overrides":{"success":"#123456"}}' > "$fixture/themes/remote.json"
+cat > "$fixture/claude" <<'AGENT'
+#!/bin/sh
+if [ "$1" = --version ]; then printf '%s\n' '2.1.296 (Claude Code)'; exit; fi
+printf '\033[38;2;18;52;86mREMOTE_AGENT_READY\033[0m\n'
+AGENT
+chmod +x "$fixture/claude"
+"$fixture/claude" --version >/dev/null
+CLAUDE_CONFIG_DIR="$fixture" yinz agent claude --command "$fixture/claude"
+echo SHELL_BETWEEN
+CLAUDE_CONFIG_DIR="$fixture" yinz agent claude --command "$fixture/claude"
+echo LAUNCH_COMPLETE
+read -r finish
+"##;
+    let pane = open_pane(&hosts, script);
+    let output = pane.wait_for_output("LAUNCH_COMPLETE");
+    assert!(output.contains("REMOTE_AGENT_READY"), "{output}");
+    let events: Vec<AgentThemeEvent> = output
+        .split("\x1b]777;yinz-agent-theme;")
+        .skip(1)
+        .map(|part| {
+            serde_json::from_slice(
+                &base64::engine::general_purpose::STANDARD
+                    .decode(part.split("\x1b\\").next().unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(events.len(), 4);
+    assert_ne!(events[0].launch_id, events[2].launch_id);
+    for pair in events.as_chunks::<2>().0 {
+        assert_eq!(pair[0].launch_id, pair[1].launch_id);
+        assert!(pair[0].snapshot.is_some());
+        assert!(pair[1].snapshot.is_none());
+    }
+    let encoded = output
+        .split("\x1b]777;yinz-agent-theme;")
+        .nth(1)
+        .unwrap()
+        .split("\x1b\\")
+        .next()
+        .unwrap();
+    let event: AgentThemeEvent = serde_json::from_slice(
+        &base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap(),
+    )
+    .unwrap();
+    let snapshot = event.snapshot.unwrap();
+    assert_eq!(snapshot.theme, "custom:remote");
+    assert!(!matches!(
+        snapshot.availability,
+        Availability::Unavailable(_)
+    ));
+    assert!(snapshot
+        .definitions
+        .iter()
+        .any(|d| d.token == "success" && d.color == SourceColor::Rgb(18, 52, 86)));
+    pane.close();
+}

@@ -3112,6 +3112,15 @@ impl TiledPanes {
         self.active_panes.pane_id_is_focused(pane_id)
     }
 
+    pub fn update_agent_theme_mapping(
+        &mut self,
+        mapping: yinz_types::agent::theme::AgentThemeMapping,
+    ) {
+        self.style.agent_theme_mapping = mapping;
+        for pane in self.panes.values_mut() {
+            pane.update_agent_theme_mapping(mapping);
+        }
+    }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
         for pane in self.panes.values_mut() {

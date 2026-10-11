@@ -2231,6 +2231,8 @@ pub enum WarpPlacement {
 /// server-side agent record attached to that process.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedPane {
+    #[serde(default)]
+    pub agent_theme: Option<crate::agent::theme::AgentThemeHandoff>,
     /// The emulator mode, restored after the ANSI dump and before buffered output.
     #[serde(default)]
     pub bracketed_paste: bool,

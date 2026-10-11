@@ -487,6 +487,7 @@ pub(crate) fn optional_run_command_actions(tc: &hegel::TestCase) -> Option<RunCo
 
 pub(crate) fn run_commands(tc: &hegel::TestCase) -> RunCommand {
     RunCommand {
+        agent_theme: None,
         workflow_owner: None,
         command: paths(tc),
         args: up_to(tc, 3, strings),
@@ -729,6 +730,7 @@ pub(crate) fn layout_infos(tc: &hegel::TestCase) -> LayoutInfo {
 
 pub(crate) fn warped_panes(tc: &hegel::TestCase) -> WarpedPane {
     WarpedPane {
+        agent_theme: None,
         bracketed_paste: false,
         agent_input: None,
         held: None,
