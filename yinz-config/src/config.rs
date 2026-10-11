@@ -519,6 +519,15 @@ impl Config {
         Ok(path)
     }
 
+    pub fn terminal_theme_config(
+        &self,
+        name: Option<&String>,
+    ) -> Option<yinz_types::style::TerminalTheme> {
+        self.themes
+            .get_theme(name.map(String::as_str).unwrap_or("default"))
+            .and_then(|theme| theme.terminal)
+    }
+
     pub fn theme_config(&self, theme_name: Option<&String>) -> Option<Styling> {
         match &theme_name {
             Some(theme_name) => self.themes.get_theme(theme_name).map(|theme| theme.palette),
@@ -1497,6 +1506,7 @@ mod config_test {
         expected_themes.insert(
             "dracula".into(),
             Theme {
+                terminal: None,
                 palette: Palette {
                     fg: PaletteColor::Rgb((248, 248, 242)),
                     bg: PaletteColor::Rgb((40, 42, 54)),
@@ -1556,6 +1566,7 @@ mod config_test {
         expected_themes.insert(
             "dracula".into(),
             Theme {
+                terminal: None,
                 palette: Palette {
                     fg: PaletteColor::Rgb((248, 248, 242)),
                     bg: PaletteColor::Rgb((40, 42, 54)),
@@ -1577,6 +1588,7 @@ mod config_test {
         expected_themes.insert(
             "nord".into(),
             Theme {
+                terminal: None,
                 palette: Palette {
                     fg: PaletteColor::Rgb((216, 222, 233)),
                     bg: PaletteColor::Rgb((46, 52, 64)),
@@ -1623,6 +1635,7 @@ mod config_test {
         expected_themes.insert(
             "eight_bit_theme".into(),
             Theme {
+                terminal: None,
                 palette: Palette {
                     fg: PaletteColor::EightBit(248),
                     bg: PaletteColor::EightBit(40),
@@ -1759,6 +1772,7 @@ mod config_test {
         expected_themes.insert(
             "named_theme".into(),
             Theme {
+                terminal: None,
                 sourced_from_external_file: false,
                 palette: Styling {
                     text_unselected: StyleDeclaration {
@@ -1925,6 +1939,7 @@ mod config_test {
         expected_themes.insert(
             "named_theme".into(),
             Theme {
+                terminal: None,
                 sourced_from_external_file: false,
                 palette: Styling {
                     text_unselected: StyleDeclaration {

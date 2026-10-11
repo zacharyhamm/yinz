@@ -1,5 +1,26 @@
 themes {
     molokai-dark {
+        // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Molokai
+        terminal {
+            foreground "#bbbbbb"
+            background "#121212"
+            black "#121212"
+            red "#fa2573"
+            green "#98e123"
+            yellow "#dfd460"
+            blue "#1080d0"
+            magenta "#8700ff"
+            cyan "#43a8d0"
+            white "#bbbbbb"
+            bright_black "#555555"
+            bright_red "#f6669d"
+            bright_green "#b1e05f"
+            bright_yellow "#fff26d"
+            bright_blue "#00afff"
+            bright_magenta "#af87ff"
+            bright_cyan "#51ceff"
+            bright_white "#ffffff"
+        }
         text_unselected {
             base 255 255 255
             background 0 0 0

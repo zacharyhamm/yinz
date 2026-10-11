@@ -26,6 +26,7 @@ fn styling(shade: u8) -> Styling {
 
 fn theme(shade: u8) -> Theme {
     Theme {
+        terminal: None,
         sourced_from_external_file: false,
         palette: styling(shade),
     }
@@ -106,6 +107,8 @@ fn defaults_match_the_documented_fallbacks() {
     // No `..`: a field added to `ScreenConfig` has to say what its default is here.
     let ScreenConfig {
         theme,
+        terminal_theme: _,
+        terminal_themes: _,
         themes: _,
         theme_name: _,
         theme_dark_name: _,
@@ -224,6 +227,8 @@ fn every_option_reaches_its_field() {
     let config = every_option_set();
     let ScreenConfig {
         theme,
+        terminal_theme: _,
+        terminal_themes: _,
         themes: _,
         theme_name: _,
         theme_dark_name: _,
@@ -356,6 +361,7 @@ fn screen_theme_catalog_contains_all_resolved_themes_in_name_order() {
     config.themes.insert(
         "a custom theme".into(),
         crate::theme::Theme {
+            terminal: None,
             palette: styling(42),
             sourced_from_external_file: true,
         },
@@ -371,4 +377,28 @@ fn screen_theme_catalog_contains_all_resolved_themes_in_name_order() {
     assert_eq!(screen.theme_light_name, config.options.theme_light);
     let names: Vec<_> = screen.themes.keys().collect();
     assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn terminal_theme_resolves_the_selected_name_and_host_switch_palettes() {
+    let mut config = Config {
+        themes: crate::theme::Themes::from_string(
+            include_str!("../../assets/themes/nord.kdl"),
+            false,
+        )
+        .unwrap(),
+        ..Default::default()
+    };
+    config.options.theme = Some("nord".into());
+    config.options.theme_dark = Some("nord".into());
+    let expected = config.themes.get_theme("nord").unwrap().terminal.unwrap();
+    assert_eq!(
+        config.terminal_theme_config(config.options.theme.as_ref()),
+        Some(expected)
+    );
+    let resolved = ScreenConfig::from_config(&config);
+    assert_eq!(resolved.terminal_theme, Some(expected));
+    assert_eq!(resolved.terminal_themes["nord"], expected);
+    config.options.theme = Some("missing".into());
+    assert_eq!(ScreenConfig::from_config(&config).terminal_theme, None);
 }

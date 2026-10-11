@@ -9871,6 +9871,15 @@ impl Tab {
     pub fn resize_pane_with_id(&mut self, strategy: ResizeStrategy, pane_id: PaneId) -> Result<()> {
         self.resize_pane_in_layer(PaneSubject::Pane(pane_id), strategy)
     }
+    pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
+        self.style.terminal = theme;
+        self.floating_panes.update_terminal_theme(theme);
+        self.overlay_panes.update_terminal_theme(theme);
+        self.tiled_panes.update_terminal_theme(theme);
+        for pane in self.suppressed_panes.values_mut().map(|s| &mut s.pane) {
+            pane.update_terminal_theme(theme);
+        }
+    }
     pub fn update_theme(&mut self, theme: Styling) {
         self.style.colors = theme;
         // The tab's `default_mode_info` is what `update_input_modes`

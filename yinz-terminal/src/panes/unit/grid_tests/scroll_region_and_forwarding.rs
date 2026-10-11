@@ -823,7 +823,7 @@ fn osc_11_set_stays_local() {
         grid.pending_forwarded_queries.is_empty(),
         "set (not query) must not forward"
     );
-    assert!(grid.pane_default_bg.is_some());
+    assert!(grid.effective_background().is_some());
 }
 
 #[test]
@@ -832,7 +832,7 @@ fn osc_11_query_without_override_forwards_to_host() {
     // forwarded — the host's actual bg is what the app asked for.
     let mut parser = vte::Parser::new();
     let mut grid = new_grid_for_forwarding_test();
-    assert!(grid.pane_default_bg.is_none());
+    assert!(grid.effective_background().is_none());
     parser.advance(&mut grid, b"\x1b]11;?\x07");
     assert!(
         grid.pending_messages_to_pty.is_empty(),
@@ -849,7 +849,7 @@ fn osc_11_query_without_override_forwards_to_host() {
 fn osc_10_query_without_override_forwards_to_host() {
     let mut parser = vte::Parser::new();
     let mut grid = new_grid_for_forwarding_test();
-    assert!(grid.pane_default_fg.is_none());
+    assert!(grid.effective_foreground().is_none());
     parser.advance(&mut grid, b"\x1b]10;?\x07");
     assert!(grid.pending_messages_to_pty.is_empty());
     assert_eq!(grid.pending_forwarded_queries.len(), 1);
@@ -892,8 +892,8 @@ fn osc_11_override_short_circuits_only_the_overridden_channel() {
     let mut parser = vte::Parser::new();
     let mut grid = new_grid_for_forwarding_test();
     parser.advance(&mut grid, b"\x1b]11;rgb:1010/2020/3030\x07");
-    assert!(grid.pane_default_bg.is_some());
-    assert!(grid.pane_default_fg.is_none());
+    assert!(grid.effective_background().is_some());
+    assert!(grid.effective_foreground().is_none());
 
     parser.advance(&mut grid, b"\x1b]10;?\x07");
     assert!(
@@ -1526,4 +1526,120 @@ fn internal_full_clears_reset_the_padding_background() {
                     && matches!(character.styles.background, None | Some(AnsiCode::Reset))
             }));
     }
+}
+
+#[test]
+fn terminal_theme_colors_overrides_resets_and_queries() {
+    use crate::panes::terminal_character::AnsiCode;
+    use yinz_types::style::TerminalTheme;
+    let mut grid = new_grid_for_forwarding_test();
+    let mut parser = vte::Parser::new();
+    let theme = TerminalTheme {
+        foreground: (1, 2, 3),
+        background: (4, 5, 6),
+        ansi: std::array::from_fn(|i| (i as u8, 20, 30)),
+    };
+    grid.update_terminal_theme(Some(theme));
+    parser.advance(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x1b\\");
+    assert_eq!(
+        grid.pending_messages_to_pty.remove(0),
+        b"\x1b]10;rgb:0101/0202/0303\x07"
+    );
+    assert_eq!(
+        grid.pending_messages_to_pty.remove(0),
+        b"\x1b]11;rgb:0404/0505/0606\x1b\\"
+    );
+    for i in 0..16 {
+        parser.advance(&mut grid, format!("\x1b]4;{i};?\x07").as_bytes());
+        assert_eq!(
+            grid.pending_messages_to_pty.remove(0),
+            format!("\x1b]4;{i};rgb:{i:02x}{i:02x}/1414/1e1e\x07").as_bytes()
+        );
+        assert_eq!(
+            grid.effective_colors().unwrap()[i],
+            Some(AnsiCode::RgbCode(theme.ansi[i]))
+        );
+    }
+    assert!(grid.pending_forwarded_queries.is_empty());
+    parser.advance(&mut grid, b"\x1b]4;16;?\x07");
+    assert_eq!(grid.pending_forwarded_queries.len(), 1);
+    grid.pending_forwarded_queries.clear();
+
+    grid.set_pane_default_colors(Some("#112233".into()), Some("#445566".into()));
+    parser.advance(
+        &mut grid,
+        b"\x1b]10;#abcdef\x07\x1b]11;#fedcba\x07\x1b]4;1;#123456\x07",
+    );
+    grid.update_terminal_theme(None);
+    grid.update_terminal_theme(Some(theme));
+    assert_eq!(grid.effective_foreground(), Some((0xab, 0xcd, 0xef)));
+    assert_eq!(grid.effective_background(), Some((0xfe, 0xdc, 0xba)));
+    assert_eq!(
+        grid.effective_colors().unwrap()[1],
+        Some(AnsiCode::RgbCode((0x12, 0x34, 0x56)))
+    );
+    parser.advance(&mut grid, b"\x1b]110\x07\x1b]111\x07\x1b]104;1\x07");
+    assert_eq!(grid.effective_foreground(), Some((0x11, 0x22, 0x33)));
+    assert_eq!(grid.effective_background(), Some((0x44, 0x55, 0x66)));
+    assert_eq!(
+        grid.effective_colors().unwrap()[1],
+        Some(AnsiCode::RgbCode(theme.ansi[1]))
+    );
+    grid.set_pane_default_colors(None, None);
+    assert_eq!(grid.effective_foreground(), Some(theme.foreground));
+    assert_eq!(grid.effective_background(), Some(theme.background));
+    parser.advance(&mut grid, b"\x1b]4;200;#abcdef\x07\x1b]104\x07\x1bc");
+    assert_eq!(grid.effective_foreground(), Some(theme.foreground));
+    assert_eq!(grid.effective_colors().unwrap()[200], None);
+    grid.update_terminal_theme(None);
+    parser.advance(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x07\x1b]4;1;?\x07");
+    assert_eq!(grid.pending_forwarded_queries.len(), 3);
+}
+
+#[test]
+fn terminal_theme_repaints_existing_cells_and_blank_backgrounds() {
+    use crate::panes::terminal_character::AnsiCode;
+    use yinz_types::style::TerminalTheme;
+    let mut grid = new_grid_for_forwarding_test();
+    let mut parser = vte::Parser::new();
+    for i in 0..16 {
+        parser.advance(&mut grid, format!("\x1b[38;5;{i};48;5;{i}mX").as_bytes());
+    }
+    parser.advance(&mut grid, b"\x1b[38;5;200;48;2;11;22;33mY\x1b[0mZ");
+    let style = Style::default();
+    grid.render(0, 0, &style).unwrap();
+    let theme = TerminalTheme {
+        foreground: (1, 2, 3),
+        background: (4, 5, 6),
+        ansi: [(7, 8, 9); 16],
+    };
+    grid.update_terminal_theme(Some(theme));
+    let (chunks, _, _, _) = grid.render(0, 0, &style).unwrap().unwrap();
+    assert_eq!(chunks.len(), grid.height);
+    for chunk in &chunks {
+        assert_eq!(
+            chunk.pane_default_fg,
+            Some(AnsiCode::RgbCode(theme.foreground))
+        );
+        assert_eq!(
+            chunk.pane_default_bg,
+            Some(AnsiCode::RgbCode(theme.background))
+        );
+        assert_eq!(chunk.changed_colors.unwrap()[200], None);
+    }
+    let cells: Vec<_> = chunks.iter().flat_map(|c| &c.terminal_characters).collect();
+    for (i, cell) in cells.iter().take(16).enumerate() {
+        assert_eq!(cell.styles.foreground, Some(AnsiCode::ColorIndex(i as u8)));
+        assert_eq!(cell.styles.background, Some(AnsiCode::ColorIndex(i as u8)));
+    }
+    assert_eq!(cells[16].styles.foreground, Some(AnsiCode::ColorIndex(200)));
+    assert_eq!(
+        cells[16].styles.background,
+        Some(AnsiCode::RgbCode((11, 22, 33)))
+    );
+    grid.update_terminal_theme(None);
+    let (chunks, _, _, _) = grid.render(0, 0, &style).unwrap().unwrap();
+    assert!(chunks.iter().all(|c| c.pane_default_fg.is_none()
+        && c.pane_default_bg.is_none()
+        && c.changed_colors.is_none()));
 }

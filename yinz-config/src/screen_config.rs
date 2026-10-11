@@ -33,6 +33,8 @@ pub struct ScreenConfig {
     /// `ClientAttributes.style`, which that client resolved against its command line as well as
     /// the config file, and the same goes for `rounded_corners` and `hide_session_name`.
     pub theme: Styling,
+    pub terminal_theme: Option<yinz_types::style::TerminalTheme>,
+    pub terminal_themes: std::collections::BTreeMap<String, yinz_types::style::TerminalTheme>,
     pub themes: std::collections::BTreeMap<String, Styling>,
     pub theme_name: Option<String>,
     pub theme_dark_name: Option<String>,
@@ -120,6 +122,13 @@ impl ScreenConfig {
             styling
         };
         Self {
+            terminal_theme: config.terminal_theme_config(options.theme.as_ref()),
+            terminal_themes: config
+                .themes
+                .inner()
+                .iter()
+                .filter_map(|(name, theme)| theme.terminal.map(|terminal| (name.clone(), terminal)))
+                .collect(),
             themes: config
                 .themes
                 .inner()

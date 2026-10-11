@@ -205,7 +205,7 @@ impl Composition {
         );
         let default_background = matches!(styles.background, None | Some(AnsiCode::Reset))
             && styles.reverse != Some(AnsiCode::On)
-            && chunk.pane_default_bg.is_none();
+            && (chunk.pane_default_bg.is_none() || chunk.theme_background);
         let mut styles =
             adjust_styles_for_custom_bg_fg(styles, chunk.pane_default_fg, chunk.pane_default_bg);
         let mut fg = color(

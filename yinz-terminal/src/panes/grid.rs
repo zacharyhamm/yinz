@@ -809,6 +809,8 @@ pub struct Grid {
     /// Pane-scoped override for the default background colour. Same
     /// invariant as `pane_default_fg`.
     pub pane_default_bg: Option<(u8, u8, u8)>,
+    application_fg: Option<(u8, u8, u8)>,
+    application_bg: Option<(u8, u8, u8)>,
     pub plugin_highlights: HashMap<PluginId, Vec<(String, CompiledHighlight)>>,
     // key: plugin_id (u32), inner vec: (pattern, compiled) pairs
     pub hover_position: Option<Position>, // pane-relative cursor cell; None when outside pane
@@ -823,6 +825,49 @@ pub struct Grid {
 }
 
 impl Grid {
+    fn effective_foreground(&self) -> Option<(u8, u8, u8)> {
+        self.application_fg
+            .or(self.pane_default_fg)
+            .or(self.style.terminal.map(|t| t.foreground))
+    }
+    fn effective_background(&self) -> Option<(u8, u8, u8)> {
+        self.application_bg
+            .or(self.pane_default_bg)
+            .or(self.style.terminal.map(|t| t.background))
+    }
+    fn theme_background(&self) -> bool {
+        self.style.terminal.is_some()
+            && self.application_bg.is_none()
+            && self.pane_default_bg.is_none()
+    }
+    fn effective_colors(&self) -> Option<[Option<AnsiCode>; 256]> {
+        let Some(theme) = self.style.terminal else {
+            return self.changed_colors;
+        };
+        let mut colors = self.changed_colors.unwrap_or([None; 256]);
+        for (color, rgb) in colors.iter_mut().zip(theme.ansi) {
+            *color = color.or(Some(AnsiCode::RgbCode(rgb)));
+        }
+        Some(colors)
+    }
+    pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
+        if self.style.terminal == theme {
+            return;
+        }
+        self.style.terminal = theme;
+        let colors = self.effective_colors();
+        let fg = self.effective_foreground().map(AnsiCode::RgbCode);
+        let bg = self.effective_background().map(AnsiCode::RgbCode);
+        let theme_background = self.theme_background();
+        for chunk in &mut self.completed_text {
+            chunk.theme_background = theme_background;
+            chunk.add_changed_colors(colors);
+            chunk.add_pane_defaults(fg, bg);
+        }
+        self.output_buffer.update_all_lines();
+        self.repaint_completed_text = true;
+        self.should_render = true;
+    }
     pub fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) {
         // Parse inputs; anything that isn't literal RGB (palette
         // index / named colour / parse failure) is silently dropped so
@@ -1200,6 +1245,8 @@ impl Grid {
             hyperlink_tracker: HyperlinkTracker::new(),
             pane_default_fg: None,
             pane_default_bg: None,
+            application_fg: None,
+            application_bg: None,
             plugin_highlights: HashMap::new(),
             hover_position: None,
             cached_hover_tooltip: None,
@@ -2213,15 +2260,16 @@ impl Grid {
             // Store text and highlights relative to the pane.
             character_chunk.x -= content_x;
             character_chunk.y -= content_y;
-            character_chunk.add_changed_colors(self.changed_colors);
+            character_chunk.theme_background = self.theme_background();
+            character_chunk.add_changed_colors(self.effective_colors());
             // CharacterChunk still carries `Option<AnsiCode>` because
             // `adjust_styles_for_custom_bg_fg` assigns the value into
             // `CharacterStyles.{foreground,background}` (themselves
             // `Option<AnsiCode>`). Re-wrap the narrow RGB at the
             // boundary so the downstream pipeline stays uniform.
             character_chunk.add_pane_defaults(
-                self.pane_default_fg.map(AnsiCode::RgbCode),
-                self.pane_default_bg.map(AnsiCode::RgbCode),
+                self.effective_foreground().map(AnsiCode::RgbCode),
+                self.effective_background().map(AnsiCode::RgbCode),
             );
             if self.selection.contains_row(character_chunk.y) {
                 let background_color = match style.colors.text_selected.background {
@@ -3205,8 +3253,8 @@ impl Grid {
         self.cursor_is_hidden = false;
         self.supports_kitty_keyboard_protocol = false;
         self.set_scroll_region_to_viewport_size();
-        self.pane_default_fg = None;
-        self.pane_default_bg = None;
+        self.application_fg = None;
+        self.application_bg = None;
         self.osc133_markers_seen = false;
         self.osc7_payload = None;
         if let Some(images_to_reap) = self.sixel_grid.clear() {
@@ -5042,11 +5090,20 @@ impl Perform for Grid {
                         self.output_buffer.update_all_lines();
                     } else if chunk.get(1).as_ref().and_then(|c| c.first()) == Some(&b'?') {
                         if let Some(index) = index {
-                            // Forward palette-register queries to the
-                            // host — apps want the actual host palette,
-                            // not Yinz's cached copy. (Yinz's cache
-                            // still auto-refreshes via double-dispatch
-                            // when the host's reply comes back.)
+                            if let Some(rgb) = self
+                                .effective_colors()
+                                .and_then(|colors| colors[index as usize])
+                                .and_then(rgb_of_ansi_code)
+                            {
+                                self.pending_messages_to_pty.push(
+                                    format!(
+                                        "\x1b]4;{index};{}{terminator}",
+                                        osc_color_reply_body(rgb)
+                                    )
+                                    .into_bytes(),
+                                );
+                                continue;
+                            }
                             self.pending_forwarded_queries.push(
                                 crate::host_query::HostQuery::PaletteRegister {
                                     index,
@@ -5083,8 +5140,8 @@ impl Perform for Grid {
                                 // is actually rendering for them, not
                                 // the host terminal's background.
                                 let local_override = match dynamic_code {
-                                    10 => self.pane_default_fg,
-                                    11 => self.pane_default_bg,
+                                    10 => self.effective_foreground(),
+                                    11 => self.effective_background(),
                                     _ => None,
                                 };
                                 if let Some(rgb) = local_override {
@@ -5132,9 +5189,9 @@ impl Perform for Grid {
                                 // narrow.
                                 if let Some(rgb) = xparse_color(param).and_then(rgb_of_ansi_code) {
                                     if dynamic_code == 10 {
-                                        self.pane_default_fg = Some(rgb);
+                                        self.application_fg = Some(rgb);
                                     } else if dynamic_code == 11 {
-                                        self.pane_default_bg = Some(rgb);
+                                        self.application_bg = Some(rgb);
                                     }
                                     self.output_buffer.update_all_lines();
                                 }
@@ -5244,13 +5301,13 @@ impl Perform for Grid {
 
             // Reset foreground color.
             b"110" => {
-                self.pane_default_fg = None;
+                self.application_fg = None;
                 self.output_buffer.update_all_lines();
             },
 
             // Reset background color.
             b"111" => {
-                self.pane_default_bg = None;
+                self.application_bg = None;
                 self.output_buffer.update_all_lines();
             },
 

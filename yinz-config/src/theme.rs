@@ -74,6 +74,8 @@ impl Themes {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Theme {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<yinz_types::style::TerminalTheme>,
     pub sourced_from_external_file: bool,
     #[serde(flatten)]
     pub palette: Styling,

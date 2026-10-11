@@ -260,7 +260,10 @@ impl Screen {
             }
         }
 
-        self.style = mode_info.style;
+        self.style = yinz_types::style::Style {
+            terminal: self.style.terminal,
+            ..mode_info.style
+        };
         self.mode_info.insert(client_id, mode_info.clone());
         for tab in self.tabs.values_mut() {
             tab.change_mode_info(mode_info.clone(), client_id);

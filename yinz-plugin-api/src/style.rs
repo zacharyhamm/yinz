@@ -16,6 +16,7 @@ impl TryFrom<ProtobufStyle> for Style {
             .ok_or("malformed style payload")?
             .try_into()?;
         Ok(Style {
+            terminal: None,
             colors: s,
             rounded_corners: protobuf_style.rounded_corners,
             hide_session_name: protobuf_style.hide_session_name,

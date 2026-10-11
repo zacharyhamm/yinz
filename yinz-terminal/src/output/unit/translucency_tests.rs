@@ -995,3 +995,76 @@ fn upper_opaque_wide_glyphs_survive_lower_translucent_edges() {
         assert!(bytes[&client].contains("界\u{301}ab"));
     }
 }
+
+#[test]
+fn theme_backgrounds_allow_opacity_but_explicit_pane_colors_stay_solid() {
+    let mut over = chunk("     ", 0);
+    over.add_pane_defaults(
+        Some(AnsiCode::RgbCode((1, 2, 3))),
+        Some(AnsiCode::RgbCode((4, 5, 6))),
+    );
+    over.theme_background = true;
+    let result = compose(50, chunk("abcde", 0), over.clone());
+    assert_eq!(text(&result), "abcde");
+    assert_eq!(
+        result[0].terminal_characters[0].styles.background,
+        Some(AnsiCode::RgbCode((60, 70, 80)))
+    );
+    over.theme_background = false;
+    let result = compose(50, chunk("abcde", 0), over);
+    assert_eq!(text(&result), "     ");
+    assert_eq!(
+        result[0].terminal_characters[0].styles.background,
+        Some(AnsiCode::RgbCode((4, 5, 6)))
+    );
+}
+
+#[test]
+fn serialization_remaps_all_ansi_colors_without_changing_extended_or_truecolor() {
+    let palette: [_; 16] = std::array::from_fn(|i| (i as u8, 40, 80));
+    let mut themed = chunk("0123456789abcdefETD", 0);
+    let mut colors = [None; 256];
+    for (i, rgb) in palette.iter().enumerate() {
+        colors[i] = Some(AnsiCode::RgbCode(*rgb));
+        themed.terminal_characters[i].styles = DEFAULT_STYLES
+            .foreground(Some(AnsiCode::ColorIndex(i as u8)))
+            .background(Some(AnsiCode::ColorIndex(i as u8)))
+            .into();
+    }
+    themed.terminal_characters[16].styles = DEFAULT_STYLES
+        .foreground(Some(AnsiCode::ColorIndex(200)))
+        .background(Some(AnsiCode::ColorIndex(255)))
+        .into();
+    themed.terminal_characters[17].styles = DEFAULT_STYLES
+        .foreground(Some(AnsiCode::RgbCode((11, 22, 33))))
+        .background(Some(AnsiCode::RgbCode((44, 55, 66))))
+        .into();
+    themed.add_changed_colors(Some(colors));
+    themed.add_pane_defaults(
+        Some(AnsiCode::RgbCode((1, 2, 3))),
+        Some(AnsiCode::RgbCode((4, 5, 6))),
+    );
+    let cells = serialize_and_parse_row(vec![themed], 19);
+    for (i, rgb) in palette.into_iter().enumerate() {
+        assert_eq!(cells[i].styles.foreground, Some(AnsiCode::RgbCode(rgb)));
+        assert_eq!(cells[i].styles.background, Some(AnsiCode::RgbCode(rgb)));
+    }
+    assert_eq!(cells[16].styles.foreground, Some(AnsiCode::ColorIndex(200)));
+    assert_eq!(cells[16].styles.background, Some(AnsiCode::ColorIndex(255)));
+    assert_eq!(
+        cells[17].styles.foreground,
+        Some(AnsiCode::RgbCode((11, 22, 33)))
+    );
+    assert_eq!(
+        cells[17].styles.background,
+        Some(AnsiCode::RgbCode((44, 55, 66)))
+    );
+    assert_eq!(
+        cells[18].styles.foreground,
+        Some(AnsiCode::RgbCode((1, 2, 3)))
+    );
+    assert_eq!(
+        cells[18].styles.background,
+        Some(AnsiCode::RgbCode((4, 5, 6)))
+    );
+}

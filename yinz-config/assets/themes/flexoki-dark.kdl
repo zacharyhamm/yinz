@@ -1,5 +1,26 @@
 themes {
     flexoki-dark {
+        // Terminal palette: https://github.com/kepano/flexoki/blob/main/kitty/flexoki_dark.conf
+        terminal {
+            foreground "#cecdc3"
+            background "#100f0f"
+            black "#100f0f"
+            red "#af3029"
+            green "#66800b"
+            yellow "#ad8301"
+            blue "#205ea6"
+            magenta "#a02f6f"
+            cyan "#24837b"
+            white "#878580"
+            bright_black "#6f6e69"
+            bright_red "#d14d41"
+            bright_green "#879a39"
+            bright_yellow "#d0a215"
+            bright_blue "#4385be"
+            bright_magenta "#ce5d97"
+            bright_cyan "#3aa99f"
+            bright_white "#cecdc3"
+        }
         text_unselected {
             base 206 205 195
             background 40 39 38

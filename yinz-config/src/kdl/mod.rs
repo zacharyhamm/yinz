@@ -478,7 +478,59 @@ pub fn kdl_child_bool_value_for_entry<'a>(
         .and_then(|cwd_value| cwd_value.value().as_bool())
 }
 
-// Keep the parser's existing diagnostic payload and error propagation.
+fn terminal_theme_from_kdl(
+    document: &KdlDocument,
+) -> Result<Option<yinz_types::style::TerminalTheme>, ConfigError> {
+    use yinz_types::style::TerminalTheme;
+    let Some(node) = single_top_level_block(document, "terminal")? else {
+        return Ok(None);
+    };
+    let colors = kdl_children_or_error!(node, "empty terminal palette");
+    let error = || {
+        ConfigError::new_kdl_error(
+            "Terminal colors require hex RGB or three channels from 0 to 255".into(),
+            node.span().offset(),
+            node.span().len(),
+        )
+    };
+    for color in colors.nodes() {
+        let name = color.name().value();
+        if !["foreground", "background"].contains(&name)
+            && !TerminalTheme::ANSI_NAMES.contains(&name)
+        {
+            return Err(error());
+        }
+        if colors
+            .nodes()
+            .iter()
+            .filter(|n| n.name() == color.name())
+            .count()
+            != 1
+            || color.children().is_some()
+            || color.entries().iter().any(|e| {
+                e.name().is_some() || e.value().as_i64().is_some_and(|v| !(0..=255).contains(&v))
+            })
+        {
+            return Err(error());
+        }
+    }
+    let rgb = |name| match palette_color_from_kdl(name, colors)? {
+        PaletteColor::Rgb(rgb) => Ok(rgb),
+        _ => Err(error()),
+    };
+    let foreground = rgb("foreground")?;
+    let background = rgb("background")?;
+    let mut ansi = [(0, 0, 0); 16];
+    for (index, name) in TerminalTheme::ANSI_NAMES.into_iter().enumerate() {
+        ansi[index] = rgb(name)?;
+    }
+    Ok(Some(TerminalTheme {
+        foreground,
+        background,
+        ansi,
+    }))
+}
+
 pub fn palette_color_from_kdl(
     color_name: &str,
     theme_colors: &KdlDocument,
@@ -1567,11 +1619,14 @@ impl Themes {
                 "fg", "bg", "red", "green", "blue", "yellow", "magenta", "orange", "cyan", "black",
                 "white",
             ]);
+            let terminal = terminal_theme_from_kdl(theme_colors)?;
             let theme = if theme_colors
                 .nodes()
                 .iter()
-                .all(|n| palette_color_names.contains(n.name().value()))
-            {
+                .any(|n| palette_color_names.contains(n.name().value()))
+                && theme_colors.nodes().iter().all(|n| {
+                    n.name().value() == "terminal" || palette_color_names.contains(n.name().value())
+                }) {
                 // Older palette based theme definition
                 let palette = Palette {
                     fg: crate::kdl::palette_color_from_kdl("fg", theme_colors)?,
@@ -1588,6 +1643,7 @@ impl Themes {
                     ..Default::default()
                 };
                 Theme {
+                    terminal,
                     palette: palette.into(),
                     sourced_from_external_file,
                 }
@@ -1669,6 +1725,7 @@ impl Themes {
                 };
 
                 Theme {
+                    terminal,
                     palette: s,
                     sourced_from_external_file,
                 }
@@ -1829,6 +1886,26 @@ impl Themes {
                 .push(multiplayer_colors_to_kdl(
                     &theme.palette.multiplayer_user_colors,
                 ));
+            if let Some(terminal) = theme.terminal {
+                let mut node = KdlNode::new("terminal");
+                let mut colors = KdlDocument::new();
+                for (name, rgb) in [
+                    ("foreground", terminal.foreground),
+                    ("background", terminal.background),
+                ]
+                .into_iter()
+                .chain(
+                    yinz_types::style::TerminalTheme::ANSI_NAMES
+                        .into_iter()
+                        .zip(terminal.ansi),
+                ) {
+                    colors
+                        .nodes_mut()
+                        .push(palette_color_to_kdl(&PaletteColor::Rgb(rgb), name));
+                }
+                node.set_children(colors);
+                current_theme_node_children.nodes_mut().push(node);
+            }
             current_theme_node.set_children(current_theme_node_children);
             themes.nodes_mut().push(current_theme_node);
         }

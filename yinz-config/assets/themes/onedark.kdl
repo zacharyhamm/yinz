@@ -1,5 +1,26 @@
 themes {
     onedark {
+        // Terminal palette: https://github.com/joshdick/onedark.vim/blob/main/term/One%20Dark.kitty
+        terminal {
+            foreground "#abb2bf"
+            background "#282c34"
+            black "#2c323c"
+            red "#e06c75"
+            green "#98c379"
+            yellow "#e5c07b"
+            blue "#61afef"
+            magenta "#c678dd"
+            cyan "#56b6c2"
+            white "#5c6370"
+            bright_black "#3e4452"
+            bright_red "#e06c75"
+            bright_green "#98c379"
+            bright_yellow "#e5c07b"
+            bright_blue "#61afef"
+            bright_magenta "#c678dd"
+            bright_cyan "#56b6c2"
+            bright_white "#abb2bf"
+        }
         text_unselected {
             base 204 204 204
             background 29 32 37

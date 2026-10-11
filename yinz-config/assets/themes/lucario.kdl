@@ -1,5 +1,26 @@
 themes {
     lucario {
+        // Terminal palette: https://github.com/raphamorim/lucario/blob/main/windows-terminal/lucario.json
+        terminal {
+            foreground "#F8F8F2"
+            background "#2B3E50"
+            black "#4F4F4F"
+            red "#FF6C60"
+            green "#FBB036"
+            yellow "#FFFFB6"
+            blue "#5796ED"
+            magenta "#FF73FD"
+            cyan "#8EE478"
+            white "#EEEEEE"
+            bright_black "#4F4F4F"
+            bright_red "#FA6960"
+            bright_green "#FBB036"
+            bright_yellow "#FEFFB9"
+            bright_blue "#6B9FED"
+            bright_magenta "#FC6FFA"
+            bright_cyan "#8EE478"
+            bright_white "#FFFFFF"
+        }
         text_unselected {
             base 248 248 242
             background 25 36 47

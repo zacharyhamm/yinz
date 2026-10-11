@@ -266,3 +266,25 @@ fn client_grid_reset_only_follows_recreation_including_delayed_frames() {
         assert!(rx.is_empty());
     }
 }
+
+#[test]
+fn terminal_palette_does_not_remap_plugin_output() {
+    let client = ClientId::new(1);
+    let mut pane = test_plugin_pane(5, 60, Offset::default());
+    pane.style.terminal = Some(yinz_types::style::TerminalTheme {
+        foreground: (1, 2, 3),
+        background: (4, 5, 6),
+        ansi: [(7, 8, 9); 16],
+    });
+    pane.handle_plugin_bytes(client, b"\x1b[31mplugin".to_vec());
+    let (chunks, _, _, _) = pane
+        .grids
+        .get_mut(&client)
+        .unwrap()
+        .render(0, 0, &pane.style)
+        .unwrap()
+        .unwrap();
+    assert!(chunks.iter().all(|chunk| chunk.pane_default_fg.is_none()
+        && chunk.pane_default_bg.is_none()
+        && chunk.changed_colors.is_none()));
+}

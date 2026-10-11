@@ -1123,6 +1123,8 @@ pub fn start_server_impl(
                 let client_attributes = ClientAttributes {
                     size: cli_assets.terminal_window_size,
                     style: Style {
+                        terminal: config
+                            .terminal_theme_config(runtime_config_options.theme.as_ref()),
                         colors: config
                             .theme_config(runtime_config_options.theme.as_ref())
                             .unwrap_or_else(|| default_palette().into()),
@@ -1310,6 +1312,8 @@ pub fn start_server_impl(
                 let client_attributes = ClientAttributes {
                     size: cli_assets.terminal_window_size,
                     style: Style {
+                        terminal: config
+                            .terminal_theme_config(runtime_config_options.theme.as_ref()),
                         colors: config
                             .theme_config(runtime_config_options.theme.as_ref())
                             .unwrap_or_else(|| default_palette().into()),

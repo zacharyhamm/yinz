@@ -1,5 +1,26 @@
 themes {
     iceberg-light {
+        // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Iceberg%20Light
+        terminal {
+            foreground "#33374c"
+            background "#e8e9ec"
+            black "#dcdfe7"
+            red "#cc517a"
+            green "#668e3d"
+            yellow "#c57339"
+            blue "#2d539e"
+            magenta "#7759b4"
+            cyan "#3f83a6"
+            white "#33374c"
+            bright_black "#8389a3"
+            bright_red "#cc3768"
+            bright_green "#598030"
+            bright_yellow "#b6662d"
+            bright_blue "#22478e"
+            bright_magenta "#6845ad"
+            bright_cyan "#327698"
+            bright_white "#262a3f"
+        }
         text_unselected {
             base 51 55 76
             background 220 223 231

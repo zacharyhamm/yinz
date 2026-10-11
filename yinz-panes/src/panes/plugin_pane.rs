@@ -56,7 +56,10 @@ macro_rules! get_or_create_grid {
                 $self.character_cell_size.clone(),
                 $self.sixel_image_store.clone(),
                 $self.kitty_image_store.clone(),
-                $self.style.clone(),
+                Style {
+                    terminal: None,
+                    ..$self.style
+                },
                 $self.debug,
                 $self.arrow_fonts,
                 $self.styled_underlines,

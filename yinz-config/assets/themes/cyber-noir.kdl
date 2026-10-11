@@ -1,5 +1,26 @@
 themes {
   cyber-noir {
+        // Terminal palette: Yinz-specific palette, matched to the UI colors below.
+        terminal {
+            foreground "#91f3e4"
+            background "#000000"
+            black "#000000"
+            red "#ff5555"
+            green "#00cc44"
+            yellow "#ff7f50"
+            blue "#5267d9"
+            magenta "#cc33cc"
+            cyan "#00b8b8"
+            white "#91f3e4"
+            bright_black "#465166"
+            bright_red "#ff8888"
+            bright_green "#00ff00"
+            bright_yellow "#ffb38a"
+            bright_blue "#859aff"
+            bright_magenta "#ff00ff"
+            bright_cyan "#00e5e5"
+            bright_white "#c4fff4"
+        }
         text_unselected {
             base 145 243 228
             background 0 0 0

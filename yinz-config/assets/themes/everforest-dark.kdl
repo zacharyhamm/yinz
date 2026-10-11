@@ -1,5 +1,26 @@
 themes {
   everforest-dark {
+        // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Everforest%20Dark%20Med
+        terminal {
+            foreground "#d3c6aa"
+            background "#232a2e"
+            black "#7a8478"
+            red "#e67e80"
+            green "#a7c080"
+            yellow "#dbbc7f"
+            blue "#7fbbb3"
+            magenta "#d699b6"
+            cyan "#83c092"
+            white "#f2efdf"
+            bright_black "#a6b0a0"
+            bright_red "#f85552"
+            bright_green "#8da101"
+            bright_yellow "#dfa000"
+            bright_blue "#3a94c5"
+            bright_magenta "#df69ba"
+            bright_cyan "#35a77c"
+            bright_white "#fffbef"
+        }
         text_unselected {
             base 211 198 170
             background 75 86 92

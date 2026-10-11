@@ -1,5 +1,26 @@
 themes {
     ayu-mirage {
+        // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Ayu%20Mirage
+        terminal {
+            foreground "#cccac2"
+            background "#1f2430"
+            black "#171b24"
+            red "#ed8274"
+            green "#87d96c"
+            yellow "#facc6e"
+            blue "#6dcbfa"
+            magenta "#dabafa"
+            cyan "#90e1c6"
+            white "#c7c7c7"
+            bright_black "#686868"
+            bright_red "#f28779"
+            bright_green "#d5ff80"
+            bright_yellow "#ffd173"
+            bright_blue "#73d0ff"
+            bright_magenta "#dfbfff"
+            bright_cyan "#95e6cb"
+            bright_white "#ffffff"
+        }
         text_unselected {
             base 199 199 199
             background 26 31 41

@@ -1,5 +1,26 @@
 themes {
     ayu-light {
+        // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Ayu%20Light
+        terminal {
+            foreground "#5c6166"
+            background "#f8f9fa"
+            black "#000000"
+            red "#ea6c6d"
+            green "#6cbf43"
+            yellow "#eca944"
+            blue "#3199e1"
+            magenta "#9e75c7"
+            cyan "#46ba94"
+            white "#bababa"
+            bright_black "#686868"
+            bright_red "#f07171"
+            bright_green "#86b300"
+            bright_yellow "#f2ae49"
+            bright_blue "#399ee6"
+            bright_magenta "#a37acc"
+            bright_cyan "#4cbf99"
+            bright_white "#d1d1d1"
+        }
         text_unselected {
             base 252 252 252
             background 231 234 237

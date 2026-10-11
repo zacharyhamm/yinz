@@ -1,5 +1,26 @@
 themes {
     solarized-light {
+        // Terminal palette: https://github.com/altercation/solarized/blob/master/xresources/solarized
+        terminal {
+            foreground "#657b83"
+            background "#fdf6e3"
+            black "#eee8d5"
+            red "#dc322f"
+            green "#859900"
+            yellow "#b58900"
+            blue "#268bd2"
+            magenta "#d33682"
+            cyan "#2aa198"
+            white "#073642"
+            bright_black "#fdf6e3"
+            bright_red "#cb4b16"
+            bright_green "#93a1a1"
+            bright_yellow "#839496"
+            bright_blue "#657b83"
+            bright_magenta "#6c71c4"
+            bright_cyan "#586e75"
+            bright_white "#002b36"
+        }
         text_unselected {
             base 238 232 213
             background 7 54 66

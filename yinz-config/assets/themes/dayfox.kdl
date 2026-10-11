@@ -1,5 +1,26 @@
 themes {
     dayfox {
+        // Terminal palette: https://github.com/EdenEast/nightfox.nvim/blob/main/extra/dayfox/kitty.conf
+        terminal {
+            foreground "#3d2b5a"
+            background "#f6f2ee"
+            black "#352c24"
+            red "#a5222f"
+            green "#396847"
+            yellow "#ac5402"
+            blue "#2848a9"
+            magenta "#6e33ce"
+            cyan "#287980"
+            white "#f2e9e1"
+            bright_black "#534c45"
+            bright_red "#b3434e"
+            bright_green "#577f63"
+            bright_yellow "#b86e28"
+            bright_blue "#4863b6"
+            bright_magenta "#8452d5"
+            bright_cyan "#488d93"
+            bright_white "#f4ece6"
+        }
         text_unselected {
             base 100 63 97
             background 211 199 187
