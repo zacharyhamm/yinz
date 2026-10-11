@@ -199,7 +199,7 @@ fn wait_reporting_stops(
 
 fn handle_openpty(
     open_pty_res: OpenptyResult,
-    cmd: RunCommand,
+    mut cmd: RunCommand,
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
@@ -230,6 +230,14 @@ fn handle_openpty(
         yinz_process::command::exec_program_and_args(&cmd).with_context(|| err_context(&cmd))?;
     let child = unsafe {
         let command = &mut Command::new(program);
+        let settings = cmd
+            .claude_settings
+            .take()
+            .filter(|_| cmd.target.is_bubblewrap());
+        let settings_file = yinz_process::command::stage_claude_settings(
+            command,
+            settings.as_ref().map(|settings| settings.0.as_str()),
+        )?;
         if let Some(current_dir) = &cmd.cwd {
             if current_dir.exists() && current_dir.is_dir() {
                 command.current_dir(current_dir);
@@ -258,6 +266,11 @@ fn handle_openpty(
                 }
                 // Leave std's exec-error pipe usable until exec succeeds.
                 close_fds::set_fds_cloexec(3, &[]);
+                if let Some(file) = &settings_file {
+                    if libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
                 Ok(())
             })
             .spawn()
@@ -619,7 +632,17 @@ impl UnixPtyBackend {
             // A local pane inherits this server's environment, which is where its
             // TERM and locale have always come from. Only a remote pane needs one
             // composed for it, because only a remote pane cannot inherit ours.
-            env: vec![],
+            env: cmd
+                .claude_settings
+                .as_ref()
+                .map(|settings| {
+                    (
+                        yinz_types::input::command::CLAUDE_SETTINGS_SNAPSHOT.into(),
+                        settings.0.clone(),
+                    )
+                })
+                .into_iter()
+                .collect(),
             login_session: false,
             // This server listens for the stops job control makes possible and
             // can send `SIGCONT` back, so a pane that suspends is recoverable.

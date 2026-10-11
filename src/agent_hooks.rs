@@ -790,6 +790,7 @@ pub(crate) fn home() -> Result<PathBuf> {
 
 pub(crate) fn agent_root(
     agent: HookAgent,
+    claude_home: Option<OsString>,
     codex_home: Option<OsString>,
     pi_home: Option<OsString>,
     xdg_config_home: Option<OsString>,
@@ -805,6 +806,7 @@ pub(crate) fn agent_root(
             HookAgent::Agy => "agy",
             HookAgent::All => unreachable!("all is expanded before resolving files"),
         },
+        claude_home,
         codex_home,
         pi_home,
         xdg_config_home,
@@ -849,6 +851,7 @@ impl Files {
         };
         let root = agent_root(
             agent,
+            std::env::var_os("CLAUDE_CONFIG_DIR"),
             std::env::var_os("CODEX_HOME"),
             std::env::var_os("PI_CODING_AGENT_DIR"),
             std::env::var_os("XDG_CONFIG_HOME"),
@@ -2180,10 +2183,47 @@ mod tests {
     }
 
     #[test]
+    fn claude_install_directory_honors_override_and_empty_fallback() {
+        assert_eq!(
+            agent_root(
+                HookAgent::Claude,
+                Some("/custom/claude".into()),
+                None,
+                None,
+                None,
+                || panic!("override does not need HOME")
+            )
+            .unwrap(),
+            PathBuf::from("/custom/claude")
+        );
+        for value in [None, Some(OsString::new())] {
+            assert_eq!(
+                agent_root(HookAgent::Claude, value, None, None, None, || Ok(
+                    PathBuf::from("/home/test")
+                ))
+                .unwrap(),
+                PathBuf::from("/home/test/.claude")
+            );
+        }
+    }
+
+    #[test]
+    fn claude_hook_files_resolve_inside_the_override() {
+        if yinz_test_support::reexec_test() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", temp.path());
+        let files = Files::resolve(HookAgent::Claude, false, None).unwrap();
+        assert_eq!(files.script, temp.path().join("yinz").join(MARKER));
+        assert_eq!(files.user_settings, temp.path().join("settings.json"));
+    }
+
+    #[test]
     fn pi_install_directory_override_does_not_need_home() {
         for path in ["/custom/pi", "relative/pi", "~user/pi", "./~/pi"] {
             assert_eq!(
-                agent_root(HookAgent::Pi, None, Some(path.into()), None, || {
+                agent_root(HookAgent::Pi, None, None, Some(path.into()), None, || {
                     panic!("override does not need HOME")
                 })
                 .unwrap(),
@@ -2191,7 +2231,7 @@ mod tests {
             );
         }
         assert_eq!(
-            agent_root(HookAgent::Pi, None, Some("".into()), None, || Ok(
+            agent_root(HookAgent::Pi, None, None, Some("".into()), None, || Ok(
                 PathBuf::from("/home/test")
             ))
             .unwrap(),
@@ -2206,14 +2246,14 @@ mod tests {
             ("~/.config/pi", "/home/test/.config/pi"),
         ] {
             assert_eq!(
-                agent_root(HookAgent::Pi, None, Some(path.into()), None, || Ok(
+                agent_root(HookAgent::Pi, None, None, Some(path.into()), None, || Ok(
                     PathBuf::from("/home/test")
                 ))
                 .unwrap(),
                 PathBuf::from(expected)
             );
             assert!(
-                agent_root(HookAgent::Pi, None, Some(path.into()), None, || Err(
+                agent_root(HookAgent::Pi, None, None, Some(path.into()), None, || Err(
                     anyhow!("HOME is not set")
                 ))
                 .is_err()
@@ -2303,7 +2343,7 @@ mod tests {
         );
         assert!(selected_agents(Some(HookAgent::Pi), true).is_err());
         assert_eq!(
-            agent_root(HookAgent::Pi, None, None, None, || Ok(PathBuf::from(
+            agent_root(HookAgent::Pi, None, None, None, None, || Ok(PathBuf::from(
                 "/home/me"
             )))
             .unwrap(),
@@ -2317,6 +2357,7 @@ mod tests {
         assert_eq!(
             agent_root(
                 HookAgent::Codex,
+                None,
                 Some(OsString::from("/custom/codex")),
                 None,
                 None,
@@ -2333,18 +2374,26 @@ mod tests {
     #[test]
     fn an_empty_codex_home_falls_back_to_home_rather_than_to_the_current_folder() {
         assert_eq!(
-            agent_root(HookAgent::Codex, Some(OsString::new()), None, None, || Ok(
-                PathBuf::from("/home/me")
-            ))
+            agent_root(
+                HookAgent::Codex,
+                None,
+                Some(OsString::new()),
+                None,
+                None,
+                || Ok(PathBuf::from("/home/me"))
+            )
             .unwrap(),
             PathBuf::from("/home/me/.codex")
         );
-        assert!(
-            agent_root(HookAgent::Codex, Some(OsString::new()), None, None, || Err(
-                anyhow!("HOME is unavailable")
-            ))
-            .is_err()
-        );
+        assert!(agent_root(
+            HookAgent::Codex,
+            None,
+            Some(OsString::new()),
+            None,
+            None,
+            || Err(anyhow!("HOME is unavailable"))
+        )
+        .is_err());
     }
 
     /// opencode's config root is the one that follows `XDG_CONFIG_HOME`, and its empty
@@ -2354,6 +2403,7 @@ mod tests {
         assert_eq!(
             agent_root(
                 HookAgent::Opencode,
+                None,
                 None,
                 None,
                 Some(OsString::from("/xdg")),
@@ -2367,6 +2417,7 @@ mod tests {
                 HookAgent::Opencode,
                 None,
                 None,
+                None,
                 Some(OsString::new()),
                 || Ok(PathBuf::from("/home/me"))
             )
@@ -2374,9 +2425,9 @@ mod tests {
             PathBuf::from("/home/me/.config/opencode")
         );
         assert_eq!(
-            agent_root(HookAgent::Opencode, None, None, None, || Ok(PathBuf::from(
-                "/home/me"
-            )))
+            agent_root(HookAgent::Opencode, None, None, None, None, || Ok(
+                PathBuf::from("/home/me")
+            ))
             .unwrap(),
             PathBuf::from("/home/me/.config/opencode")
         );
@@ -2390,6 +2441,7 @@ mod tests {
                 HookAgent::Muse,
                 None,
                 None,
+                None,
                 Some(OsString::from("/xdg")),
                 || Ok(PathBuf::from("/home/me"))
             )
@@ -2397,16 +2449,21 @@ mod tests {
             PathBuf::from("/xdg/muse")
         );
         assert_eq!(
-            agent_root(HookAgent::Muse, None, None, Some(OsString::new()), || Ok(
-                PathBuf::from("/home/me")
-            ))
+            agent_root(
+                HookAgent::Muse,
+                None,
+                None,
+                None,
+                Some(OsString::new()),
+                || Ok(PathBuf::from("/home/me"))
+            )
             .unwrap(),
             PathBuf::from("/home/me/.config/muse")
         );
         assert_eq!(
-            agent_root(HookAgent::Muse, None, None, None, || Ok(PathBuf::from(
-                "/home/me"
-            )))
+            agent_root(HookAgent::Muse, None, None, None, None, || Ok(
+                PathBuf::from("/home/me")
+            ))
             .unwrap(),
             PathBuf::from("/home/me/.config/muse")
         );

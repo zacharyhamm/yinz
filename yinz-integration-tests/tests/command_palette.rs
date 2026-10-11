@@ -632,8 +632,25 @@ fn command_palette_switches_to_an_exited_session() {
     source.quit();
 }
 
+fn claude_mother_fixture() {
+    let root = yinz_integration_tests::test_env::init();
+    let config = root.join("home/.claude");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join(".claude.json"), "{}").unwrap();
+    std::env::set_var("CLAUDE_CONFIG_DIR", config);
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    yinz_test_support::write_warm_script(&bin.join("bwrap"), "exit 1");
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+}
+
 #[test]
 fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
+    claude_mother_fixture();
     let elsewhere = tempfile::tempdir().unwrap();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config("load_plugins clear-defaults=true {}\npane_animations false")
@@ -666,9 +683,9 @@ fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
     // Mother has a persistent directory separate from the session and focused pane.
     assert_eq!(command.cwd.as_ref().unwrap().file_name().unwrap(), "work");
     assert_ne!(command.cwd, Some(std::env::current_dir().unwrap()));
-    assert!(
-        command.args.iter().any(|arg| arg == "claude"),
-        "{command:?}"
+    assert_eq!(
+        yinz_types::agent::agent_kind_of(&command.command, &command.args).as_deref(),
+        Some("claude")
     );
     mother.output(b"MOTHER READY\r\n");
     yinz.wait_until("mother is shown and the palette is gone", |snapshot| {
@@ -737,6 +754,7 @@ fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
 
 #[test]
 fn mother_launches_outside_the_configured_session_directory() {
+    claude_mother_fixture();
     // Where the session's panes open, which is not where the server process happens to run.
     let start = tempfile::tempdir().unwrap();
     let start = start.path().canonicalize().unwrap();
@@ -823,9 +841,9 @@ fn command_palette_launches_agent_in_selected_worktree_and_focuses_it() {
     let agent = yinz.expect_pty_spawn();
     let command = agent.run_command();
     assert_eq!(command.cwd, Some(root.join(".worktrees/palette")));
-    assert!(
-        command.args.iter().any(|arg| arg == "claude"),
-        "{command:?}"
+    assert_eq!(
+        yinz_types::agent::agent_kind_of(&command.command, &command.args).as_deref(),
+        Some("claude")
     );
     agent.output(b"PALETTE AGENT READY\r\n");
     yinz.wait_until("palette closes after launch", |s| {

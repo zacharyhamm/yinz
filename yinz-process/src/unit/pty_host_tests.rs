@@ -148,6 +148,7 @@ impl TestHost {
 fn sh(script: &str) -> RunCommand {
     RunCommand {
         agent_theme: None,
+        claude_settings: None,
         workflow_owner: None,
         command: PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), script.to_owned()],
@@ -624,6 +625,7 @@ fn a_missing_command_is_reported_rather_than_panicking() {
         session_name: None,
         cmd: RunCommand {
             agent_theme: None,
+            claude_settings: None,
             workflow_owner: None,
             command: PathBuf::from("/nonexistent/yinz-pty-host-no-such-binary"),
             args: vec![],

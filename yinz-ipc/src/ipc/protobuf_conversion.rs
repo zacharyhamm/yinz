@@ -1584,6 +1584,7 @@ fn run_command_from_protobuf(
 ) -> Option<yinz_types::input::command::RunCommand> {
     Some(yinz_types::input::command::RunCommand {
         agent_theme: None,
+        claude_settings: None,
         workflow_owner: None,
         command: std::path::PathBuf::from(cmd.command),
         args: cmd.args,
@@ -5557,6 +5558,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
             RunType::Command(cmd) => Ok(yinz_types::input::layout::Run::Command(
                 yinz_types::input::command::RunCommand {
                     agent_theme: None,
+                    claude_settings: None,
                     workflow_owner: None,
                     command: std::path::PathBuf::from(cmd.command),
                     args: cmd.args,

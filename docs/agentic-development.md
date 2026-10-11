@@ -79,13 +79,26 @@ If Yinz cannot create the folder, the launch fails. The pane title is `mother: <
 
 On Linux, mother automatically attempts Bubblewrap isolation without project configuration or Git.
 The sandbox can read host files. It can write only its working folder, private temporary storage, and the selected agent's state directories.
-Codex, pi, and opencode have supported state layouts. Their configuration directory overrides are honored, including `CODEX_HOME`, `PI_CODING_AGENT_DIR`, and the XDG directories.
+Codex, Claude, pi, and opencode have supported state layouts. Their configuration directory overrides are honored, including `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, and the XDG directories.
+Claude requires `/dev/fuse`, `fusermount3`, and `flock` (util-linux), with permission to mount a private FUSE filesystem.
+Each launch uses a private copy-on-write view of the host configuration. Changes to hooks, skills, and settings stay private.
+The `.credentials.json` file remains shared with the host. Credential writes persist immediately, including atomic replacements.
+When the host replaces credentials, the next open in a running mother sees the replacement. Already-open descriptors keep their original file.
+Credential symlinks, hard links, and special files are rejected. Replacement credentials have mode `0600`.
+Concurrent writers follow normal filesystem ordering. Yinz does not coordinate Claude's OAuth refresh requests.
+
+Complete Claude setup on the host first. Missing or invalid global settings stop the launch.
+Yinz retries briefly if a host settings write is incomplete. Each launch validates one settings snapshot and reuses it for probes and execution.
+Host account and MCP configuration changes apply to the next launch. Settings changes inside mother expire when it exits.
+Conversation transcripts under `projects` persist in session-private storage. The global command-history index does not persist.
+Claude's cache and state variables use private temporary storage for logs, locks, and staging. Automatic updates are disabled.
+If the configuration filesystem service stops, Yinz stops the running sandbox. Termination releases its mount and temporary files. A separate cleanup process releases the mount if the launcher is killed.
 Each provider has a separate saved sandbox profile. Switching providers keeps earlier profiles available for resuming runs from history.
 Other providers, including plugin providers, currently use the local fallback because their complete writable state layouts are not mapped.
-If Bubblewrap is unavailable or setup fails, mother launches locally and prints the reason in its pane.
+If Bubblewrap is unavailable or runtime probes fail (including unavailable FUSE mounts), mother launches locally and prints the reason in its pane. Claude configuration and validation errors stop the launch instead.
 This fallback provides no filesystem isolation. A started agent is never retried locally.
 
-Agent state remains shared with host agents. Network access, authentication, hooks, and agent permissions remain unchanged.
+Other providers still share agent state with host agents. Network access, hooks, and agent permissions remain unchanged.
 Mother can still request host changes through Yinz. Bubblewrap restricts direct filesystem writes, not Yinz control requests.
 
 Toggling shows mother on the tab you are on and gives it the keyboard, or hides it when it already has the keyboard.

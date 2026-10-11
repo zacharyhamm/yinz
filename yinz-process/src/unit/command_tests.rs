@@ -290,3 +290,47 @@ fn mother_fallback_resolves_the_private_agent_launcher_only_at_execution() {
         "sandbox unavailable\nagent\ncodex\n--\n"
     );
 }
+
+#[test]
+fn claude_settings_travel_by_descriptor_and_clear_inherited_transport_keys() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+    use yinz_types::input::command::{CLAUDE_SETTINGS_FD, CLAUDE_SETTINGS_SNAPSHOT};
+
+    for contents in [Some(r#"{"snapshot":true}"#), None] {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-eu",
+            "-c",
+            r#"
+            test -z "${YINZ_CLAUDE_SETTINGS_SNAPSHOT-}"
+            if test -n "${YINZ_CLAUDE_SETTINGS_FD-}"; then
+                cat "/dev/fd/$YINZ_CLAUDE_SETTINGS_FD"
+            fi
+        "#,
+        ]);
+        command
+            .env(CLAUDE_SETTINGS_FD, "invalid")
+            .env(CLAUDE_SETTINGS_SNAPSHOT, "stale");
+        let file = stage_claude_settings(&mut command, contents).unwrap();
+        unsafe {
+            command.pre_exec(move || {
+                close_fds::set_fds_cloexec(3, &[]);
+                if let Some(file) = &file {
+                    if libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, contents.unwrap_or_default().as_bytes());
+    }
+}

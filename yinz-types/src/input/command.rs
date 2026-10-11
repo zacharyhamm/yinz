@@ -58,11 +58,27 @@ impl OpenFilePayload {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Default, Serialize, PartialEq, Eq)]
+/// Internal launch transport keys, never passed to the agent.
+pub const CLAUDE_SETTINGS_SNAPSHOT: &str = "YINZ_CLAUDE_SETTINGS_SNAPSHOT";
+pub const CLAUDE_SETTINGS_FD: &str = "YINZ_CLAUDE_SETTINGS_FD";
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ClaudeSettings(pub String);
+
+impl std::fmt::Debug for ClaudeSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClaudeSettings(<private>)")
+    }
+}
+
+#[derive(Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
 pub struct RunCommand {
     /// Launch-time palette retained by the supervisor across adoption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_theme: Option<crate::agent::theme::AgentThemeLaunch>,
+    /// One launch only; the supervisor receives it through its private spawn channel.
+    #[serde(skip)]
+    pub claude_settings: Option<ClaudeSettings>,
     #[serde(alias = "cmd")]
     pub command: PathBuf,
     #[serde(default)]
@@ -96,6 +112,25 @@ pub struct RunCommand {
     /// instead would name a path that need not even exist there.
     #[serde(default)]
     pub remote_default_shell: bool,
+}
+
+impl std::fmt::Debug for RunCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Transient settings are not part of command diagnostics or layout snapshots.
+        f.debug_struct("RunCommand")
+            .field("agent_theme", &self.agent_theme)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("cwd", &self.cwd)
+            .field("hold_on_close", &self.hold_on_close)
+            .field("hold_on_start", &self.hold_on_start)
+            .field("originating_plugin", &self.originating_plugin)
+            .field("workflow_owner", &self.workflow_owner)
+            .field("use_terminal_title", &self.use_terminal_title)
+            .field("target", &self.target)
+            .field("remote_default_shell", &self.remote_default_shell)
+            .finish()
+    }
 }
 
 impl std::fmt::Display for RunCommand {
@@ -169,6 +204,7 @@ impl From<RunCommandAction> for RunCommand {
     fn from(action: RunCommandAction) -> Self {
         RunCommand {
             agent_theme: None,
+            claude_settings: None,
             command: action.command,
             args: action.args,
             cwd: action.cwd,

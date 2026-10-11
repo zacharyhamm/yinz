@@ -8,13 +8,17 @@ fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
 
 pub fn config_root(
     agent: &str,
+    claude_home: Option<OsString>,
     codex_home: Option<OsString>,
     pi_home: Option<OsString>,
     xdg_config_home: Option<OsString>,
     home: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<PathBuf> {
     Ok(match agent {
-        "claude" => home()?.join(".claude"),
+        "claude" => match non_empty(claude_home) {
+            Some(root) => root,
+            None => home()?.join(".claude"),
+        },
         "codex" => match non_empty(codex_home) {
             Some(root) => root,
             None => home()?.join(".codex"),

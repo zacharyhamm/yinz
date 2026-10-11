@@ -11,6 +11,7 @@ use std::os::fd::AsFd;
 fn sample_run_command() -> RunCommand {
     RunCommand {
         agent_theme: None,
+        claude_settings: None,
         workflow_owner: None,
         command: std::path::PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), "echo hi".to_owned()],
@@ -201,6 +202,7 @@ fn run_commands(tc: &hegel::TestCase) -> RunCommand {
     let arg_count = tc.draw(generators::integers::<usize>().max_value(4));
     RunCommand {
         agent_theme: None,
+        claude_settings: None,
         workflow_owner: tc.draw(generators::optional(generators::text())),
         command: PathBuf::from(tc.draw(generators::text())),
         args: (0..arg_count)
@@ -691,6 +693,7 @@ fn a_full_ring_fits_in_one_frame() {
         child_pid: ProcessId::new(u32::MAX),
         cmd: RunCommand {
             agent_theme: None,
+            claude_settings: None,
             workflow_owner: None,
             command: PathBuf::from("/usr/bin/some-fairly-long-command-name"),
             args: vec!["--with".to_owned(), "--several".to_owned()],

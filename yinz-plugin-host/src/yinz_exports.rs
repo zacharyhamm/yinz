@@ -3182,8 +3182,6 @@ fn prepare_agent(
 ) -> Result<PreparedAgent, AgentSpawnError> {
     let (mut command, mut checkout) = yinz_runtime::agent::launch::plan(spec)?;
     let bubblewrap = if spec.bubblewrap {
-        yinz_config::project_config::bubblewrap::validate_spawn_env(&spec.env)
-            .map_err(|error| format!("{error:#}"))?;
         if !command.target.is_local() {
             return Err("Bubblewrap cannot be combined with SSH".into());
         }
@@ -3198,6 +3196,9 @@ fn prepare_agent(
                 .map_err(|error| format!("{error:#}"))?;
         environment
             .preflight()
+            .map_err(|error| format!("{error:#}"))?;
+        environment
+            .validate_spawn_env(&spec.env)
             .map_err(|error| format!("{error:#}"))?;
         Some((environment, validated_cwd))
     } else {
