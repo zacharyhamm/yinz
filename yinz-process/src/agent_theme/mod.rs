@@ -7,6 +7,7 @@ mod codex;
 
 use std::{
     collections::BTreeMap,
+    ffi::{OsStr, OsString},
     io::{IsTerminal, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -18,7 +19,7 @@ use yinz_types::agent::theme::*;
 pub struct LaunchContext {
     pub executable: PathBuf,
     pub arguments: Vec<String>,
-    pub environment: BTreeMap<String, String>,
+    pub environment: BTreeMap<OsString, OsString>,
     pub cwd: PathBuf,
     pub target: ExecutionTarget,
 }
@@ -35,7 +36,7 @@ impl LaunchContext {
         Ok(Self {
             executable: executable.to_owned(),
             arguments: arguments.to_vec(),
-            environment: std::env::vars().collect(),
+            environment: std::env::vars_os().collect(),
             cwd: std::env::current_dir().context("resolve agent working directory")?,
             target: if std::env::var_os("YINZ_REMOTE_PANE_TOKEN").is_some() {
                 ExecutionTarget::Remote
@@ -56,7 +57,7 @@ impl LaunchContext {
     }
     fn home(&self) -> Result<PathBuf> {
         self.environment
-            .get("HOME")
+            .get(OsStr::new("HOME"))
             .map(PathBuf::from)
             .context("agent HOME is unavailable")
     }

@@ -6,7 +6,7 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
     let (cwd, overrides, profile) = launch_options(context)?;
     let root = context
         .environment
-        .get("CODEX_HOME")
+        .get(OsStr::new("CODEX_HOME"))
         .map(PathBuf::from)
         .unwrap_or(context.home()?.join(".codex"));
     let result = read_configuration(context, &cwd, &overrides)?;

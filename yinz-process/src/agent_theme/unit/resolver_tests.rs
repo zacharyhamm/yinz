@@ -4,7 +4,7 @@ fn context(root: &Path) -> LaunchContext {
     LaunchContext {
         executable: "/usr/bin/true".into(),
         arguments: vec![],
-        environment: BTreeMap::from([("HOME".into(), root.display().to_string())]),
+        environment: BTreeMap::from([("HOME".into(), root.as_os_str().to_owned())]),
         cwd: root.to_owned(),
         target: ExecutionTarget::Local,
     }
@@ -25,6 +25,68 @@ fn write(root: &Path, path: &str, value: &str) {
     let path = root.join(path);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, value).unwrap();
+}
+
+#[test]
+fn non_utf8_environment_survives_resolution_and_terminal_launch() {
+    use std::os::unix::ffi::OsStringExt;
+
+    const TEST: &str =
+        "agent_theme::tests::non_utf8_environment_survives_resolution_and_terminal_launch";
+    const MODE: &str = "YINZ_TEST_RAW_ENV_MODE";
+    let key = OsString::from_vec(b"YINZ_TEST_RAW_\xff".to_vec());
+    let value = OsString::from_vec(vec![0xff]);
+    if let Ok(mode) = std::env::var(MODE) {
+        assert_eq!(std::env::var_os(&key), Some(value.clone()));
+        assert_eq!(std::env::var_os("YINZ_TEST_RAW_VALUE"), Some(value.clone()));
+        if mode == "resolve" {
+            assert!(std::io::stdout().is_terminal());
+            let context = LaunchContext::current(&std::env::current_exe().unwrap(), &[]).unwrap();
+            assert_eq!(context.environment.get(&key), Some(&value));
+            let output = context
+                .command()
+                .args(["--exact", TEST, "--nocapture"])
+                .env(MODE, "verify")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            assert_eq!(
+                launch("claude", Path::new("/usr/bin/true"), &[]).unwrap(),
+                0
+            );
+        }
+        return;
+    }
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST, "--nocapture"])
+        .env(MODE, "resolve")
+        .env(&key, &value)
+        .env("YINZ_TEST_RAW_VALUE", &value)
+        .env("YINZ_PANE_ID", "1")
+        .env_remove("YINZ_PANE_REF")
+        .env_remove("YINZ_AGENT_THEME_REF")
+        .stdout(std::fs::File::from(pty.slave))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn claude_resolves_non_utf8_configuration_paths() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(OsString::from_vec(vec![b'c', 0xff]));
+    write(&root, ".claude.json", r#"{"theme":"light"}"#);
+    let mut launch = context(dir.path());
+    launch
+        .environment
+        .insert("CLAUDE_CONFIG_DIR".into(), root.into_os_string());
+    let mut source = snapshot();
+    claude::resolve(&launch, &mut source).unwrap();
+    assert_eq!(source.theme, "light");
 }
 
 #[test]
@@ -94,7 +156,7 @@ fn claude_launch_overrides_and_config_roots_are_invocation_local() {
     let mut launch = context(dir.path());
     launch.environment.insert(
         "CLAUDE_CONFIG_DIR".into(),
-        dir.path().join("isolated").display().to_string(),
+        dir.path().join("isolated").into_os_string(),
     );
     launch.arguments = vec!["--setting-sources".into(), "user".into()];
     launch.target = ExecutionTarget::Remote;
