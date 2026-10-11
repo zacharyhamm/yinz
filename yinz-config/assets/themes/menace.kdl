@@ -104,7 +104,7 @@ themes {
         frame_highlight {
             base 255 184 108
             background 0
-            emphasis_0 255 121 198
+            emphasis_0 255 132 203
             emphasis_1 255 184 108
             emphasis_2 255 184 108
             emphasis_3 255 184 108
@@ -126,16 +126,16 @@ themes {
             emphasis_3 0
         }
         multiplayer_user_colors {
-            player_1 255 121 198
-            player_2 98 114 164
-            player_3 0
+            player_1 255 132 203
+            player_2 164 173 202
+            player_3 173 173 178
             player_4 241 250 140
             player_5 139 233 253
-            player_6 0
-            player_7 247 76 23
-            player_8 0
-            player_9 0
-            player_10 0
+            player_6 173 173 178
+            player_7 250 146 113
+            player_8 173 173 178
+            player_9 173 173 178
+            player_10 173 173 178
         }
     }
 }

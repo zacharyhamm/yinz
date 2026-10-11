@@ -488,12 +488,6 @@ impl<'a> PaneContentsAndUi<'a> {
             if self.frame_is_dimmed_for_client(client_id) {
                 dim_character_chunks(&mut frame_terminal_characters);
             }
-            if self.output.is_translucent_layer(client_id, self.z_index) {
-                for chunk in &mut frame_terminal_characters {
-                    chunk.pane_default_bg =
-                        Some(self.style.colors.text_unselected.background.into());
-                }
-            }
             self.output
                 .add_character_chunks_to_client(client_id, frame_terminal_characters, self.z_index)
                 .with_context(err_context)?;
@@ -678,12 +672,15 @@ pub fn frame_color(
     } else {
         style.colors.frame_unselected.map(|frame| (frame.base, 0))
     };
-    if let Some((strength, foreground)) = waiting_pulse.filter(|(strength, _)| *strength > 0.0) {
-        let (color, precedence) = base.unwrap_or((foreground, 0));
-        Some((
-            blend(color, PaletteColor::Rgb((255, 255, 255)), strength),
-            precedence + 1,
-        ))
+    if let Some((strength, _)) = waiting_pulse.filter(|(strength, _)| *strength > 0.0) {
+        let (color, precedence) = base.unwrap_or((style.colors.text_unselected.base, 0));
+        // An unselected frame already uses the UI foreground; pulse it toward the focus color.
+        let target = if color == style.colors.text_unselected.base {
+            style.colors.frame_selected.base
+        } else {
+            style.colors.text_unselected.base
+        };
+        Some((blend(color, target, strength), precedence + 1))
     } else {
         base
     }

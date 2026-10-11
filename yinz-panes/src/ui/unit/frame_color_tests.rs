@@ -303,7 +303,7 @@ fn an_override_at_full_strength_wins_outright() {
 }
 
 #[test]
-fn waiting_pulse_brightens_the_resolved_color_and_breaks_base_priority_ties() {
+fn waiting_pulse_uses_the_ui_foreground_and_breaks_base_priority_ties() {
     let foreground = PaletteColor::Rgb((100, 150, 200));
     let mut indexed = style_with_frame_unselected();
     indexed.colors.frame_unselected.as_mut().unwrap().base = PaletteColor::EightBit(24);
@@ -327,7 +327,7 @@ fn waiting_pulse_brightens_the_resolved_color_and_breaks_base_priority_ties() {
                 ),
                 base
             );
-            let (color, precedence) = base.unwrap_or((foreground, 0));
+            let (color, precedence) = base.unwrap_or((style.colors.text_unselected.base, 0));
             assert_eq!(
                 color_of(
                     &style,
@@ -337,7 +337,15 @@ fn waiting_pulse_brightens_the_resolved_color_and_breaks_base_priority_ties() {
                     }
                 ),
                 Some((
-                    blend(color, PaletteColor::Rgb((255, 255, 255)), 0.4),
+                    blend(
+                        color,
+                        if color == style.colors.text_unselected.base {
+                            style.colors.frame_selected.base
+                        } else {
+                            style.colors.text_unselected.base
+                        },
+                        0.4,
+                    ),
                     precedence + 1
                 ))
             );
@@ -406,6 +414,45 @@ fn waiting_pulse_loses_to_every_higher_base_state() {
         .1;
         for higher in states().into_iter().skip(index + 1) {
             assert!(pulsed < color_of(&style, higher).unwrap().1);
+        }
+    }
+}
+
+#[test]
+fn waiting_pulses_stay_theme_colored_on_opposite_host_palettes() {
+    for (background, foreground) in [
+        ((245, 245, 245), (35, 35, 35)),
+        ((25, 25, 25), (220, 220, 220)),
+    ] {
+        let mut style = default_style();
+        style.colors.text_unselected.background = PaletteColor::Rgb(background);
+        style.colors.text_unselected.base = PaletteColor::Rgb(foreground);
+        style.colors.frame_selected.base = PaletteColor::Rgb((120, 90, 160));
+        for focused in [false, true] {
+            let normal = color_of(
+                &style,
+                FrameColorState {
+                    pane_is_focused: focused,
+                    ..state()
+                },
+            )
+            .map(|(color, _)| color)
+            .unwrap_or(style.colors.text_unselected.base);
+            let pulse = |host| {
+                color_of(
+                    &style,
+                    FrameColorState {
+                        pane_is_focused: focused,
+                        waiting_pulse: Some((0.4, host)),
+                        ..state()
+                    },
+                )
+                .unwrap()
+                .0
+            };
+            let light_host = pulse(PaletteColor::Rgb((0, 0, 0)));
+            assert_eq!(light_host, pulse(PaletteColor::Rgb((255, 255, 255))));
+            assert_ne!(light_host, normal);
         }
     }
 }

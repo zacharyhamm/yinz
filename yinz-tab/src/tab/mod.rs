@@ -5630,8 +5630,8 @@ impl Tab {
                     .get(&client_id)
                     .unwrap_or(&self.default_mode_info)
                     .mode;
-                let mut unpulsed = Boundaries::new(viewport);
-                let mut pulsed = Boundaries::new(viewport);
+                let mut unpulsed = Boundaries::new(viewport, self.style.colors.text_unselected);
+                let mut pulsed = Boundaries::new(viewport, self.style.colors.text_unselected);
                 for (id, other) in self
                     .tiled_panes
                     .get_panes()

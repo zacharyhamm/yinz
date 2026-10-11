@@ -442,14 +442,18 @@ impl Coordinates {
 
 pub struct Boundaries {
     viewport: Viewport,
+    foreground: PaletteColor,
+    background: PaletteColor,
     pub boundary_characters: HashMap<Coordinates, BoundarySymbol>,
 }
 
 #[allow(clippy::if_same_then_else)]
 impl Boundaries {
-    pub fn new(viewport: Viewport) -> Self {
+    pub fn new(viewport: Viewport, colors: yinz_types::style::StyleDeclaration) -> Self {
         Boundaries {
             viewport,
+            foreground: colors.base,
+            background: colors.background,
             boundary_characters: HashMap::new(),
         }
     }
@@ -598,6 +602,9 @@ impl Boundaries {
         &self,
         existing_boundaries_on_screen: Option<&Boundaries>,
     ) -> Result<Vec<CharacterChunk>> {
+        let existing_boundaries_on_screen = existing_boundaries_on_screen.filter(|previous| {
+            previous.foreground == self.foreground && previous.background == self.background
+        });
         let mut character_chunks = vec![];
         for (coordinates, boundary_character) in &self.boundary_characters {
             let already_on_screen = existing_boundaries_on_screen
@@ -607,13 +614,15 @@ impl Boundaries {
             if already_on_screen {
                 continue;
             }
-            character_chunks.push(CharacterChunk::new(
+            let mut chunk = CharacterChunk::new(
                 vec![boundary_character
                     .as_terminal_character()
                     .context("failed to render as terminal character")?],
                 coordinates.x,
                 coordinates.y,
-            ));
+            );
+            chunk.add_pane_defaults(Some(self.foreground.into()), Some(self.background.into()));
+            character_chunks.push(chunk);
         }
         Ok(character_chunks)
     }
@@ -669,3 +678,7 @@ impl Boundaries {
             && rect.y() + rect.rows() <= self.viewport.y + self.viewport.rows
     }
 }
+
+#[cfg(test)]
+#[path = "unit/boundary_background_tests.rs"]
+mod boundary_background_tests;
