@@ -2,6 +2,7 @@ pub use yinz_types::agent::*;
 pub mod hook_files;
 pub mod hooks;
 pub mod launch;
+pub mod paths;
 pub mod pi;
 pub mod report;
 mod restart;

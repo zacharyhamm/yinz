@@ -663,8 +663,9 @@ fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
     yinz.send_stdin(&keys::ENTER);
     let mother = yinz.expect_pty_spawn();
     let command = mother.run_command();
-    // The session's starting directory, not the focused pane's.
-    assert_eq!(command.cwd, Some(std::env::current_dir().unwrap()));
+    // Mother has a persistent directory separate from the session and focused pane.
+    assert_eq!(command.cwd.as_ref().unwrap().file_name().unwrap(), "work");
+    assert_ne!(command.cwd, Some(std::env::current_dir().unwrap()));
     assert!(
         command.args.iter().any(|arg| arg == "claude"),
         "{command:?}"
@@ -735,7 +736,7 @@ fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
 }
 
 #[test]
-fn mother_launches_in_the_configured_session_directory() {
+fn mother_launches_outside_the_configured_session_directory() {
     // Where the session's panes open, which is not where the server process happens to run.
     let start = tempfile::tempdir().unwrap();
     let start = start.path().canonicalize().unwrap();
@@ -758,7 +759,10 @@ fn mother_launches_in_the_configured_session_directory() {
     yinz.wait_until("claude selected", |snapshot| snapshot.contains("> claude"));
     yinz.send_stdin(&keys::ENTER);
     let mother = yinz.expect_pty_spawn();
-    assert_eq!(mother.run_command().cwd, Some(start));
+    let cwd = mother.run_command().cwd.unwrap();
+    assert_ne!(cwd, start);
+    assert!(cwd.is_dir());
+    assert_eq!(cwd.file_name().unwrap(), "work");
     yinz.quit();
 }
 

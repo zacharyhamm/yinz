@@ -253,9 +253,12 @@ pub fn hook_settings(events: &[&str], command: &str, timeout: u64) -> Value {
     json!({ "hooks": hooks })
 }
 
-/// The internal flag behind which `yinz` runs a command in a project's Bubblewrap
+/// The internal flag behind which `yinz` runs a command in a prepared Bubblewrap
 /// environment. Launching and recognition share it so neither can drift from the other.
 pub const BUBBLEWRAP_RUN_FLAG: &str = "--bubblewrap-run";
+
+/// Generated mother banner wrapper, shared with detection so lifecycle hooks still see the agent.
+pub const MOTHER_FALLBACK_SCRIPT: &str = "printf '%s\\n' \"$1\"; shift; exec \"$@\"";
 
 /// The command a Bubblewrap pane runs, read from the argv of the process holding its pty:
 /// this binary's launcher until it execs, then `bwrap`. Both end in `-- <command>`.
@@ -278,12 +281,19 @@ pub fn bubblewrap_inner_argv(argv: &[String]) -> Option<&[String]> {
     (!inner.is_empty()).then_some(inner)
 }
 
-/// The program and arguments behind an `env(1)` or `yinz agent` launcher wrapper.
+/// The program and arguments behind an `env(1)`, `yinz agent`, or mother banner wrapper.
 /// Other commands are returned unchanged.
 pub fn unwrapped_program_and_args<'a>(
     program: &'a Path,
     args: &'a [String],
 ) -> Option<(&'a Path, &'a [String])> {
+    if program.file_name()? == "sh" {
+        if let [flag, script, name, _reason, command, rest @ ..] = args {
+            if flag == "-c" && script == MOTHER_FALLBACK_SCRIPT && name == "mother" {
+                return unwrapped_program_and_args(Path::new(command), rest);
+            }
+        }
+    }
     if program.file_name()? == "yinz" {
         if let [agent, launcher, flag, command, separator, rest @ ..] = args {
             if agent == "agent"
@@ -1595,6 +1605,36 @@ mod tests {
                 Some("yinz")
             );
         }
+    }
+
+    #[test]
+    fn mother_fallback_preserves_agent_detection_without_interpreting_arbitrary_shell() {
+        let mut args: Vec<String> = [
+            "-c",
+            MOTHER_FALLBACK_SCRIPT,
+            "mother",
+            "setup failed",
+            "claude",
+            "--resume",
+            "conversation",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(
+            agent_kind_of(Path::new("/bin/sh"), &args).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            kind_from_program_and_args(Path::new("/bin/sh"), &args).as_deref(),
+            Some("claude")
+        );
+        args[1] = "echo claude".into();
+        assert_eq!(
+            agent_kind_of(Path::new("/bin/sh"), &args).as_deref(),
+            Some("sh")
+        );
+        assert!(kind_from_program_and_args(Path::new("/bin/sh"), &args).is_none());
     }
 
     #[test]

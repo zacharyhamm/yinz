@@ -795,35 +795,21 @@ pub(crate) fn agent_root(
     xdg_config_home: Option<OsString>,
     home: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<PathBuf> {
-    Ok(match agent {
-        HookAgent::Claude => home()?.join(".claude"),
-        HookAgent::Codex => match non_empty(codex_home) {
-            Some(root) => root,
-            None => home()?.join(".codex"),
+    yinz_runtime::agent::paths::config_root(
+        match agent {
+            HookAgent::Claude => "claude",
+            HookAgent::Codex => "codex",
+            HookAgent::Pi => "pi",
+            HookAgent::Opencode => "opencode",
+            HookAgent::Muse => "muse",
+            HookAgent::Agy => "agy",
+            HookAgent::All => unreachable!("all is expanded before resolving files"),
         },
-        // pi discovers extensions in `~/.pi/agent/extensions/` - its own convention,
-        // honoured rather than redirected, because a hand-run pi loads them from there
-        // with no flag at all.
-        HookAgent::Pi => match non_empty(pi_home) {
-            Some(root) if root.as_os_str() == "~" => home()?,
-            Some(root) if root.as_os_str().as_encoded_bytes().starts_with(b"~/") => home()?.join(
-                root.strip_prefix("~")
-                    .context("cannot expand Pi directory override")?,
-            ),
-            Some(root) => root,
-            None => home()?.join(".pi/agent"),
-        },
-        // opencode reads its config from `$XDG_CONFIG_HOME/opencode`, and falls back to
-        // `~/.config/opencode` where that is unset, the way opencode itself does.
-        HookAgent::Opencode => match non_empty(xdg_config_home) {
-            Some(root) => root.join("opencode"),
-            None => home()?.join(".config/opencode"),
-        },
-        // One root for the install and the launcher's startup verification.
-        HookAgent::Muse => yinz_muse::config_root(xdg_config_home, home)?,
-        HookAgent::Agy => home()?.join(".gemini"),
-        HookAgent::All => unreachable!("all is expanded before resolving files"),
-    })
+        codex_home,
+        pi_home,
+        xdg_config_home,
+        home,
+    )
 }
 
 fn shell_quote(path: &Path) -> String {

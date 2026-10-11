@@ -8,7 +8,7 @@ use yinz_bus::command_palette::{
 use yinz_types::agent::control::AgentPlacement;
 use yinz_types::data::PaneInfo;
 
-/// `session_cwd` is the directory the session was started in, where mother runs.
+/// `session_cwd` is the directory the session was started in.
 pub(crate) fn handle(
     mut request: AgentRequest,
     senders: &ThreadSenders,
@@ -364,34 +364,68 @@ fn existing_command(
     })
 }
 
-/// Launch the session's mother agent: a fresh conversation in the directory the session
-/// started in (or home if it disappeared), on the session surface instead of a tiled pane.
+/// Launch a fresh conversation on the session surface, in its persistent private folder.
 fn mother(
     request: &AgentRequest,
     kind: &str,
-    session_cwd: &Path,
+    _session_cwd: &Path,
     senders: &ThreadSenders,
 ) -> Result<AgentReply, String> {
-    let cwd = mother_directory(session_cwd, std::env::home_dir())?;
-    let cwd = cwd.to_string_lossy();
+    let session = yinz_runtime::envs::get_session_name()
+        .map_err(|error| format!("Mother requires a session: {error}"))?;
+    let cwd = yinz_config::project_config::bubblewrap::mother_directory(
+        &yinz_runtime::consts::YINZ_CACHE_DIR,
+        session.as_str(),
+    )
+    .map_err(|error| format!("Mother cannot create its working directory: {error:#}"))?;
     let spec = AgentSpawnSpec {
         kind: Some(kind.to_owned()),
         allow_outside_worktree: Some(true),
         ..Default::default()
     };
-    launch(request, senders, spec, |_| {
-        existing_command(kind, &cwd, PaneTarget::Local)
+    launch(request, senders, spec, |spec| {
+        let kind = yinz_runtime::agent::launch::kind_for_spec(spec)
+            .ok_or("mother requires an agent kind")?;
+        let mut prepared = existing_command(&kind, &cwd.to_string_lossy(), PaneTarget::Local)?;
+        let (program, _) = yinz_types::agent::unwrapped_program_and_args(
+            &prepared.command.path,
+            &prepared.command.args,
+        )
+        .unwrap_or((&prepared.command.path, &prepared.command.args));
+        let sandbox = yinz_config::project_config::bubblewrap::Environment::at_root(&cwd)
+            .prepare_mother(&kind, program);
+        mother_target(&mut prepared, sandbox.map_err(|error| format!("{error:#}")))?;
+        Ok(prepared)
     })
 }
 
-fn mother_directory(session_cwd: &Path, home: Option<PathBuf>) -> Result<PathBuf, String> {
-    if session_cwd.is_dir() {
-        return Ok(session_cwd.to_path_buf());
+fn mother_target(
+    prepared: &mut PreparedAgent,
+    sandbox: Result<(), String>,
+) -> Result<(), AgentSpawnError> {
+    match sandbox {
+        Ok(()) => prepared.command.target = PaneTarget::bubblewrap(&prepared.cwd)?,
+        Err(reason) => {
+            // Print before exec, once. An agent that has started is never retried locally.
+            let command = &mut prepared.command;
+            let message = format!(
+                "Mother is running unsandboxed (no filesystem isolation): {}",
+                yinz_types::text::clean_string_from_control_and_linebreak(&reason)
+            );
+            let mut args = vec![
+                "-c".into(),
+                yinz_types::agent::MOTHER_FALLBACK_SCRIPT.into(),
+                "mother".into(),
+                message,
+                command.path.to_string_lossy().into_owned(),
+            ];
+            args.append(&mut command.args);
+            command.path = "/bin/sh".into();
+            command.args = args;
+            command.target = PaneTarget::Local;
+        },
     }
-    home.filter(|path| path.is_dir()).ok_or_else(|| {
-        "Mother cannot launch: neither the session directory nor the home directory is available"
-            .into()
-    })
+    Ok(())
 }
 
 fn launch(

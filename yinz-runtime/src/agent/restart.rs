@@ -5,7 +5,7 @@ use std::path::Path;
 /// could replay work or silently change the model, permissions, or working directory.
 pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, String> {
     let name = program.file_name().and_then(|name| name.to_str());
-    if name == Some("yinz") {
+    if matches!(name, Some("yinz" | "sh")) {
         if let Some((inner, inner_args)) = crate::agent::unwrapped_program_and_args(program, args) {
             if inner != program {
                 let mut result = args[..args.len() - inner_args.len()].to_vec();
@@ -599,6 +599,26 @@ fn provider_restart_args(
 mod tests {
     use super::*;
     use crate::agent::launch::{plan, Spec};
+
+    #[test]
+    fn mother_fallback_restart_keeps_the_banner_and_clears_conversation_selectors() {
+        let prefix: Vec<String> = [
+            "-c",
+            crate::agent::MOTHER_FALLBACK_SCRIPT,
+            "mother",
+            "setup failed",
+            "claude",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let args = [
+            prefix.clone(),
+            vec!["--resume".into(), "conversation".into()],
+        ]
+        .concat();
+        assert_eq!(restart_args(Path::new("/bin/sh"), &args).unwrap(), prefix);
+    }
 
     #[test]
     fn pi_restart_removes_prompts_and_session_selectors_with_exact_arity() {

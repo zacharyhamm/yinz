@@ -192,3 +192,61 @@ while s.recv(1) == b'r':
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+#[ignore = "requires Linux Bubblewrap user namespaces"]
+fn mother_bubblewrap_supports_agent_control_and_lifecycle_reporting() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    for name in ["HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] {
+        std::env::set_var(name, root);
+    }
+    std::env::remove_var("CODEX_HOME");
+    std::env::set_var("YINZ_SESSION_NAME", "owner");
+    std::env::set_var("YINZ_SOCKET_DIR", root);
+    let session = Session::new(root, "owner");
+    yinz_runtime::shared::set_permissions(session.path.parent().unwrap(), 0o700).unwrap();
+    let work = yinz_config::project_config::bubblewrap::mother_directory(root, "owner").unwrap();
+    let environment = yinz_config::project_config::bubblewrap::Environment::at_root(&work);
+    environment
+        .prepare_mother("codex", Path::new("sh"))
+        .unwrap();
+    let _supervisor = Supervisor::new(root, "owner", 7);
+    let output = command(root, &work)
+        .arg("--bubblewrap-run").arg(&work)
+        .args(["--", "sh", "-eu", "-c", r#"
+            test "$YINZ_BUBBLEWRAP" = 1
+            test "$YINZ_SESSION_NAME" = owner
+            test "$YINZ_PANE_REF" = abcdef012345
+            echo notes > notes
+            echo state > "$HOME/.codex/mother-state"
+            yinz agent list --json
+            yinz action write-chars mother-control
+            printf '%s' '{"hook_event_name":"Stop","session_id":"mother-test"}' | yinz action agent-report --hook-json
+        "#]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(matches!(
+        session.receive(),
+        ClientToServerMsg::AgentControl(_)
+    ));
+    assert!(matches!(
+        session.receive(),
+        ClientToServerMsg::Action { .. }
+    ));
+    assert!(matches!(
+        session.receive(),
+        ClientToServerMsg::AgentReport(_)
+    ));
+    assert_eq!(
+        std::fs::read_to_string(work.join("notes")).unwrap(),
+        "notes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".codex/mother-state")).unwrap(),
+        "state\n"
+    );
+}

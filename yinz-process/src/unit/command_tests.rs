@@ -252,3 +252,41 @@ fn only_a_bubblewrap_target_execs_through_this_binarys_launcher() {
         Some(std::ffi::OsStr::new("/nonexistent"))
     ));
 }
+
+#[test]
+fn mother_fallback_resolves_the_private_agent_launcher_only_at_execution() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("renamed yinz");
+    yinz_test_support::write_warm_script(&binary, "printf '%s\\n' \"$@\"");
+    let mut command: PathBuf = "env".into();
+    let mut args: Vec<String> = [
+        "YINZ_AGENT_PANE=1",
+        "/bin/sh",
+        "-c",
+        yinz_types::agent::MOTHER_FALLBACK_SCRIPT,
+        "mother",
+        "sandbox unavailable",
+        "yinz",
+        "agent",
+        "codex",
+        "--",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(
+        yinz_types::agent::agent_kind_of(&command, &args).as_deref(),
+        Some("codex")
+    );
+    resolve_agent_launcher(&binary, &mut command, &mut args).unwrap();
+    assert_eq!(args[6], binary.to_str().unwrap());
+    let output = std::process::Command::new(command)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "sandbox unavailable\nagent\ncodex\n--\n"
+    );
+}

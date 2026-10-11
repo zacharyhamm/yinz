@@ -100,7 +100,7 @@ pub fn plugin_thread_main(
     available_layout_errors: Vec<LayoutWithError>,
     path_to_default_shell: PathBuf,
     yinz_cwd: PathBuf,
-    // Where the session's first panes opened, which is where mother runs. Not `yinz_cwd` when
+    // Where the session's first panes opened. Not `yinz_cwd` when
     // the session was started with an explicit directory or `default_cwd`.
     session_cwd: PathBuf,
     session_env_vars: std::collections::BTreeMap<String, String>,
