@@ -13,6 +13,7 @@ fn bubblewrap_roots_are_validated_in_every_command_decoder() {
             command: "claude".into(),
             target: Some(proto::PaneTarget {
                 kind: Some(proto::pane_target::Kind::BubblewrapRoot(root.into())),
+                ..Default::default()
             }),
             ..Default::default()
         };

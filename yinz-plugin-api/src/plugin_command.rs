@@ -3045,7 +3045,10 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             },
             Some(CommandName::SpawnAgent) => match protobuf_plugin_command.payload {
                 Some(Payload::SpawnAgentPayload(payload)) => Ok(PluginCommand::SpawnAgent {
-                    spec: payload.spec.ok_or("SpawnAgent must have a spec")?.into(),
+                    spec: payload
+                        .spec
+                        .ok_or("SpawnAgent must have a spec")?
+                        .try_into()?,
                     source_directory: payload.source_directory.map(PathBuf::from),
                     cwd: payload.cwd.map(PathBuf::from),
                     name: payload.name,
@@ -6951,6 +6954,8 @@ impl From<AgentSpawnSpec> for ProtobufAgentSpawnSpec {
             permission_mode: spec.permission_mode,
             resume: spec.resume,
             hooks: spec.hooks,
+            firecracker: None,
+            firecracker_image: None,
 
             reuse: spec.reuse,
             reuse_prompt: spec.reuse_prompt,
@@ -6960,9 +6965,14 @@ impl From<AgentSpawnSpec> for ProtobufAgentSpawnSpec {
     }
 }
 
-impl From<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
-    fn from(spec: ProtobufAgentSpawnSpec) -> Self {
-        AgentSpawnSpec {
+impl TryFrom<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
+    type Error = &'static str;
+
+    fn try_from(spec: ProtobufAgentSpawnSpec) -> Result<Self, Self::Error> {
+        if spec.firecracker.is_some() || spec.firecracker_image.is_some() {
+            return Err("Firecracker execution is no longer supported.");
+        }
+        Ok(AgentSpawnSpec {
             kind: spec.kind,
             command: spec.command,
             args: spec.args,
@@ -6986,7 +6996,7 @@ impl From<ProtobufAgentSpawnSpec> for AgentSpawnSpec {
             reuse_prompt: spec.reuse_prompt,
             allow_outside_worktree: spec.allow_outside_worktree,
             bubblewrap: spec.bubblewrap,
-        }
+        })
     }
 }
 

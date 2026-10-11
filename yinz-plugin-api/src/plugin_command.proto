@@ -693,6 +693,9 @@ message AgentSpawnSpec {
   optional string permission_mode = 11;
   optional string resume = 12;
   optional bool hooks = 13;
+  // Decode-only markers: reject retired execution requests.
+  optional string firecracker = 14;
+  optional string firecracker_image = 15;
   optional string effort = 16;
   optional bool reuse = 17;
   optional bool allow_outside_worktree = 18;
