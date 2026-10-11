@@ -131,7 +131,7 @@ pub fn config_root(
     xdg_config_home: Option<std::ffi::OsString>,
     home: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<PathBuf> {
-    yinz_runtime::agent::paths::config_root("muse", None, None, xdg_config_home, home)
+    yinz_runtime::agent::paths::config_root("muse", None, None, None, xdg_config_home, home)
 }
 
 /// The hook script and the settings document that wires it, resolved from the environment.

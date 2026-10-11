@@ -761,6 +761,7 @@ impl ServerOsInputOutput {
         mut cmd: RunCommand,
         report_progress: Option<&mut dyn FnMut(&str)>,
     ) -> Result<(RunCommand, RunCommand, Option<RemoteEndpoint>)> {
+        cmd.claude_settings = None;
         let rerun_cmd = cmd.clone();
         match &cmd.target {
             PaneTarget::Local => {
@@ -786,7 +787,7 @@ impl ServerOsInputOutput {
                 if let Some(report_progress) = report_progress {
                     report_progress("running launch checks");
                 }
-                if let Some(reason) = check_bubblewrap_launch(root, &cmd)? {
+                if let Some(reason) = check_bubblewrap_launch(&root.clone(), &mut cmd)? {
                     yinz_types::agent::mother_fallback(&mut cmd.command, &mut cmd.args, &reason);
                     cmd.target = PaneTarget::Local;
                     // Resolve portable launchers on the host, retaining the sandbox request for reruns.
@@ -1059,7 +1060,7 @@ fn resolve_failed(
 /// local command already is. Its terminal id is a placeholder, as a broker's is:
 /// [`resolve_failed`] names the pane.
 #[cfg(unix)]
-fn check_bubblewrap_launch(root: &Path, cmd: &RunCommand) -> Result<Option<String>> {
+fn check_bubblewrap_launch(root: &Path, cmd: &mut RunCommand) -> Result<Option<String>> {
     use yinz_project_config::bubblewrap::{Environment, LaunchCheck, ProgramNotFound};
     let cwd = cmd
         .cwd
@@ -1067,10 +1068,14 @@ fn check_bubblewrap_launch(root: &Path, cmd: &RunCommand) -> Result<Option<Strin
         .context("a Bubblewrap pane needs a working directory")?;
     let (program, _) = yinz_types::agent::unwrapped_program_and_args(&cmd.command, &cmd.args)
         .unwrap_or((&cmd.command, &cmd.args));
+    let program = program.to_path_buf();
     Environment::at_root(root)
-        .check_launch(cwd, program)
+        .check_launch(cwd, &program)
         .map(|outcome| match outcome {
-            LaunchCheck::Ready => None,
+            LaunchCheck::Ready(settings) => {
+                cmd.claude_settings = settings;
+                None
+            },
             LaunchCheck::MotherFallback(reason) => Some(reason),
         })
         .map_err(|error| {

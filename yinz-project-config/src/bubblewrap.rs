@@ -3,7 +3,7 @@ use kdl::{KdlDocument, KdlNode};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Seek, Write};
+use std::io::{Read, Seek, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::{
     fs::{OpenOptionsExt, PermissionsExt},
@@ -13,16 +13,6 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use yinz_runtime::errors::prelude::*;
-
-/// Protect variables that establish the sandbox boundary, including against spawn's env wrapper.
-pub fn validate_spawn_env(env: &BTreeMap<String, String>) -> Result<()> {
-    for name in env.keys() {
-        if reserved_env(name) && !matches!(name.as_str(), "YINZ_AGENT_PANE" | "YINZ_SWAMP_OWNER") {
-            bail!("Bubblewrap spawn cannot override {name}");
-        }
-    }
-    Ok(())
-}
 
 pub const RUN_FLAG: &str = yinz_types::agent::BUBBLEWRAP_RUN_FLAG;
 const HOME: &str = "/home/yinz";
@@ -40,12 +30,18 @@ const ETC: &[&str] = &[
 ];
 /// Synthesized for the sandbox's single user, so `getpwuid` agrees with the private home.
 const ACCOUNTS: &[&str] = &["/etc/passwd", "/etc/group"];
+#[cfg(target_os = "linux")]
+#[path = "claude_view.rs"]
+mod claude_view;
+
+use yinz_types::input::command::ClaudeSettings;
+
 const LOG_LIMIT: u64 = 1024 * 1024;
 
 /// Runtime probes may fall back locally only for a validated internal mother profile.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LaunchCheck {
-    Ready,
+    Ready(Option<ClaudeSettings>),
     MotherFallback(String),
 }
 
@@ -61,6 +57,134 @@ impl std::fmt::Display for ProgramNotFound {
 
 impl std::error::Error for ProgramNotFound {}
 
+/// Invalid Claude configuration must not silently launch an unsandboxed agent.
+#[derive(Debug)]
+pub struct MotherSetupError;
+
+impl std::fmt::Display for MotherSetupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cannot prepare Claude mother configuration")
+    }
+}
+
+impl std::error::Error for MotherSetupError {}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct ClaudeState {
+    root: PathBuf,
+    global: PathBuf,
+    home: PathBuf,
+}
+
+impl ClaudeState {
+    fn resolve() -> Result<Self> {
+        let home = host_home()?;
+        let override_root = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|p| !p.is_empty());
+        let root = yinz_runtime::agent::paths::config_root(
+            "claude",
+            override_root.clone(),
+            None,
+            None,
+            None,
+            || Ok(home.clone()),
+        )?;
+        let root = if root.is_relative() {
+            root.canonicalize()
+                .context("resolve relative Claude config directory")?
+        } else {
+            root
+        };
+        let global = if override_root.is_some() {
+            root.join(".claude.json")
+        } else {
+            home.join(".claude.json")
+        };
+        Ok(Self {
+            root: resolved_path(&root)?,
+            global: resolved_path(&global)?,
+            home: resolved_path(&home)?,
+        })
+    }
+
+    fn env(&self) -> Result<BTreeMap<String, String>> {
+        let mut env = BTreeMap::from([
+            ("DISABLE_AUTOUPDATER".into(), "1".into()),
+            ("XDG_CACHE_HOME".into(), "/run/yinz-claude/cache".into()),
+            ("XDG_STATE_HOME".into(), "/run/yinz-claude/state".into()),
+        ]);
+        for (name, path) in [("HOME", &self.home), ("CLAUDE_CONFIG_DIR", &self.root)] {
+            env.insert(
+                name.into(),
+                path.to_str().context("Claude path is not UTF-8")?.into(),
+            );
+        }
+        Ok(env)
+    }
+
+    fn settings(&self) -> Result<ClaudeSettings> {
+        settings_snapshot(|| {
+            let legacy = self.root.join(".config.json");
+            let path = if legacy
+                .try_exists()
+                .context("inspect legacy Claude settings")?
+            {
+                &legacy
+            } else {
+                &self.global
+            };
+            fs::read(path).with_context(|| {
+                format!(
+                    "read host Claude settings {}; run Claude on the host to complete setup first",
+                    path.display()
+                )
+            })
+        })
+    }
+}
+
+fn settings_snapshot(mut read: impl FnMut() -> Result<Vec<u8>>) -> Result<ClaudeSettings> {
+    // Claude sometimes truncates and rewrites settings instead of renaming them.
+    for attempt in 0..5 {
+        let result = (|| {
+            let contents = read()?;
+            let value: serde_json::Value =
+                serde_json::from_slice(&contents).context("parse host Claude global settings")?;
+            if !value.is_object() {
+                bail!("host Claude global settings must be a JSON object");
+            }
+            Ok(ClaudeSettings(
+                String::from_utf8(contents).context("decode Claude settings")?,
+            ))
+        })();
+        match result {
+            Ok(settings) => return Ok(settings),
+            Err(error) if attempt == 4 => return Err(error).context(MotherSetupError),
+            Err(_) => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    unreachable!("bounded settings retry returns on the last attempt")
+}
+
+fn host_home() -> Result<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .context("HOME is not set")
+}
+
+/// Resolve existing ancestors without creating host state directories.
+fn resolved_path(path: &Path) -> Result<PathBuf> {
+    absolute(path.to_str().context("agent state path is not UTF-8")?)?;
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !path.is_symlink() => Ok(
+            resolved_path(path.parent().context("state path has no parent")?)?
+                .join(path.file_name().context("state path has no filename")?),
+        ),
+        Err(error) => Err(error).context("resolve agent state path"),
+    }
+}
+
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Declaration {
     mounts: Vec<(PathBuf, PathBuf)>,
@@ -74,6 +198,8 @@ struct Declaration {
     mother: Option<Vec<PathBuf>>,
     #[serde(default)]
     mother_work: Option<PathBuf>,
+    #[serde(default)]
+    claude: Option<ClaudeState>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -83,10 +209,37 @@ struct Accepted {
     ready: bool,
 }
 
+#[derive(Clone)]
 pub struct Environment {
     root: PathBuf,
     metadata: PathBuf,
     home: PathBuf,
+    settings: Option<ClaudeSettings>,
+}
+
+struct SandboxCommand {
+    command: Command,
+    #[cfg(target_os = "linux")]
+    view: Option<claude_view::View>,
+}
+
+impl std::fmt::Debug for SandboxCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.command.fmt(f)
+    }
+}
+
+impl std::ops::Deref for SandboxCommand {
+    type Target = Command;
+    fn deref(&self) -> &Command {
+        &self.command
+    }
+}
+
+impl std::ops::DerefMut for SandboxCommand {
+    fn deref_mut(&mut self) -> &mut Command {
+        &mut self.command
+    }
 }
 
 /// Resolved once: after the running binary is replaced on disk, `current_exe()` names a
@@ -393,6 +546,22 @@ fn parse(doc: &KdlDocument, root: &Path, host_home: &Path) -> Result<Declaration
 }
 
 impl Declaration {
+    fn validate_spawn_env(&self, env: &BTreeMap<String, String>) -> Result<()> {
+        for name in env.keys() {
+            if (reserved_env(name)
+                || (self.claude.is_some()
+                    && matches!(
+                        name.as_str(),
+                        "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "DISABLE_AUTOUPDATER"
+                    )))
+                && !matches!(name.as_str(), "YINZ_AGENT_PANE" | "YINZ_SWAMP_OWNER")
+            {
+                bail!("Bubblewrap spawn cannot override {name}");
+            }
+        }
+        Ok(())
+    }
+
     fn validate(&self, root: &Path) -> Result<()> {
         let mut destinations = vec![root.to_path_buf()];
         destinations.extend(SYSTEM.iter().chain(ETC).chain(ACCOUNTS).map(PathBuf::from));
@@ -525,17 +694,16 @@ fn declared_environment(
     Ok(())
 }
 
+/// The agent's writable directories, its configuration root first.
 fn mother_state(kind: &str) -> Result<Vec<PathBuf>> {
     // shortcut: only mapped state layouts are sandboxed, extend this when another provider's paths are known.
     if !matches!(kind, "codex" | "pi" | "opencode") {
         bail!("no supported writable state layout for agent {kind}");
     }
-    let home = std::env::var_os("HOME")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .context("HOME is not set")?;
+    let home = host_home()?;
     let root = yinz_runtime::agent::paths::config_root(
         kind,
+        None,
         std::env::var_os("CODEX_HOME"),
         std::env::var_os("PI_CODING_AGENT_DIR"),
         std::env::var_os("XDG_CONFIG_HOME"),
@@ -564,12 +732,18 @@ impl Environment {
     /// Prepare an internal profile without reading project configuration or requiring Git.
     /// Runtime probes belong to the PTY spawn, where mother failures can fall back locally.
     pub fn prepare_mother(&self, kind: &str) -> Result<Self> {
-        platform()?;
-        self.accept_mother(kind)
+        // Claude must validate its launch snapshot before an unavailable runtime can fall back.
+        if kind != "claude" || !cfg!(target_os = "linux") {
+            platform()?;
+        }
+        if kind == "claude" {
+            self.accept_mother(kind).context(MotherSetupError)
+        } else {
+            self.accept_mother(kind)
+        }
     }
 
     fn accept_mother(&self, kind: &str) -> Result<Self> {
-        let paths = mother_state(kind)?;
         // History records this target; switching providers must leave earlier profiles intact.
         let root = self.root.with_file_name(format!("profile-{kind}"));
         if root.is_symlink() {
@@ -581,8 +755,11 @@ impl Environment {
         yinz_runtime::shared::ensure_secure_dir(&root)
             .context("create private mother profile directory")?;
         let profile = Self::at_root(&root);
+        if kind == "claude" {
+            return self.accept_claude(profile);
+        }
         let mut state = Vec::new();
-        for path in paths {
+        for path in mother_state(kind)? {
             absolute(path.to_str().context("agent state path is not UTF-8")?)?;
             self.validate_mother_state(&path)?;
             profile.validate_mother_state(&path)?;
@@ -625,6 +802,97 @@ impl Environment {
         Ok(profile)
     }
 
+    fn accept_claude(&self, profile: Self) -> Result<Self> {
+        let claude = ClaudeState::resolve()?;
+        let accepted = Accepted {
+            root: profile.root.clone(),
+            declaration: Declaration {
+                env: claude.env()?,
+                mother: Some(vec![profile.home.join("projects")]),
+                mother_work: Some(self.root.clone()),
+                claude: Some(claude),
+                ..Default::default()
+            },
+            ready: true,
+        };
+        for exclusive in [false, true] {
+            let _lock = profile.lock(exclusive)?;
+            profile.validate_storage(&accepted.declaration)?;
+            profile.validate_claude(&accepted.declaration)?;
+            if profile
+                .accepted()
+                .is_ok_and(|previous| previous.declaration == accepted.declaration)
+            {
+                return Ok(profile);
+            }
+            if exclusive {
+                for path in [&profile.home, &profile.home.join("projects")] {
+                    if path.is_symlink() {
+                        bail!("private Claude state must not be a symlink");
+                    }
+                    yinz_runtime::shared::ensure_secure_dir(path)
+                        .context("create private Claude transcripts")?;
+                }
+                profile.save(&accepted)?;
+            }
+        }
+        Ok(profile)
+    }
+
+    fn validate_claude(&self, declaration: &Declaration) -> Result<()> {
+        let Some(claude) = &declaration.claude else {
+            return Ok(());
+        };
+        if declaration.mother.as_deref() != Some(&[self.home.join("projects")])
+            || declaration.env != claude.env()?
+        {
+            bail!("invalid Claude isolation profile; prepare mother again");
+        }
+        let work = self.writable_root(declaration);
+        self.validate_mother_state(&self.home)?;
+        if overlaps(&self.home, work) {
+            bail!("private Claude storage overlaps the working directory");
+        }
+        let metadata = self
+            .metadata
+            .canonicalize()
+            .context("resolve Claude profile metadata")?;
+        self.validate_mother_state(&claude.root)?;
+        if resolved_path(&claude.root)? != claude.root
+            || overlaps(&claude.root, work)
+            || overlaps(&claude.root, &self.home)
+            || overlaps(&claude.root, &metadata)
+        {
+            bail!(
+                "unsafe or changed Claude state path: {}",
+                claude.root.display()
+            );
+        }
+        if !claude.root.is_dir() {
+            bail!("Claude config directory is missing; run Claude on the host to complete setup first");
+        }
+        for path in [
+            &claude.global,
+            &claude.root.join(".config.json"),
+            &claude.root.join(".claude.json"),
+            &claude.root.join("projects"),
+        ] {
+            let resolved = resolved_path(path)?;
+            if overlaps(&resolved, work)
+                || overlaps(&resolved, &self.home)
+                || overlaps(&resolved, &metadata)
+            {
+                bail!("unsafe or changed Claude settings path: {}", path.display());
+            }
+        }
+        if resolved_path(&self.home)? != self.home
+            || resolved_path(&self.home.join("projects"))? != self.home.join("projects")
+        {
+            bail!("private Claude transcripts changed through a symlink");
+        }
+        Ok(())
+    }
+
     /// Preserve project targets; a mother fork needs the destination provider's state mounts.
     pub fn for_agent(&self, kind: &str, cwd: Option<&Path>) -> Result<Self> {
         let _lock = self.lock(false)?;
@@ -634,12 +902,20 @@ impl Environment {
         };
         let cwd = cwd.context("Mother agent requires a working directory")?;
         self.validate_launch_cwd(cwd, &accepted.declaration)?;
+        if kind == "claude" {
+            let desired = ClaudeState::resolve()?;
+            if accepted.declaration.claude.as_ref() == Some(&desired) {
+                return Ok(Self::at_root(&self.root));
+            }
+            drop(_lock);
+            return Self::at_root(self.writable_root(&accepted.declaration)).prepare_mother(kind);
+        }
         let desired = mother_state(kind)?
             .into_iter()
             .map(|path| path.canonicalize().unwrap_or(path))
             .collect::<Vec<_>>();
         // Legacy profiles have no mother_work; retain them when their mounts already match.
-        if *state == desired {
+        if *state == desired && accepted.declaration.claude.is_none() {
             return Ok(Self::at_root(&self.root));
         }
         drop(_lock);
@@ -651,10 +927,8 @@ impl Environment {
     }
 
     fn validate_mother_state(&self, path: &Path) -> Result<()> {
-        let home = std::env::var_os("HOME").context("HOME is not set")?;
-        let home = Path::new(&home)
-            .canonicalize()
-            .context("resolve host home")?;
+        let home = host_home()?;
+        let home = home.canonicalize().context("resolve host home")?;
         if !path.is_absolute()
             || path == Path::new("/tmp")
             || home.starts_with(path)
@@ -698,10 +972,12 @@ impl Environment {
 
     fn at(root: PathBuf, data: &Path) -> Self {
         let key = crate::root_key(&root);
+        let data = resolved_path(data).unwrap_or_else(|_| data.to_path_buf());
         Self {
             root,
             metadata: data.join("environments").join(&key),
             home: data.join("homes").join(key),
+            settings: None,
         }
     }
 
@@ -796,21 +1072,15 @@ impl Environment {
             .metadata
             .canonicalize()
             .context("resolve environment metadata")?;
-        if overlaps(&self.root, &metadata)
-            || (self.home.exists()
-                && overlaps(
-                    &self.home.canonicalize().context("resolve private home")?,
-                    &metadata,
-                ))
-            || declaration
-                .mounts
-                .iter()
-                .map(|(source, _)| source)
-                .chain(declaration.mother.iter().flatten())
-                .chain(declaration.mother_work.iter())
-                .any(|source| overlaps(source, &metadata))
+        for source in [&self.root, &self.home]
+            .into_iter()
+            .chain(declaration.mounts.iter().map(|(source, _)| source))
+            .chain(declaration.mother.iter().flatten())
+            .chain(declaration.mother_work.iter())
         {
-            bail!("Bubblewrap mounts must not expose environment management files");
+            if overlaps(&resolved_path(source)?, &metadata) {
+                bail!("Bubblewrap mounts must not expose environment management files");
+            }
         }
         Ok(())
     }
@@ -838,6 +1108,7 @@ impl Environment {
         }
         accepted.declaration.validate(&self.root)?;
         self.validate_storage(&accepted.declaration)?;
+        self.validate_claude(&accepted.declaration)?;
         Ok(accepted)
     }
 
@@ -846,6 +1117,12 @@ impl Environment {
         let _lock = self.lock(false)?;
         self.accepted()?;
         Ok(())
+    }
+
+    /// Protect the accepted profile's boundary against spawn's env wrapper.
+    pub fn validate_spawn_env(&self, env: &BTreeMap<String, String>) -> Result<()> {
+        let _lock = self.lock(false)?;
+        self.accepted()?.declaration.validate_spawn_env(env)
     }
 
     fn project_command(
@@ -899,7 +1176,11 @@ impl Environment {
         declaration: &Declaration,
         state: &[PathBuf],
         setenv: &mut impl FnMut(&str, &str) -> Result<()>,
+        view: Option<&Path>,
     ) -> Result<Vec<File>> {
+        self.validate_claude(declaration)
+            .context(MotherSetupError)?;
+        let data_files = Vec::new();
         command.args(["--ro-bind", "/", "/"]);
         private_mounts(command);
         if Path::new("/etc/resolv.conf").exists() {
@@ -909,6 +1190,24 @@ impl Environment {
         command.arg("--bind").arg(work).arg(work);
         for path in state {
             command.arg("--bind").arg(path).arg(path);
+        }
+        if let Some(claude) = &declaration.claude {
+            command
+                .arg("--bind")
+                .arg(view.context("missing Claude configuration view")?)
+                .arg(&claude.root);
+            command.args([
+                "--dir",
+                "/run/yinz-claude/cache/claude-cli-nodejs",
+                "--dir",
+                "/run/yinz-claude/cache/claude/staging",
+                "--dir",
+                "/run/yinz-claude/state/claude/locks",
+            ]);
+            command
+                .arg("--bind")
+                .arg(self.home.join("projects"))
+                .arg(claude.root.join("projects"));
         }
         for (name, value) in std::env::vars_os() {
             let (Some(name), Some(value)) = (name.to_str(), value.to_str()) else {
@@ -926,11 +1225,37 @@ impl Environment {
                 std::env::var("PATH").unwrap_or_default()
             ),
         )?;
-        Ok(Vec::new())
+        Ok(data_files)
     }
 
-    fn command(&self, declaration: &Declaration, cwd: &Path, runtime: bool) -> Result<Command> {
+    fn command(
+        &self,
+        declaration: &Declaration,
+        cwd: &Path,
+        runtime: bool,
+    ) -> Result<SandboxCommand> {
+        #[cfg(target_os = "linux")]
+        let view = declaration
+            .claude
+            .as_ref()
+            .map(|claude| {
+                let settings = self
+                    .settings
+                    .as_ref()
+                    .context("missing Claude launch settings snapshot")
+                    .context(MotherSetupError)?;
+                claude_view::View::mount(&claude.root, settings.0.as_bytes())
+            })
+            .transpose()?;
+        #[cfg(target_os = "linux")]
+        let view_path = view.as_ref().map(|view| view.path());
+        #[cfg(not(target_os = "linux"))]
+        let view_path = None;
         let mut command = Command::new("bwrap");
+        #[cfg(target_os = "linux")]
+        if declaration.mother.is_some() {
+            claude_view::guard_setup(&mut command)?;
+        }
         command.args([
             "--unshare-all",
             "--share-net",
@@ -962,7 +1287,9 @@ impl Environment {
             Ok(())
         };
         let mut data_files = match &declaration.mother {
-            Some(state) => self.mother_command(&mut command, declaration, state, &mut setenv)?,
+            Some(state) => {
+                self.mother_command(&mut command, declaration, state, &mut setenv, view_path)?
+            },
             None => self.project_command(&mut command, declaration, &mut setenv)?,
         };
         let mut mount_files = Vec::new();
@@ -1062,7 +1389,11 @@ impl Environment {
             });
         }
         command.arg("--chdir").arg(cwd);
-        Ok(command)
+        Ok(SandboxCommand {
+            command,
+            #[cfg(target_os = "linux")]
+            view,
+        })
     }
 
     fn checks(
@@ -1072,10 +1403,14 @@ impl Environment {
         log: &File,
         deadline: Instant,
     ) -> Result<()> {
-        // Even an empty declaration must prove namespaces and mandatory mounts work.
-        for args in
-            std::iter::once(vec!["/usr/bin/true".into()]).chain(declaration.checks.iter().cloned())
-        {
+        // Probe the actual view inside the namespace, including its private write path.
+        let probe = if declaration.claude.is_some() {
+            vec!["/bin/sh".into(), "-eu".into(), "-c".into(),
+                "cat \"$CLAUDE_CONFIG_DIR/.claude.json\" >/dev/null; p=$(mktemp \"$CLAUDE_CONFIG_DIR/.yinz-probe-XXXXXX\"); rm \"$p\"".into()]
+        } else {
+            vec!["/usr/bin/true".into()]
+        };
+        for args in std::iter::once(probe).chain(declaration.checks.iter().cloned()) {
             let result = (|| {
                 if Instant::now() >= deadline {
                     bail!("check deadline expired");
@@ -1209,9 +1544,18 @@ impl Environment {
         let _lock = self.lock(false)?;
         let accepted = self.accepted()?;
         self.validate_launch_cwd(cwd, &accepted.declaration)?;
-        match self.launch_probes(&accepted.declaration, cwd, program) {
-            Ok(()) => Ok(LaunchCheck::Ready),
-            Err(error) if accepted.declaration.mother.is_some() => {
+        let mut launch = self.clone();
+        launch.settings = accepted
+            .declaration
+            .claude
+            .as_ref()
+            .map(ClaudeState::settings)
+            .transpose()?;
+        match launch.launch_probes(&accepted.declaration, cwd, program) {
+            Ok(()) => Ok(LaunchCheck::Ready(launch.settings)),
+            Err(error)
+                if accepted.declaration.mother.is_some() && !error.is::<MotherSetupError>() =>
+            {
                 Ok(LaunchCheck::MotherFallback(format!("{error:#}")))
             },
             Err(error) => Err(error),
@@ -1258,7 +1602,27 @@ impl Environment {
         let accepted = self.accepted()?;
         let cwd = std::env::current_dir().context("read launch directory")?;
         self.validate_launch_cwd(&cwd, &accepted.declaration)?;
-        let mut command = self.command(&accepted.declaration, &cwd, true)?;
+        let mut launch = self.clone();
+        if let Some(claude) = &accepted.declaration.claude {
+            launch.settings = Some(
+                match std::env::var(yinz_types::input::command::CLAUDE_SETTINGS_FD) {
+                    Ok(fd) => {
+                        use std::os::fd::FromRawFd;
+                        let fd: i32 = fd.parse().context("invalid settings descriptor")?;
+                        if fd < 3 {
+                            bail!("invalid settings descriptor");
+                        }
+                        let mut file = unsafe { File::from_raw_fd(fd) };
+                        let mut contents = String::new();
+                        file.read_to_string(&mut contents)
+                            .context("read launch settings snapshot")?;
+                        ClaudeSettings(contents)
+                    },
+                    Err(_) => claude.settings()?,
+                },
+            );
+        }
+        let mut command = launch.command(&accepted.declaration, &cwd, true)?;
         // Bubblewrap retains this shared lease through its PID namespace's lifetime.
         let fd = lock.as_raw_fd();
         if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } == -1 {
@@ -1269,8 +1633,80 @@ impl Environment {
             .arg(fd.to_string())
             .arg("--")
             .args(args);
+        #[cfg(target_os = "linux")]
+        if command.view.is_some() {
+            use std::os::unix::process::ExitStatusExt;
+            let result = supervise(&mut command);
+            drop(command);
+            let status = result?;
+            if let Some(signal) = status.signal() {
+                unsafe {
+                    libc::signal(signal, libc::SIG_DFL);
+                    libc::raise(signal);
+                }
+                std::process::exit(128 + signal);
+            }
+            std::process::exit(status.code().unwrap_or(1));
+        }
         Err(command.exec()).context("start sandboxed agent")
     }
+}
+
+#[cfg(target_os = "linux")]
+fn supervise(sandbox: &mut SandboxCommand) -> Result<std::process::ExitStatus> {
+    let mut signals = signal_hook::iterator::Signals::new([
+        libc::SIGHUP,
+        libc::SIGINT,
+        libc::SIGQUIT,
+        libc::SIGTERM,
+    ])
+    .context("watch Claude sandbox signals")?;
+    let mut child = sandbox.spawn().context("start sandboxed Claude mother")?;
+    let mut terminating = None;
+    let result = (|| loop {
+        if let Some(status) = child.try_wait().context("wait for Claude sandbox")? {
+            break Ok(status);
+        }
+        if sandbox.view.as_ref().is_some_and(|view| view.finished()) {
+            child
+                .kill()
+                .context("stop sandbox after Claude filesystem service failure")?;
+            child
+                .wait()
+                .context("reap sandbox after Claude filesystem service failure")?;
+            break Err(anyhow!(
+                "Claude configuration filesystem service stopped; sandbox terminated"
+            ));
+        }
+        for signal in signals.pending() {
+            if unsafe { libc::kill(child.id() as i32, signal) } == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error).context("forward Claude sandbox signal");
+                }
+            }
+            if matches!(signal, libc::SIGHUP | libc::SIGTERM) {
+                terminating.get_or_insert(Instant::now());
+            }
+        }
+        if terminating.is_some_and(|start| start.elapsed() >= Duration::from_secs(2)) {
+            child
+                .kill()
+                .context("terminate unresponsive Claude sandbox")?;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    })();
+    if result.is_err() {
+        child
+            .kill()
+            .context("stop failed Claude sandbox")
+            .non_fatal();
+        child
+            .wait()
+            .context("reap failed Claude sandbox")
+            .non_fatal();
+    }
+    result
 }
 
 fn wait_check(command: &mut Command, deadline: Instant) -> Result<()> {

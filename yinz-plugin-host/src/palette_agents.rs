@@ -377,9 +377,7 @@ fn mother(
             .prepare_mother(&kind);
         mother_target(
             &mut prepared,
-            sandbox
-                .map(|profile| profile.root().to_path_buf())
-                .map_err(|error| format!("{error:#}")),
+            sandbox.map(|profile| profile.root().to_path_buf()),
         )?;
         Ok(prepared)
     })
@@ -387,11 +385,15 @@ fn mother(
 
 fn mother_target(
     prepared: &mut PreparedAgent,
-    sandbox: Result<PathBuf, String>,
+    sandbox: Result<PathBuf, anyhow::Error>,
 ) -> Result<(), AgentSpawnError> {
     match sandbox {
         Ok(root) => prepared.command.target = PaneTarget::bubblewrap(&root)?,
-        Err(reason) => {
+        Err(error) if error.is::<yinz_config::project_config::bubblewrap::MotherSetupError>() => {
+            return Err(format!("{error:#}").into());
+        },
+        Err(error) => {
+            let reason = format!("{error:#}");
             // Print before exec, once. An agent that has started is never retried locally.
             let command = &mut prepared.command;
             yinz_types::agent::mother_fallback(&mut command.path, &mut command.args, &reason);

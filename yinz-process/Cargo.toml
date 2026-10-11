@@ -38,5 +38,4 @@ two-face = { version = "=0.5.1", default-features = false, features = ["syntect-
 
 [dev-dependencies]
 hegeltest = "0.29.3"
-tempfile = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }

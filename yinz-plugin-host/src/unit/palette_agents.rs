@@ -88,6 +88,7 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
                 }
             }
         });
+        let is_mother = matches!(request.action, AgentAction::Mother { .. });
         let worker = scope.spawn(move || {
             let mut commands = Vec::new();
             while let Ok((instruction, _)) = pty_rx.recv() {
@@ -107,8 +108,12 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
                     target,
                     ClientTabIndexOrPaneId::ClientIdNoFocus(ClientId::new(1))
                 );
-                assert_eq!(placement, TILED);
-                assert!(!completion.is_mother);
+                if is_mother {
+                    assert!(matches!(placement, NewPanePlacement::Overlay(_)));
+                } else {
+                    assert_eq!(placement, TILED);
+                }
+                assert_eq!(completion.is_mother, is_mother);
                 commands.push(command);
                 completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(42)));
                 completion.set_affected_tab_id(TabId::new(2));
@@ -348,6 +353,22 @@ fn palette_current_directory_and_fresh_duplicate_targets() {
     assert!(commands.is_empty());
 }
 
+fn claude_mother_fixture(home: &Path) {
+    std::env::set_var("HOME", home);
+    std::env::set_var("XDG_DATA_HOME", home.join("state"));
+    std::env::set_var("CLAUDE_CONFIG_DIR", home.join("claude"));
+    fs::create_dir_all(home.join("claude")).unwrap();
+    fs::write(home.join("claude/.claude.json"), "{}").unwrap();
+    let bin = home.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    yinz_test_support::write_warm_script(&bin.join("bwrap"), "echo 'bubblewrap 0.10.0'");
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+}
+
 #[test]
 fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane() {
     if yinz_test_support::reexec_test() {
@@ -355,6 +376,7 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
     }
     std::env::set_var("YINZ_SESSION_NAME", "mother-test");
     let start = tempfile::tempdir().unwrap();
+    claude_mother_fixture(start.path());
     std::env::set_var("YINZ_TEST_CACHE_ROOT", start.path());
     assert!(yinz_runtime::consts::YINZ_CACHE_DIR.starts_with(start.path()));
     let cwd = yinz_config::project_config::bubblewrap::mother_directory(
@@ -418,7 +440,8 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
         (reply, launches, screen)
     };
 
-    let (reply, launches, screen) = launch(true, "claude", "mother: claude");
+    // An agent without a mapped state layout: the launch never prepares a sandbox profile.
+    let (reply, launches, screen) = launch(true, "cursor", "mother: cursor");
     assert!(
         matches!(&reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok),
         "{reply:?}"
@@ -428,7 +451,7 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
     };
     assert_eq!(command.cwd.as_deref(), Some(cwd.as_path()));
     assert_eq!(command.target, PaneTarget::Local);
-    assert!(command.args.iter().any(|arg| arg == "claude"));
+    assert!(command.args.iter().any(|arg| arg == "cursor-agent"));
     assert!(
         matches!(placement, NewPanePlacement::Overlay(overlay) if !overlay.is_modal() && overlay.coordinates.is_some()),
         "{placement:?}"
@@ -440,6 +463,34 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
     assert!(!screen
         .iter()
         .any(|instruction| matches!(instruction, ScreenInstruction::GetPaneInfo { .. })));
+
+    let (reply, launches, _) = launch(true, "claude", "mother: claude");
+    assert!(
+        matches!(reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok)
+    );
+    let command = &launches[0].0;
+    assert_eq!(command.cwd.as_deref(), Some(cwd.as_path()));
+    assert_eq!(command.target.is_bubblewrap(), cfg!(target_os = "linux"));
+    if cfg!(target_os = "linux") {
+        assert!(command
+            .target
+            .bubblewrap_root()
+            .unwrap()
+            .ends_with("profile-claude"));
+        std::env::set_var("CLAUDE_CONFIG_DIR", start.path().join("missing"));
+        let (reply, launches, _) = launch(true, "claude", "mother: claude");
+        assert!(
+            matches!(reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Rejected && response.message.as_ref().unwrap().contains("Claude"))
+        );
+        assert!(launches.is_empty());
+        std::env::set_var("CLAUDE_CONFIG_DIR", start.path());
+        let (reply, launches, _) = launch(true, "claude", "mother: claude");
+        assert!(
+            matches!(reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Rejected)
+        );
+        assert!(launches.is_empty());
+        std::env::set_var("CLAUDE_CONFIG_DIR", start.path().join("claude"));
+    }
 
     for (kind, title) in [
         ("antigravity", "mother: agy"),
@@ -832,6 +883,7 @@ fn mother_launch_errors_preserve_the_placement_marker_pane_and_resources() {
     }
     std::env::set_var("YINZ_SESSION_NAME", "mother-test");
     let start = tempfile::tempdir().unwrap();
+    claude_mother_fixture(start.path());
     std::env::set_var("YINZ_TEST_CACHE_ROOT", start.path());
     assert!(yinz_runtime::consts::YINZ_CACHE_DIR.starts_with(start.path()));
     let cwd = yinz_config::project_config::bubblewrap::mother_directory(
@@ -911,8 +963,15 @@ fn mother_sandbox_selection_and_fallback_are_independent_of_bubblewrap() {
     assert_eq!(sandboxed.cwd, root.path());
     assert_eq!(sandboxed.command.args, args);
 
+    let mut invalid = existing_command("claude", cwd, PaneTarget::Local).unwrap();
+    let original = invalid.command.path.clone();
+    let error = anyhow::anyhow!("complete host setup first")
+        .context(yinz_config::project_config::bubblewrap::MotherSetupError);
+    assert!(mother_target(&mut invalid, Err(error)).is_err());
+    assert_eq!(invalid.command.path, original);
+
     let mut local = existing_command("codex", cwd, PaneTarget::Local).unwrap();
-    mother_target(&mut local, Err("namespace setup failed".into())).unwrap();
+    mother_target(&mut local, Err(anyhow::anyhow!("namespace setup failed"))).unwrap();
     assert_eq!(local.command.target, PaneTarget::Local);
     assert_eq!(local.command.path, Path::new("/bin/sh"));
     assert_eq!(
@@ -951,6 +1010,11 @@ fn mother_forks_select_provider_profiles_for_palette_and_plugin_panes() {
     std::env::set_var("XDG_DATA_HOME", home.join("data"));
     std::env::set_var("CODEX_HOME", home.join("codex-state"));
     std::env::set_var("PI_CODING_AGENT_DIR", home.join("pi-state"));
+    std::env::set_var("CLAUDE_CONFIG_DIR", home.join("claude-state"));
+    fs::create_dir(home.join("claude-state")).unwrap();
+    fs::write(home.join("claude-state/.claude.json"), "{}").unwrap();
+    std::env::set_var("XDG_STATE_HOME", home.join("xdg-state"));
+    std::env::set_var("XDG_CACHE_HOME", home.join("xdg-cache"));
     std::env::set_var("YINZ_SESSION_NAME", "mother-forks");
     std::env::remove_var("YINZ_PANE_REF");
     let bin = home.join("bin");
@@ -989,7 +1053,7 @@ test "${MOTHER_CHECK_FAIL:-0}" = 0
     plugin.plugin_cwd = work.clone();
     plugin.response_sink = ResponseSink::Capture(None);
     let data = DataAccess::sqlite(&home.join("store"));
-    for kind in ["codex", "pi", "claude"] {
+    for kind in ["codex", "pi", "claude", "cursor"] {
         let mut duplicate = request(
             &work,
             AgentAction::Duplicate {
@@ -1004,7 +1068,7 @@ test "${MOTHER_CHECK_FAIL:-0}" = 0
             .unwrap(),
         );
         let (reply, commands) = run(&duplicate, &data);
-        if kind == "claude" {
+        if kind == "cursor" {
             assert!(commands.is_empty(), "{reply:?}");
             assert!(
                 matches!(reply.unwrap(), AgentReply::Launched(response) if response.outcome != AgentOutcome::Ok && response.message.as_deref().is_some_and(|message| message.contains("no supported writable state layout")))
@@ -1019,10 +1083,23 @@ test "${MOTHER_CHECK_FAIL:-0}" = 0
                 &fs::read(metadata(&expected).join("accepted.json")).unwrap(),
             )
             .unwrap();
-            assert_eq!(
-                record["declaration"]["mother"],
-                serde_json::json!([home.join(format!("{kind}-state"))])
-            );
+            let mut state = vec![home.join(format!("{kind}-state"))];
+            let mut env = serde_json::json!({});
+            if kind == "claude" {
+                state = vec![home
+                    .join("data/yinz/bubblewrap/homes")
+                    .join(yinz_config::project_config::root_key(&expected))
+                    .join("projects")];
+                env = serde_json::json!({
+                    "HOME": home,
+                    "CLAUDE_CONFIG_DIR": home.join("claude-state"),
+                    "DISABLE_AUTOUPDATER": "1",
+                    "XDG_CACHE_HOME": "/run/yinz-claude/cache",
+                    "XDG_STATE_HOME": "/run/yinz-claude/state",
+                });
+            }
+            assert_eq!(record["declaration"]["mother"], serde_json::json!(state));
+            assert_eq!(record["declaration"]["env"], env);
         }
         for rerun in [false, true] {
             let command = yinz_runtime::agent::launch::command_in_context(
@@ -1077,7 +1154,7 @@ test "${MOTHER_CHECK_FAIL:-0}" = 0
                     opened
                 }
             });
-            if kind == "claude" {
+            if kind == "cursor" {
                 assert!(command.is_none());
             } else {
                 let command = command.unwrap();
@@ -1152,4 +1229,52 @@ test "${MOTHER_CHECK_FAIL:-0}" = 0
             .unwrap();
     assert!(run_command_action(&plugin, command, false, BTreeMap::new()).is_some());
     assert_eq!(fs::read(source_record).unwrap(), original);
+}
+
+#[test]
+fn claude_mother_runtime_unavailable_has_visible_local_fallback() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    claude_mother_fixture(temp.path());
+    yinz_test_support::write_warm_script(&temp.path().join("bin/bwrap"), "exit 1");
+    std::env::set_var("YINZ_TEST_CACHE_ROOT", temp.path());
+    std::env::set_var("YINZ_SESSION_NAME", "claude-fallback");
+    let request = request(
+        temp.path(),
+        AgentAction::Mother {
+            kind: "claude".into(),
+        },
+    );
+    let (reply, commands) = run(&request, &DataAccess::sqlite(&temp.path().join("data")));
+    assert!(
+        matches!(reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok)
+    );
+    assert_eq!(commands.len(), 1);
+    #[cfg(target_os = "linux")]
+    let mut commands = commands;
+    #[cfg(target_os = "linux")]
+    {
+        use yinz_config::project_config::bubblewrap::{Environment, LaunchCheck};
+        let command = &mut commands[0];
+        let profile = Environment::at_root(command.target.bubblewrap_root().unwrap());
+        let LaunchCheck::MotherFallback(reason) = profile
+            .check_launch(command.cwd.as_ref().unwrap(), Path::new("claude"))
+            .unwrap()
+        else {
+            panic!("unavailable Bubblewrap must request local fallback")
+        };
+        yinz_types::agent::mother_fallback(&mut command.command, &mut command.args, &reason);
+        command.target = PaneTarget::Local;
+    }
+    assert_eq!(commands[0].target, PaneTarget::Local);
+    assert!(commands[0]
+        .args
+        .iter()
+        .any(|arg| arg.contains("unsandboxed") && arg.contains("Bubblewrap")));
+    assert_eq!(
+        yinz_types::agent::agent_kind_of(&commands[0].command, &commands[0].args).as_deref(),
+        Some("claude")
+    );
 }

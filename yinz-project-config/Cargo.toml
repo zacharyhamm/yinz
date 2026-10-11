@@ -22,6 +22,10 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { workspace = true }
+signal-hook = { workspace = true }
+
 [dev-dependencies]
 serde_json = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }

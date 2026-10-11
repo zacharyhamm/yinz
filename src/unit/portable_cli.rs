@@ -1344,3 +1344,6 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
 
 #[path = "agent_theme_launch.rs"]
 mod agent_theme_launch;
+#[cfg(target_os = "linux")]
+#[path = "claude_mother.rs"]
+mod claude_mother;

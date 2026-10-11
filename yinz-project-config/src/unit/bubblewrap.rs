@@ -246,6 +246,7 @@ fn real_bubblewrap_isolation_preparation_retry_and_private_caches() {
 
 #[test]
 fn spawn_env_cannot_override_the_sandbox_boundary() {
+    let project = Declaration::default();
     for name in [
         "HOME",
         "PATH",
@@ -253,9 +254,37 @@ fn spawn_env_cannot_override_the_sandbox_boundary() {
         "YINZ_SOCKET_DIR",
         "CARGO_TARGET_DIR",
     ] {
-        assert!(validate_spawn_env(&BTreeMap::from([(name.into(), "bad".into())])).is_err());
+        assert!(project
+            .validate_spawn_env(&BTreeMap::from([(name.into(), "bad".into())]))
+            .is_err());
     }
-    validate_spawn_env(&BTreeMap::from([("YINZ_AGENT_PANE".into(), "1".into())])).unwrap();
+    project
+        .validate_spawn_env(&BTreeMap::from([("YINZ_AGENT_PANE".into(), "1".into())]))
+        .unwrap();
+    let mother = Declaration {
+        mother: Some(vec!["/host/agent".into()]),
+        ..Default::default()
+    };
+    let claude = Declaration {
+        claude: Some(ClaudeState {
+            root: "/host/.claude".into(),
+            global: "/host/.claude.json".into(),
+            home: "/host".into(),
+        }),
+        ..Default::default()
+    };
+    for name in ["CLAUDE_CONFIG_DIR", "XDG_STATE_HOME", "DISABLE_AUTOUPDATER"] {
+        let env = BTreeMap::from([(name.into(), "custom".into())]);
+        project.validate_spawn_env(&env).unwrap();
+        mother.validate_spawn_env(&env).unwrap();
+        assert!(claude.validate_spawn_env(&env).is_err());
+        parse(
+            &format!("env {name:?} \"custom\"").parse().unwrap(),
+            Path::new("/project"),
+            Path::new("/host"),
+        )
+        .unwrap();
+    }
 }
 
 #[test]
@@ -985,6 +1014,246 @@ fn mother_state_overrides_cannot_grant_home_or_metadata_writes() {
         .validate_mother_state(&temp.path().join("codex-state"))
         .is_ok());
     assert!(mother_state("plugin-provider").is_err());
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    std::env::set_var("XDG_CACHE_HOME", temp.path().join("cache"));
+    assert_eq!(
+        ClaudeState::resolve().unwrap().root,
+        temp.path().join(".claude")
+    );
+    std::env::set_var("CLAUDE_CONFIG_DIR", temp.path().join("claude-state"));
+    assert_eq!(
+        ClaudeState::resolve().unwrap().root,
+        temp.path().join("claude-state")
+    );
+    // The override cannot make the whole home writable.
+    std::env::set_var("XDG_DATA_HOME", temp.path().join("data"));
+    std::env::set_var("CLAUDE_CONFIG_DIR", temp.path());
+    assert!(env.accept_mother("claude").is_err());
+}
+
+#[test]
+fn unavailable_runtime_does_not_hide_invalid_claude_configuration() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_DATA_HOME", home.join("data"));
+    std::env::set_var("PATH", home.join("no-bwrap"));
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    let work = Environment::at_root(&mother_directory(&home.join("cache"), "owner").unwrap());
+    let profile = Environment::at_root(&work.root.with_file_name("profile-claude"));
+    let assert_failure = || {
+        let error = work.prepare_mother("claude").err().unwrap();
+        if cfg!(target_os = "linux") {
+            assert!(error.is::<MotherSetupError>(), "{error:#}");
+        } else {
+            assert!(!error.is::<MotherSetupError>(), "{error:#}");
+            assert!(format!("{error:#}").contains("Bubblewrap"));
+        }
+        assert!(!profile.metadata.join("accepted.json").exists());
+    };
+    assert_failure();
+    std::env::set_var("CLAUDE_CONFIG_DIR", "relative-config");
+    assert_failure();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn supported_mother_keeps_claude_setup_errors_fatal() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_DATA_HOME", home.join("data"));
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    let bin = home.join("bin");
+    fs::create_dir(&bin).unwrap();
+    yinz_test_support::write_warm_script(&bin.join("bwrap"), "echo 'bubblewrap 0.10.0'");
+    let unavailable = bin.join("unavailable");
+    yinz_test_support::write_warm_script(&unavailable, "exit 1");
+    std::env::set_var("PATH", &bin);
+    fs::create_dir(home.join(".claude")).unwrap();
+    let work = Environment::at_root(&mother_directory(&home.join("cache"), "owner").unwrap());
+    for contents in [None, Some("invalid")] {
+        if let Some(contents) = contents {
+            fs::write(home.join(".claude.json"), contents).unwrap();
+        }
+        let profile = work.prepare_mother("claude").unwrap();
+        let error = profile
+            .check_launch(&work.root, Path::new("sh"))
+            .unwrap_err();
+        assert!(error.is::<MotherSetupError>(), "{error:#}");
+    }
+    fs::rename(unavailable, bin.join("bwrap")).unwrap();
+    let profile = work.prepare_mother("claude").unwrap();
+    assert!(profile
+        .check_launch(&work.root, Path::new("sh"))
+        .unwrap_err()
+        .is::<MotherSetupError>());
+    fs::write(home.join(".claude.json"), "{}").unwrap();
+    assert!(matches!(
+        profile.check_launch(&work.root, Path::new("sh")).unwrap(),
+        LaunchCheck::MotherFallback(_)
+    ));
+}
+
+#[test]
+fn claude_mother_accepts_safe_host_aliases_and_relative_config() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let alias = home.join("home-alias");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    std::env::set_var("HOME", &alias);
+    std::env::set_var("XDG_DATA_HOME", alias.join("data"));
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    fs::create_dir(home.join(".claude")).unwrap();
+    fs::create_dir(home.join("transcripts")).unwrap();
+    fs::write(home.join("settings.json"), "{}").unwrap();
+    for name in [
+        ".claude.json",
+        ".claude/.config.json",
+        ".claude/.claude.json",
+    ] {
+        std::os::unix::fs::symlink(home.join("settings.json"), home.join(name)).unwrap();
+    }
+    std::os::unix::fs::symlink(home.join("transcripts"), home.join(".claude/projects")).unwrap();
+    let work = Environment::at_root(&mother_directory(&home.join("cache"), "owner").unwrap());
+    let profile = work.accept_mother("claude").unwrap();
+    assert!(profile.home.starts_with(home.join("data")));
+    assert_eq!(work.accept_mother("claude").unwrap().root(), profile.root());
+    let reloaded = Environment::at_root(profile.root());
+    let accepted = reloaded.accepted().unwrap();
+    reloaded
+        .validate_launch_cwd(&work.root, &accepted.declaration)
+        .unwrap();
+    for name in ["CLAUDE_CONFIG_DIR", "XDG_STATE_HOME", "DISABLE_AUTOUPDATER"] {
+        assert!(reloaded
+            .validate_spawn_env(&BTreeMap::from([(name.into(), "custom".into())]))
+            .is_err());
+    }
+    std::env::set_current_dir(&home).unwrap();
+    std::env::set_var("CLAUDE_CONFIG_DIR", "data/../.claude");
+    let relative = work.accept_mother("claude").unwrap();
+    assert_eq!(
+        relative
+            .accepted()
+            .unwrap()
+            .declaration
+            .claude
+            .unwrap()
+            .root,
+        home.join(".claude")
+    );
+    for name in [".config.json", ".claude.json", "projects"] {
+        let link = home.join(".claude").join(name);
+        fs::remove_file(&link).unwrap();
+        for unsafe_path in [&work.root, &profile.home, &profile.metadata] {
+            std::os::unix::fs::symlink(unsafe_path, &link).unwrap();
+            assert!(
+                work.accept_mother("claude").is_err(),
+                "{link:?} -> {unsafe_path:?}"
+            );
+            fs::remove_file(&link).unwrap();
+        }
+        let target = if name == "projects" {
+            "transcripts"
+        } else {
+            "settings.json"
+        };
+        std::os::unix::fs::symlink(home.join(target), &link).unwrap();
+    }
+    let private = profile.home.join("projects");
+    fs::remove_dir(&private).unwrap();
+    std::os::unix::fs::symlink(home.join("transcripts"), &private).unwrap();
+    assert!(profile.accepted().is_err());
+}
+
+#[test]
+fn claude_mother_configuration_is_host_authoritative_and_never_seeded() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_DATA_HOME", home.join("data"));
+    std::env::set_var("XDG_CACHE_HOME", home.join("xdg-cache"));
+    std::env::set_var("XDG_STATE_HOME", home.join("xdg-state"));
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    fs::create_dir(home.join(".claude")).unwrap();
+    let work = Environment::at_root(&mother_directory(&home.join("cache"), "owner").unwrap());
+    let profile = work.accept_mother("claude").unwrap();
+    let error = profile
+        .check_launch(&work.root, Path::new("sh"))
+        .unwrap_err();
+    assert!(error.is::<MotherSetupError>());
+    assert!(format!("{error:#}").contains("complete setup first"));
+    assert!(!home.join(".claude/.claude.json").exists());
+    let global = home.join(".claude.json");
+    fs::write(
+        &global,
+        r#"{"oauthAccount":"first","mcpServers":{"host":{}}}"#,
+    )
+    .unwrap();
+    let profile = work.accept_mother("claude").unwrap();
+    let accepted = profile.accepted().unwrap();
+    assert_eq!(
+        accepted.declaration.mother,
+        Some(vec![profile.home.join("projects")])
+    );
+    assert!(!home.join(".claude/.claude.json").exists());
+    let claude = accepted.declaration.claude.as_ref().unwrap();
+    for contents in [r#"{"oauthAccount":"second","mcpServers":{}}"#, "{}"] {
+        fs::write(&global, contents).unwrap();
+        assert_eq!(claude.settings().unwrap().0, contents);
+        assert_eq!(work.accept_mother("claude").unwrap().root(), profile.root());
+    }
+    fs::write(&global, "invalid").unwrap();
+    assert!(profile.accepted().is_ok());
+    assert!(work.accept_mother("claude").is_ok());
+    assert!(claude.settings().unwrap_err().is::<MotherSetupError>());
+    fs::write(home.join(".claude/.config.json"), r#"{"legacy":true}"#).unwrap();
+    assert_eq!(claude.settings().unwrap().0, r#"{"legacy":true}"#);
+    fs::remove_file(home.join(".claude/.config.json")).unwrap();
+    fs::remove_file(&global).unwrap();
+    assert!(profile.accepted().is_ok());
+    assert!(profile.check_launch(&work.root, Path::new("sh")).is_err());
+    std::env::set_var("CLAUDE_CONFIG_DIR", home.join("custom"));
+    fs::create_dir(home.join("custom")).unwrap();
+    fs::write(home.join("custom/.claude.json"), "{}").unwrap();
+    let overridden = work.accept_mother("claude").unwrap();
+    assert_eq!(
+        overridden
+            .accepted()
+            .unwrap()
+            .declaration
+            .claude
+            .unwrap()
+            .global,
+        home.join("custom/.claude.json")
+    );
+    assert!(!global.exists());
+    std::env::set_var("CLAUDE_CONFIG_DIR", &work.root);
+    assert!(work.accept_mother("claude").is_err());
+    std::env::set_var("CLAUDE_CONFIG_DIR", home.join("custom"));
+    assert_eq!(
+        fs::read_to_string(home.join("custom/.claude.json")).unwrap(),
+        "{}"
+    );
+    std::env::set_var("XDG_CACHE_HOME", home.join("xdg-cache"));
+    let link = home.join("custom/projects");
+    std::os::unix::fs::symlink(&work.root, &link).unwrap();
+    assert!(work.accept_mother("claude").is_err());
+    fs::remove_file(link).unwrap();
+    std::env::set_var("HOME", "");
+    assert!(ClaudeState::resolve().is_err());
 }
 
 #[test]
@@ -1270,7 +1539,12 @@ fn real_mother_bubblewrap_preserves_resolver() {
         if layout != "plain" {
             std::os::unix::fs::symlink(link, etc.join("resolv.conf")).unwrap();
         }
-        let output = Command::new("bwrap")
+        let lock = claude_view::mount_lock().unwrap();
+        let lock_path = fs::read_link(format!("/proc/self/fd/{}", lock.as_raw_fd())).unwrap();
+        fs::write(tmp.join(lock_path.file_name().unwrap()), "").unwrap();
+        let mut outer = Command::new("bwrap");
+        claude_view::guard_setup(&mut outer).unwrap();
+        let output = outer
             .args([
                 "--unshare-all",
                 "--share-net",
@@ -1291,6 +1565,9 @@ fn real_mother_bubblewrap_preserves_resolver() {
             .arg("--ro-bind")
             .arg(&tmp)
             .arg("/tmp")
+            .arg("--ro-bind")
+            .arg(&lock_path)
+            .arg(&lock_path)
             .args(["--dev", "/dev", "--proc", "/proc"])
             .arg("--chdir")
             .arg(&root)
@@ -1389,6 +1666,98 @@ fn mother_resolver_mounts_directories_for_every_symlink_hop() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires real Bubblewrap user namespaces; run explicitly on Linux"]
+fn real_claude_mother_supports_symlinked_storage_and_settings() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let alias = home.join("alias");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    std::env::set_var("HOME", &alias);
+    std::env::set_var("XDG_DATA_HOME", alias.join("data"));
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    fs::create_dir(home.join(".claude")).unwrap();
+    fs::create_dir(home.join("host-projects")).unwrap();
+    fs::write(home.join("host-projects/host.jsonl"), "host transcript").unwrap();
+    fs::write(home.join("settings.json"), r#"{"host":true}"#).unwrap();
+    for name in [
+        ".claude.json",
+        ".claude/.config.json",
+        ".claude/.claude.json",
+    ] {
+        std::os::unix::fs::symlink(home.join("settings.json"), home.join(name)).unwrap();
+    }
+    std::os::unix::fs::symlink(home.join("host-projects"), home.join(".claude/projects")).unwrap();
+    let work = Environment::at_root(&mother_directory(&home.join("cache"), "owner").unwrap());
+    let mut profile = work.prepare_mother("claude").unwrap();
+    let accepted = profile.accepted().unwrap();
+    profile.settings = Some(
+        accepted
+            .declaration
+            .claude
+            .as_ref()
+            .unwrap()
+            .settings()
+            .unwrap(),
+    );
+    profile
+        .validate_launch_cwd(&work.root, &accepted.declaration)
+        .unwrap();
+    for _ in 0..2 {
+        let output = profile
+            .command(&accepted.declaration, &work.root, false)
+            .unwrap()
+            .args([
+                "--",
+                "/bin/sh",
+                "-eu",
+                "-c",
+                r#"
+                for name in .claude.json .config.json; do
+                    test "$(cat "$CLAUDE_CONFIG_DIR/$name")" = '{"host":true}'
+                    echo private > "$CLAUDE_CONFIG_DIR/$name.tmp"
+                    mv "$CLAUDE_CONFIG_DIR/$name.tmp" "$CLAUDE_CONFIG_DIR/$name"
+                    test "$(cat "$CLAUDE_CONFIG_DIR/$name")" = private
+                done
+                test ! -e "$CLAUDE_CONFIG_DIR/projects/host.jsonl"
+                echo private >> "$CLAUDE_CONFIG_DIR/projects/private.jsonl"
+                if echo changed > "$HOME/settings.json"; then exit 1; fi
+                "#,
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("settings.json")).unwrap(),
+            r#"{"host":true}"#
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("host-projects/host.jsonl")).unwrap(),
+            "host transcript"
+        );
+        assert!(!home.join("host-projects/private.jsonl").exists());
+        for name in [
+            ".claude/.config.json",
+            ".claude/.claude.json",
+            ".claude/projects",
+        ] {
+            assert!(home.join(name).is_symlink());
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(profile.home.join("projects/private.jsonl")).unwrap(),
+        "private\nprivate\n"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires real Bubblewrap user namespaces; run explicitly on Linux"]
 fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
     if yinz_test_support::reexec_test() {
         return;
@@ -1400,6 +1769,19 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
     std::env::set_var("XDG_DATA_HOME", home.join("metadata"));
     std::env::set_var("CODEX_HOME", home.join("agent-state"));
     std::env::set_var("PI_CODING_AGENT_DIR", home.join("pi-state"));
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    std::env::set_var("XDG_CACHE_HOME", home.join("xdg-cache"));
+    std::env::set_var("XDG_STATE_HOME", home.join("xdg-state"));
+    fs::create_dir_all(home.join(".claude/skills")).unwrap();
+    for file in [
+        "settings.json",
+        ".credentials.json",
+        "CLAUDE.md",
+        "skills/example",
+    ] {
+        fs::write(home.join(".claude").join(file), "host").unwrap();
+    }
+    fs::write(home.join(".claude.json"), r#"{"host":true}"#).unwrap();
     std::env::set_var("MOTHER_AUTH_SENTINEL", "test-auth");
     std::env::set_var("YINZ_SESSION_NAME", "mother-test");
     std::env::set_var("YINZ_SOCKET_DIR", home.join("sockets"));
@@ -1410,12 +1792,14 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
     let _lease = codex.lock(false).unwrap();
     assert_eq!(work.prepare_mother("codex").unwrap().root(), codex.root());
     let pi = codex.for_agent("pi", Some(&root)).unwrap();
-    assert!(codex.for_agent("claude", Some(&root)).is_err());
+    assert!(codex.for_agent("cursor", Some(&root)).is_err());
     assert_ne!(codex.root(), pi.root());
     let env = Environment::at_root(codex.root());
     assert_eq!(
         env.check_launch(&root, Path::new("sh")).unwrap(),
-        LaunchCheck::Ready
+        LaunchCheck::Ready(None),
+        "{}",
+        fs::read_to_string(env.metadata.join("launch.log")).unwrap_or_default()
     );
     fs::write(home.join("project"), "unchanged").unwrap();
     let accepted = env.accepted().unwrap();
@@ -1430,13 +1814,13 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
             r#"
             echo own > own-file
             echo state > "$CODEX_HOME/state"
-            ! touch "$PI_CODING_AGENT_DIR/codex-must-not-write"
+            if touch "$PI_CODING_AGENT_DIR/codex-must-not-write"; then exit 1; fi
             echo private > /tmp/mother-private
             test "$MOTHER_AUTH_SENTINEL" = test-auth
             test "$YINZ_BUBBLEWRAP" = 1
             test "$(cat "$HOME/project")" = unchanged
-            ! (echo changed > "$HOME/project")
-            ! touch "$HOME/metadata/new"
+            if echo changed > "$HOME/project"; then exit 1; fi
+            if touch "$HOME/metadata/new"; then exit 1; fi
             command -v yinz
         "#,
         ])
@@ -1469,7 +1853,7 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
             r#"
             echo pi > "$PI_CODING_AGENT_DIR/state"
             test "$(cat own-file)" = own
-            ! touch "$CODEX_HOME/pi-must-not-write"
+            if touch "$CODEX_HOME/pi-must-not-write"; then exit 1; fi
         "#,
         ])
         .output()
@@ -1479,6 +1863,131 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // Claude replaces its settings file by rename, which needs a writable directory.
+    let mut claude = codex.for_agent("claude", Some(&root)).unwrap();
+    let accepted = claude.accepted().unwrap();
+    claude.settings = Some(
+        accepted
+            .declaration
+            .claude
+            .as_ref()
+            .unwrap()
+            .settings()
+            .unwrap(),
+    );
+    let output = claude
+        .command(&accepted.declaration, &root, false)
+        .unwrap()
+        .args([
+            "--",
+            "sh",
+            "-eu",
+            "-c",
+            r#"
+            test "$CLAUDE_CONFIG_DIR" = "$HOME/.claude"
+            test "$DISABLE_AUTOUPDATER" = 1
+            test "$(cat "$CLAUDE_CONFIG_DIR/.claude.json")" = '{"host":true}'
+            echo sandbox > "$CLAUDE_CONFIG_DIR/.claude.json.tmp"
+            mv "$CLAUDE_CONFIG_DIR/.claude.json.tmp" "$CLAUDE_CONFIG_DIR/.claude.json"
+            echo log > "$XDG_CACHE_HOME/claude-cli-nodejs/log"
+            mkdir -p "$XDG_STATE_HOME/claude/locks" "$XDG_CACHE_HOME/claude/staging"
+            echo lock > "$XDG_STATE_HOME/claude/locks/test"
+            echo staging > "$XDG_CACHE_HOME/claude/staging/test"
+            for file in settings.json .credentials.json CLAUDE.md skills/example; do
+                echo sandbox > "$CLAUDE_CONFIG_DIR/$file.tmp"
+                mv "$CLAUDE_CONFIG_DIR/$file.tmp" "$CLAUDE_CONFIG_DIR/$file"
+            done
+            echo transcript > "$CLAUDE_CONFIG_DIR/projects/test.jsonl"
+            if echo changed > "$HOME/.claude.json"; then exit 1; fi
+            if touch "$CODEX_HOME/claude-must-not-write"; then exit 1; fi
+        "#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(home.join(".claude.json")).unwrap(),
+        r#"{"host":true}"#
+    );
+    assert!(!home.join(".claude/.claude.json").exists());
+    for file in [
+        "settings.json",
+        ".credentials.json",
+        "CLAUDE.md",
+        "skills/example",
+    ] {
+        assert_eq!(
+            fs::read_to_string(home.join(".claude").join(file)).unwrap(),
+            if file == ".credentials.json" {
+                "sandbox\n"
+            } else {
+                "host"
+            }
+        );
+    }
+    assert!(!home.join(".claude/projects").exists());
+    assert!(!home.join("xdg-state/claude").exists());
+    assert!(!home.join("xdg-cache/claude").exists());
+    // Hold one overlay open while another starts, with a pipe handshake rather than timing.
+    let mut running_command = claude.command(&accepted.declaration, &root, false).unwrap();
+    let mut running = running_command
+        .args([
+            "--",
+            "sh",
+            "-eu",
+            "-c",
+            r#"
+            echo private > "$CLAUDE_CONFIG_DIR/launch-marker"
+            echo ready
+            read release
+        "#,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut ready = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(running.stdout.take().unwrap()),
+        &mut ready,
+    )
+    .unwrap();
+    assert_eq!(ready, "ready\n");
+    // A prepared launch retains its snapshot despite a later host rewrite.
+    fs::write(home.join(".claude.json"), r#"{"host":"changed"}"#).unwrap();
+    fs::write(home.join(".claude/.credentials.json"), "new account").unwrap();
+    fs::remove_file(home.join(".claude/skills/example")).unwrap();
+    let output = claude
+        .command(&accepted.declaration, &root, false)
+        .unwrap()
+        .args([
+            "--",
+            "sh",
+            "-eu",
+            "-c",
+            r#"
+            test "$(cat "$CLAUDE_CONFIG_DIR/.claude.json")" = '{"host":true}'
+            test "$(cat "$CLAUDE_CONFIG_DIR/.credentials.json")" = 'new account'
+            test "$(cat "$CLAUDE_CONFIG_DIR/settings.json")" = host
+            test ! -e "$CLAUDE_CONFIG_DIR/skills/example"
+            test ! -e "$CLAUDE_CONFIG_DIR/launch-marker"
+            test "$(cat "$CLAUDE_CONFIG_DIR/projects/test.jsonl")" = transcript
+            test ! -e "$XDG_STATE_HOME/claude/locks/test"
+        "#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    writeln!(running.stdin.take().unwrap(), "release").unwrap();
+    assert!(running.wait().unwrap().success());
 }
 
 #[test]
@@ -1495,4 +2004,89 @@ fn mother_state_cannot_expose_metadata_through_a_storage_symlink() {
         ..Default::default()
     };
     assert!(env.validate_storage(&declaration).is_err());
+    let state_alias = temp.path().join("state-alias");
+    std::os::unix::fs::symlink(&state, &state_alias).unwrap();
+    let declaration = Declaration {
+        mother: Some(vec![state_alias]),
+        ..Default::default()
+    };
+    assert!(env.validate_storage(&declaration).is_err());
+}
+
+#[test]
+fn settings_snapshot_recovers_partial_writes_and_bounds_corruption() {
+    let mut attempts = 0;
+    let snapshot = settings_snapshot(|| {
+        attempts += 1;
+        match attempts {
+            1 => Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+                .context("settings absent during rewrite"),
+            2 => Ok(Vec::new()),
+            3 => Ok(br#"{"partial":"#.to_vec()),
+            _ => Ok(br#"{"complete":true}"#.to_vec()),
+        }
+    })
+    .unwrap();
+    assert_eq!(attempts, 4);
+    assert_eq!(snapshot.0, r#"{"complete":true}"#);
+    for invalid in ["", "{", "null", "[]", "broken"] {
+        let mut attempts = 0;
+        let error = settings_snapshot(|| {
+            attempts += 1;
+            Ok(invalid.as_bytes().to_vec())
+        })
+        .unwrap_err();
+        assert_eq!(attempts, 5);
+        assert!(error.is::<MotherSetupError>());
+    }
+    let command = yinz_types::input::command::RunCommand {
+        claude_settings: Some(snapshot),
+        ..Default::default()
+    };
+    assert!(!serde_json::to_string(&command)
+        .unwrap()
+        .contains("complete"));
+    assert!(!format!("{command:?}").contains("complete"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires /dev/fuse and fusermount3; run explicitly on Linux"]
+fn real_claude_supervision_preserves_exit_and_stops_on_service_failure() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    use std::os::unix::process::ExitStatusExt;
+    let host = tempfile::tempdir().unwrap();
+    for script in [
+        "exit 23",
+        "kill -TERM $$",
+        "flock -x \"$2\" fusermount3 -u \"$1\"; exec sleep 30",
+    ] {
+        let view = claude_view::View::mount(host.path(), b"{}").unwrap();
+        let mount = view.path().to_path_buf();
+        let mut sandbox = SandboxCommand {
+            command: Command::new("/bin/sh"),
+            view: Some(view),
+        };
+        let lock = claude_view::mount_lock().unwrap();
+        let lock_path = fs::read_link(format!("/proc/self/fd/{}", lock.as_raw_fd())).unwrap();
+        sandbox
+            .args(["-c", script, "sh"])
+            .arg(&mount)
+            .arg(lock_path);
+        let result = supervise(&mut sandbox);
+        if script == "exit 23" {
+            assert_eq!(result.unwrap().code(), Some(23));
+        } else if script == "kill -TERM $$" {
+            assert_eq!(result.unwrap().signal(), Some(libc::SIGTERM));
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("filesystem service stopped"));
+        }
+        drop(sandbox);
+        assert!(!mount.exists());
+    }
 }
