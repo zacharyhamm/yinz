@@ -329,3 +329,228 @@ fn real_mount_guard_releases_before_agent_execution() {
     finished.send(()).unwrap();
     thread.join().unwrap();
 }
+
+#[test]
+fn detached_files_wait_for_all_lookups_and_handles() {
+    for forget_first in [false, true] {
+        for replace in [false, true] {
+            let host = tempfile::tempdir().unwrap();
+            let mut tree = Tree::new(host.path(), b"{}").unwrap();
+            let baseline = tree.nodes.len();
+            let name = OsStr::new("temporary");
+            let (ino, fh) = tree.create(ROOT, name, libc::O_RDWR, 0o600).unwrap();
+            tree.file(fh, true)
+                .unwrap()
+                .write_all_at(b"old", 0)
+                .unwrap();
+            tree.entry_attr(ino, Some(fh)).unwrap();
+            tree.entry_attr(ino, None).unwrap();
+            let other = tree.open(ino, libc::O_RDONLY).unwrap();
+            let fd = tree.file(fh, false).unwrap().as_raw_fd();
+            if replace {
+                let (_, replacement) = tree
+                    .create(ROOT, OsStr::new("replacement"), libc::O_RDWR, 0o600)
+                    .unwrap();
+                tree.rename(
+                    ROOT,
+                    OsStr::new("replacement"),
+                    ROOT,
+                    name,
+                    RenameFlags::empty(),
+                )
+                .unwrap();
+                tree.release(replacement);
+            } else {
+                tree.remove(ROOT, name, false).unwrap();
+            }
+            tree.collect_unused();
+            assert_eq!(read(&mut tree, fh), "old");
+            tree.forget(ino, 1);
+            tree.release(other);
+            tree.collect_unused();
+            assert!(tree.nodes.contains_key(&ino));
+            if forget_first {
+                tree.forget(ino, 1);
+            } else {
+                tree.release(fh);
+            }
+            tree.collect_unused();
+            assert!(tree.nodes.contains_key(&ino));
+            if forget_first {
+                assert_eq!(read(&mut tree, fh), "old");
+                tree.release(fh);
+            } else {
+                assert_eq!(tree.attr(ino, None).unwrap().size, 3);
+                tree.forget(ino, 1);
+            }
+            tree.collect_unused();
+            assert!(!tree.nodes.contains_key(&ino));
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+            assert_eq!(tree.nodes.len(), baseline + usize::from(replace));
+        }
+    }
+}
+
+#[test]
+fn repeated_atomic_replacements_reclaim_old_nodes() {
+    let host = tempfile::tempdir().unwrap();
+    let mut tree = Tree::new(host.path(), b"{}").unwrap();
+    let baseline = tree.nodes.len();
+    for destination in ["settings.json", NAME] {
+        for _ in 0..256 {
+            let (ino, fh) = tree
+                .create(ROOT, OsStr::new("stage"), libc::O_RDWR, 0o600)
+                .unwrap();
+            tree.entry_attr(ino, Some(fh)).unwrap();
+            tree.rename(
+                ROOT,
+                OsStr::new("stage"),
+                ROOT,
+                OsStr::new(destination),
+                RenameFlags::empty(),
+            )
+            .unwrap();
+            tree.file(fh, true)
+                .unwrap()
+                .write_all_at(b"new", 0)
+                .unwrap();
+            tree.release(fh);
+            tree.forget(ino, 1);
+            tree.collect_unused();
+            assert_eq!(tree.nodes.len(), baseline + 1);
+            assert!(tree.handles.is_empty());
+            assert_eq!(tree.lifetimes.len(), tree.nodes.len() - 1);
+        }
+    }
+    assert_eq!(fs::read_to_string(host.path().join(NAME)).unwrap(), "new");
+}
+
+#[test]
+fn scanning_large_directories_does_not_retain_child_descriptors() {
+    let host = tempfile::tempdir().unwrap();
+    let nested = host.path().join("nested");
+    fs::create_dir(&nested).unwrap();
+    for index in 0..256 {
+        fs::write(nested.join(index.to_string()), "host").unwrap();
+    }
+    let mut tree = Tree::new(host.path(), b"{}").unwrap();
+    let baseline = tree.nodes.len();
+    for _ in 0..3 {
+        let ino = tree.lookup(ROOT, OsStr::new("nested")).unwrap();
+        tree.entry_attr(ino, None).unwrap();
+        let fh = tree.opendir(ino).unwrap();
+        tree.forget(ino, 1);
+        tree.collect_unused();
+        assert_eq!(tree.directories[&fh].entries.len(), 258);
+        assert_eq!(tree.nodes.len(), baseline + 1);
+        tree.releasedir(fh);
+        tree.collect_unused();
+        assert_eq!(tree.nodes.len(), baseline);
+    }
+}
+
+#[test]
+fn forgetting_cached_descendants_reclaims_their_ancestors() {
+    let host = tempfile::tempdir().unwrap();
+    fs::create_dir(host.path().join("nested")).unwrap();
+    fs::write(host.path().join("nested/file"), "host").unwrap();
+    let mut tree = Tree::new(host.path(), b"{}").unwrap();
+    let baseline = tree.nodes.len();
+    let parent = tree.lookup(ROOT, OsStr::new("nested")).unwrap();
+    tree.entry_attr(parent, None).unwrap();
+    let child = tree.lookup(parent, OsStr::new("file")).unwrap();
+    tree.entry_attr(child, None).unwrap();
+    tree.forget(parent, 1);
+    tree.collect_unused();
+    assert!(tree.nodes.contains_key(&parent));
+    tree.forget(child, 1);
+    tree.collect_unused();
+    assert_eq!(tree.nodes.len(), baseline);
+    let reloaded = tree.lookup(ROOT, OsStr::new("nested")).unwrap();
+    assert_ne!(reloaded, parent);
+    let child = tree.lookup(reloaded, OsStr::new("file")).unwrap();
+    let fh = tree.open(child, libc::O_RDONLY).unwrap();
+    assert_eq!(read(&mut tree, fh), "host");
+}
+
+#[test]
+fn private_changes_and_tombstones_survive_forget() {
+    let host = tempfile::tempdir().unwrap();
+    fs::create_dir(host.path().join("nested")).unwrap();
+    fs::write(host.path().join("nested/file"), "host").unwrap();
+    fs::write(host.path().join("nested/deleted"), "host").unwrap();
+    let mut tree = Tree::new(host.path(), b"{}").unwrap();
+    let parent = tree.lookup(ROOT, OsStr::new("nested")).unwrap();
+    tree.entry_attr(parent, None).unwrap();
+    let child = tree.lookup(parent, OsStr::new("file")).unwrap();
+    tree.entry_attr(child, None).unwrap();
+    let fh = tree.open(child, libc::O_RDWR).unwrap();
+    tree.file(fh, true)
+        .unwrap()
+        .write_all_at(b"ours", 0)
+        .unwrap();
+    tree.remove(parent, OsStr::new("deleted"), false).unwrap();
+    tree.release(fh);
+    tree.forget(child, 1);
+    tree.forget(parent, 1);
+    tree.collect_unused();
+    assert_eq!(tree.lookup(ROOT, OsStr::new("nested")).unwrap(), parent);
+    assert_eq!(tree.lookup(parent, OsStr::new("file")).unwrap(), child);
+    assert_eq!(
+        tree.lookup(parent, OsStr::new("deleted")),
+        Err(Errno::ENOENT)
+    );
+    tree.rename(
+        ROOT,
+        OsStr::new("nested"),
+        ROOT,
+        OsStr::new("moved"),
+        RenameFlags::empty(),
+    )
+    .unwrap();
+    tree.collect_unused();
+    assert_eq!(tree.lookup(ROOT, OsStr::new("nested")), Err(Errno::ENOENT));
+    assert_eq!(tree.lookup(ROOT, OsStr::new("moved")).unwrap(), parent);
+    let fh = tree.open(child, libc::O_RDONLY).unwrap();
+    assert_eq!(read(&mut tree, fh), "ours");
+    assert_eq!(
+        fs::read_to_string(host.path().join("nested/file")).unwrap(),
+        "host"
+    );
+    assert!(host.path().join("nested/deleted").exists());
+}
+
+#[test]
+fn failed_operations_release_temporary_nodes_and_handles() {
+    let host = tempfile::tempdir().unwrap();
+    fs::write(host.path().join("file"), "host").unwrap();
+    fs::write(host.path().join(NAME), "credential").unwrap();
+    let view = ConfigFs(Mutex::new(Tree::new(host.path(), b"{}").unwrap()));
+    let baseline = view.0.lock().unwrap().nodes.len();
+    assert_eq!(
+        view.with(|tree| {
+            let ino = tree.lookup(ROOT, OsStr::new("file"))?;
+            tree.open(ino, libc::O_RDONLY | libc::O_TRUNC)
+        }),
+        Err(Errno::EBADF)
+    );
+    assert_eq!(
+        view.with(|tree| tree.open(CREDENTIAL, libc::O_RDONLY | libc::O_TRUNC)),
+        Err(Errno::EBADF)
+    );
+    let tree = view.0.lock().unwrap();
+    assert!(tree.handles.is_empty());
+    assert_eq!(tree.nodes.len(), baseline);
+    drop(tree);
+    assert_eq!(
+        view.with(|tree| {
+            let ino = tree.lookup(ROOT, OsStr::new("file"))?;
+            tree.opendir(ino)
+        }),
+        Err(Errno::ENOTDIR)
+    );
+    let tree = view.0.lock().unwrap();
+    assert!(tree.directories.is_empty());
+    assert_eq!(tree.nodes.len(), baseline);
+}

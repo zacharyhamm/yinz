@@ -1,6 +1,6 @@
 //! A private configuration tree with one live, writable host pathname.
 use fuser::*;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -121,11 +121,26 @@ struct Handle {
     flags: i32,
 }
 
+#[derive(Default)]
+struct Lifetime {
+    lookups: u64,
+    opens: u64,
+    entry: Option<(INodeNo, OsString)>,
+    persistent: bool,
+}
+
+struct DirectoryHandle {
+    inode: INodeNo,
+    entries: Vec<(INodeNo, FileType, OsString)>,
+}
+
 struct Tree {
     host: File,
     nodes: HashMap<INodeNo, Node>,
     handles: HashMap<FileHandle, Handle>,
-    directories: HashMap<FileHandle, Vec<(INodeNo, FileType, OsString)>>,
+    directories: HashMap<FileHandle, DirectoryHandle>,
+    lifetimes: HashMap<INodeNo, Lifetime>,
+    reclaim: HashSet<INodeNo>,
     next: u64,
 }
 
@@ -174,6 +189,8 @@ impl Tree {
             host,
             handles: HashMap::new(),
             directories: HashMap::new(),
+            lifetimes: HashMap::new(),
+            reclaim: HashSet::new(),
             next: 3,
         };
         for name in [".claude.json", ".config.json"] {
@@ -233,7 +250,104 @@ impl Tree {
         let ino = INodeNo(self.id());
         self.children(parent)?.insert(name.to_owned(), Some(ino));
         self.nodes.insert(ino, node);
+        self.lifetimes.insert(
+            ino,
+            Lifetime {
+                entry: Some((parent, name.to_owned())),
+                persistent: true,
+                ..Lifetime::default()
+            },
+        );
+        self.reclaim.insert(ino);
         Ok(ino)
+    }
+
+    fn entry_attr(&mut self, ino: INodeNo, fh: Option<FileHandle>) -> FsResult<FileAttr> {
+        let attr = self.attr(ino, fh)?;
+        if let Some(lifetime) = self.lifetimes.get_mut(&ino) {
+            lifetime.lookups += 1;
+        }
+        Ok(attr)
+    }
+
+    fn forget(&mut self, ino: INodeNo, count: u64) {
+        if let Some(lifetime) = self.lifetimes.get_mut(&ino) {
+            lifetime.lookups = lifetime.lookups.saturating_sub(count);
+            self.reclaim.insert(ino);
+        }
+    }
+
+    fn detach(&mut self, ino: INodeNo) {
+        if let Some(lifetime) = self.lifetimes.get_mut(&ino) {
+            lifetime.entry = None;
+            self.reclaim.insert(ino);
+        }
+    }
+
+    fn reclaim_node(&mut self, ino: INodeNo) {
+        let Some(lifetime) = self.lifetimes.get(&ino) else {
+            return;
+        };
+        if lifetime.lookups != 0 || lifetime.opens != 0 {
+            return;
+        }
+        if lifetime.entry.is_some()
+            && (lifetime.persistent
+                || matches!(self.nodes.get(&ino), Some(Node::Directory { children, .. }) if !children.is_empty()))
+        {
+            return;
+        }
+        if let Some((parent, name)) = self.lifetimes.remove(&ino).and_then(|l| l.entry) {
+            if let Some(Node::Directory { children, .. }) = self.nodes.get_mut(&parent) {
+                children.remove(&name);
+            }
+            self.reclaim.insert(parent);
+        }
+        self.nodes.remove(&ino);
+    }
+
+    fn collect_unused(&mut self) {
+        while !self.reclaim.is_empty() {
+            let candidates = self.reclaim.drain().collect::<Vec<_>>();
+            for ino in candidates {
+                self.reclaim_node(ino);
+            }
+        }
+    }
+
+    fn release(&mut self, fh: FileHandle) {
+        if let Some(handle) = self.handles.remove(&fh) {
+            self.close_inode(handle.inode);
+        }
+    }
+
+    fn close_inode(&mut self, ino: INodeNo) {
+        if let Some(lifetime) = self.lifetimes.get_mut(&ino) {
+            lifetime.opens -= 1;
+            self.reclaim.insert(ino);
+        }
+    }
+
+    fn opendir(&mut self, ino: INodeNo) -> FsResult<FileHandle> {
+        let entries = self.entries(ino)?;
+        let fh = FileHandle(self.id());
+        self.directories.insert(
+            fh,
+            DirectoryHandle {
+                inode: ino,
+                entries,
+            },
+        );
+        if let Some(lifetime) = self.lifetimes.get_mut(&ino) {
+            lifetime.opens += 1;
+        }
+        Ok(fh)
+    }
+
+    fn releasedir(&mut self, fh: FileHandle) {
+        if let Some(handle) = self.directories.remove(&fh) {
+            self.close_inode(handle.inode);
+        }
     }
 
     fn credential(&self, flags: i32) -> FsResult<File> {
@@ -257,6 +371,9 @@ impl Tree {
             return Err(Errno::ENOTDIR);
         };
         if let Some(ino) = children.get(name) {
+            if let Some(ino) = ino {
+                self.reclaim.insert(*ino);
+            }
             return ino.ok_or(Errno::ENOENT);
         }
         let path = fd_path(lower.as_ref().ok_or(Errno::ENOENT)?).join(name);
@@ -284,7 +401,11 @@ impl Tree {
         } else {
             return Err(Errno::EPERM);
         };
-        self.insert(parent, name, node)
+        let ino = self.insert(parent, name, node)?;
+        if let Some(lifetime) = self.lifetimes.get_mut(&ino) {
+            lifetime.persistent = false;
+        }
+        Ok(ino)
     }
 
     fn private_file(&mut self, ino: INodeNo) -> FsResult<&mut File> {
@@ -298,6 +419,9 @@ impl Tree {
             copy.set_permissions(fs::Permissions::from_mode(file.metadata()?.mode() & 0o777))?;
             *file = copy;
             *private = true;
+        }
+        if let Some(lifetime) = self.lifetimes.get_mut(&ino) {
+            lifetime.persistent = true;
         }
         Ok(file)
     }
@@ -372,8 +496,15 @@ impl Tree {
                 flags,
             },
         );
+        if let Some(lifetime) = self.lifetimes.get_mut(&ino) {
+            lifetime.opens += 1;
+        }
         if flags & libc::O_TRUNC != 0 {
-            self.file(fh, true)?.set_len(0)?;
+            let result = self.file(fh, true).and_then(|file| Ok(file.set_len(0)?));
+            if let Err(error) = result {
+                self.release(fh);
+                return Err(error);
+            }
         }
         Ok(fh)
     }
@@ -455,7 +586,12 @@ impl Tree {
         ];
         for name in names {
             match self.lookup(ino, &name) {
-                Ok(child) => entries.push((child, self.attr(child, None)?.kind, name)),
+                Ok(child) => {
+                    let attr = self.attr(child, None);
+                    // Ordinary readdir entries do not hold kernel lookup references.
+                    self.reclaim_node(child);
+                    entries.push((child, attr?.kind, name));
+                },
                 Err(Errno::ENOENT | Errno::EPERM | Errno::ELOOP) => {},
                 Err(error) => return Err(error),
             }
@@ -480,6 +616,7 @@ impl Tree {
             fs::remove_file(fd_path(&self.host).join(NAME))?;
         } else {
             self.children(parent)?.insert(name.to_owned(), None);
+            self.detach(ino);
         }
         Ok(())
     }
@@ -550,6 +687,7 @@ impl Tree {
                     if kind == FileType::Directory && self.entries(previous)?.len() > 2 {
                         return Err(Errno::ENOTEMPTY);
                     }
+                    self.detach(previous);
                 },
                 Err(Errno::ENOENT) => {},
                 Err(error) => return Err(error),
@@ -557,6 +695,12 @@ impl Tree {
             self.children(dest)?.insert(newname.to_owned(), Some(ino));
         }
         self.children(parent)?.insert(name.to_owned(), None);
+        if dest == ROOT && newname == NAME {
+            self.detach(ino);
+        } else if let Some(lifetime) = self.lifetimes.get_mut(&ino) {
+            lifetime.entry = Some((dest, newname.to_owned()));
+            lifetime.persistent = true;
+        }
         Ok(())
     }
 
@@ -576,7 +720,10 @@ struct ConfigFs(Mutex<Tree>);
 
 impl ConfigFs {
     fn with<T>(&self, operation: impl FnOnce(&mut Tree) -> FsResult<T>) -> FsResult<T> {
-        operation(&mut *self.0.lock().map_err(|_| Errno::EIO)?)
+        let mut tree = self.0.lock().map_err(|_| Errno::EIO)?;
+        let result = operation(&mut tree);
+        tree.collect_unused();
+        result
     }
 }
 
@@ -584,11 +731,20 @@ impl Filesystem for ConfigFs {
     fn lookup(&self, _: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         match self.with(|tree| {
             let ino = tree.lookup(parent, name)?;
-            tree.attr(ino, None)
+            tree.entry_attr(ino, None)
         }) {
             Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
             Err(error) => reply.error(error),
         }
+    }
+    fn forget(&self, _: &Request, ino: INodeNo, nlookup: u64) {
+        self.with(|tree| {
+            tree.forget(ino, nlookup);
+            Ok(())
+        })
+        .map_err(|error| io::Error::from_raw_os_error(error.into()))
+        .context("forget Claude configuration inode")
+        .non_fatal();
     }
     fn getattr(&self, _: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
         match self.with(|tree| tree.attr(ino, fh)) {
@@ -623,7 +779,13 @@ impl Filesystem for ConfigFs {
     ) {
         match self.with(|tree| {
             let (ino, fh) = tree.create(parent, name, flags, mode & !umask)?;
-            Ok((tree.attr(ino, Some(fh))?, fh))
+            match tree.entry_attr(ino, Some(fh)) {
+                Ok(attr) => Ok((attr, fh)),
+                Err(error) => {
+                    tree.release(fh);
+                    Err(error)
+                },
+            }
         }) {
             Ok((attr, fh)) => {
                 reply.created(&TTL, &attr, Generation(0), fh, FopenFlags::FOPEN_DIRECT_IO)
@@ -705,7 +867,7 @@ impl Filesystem for ConfigFs {
         reply: ReplyEmpty,
     ) {
         match self.with(|tree| {
-            tree.handles.remove(&fh);
+            tree.release(fh);
             Ok(())
         }) {
             Ok(()) => reply.ok(),
@@ -797,7 +959,7 @@ impl Filesystem for ConfigFs {
                     children: BTreeMap::new(),
                 },
             )?;
-            tree.attr(ino, None)
+            tree.entry_attr(ino, None)
         }) {
             Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
             Err(error) => reply.error(error),
@@ -831,12 +993,7 @@ impl Filesystem for ConfigFs {
         }
     }
     fn opendir(&self, _: &Request, ino: INodeNo, _: OpenFlags, reply: ReplyOpen) {
-        match self.with(|tree| {
-            let entries = tree.entries(ino)?;
-            let fh = FileHandle(tree.id());
-            tree.directories.insert(fh, entries);
-            Ok(fh)
-        }) {
+        match self.with(|tree| tree.opendir(ino)) {
             Ok(fh) => reply.opened(fh, FopenFlags::empty()),
             Err(error) => reply.error(error),
         }
@@ -850,8 +1007,10 @@ impl Filesystem for ConfigFs {
         mut reply: ReplyDirectory,
     ) {
         let result = self.with(|tree| {
-            let entries = tree.directories.get(&fh).ok_or(Errno::EBADF)?;
-            for (index, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
+            let handle = tree.directories.get(&fh).ok_or(Errno::EBADF)?;
+            for (index, (ino, kind, name)) in
+                handle.entries.iter().enumerate().skip(offset as usize)
+            {
                 if reply.add(*ino, (index + 1) as u64, *kind, name) {
                     break;
                 }
@@ -865,7 +1024,7 @@ impl Filesystem for ConfigFs {
     }
     fn releasedir(&self, _: &Request, _: INodeNo, fh: FileHandle, _: OpenFlags, reply: ReplyEmpty) {
         match self.with(|tree| {
-            tree.directories.remove(&fh);
+            tree.releasedir(fh);
             Ok(())
         }) {
             Ok(()) => reply.ok(),
