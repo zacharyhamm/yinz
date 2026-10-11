@@ -2529,8 +2529,6 @@ fn init_session(
         .unwrap();
 
     let yinz_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let session_cwd = session_start_cwd(cli_assets.cwd.as_deref(), &config_options)
-        .map_or_else(|| yinz_cwd.clone(), |cwd| yinz_cwd.join(cwd));
     let mut session_env_vars: std::collections::BTreeMap<String, String> =
         std::env::vars().collect();
     // CLI paths are not necessarily present in the server's inherited environment.
@@ -2615,7 +2613,6 @@ fn init_session(
                     available_layout_errors,
                     path_to_default_shell,
                     yinz_cwd,
-                    session_cwd,
                     session_env_vars,
                     default_shell,
                     plugin_aliases,

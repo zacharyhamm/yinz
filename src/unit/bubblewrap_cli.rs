@@ -208,11 +208,9 @@ fn mother_bubblewrap_supports_agent_control_and_lifecycle_reporting() {
     yinz_runtime::shared::set_permissions(session.path.parent().unwrap(), 0o700).unwrap();
     let work = yinz_config::project_config::bubblewrap::mother_directory(root, "owner").unwrap();
     let environment = yinz_config::project_config::bubblewrap::Environment::at_root(&work);
-    let codex = environment
-        .prepare_mother("codex", Path::new("sh"))
-        .unwrap();
+    let codex = environment.prepare_mother("codex").unwrap();
     std::env::set_var("PI_CODING_AGENT_DIR", root.join("pi-state"));
-    let pi = environment.prepare_mother("pi", Path::new("sh")).unwrap();
+    let pi = environment.prepare_mother("pi").unwrap();
     assert_ne!(codex.root(), pi.root());
     let resumed = yinz_runtime::agent::launch::resume_command(
         "codex",

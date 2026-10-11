@@ -100,9 +100,6 @@ pub fn plugin_thread_main(
     available_layout_errors: Vec<LayoutWithError>,
     path_to_default_shell: PathBuf,
     yinz_cwd: PathBuf,
-    // Where the session's first panes opened. Not `yinz_cwd` when
-    // the session was started with an explicit directory or `default_cwd`.
-    session_cwd: PathBuf,
     session_env_vars: std::collections::BTreeMap<String, String>,
     default_shell: Option<TerminalAction>,
     mut plugin_aliases: PluginAliases,
@@ -372,10 +369,9 @@ pub fn plugin_thread_main(
                 let senders = bus.senders.clone();
                 let data = palette_data.clone();
                 let shutdown = shutdown_send.clone();
-                let session_cwd = session_cwd.clone();
                 yinz_bus::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
                     let _shutdown = shutdown;
-                    yinz_exports::palette_agents::handle(*request, &senders, &data, &session_cwd);
+                    yinz_exports::palette_agents::handle(*request, &senders, &data);
                 });
             },
             PluginInstruction::DenoPalette(delivery) => {

@@ -115,7 +115,7 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
             }
             commands
         });
-        let reply = execute(request, &senders, data, Path::new("/nonexistent/session"));
+        let reply = execute(request, &senders, data);
         drop(senders);
         (reply, worker.join().unwrap())
     })
@@ -274,7 +274,22 @@ fn palette_worktree_base_prefers_main_and_falls_back_to_primary_head() {
 
 #[test]
 fn palette_current_directory_and_fresh_duplicate_targets() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
     let (repo, data) = repository();
+    let storage = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_DATA_HOME", storage.path());
+    let metadata = yinz_runtime::home::xdg_data_dir()
+        .join("bubblewrap/environments")
+        .join(yinz_config::project_config::root_key(
+            &repo.path().canonicalize().unwrap(),
+        ));
+    fs::create_dir_all(&metadata).unwrap();
+    fs::write(metadata.join("accepted.json"), serde_json::to_vec(&serde_json::json!({
+        "root": repo.path().canonicalize().unwrap(), "ready": true,
+        "declaration": {"mounts": [], "paths": [], "env": {}, "inherit": [], "seeds": [], "setup": [], "checks": []}
+    })).unwrap()).unwrap();
     let current = request(
         repo.path(),
         AgentAction::Current {
@@ -335,9 +350,13 @@ fn palette_current_directory_and_fresh_duplicate_targets() {
 
 #[test]
 fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
     std::env::set_var("YINZ_SESSION_NAME", "mother-test");
     let start = tempfile::tempdir().unwrap();
     std::env::set_var("YINZ_TEST_CACHE_ROOT", start.path());
+    assert!(yinz_runtime::consts::YINZ_CACHE_DIR.starts_with(start.path()));
     let cwd = yinz_config::project_config::bubblewrap::mother_directory(
         &yinz_runtime::consts::YINZ_CACHE_DIR,
         "mother-test",
@@ -391,7 +410,7 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
                 }
                 launches
             });
-            let reply = execute(&request, &senders, &data, start.path());
+            let reply = execute(&request, &senders, &data);
             drop(senders);
             (reply, worker.join().unwrap())
         });
@@ -808,9 +827,13 @@ fn palette_history_run_search_orders_events_and_keeps_time_and_hit_navigation() 
 
 #[test]
 fn mother_launch_errors_preserve_the_placement_marker_pane_and_resources() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
     std::env::set_var("YINZ_SESSION_NAME", "mother-test");
     let start = tempfile::tempdir().unwrap();
     std::env::set_var("YINZ_TEST_CACHE_ROOT", start.path());
+    assert!(yinz_runtime::consts::YINZ_CACHE_DIR.starts_with(start.path()));
     let cwd = yinz_config::project_config::bubblewrap::mother_directory(
         &yinz_runtime::consts::YINZ_CACHE_DIR,
         "mother-test",
@@ -848,7 +871,7 @@ fn mother_launch_errors_preserve_the_placement_marker_pane_and_resources() {
                     completion.set_error_message(failure.into());
                 }
             });
-            mother(&request, "claude", start.path(), &senders).unwrap()
+            mother(&request, "claude", &senders).unwrap()
         });
         let AgentReply::Launched(response) = reply else {
             panic!("expected a launch reply")
@@ -913,4 +936,220 @@ fn mother_sandbox_selection_and_fallback_are_independent_of_bubblewrap() {
         output.contains("namespace setup failed\nagent-started"),
         "{output}"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mother_forks_select_provider_profiles_for_palette_and_plugin_panes() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    use yinz_config::project_config::bubblewrap::{mother_directory, Environment};
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_DATA_HOME", home.join("data"));
+    std::env::set_var("CODEX_HOME", home.join("codex-state"));
+    std::env::set_var("PI_CODING_AGENT_DIR", home.join("pi-state"));
+    std::env::set_var("YINZ_SESSION_NAME", "mother-forks");
+    std::env::remove_var("YINZ_PANE_REF");
+    let bin = home.join("bin");
+    fs::create_dir(&bin).unwrap();
+    yinz_test_support::write_warm_script(
+        &bin.join("bwrap"),
+        r#"
+if [ "$1" = --version ]; then
+    echo 'bubblewrap 0.10.0'
+    exit 0
+fi
+test "${MOTHER_CHECK_FAIL:-0}" = 0
+"#,
+    );
+    std::env::set_var(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    let work = mother_directory(&home.join("cache"), "forks").unwrap();
+    let source = Environment::at_root(&work).prepare_mother("codex").unwrap();
+    let metadata = |root: &Path| {
+        yinz_runtime::home::xdg_data_dir()
+            .join("bubblewrap/environments")
+            .join(yinz_config::project_config::root_key(root))
+    };
+    let source_record = metadata(source.root()).join("accepted.json");
+    let original = fs::read(&source_record).unwrap();
+    let lease = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(metadata(source.root()).join("lock"))
+        .unwrap();
+    lease.try_lock_shared().unwrap();
+    let source_target = PaneTarget::bubblewrap(source.root()).unwrap();
+    let mut plugin = crate::test_env::test_env();
+    plugin.plugin_cwd = work.clone();
+    plugin.response_sink = ResponseSink::Capture(None);
+    let data = DataAccess::sqlite(&home.join("store"));
+    for kind in ["codex", "pi", "claude"] {
+        let mut duplicate = request(
+            &work,
+            AgentAction::Duplicate {
+                kind: Some(kind.into()),
+            },
+        );
+        duplicate.source.target = source_target.clone();
+        duplicate.source.agent = Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "codex", "state": "Idle", "cwd": work
+            }))
+            .unwrap(),
+        );
+        let (reply, commands) = run(&duplicate, &data);
+        if kind == "claude" {
+            assert!(commands.is_empty(), "{reply:?}");
+            assert!(
+                matches!(reply.unwrap(), AgentReply::Launched(response) if response.outcome != AgentOutcome::Ok && response.message.as_deref().is_some_and(|message| message.contains("no supported writable state layout")))
+            );
+        } else {
+            assert_eq!(commands.len(), 1, "{reply:?}");
+            let command = &commands[0];
+            assert_eq!(command.cwd.as_deref(), Some(work.as_path()));
+            let expected = work.with_file_name(format!("profile-{kind}"));
+            assert_eq!(command.target.bubblewrap_root(), Some(expected.as_path()));
+            let record: serde_json::Value = serde_json::from_slice(
+                &fs::read(metadata(&expected).join("accepted.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                record["declaration"]["mother"],
+                serde_json::json!([home.join(format!("{kind}-state"))])
+            );
+        }
+        for rerun in [false, true] {
+            let command = yinz_runtime::agent::launch::command_in_context(
+                kind,
+                Some("/host".into()),
+                source_target.clone(),
+            )
+            .unwrap();
+            let (screen_tx, screen_rx) = unbounded();
+            let (pty_tx, pty_rx) = unbounded();
+            plugin.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+            plugin.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+            let command = thread::scope(|scope| {
+                let worker = scope.spawn(move || {
+                    let mut launched = None;
+                    while let Ok((instruction, _)) = pty_rx.recv() {
+                        let PtyInstruction::SpawnTerminal(
+                            Some(TerminalAction::RunCommand(command)),
+                            ..,
+                        ) = instruction
+                        else {
+                            panic!("unexpected launch {instruction:?}");
+                        };
+                        launched = Some(command);
+                    }
+                    launched
+                });
+                if rerun {
+                    run_command_in_pane(
+                        &plugin,
+                        PaneId::Terminal(TerminalId::new(7)),
+                        command,
+                        BTreeMap::new(),
+                        false,
+                    );
+                } else {
+                    open_command_pane(&mut plugin, command, BTreeMap::new());
+                }
+                plugin.senders.to_pty = None;
+                let opened = worker.join().unwrap();
+                let rerun_command = screen_rx.try_iter().find_map(|(instruction, _)| {
+                    if let ScreenInstruction::RunCommandInPane(id, command, _) = instruction {
+                        assert_eq!(id, TerminalId::new(7));
+                        Some(command)
+                    } else {
+                        None
+                    }
+                });
+                if rerun {
+                    rerun_command
+                } else {
+                    opened
+                }
+            });
+            if kind == "claude" {
+                assert!(command.is_none());
+            } else {
+                let command = command.unwrap();
+                assert_eq!(command.cwd, Some(work.clone()));
+                assert_eq!(
+                    command.target.bubblewrap_root(),
+                    Some(work.with_file_name(format!("profile-{kind}")).as_path())
+                );
+            }
+        }
+        assert_eq!(fs::read(&source_record).unwrap(), original);
+    }
+    // Recorded resumes and compatible legacy profiles keep their accepted target.
+    let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    legacy["root"] = serde_json::json!(work);
+    legacy["declaration"]
+        .as_object_mut()
+        .unwrap()
+        .remove("mother_work");
+    fs::create_dir_all(metadata(&work)).unwrap();
+    fs::write(
+        metadata(&work).join("accepted.json"),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+    for root in [source.root(), work.as_path()] {
+        let target = PaneTarget::bubblewrap(root).unwrap();
+        let mut command = yinz_runtime::agent::launch::resume_command(
+            "codex",
+            "archived",
+            None,
+            None,
+            root.to_str(),
+        )
+        .unwrap();
+        command.cwd = Some(work.clone());
+        prepare_agent_command(&mut command).unwrap();
+        assert_eq!(command.target, target);
+        assert_eq!(command.cwd, Some(work.clone()));
+    }
+    // Project environments and remote commands keep their original targets.
+    legacy["declaration"]
+        .as_object_mut()
+        .unwrap()
+        .remove("mother");
+    fs::write(
+        metadata(&work).join("accepted.json"),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+    for target in [
+        PaneTarget::bubblewrap(&work).unwrap(),
+        PaneTarget::Local,
+        PaneTarget::ssh("example.test").unwrap(),
+    ] {
+        let prepared = existing_command("claude", work.to_str().unwrap(), target.clone()).unwrap();
+        assert_eq!(prepared.command.target, target);
+    }
+    let mut project_command = yinz_runtime::agent::launch::command_in_context(
+        "claude",
+        None,
+        PaneTarget::bubblewrap(&work).unwrap(),
+    )
+    .unwrap();
+    prepare_agent_command(&mut project_command).unwrap();
+    assert_eq!(project_command.cwd, None);
+    std::env::set_var("MOTHER_CHECK_FAIL", "1");
+    // Preparation selects the profile; runtime probes belong to PTY spawning.
+    assert!(existing_command("pi", work.to_str().unwrap(), source_target.clone()).is_ok());
+    let command =
+        yinz_runtime::agent::launch::command_in_context("pi", Some("/host".into()), source_target)
+            .unwrap();
+    assert!(run_command_action(&plugin, command, false, BTreeMap::new()).is_some());
+    assert_eq!(fs::read(source_record).unwrap(), original);
 }

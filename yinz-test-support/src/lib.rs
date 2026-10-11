@@ -56,6 +56,29 @@ pub fn default_timeout() -> Duration {
     }
 }
 
+/// Re-run the current libtest in its own process, returning true in the parent.
+/// Call before changing process-global environment or initializing environment-dependent statics.
+pub fn reexec_test() -> bool {
+    const CHILD: &str = "YINZ_ISOLATED_TEST";
+    let thread = std::thread::current();
+    let name = thread.name().expect("libtest thread must have a name");
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return false;
+    }
+    let output = Command::new(std::env::current_exe().expect("locate test executable"))
+        .args(["--exact", name, "--include-ignored", "--nocapture"])
+        .env(CHILD, name)
+        .output()
+        .expect("run isolated test");
+    assert!(
+        output.status.success(),
+        "isolated test {name} failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 /// Shared state a test can block on until it satisfies a predicate.
 ///
 /// Clone it to share the same underlying state; every clone observes the same value and any
@@ -277,6 +300,16 @@ mod tests {
 
     const SHORT: Duration = Duration::from_millis(50);
     const PATIENT: Duration = Duration::from_secs(30);
+
+    #[test]
+    fn reexec_isolates_environment() {
+        let original = std::env::var_os("YINZ_ISOLATION_SENTINEL");
+        if reexec_test() {
+            assert_eq!(std::env::var_os("YINZ_ISOLATION_SENTINEL"), original);
+            return;
+        }
+        std::env::set_var("YINZ_ISOLATION_SENTINEL", "child-only");
+    }
 
     #[test]
     fn returns_immediately_when_the_condition_already_holds() {

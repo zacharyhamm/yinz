@@ -395,6 +395,9 @@ fn real_bubblewrap_pins_sources_before_startup() {
 #[cfg(target_os = "linux")]
 #[test]
 fn environment_arguments_are_private_and_preserve_values() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
     use std::os::unix::fs::MetadataExt;
 
     let (_temp, env) = fixture();
@@ -460,6 +463,9 @@ fn environment_arguments_are_private_and_preserve_values() {
 
 #[test]
 fn environment_arguments_reject_nuls_and_missing_inherited_variables() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
     let (_temp, env) = fixture();
     for (name, value) in [("TOKEN", "secret\0value"), ("secret\0name", "value")] {
         let declaration = Declaration {
@@ -486,6 +492,9 @@ fn environment_arguments_reject_nuls_and_missing_inherited_variables() {
 #[test]
 #[ignore = "requires real Bubblewrap user namespaces; run explicitly on Linux"]
 fn real_bubblewrap_delivers_environment_without_secrets_in_argv() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
     use std::io::Read;
     use std::time::Duration;
 
@@ -741,7 +750,7 @@ fn real_bubblewrap_checks_run_once_capture_output_and_share_deadline() {
         // The server's half of a launch, then the pane's.
         let result = env
             .check_launch(&std::env::current_dir().unwrap(), Path::new("sh"))
-            .and_then(|()| env.run(&["sh".into(), "-c".into(), "touch agent-ran".into()]));
+            .and_then(|_| env.run(&["sh".into(), "-c".into(), "touch agent-ran".into()]));
         let error = result.unwrap_err();
         eprintln!("{error:#}");
         assert!(std::env::var_os("BWRAP_RUN_EXPECT_FAILURE").is_some());
@@ -954,6 +963,9 @@ fn mother_directories_are_private_persistent_and_separate() {
 
 #[test]
 fn mother_state_overrides_cannot_grant_home_or_metadata_writes() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
     let (temp, env) = fixture();
     std::env::set_var("HOME", temp.path());
     std::env::set_var("CODEX_HOME", temp.path().join("codex-state"));
@@ -977,6 +989,9 @@ fn mother_state_overrides_cannot_grant_home_or_metadata_writes() {
 
 #[test]
 fn mother_provider_profiles_preserve_recorded_targets_and_legacy_profiles() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().canonicalize().unwrap();
     std::env::set_var("HOME", &home);
@@ -1040,10 +1055,344 @@ fn mother_provider_profiles_preserve_recorded_targets_and_legacy_profiles() {
     assert!(legacy.accept_mother("pi").is_err());
 }
 
+#[test]
+fn mother_acceptance_reuses_ready_profiles_under_a_shared_lease() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_DATA_HOME", home.join("data"));
+    std::env::set_var("CODEX_HOME", home.join("codex-state"));
+    let work = Environment::at_root(&mother_directory(&home.join("cache"), "lease").unwrap());
+    let profile = work.accept_mother("codex").unwrap();
+    let record = profile.metadata.join("accepted.json");
+    use std::os::unix::fs::MetadataExt;
+    let inode = fs::metadata(&record).unwrap().ino();
+    let contents = fs::read(&record).unwrap();
+    let lease = profile.lock(false).unwrap();
+    for _ in 0..2 {
+        assert_eq!(work.accept_mother("codex").unwrap().root(), profile.root());
+        assert_eq!(fs::metadata(&record).unwrap().ino(), inode);
+    }
+    std::env::set_var("CODEX_HOME", home.join("changed-state"));
+    assert!(work.accept_mother("codex").is_err());
+    assert_eq!(fs::read(&record).unwrap(), contents);
+    std::env::set_var("CODEX_HOME", &home);
+    assert!(work.accept_mother("codex").is_err());
+    drop(lease);
+    std::env::set_var("CODEX_HOME", home.join("changed-state"));
+    let updated = work.accept_mother("codex").unwrap();
+    assert_eq!(
+        updated.accepted().unwrap().declaration.mother,
+        Some(vec![home.join("changed-state")])
+    );
+    for invalid in [b"invalid".as_slice(), b"{}"] {
+        fs::write(&record, invalid).unwrap();
+        let _lease = profile.lock(false).unwrap();
+        assert!(work.accept_mother("codex").is_err());
+        assert_eq!(fs::read(&record).unwrap(), invalid);
+    }
+    work.accept_mother("codex").unwrap();
+    let mut accepted = profile.accepted().unwrap();
+    accepted.ready = false;
+    profile.save(&accepted).unwrap();
+    let _lease = profile.lock(false).unwrap();
+    assert!(work.accept_mother("codex").is_err());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mother_environment_skips_non_utf8_names_and_values_in_both_modes() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    use std::os::unix::ffi::OsStrExt;
+    let (_temp, env) = fixture();
+    let invalid_name = std::ffi::OsStr::from_bytes(b"MOTHER_INVALID_\xff");
+    std::env::set_var(invalid_name, "valid-value");
+    std::env::set_var("MOTHER_INVALID_VALUE", std::ffi::OsStr::from_bytes(b"\xff"));
+    std::env::set_var("MOTHER_VALID", "preserved");
+    std::env::set_var("YINZ_PRIVATE_SENTINEL", "hidden");
+    std::env::set_var("YINZ_SESSION_NAME", "encoding-test");
+    std::env::remove_var("YINZ_PANE_REF");
+    let declaration = Declaration {
+        mother: Some(vec![]),
+        ..Default::default()
+    };
+    for runtime in [false, true] {
+        let command = env.command(&declaration, &env.root, runtime).unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        let index = args.iter().position(|arg| *arg == "--args").unwrap();
+        let encoded = fs::read(format!(
+            "/proc/self/fd/{}",
+            args[index + 1].to_str().unwrap()
+        ))
+        .unwrap();
+        let words: Vec<_> = encoded.split(|byte| *byte == 0).collect();
+        assert!(words
+            .windows(3)
+            .any(|triple| triple == [b"--setenv".as_slice(), b"MOTHER_VALID", b"preserved"]));
+        assert!(!words.contains(&b"MOTHER_INVALID_VALUE".as_slice()));
+        assert!(!words.contains(&invalid_name.as_bytes()));
+        assert!(!words.contains(&b"YINZ_PRIVATE_SENTINEL".as_slice()));
+        assert!(words
+            .windows(3)
+            .any(|triple| triple == [b"--setenv".as_slice(), b"YINZ_BUBBLEWRAP", b"1"]));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires real Bubblewrap user namespaces; run explicitly on Linux"]
+fn real_mother_bubblewrap_preserves_resolver() {
+    use std::io::{BufRead, BufReader};
+    const CONTENTS: &str = "nameserver 127.0.0.53\n";
+    const UPDATED: &str = "nameserver 192.0.2.53\n";
+    const SOURCE: &str = "BWRAP_RESOLVER_TEST_SOURCE";
+    if let Some(source) = std::env::var_os(SOURCE) {
+        let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let env = Environment::at(root.clone(), &root.join("metadata"));
+        let declaration = Declaration {
+            mother: Some(vec![]),
+            ..Default::default()
+        };
+        let mut child = env
+            .command(&declaration, &root, false)
+            .unwrap()
+            .args([
+                "--",
+                "sh",
+                "-eu",
+                "-c",
+                r#"
+                cat /etc/resolv.conf
+                read -r reply
+                cat /etc/resolv.conf
+                if echo changed >> /etc/resolv.conf; then exit 1; fi
+                test ! -e /run/unrelated
+                test ! -e /tmp/unrelated
+                "#,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                send.send(line.unwrap()).unwrap();
+            }
+        });
+        assert_eq!(
+            receive.recv_timeout(Duration::from_secs(30)).unwrap(),
+            CONTENTS.trim_end()
+        );
+        let source = PathBuf::from(source);
+        let replacement = source.with_extension("new");
+        fs::write(&replacement, UPDATED).unwrap();
+        fs::rename(replacement, source).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"continue\n")
+            .unwrap();
+        assert_eq!(
+            receive.recv_timeout(Duration::from_secs(30)).unwrap(),
+            UPDATED.trim_end()
+        );
+        let output = child.wait_with_output().unwrap();
+        reader.join().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    // An outer namespace supplies each host layout without touching the real /etc or /run.
+    let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    for layout in [
+        "stub",
+        "resolved",
+        "network-manager",
+        "multi-hop",
+        "relative",
+        "directory-link",
+        "tmp",
+        "plain",
+    ] {
+        let root = temp.path().canonicalize().unwrap().join(layout);
+        let etc = root.join("etc");
+        let run = root.join("run");
+        let tmp = root.join("tmp");
+        fs::create_dir_all(&etc).unwrap();
+        fs::create_dir_all(run.join("systemd/resolve")).unwrap();
+        fs::create_dir_all(run.join("resolvconf")).unwrap();
+        fs::create_dir_all(run.join("NetworkManager")).unwrap();
+        fs::create_dir_all(tmp.join("resolver")).unwrap();
+        fs::write(run.join("unrelated"), "private").unwrap();
+        fs::write(tmp.join("unrelated"), "private").unwrap();
+        let target = match layout {
+            "plain" => "etc/resolv.conf",
+            "resolved" => "run/systemd/resolve/resolv.conf",
+            "network-manager" => "run/NetworkManager/resolv.conf",
+            "tmp" => "tmp/resolver/resolv.conf",
+            _ => "run/systemd/resolve/stub-resolv.conf",
+        };
+        let source = root.join(target);
+        fs::write(&source, CONTENTS).unwrap();
+        let link = match layout {
+            "multi-hop" | "relative" => {
+                std::os::unix::fs::symlink(
+                    if layout == "relative" {
+                        "../systemd/resolve/stub-resolv.conf"
+                    } else {
+                        "/run/systemd/resolve/stub-resolv.conf"
+                    },
+                    run.join("resolvconf/resolv.conf"),
+                )
+                .unwrap();
+                "/run/resolvconf/resolv.conf".to_owned()
+            },
+            "directory-link" => {
+                std::os::unix::fs::symlink("systemd/resolve", run.join("resolver")).unwrap();
+                "/run/resolver/stub-resolv.conf".to_owned()
+            },
+            _ => format!("../{target}"),
+        };
+        if layout != "plain" {
+            std::os::unix::fs::symlink(link, etc.join("resolv.conf")).unwrap();
+        }
+        let output = Command::new("bwrap")
+            .args([
+                "--unshare-all",
+                "--share-net",
+                "--die-with-parent",
+                "--ro-bind",
+                "/",
+                "/",
+                "--bind",
+            ])
+            .arg(&root)
+            .arg(&root)
+            .arg("--ro-bind")
+            .arg(&etc)
+            .arg("/etc")
+            .arg("--ro-bind")
+            .arg(&run)
+            .arg("/run")
+            .arg("--ro-bind")
+            .arg(&tmp)
+            .arg("/tmp")
+            .args(["--dev", "/dev", "--proc", "/proc"])
+            .arg("--chdir")
+            .arg(&root)
+            .arg("--")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "bubblewrap::tests::real_mother_bubblewrap_preserves_resolver",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(SOURCE, &source)
+            .env("TMPDIR", &root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "layout {layout}:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn mother_resolver_mount_follows_private_run() {
+    let resolver = Path::new("/etc/resolv.conf");
+    if !resolver.exists() {
+        return;
+    }
+    let (_temp, env) = fixture();
+    let declaration = Declaration {
+        mother: Some(vec![]),
+        ..Default::default()
+    };
+    let command = env.command(&declaration, &env.root, false).unwrap();
+    let args: Vec<_> = command.get_args().collect();
+    let private_run = args
+        .windows(2)
+        .position(|args| args == ["--tmpfs", "/run"])
+        .unwrap();
+    let mut mounts = Command::new("bwrap");
+    bind_mother_resolver(&mut mounts, resolver).unwrap();
+    let mounts: Vec<_> = mounts.get_args().collect();
+    if !mounts.is_empty() {
+        assert!(
+            args.windows(mounts.len())
+                .position(|args| args == mounts)
+                .unwrap()
+                > private_run
+        );
+    }
+    assert!(!args
+        .windows(3)
+        .any(|args| args[0] == "--ro-bind" && args[1] == resolver));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mother_resolver_mounts_directories_for_every_symlink_hop() {
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let etc = root.join("etc");
+    let middle = root.join("resolvconf");
+    let target = root.join("systemd/resolve");
+    for directory in [&etc, &middle, &target] {
+        fs::create_dir_all(directory).unwrap();
+    }
+    let resolver = etc.join("resolv.conf");
+    std::os::unix::fs::symlink("../resolvconf/resolv.conf", &resolver).unwrap();
+    std::os::unix::fs::symlink(target.join("stub-resolv.conf"), middle.join("resolv.conf"))
+        .unwrap();
+    fs::write(target.join("stub-resolv.conf"), "nameserver 127.0.0.53").unwrap();
+    let mut command = Command::new("bwrap");
+    bind_mother_resolver(&mut command, &resolver).unwrap();
+    let args: Vec<_> = command.get_args().collect();
+    let expected: Vec<_> = [&etc, &middle, &target]
+        .into_iter()
+        .flat_map(|path| {
+            [
+                std::ffi::OsStr::new("--ro-bind"),
+                path.as_os_str(),
+                path.as_os_str(),
+            ]
+        })
+        .collect();
+    assert_eq!(args, expected);
+    fs::remove_file(target.join("stub-resolv.conf")).unwrap();
+    std::os::unix::fs::symlink(&resolver, target.join("stub-resolv.conf")).unwrap();
+    assert!(bind_mother_resolver(&mut Command::new("bwrap"), &resolver).is_err());
+    for path in ["/run/resolv.conf", "/tmp/resolv.conf"] {
+        assert!(bind_mother_resolver(&mut Command::new("bwrap"), Path::new(path)).is_err());
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires real Bubblewrap user namespaces; run explicitly on Linux"]
 fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
     // Keep the host fixture outside /tmp, which the sandbox replaces with private storage.
     let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let home = temp.path().canonicalize().unwrap();
@@ -1057,11 +1406,17 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
     fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
     let root = mother_directory(&home.join("cache"), "test").unwrap();
     let work = Environment::at_root(&root);
-    let codex = work.prepare_mother("codex", Path::new("sh")).unwrap();
-    let pi = work.prepare_mother("pi", Path::new("sh")).unwrap();
+    let codex = work.prepare_mother("codex").unwrap();
+    let _lease = codex.lock(false).unwrap();
+    assert_eq!(work.prepare_mother("codex").unwrap().root(), codex.root());
+    let pi = codex.for_agent("pi", Some(&root)).unwrap();
+    assert!(codex.for_agent("claude", Some(&root)).is_err());
     assert_ne!(codex.root(), pi.root());
     let env = Environment::at_root(codex.root());
-    env.check_launch(&root, Path::new("sh")).unwrap();
+    assert_eq!(
+        env.check_launch(&root, Path::new("sh")).unwrap(),
+        LaunchCheck::Ready
+    );
     fs::write(home.join("project"), "unchanged").unwrap();
     let accepted = env.accepted().unwrap();
     let output = env

@@ -290,6 +290,21 @@ fn translate_plugin_path(env: &PluginEnv, path: PathBuf) -> PathBuf {
     }
 }
 
+/// Prepare provider hooks and select a mother profile before either palette or plugin launch.
+fn prepare_agent_command(command: &mut CommandToRun) -> Result<(), String> {
+    yinz_runtime::agent::pi::prepare_command(command)?;
+    if let (Some(root), Some(kind)) = (
+        command.target.bubblewrap_root(),
+        yinz_types::agent::kind_from_program_and_args(&command.path, &command.args),
+    ) {
+        let profile = yinz_config::project_config::bubblewrap::Environment::at_root(root)
+            .for_agent(&kind, command.cwd.as_deref())
+            .map_err(|error| format!("cannot prepare agent sandbox: {error:#}"))?;
+        command.target = PaneTarget::bubblewrap(profile.root())?;
+    }
+    Ok(())
+}
+
 /// The `RunCommandAction` behind every plugin call that opens or re-runs a
 /// command pane: the plugin's `CommandToRun` with its cwd resolved through the
 /// plugin mounts (`command_cwd`), tagged as this plugin's so the pane's exit
@@ -302,11 +317,6 @@ fn run_command_action(
     default_to_plugin_cwd: bool,
     context: BTreeMap<String, String>,
 ) -> Option<RunCommandAction> {
-    if let Err(error) = yinz_runtime::agent::pi::prepare_command(&mut command_to_run) {
-        log::error!("cannot prepare agent reporting: {error}");
-        notify(env, error, None, None);
-        return None;
-    }
     let cwd = if env.plugin_config.is_builtin()
         && (context.contains_key("swamp_owner")
             || context
@@ -317,10 +327,24 @@ fn run_command_action(
     } else {
         command_cwd(env, &command_to_run, default_to_plugin_cwd)
     };
+    command_to_run.cwd = cwd;
+    command_action_with_resolved_cwd(env, command_to_run, context)
+}
+
+fn command_action_with_resolved_cwd(
+    env: &PluginEnv,
+    mut command_to_run: CommandToRun,
+    context: BTreeMap<String, String>,
+) -> Option<RunCommandAction> {
+    if let Err(error) = prepare_agent_command(&mut command_to_run) {
+        log::error!("cannot prepare agent command: {error}");
+        notify(env, error, None, None);
+        return None;
+    }
     Some(RunCommandAction {
         command: command_to_run.path,
         args: command_to_run.args,
-        cwd,
+        cwd: command_to_run.cwd,
         direction: None,
         hold_on_close: true,
         hold_on_start: false,
@@ -2920,7 +2944,7 @@ fn open_command_pane_near_plugin(
 
 fn spawn_command_pane_near_plugin(
     env: &PluginEnv,
-    mut command_to_run: CommandToRun,
+    command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
     name: Option<String>,
     cwd_already_resolved: bool,
@@ -2928,13 +2952,13 @@ fn spawn_command_pane_near_plugin(
 ) -> Result<PaneId, String> {
     let agent = context.contains_key(AGENT_PANE_CONTEXT);
     let preserve_cwd = cwd_already_resolved && !command_to_run.target.is_remote();
-    let resolved_cwd = preserve_cwd.then(|| command_to_run.cwd.take());
-    let mut run_command_action = run_command_action(env, command_to_run, false, context)
-        .ok_or_else(|| "invalid pane command".to_owned())?;
     // Checkout launchers already resolved host paths, including names like /tmp and /host.
-    if let Some(cwd) = resolved_cwd {
-        run_command_action.cwd = cwd;
+    let run_command_action = if preserve_cwd {
+        command_action_with_resolved_cwd(env, command_to_run, context)
+    } else {
+        run_command_action(env, command_to_run, false, context)
     }
+    .ok_or_else(|| "invalid pane command".to_owned())?;
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     // Create completion channel

@@ -558,6 +558,24 @@ fn agent_placement_timeout_preserves_known_tab_and_checkout_without_cancelling_t
 
 #[test]
 fn plugin_agent_launch_waits_for_checks_and_rejects_errors_with_pane_ids() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_DATA_HOME", temp.path().join("data"));
+    let root = temp.path().join("repo");
+    let cwd = root.join("task");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let root = root.canonicalize().unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let metadata = yinz_runtime::home::xdg_data_dir()
+        .join("bubblewrap/environments")
+        .join(yinz_config::project_config::root_key(&root));
+    std::fs::create_dir_all(&metadata).unwrap();
+    std::fs::write(metadata.join("accepted.json"), serde_json::to_vec(&serde_json::json!({
+        "root": root, "ready": true,
+        "declaration": {"mounts": [], "paths": [], "env": {}, "inherit": [], "seeds": [], "setup": [], "checks": []}
+    })).unwrap()).unwrap();
     for (delay, error) in [
         (false, None),
         (true, None),
@@ -567,6 +585,7 @@ fn plugin_agent_launch_waits_for_checks_and_rejects_errors_with_pane_ids() {
         let (pty_tx, pty_rx) = channels::unbounded();
         env.senders.to_pty = Some(SenderWithContext::new(pty_tx));
         let plugin_id = env.plugin_id;
+        let expected_cwd = cwd.clone();
         let worker = std::thread::spawn(move || {
             let (
                 PtyInstruction::SpawnTerminal(
@@ -590,7 +609,7 @@ fn plugin_agent_launch_waits_for_checks_and_rejects_errors_with_pane_ids() {
             assert!(
                 matches!(destination, ClientTabIndexOrPaneId::PaneIdOrClient(PaneId::Plugin(id), _) if id == plugin_id)
             );
-            assert_eq!(command.cwd, Some(PathBuf::from("/repo/task")));
+            assert_eq!(command.cwd, Some(expected_cwd));
             let origin = command.originating_plugin.unwrap();
             assert_eq!(origin.plugin_id, plugin_id);
             assert_eq!(
@@ -610,10 +629,8 @@ fn plugin_agent_launch_waits_for_checks_and_rejects_errors_with_pane_ids() {
             &env,
             CommandToRun {
                 path: "claude".into(),
-                cwd: Some("/repo/task".into()),
-                target: PaneTarget::Bubblewrap {
-                    root: "/repo".into(),
-                },
+                cwd: Some(cwd.clone()),
+                target: PaneTarget::bubblewrap(&root).unwrap(),
                 ..Default::default()
             },
             BTreeMap::from([(AGENT_PANE_CONTEXT.into(), "claude".into())]),
