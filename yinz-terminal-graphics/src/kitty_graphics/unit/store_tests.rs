@@ -1,5 +1,12 @@
 use super::*;
 
+fn key(width: u16, height: u16) -> ScaledImageKey {
+    ScaledImageKey {
+        source: PixelRect::new(0, 0, 1, 1),
+        size: (width as usize, height as usize),
+    }
+}
+
 fn rgba_image(width: u32, height: u32) -> DecodedImage {
     DecodedImage {
         bytes: vec![0; (width * height * 4) as usize],
@@ -98,11 +105,11 @@ fn byte_accounting_matches_hand_computed_total_with_scaled_variants() {
     let mut store = KittyImageStore::default();
     let id_a = store.store_image(rgba_image(10, 10)).unwrap();
     let id_b = store.store_image(rgba_image(4, 5)).unwrap();
-    assert!(store.add_scaled_variant(id_a, (3, 2), vec![0; 120]));
-    assert!(store.add_scaled_variant(id_a, (5, 4), vec![0; 60]));
-    assert!(store.add_scaled_variant(id_a, (3, 2), vec![0; 100]));
+    assert!(store.add_scaled_variant(id_a, key(3, 2), vec![0; 120]));
+    assert!(store.add_scaled_variant(id_a, key(5, 4), vec![0; 60]));
+    assert!(store.add_scaled_variant(id_a, key(3, 2), vec![0; 100]));
     assert_eq!(store.total_bytes(), 640);
-    assert_eq!(store.scaled_variant(id_a, (3, 2)).unwrap().len(), 100);
+    assert_eq!(store.scaled_variant(id_a, key(3, 2)).unwrap().len(), 100);
     store.free(id_a);
     assert_eq!(store.total_bytes(), 80);
     store.free(id_b);
@@ -194,16 +201,19 @@ fn shared_base64_handles_survive_variant_frame_and_image_replacement() {
         &store.zlib_base64_for(id, None).unwrap().unwrap()
     ));
 
-    assert!(store.add_scaled_variant(id, (1, 1), vec![1; 4]));
-    let scaled = store.zlib_base64_for(id, Some((1, 1))).unwrap().unwrap();
-    assert!(store.add_scaled_variant(id, (1, 1), vec![2; 4]));
-    let replacement = store.zlib_base64_for(id, Some((1, 1))).unwrap().unwrap();
+    assert!(store.add_scaled_variant(id, key(1, 1), vec![1; 4]));
+    let scaled = store.zlib_base64_for(id, Some(key(1, 1))).unwrap().unwrap();
+    assert!(store.add_scaled_variant(id, key(1, 1), vec![2; 4]));
+    let replacement = store.zlib_base64_for(id, Some(key(1, 1))).unwrap().unwrap();
     assert_eq!(decode(&scaled), [1; 4]);
     assert_eq!(decode(&replacement), [2; 4]);
 
     store.write_frame(id, None, vec![3; 4], 40).unwrap();
     store.set_current_frame(id, 2).unwrap();
-    assert!(store.zlib_base64_for(id, Some((1, 1))).unwrap().is_none());
+    assert!(store
+        .zlib_base64_for(id, Some(key(1, 1)))
+        .unwrap()
+        .is_none());
     assert_eq!(store.total_bytes(), 8);
     let frame = store.zlib_base64_for(id, None).unwrap().unwrap();
     assert_eq!(decode(&frame), [3; 4]);
@@ -230,10 +240,10 @@ fn shared_base64_handles_survive_variant_frame_and_image_replacement() {
 fn scaled_variant_overflow_does_not_replace_the_previous_variant() {
     let mut store = KittyImageStore::with_quota(120);
     let id = store.store_image(rgba_image(4, 4)).unwrap();
-    assert!(store.add_scaled_variant(id, (2, 2), vec![1; 40]));
+    assert!(store.add_scaled_variant(id, key(2, 2), vec![1; 40]));
 
-    assert!(!store.add_scaled_variant(id, (2, 2), vec![2; 80]));
-    assert_eq!(store.scaled_variant(id, (2, 2)), Some(&[1; 40][..]));
+    assert!(!store.add_scaled_variant(id, key(2, 2), vec![2; 80]));
+    assert_eq!(store.scaled_variant(id, key(2, 2)), Some(&[1; 40][..]));
     assert_eq!(store.total_bytes(), 104);
 }
 
@@ -257,7 +267,7 @@ fn deleting_frames_debits_frames_variants_and_base64() {
         Some(2)
     );
     store.set_current_frame(id, 2).unwrap();
-    assert!(store.add_scaled_variant(id, (2, 2), vec![2; 20]));
+    assert!(store.add_scaled_variant(id, key(2, 2), vec![2; 20]));
     let _ = store.zlib_base64_for(id, None).unwrap().unwrap();
     assert!(store.total_bytes() > 128);
 
@@ -351,14 +361,44 @@ impl KittyImageStoreModel {
             tc.draw(generators::integers::<u16>().max_value(4)),
         );
         let bytes = tc.draw(generators::binary().max_size(64));
-        self.store.add_scaled_variant(id, cells, bytes);
+        self.store
+            .add_scaled_variant(id, key(cells.0, cells.1), bytes);
+    }
+
+    #[rule]
+    fn retain_scaled_variants(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        let mut live: HashSet<_> = self
+            .store
+            .get(id)
+            .map(|image| {
+                image
+                    .scaled_variants
+                    .keys()
+                    .copied()
+                    .filter(|_| tc.draw(generators::booleans()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // This model also stores empty images and partial frames, which cannot be placed.
+        let placeable = self.store.get(id).is_some_and(|image| {
+            image.width > 0 && image.height > 0 && image.displayed_rgba().len() >= 4
+        });
+        let required = (tc.draw(generators::booleans()) && placeable).then(|| {
+            key(
+                tc.draw(generators::integers::<u16>().min_value(1).max_value(4)),
+                tc.draw(generators::integers::<u16>().min_value(1).max_value(4)),
+            )
+        });
+        live.extend(required);
+        self.store.retain_scaled_variants(id, &live, required);
     }
 
     #[rule]
     fn zlib_base64_for(&mut self, tc: hegel::TestCase) {
         let id = self.any_id(&tc);
         let variant = if tc.draw(generators::booleans()) {
-            Some((
+            Some(key(
                 tc.draw(generators::integers::<u16>().max_value(4)),
                 tc.draw(generators::integers::<u16>().max_value(4)),
             ))
@@ -442,4 +482,108 @@ fn store_accounting_survives_any_sequence_of_operations(tc: hegel::TestCase) {
         known_ids: vec![],
     };
     hegel::stateful::run(machine, tc);
+}
+
+#[test]
+fn replacement_credits_obsolete_rasters_and_drops_their_compressed_caches() {
+    let mut store = KittyImageStore::with_quota(256);
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    store.add_placement_ref(id);
+    assert!(store.add_scaled_variant(id, key(4, 4), vec![1; 64]));
+    let retained = store.zlib_base64_for(id, Some(key(4, 4))).unwrap().unwrap();
+    assert!(store.total_bytes() > 68);
+    let replace = |key, count| HashMap::from([(id, HashMap::from([(key, vec![2; count])]))]);
+    assert!(store.replace_scaled_variants(replace(key(7, 7), 196)));
+    assert_eq!(store.total_bytes(), 200);
+    assert!(store.scaled_variant(id, key(4, 4)).is_none());
+    assert!(store
+        .zlib_base64_for(id, Some(key(4, 4)))
+        .unwrap()
+        .is_none());
+    assert!(!retained.is_empty());
+    assert!(!store.replace_scaled_variants(replace(key(8, 8), 256)));
+    assert_eq!(store.total_bytes(), 200);
+    assert_eq!(store.scaled_variant(id, key(7, 7)).unwrap(), &[2; 196]);
+    store.write_frame(id, None, vec![3; 4], 40).unwrap();
+    store.set_current_frame(id, 2).unwrap();
+    assert_eq!(store.total_bytes(), 8);
+    assert!(store.get(id).unwrap().scaled_variants.is_empty());
+    assert_eq!(store.get(id).unwrap().displayed_rgba(), &[3; 4]);
+}
+
+#[test]
+fn pruning_variants_preserves_surviving_caches_and_retained_encodings() {
+    use std::io::Read;
+    let mut store = KittyImageStore::default();
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    assert!(store.add_scaled_variant(id, key(2, 2), vec![1; 16]));
+    assert!(store.add_scaled_variant(id, key(3, 3), vec![2; 36]));
+    let root = store.zlib_base64_for(id, None).unwrap().unwrap();
+    let surviving = store.zlib_base64_for(id, Some(key(2, 2))).unwrap().unwrap();
+    let obsolete = store.zlib_base64_for(id, Some(key(3, 3))).unwrap().unwrap();
+    assert!(store.retain_scaled_variants(id, &HashSet::from([key(2, 2)]), None));
+    assert_eq!(store.total_bytes(), 20 + root.len() + surviving.len());
+    assert!(Rc::ptr_eq(
+        &root,
+        &store.zlib_base64_for(id, None).unwrap().unwrap()
+    ));
+    assert!(Rc::ptr_eq(
+        &surviving,
+        &store.zlib_base64_for(id, Some(key(2, 2))).unwrap().unwrap()
+    ));
+    assert!(store
+        .zlib_base64_for(id, Some(key(3, 3)))
+        .unwrap()
+        .is_none());
+    let compressed = base64_simd::STANDARD.decode_to_vec(&*obsolete).unwrap();
+    let mut pixels = Vec::new();
+    flate2::read::ZlibDecoder::new(compressed.as_slice())
+        .read_to_end(&mut pixels)
+        .unwrap();
+    assert_eq!(pixels, vec![2; 36]);
+    assert!(store.retain_scaled_variants(id, &HashSet::new(), None));
+    assert_eq!(store.total_bytes(), 4 + root.len());
+}
+
+#[test]
+fn placement_transaction_credits_obsolete_cache_and_preserves_caches_on_failure() {
+    let mut store = KittyImageStore::with_quota(256);
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    store.add_placement_ref(id);
+    assert!(store.ensure_scaled_variant(id, key(2, 2)));
+    let root = store.zlib_base64_for(id, None).unwrap().unwrap();
+    store.zlib_base64_for(id, Some(key(2, 2))).unwrap();
+    assert!(store.retain_scaled_variants(id, &HashSet::from([key(7, 7)]), Some(key(7, 7))));
+    assert_eq!(store.total_bytes(), 200 + root.len());
+    assert!(Rc::ptr_eq(
+        &root,
+        &store.zlib_base64_for(id, None).unwrap().unwrap()
+    ));
+    let cached = store.zlib_base64_for(id, Some(key(7, 7))).unwrap().unwrap();
+    let total = store.total_bytes();
+    assert!(!store.retain_scaled_variants(id, &HashSet::from([key(8, 8)]), Some(key(8, 8))));
+    assert_eq!(store.total_bytes(), total);
+    assert_eq!(store.get(id).unwrap().scaled_variants.len(), 1);
+    assert!(Rc::ptr_eq(
+        &cached,
+        &store.zlib_base64_for(id, Some(key(7, 7))).unwrap().unwrap()
+    ));
+}
+
+#[test]
+fn placement_transaction_does_not_credit_caches_twice_when_making_room() {
+    let mut store = KittyImageStore::with_quota(256);
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    store.add_placement_ref(id);
+    assert!(store.ensure_scaled_variant(id, key(2, 2)));
+    store.zlib_base64_for(id, None).unwrap();
+    store.zlib_base64_for(id, Some(key(2, 2))).unwrap();
+    let placed = store.store_image(rgba_image(5, 5)).unwrap();
+    store.add_placement_ref(placed);
+    let unplaced = store.store_image(rgba_image(5, 5)).unwrap();
+    assert!(store.total_bytes() > 220);
+    assert!(store.retain_scaled_variants(id, &HashSet::from([key(2, 7)]), Some(key(2, 7))));
+    assert!(store.get(unplaced).is_none());
+    assert!(store.get(placed).is_some());
+    assert_eq!(store.total_bytes(), 160);
 }

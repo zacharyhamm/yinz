@@ -1,12 +1,19 @@
 use super::parser::{DecodedImage, KittyError, KittyErrorCode, KittyFormat};
+use crate::sixel::PixelRect;
 use flate2::{write::ZlibEncoder, Compression};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::rc::Rc;
 
 pub const DEFAULT_KITTY_STORE_QUOTA_BYTES: usize = 335_544_320;
 
 pub type InternalImageId = u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScaledImageKey {
+    pub source: PixelRect,
+    pub size: (usize, usize),
+}
 
 /// One frame of an image's animation, beyond the root frame.
 ///
@@ -30,7 +37,7 @@ pub struct KittyImage {
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
-    pub scaled_variants: HashMap<(u16, u16), Vec<u8>>,
+    pub scaled_variants: HashMap<ScaledImageKey, Vec<u8>>,
     /// Frames 2..=n. Frame 1 is [`Self::rgba`], the root image, so this is empty for the still
     /// image that every transmission starts as.
     pub frames: Vec<KittyFrame>,
@@ -78,7 +85,7 @@ struct StoredImage {
     image: KittyImage,
     refcount: usize,
     lru_stamp: u64,
-    base64_cache: HashMap<Option<(u16, u16)>, Rc<String>>,
+    base64_cache: HashMap<Option<ScaledImageKey>, Rc<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,11 +181,123 @@ impl KittyImageStore {
     pub fn get(&self, id: InternalImageId) -> Option<&KittyImage> {
         self.images.get(&id).map(|stored| &stored.image)
     }
-    pub fn scaled_variant(&self, id: InternalImageId, cells: (u16, u16)) -> Option<&[u8]> {
+    pub fn scaled_variant(&self, id: InternalImageId, key: ScaledImageKey) -> Option<&[u8]> {
         self.images
             .get(&id)
-            .and_then(|stored| stored.image.scaled_variants.get(&cells))
+            .and_then(|stored| stored.image.scaled_variants.get(&key))
             .map(|bytes| bytes.as_slice())
+    }
+    /// Rebuild a raster invalidated by an animation frame change using its complete pixel key.
+    pub fn ensure_scaled_variant(&mut self, id: InternalImageId, key: ScaledImageKey) -> bool {
+        if self.scaled_variant(id, key).is_some() {
+            return true;
+        }
+        let Some(bytes) = self.scaled_variant_pixels(id, key) else {
+            return false;
+        };
+        self.add_scaled_variant(id, key, bytes)
+    }
+    fn scaled_variant_pixels(&self, id: InternalImageId, key: ScaledImageKey) -> Option<Vec<u8>> {
+        let image = self.get(id)?;
+        let source = key.source;
+        let cropped = super::grid_state::crop_rgba(
+            image.displayed_rgba(),
+            image.width as usize,
+            image.height as usize,
+            source.x,
+            source.y as usize,
+            source.width,
+            source.height,
+        );
+        Some(super::grid_state::scale_rgba(
+            &cropped,
+            source.width,
+            source.height,
+            key.size.0,
+            key.size.1,
+        ))
+    }
+    /// Commit the post-placement live keys and its required raster only after they fit.
+    pub(super) fn retain_scaled_variants(
+        &mut self,
+        id: InternalImageId,
+        live: &HashSet<ScaledImageKey>,
+        required: Option<ScaledImageKey>,
+    ) -> bool {
+        let Some(stored) = self.images.get(&id) else {
+            return false;
+        };
+        let obsolete_pixels: usize = stored
+            .image
+            .scaled_variants
+            .iter()
+            .filter(|(key, _)| !live.contains(key))
+            .map(|(_, bytes)| bytes.len())
+            .sum();
+        let obsolete_caches: usize = stored
+            .base64_cache
+            .iter()
+            .filter(|(key, _)| key.is_some_and(|key| !live.contains(&key)))
+            .map(|(_, bytes)| bytes.len())
+            .sum();
+        let staged = required
+            .filter(|key| !stored.image.scaled_variants.contains_key(key))
+            .and_then(|key| {
+                self.scaled_variant_pixels(id, key)
+                    .map(|bytes| (key, bytes))
+            });
+        let incoming = staged.as_ref().map_or(0, |(_, bytes)| bytes.len());
+        let extra = incoming.saturating_sub(obsolete_pixels + obsolete_caches);
+        if !self.has_room(extra) {
+            // Preflight before make_room drops caches, so a failed placement keeps its encodings.
+            let disposable: usize = self
+                .images
+                .iter()
+                .map(|(other_id, stored)| {
+                    if *other_id != id && stored.refcount == 0 {
+                        Self::stored_image_bytes(stored)
+                    } else {
+                        Self::base64_cache_bytes(stored)
+                    }
+                })
+                .sum();
+            if incoming.saturating_sub(obsolete_pixels)
+                > self
+                    .quota_bytes
+                    .saturating_sub(self.total_bytes - disposable)
+            {
+                return false;
+            }
+            // make_room may discard the obsolete caches itself, so only credit pixels here.
+            if !self.make_room(incoming.saturating_sub(obsolete_pixels), Some(id)) {
+                return false;
+            }
+        }
+        let Some(stored) = self.images.get_mut(&id) else {
+            return false;
+        };
+        let mut removed = 0;
+        stored.image.scaled_variants.retain(|key, bytes| {
+            if live.contains(key) {
+                true
+            } else {
+                removed += bytes.len();
+                false
+            }
+        });
+        stored.base64_cache.retain(|key, bytes| {
+            if key.is_some_and(|key| !live.contains(&key)) {
+                removed += bytes.len();
+                false
+            } else {
+                true
+            }
+        });
+        if let Some((key, bytes)) = staged {
+            stored.image.scaled_variants.insert(key, bytes);
+        }
+        self.total_bytes = self.total_bytes - removed + incoming;
+        true
     }
     pub fn touch(&mut self, id: InternalImageId) {
         let lru_stamp = self.bump_lru();
@@ -213,7 +332,7 @@ impl KittyImageStore {
     pub fn zlib_base64_for(
         &mut self,
         id: InternalImageId,
-        variant: Option<(u16, u16)>,
+        variant: Option<ScaledImageKey>,
     ) -> std::io::Result<Option<Rc<String>>> {
         // Shared rather than cloned: an image is megabytes of base64.
         let encoded = {
@@ -224,7 +343,7 @@ impl KittyImageStore {
                 return Ok(Some(cached.clone()));
             }
             let bytes = match variant {
-                Some(cells) => match stored.image.scaled_variants.get(&cells) {
+                Some(key) => match stored.image.scaled_variants.get(&key) {
                     Some(bytes) => bytes,
                     None => return Ok(None),
                 },
@@ -249,19 +368,19 @@ impl KittyImageStore {
     pub fn add_scaled_variant(
         &mut self,
         id: InternalImageId,
-        cells: (u16, u16),
+        key: ScaledImageKey,
         bytes: Vec<u8>,
     ) -> bool {
         let old_len = match self.images.get(&id) {
             Some(stored) => stored
                 .image
                 .scaled_variants
-                .get(&cells)
+                .get(&key)
                 .map(Vec::len)
                 .unwrap_or(0),
             None => return false,
         };
-        self.remove_base64_cache(id, Some(cells));
+        self.remove_base64_cache(id, Some(key));
         if !self.make_room(bytes.len().saturating_sub(old_len), Some(id)) {
             return false;
         }
@@ -270,9 +389,41 @@ impl KittyImageStore {
         let Some(stored) = self.images.get_mut(&id) else {
             return false;
         };
-        stored.image.scaled_variants.insert(cells, bytes);
+        stored.image.scaled_variants.insert(key, bytes);
         stored.lru_stamp = lru_stamp;
         self.total_bytes = self.total_bytes - old_len + new_len;
+        true
+    }
+    /// Replace a grid's rasters together, crediting obsolete pixels before checking the quota.
+    pub(super) fn replace_scaled_variants(
+        &mut self,
+        replacements: HashMap<InternalImageId, HashMap<ScaledImageKey, Vec<u8>>>,
+    ) -> bool {
+        let mut reclaimed = 0;
+        let mut incoming = 0;
+        for (id, variants) in &replacements {
+            let Some(stored) = self.images.get(id) else {
+                return false;
+            };
+            reclaimed += stored
+                .image
+                .scaled_variants
+                .values()
+                .map(Vec::len)
+                .sum::<usize>();
+            incoming += variants.values().map(Vec::len).sum::<usize>();
+        }
+        // All affected images have placement references, so make_room cannot evict them.
+        if !self.make_room(incoming.saturating_sub(reclaimed), None) {
+            return false;
+        }
+        for (id, variants) in replacements {
+            self.remove_all_base64_caches(id);
+            if let Some(stored) = self.images.get_mut(&id) {
+                stored.image.scaled_variants = variants;
+            }
+        }
+        self.total_bytes = self.total_bytes - reclaimed + incoming;
         true
     }
     /// Add `rgba` as a new frame, or replace the pixels of frame `edit` if one is named.
@@ -480,7 +631,7 @@ impl KittyImageStore {
     fn has_room(&self, incoming_bytes: usize) -> bool {
         incoming_bytes <= self.quota_bytes.saturating_sub(self.total_bytes)
     }
-    fn remove_base64_cache(&mut self, id: InternalImageId, variant: Option<(u16, u16)>) {
+    fn remove_base64_cache(&mut self, id: InternalImageId, variant: Option<ScaledImageKey>) {
         let removed = self
             .images
             .get_mut(&id)

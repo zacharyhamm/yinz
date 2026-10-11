@@ -49,7 +49,10 @@ fn test_placement(y: isize, height: usize) -> KittyPlacement {
         emit_y: 0,
         scaled_px: None,
         dest_cells: (2, 2),
-        variant_key: (2, 2),
+        variant_key: crate::kitty_graphics::store::ScaledImageKey {
+            source: crate::sixel::PixelRect::new(0, 0, 40, 20),
+            size: (20, 40),
+        },
         cell_offset: (0, 0),
         z_index: 0,
         vertical_anchor: KittyVerticalAnchor {
@@ -342,4 +345,27 @@ fn crop_rgba_of_an_in_bounds_rect_is_exactly_w_times_h_pixels(tc: hegel::TestCas
         out.len(),
         w * h * 4
     );
+}
+
+#[test]
+fn unscaled_crop_origin_is_added_to_clipped_output() {
+    // Spec: "`x, y, w, h` [...] specify the top-left corner, width and height of the
+    // source rectangle", in pixels.
+    let mut grid = test_grid();
+    let mut placement = test_placement(0, 40);
+    placement.source_rect.x = 7;
+    placement.source_rect.y = 9;
+    placement.emit_x = 2;
+    placement.emit_y = 3;
+    grid.placements.push(placement);
+    for (row, expected_y) in [(0, 12), (1, 32)] {
+        let chunks = grid.changed_kitty_chunks_in_viewport(HashMap::from([(row, 1)]), 0, 4, 0, 0);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].source_px_x, 9);
+        assert_eq!(chunks[0].source_px_y, expected_y);
+        assert_eq!(chunks[0].source_px_height, 20);
+    }
+    grid.placements[0].scaled_px = Some((20, 40));
+    let chunks = grid.changed_kitty_chunks_in_viewport(HashMap::from([(1, 1)]), 0, 4, 0, 0);
+    assert_eq!((chunks[0].source_px_x, chunks[0].source_px_y), (2, 23));
 }

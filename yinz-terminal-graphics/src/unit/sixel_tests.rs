@@ -127,3 +127,40 @@ fn cutting_pixels_invalidates_only_overlapping_cached_rectangles() {
         );
     }
 }
+
+#[test]
+fn multiple_cuts_reap_empty_images_once_and_preserve_retained_pixels() {
+    let mut grid = SixelGrid::default();
+    grid.start_image(None, vec![], vec![]);
+    for byte in b"\"1;1;16;12#1;2;100;0;0#1!16~-!16~" {
+        grid.handle_byte(*byte);
+    }
+    grid.end_image(24, 12);
+    let retained = grid.sixel_image_store.borrow_mut().retain_image(0).unwrap();
+    let before = grid
+        .sixel_image_store
+        .borrow_mut()
+        .serialize_image(retained, 0, 0, 16, 12)
+        .unwrap();
+    grid.remove_pixels_from_image(0, PixelRect::new(0, 0, 12, 8));
+    grid.remove_pixels_from_image(0, PixelRect::new(0, 0, 12, 8));
+    assert_eq!(grid.images_to_check_for_emptiness.len(), 1);
+    assert!(grid.drain_image_ids_to_reap().is_none());
+    assert_eq!(grid.image_coordinates().count(), 1);
+    grid.remove_pixels_from_image(0, PixelRect::new(8, 0, 12, 8));
+    let reaped = grid.drain_image_ids_to_reap().unwrap();
+    assert_eq!(reaped, vec![0]);
+    assert_eq!(grid.image_coordinates().count(), 0);
+    grid.reap_images(reaped);
+    assert!(grid.drain_image_ids_to_reap().is_none());
+    let mut store = grid.sixel_image_store.borrow_mut();
+    assert_eq!(store.image_count(), 1);
+    assert_eq!(
+        store.serialize_image(retained, 0, 0, 16, 12).unwrap(),
+        before
+    );
+    drop(store);
+    grid.remove_pixels_from_image(0, PixelRect::default());
+    grid.clear();
+    assert!(grid.images_to_check_for_emptiness.is_empty());
+}

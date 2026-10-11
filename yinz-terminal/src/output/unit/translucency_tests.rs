@@ -246,7 +246,10 @@ fn screen_overlay_clips_both_graphics_protocols_and_composes_over_a_translucent_
             cell_offset_y: 0,
             z_index: 0,
             dest_cells: (5, 1),
-            variant_key: (5, 1),
+            variant_key: crate::panes::kitty_graphics::store::ScaledImageKey {
+                source: crate::panes::sixel::PixelRect::new(0, 0, 20, 50),
+                size: (50, 20),
+            },
             scaled_px: None,
             placement_uid: 1,
         }],
