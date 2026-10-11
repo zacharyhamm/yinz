@@ -152,6 +152,8 @@ Sandboxed mother can write its own folder and shared agent state, and can still 
 Mother is listed by `agent list` like any managed agent and has no additional agent permissions.
 It stays mother across `/clear`, `/new`, and conversation changes. After its agent exits, the user's next toggle shows the pane and offers a new mother, and launching one closes the old pane; closing the pane or moving it to another session also ends it. Session resurrection does not restore it.
 Plugins see its terminal pane ID in `SessionInfo.mother`, which is `null` when none is running.
+`SessionInfo.mother_supervision` reports watching, processing, queued, paused, degraded, or needs_attention with pending and blocker counts.
+Mother receives a local yinz-mother skill and a durable inbox. Use `yinz mother status`, `inbox`, `checkpoint`, `ack`, `configure`, `pause`, and `resume` to inspect and control supervision. Automatic deliveries never clear drafts or interrupt active turns.
 
 ```sh
 yinz agent runs --project work --limit 20 --offset 0

@@ -918,6 +918,16 @@ pub enum ScreenInstruction {
     InvalidateAgentEventProjects,
     AgentEventProjects(u64, AgentEventProjectMemberships),
     SubscribeAgentEvents(ClientId, yinz_ipc::ipc::EventSubscription),
+    MotherWake {
+        generation: String,
+        conversation: String,
+        input_revision: u64,
+        submission: String,
+        prompt: String,
+        reply: std::sync::mpsc::Sender<yinz_types::agent::control::AgentResponse>,
+    },
+    MotherStatus(String, yinz_types::agent::mother::MotherStatus),
+    MotherCommandReply(ClientId, yinz_types::agent::control::AgentResponse),
     SetCliEventSubscribersPresent(bool),
     AgentControl(yinz_types::agent::control::AgentRequest, ClientId),
     AgentControlReply(

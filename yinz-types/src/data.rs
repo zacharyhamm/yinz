@@ -982,6 +982,8 @@ pub struct SessionInfo {
     /// The terminal pane running the session's mother agent, when one is live.
     #[serde(default)]
     pub mother: Option<crate::internal_ids::TerminalId>,
+    #[serde(default)]
+    pub mother_supervision: Option<crate::agent::mother::MotherStatus>,
     pub name: SessionName,
     pub tabs: Vec<TabInfo>,
     pub panes: PaneManifest,

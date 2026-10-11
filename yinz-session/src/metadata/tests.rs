@@ -123,6 +123,7 @@ fn serialize_and_deserialize_session_info_with_data() {
     panes.insert(TabPosition::new(0), panes_list);
     let session_info = SessionInfo {
         mother: None,
+        mother_supervision: None,
         name: "my session name".to_owned().into(),
         tabs: vec![
             TabInfo {
@@ -323,4 +324,17 @@ fn pane_display_title_round_trips_and_old_metadata_keeps_raw_title() {
             assert!(json.get("display_title").is_none());
         }
     }
+}
+
+#[test]
+fn mother_supervision_metadata_roundtrips() {
+    let mut session = SessionInfo::new("mother-test".into());
+    session.mother_supervision = Some(yinz_types::agent::mother::MotherStatus {
+        state: "needs_attention".into(),
+        pending: 2,
+        blockers: 1,
+    });
+    let encoded = crate::metadata::session_info::to_string(&session).unwrap();
+    let decoded = crate::metadata::session_info::from_string(&encoded, &session.name).unwrap();
+    assert_eq!(decoded.mother_supervision, session.mother_supervision);
 }

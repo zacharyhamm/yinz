@@ -148,6 +148,7 @@ pub(super) struct Pending {
     enter_at: Option<Instant>,
     submit_key: KeyWithModifier,
     submit_delay: Duration,
+    automatic: bool,
 }
 
 impl Pending {
@@ -1005,7 +1006,7 @@ impl Screen {
         })
     }
 
-    fn agent_reply(&self, reply: &Reply, response: AgentResponse) {
+    pub(super) fn agent_reply(&self, reply: &Reply, response: AgentResponse) {
         let client = match reply {
             Reply::Client(client) => *client,
             Reply::Host(sender) => {
@@ -1041,8 +1042,22 @@ impl Screen {
     }
 
     pub(super) fn agent_control_at(&mut self, request: AgentRequest, client: Reply, now: Instant) {
+        self.agent_control_inner(request, client, now, false);
+    }
+
+    fn agent_control_inner(
+        &mut self,
+        request: AgentRequest,
+        client: Reply,
+        now: Instant,
+        automatic: bool,
+    ) {
         use AgentRequest::*;
         let (pane, expected) = match &request {
+            Mother(request) => {
+                self.mother_command(request.clone(), client);
+                return;
+            },
             SpawnPlacementSupport => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.output = Some("agent-tab-placement-v1".into());
@@ -1173,6 +1188,7 @@ impl Screen {
                         enter_at: None,
                         submit_key: KeyWithModifier::new(BareKey::Enter),
                         submit_delay: Duration::ZERO,
+                        automatic: false,
                     });
                     return;
                 }
@@ -1568,6 +1584,16 @@ impl Screen {
                     || self
                         .draft_composer(pane, &status.agent.kind)
                         .is_some_and(|composer| !composer.empty);
+                if automatic
+                    && (needs_clear
+                        || self.mother_focused(pane)
+                        || self.draft_composer(pane, &status.agent.kind).is_none()
+                        || self.claude_background_pending(pane)
+                        || !status.background_tasks.is_empty())
+                {
+                    reject(self, AgentOutcome::Rejected, &format!("Mother delivery queued: focused={}, draft_or_unconsumed_input={}, composer_known={}, background_work={}", self.mother_focused(pane), needs_clear, self.draft_composer(pane, &status.agent.kind).is_some(), self.claude_background_pending(pane) || !status.background_tasks.is_empty()));
+                    return;
+                }
                 if needs_clear {
                     let limitation = if !matches!(
                         status.agent.kind.as_str(),
@@ -1623,6 +1649,7 @@ impl Screen {
                     enter_at: None,
                     submit_key,
                     submit_delay,
+                    automatic,
                 };
                 // Expose Claude's slash command before its arguments can collapse into a chip,
                 // and type Codex's `/new`: a pasted command is draft text, not a command.
@@ -1714,6 +1741,7 @@ impl Screen {
                     enter_at: None,
                     submit_key: KeyWithModifier::new(BareKey::Enter),
                     submit_delay: Duration::ZERO,
+                    automatic: false,
                 });
                 self.refresh_agent_controls();
             },
@@ -1747,10 +1775,15 @@ impl Screen {
                     enter_at: None,
                     submit_key: KeyWithModifier::new(BareKey::Enter),
                     submit_delay: Duration::ZERO,
+                    automatic: false,
                 });
                 self.refresh_agent_controls();
             },
-            List { .. } | Spawn { .. } | SpawnPlacementSupport | SpawnBubblewrapSupport => {},
+            Mother(_)
+            | List { .. }
+            | Spawn { .. }
+            | SpawnPlacementSupport
+            | SpawnBubblewrapSupport => {},
         }
     }
 
@@ -2045,6 +2078,15 @@ impl Screen {
                 .and_then(|id| self.submission(pending.pane, id))
                 .and_then(|submission| submission.result.as_ref());
             let mut outcome = match &status {
+                _ if pending.automatic
+                    && pending.prompt.as_ref().is_some_and(|p| !p.acknowledged())
+                    && (self.mother_focused(pending.pane)
+                        || status.as_ref().is_some_and(|s| {
+                            s.agent.state != AgentState::Idle || !s.background_tasks.is_empty()
+                        })) =>
+                {
+                    Some(AgentOutcome::Interrupted)
+                },
                 _ if submission_result.is_some() => submission_result.map(|result| result.outcome),
                 _ if delivery_error.is_some() => Some(AgentOutcome::Failed),
                 None if self.tab_containing_pane(pending.pane).is_none() => {
@@ -3228,5 +3270,56 @@ impl Screen {
             }
             self.agent_draft_clears.insert(pane, operation);
         }
+    }
+}
+
+impl Screen {
+    fn mother_focused(&self, pane: PaneId) -> bool {
+        self.connected_clients
+            .borrow()
+            .iter()
+            .any(|client| self.get_active_pane_id(client) == Some(pane))
+    }
+
+    pub(super) fn deliver_mother(
+        &mut self,
+        generation: String,
+        conversation: String,
+        input_revision: u64,
+        submission: String,
+        prompt: String,
+        reply: std::sync::mpsc::Sender<AgentResponse>,
+    ) {
+        let target = Reply::Host(reply);
+        let pane = self.live_mother();
+        if !self
+            .mother_supervisor
+            .as_ref()
+            .is_some_and(|s| s.generation == generation)
+            || pane.is_none()
+        {
+            self.agent_reply(&target, AgentResponse::new(AgentOutcome::TargetChanged));
+            return;
+        }
+        let Some(pane) = pane else {
+            return;
+        };
+        if self.agent_input_revision(pane) != input_revision {
+            self.agent_reply(&target, AgentResponse::new(AgentOutcome::Rejected));
+            return;
+        }
+        self.agent_control_inner(
+            AgentRequest::Prompt {
+                pane_id: pane,
+                expected_session_id: Some(conversation),
+                submission_id: Some(submission),
+                prompt,
+                wait: true,
+                timeout_ms: 30_000,
+            },
+            target,
+            Instant::now(),
+            true,
+        );
     }
 }

@@ -1,3 +1,4 @@
+import { motherLabel } from "./status-bar/mother.ts";
 import z, {
   definePlugin,
   type Event,
@@ -13,6 +14,9 @@ import { equal, type ModeInfo, type ReadonlyWire } from "./status-bar/keys.ts";
 import { background, render, type Bar } from "./compact-bar/render.ts";
 import { dimensions, renderTooltip } from "./compact-bar/tooltip.ts";
 import type { Part, Range } from "./tab-bar/render.ts";
+
+let mother = "";
+let motherRange: Range = null;
 
 const state: Bar = {
   hostname: "",
@@ -124,6 +128,10 @@ function mouse(event: ReadonlyWire<Mouse>): void {
   if (isTooltip) return;
   if ("LeftClick" in event) {
     const col = Number(event.LeftClick[1]);
+    if (motherRange && col >= motherRange[0] && col < motherRange[1]) {
+      z.command("RunAction", ["ToggleMother", {}]);
+      return;
+    }
     if (breadcrumb !== null && col >= breadcrumb[0] && col < breadcrumb[1])
       z.command("FocusHostSession");
     else {
@@ -152,6 +160,10 @@ function update(event: ReadonlyWire<Event>): boolean {
     return changed;
   }
   if (typeof event === "string") return false;
+  if ("SessionUpdate" in event) {
+    mother = motherLabel(event.SessionUpdate[0]);
+    return true;
+  }
   if ("InitialKeybinds" in event) {
     cachedKeybinds = event.InitialKeybinds;
     if (cachedKeybinds.length > 0) state.modeInfo = { ...state.modeInfo, keybinds: cachedKeybinds };
@@ -214,6 +226,7 @@ export default definePlugin({
         : [
             "TabUpdate",
             "PaneUpdate",
+            "SessionUpdate",
             "ModeUpdate",
             "Mouse",
             "CopyToClipboard",
@@ -256,9 +269,14 @@ export default definePlugin({
       return background(state.modeInfo, z.ui.text(hint).emphasis(2).opaque().render());
     }
     if (state.tabs.length === 0) return "";
-    const output = render(state, cols);
+    const width = Math.min(mother.length, cols);
+    motherRange = width ? [cols - width, cols] : null;
+    const output = render(state, cols - width);
     parts = output.parts;
     breadcrumb = output.breadcrumb;
-    return background(state.modeInfo, parts.map((part) => part.part).join(""));
+    return (
+      background(state.modeInfo, parts.map((part) => part.part).join("")) +
+      (width ? `\u001B[1;${cols - width + 1}H${mother.slice(0, width)}` : "")
+    );
   },
 });

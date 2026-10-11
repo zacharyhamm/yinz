@@ -364,6 +364,8 @@ fn mother(
         session.as_str(),
     )
     .map_err(|error| format!("Mother cannot create its working directory: {error:#}"))?;
+    yinz_runtime::mother::provision(&cwd)
+        .map_err(|error| format!("Mother cannot provision instructions: {error:#}"))?;
     let spec = AgentSpawnSpec {
         kind: Some(kind.to_owned()),
         allow_outside_worktree: Some(true),

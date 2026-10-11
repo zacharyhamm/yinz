@@ -555,6 +555,7 @@ export interface ModeInfo {
 export interface SessionInfo {
   /** Terminal pane ID of the session's mother agent, or null when none is running. */
   mother: number | null;
+  mother_supervision?: { state: string; pending: number; blockers: number } | null;
   name: string; tabs: TabInfo[]; panes: PaneManifest; connected_clients: Integer; is_current_session: boolean;
   available_layouts: LayoutInfo[]; plugins: Record<string, {location: string; configuration: StringMap}>;
   tab_history: Record<string, number[]>; pane_history: Record<string, PaneId[]>; creation_time: Duration;

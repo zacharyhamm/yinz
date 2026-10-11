@@ -1,3 +1,5 @@
+import type { SessionInfo } from "yinz:plugin";
+import { motherLabel } from "./status-bar/mother.ts";
 import z, { type Action, type BareKey, type KeyWithModifier, type TabInfo } from "yinz:plugin";
 import { test, loadPlugin, assert, assertEquals } from "yinz:testing";
 import { defaultMode } from "./status-bar/default-mode.ts";
@@ -218,4 +220,46 @@ test("status bar clipboard messages clear on input and live Alt release restores
   assert((await p.render(1, 200)).includes("00:00"));
   await p.event("SystemClipboardFailure");
   assert((await p.render(1, 200)).includes("Error using the system clipboard"));
+});
+
+const session: SessionInfo = {
+  name: "test",
+  mother: 1,
+  mother_supervision: { state: "queued", pending: 2, blockers: 1 },
+  tabs: [],
+  panes: { panes: {} },
+  connected_clients: 1,
+  is_current_session: true,
+  available_layouts: [],
+  plugins: {},
+  tab_history: {},
+  pane_history: {},
+  creation_time: { secs: 0, nanos: 0 },
+};
+
+test("Mother status selects this session and keeps unknown state labels safe", () => {
+  assertEquals(motherLabel([session]), " Mother: queued (2/1) ");
+  assertEquals(motherLabel([{ ...session, is_current_session: false }]), "");
+  assertEquals(motherLabel([{ ...session, mother_supervision: null }]), "");
+  assert(
+    motherLabel([
+      { ...session, mother_supervision: { state: "\u001B[2J", pending: 0, blockers: 0 } },
+    ]).includes("degraded"),
+  );
+});
+
+test("status bar renders Mother and toggles it on click", async () => {
+  const plugin = await loadPlugin("./status-bar.ts", {
+    replies: {
+      GetLocalUtcOffset: 0,
+      GetYinzVersion: "test",
+      FsMetadata: null,
+      FsWrite: null,
+      RunAction: null,
+    },
+  });
+  await plugin.event({ SessionUpdate: [[session], []] });
+  assert((await plugin.render(1, 100)).includes("Mother: queued (2/1)"));
+  await plugin.event({ Mouse: { LeftClick: [0, 98] } });
+  assertEquals(named(plugin.commands, "RunAction"), [{ RunAction: ["ToggleMother", {}] }]);
 });

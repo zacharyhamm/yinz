@@ -128,6 +128,7 @@ mod context_menu;
 mod host_query;
 mod input_modes;
 mod mother;
+mod mother_supervisor;
 mod mouse;
 mod nested;
 mod notification_browser;
@@ -580,6 +581,8 @@ pub(crate) struct Screen {
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
     /// The terminal pane running this session's mother agent. See `mother.rs`.
     mother: Option<TerminalId>,
+    mother_supervisor: Option<mother_supervisor::Supervisor>,
+    mother_status: Option<yinz_types::agent::mother::MotherStatus>,
     warped_agent_inputs: HashMap<PaneId, (yinz_types::data::WarpedAgentInput, u64)>,
     agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
     agent_dialog_inputs: HashMap<PaneId, agent_control::DialogInput>,
@@ -1336,6 +1339,8 @@ impl Screen {
             agent_submissions: HashMap::new(),
             agent_launches: HashMap::new(),
             mother: None,
+            mother_supervisor: None,
+            mother_status: None,
             warped_agent_inputs: HashMap::new(),
             agent_lifecycle: HashMap::new(),
             agent_dialog_inputs: HashMap::new(),
