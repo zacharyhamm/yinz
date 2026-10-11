@@ -305,7 +305,23 @@ impl AgentThemeSnapshot {
                             .into_iter()
                             .collect(),
                     });
-                    None
+                    if self.provider == "codex" {
+                        // Codex reuses UI colors in its syntax palettes. Semantic
+                        // mapping intentionally recolors those shared tokens too.
+                        // Prefer its explicit accent, then the stable Role order
+                        // (base text before accent before status colors).
+                        definitions
+                            .iter()
+                            .filter_map(|definition| {
+                                definition
+                                    .target
+                                    .map(|target| (definition.token != "codex.accent", target))
+                            })
+                            .min()
+                            .map(|(_, target)| target)
+                    } else {
+                        None
+                    }
                 };
                 (key, target)
             })

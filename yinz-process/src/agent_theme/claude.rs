@@ -108,7 +108,12 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
     } else {
         Path::new("/etc/claude-code/managed-settings.json")
     };
-    if root.join("remote-settings.json").exists()
+    // Claude retains an empty remote-policy cache even when no policy is active.
+    // Its presence alone must not disable the user's palette.
+    let remote_policy = read_json(&root.join("remote-settings.json"))?;
+    if remote_policy
+        .as_ref()
+        .is_some_and(|value| !value.as_object().is_some_and(|object| object.is_empty()))
         || managed.with_file_name("managed-settings.d").exists()
         || (cfg!(target_os = "macos")
             && Path::new("/Library/Managed Preferences/com.anthropic.claudecode.plist").exists())

@@ -49,6 +49,34 @@ fn unsupported_tokens_block_mapping_and_order_does_not_matter() {
 }
 
 #[test]
+fn codex_shared_colors_use_semantic_targets_in_a_stable_order() {
+    let mut s = snapshot(vec![
+        definition("markup.inserted", Channel::Foreground, Some(Role::Success)),
+        definition("string", Channel::Foreground, None),
+    ]);
+    s.provider = "codex".into();
+    assert_eq!(
+        s.compile().0.values().copied().collect::<Vec<_>>(),
+        vec![Some(Role::Success.into())]
+    );
+    s.definitions.push(definition(
+        "codex.accent",
+        Channel::Foreground,
+        Some(Role::Accent),
+    ));
+    let result = s.compile();
+    assert_eq!(
+        result.0.values().copied().collect::<Vec<_>>(),
+        vec![Some(Role::Accent.into())]
+    );
+    s.definitions.reverse();
+    assert_eq!(s.compile(), result);
+
+    s.definitions.retain(|d| d.target.is_none());
+    assert!(s.compile().0.values().all(Option::is_none));
+}
+
+#[test]
 fn explicit_pairs_disambiguate_singles_but_conflicting_pairs_stay_unresolved() {
     let mut pair = definition("added", Channel::Foreground, Some(Role::Success));
     pair.pair = Some((SourceColor::Index(2), SourceColor::Index(22)));

@@ -44,5 +44,12 @@ The theme picker previews terminal colors. Cancelling a preview or failing to sa
 Pane background opacity still applies to themed colors.
 Cursor colors, indexed colors 16–255, and application truecolor are not replaced by themes.
 
+Managed Claude and Codex launches also map known agent palette colors to the active
+theme. Set `agent_theme_mapping "off"` to disable this mapping. Codex UI colors
+take priority when syntax highlighting shares the same source color, so matching
+syntax colors change too. An explicit Codex accent wins over other semantic roles;
+otherwise base text takes priority over accents and status colors. Syntax-only
+colors remain unchanged.
+
 Built-in palettes and their source links are in [the theme assets](../../yinz-config/assets/themes).
 The Yinz-specific palettes have explicit matching colors. Published palettes are attributed beside each `terminal` block.
