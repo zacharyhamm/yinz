@@ -80,6 +80,7 @@ If Yinz cannot create the folder, the launch fails. The pane title is `mother: <
 On Linux, mother automatically attempts Bubblewrap isolation without project configuration or Git.
 The sandbox can read host files. It can write only its working folder, private temporary storage, and the selected agent's state directories.
 Codex, pi, and opencode have supported state layouts. Their configuration directory overrides are honored, including `CODEX_HOME`, `PI_CODING_AGENT_DIR`, and the XDG directories.
+Each provider has a separate saved sandbox profile. Switching providers keeps earlier profiles available for resuming runs from history.
 Other providers, including plugin providers, currently use the local fallback because their complete writable state layouts are not mapped.
 If Bubblewrap is unavailable or setup fails, mother launches locally and prints the reason in its pane.
 This fallback provides no filesystem isolation. A started agent is never retried locally.

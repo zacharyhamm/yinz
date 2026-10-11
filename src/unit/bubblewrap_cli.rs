@@ -196,7 +196,7 @@ while s.recv(1) == b'r':
 #[test]
 #[ignore = "requires Linux Bubblewrap user namespaces"]
 fn mother_bubblewrap_supports_agent_control_and_lifecycle_reporting() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let root = temp.path();
     for name in ["HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] {
         std::env::set_var(name, root);
@@ -208,18 +208,31 @@ fn mother_bubblewrap_supports_agent_control_and_lifecycle_reporting() {
     yinz_runtime::shared::set_permissions(session.path.parent().unwrap(), 0o700).unwrap();
     let work = yinz_config::project_config::bubblewrap::mother_directory(root, "owner").unwrap();
     let environment = yinz_config::project_config::bubblewrap::Environment::at_root(&work);
-    environment
+    let codex = environment
         .prepare_mother("codex", Path::new("sh"))
         .unwrap();
+    std::env::set_var("PI_CODING_AGENT_DIR", root.join("pi-state"));
+    let pi = environment.prepare_mother("pi", Path::new("sh")).unwrap();
+    assert_ne!(codex.root(), pi.root());
+    let resumed = yinz_runtime::agent::launch::resume_command(
+        "codex",
+        "mother-test",
+        work.to_str(),
+        None,
+        codex.root().to_str(),
+    )
+    .unwrap();
+    assert_eq!(resumed.cwd.as_ref(), Some(&work));
     let _supervisor = Supervisor::new(root, "owner", 7);
-    let output = command(root, &work)
-        .arg("--bubblewrap-run").arg(&work)
+    let output = command(root, resumed.cwd.as_ref().unwrap())
+        .arg("--bubblewrap-run").arg(resumed.target.bubblewrap_root().unwrap())
         .args(["--", "sh", "-eu", "-c", r#"
             test "$YINZ_BUBBLEWRAP" = 1
             test "$YINZ_SESSION_NAME" = owner
             test "$YINZ_PANE_REF" = abcdef012345
             echo notes > notes
             echo state > "$HOME/.codex/mother-state"
+            ! touch "$PI_CODING_AGENT_DIR/codex-must-not-write"
             yinz agent list --json
             yinz action write-chars mother-control
             printf '%s' '{"hook_event_name":"Stop","session_id":"mother-test"}' | yinz action agent-report --hook-json

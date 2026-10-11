@@ -975,6 +975,71 @@ fn mother_state_overrides_cannot_grant_home_or_metadata_writes() {
     assert!(mother_state("plugin-provider").is_err());
 }
 
+#[test]
+fn mother_provider_profiles_preserve_recorded_targets_and_legacy_profiles() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_DATA_HOME", home.join("data"));
+    std::env::set_var("CODEX_HOME", home.join("codex-state"));
+    std::env::set_var("PI_CODING_AGENT_DIR", home.join("pi-state"));
+    let work = mother_directory(&home.join("cache"), "owner").unwrap();
+    let legacy = Environment::at_root(&work);
+    fs::create_dir(home.join("codex-state")).unwrap();
+    {
+        let _lock = legacy.lock(true).unwrap();
+        legacy
+            .save(&Accepted {
+                root: work.clone(),
+                declaration: Declaration {
+                    mother: Some(vec![home.join("codex-state")]),
+                    ..Default::default()
+                },
+                ready: true,
+            })
+            .unwrap();
+    }
+    let legacy_record = fs::read(legacy.metadata.join("accepted.json")).unwrap();
+    let codex = legacy.accept_mother("codex").unwrap();
+    let codex_record = fs::read(codex.metadata.join("accepted.json")).unwrap();
+    let pi = legacy.accept_mother("pi").unwrap();
+    assert_ne!(codex.root(), pi.root());
+    assert_ne!(codex.root(), legacy.root());
+    assert!(!codex.root().starts_with(&work));
+    assert_eq!(legacy.accept_mother("codex").unwrap().root(), codex.root());
+    assert_eq!(
+        fs::read(codex.metadata.join("accepted.json")).unwrap(),
+        codex_record
+    );
+    assert_eq!(
+        fs::read(legacy.metadata.join("accepted.json")).unwrap(),
+        legacy_record
+    );
+    for (target, state) in [
+        (codex.root(), "codex-state"),
+        (pi.root(), "pi-state"),
+        (legacy.root(), "codex-state"),
+    ] {
+        let reloaded = Environment::at_root(target);
+        let accepted = reloaded.accepted().unwrap();
+        assert_eq!(accepted.declaration.mother, Some(vec![home.join(state)]));
+        assert_eq!(reloaded.writable_root(&accepted.declaration), work);
+        reloaded
+            .validate_launch_cwd(&work, &accepted.declaration)
+            .unwrap();
+        assert!(reloaded
+            .validate_launch_cwd(&home, &accepted.declaration)
+            .is_err());
+    }
+    assert_eq!(
+        fs::metadata(codex.root()).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    fs::remove_dir(pi.root()).unwrap();
+    std::os::unix::fs::symlink(codex.root(), pi.root()).unwrap();
+    assert!(legacy.accept_mother("pi").is_err());
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires real Bubblewrap user namespaces; run explicitly on Linux"]
@@ -983,18 +1048,24 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
     let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let home = temp.path().canonicalize().unwrap();
     std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_DATA_HOME", home.join("metadata"));
     std::env::set_var("CODEX_HOME", home.join("agent-state"));
+    std::env::set_var("PI_CODING_AGENT_DIR", home.join("pi-state"));
     std::env::set_var("MOTHER_AUTH_SENTINEL", "test-auth");
     std::env::set_var("YINZ_SESSION_NAME", "mother-test");
     std::env::set_var("YINZ_SOCKET_DIR", home.join("sockets"));
     fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
     let root = mother_directory(&home.join("cache"), "test").unwrap();
-    let env = Environment::at(root, &home.join("metadata"));
-    env.prepare_mother("codex", Path::new("sh")).unwrap();
+    let work = Environment::at_root(&root);
+    let codex = work.prepare_mother("codex", Path::new("sh")).unwrap();
+    let pi = work.prepare_mother("pi", Path::new("sh")).unwrap();
+    assert_ne!(codex.root(), pi.root());
+    let env = Environment::at_root(codex.root());
+    env.check_launch(&root, Path::new("sh")).unwrap();
     fs::write(home.join("project"), "unchanged").unwrap();
     let accepted = env.accepted().unwrap();
     let output = env
-        .command(&accepted.declaration, &env.root, false)
+        .command(&accepted.declaration, &root, false)
         .unwrap()
         .args([
             "--",
@@ -1004,6 +1075,7 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
             r#"
             echo own > own-file
             echo state > "$CODEX_HOME/state"
+            ! touch "$PI_CODING_AGENT_DIR/codex-must-not-write"
             echo private > /tmp/mother-private
             test "$MOTHER_AUTH_SENTINEL" = test-auth
             test "$YINZ_BUBBLEWRAP" = 1
@@ -1020,10 +1092,7 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        fs::read_to_string(env.root.join("own-file")).unwrap(),
-        "own\n"
-    );
+    assert_eq!(fs::read_to_string(root.join("own-file")).unwrap(), "own\n");
     assert_eq!(
         fs::read_to_string(home.join("agent-state/state")).unwrap(),
         "state\n"
@@ -1032,7 +1101,29 @@ fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
         fs::read_to_string(home.join("project")).unwrap(),
         "unchanged"
     );
-    assert!(!env.root.join(".git").exists());
+    assert!(!root.join(".git").exists());
+    let accepted = pi.accepted().unwrap();
+    let output = pi
+        .command(&accepted.declaration, &root, false)
+        .unwrap()
+        .args([
+            "--",
+            "sh",
+            "-eu",
+            "-c",
+            r#"
+            echo pi > "$PI_CODING_AGENT_DIR/state"
+            test "$(cat own-file)" = own
+            ! touch "$CODEX_HOME/pi-must-not-write"
+        "#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
