@@ -26,6 +26,37 @@ fn frame(tab: &mut Tab, history: &mut String) -> String {
 }
 
 #[test]
+fn mother_overlay_inherits_global_background_opacity() {
+    let mut tab =
+        create_new_tab_without_pane_frames(Size { cols: 60, rows: 20 }, ModeInfo::default());
+    tab.new_pane(
+        PaneId::Terminal(TerminalId::new(2)),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::mother()),
+        Some(ClientId::new(1)),
+        None,
+    )
+    .unwrap();
+    paint(&mut tab, 1, 'a');
+    tab.handle_pty_bytes(TerminalId::new(2), b"\x1b[?25lMOTHER".to_vec())
+        .unwrap();
+    let mut history = String::new();
+    let default = frame(&mut tab, &mut history);
+    assert!(default.contains("MOTHERaaaaaaaa"), "{default}");
+
+    tab.update_background_opacity(100);
+    let opaque = frame(&mut tab, &mut history);
+    assert!(opaque.contains("MOTHER        "), "{opaque}");
+
+    tab.update_background_opacity(50);
+    let translucent = frame(&mut tab, &mut history);
+    assert!(translucent.contains("MOTHERaaaaaaaa"), "{translucent}");
+}
+
+#[test]
 fn translucent_overlay_refreshes_both_layers_and_restores_old_bounds() {
     let mut tab =
         create_new_tab_without_pane_frames(Size { cols: 60, rows: 20 }, ModeInfo::default());

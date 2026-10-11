@@ -2562,14 +2562,16 @@ impl OverlayPlacement {
     /// Where a session's mother agent sits, both when it is launched and when a toggle puts it
     /// back on the surface.
     pub fn mother() -> Self {
-        OverlayPlacement::dismissible(FloatingPaneCoordinates::new(
+        let mut placement = OverlayPlacement::dismissible(FloatingPaneCoordinates::new(
             Some("10%".into()),
             Some("10%".into()),
             Some("80%".into()),
             Some("80%".into()),
             None,
             None,
-        ))
+        ));
+        placement.background_opacity = Some(crate::input::options::DEFAULT_BACKGROUND_OPACITY);
+        placement
     }
     pub fn is_modal(&self) -> bool {
         self.kind.is_modal()
