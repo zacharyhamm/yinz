@@ -65,6 +65,8 @@ struct Declaration {
     checks: Vec<Vec<String>>,
     #[serde(default)]
     mother: Option<Vec<PathBuf>>,
+    #[serde(default)]
+    mother_work: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -477,14 +479,32 @@ fn mother_state(kind: &str) -> Result<Vec<PathBuf>> {
 
 impl Environment {
     /// Prepare an internal profile without reading project configuration or requiring Git.
-    pub fn prepare_mother(&self, kind: &str, program: &Path) -> Result<()> {
+    pub fn prepare_mother(&self, kind: &str, program: &Path) -> Result<Self> {
         platform()?;
+        let profile = self.accept_mother(kind)?;
+        profile.check_launch(&self.root, program)?;
+        Ok(profile)
+    }
+
+    fn accept_mother(&self, kind: &str) -> Result<Self> {
         let paths = mother_state(kind)?;
-        let _lock = self.lock(true)?;
+        // History records this target; switching providers must leave earlier profiles intact.
+        let root = self.root.with_file_name(format!("profile-{kind}"));
+        if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            bail!(
+                "Mother profile directory must not be a symlink: {}",
+                root.display()
+            );
+        }
+        yinz_runtime::shared::ensure_secure_dir(&root)
+            .context("create private mother profile directory")?;
+        let profile = Self::at_root(&root);
+        let _lock = profile.lock(true)?;
         let mut state = Vec::new();
         for path in paths {
             absolute(path.to_str().context("agent state path is not UTF-8")?)?;
             self.validate_mother_state(&path)?;
+            profile.validate_mother_state(&path)?;
             if !path.exists() {
                 yinz_runtime::shared::ensure_secure_dir(&path)
                     .context("create agent state directory")?;
@@ -493,23 +513,28 @@ impl Environment {
                 .canonicalize()
                 .context("resolve agent state directory")?;
             self.validate_mother_state(&path)?;
+            profile.validate_mother_state(&path)?;
             if !path.is_dir() {
                 bail!("agent state must be a directory: {}", path.display());
             }
             state.push(path);
         }
         let accepted = Accepted {
-            root: self.root.clone(),
+            root: profile.root.clone(),
             declaration: Declaration {
                 mother: Some(state),
+                mother_work: Some(self.root.clone()),
                 ..Default::default()
             },
             ready: true,
         };
-        self.validate_storage(&accepted.declaration)?;
-        self.save(&accepted)?;
-        drop(_lock);
-        self.check_launch(&self.root, program)
+        profile.validate_storage(&accepted.declaration)?;
+        profile.save(&accepted)?;
+        Ok(profile)
+    }
+
+    fn writable_root<'a>(&'a self, declaration: &'a Declaration) -> &'a Path {
+        declaration.mother_work.as_deref().unwrap_or(&self.root)
     }
 
     fn validate_mother_state(&self, path: &Path) -> Result<()> {
@@ -535,11 +560,15 @@ impl Environment {
 
     fn validate_launch_cwd(&self, cwd: &Path, declaration: &Declaration) -> Result<()> {
         if let Some(paths) = &declaration.mother {
-            if cwd.canonicalize().context("resolve mother cwd")? != self.root {
+            let work = self.writable_root(declaration);
+            if cwd.canonicalize().context("resolve mother cwd")? != work {
                 bail!("mother must launch in its dedicated directory");
             }
             for path in paths {
                 self.validate_mother_state(path)?;
+                if overlaps(path, work) {
+                    bail!("mother agent state must not overlap its working directory");
+                }
                 if path.canonicalize().context("resolve agent state")? != *path {
                     bail!("agent state path changed; prepare mother again");
                 }
@@ -570,7 +599,7 @@ impl Environment {
         Ok(env)
     }
 
-    /// The environment of a primary checkout already resolved by [`Self::for_project`].
+    /// The environment of a primary checkout or a recorded mother profile target.
     /// Nothing is trusted from `root` itself: a launch still requires its accepted record.
     pub fn at_root(root: &Path) -> Self {
         // Environments are keyed by canonical path. One that does not resolve keeps its
@@ -665,6 +694,7 @@ impl Environment {
                 .iter()
                 .map(|(source, _)| source)
                 .chain(declaration.mother.iter().flatten())
+                .chain(declaration.mother_work.iter())
                 .any(|source| overlaps(source, &metadata))
         {
             bail!("Bubblewrap mounts must not expose environment management files");
@@ -779,7 +809,8 @@ impl Environment {
             "--dir",
             "/run/yinz-bin",
         ]);
-        command.arg("--bind").arg(&self.root).arg(&self.root);
+        let work = self.writable_root(declaration);
+        command.arg("--bind").arg(work).arg(work);
         if let Some(paths) = &declaration.mother {
             for path in paths {
                 command.arg("--bind").arg(path).arg(path);
@@ -865,7 +896,7 @@ impl Environment {
                 setenv(name, &value)?;
             }
         }
-        bind_binary(&mut command, &self.root, yinz_binary()?);
+        bind_binary(&mut command, work, yinz_binary()?);
         if runtime {
             let session = std::env::var("YINZ_SESSION_NAME")
                 .context("Bubblewrap launch requires a Yinz session")?;

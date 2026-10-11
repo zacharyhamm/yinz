@@ -795,8 +795,8 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
 ///
 /// `session_id` is the agent's own, as `AgentRun` stores it. `host` is the machine the
 /// `cwd` is on, absent for this one, in the spelling `PaneTarget::parse_display` reads.
-/// `bubblewrap` is the checkout whose environment the run was in: its conversation is in
-/// that environment's private home, so the resume is sandboxed the same way or not at all.
+/// `bubblewrap` is the recorded environment target (a checkout or a mother profile),
+/// so the resume uses that environment's writable state or fails closed.
 ///
 /// Every refusal here is written to be read on a divider one row high, so each says what is
 /// missing in as few characters as it can and leaves the reasoning to these comments.

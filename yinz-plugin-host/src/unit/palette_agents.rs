@@ -879,11 +879,13 @@ fn mother_sandbox_selection_and_fallback_are_independent_of_bubblewrap() {
     let cwd = root.path().to_str().unwrap();
     let mut sandboxed = existing_command("codex", cwd, PaneTarget::Local).unwrap();
     let args = sandboxed.command.args.clone();
-    mother_target(&mut sandboxed, Ok(())).unwrap();
+    let profile = root.path().join("profile-codex");
+    mother_target(&mut sandboxed, Ok(profile.clone())).unwrap();
     assert_eq!(
         sandboxed.command.target.bubblewrap_root(),
-        Some(root.path())
+        Some(profile.as_path())
     );
+    assert_eq!(sandboxed.cwd, root.path());
     assert_eq!(sandboxed.command.args, args);
 
     let mut local = existing_command("codex", cwd, PaneTarget::Local).unwrap();
