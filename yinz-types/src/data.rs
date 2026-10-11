@@ -3416,6 +3416,19 @@ pub enum PluginCommand {
         source: String,
         expected: Option<String>,
     },
+    /// Start a coding agent in a command pane near this plugin, the way the CLI
+    /// and the `new-agent` modal do: plan its argv with `agent::launch::plan` (per-kind
+    /// flags, permission mode, resume, the inline Claude Code hooks), make the branch or
+    /// worktree `spec` asks for, open the pane there and record it as an agent pane
+    /// (`AgentSource::Spawned`). Answers with the pane id, or the error text.
+    ///
+    /// `source_directory` is the repository a branch or worktree is made in, as a plugin path
+    /// (`/host`, a relative path, or an absolute one); absent, the plugin's own folder. `cwd`
+    /// is where the pane runs when `spec` names no branch, and is ignored when a checkout is
+    /// made. With neither, a spec with no branch runs in `source_directory` as it stands.
+    /// `name` titles the pane; `context` round-trips on `command_pane_exited` beside the agent
+    /// marker the host adds.
+    ///
     SpawnAgent {
         spec: AgentSpawnSpec,
         #[serde(default)]

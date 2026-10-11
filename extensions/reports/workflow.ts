@@ -82,7 +82,6 @@ export const report = {
                         "assessment",
                         "checks",
                         "diff",
-                        "checkoutSync",
                         "evidence",
                         "integration",
                         "integrationDecision",

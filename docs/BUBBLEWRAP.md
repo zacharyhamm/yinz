@@ -162,12 +162,12 @@ Preparation repeats seed copies, so it can replace credentials changed inside th
 
 The shared API accepts `bubblewrap: true` in `AgentSpawnSpec`, including CLI JSON files and
 `yinz.agent.spawn({...})`. Omission keeps the existing unsandboxed launch behavior.
-The interactive chooser is unchanged. SSH and Firecracker cannot be combined with Bubblewrap.
+The interactive chooser is unchanged. SSH cannot be combined with Bubblewrap.
 A failed check, unavailable Bubblewrap, or sandbox startup failure never falls back to an unsandboxed launch.
 
 ## Relaunching a sandboxed agent
 
-The sandbox is part of where a pane runs, like an SSH host or a Firecracker VM. The pane's command
+The sandbox is part of where a pane runs, like an SSH host. The pane's command
 stays the agent's own, and plugins see the target as `{Bubblewrap: {root}}`. Everything that starts
 a command from an existing pane keeps it:
 

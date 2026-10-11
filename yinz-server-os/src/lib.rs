@@ -1,3 +1,12 @@
+//! The yinz server's operating-system backend.
+//!
+//! [`ServerOsInputOutput`] implements `yinz_bus::os_input_output::ServerOsApi` over real ptys,
+//! pane supervisors, remote brokers and the client sockets' writer threads. Only
+//! the binary and this crate's tests construct it; library crates see it through the trait. The
+//! in-process whole-app tests use a fake, so beyond this crate's tests the backend runs only under
+//! tests that spawn the `yinz` binary, such as the root package's tests and the integration
+//! suite's plugin-test sessions.
+
 mod os_input_output;
 mod os_input_output_unix;
 

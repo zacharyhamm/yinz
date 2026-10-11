@@ -2168,12 +2168,8 @@ fn readers_have_their_own_footer_and_other_tabs_none() {
     assert_eq!(state.last_footer_row, Some(10));
 }
 
-/// While the tab bar has the keys the Agents footer says how to work the bar, over the list
-/// and over the reader - neither of which would otherwise have the right keys on show - and
-/// goes back to the list's or the reader's own hints once the keys leave it. The other tabs
-/// say it in the hint row they have anyway, so they grow no footer: their bodies keep the
-/// same number of rows whoever has the keys - but for a quiet Todos list, which has no such
-/// row and grows one of its own (`render_vms`).
+/// The Agents footer shows tab-bar keys over the list, reader, and an open search box
+/// while the bar has keyboard focus. It restores the view's hints when focus leaves.
 #[test]
 fn the_bar_hint_is_the_footer_wherever_the_bar_has_the_keys() {
     let mut state = reading(&"word ".repeat(1000));

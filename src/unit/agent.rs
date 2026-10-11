@@ -831,3 +831,28 @@ fn bubblewrap_spawn_cli_and_json_keep_the_opt_in() {
         assert_eq!(spec.bubblewrap, expected);
     }
 }
+
+#[test]
+fn spawn_defaults_cwd_only_when_a_host_checkout_is_needed() {
+    let caller = serde_json::json!(std::env::current_dir().unwrap());
+    for input in [
+        serde_json::json!({}),
+        serde_json::json!({"cwd":null,"project":null,"remote_host":null}),
+    ] {
+        assert_eq!(spawn_args(&[], input)["cwd"], caller);
+    }
+    for input in [
+        serde_json::json!({"project":"work","cwd":null}),
+        serde_json::json!({"remote_host":"ssh","cwd":null}),
+    ] {
+        assert!(spawn_args(&[], input)["cwd"].is_null());
+    }
+    assert_eq!(
+        spawn_args(&["--branch", "topic"], serde_json::json!({}))["cwd"],
+        caller
+    );
+    assert_eq!(
+        spawn_args(&[], serde_json::json!({"cwd":"/explicit"}))["cwd"],
+        "/explicit"
+    );
+}

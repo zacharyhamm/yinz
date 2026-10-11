@@ -2103,3 +2103,18 @@ fn a_bubblewrap_launch_that_cannot_resolve_is_a_pane_start_failure() {
             if *terminal_id == TerminalId::new(7) && command == "claude"
     ));
 }
+
+#[test]
+fn remote_codex_wrappers_keep_the_remote_executable() {
+    let server = make_server();
+    for with_env in [false, true] {
+        let requested = RunCommand {
+            target: PaneTarget::ssh("build-box").unwrap(),
+            ..codex_command(with_env)
+        };
+        let (resolved, rerun, endpoint) = server.resolve_target(requested.clone(), None).unwrap();
+        assert_eq!(resolved, requested);
+        assert_eq!(rerun, requested);
+        assert_eq!(endpoint.unwrap().host, "build-box");
+    }
+}

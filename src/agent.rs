@@ -99,16 +99,14 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
     let explicit = explicit.map(|session| session.into_string());
     let session = match explicit {
         Some(session) => session,
-        None => {
-            crate::commands::resolve_session(None, None, yinz_cli::sessions::get_active_session())
-                .map_err(|error| {
+        None => crate::commands::resolve_session(yinz_cli::sessions::get_active_session())
+            .map_err(|error| {
                 if yinz_cli::sessions::sessions_denied() {
                     anyhow!(yinz_cli::sessions::no_active_session_message())
                 } else {
                     error
                 }
-            })?
-        },
+            })?,
     };
     yinz_session::sessions::validate_session_name(&session).map_err(|error| anyhow!(error))?;
     let action = match &command {

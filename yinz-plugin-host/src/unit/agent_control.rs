@@ -1037,3 +1037,206 @@ exec "$YINZ_TEST_REAL_GIT" "$@"
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
+
+#[test]
+fn project_filter_respects_host_session_assignment_and_remote_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    git(&root, &["init", "-b", "main"]);
+    let data = DataAccess::sqlite(temp.path());
+    let store = data.plugin_data();
+    for def in project_data::store::shared_defs() {
+        store
+            .define_entity(project_data::store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    let mut project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
+    project.remote = Some("git@example.com:team/repo.git".into());
+    let id = store
+        .apply(
+            project_data::store::SHARED,
+            &[project_data::projects::to_mutation(&project)],
+        )
+        .unwrap()
+        .report
+        .ids[0];
+    let status = agent_status(&root);
+    let listed = |status: AgentStatus| {
+        let mut response = AgentResponse::new(AgentOutcome::Ok);
+        response.agents.push(status);
+        filter_project(&mut response, "work", &data, |_, _| {
+            yinz_types::data::GetPaneGitProbeResponse::Pending
+        })
+        .unwrap();
+        !response.agents.is_empty()
+    };
+    assert!(listed(status.clone()));
+    assert!(!listed(AgentStatus {
+        target: PaneTarget::ssh("other-host").unwrap(),
+        ..status.clone()
+    }));
+    let remote = AgentStatus {
+        target: PaneTarget::ssh("server").unwrap(),
+        cwd: Some("/work/src".into()),
+        ..status.clone()
+    };
+    let probe = yinz_types::data::PaneGitProbe {
+        host: "server".into(),
+        cwd: "/work/src".into(),
+        exit_code: Some(0),
+        metadata: b"/work\n/work/.git\n/work/.git\nmain\n".to_vec(),
+        config: b"remote.origin.url\nhttps://example.com/team/repo\0".to_vec(),
+    };
+    use yinz_types::data::GetPaneGitProbeResponse as Probe;
+    let remote_listed = |probe: Probe| {
+        let mut response = AgentResponse::new(AgentOutcome::Ok);
+        response.agents.push(remote.clone());
+        let pending = filter_project(&mut response, "work", &data, |pane, cwd| {
+            assert_eq!(pane, remote.pane_id);
+            assert_eq!(cwd, "/work/src");
+            probe.clone()
+        })
+        .unwrap();
+        (!response.agents.is_empty(), pending)
+    };
+    assert_eq!(remote_listed(Probe::Ok(probe.clone())), (true, false));
+    assert_eq!(remote_listed(Probe::Pending), (false, true));
+    assert_eq!(
+        remote_listed(Probe::Err("unavailable".into())),
+        (false, true)
+    );
+    for unavailable in [
+        Probe::Ok(yinz_types::data::PaneGitProbe {
+            host: "stale".into(),
+            ..probe.clone()
+        }),
+        Probe::Ok(yinz_types::data::PaneGitProbe {
+            cwd: "/old".into(),
+            ..probe.clone()
+        }),
+        Probe::Ok(yinz_types::data::PaneGitProbe {
+            metadata: vec![],
+            ..probe.clone()
+        }),
+        Probe::Ok(yinz_types::data::PaneGitProbe {
+            exit_code: None,
+            metadata: vec![],
+            ..probe.clone()
+        }),
+        Probe::Ok(yinz_types::data::PaneGitProbe {
+            config: vec![],
+            ..probe.clone()
+        }),
+        Probe::Ok(yinz_types::data::PaneGitProbe {
+            config: b"remote.origin.url\nhttps://example.com/team/other\0".to_vec(),
+            ..probe.clone()
+        }),
+    ] {
+        assert_eq!(remote_listed(unavailable), (false, false));
+    }
+    // An explicit assignment wins in both directions and never needs a probe.
+    for (project_id, expected) in [(id.get() + 1, false), (id.get(), true)] {
+        store
+            .apply(
+                project_data::store::SHARED,
+                &[Mutation::put("agent_assignment")
+                    .uid("remote-override")
+                    .set("host_id", "host")
+                    .set("yinz_session_name", "session")
+                    .set("tab_id", 3i64)
+                    .set("project", "assigned")
+                    .set("project_id", project_id)
+                    .build()],
+            )
+            .unwrap();
+        let mut response = AgentResponse::new(AgentOutcome::Ok);
+        response.agents.push(remote.clone());
+        let pending = filter_project(&mut response, "work", &data, |_, _| {
+            panic!("explicit assignment wins")
+        })
+        .unwrap();
+        assert!(!pending);
+        assert_eq!(!response.agents.is_empty(), expected);
+    }
+    store
+        .apply(
+            project_data::store::SHARED,
+            &[Mutation::delete(
+                "agent_assignment",
+                yinz_types::plugin_data::Pred::eq("uid", "remote-override"),
+            )],
+        )
+        .unwrap();
+    let outside = AgentStatus {
+        cwd: Some("/other".into()),
+        ..status
+    };
+    for (host, session, expected) in [
+        ("other", "session", false),
+        ("host", "other", false),
+        ("host", "session", true),
+    ] {
+        store
+            .apply(
+                project_data::store::SHARED,
+                &[Mutation::put("agent_assignment")
+                    .uid(format!("{host}/{session}"))
+                    .set("host_id", host)
+                    .set("yinz_session_name", session)
+                    .set("tab_id", 3i64)
+                    .set("project", "work")
+                    .set("project_id", id.get())
+                    .build()],
+            )
+            .unwrap();
+        assert_eq!(listed(outside.clone()), expected);
+    }
+}
+
+#[test]
+fn project_launch_uses_worktree_defaults_collision_names_and_reuse() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    ] {
+        git(&root, &args);
+    }
+    let data = DataAccess::sqlite(&root.join("data"));
+    let store = data.plugin_data();
+    for def in project_data::store::shared_defs() {
+        store
+            .define_entity(project_data::store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    let mut project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
+    project.worktree_dir = Some("custom-trees".into());
+    store
+        .apply(
+            project_data::store::SHARED,
+            &[project_data::projects::to_mutation(&project)],
+        )
+        .unwrap();
+    for (reuse, branch) in [(false, "topic"), (false, "topic-2"), (true, "topic")] {
+        let mut spec = AgentSpawnSpec {
+            kind: Some("codex".into()),
+            branch: Some("topic".into()),
+            reuse: Some(reuse),
+            ..Default::default()
+        };
+        let prepared =
+            prepare_automation_agent(&mut spec, None, Some("work".into()), None, &data).unwrap();
+        assert_eq!(prepared.cwd, root.join("custom-trees").join(branch));
+        assert_eq!(prepared.branch.as_deref(), Some(branch));
+    }
+}

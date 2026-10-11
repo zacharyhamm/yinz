@@ -1848,22 +1848,17 @@ pub(crate) fn data(command: yinz_cli::args::Data, opts: &CliArgs) -> anyhow::Res
     Ok(())
 }
 
-/// The session a CLI command acts on: `--session` if given, else the
-/// session this command runs inside, else the only active one.
+/// Select the only active session after explicit and caller session selection.
 pub(crate) fn resolve_session(
-    explicit: Option<String>,
-    env_session: Option<SessionName>,
     active: ActiveSession,
 ) -> yinz_runtime::errors::prelude::Result<String> {
     use yinz_runtime::errors::prelude::*;
 
-    explicit
-        .or(env_session.map(SessionName::into_string))
-        .or(match active {
-            ActiveSession::One(name) => Some(name.into_string()),
-            ActiveSession::None | ActiveSession::Many => None,
-        })
-        .context("no session selected; pass --session SESSION")
+    match active {
+        ActiveSession::One(name) => Some(name.into_string()),
+        ActiveSession::None | ActiveSession::Many => None,
+    }
+    .context("no session selected; pass --session SESSION")
 }
 
 #[cfg(test)]
@@ -1879,6 +1874,22 @@ mod tests {
 
     fn session(name: &str) -> (yinz_types::internal_ids::SessionName, Duration) {
         (name.into(), Duration::default())
+    }
+
+    #[test]
+    fn session_selection_requires_one_active_session() {
+        use yinz_cli::sessions::ActiveSession;
+
+        assert_eq!(
+            super::resolve_session(ActiveSession::One("work".into())).unwrap(),
+            "work"
+        );
+        for active in [ActiveSession::None, ActiveSession::Many] {
+            assert_eq!(
+                super::resolve_session(active).unwrap_err().to_string(),
+                "no session selected; pass --session SESSION"
+            );
+        }
     }
 
     #[test]
