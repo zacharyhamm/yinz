@@ -102,6 +102,66 @@ swap_tiled_layout name="three-columns" {
     }
 }
 
+swap_tiled_layout name="quad" {
+    ui max_panes=3 {
+        pane
+    }
+    ui max_panes=4 {
+        pane split_direction="vertical" {
+            pane
+            pane
+        }
+    }
+    ui max_panes=5 {
+        pane split_direction="vertical" {
+            pane
+            pane { pane; pane; }
+        }
+    }
+    ui max_panes=6 {
+        pane split_direction="vertical" {
+            pane { pane; pane; }
+            pane { pane; pane; }
+        }
+    }
+    ui max_panes=7 {
+        pane split_direction="vertical" {
+            pane { pane; pane; }
+            pane { pane; pane; pane; }
+        }
+    }
+    ui max_panes=8 {
+        pane split_direction="vertical" {
+            pane { pane; pane; pane; }
+            pane { pane; pane; pane; }
+        }
+    }
+    ui max_panes=9 {
+        pane split_direction="vertical" {
+            pane { pane; pane; pane; }
+            pane { pane; pane; pane; pane; }
+        }
+    }
+    ui max_panes=10 {
+        pane split_direction="vertical" {
+            pane { pane; pane; pane; pane; }
+            pane { pane; pane; pane; pane; }
+        }
+    }
+    ui max_panes=11 {
+        pane split_direction="vertical" {
+            pane { pane; pane; pane; pane; }
+            pane { pane; pane; pane; pane; pane; }
+        }
+    }
+    ui max_panes=12 {
+        pane split_direction="vertical" {
+            pane { pane; pane; pane; pane; pane; }
+            pane { pane; pane; pane; pane; pane; }
+        }
+    }
+}
+
 swap_tiled_layout name="horizontal" {
     ui max_panes=5 {
         pane

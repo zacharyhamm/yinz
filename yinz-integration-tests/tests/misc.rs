@@ -99,9 +99,15 @@ fn next_swap_layout() {
             && !grid_snapshot.contains("VERTICAL")
     });
     yinz.send_stdin(&keys::alt(']'));
+    yinz.wait_until("swap layout advanced to quad", |grid_snapshot| {
+        grid_snapshot.status_bar_appears()
+            && grid_snapshot.contains("QUAD")
+            && !grid_snapshot.contains("THREE-COLUMNS")
+    });
+    yinz.send_stdin(&keys::alt(']'));
     let grid_snapshot = yinz.wait_until("swap layout advanced to horizontal", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && !grid_snapshot.contains("THREE-COLUMNS")
+            && !grid_snapshot.contains("QUAD")
             && !grid_snapshot.contains("VERTICAL")
             && grid_snapshot.contains("HORIZONTAL")
     });
