@@ -1398,6 +1398,19 @@ impl PaneFrame {
         (start..start + 3).contains(&position.column())
     }
     pub fn render(&self) -> Result<(Vec<CharacterChunk>, Option<String>)> {
+        let (mut chunks, output) = self
+            .render_frame()
+            .context("failed to render themed pane frame")?;
+        for chunk in &mut chunks {
+            chunk.add_pane_defaults(
+                Some(self.style.colors.text_unselected.base.into()),
+                Some(self.style.colors.text_unselected.background.into()),
+            );
+        }
+        Ok((chunks, output))
+    }
+
+    fn render_frame(&self) -> Result<(Vec<CharacterChunk>, Option<String>)> {
         let err_context = || "failed to render pane frame";
         let mut character_chunks = vec![];
         if self.omit_title {
@@ -1932,3 +1945,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "unit/frame_background_tests.rs"]
+mod frame_background_tests;

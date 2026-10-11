@@ -1495,9 +1495,15 @@ impl TiledPanes {
                                 true,
                             )
                             .with_context(err_context)?;
-                        let boundaries = client_id_to_boundaries
-                            .entry(*client_id)
-                            .or_insert_with(|| Boundaries::new(boundary_viewport));
+                        let boundaries =
+                            client_id_to_boundaries
+                                .entry(*client_id)
+                                .or_insert_with(|| {
+                                    Boundaries::new(
+                                        boundary_viewport,
+                                        self.style.colors.text_unselected,
+                                    )
+                                });
                         pane_contents_and_ui.render_pane_boundaries(
                             *client_id,
                             client_mode,
@@ -1507,9 +1513,15 @@ impl TiledPanes {
                             pane_is_on_bottom_of_stack,
                         );
                     } else {
-                        let boundaries = client_id_to_boundaries
-                            .entry(*client_id)
-                            .or_insert_with(|| Boundaries::new(boundary_viewport));
+                        let boundaries =
+                            client_id_to_boundaries
+                                .entry(*client_id)
+                                .or_insert_with(|| {
+                                    Boundaries::new(
+                                        boundary_viewport,
+                                        self.style.colors.text_unselected,
+                                    )
+                                });
                         pane_contents_and_ui.render_pane_boundaries(
                             *client_id,
                             client_mode,

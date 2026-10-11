@@ -94,7 +94,7 @@ themes {
             emphasis_3 211 54 130
         }
         frame_selected {
-            base 133 153 0
+            base 143 162 21
             background 0
             emphasis_0 203 75 22
             emphasis_1 42 161 152
@@ -102,10 +102,10 @@ themes {
             emphasis_3 0
         }
         frame_highlight {
-            base 203 75 22
+            base 219 129 92
             background 0
-            emphasis_0 211 54 130
-            emphasis_1 203 75 22
+            emphasis_0 225 117 169
+            emphasis_1 219 129 92
             emphasis_2 203 75 22
             emphasis_3 203 75 22
         }
@@ -126,16 +126,16 @@ themes {
             emphasis_3 0
         }
         multiplayer_user_colors {
-            player_1 211 54 130
-            player_2 38 139 210
-            player_3 0
-            player_4 181 137 0
-            player_5 42 161 152
-            player_6 0
-            player_7 220 50 47
-            player_8 0
-            player_9 0
-            player_10 0
+            player_1 225 117 169
+            player_2 76 160 218
+            player_3 133 157 162
+            player_4 188 147 22
+            player_5 59 169 160
+            player_6 133 157 162
+            player_7 232 119 117
+            player_8 133 157 162
+            player_9 133 157 162
+            player_10 133 157 162
         }
     }
 }

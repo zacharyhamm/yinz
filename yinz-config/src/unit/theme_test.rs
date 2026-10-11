@@ -2,6 +2,212 @@ use super::super::theme::*;
 use crate::consts::YINZ_DEFAULT_THEMES;
 use std::path::{Path, PathBuf};
 
+fn contrast_ratio(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
+    let luminance = |(r, g, b): (u8, u8, u8)| {
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    };
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+#[test]
+fn builtin_light_themes_have_readable_ui_colors() {
+    use yinz_types::data::PaletteColor;
+
+    for name in [
+        "ayu-light",
+        "catppuccin-latte",
+        "dayfox",
+        "everforest-light",
+        "gruvbox-light",
+        "iceberg-light",
+        "pencil-light",
+        "solarized-light",
+        "tokyo-night-light",
+    ] {
+        let file = YINZ_DEFAULT_THEMES
+            .get_file(format!("{name}.kdl"))
+            .expect("light theme asset");
+        let themes = Themes::from_string(file.contents_utf8().unwrap(), false).unwrap();
+        let theme = themes.get_theme(name).unwrap();
+        let terminal = theme.terminal.unwrap();
+        let colors = theme.palette;
+        let rgb = |color| match color {
+            PaletteColor::Rgb(rgb) => rgb,
+            PaletteColor::EightBit(index) => terminal.ansi[usize::from(index)],
+        };
+        let panel = rgb(colors.text_unselected.background);
+        let check = |role: &str, field: &str, foreground, background| {
+            let ratio = contrast_ratio(rgb(foreground), background);
+            assert!(
+                ratio >= 4.5,
+                "{name}: {role}.{field} on {background:?}: contrast {ratio:.2}:1 < 4.5:1"
+            );
+        };
+        for (role, declaration, opaque, transparent) in [
+            ("text_unselected", colors.text_unselected, true, true),
+            ("text_selected", colors.text_selected, true, false),
+            (
+                "table_cell_unselected",
+                colors.table_cell_unselected,
+                true,
+                true,
+            ),
+            (
+                "table_cell_selected",
+                colors.table_cell_selected,
+                true,
+                false,
+            ),
+            ("list_unselected", colors.list_unselected, true, true),
+            ("list_selected", colors.list_selected, true, false),
+            ("ribbon_unselected", colors.ribbon_unselected, true, false),
+            ("ribbon_selected", colors.ribbon_selected, true, false),
+            ("table_title", colors.table_title, false, true),
+            ("frame_selected", colors.frame_selected, false, true),
+            ("frame_highlight", colors.frame_highlight, false, true),
+            ("exit_code_success", colors.exit_code_success, false, true),
+            ("exit_code_error", colors.exit_code_error, false, true),
+        ] {
+            for (field, foreground) in [
+                ("base", declaration.base),
+                ("emphasis_0", declaration.emphasis_0),
+                ("emphasis_1", declaration.emphasis_1),
+                ("emphasis_2", declaration.emphasis_2),
+                ("emphasis_3", declaration.emphasis_3),
+            ] {
+                // These roles leave unused emphasis slots set to indexed zero.
+                if !opaque && field != "base" && foreground == PaletteColor::EightBit(0) {
+                    continue;
+                }
+                // Builtin bars use this slot as a background, and pane frames use it on hover.
+                if role == "ribbon_unselected" && field == "emphasis_1" {
+                    check(role, field, foreground, panel);
+                    check(role, field, foreground, terminal.background);
+                    continue;
+                }
+                if opaque {
+                    check(role, field, foreground, rgb(declaration.background));
+                }
+                if transparent {
+                    check(role, field, foreground, panel);
+                    check(role, field, foreground, terminal.background);
+                }
+                if role == "ribbon_unselected" {
+                    check(role, field, foreground, rgb(declaration.emphasis_1));
+                }
+            }
+        }
+        let players = colors.multiplayer_user_colors;
+        for (index, foreground) in [
+            players.player_1,
+            players.player_2,
+            players.player_3,
+            players.player_4,
+            players.player_5,
+            players.player_6,
+            players.player_7,
+            players.player_8,
+            players.player_9,
+            players.player_10,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let field = format!("player_{}", index + 1);
+            check("multiplayer_user_colors", &field, foreground, panel);
+            check(
+                "multiplayer_user_colors",
+                &field,
+                foreground,
+                terminal.background,
+            );
+        }
+        for (role, selected, unselected) in [
+            ("text", colors.text_selected, colors.text_unselected),
+            (
+                "table_cell",
+                colors.table_cell_selected,
+                colors.table_cell_unselected,
+            ),
+            ("list", colors.list_selected, colors.list_unselected),
+        ] {
+            assert_ne!(
+                selected.background, unselected.background,
+                "{name}: {role} selection is invisible"
+            );
+        }
+    }
+}
+
+#[test]
+fn builtin_frame_colors_contrast_with_ui_background() {
+    use yinz_types::{colors::eightbit_to_rgb, data::PaletteColor};
+
+    for file in YINZ_DEFAULT_THEMES.files() {
+        let themes = Themes::from_string(file.contents_utf8().unwrap(), false).unwrap();
+        for (name, theme) in themes.inner() {
+            // The ANSI theme deliberately uses the host's configurable palette.
+            let Some(terminal) = theme.terminal else {
+                continue;
+            };
+            let rgb = |color| match color {
+                PaletteColor::Rgb(rgb) => rgb,
+                PaletteColor::EightBit(index) if index < 16 => terminal.ansi[usize::from(index)],
+                PaletteColor::EightBit(index) => eightbit_to_rgb(index),
+            };
+            let colors = theme.palette;
+            let background = rgb(colors.text_unselected.background);
+            let players = colors.multiplayer_user_colors;
+            let mut foregrounds = vec![
+                ("text_unselected.base", colors.text_unselected.base),
+                ("frame_selected.base", colors.frame_selected.base),
+                ("frame_highlight.base", colors.frame_highlight.base),
+                (
+                    "frame_highlight.emphasis_0",
+                    colors.frame_highlight.emphasis_0,
+                ),
+                (
+                    "frame_highlight.emphasis_1",
+                    colors.frame_highlight.emphasis_1,
+                ),
+                (
+                    "ribbon_unselected.emphasis_1",
+                    colors.ribbon_unselected.emphasis_1,
+                ),
+                ("player_1", players.player_1),
+                ("player_2", players.player_2),
+                ("player_3", players.player_3),
+                ("player_4", players.player_4),
+                ("player_5", players.player_5),
+                ("player_6", players.player_6),
+                ("player_7", players.player_7),
+                ("player_8", players.player_8),
+                ("player_9", players.player_9),
+                ("player_10", players.player_10),
+            ];
+            if let Some(frame) = colors.frame_unselected {
+                foregrounds.push(("frame_unselected.base", frame.base));
+            }
+            for (role, color) in foregrounds {
+                let ratio = contrast_ratio(rgb(color), background);
+                assert!(
+                    ratio >= 4.5,
+                    "{name}: {role} on UI background: {ratio:.2}:1 < 4.5:1"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn builtin_themes_round_trip() {
     // External themes are skipped by to_kdl, so parse as inline themes here.
