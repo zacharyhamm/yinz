@@ -72,7 +72,20 @@ They now use the shared launch planner, which supplies Claude's state hooks on l
 Each session can have one **mother**: a coding agent in an overlay pane that is available on every tab.
 Press `Ctrl e`, then `m`, to toggle it. With no mother running, the key opens the command palette at the agents to launch it as.
 **Launch mother…** in the command palette opens the same list, and becomes **Toggle mother** once one is running.
-Mother starts a fresh conversation in the directory the session was started in, without a worktree.
+Mother starts a fresh conversation in `YINZ_CACHE_DIR/mother/<session-key>/work`, without a worktree.
+The key is a stable hash of the session name. Each session has a separate private folder.
+The folder and its contents persist after mother exits and are reused on later launches. There is no automatic cleanup.
+If Yinz cannot create the folder, the launch fails. The pane title is `mother: <agent>`.
+
+On Linux, mother automatically attempts Bubblewrap isolation without project configuration or Git.
+The sandbox can read host files. It can write only its working folder, private temporary storage, and the selected agent's state directories.
+Codex, pi, and opencode have supported state layouts. Their configuration directory overrides are honored, including `CODEX_HOME`, `PI_CODING_AGENT_DIR`, and the XDG directories.
+Other providers, including plugin providers, currently use the local fallback because their complete writable state layouts are not mapped.
+If Bubblewrap is unavailable or setup fails, mother launches locally and prints the reason in its pane.
+This fallback provides no filesystem isolation. A started agent is never retried locally.
+
+Agent state remains shared with host agents. Network access, authentication, hooks, and agent permissions remain unchanged.
+Mother can still request host changes through Yinz. Bubblewrap restricts direct filesystem writes, not Yinz control requests.
 
 Toggling shows mother on the tab you are on and gives it the keyboard, or hides it when it already has the keyboard.
 A visible mother follows you when you switch tabs, unless another client is still on the tab you left. A hidden one stays hidden until you toggle or focus it.

@@ -922,3 +922,131 @@ fn unsupported_version_stops_empty_declarations_before_provisioning() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn mother_directories_are_private_persistent_and_separate() {
+    let cache = tempfile::tempdir().unwrap();
+    let first = mother_directory(cache.path(), "../session/one").unwrap();
+    let second = mother_directory(cache.path(), "../session/two").unwrap();
+    assert_ne!(first, second);
+    assert!(first.starts_with(cache.path().canonicalize().unwrap().join("mother")));
+    fs::write(first.join("kept"), "conversation notes").unwrap();
+    assert_eq!(
+        mother_directory(cache.path(), "../session/one").unwrap(),
+        first
+    );
+    assert_eq!(
+        fs::read_to_string(first.join("kept")).unwrap(),
+        "conversation notes"
+    );
+    assert_eq!(
+        fs::metadata(&first).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(mother_directory(cache.path(), "").is_err());
+    let blocked = cache.path().join("file");
+    fs::write(&blocked, "not a directory").unwrap();
+    assert!(mother_directory(&blocked, "session").is_err());
+    fs::remove_dir(&second).unwrap();
+    std::os::unix::fs::symlink(&first, &second).unwrap();
+    assert!(mother_directory(cache.path(), "../session/two").is_err());
+}
+
+#[test]
+fn mother_state_overrides_cannot_grant_home_or_metadata_writes() {
+    let (temp, env) = fixture();
+    std::env::set_var("HOME", temp.path());
+    std::env::set_var("CODEX_HOME", temp.path().join("codex-state"));
+    assert_eq!(
+        mother_state("codex").unwrap(),
+        [temp.path().join("codex-state")]
+    );
+    std::env::set_var("PI_CODING_AGENT_DIR", "~/pi-state");
+    assert_eq!(mother_state("pi").unwrap(), [temp.path().join("pi-state")]);
+    for unsafe_path in [temp.path(), Path::new("/"), &env.root, &env.metadata] {
+        assert!(
+            env.validate_mother_state(unsafe_path).is_err(),
+            "{unsafe_path:?}"
+        );
+    }
+    assert!(env
+        .validate_mother_state(&temp.path().join("codex-state"))
+        .is_ok());
+    assert!(mother_state("plugin-provider").is_err());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires real Bubblewrap user namespaces; run explicitly on Linux"]
+fn real_mother_bubblewrap_limits_writes_and_preserves_agent_environment() {
+    // Keep the host fixture outside /tmp, which the sandbox replaces with private storage.
+    let temp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("CODEX_HOME", home.join("agent-state"));
+    std::env::set_var("MOTHER_AUTH_SENTINEL", "test-auth");
+    std::env::set_var("YINZ_SESSION_NAME", "mother-test");
+    std::env::set_var("YINZ_SOCKET_DIR", home.join("sockets"));
+    fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+    let root = mother_directory(&home.join("cache"), "test").unwrap();
+    let env = Environment::at(root, &home.join("metadata"));
+    env.prepare_mother("codex", Path::new("sh")).unwrap();
+    fs::write(home.join("project"), "unchanged").unwrap();
+    let accepted = env.accepted().unwrap();
+    let output = env
+        .command(&accepted.declaration, &env.root, false)
+        .unwrap()
+        .args([
+            "--",
+            "sh",
+            "-eu",
+            "-c",
+            r#"
+            echo own > own-file
+            echo state > "$CODEX_HOME/state"
+            echo private > /tmp/mother-private
+            test "$MOTHER_AUTH_SENTINEL" = test-auth
+            test "$YINZ_BUBBLEWRAP" = 1
+            test "$(cat "$HOME/project")" = unchanged
+            ! (echo changed > "$HOME/project")
+            ! touch "$HOME/metadata/new"
+            command -v yinz
+        "#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(env.root.join("own-file")).unwrap(),
+        "own\n"
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("agent-state/state")).unwrap(),
+        "state\n"
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("project")).unwrap(),
+        "unchanged"
+    );
+    assert!(!env.root.join(".git").exists());
+}
+
+#[test]
+fn mother_state_cannot_expose_metadata_through_a_storage_symlink() {
+    let (temp, mut env) = fixture();
+    let state = temp.path().join("agent-state");
+    let metadata = state.join("metadata");
+    fs::create_dir_all(&metadata).unwrap();
+    let alias = temp.path().join("metadata-alias");
+    std::os::unix::fs::symlink(&metadata, &alias).unwrap();
+    env.metadata = alias;
+    let declaration = Declaration {
+        mother: Some(vec![state.canonicalize().unwrap()]),
+        ..Default::default()
+    };
+    assert!(env.validate_storage(&declaration).is_err());
+}

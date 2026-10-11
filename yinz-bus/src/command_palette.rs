@@ -122,7 +122,7 @@ pub enum AgentAction {
     Current {
         kind: String,
     },
-    /// The session's mother agent: an overlay pane in the session's starting directory.
+    /// The session's mother agent: an overlay pane with a dedicated working directory.
     Mother {
         kind: String,
     },

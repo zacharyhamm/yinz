@@ -1,4 +1,4 @@
-//! Explicitly accepted, persistent user-space environments. Launch never reads project KDL.
+//! Persistent project environments and internal mother profiles. Launch never reads project KDL.
 use kdl::{KdlDocument, KdlNode};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -63,6 +63,8 @@ struct Declaration {
     seeds: Vec<(PathBuf, PathBuf)>,
     setup: Vec<Vec<String>>,
     checks: Vec<Vec<String>>,
+    #[serde(default)]
+    mother: Option<Vec<PathBuf>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -417,7 +419,137 @@ fn selected(root: &Path, config_dir: Option<&Path>, host_home: &Path) -> Result<
     )
 }
 
+/// A session name is hashed, never interpreted as a path. Contents survive agent exits.
+pub fn mother_directory(cache: &Path, session: &str) -> Result<PathBuf> {
+    if session.is_empty() {
+        bail!("Mother requires a session name");
+    }
+    let parent = cache
+        .join("mother")
+        .join(crate::root_key(Path::new(session)));
+    for path in [cache.join("mother"), parent.clone(), parent.join("work")] {
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            bail!("Mother directory must not be a symlink: {}", path.display());
+        }
+        yinz_runtime::shared::ensure_secure_dir(&path)
+            .context("create private mother directory")?;
+    }
+    parent
+        .join("work")
+        .canonicalize()
+        .context("resolve mother directory")
+}
+
+fn mother_state(kind: &str) -> Result<Vec<PathBuf>> {
+    // shortcut: only mapped state layouts are sandboxed, extend this when another provider's paths are known.
+    if !matches!(kind, "codex" | "pi" | "opencode") {
+        bail!("no supported writable state layout for agent {kind}");
+    }
+    let home = std::env::var_os("HOME")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .context("HOME is not set")?;
+    let root = yinz_runtime::agent::paths::config_root(
+        kind,
+        std::env::var_os("CODEX_HOME"),
+        std::env::var_os("PI_CODING_AGENT_DIR"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        || Ok(home.clone()),
+    )?;
+    let mut paths = vec![root];
+    if kind == "opencode" {
+        for (variable, default) in [
+            ("XDG_DATA_HOME", ".local/share"),
+            ("XDG_STATE_HOME", ".local/state"),
+            ("XDG_CACHE_HOME", ".cache"),
+        ] {
+            paths.push(
+                std::env::var_os(variable)
+                    .filter(|p| !p.is_empty())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(default))
+                    .join("opencode"),
+            );
+        }
+    }
+    Ok(paths)
+}
+
 impl Environment {
+    /// Prepare an internal profile without reading project configuration or requiring Git.
+    pub fn prepare_mother(&self, kind: &str, program: &Path) -> Result<()> {
+        platform()?;
+        let paths = mother_state(kind)?;
+        let _lock = self.lock(true)?;
+        let mut state = Vec::new();
+        for path in paths {
+            absolute(path.to_str().context("agent state path is not UTF-8")?)?;
+            self.validate_mother_state(&path)?;
+            if !path.exists() {
+                yinz_runtime::shared::ensure_secure_dir(&path)
+                    .context("create agent state directory")?;
+            }
+            let path = path
+                .canonicalize()
+                .context("resolve agent state directory")?;
+            self.validate_mother_state(&path)?;
+            if !path.is_dir() {
+                bail!("agent state must be a directory: {}", path.display());
+            }
+            state.push(path);
+        }
+        let accepted = Accepted {
+            root: self.root.clone(),
+            declaration: Declaration {
+                mother: Some(state),
+                ..Default::default()
+            },
+            ready: true,
+        };
+        self.validate_storage(&accepted.declaration)?;
+        self.save(&accepted)?;
+        drop(_lock);
+        self.check_launch(&self.root, program)
+    }
+
+    fn validate_mother_state(&self, path: &Path) -> Result<()> {
+        let home = std::env::var_os("HOME").context("HOME is not set")?;
+        let home = Path::new(&home)
+            .canonicalize()
+            .context("resolve host home")?;
+        if !path.is_absolute()
+            || path == Path::new("/tmp")
+            || home.starts_with(path)
+            || overlaps(path, &self.root)
+            || overlaps(path, &self.metadata)
+            || [
+                "/run", "/proc", "/dev", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",
+            ]
+            .iter()
+            .any(|reserved| overlaps(path, Path::new(reserved)))
+        {
+            bail!("unsafe mother agent state directory: {}", path.display());
+        }
+        Ok(())
+    }
+
+    fn validate_launch_cwd(&self, cwd: &Path, declaration: &Declaration) -> Result<()> {
+        if let Some(paths) = &declaration.mother {
+            if cwd.canonicalize().context("resolve mother cwd")? != self.root {
+                bail!("mother must launch in its dedicated directory");
+            }
+            for path in paths {
+                self.validate_mother_state(path)?;
+                if path.canonicalize().context("resolve agent state")? != *path {
+                    bail!("agent state path changed; prepare mother again");
+                }
+            }
+            Ok(())
+        } else {
+            self.validate_cwd(cwd)
+        }
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -531,7 +663,9 @@ impl Environment {
             || declaration
                 .mounts
                 .iter()
-                .any(|(source, _)| overlaps(source, &metadata))
+                .map(|(source, _)| source)
+                .chain(declaration.mother.iter().flatten())
+                .any(|source| overlaps(source, &metadata))
         {
             bail!("Bubblewrap mounts must not expose environment management files");
         }
@@ -591,7 +725,11 @@ impl Environment {
             .arg(environment_args.as_raw_fd().to_string());
         // Rewound and inherited with the environment arguments below.
         let mut data_files = Vec::new();
-        for (path, contents) in ACCOUNTS.iter().zip(accounts()) {
+        for (path, contents) in ACCOUNTS
+            .iter()
+            .zip(accounts())
+            .filter(|_| declaration.mother.is_none())
+        {
             let mut file = tempfile::tempfile().context("create sandbox account file")?;
             file.write_all(contents.as_bytes())
                 .context("write sandbox account file")?;
@@ -615,7 +753,14 @@ impl Environment {
             }
             Ok(())
         };
-        for path in SYSTEM.iter().chain(ETC) {
+        if declaration.mother.is_some() {
+            command.args(["--ro-bind", "/", "/"]);
+        }
+        for path in SYSTEM
+            .iter()
+            .chain(ETC)
+            .filter(|_| declaration.mother.is_none())
+        {
             if Path::new(path).exists() {
                 command.args(["--ro-bind", path, path]);
             }
@@ -635,7 +780,13 @@ impl Environment {
             "/run/yinz-bin",
         ]);
         command.arg("--bind").arg(&self.root).arg(&self.root);
-        command.arg("--bind").arg(&self.home).arg(HOME);
+        if let Some(paths) = &declaration.mother {
+            for path in paths {
+                command.arg("--bind").arg(path).arg(path);
+            }
+        } else {
+            command.arg("--bind").arg(&self.home).arg(HOME);
+        }
         let mut mount_files = Vec::new();
         for (src, dst) in &declaration.mounts {
             let file = open_mount_source(src)?;
@@ -658,6 +809,19 @@ impl Environment {
             "/bin".into(),
         ];
         paths.extend(declaration.paths.iter().cloned());
+        if declaration.mother.is_some() {
+            for (name, value) in std::env::vars_os() {
+                let name = name.to_str().context("non-UTF-8 mother environment name")?;
+                if !name.starts_with("YINZ_") {
+                    setenv(
+                        name,
+                        value
+                            .to_str()
+                            .context("non-UTF-8 mother environment value")?,
+                    )?;
+                }
+            }
+        }
         for (name, value) in &declaration.env {
             setenv(name, value)?;
         }
@@ -676,7 +840,20 @@ impl Environment {
             ("XDG_DATA_HOME", "/home/yinz/.local/share"),
             ("YINZ_BUBBLEWRAP", "1"),
         ] {
-            setenv(name, value)?;
+            if declaration.mother.is_none()
+                || matches!(name, "TMPDIR" | "XDG_RUNTIME_DIR" | "YINZ_BUBBLEWRAP")
+            {
+                setenv(name, value)?;
+            }
+        }
+        if declaration.mother.is_some() {
+            setenv(
+                "PATH",
+                &format!(
+                    "/run/yinz-bin:{}",
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )?;
         }
         for name in ["TERM", "COLORTERM", "LANG"] {
             if declaration.env.contains_key(name)
@@ -766,7 +943,7 @@ impl Environment {
                 if Instant::now() >= deadline {
                     bail!("check deadline expired");
                 }
-                let mut command = self.command(declaration, cwd, false)?;
+                let mut command = self.command(declaration, cwd, declaration.mother.is_some())?;
                 command
                     .arg("--")
                     .args(&args)
@@ -895,13 +1072,17 @@ impl Environment {
         platform()?;
         let _lock = self.lock(false)?;
         let accepted = self.accepted()?;
-        self.validate_cwd(cwd)?;
+        self.validate_launch_cwd(cwd, &accepted.declaration)?;
         let path = self.metadata.join("launch.log");
         let log = open_log(&path).context("open launch check log")?;
         let deadline = Instant::now() + Duration::from_secs(10);
         self.checks(&accepted.declaration, cwd, &log, deadline)
             .with_context(|| format!("Launch checks failed; inspect {}", path.display()))?;
-        let mut command = self.command(&accepted.declaration, cwd, false)?;
+        let mut command = self.command(
+            &accepted.declaration,
+            cwd,
+            accepted.declaration.mother.is_some(),
+        )?;
         command
             .args([
                 "--",
@@ -933,7 +1114,7 @@ impl Environment {
         let lock = self.lock(false)?;
         let accepted = self.accepted()?;
         let cwd = std::env::current_dir().context("read launch directory")?;
-        self.validate_cwd(&cwd)?;
+        self.validate_launch_cwd(&cwd, &accepted.declaration)?;
         let mut command = self.command(&accepted.declaration, &cwd, true)?;
         // Bubblewrap retains this shared lease through its PID namespace's lifetime.
         let fd = lock.as_raw_fd();

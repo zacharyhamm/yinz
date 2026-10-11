@@ -17,9 +17,9 @@ pub enum PaneTarget {
     /// A machine reached over ssh; `host` is the `--remote-host` argument
     /// (an ssh alias, `user@host`, or an `ssh://` URL).
     Ssh { host: String },
-    /// This machine, inside the Bubblewrap environment prepared for the primary
-    /// checkout at `root`. The command stays the one asked for; the sandbox is
-    /// applied where the process is exec'd.
+    /// This machine, inside the Bubblewrap environment prepared for `root`: a primary
+    /// checkout or mother's dedicated directory. The command stays the one asked for;
+    /// the sandbox is applied where the process is exec'd.
     Bubblewrap { root: PathBuf },
 }
 
@@ -36,7 +36,7 @@ impl PaneTarget {
         })
     }
 
-    /// A Bubblewrap target for the primary checkout at `root`, an absolute path.
+    /// A Bubblewrap target for the prepared environment at `root`, an absolute path.
     pub fn bubblewrap(root: &Path) -> Result<Self, String> {
         if !root.is_absolute() {
             return Err(format!(
@@ -60,7 +60,7 @@ impl PaneTarget {
     pub fn is_bubblewrap(&self) -> bool {
         matches!(self, PaneTarget::Bubblewrap { .. })
     }
-    /// The primary checkout of a `Bubblewrap` target.
+    /// The prepared environment root of a `Bubblewrap` target.
     pub fn bubblewrap_root(&self) -> Option<&Path> {
         match self {
             PaneTarget::Bubblewrap { root } => Some(root),

@@ -17,9 +17,19 @@ pub fn resolve_agent_launcher(
         && matches!(args, [agent, launcher, ..] if agent == "agent" && matches!(launcher.as_str(), "codex" | "muse"))
     {
         *program = host_bin.to_path_buf();
-    } else if program == Path::new("env") {
-        // Generated env wrappers contain assignments followed by the command.
-        if let Some(index) = args.iter().position(|arg| !arg.contains('=')) {
+    } else {
+        let index = if program == Path::new("env") {
+            // Generated env wrappers contain assignments followed by the command.
+            args.iter().position(|arg| !arg.contains('='))
+        } else if program.file_name().is_some_and(|name| name == "sh")
+            && matches!(args, [flag, script, name, _reason, _command, ..]
+                if flag == "-c" && script == yinz_types::agent::MOTHER_FALLBACK_SCRIPT && name == "mother")
+        {
+            Some(4)
+        } else {
+            None
+        };
+        if let Some(index) = index {
             let (assignments, rest) = args.split_at_mut(index + 1);
             let executable = &mut assignments[index];
             let mut path = PathBuf::from(&*executable);

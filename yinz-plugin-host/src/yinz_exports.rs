@@ -3393,7 +3393,11 @@ fn spawn_agent_prepared(
     let mut resources = prepared.resources();
     resources.tab_id = destination.as_ref().map(|target| target.tab_id);
     let command = prepared.command;
-    let title = agent_pane_title(&spec);
+    let title = if is_mother {
+        yinz_runtime::agent::launch::kind_for_spec(&spec).map(|kind| format!("mother: {kind}"))
+    } else {
+        agent_pane_title(&spec)
+    };
     let action = RunCommandAction {
         command: command.path,
         args: command.args,

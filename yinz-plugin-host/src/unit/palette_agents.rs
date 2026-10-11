@@ -334,16 +334,30 @@ fn palette_current_directory_and_fresh_duplicate_targets() {
 }
 
 #[test]
-fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane() {
+fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane() {
+    std::env::set_var("YINZ_SESSION_NAME", "mother-test");
     let start = tempfile::tempdir().unwrap();
+    std::env::set_var("YINZ_TEST_CACHE_ROOT", start.path());
+    let cwd = yinz_config::project_config::bubblewrap::mother_directory(
+        &yinz_runtime::consts::YINZ_CACHE_DIR,
+        "mother-test",
+    )
+    .unwrap();
     let data = DataAccess::sqlite(&start.path().join("data"));
-    let launch = |active: bool| {
+    yinz_types::agent::provider::register(
+        9182,
+        yinz_types::agent::provider::AgentProvider {
+            kind: "mother-test-provider".into(),
+            executable: "custom-agent".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let launch = |active: bool, kind: &str, expected_title: &str| {
         // The pane the palette opened from is somewhere else, and may be gone by now.
         let request = request(
             Path::new("/nonexistent/source"),
-            AgentAction::Mother {
-                kind: "claude".into(),
-            },
+            AgentAction::Mother { kind: kind.into() },
         );
         request.active.store(active, atomic::Ordering::Release);
         let (screen_tx, screen_rx) = unbounded();
@@ -359,7 +373,7 @@ fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane(
                 while let Ok((instruction, _)) = pty_rx.recv() {
                     let PtyInstruction::SpawnTerminal(
                         Some(TerminalAction::RunCommand(command)),
-                        _,
+                        title,
                         placement,
                         _,
                         target,
@@ -372,6 +386,7 @@ fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane(
                     completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(42)));
                     completion.set_affected_tab_id(TabId::new(2));
                     assert!(completion.is_mother);
+                    assert_eq!(title.as_deref(), Some(expected_title));
                     launches.push((command, placement, target));
                 }
                 launches
@@ -384,7 +399,7 @@ fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane(
         (reply, launches, screen)
     };
 
-    let (reply, launches, screen) = launch(true);
+    let (reply, launches, screen) = launch(true, "claude", "mother: claude");
     assert!(
         matches!(&reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok),
         "{reply:?}"
@@ -392,7 +407,7 @@ fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane(
     let [(command, placement, target)] = launches.as_slice() else {
         panic!("expected one launch, got {launches:?}");
     };
-    assert_eq!(command.cwd.as_deref(), Some(start.path()));
+    assert_eq!(command.cwd.as_deref(), Some(cwd.as_path()));
     assert_eq!(command.target, PaneTarget::Local);
     assert!(command.args.iter().any(|arg| arg == "claude"));
     assert!(
@@ -407,7 +422,18 @@ fn mother_launches_as_an_overlay_in_the_session_directory_without_a_source_pane(
         .iter()
         .any(|instruction| matches!(instruction, ScreenInstruction::GetPaneInfo { .. })));
 
-    let (reply, launches, screen) = launch(false);
+    for (kind, title) in [
+        ("antigravity", "mother: agy"),
+        ("mother-test-provider", "mother: mother-test-provider"),
+    ] {
+        let (reply, launches, _) = launch(true, kind, title);
+        assert!(
+            matches!(reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok)
+        );
+        assert_eq!(launches.len(), 1);
+    }
+    yinz_types::agent::provider::unregister_owner(9182);
+    let (reply, launches, screen) = launch(false, "claude", "mother: claude");
     assert!(reply.unwrap_err().contains("cancelled"));
     assert!(launches.is_empty());
     assert!(screen.is_empty());
@@ -782,7 +808,14 @@ fn palette_history_run_search_orders_events_and_keeps_time_and_hit_navigation() 
 
 #[test]
 fn mother_launch_errors_preserve_the_placement_marker_pane_and_resources() {
+    std::env::set_var("YINZ_SESSION_NAME", "mother-test");
     let start = tempfile::tempdir().unwrap();
+    std::env::set_var("YINZ_TEST_CACHE_ROOT", start.path());
+    let cwd = yinz_config::project_config::bubblewrap::mother_directory(
+        &yinz_runtime::consts::YINZ_CACHE_DIR,
+        "mother-test",
+    )
+    .unwrap();
     for failure in ["known pane", "missing pane", "registration"] {
         let request = request(
             start.path(),
@@ -829,42 +862,53 @@ fn mother_launch_errors_preserve_the_placement_marker_pane_and_resources() {
             assert!(response.spawned.is_none());
             assert_eq!(
                 response.launch_resources.unwrap().cwd.as_deref(),
-                Some(start.path())
+                Some(cwd.as_path())
             );
         } else {
             let spawned = response.spawned.unwrap();
             assert_eq!(spawned.pane_id, PaneId::Terminal(TerminalId::new(42)));
             assert_eq!(spawned.tab_id, Some(TabId::new(2)));
-            assert_eq!(spawned.cwd.as_deref(), Some(start.path()));
+            assert_eq!(spawned.cwd.as_deref(), Some(cwd.as_path()));
         }
     }
 }
 
 #[test]
-fn mother_directory_is_resolved_again_for_each_launch() {
-    let start = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let directory = start.path().to_path_buf();
-    assert_eq!(mother_directory(&directory, None).unwrap(), directory);
+fn mother_sandbox_selection_and_fallback_are_independent_of_bubblewrap() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().to_str().unwrap();
+    let mut sandboxed = existing_command("codex", cwd, PaneTarget::Local).unwrap();
+    let args = sandboxed.command.args.clone();
+    mother_target(&mut sandboxed, Ok(())).unwrap();
     assert_eq!(
-        mother_directory(&directory, Some(home.path().into())).unwrap(),
-        directory
+        sandboxed.command.target.bubblewrap_root(),
+        Some(root.path())
     );
-    start.close().unwrap();
+    assert_eq!(sandboxed.command.args, args);
+
+    let mut local = existing_command("codex", cwd, PaneTarget::Local).unwrap();
+    mother_target(&mut local, Err("namespace setup failed".into())).unwrap();
+    assert_eq!(local.command.target, PaneTarget::Local);
+    assert_eq!(local.command.path, Path::new("/bin/sh"));
     assert_eq!(
-        mother_directory(&directory, Some(home.path().into())).unwrap(),
-        home.path()
+        yinz_types::agent::agent_kind_of(&local.command.path, &local.command.args).as_deref(),
+        Some("codex")
     );
-    std::fs::write(home.path().join("file"), "not a directory").unwrap();
-    for fallback in [
-        None,
-        Some(directory.clone()),
-        Some(home.path().join("file")),
-    ] {
-        assert_eq!(
-            mother_directory(&directory, fallback).unwrap_err(),
-            "Mother cannot launch: neither the session directory nor the home directory is available"
-        );
-    }
-    assert!(existing_command("claude", &directory.to_string_lossy(), PaneTarget::Local).is_err());
+    assert!(local
+        .command
+        .args
+        .iter()
+        .any(|arg| arg.contains("unsandboxed") && arg.contains("namespace setup failed")));
+    // Run the banner wrapper with a harmless command, proving it prints and execs once.
+    let output = process::Command::new(&local.command.path)
+        .args(&local.command.args[..4])
+        .args(["/bin/sh", "-c", "printf agent-started"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.contains("namespace setup failed\nagent-started"),
+        "{output}"
+    );
 }
