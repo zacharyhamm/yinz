@@ -27,7 +27,6 @@ pub mod llm;
 pub mod markdown;
 pub mod panes;
 pub mod run_history;
-pub mod swamp;
 pub mod tabs;
 pub mod text;
 pub mod wire;

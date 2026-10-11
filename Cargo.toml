@@ -96,7 +96,6 @@ members = [
     "default-plugins/project-data",
     "default-plugins/agent-service",
     "default-plugins/project-store",
-    "default-plugins/swamp-lab",
     "yinz-client",
     "yinz-integration-tests",
     "yinz-bus",

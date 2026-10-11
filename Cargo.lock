@@ -25,7 +25,6 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "swamp-lab",
  "unicode-width 0.2.2",
  "url",
  "yinz-tile",
@@ -4522,17 +4521,6 @@ name = "supports-unicode"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
-
-[[package]]
-name = "swamp-lab"
-version = "0.1.0"
-dependencies = [
- "regex",
- "serde",
- "serde_json",
- "url",
- "yinz-types",
-]
 
 [[package]]
 name = "swc_allocator"

@@ -9,7 +9,7 @@ description = "The agent plugins' store engine seam, entity schemas, and project
 workspace = true
 
 # Nothing from the rest of agent-proto: the plugin host links this crate for the project
-# registry, so it must not bring agent strips, envelopes, the LLM request builders or swamp-lab
+# registry, so it must not bring agent strips, envelopes or the LLM request builders
 # into the server with it.
 [dependencies]
 yinz-tile = { path = "../../yinz-tile" }
