@@ -1429,17 +1429,42 @@ fn note_palette(labels: &[&str]) -> CommandPalette {
 fn note_labels_wrap_twice_and_only_complete_titles_get_snippets() {
     for (label, expected) in [
         ("#1 Short", vec!["#1 Short — body snippet"]),
-        ("#2 Short title", vec!["#2 Short", "title — body snippet"]),
-        ("#3 abcdefghijklmnop", vec!["#3", "abcdefg…"]),
-        ("#4 日本語日本語", vec!["#4", "日本語…"]),
+        ("#2 Short title", vec!["#2 Short", "  title — body snippet"]),
+        ("#3 abcdefghijklmnop", vec!["#3", "  abcde…"]),
+        ("#4 日本語日本語", vec!["#4", "  日本…"]),
         ("#5 e\u{301} caf", vec!["#5 e\u{301} caf — body snippet"]),
-        ("#6 [archived]", vec!["#6", "[archiv…"]),
+        ("#6 [archived]", vec!["#6", "  [arch…"]),
+        ("#7 12345678", vec!["#7", "  12345…"]),
+        (
+            "#8 Short e\u{301} caf",
+            vec!["#8 Short", "  e\u{301} caf — body snippet"],
+        ),
     ] {
         let palette = note_palette(&[label]);
         assert_eq!(palette.entry_lines(0, 10, 2), expected, "{label}");
     }
     let palette = note_palette(&["#1 Short title"]);
     assert_eq!(palette.entry_lines(0, 10, 1), vec!["#1 Shor…"]);
+}
+
+#[test]
+fn continuation_indent_leaves_text_space_in_narrow_palettes() {
+    let palette = note_palette(&["abcdefghi"]);
+    for (width, expected) in [
+        (0, vec![""]),
+        (1, vec!["a", "…"]),
+        (2, vec!["a", "…"]),
+        (3, vec!["a", "…"]),
+        (4, vec!["ab", " …"]),
+        (5, vec!["abc", "  …"]),
+        (6, vec!["abcd", "  e…"]),
+    ] {
+        let lines = palette.entry_lines(0, width, 2);
+        assert_eq!(lines, expected, "width {width}");
+        assert!(lines
+            .iter()
+            .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) <= width));
+    }
 }
 
 #[test]
@@ -1488,6 +1513,23 @@ fn wrapped_results_share_selection_clicks_and_scroll_geometry() {
                             first_style = Some(style);
                         }
                         if *line > 0 {
+                            if cols >= 8 {
+                                assert_eq!(
+                                    painted
+                                        .chars()
+                                        .skip(layout.border)
+                                        .take(4)
+                                        .collect::<String>(),
+                                    "    "
+                                );
+                                let characters = &chunks[y - layout.rect.y].terminal_characters;
+                                for offset in 1..4 {
+                                    assert_eq!(
+                                        characters[layout.border + offset].styles,
+                                        characters[layout.border].styles
+                                    );
+                                }
+                            }
                             assert!(
                                 matches!(layout.result_rows.get(row - 1), Some(ResultRow::Entry(previous, 0)) if previous == index)
                             );
@@ -1616,6 +1658,13 @@ fn all_result_kinds_wrap_in_root_and_picker_views() {
                 let lines = rendered_lines(&palette, &layout);
                 let (last_row, _) = result_rows.last().unwrap();
                 assert!(lines[layout.options_y + last_row - layout.rect.y].contains('…'));
+                if expected == 2 {
+                    assert!(lines[layout.options_y + last_row - layout.rect.y]
+                        .chars()
+                        .skip(layout.border)
+                        .take(4)
+                        .all(|c| c == ' '));
+                }
                 palette.click(
                     &layout,
                     Position::new(
@@ -1652,13 +1701,13 @@ fn wrapped_shortcuts_and_descriptions_share_the_available_columns() {
     let first = layout.options_y - layout.rect.y;
     assert!(lines[first].contains("› Alpha bravo"));
     assert!(lines[first].contains("Ctrl n"));
-    assert!(lines[first + 1].contains("charlie delta…"));
+    assert!(lines[first + 1].contains("    charlie delt…"));
     assert!(!lines[first + 1].contains("Ctrl n"));
     assert!(!lines.iter().any(|line| line.contains("body snippet")));
     palette.entries[0].label = "Alpha bravo charlie".into();
     assert_eq!(
         palette.entry_lines(0, 24, 2),
-        vec!["Alpha bravo", "charlie — body snippet"]
+        vec!["Alpha bravo", "  charlie — body snippet"]
     );
 }
 
