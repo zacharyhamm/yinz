@@ -1733,6 +1733,7 @@ impl FloatingPanesStack {
                     CharacterChunk::new(left_chunk_characters, left_chunk_x, c_chunk.y);
                 left_chunk.pane_default_fg = c_chunk.pane_default_fg;
                 left_chunk.pane_default_bg = c_chunk.pane_default_bg;
+                left_chunk.theme_background = c_chunk.theme_background;
                 left_chunk.changed_colors = c_chunk.changed_colors;
                 if !c_chunk.selection_and_colors.is_empty() {
                     left_chunk.selection_and_colors = c_chunk.selection_and_colors.clone();
@@ -1941,6 +1942,8 @@ pub struct CharacterChunk {
     pub changed_colors: Option<[Option<AnsiCode>; 256]>,
     pub pane_default_fg: Option<AnsiCode>,
     pub pane_default_bg: Option<AnsiCode>,
+    /// Theme backgrounds remain eligible for the pane opacity setting.
+    pub theme_background: bool,
     selection_and_colors: Vec<HighlightSelection>,
 }
 

@@ -864,6 +864,7 @@ pub(crate) struct Screen {
     /// reconfigure can tell a changed pin from an unchanged one.
     configured_explicit_theme_hue: Option<ThemeHue>,
     themes: BTreeMap<String, Styling>,
+    terminal_themes: BTreeMap<String, yinz_types::style::TerminalTheme>,
     theme_name: Option<String>,
     theme_dark_name: Option<String>,
     theme_light_name: Option<String>,
@@ -1250,6 +1251,8 @@ impl Screen {
             // Painted from `client_attributes.style`, which the first client resolved against its
             // command line as well as the config; see the field's doc. Same for the two chrome
             // flags.
+            terminal_theme: _,
+            terminal_themes,
             theme: _,
             rounded_corners: _,
             hide_session_name: _,
@@ -1495,6 +1498,7 @@ impl Screen {
             theme_dark_name,
             theme_light_name,
             theme_preview: None,
+            terminal_themes,
             host_theme_dark_styling: host_theme_dark,
             host_theme_light_styling: host_theme_light,
             nested_session_handling,
@@ -3983,6 +3987,8 @@ impl Screen {
             }
         }
         let ScreenConfig {
+            terminal_theme,
+            terminal_themes,
             theme,
             themes,
             theme_name,
@@ -4043,6 +4049,8 @@ impl Screen {
             self.close_command_palette(client);
         }
         self.themes = themes;
+        self.terminal_themes = terminal_themes;
+        self.style.terminal = terminal_theme;
         self.theme_name = theme_name;
         self.theme_dark_name = theme_dark_name;
         self.theme_light_name = theme_light_name;
@@ -4126,6 +4134,7 @@ impl Screen {
             self.support_kitty_graphics_protocol != support_kitty_graphics_protocol;
         self.support_kitty_graphics_protocol = support_kitty_graphics_protocol;
         for tab in self.tabs.values_mut() {
+            tab.update_terminal_theme(self.style.terminal);
             tab.update_theme(theme);
             tab.update_rounded_corners(rounded_corners);
             tab.update_default_shell(default_shell.clone());
@@ -4266,6 +4275,13 @@ impl Screen {
                 HostTerminalThemeMode::Light => self.host_theme_light_styling,
             };
             if let Some(theme) = theme {
+                let name = match mode {
+                    HostTerminalThemeMode::Dark => self.theme_dark_name.as_ref(),
+                    HostTerminalThemeMode::Light => self.theme_light_name.as_ref(),
+                };
+                self.style.terminal = name
+                    .and_then(|name| self.terminal_themes.get(name))
+                    .copied();
                 self.repaint_theme(theme)?;
             }
         }
@@ -4276,6 +4292,7 @@ impl Screen {
         self.style.colors = theme;
         self.default_mode_info.update_theme(theme);
         for tab in self.tabs.values_mut() {
+            tab.update_terminal_theme(self.style.terminal);
             tab.update_theme(theme);
             tab.set_force_render();
         }

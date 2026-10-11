@@ -353,7 +353,7 @@ fn osc_11_set_and_query_pane_default_bg() {
     let set_bg = b"\x1b]11;#001a3a\x07";
     vte_parser.advance(&mut grid, set_bg);
 
-    assert_eq!(grid.pane_default_bg, Some((0, 26, 58)));
+    assert_eq!(grid.effective_background(), Some((0, 26, 58)));
 
     // Query background via OSC 11 — because a pane-scoped override is
     // in place, the query is short-circuited: apps inside the pane
@@ -399,7 +399,7 @@ fn osc_10_set_and_query_pane_default_fg() {
     let set_fg = b"\x1b]10;#00e000\x07";
     vte_parser.advance(&mut grid, set_fg);
 
-    assert_eq!(grid.pane_default_fg, Some((0, 224, 0)));
+    assert_eq!(grid.effective_foreground(), Some((0, 224, 0)));
 
     // Query foreground via OSC 10 — pane-scoped override is in place,
     // so the query is answered locally (see OSC 11 equivalent test for
@@ -444,20 +444,20 @@ fn osc_110_111_reset_pane_default_colors() {
     let set_bg = b"\x1b]11;#001a3a\x07";
     vte_parser.advance(&mut grid, set_bg);
 
-    assert_eq!(grid.pane_default_fg, Some((0, 224, 0)));
-    assert_eq!(grid.pane_default_bg, Some((0, 26, 58)));
+    assert_eq!(grid.effective_foreground(), Some((0, 224, 0)));
+    assert_eq!(grid.effective_background(), Some((0, 26, 58)));
 
     // Reset foreground via OSC 110
     let reset_fg = b"\x1b]110\x07";
     vte_parser.advance(&mut grid, reset_fg);
-    assert_eq!(grid.pane_default_fg, None);
-    assert_eq!(grid.pane_default_bg, Some((0, 26, 58)));
+    assert_eq!(grid.effective_foreground(), None);
+    assert_eq!(grid.effective_background(), Some((0, 26, 58)));
 
     // Reset background via OSC 111
     let reset_bg = b"\x1b]111\x07";
     vte_parser.advance(&mut grid, reset_bg);
-    assert_eq!(grid.pane_default_fg, None);
-    assert_eq!(grid.pane_default_bg, None);
+    assert_eq!(grid.effective_foreground(), None);
+    assert_eq!(grid.effective_background(), None);
 }
 
 #[test]
@@ -486,7 +486,7 @@ fn osc_11_set_bg_produces_ansi_in_render_output() {
     let set_bg = b"\x1b]11;#001a3a\x07";
     vte_parser.advance(&mut grid, set_bg);
 
-    assert_eq!(grid.pane_default_bg, Some((0, 26, 58)));
+    assert_eq!(grid.effective_background(), Some((0, 26, 58)));
 
     // Render the grid and check that the pane defaults are stamped on chunks
     let style = Style::default();

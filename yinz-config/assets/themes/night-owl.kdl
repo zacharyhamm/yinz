@@ -1,5 +1,26 @@
 themes {
     night-owl {
+        // Terminal palette: https://github.com/sdras/night-owl-vscode-theme/blob/main/themes/Night%20Owl-color-theme.json
+        terminal {
+            foreground "#d6deeb"
+            background "#011627"
+            black "#011627"
+            red "#ef5350"
+            green "#22da6e"
+            yellow "#c5e478"
+            blue "#82aaff"
+            magenta "#c792ea"
+            cyan "#21c7a8"
+            white "#ffffff"
+            bright_black "#575656"
+            bright_red "#ef5350"
+            bright_green "#22da6e"
+            bright_yellow "#ffeb95"
+            bright_blue "#82aaff"
+            bright_magenta "#c792ea"
+            bright_cyan "#7fdbca"
+            bright_white "#ffffff"
+        }
         text_unselected {
             base 254 255 255
             background 5 21 37

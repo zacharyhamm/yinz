@@ -261,6 +261,7 @@ pub trait Pane {
     fn get_selected_text(&self, _client_id: ClientId) -> Option<String> {
         None
     }
+    fn update_terminal_theme(&mut self, _theme: Option<yinz_types::style::TerminalTheme>) {}
     fn set_pane_default_colors(&mut self, _fg: Option<String>, _bg: Option<String>) {}
     fn get_pane_default_colors(&self) -> (Option<String>, Option<String>) {
         (None, None)

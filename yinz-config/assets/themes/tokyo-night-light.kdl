@@ -1,5 +1,26 @@
 themes {
     tokyo-night-light {
+        // Terminal palette: https://github.com/folke/tokyonight.nvim/blob/main/extras/kitty/tokyonight_day.conf
+        terminal {
+            foreground "#3760bf"
+            background "#e1e2e7"
+            black "#b4b5b9"
+            red "#f52a65"
+            green "#587539"
+            yellow "#8c6c3e"
+            blue "#2e7de9"
+            magenta "#9854f1"
+            cyan "#007197"
+            white "#6172b0"
+            bright_black "#a1a6c5"
+            bright_red "#ff4774"
+            bright_green "#5c8524"
+            bright_yellow "#a27629"
+            bright_blue "#358aff"
+            bright_magenta "#a463ff"
+            bright_cyan "#007ea8"
+            bright_white "#3760bf"
+        }
         text_unselected {
             base 130 137 172
             background 15 15 20

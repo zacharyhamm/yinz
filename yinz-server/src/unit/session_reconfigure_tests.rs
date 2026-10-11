@@ -560,6 +560,7 @@ fn theme_save_escapes_names_preserves_other_settings_and_stages_until_written() 
     config.themes.insert(
         name.into(),
         yinz_config::theme::Theme {
+            terminal: None,
             palette: Default::default(),
             sourced_from_external_file: true,
         },
@@ -637,6 +638,7 @@ fn theme_save_rejects_stale_names_and_write_failure_without_mutation() {
     config.themes.insert(
         "custom".into(),
         yinz_config::theme::Theme {
+            terminal: None,
             palette: Default::default(),
             sourced_from_external_file: false,
         },

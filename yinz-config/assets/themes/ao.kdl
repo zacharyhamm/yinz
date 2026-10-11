@@ -1,5 +1,26 @@
 themes {
     ao {
+        // Terminal palette: Yinz-specific palette, matched to the UI colors below.
+        terminal {
+            foreground "#f3f4f6"
+            background "#000000"
+            black "#000000"
+            red "#ef6461"
+            green "#73c991"
+            yellow "#e59728"
+            blue "#3c6eb4"
+            magenta "#d2a8ff"
+            cyan "#45b1e8"
+            white "#acc4e4"
+            bright_black "#526578"
+            bright_red "#ff8a86"
+            bright_green "#9be7b0"
+            bright_yellow "#ffc66d"
+            bright_blue "#6eb0ff"
+            bright_magenta "#e3c6ff"
+            bright_cyan "#8edbff"
+            bright_white "#f3f4f6"
+        }
         text_unselected {
             base 243 244 246
             background 0 0 0

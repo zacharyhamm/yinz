@@ -2,6 +2,27 @@
 // Activate in config.kdl with: theme "swamp" or theme "swamp-hud".
 themes {
     swamp {
+        // Terminal palette: Yinz-specific palette, matched to the UI colors below.
+        terminal {
+            foreground "#d1d5db"
+            background "#0a0a0a"
+            black "#0a0a0a"
+            red "#f87171"
+            green "#39dd14"
+            yellow "#fb923c"
+            blue "#60a5fa"
+            magenta "#d946ef"
+            cyan "#00cccc"
+            white "#d1d5db"
+            bright_black "#6b7280"
+            bright_red "#fca5a5"
+            bright_green "#39ff14"
+            bright_yellow "#fbbf24"
+            bright_blue "#93c5fd"
+            bright_magenta "#ff00ff"
+            bright_cyan "#00ffff"
+            bright_white "#ffffff"
+        }
         text_unselected {
             base "#d1d5db"
             background "#0a0a0a"
@@ -128,6 +149,27 @@ themes {
         }
     }
     swamp-hud {
+        // Terminal palette: Yinz-specific palette, matched to the UI colors below.
+        terminal {
+            foreground "#d1d5db"
+            background "#0a0a0a"
+            black "#0a0a0a"
+            red "#f87171"
+            green "#39dd14"
+            yellow "#fb923c"
+            blue "#60a5fa"
+            magenta "#d946ef"
+            cyan "#00cccc"
+            white "#d1d5db"
+            bright_black "#6b7280"
+            bright_red "#fca5a5"
+            bright_green "#39ff14"
+            bright_yellow "#fbbf24"
+            bright_blue "#93c5fd"
+            bright_magenta "#ff00ff"
+            bright_cyan "#00ffff"
+            bright_white "#ffffff"
+        }
         text_unselected {
             base "#d1d5db"
             background "#0a0a0a"

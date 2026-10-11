@@ -19,6 +19,8 @@ fn styling(shade: u8) -> Styling {
 /// Every field of `ScreenConfig` set to something other than what `test_screen_config` holds.
 fn every_field_changed() -> ScreenConfig {
     ScreenConfig {
+        terminal_theme: None,
+        terminal_themes: Default::default(),
         theme: styling(1),
         themes: std::collections::BTreeMap::from([("custom".into(), styling(1))]),
         theme_name: Some("custom".into()),
@@ -114,6 +116,8 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         .unwrap();
 
     let ScreenConfig {
+        terminal_theme,
+        terminal_themes,
         theme,
         themes,
         theme_name,
@@ -175,6 +179,8 @@ fn a_reload_applies_every_field_of_the_screen_config() {
     assert_eq!(screen.theme_name, theme_name);
     assert_eq!(screen.theme_dark_name, theme_dark_name);
     assert_eq!(screen.theme_light_name, theme_light_name);
+    assert_eq!(screen.style.terminal, terminal_theme);
+    assert_eq!(screen.terminal_themes, terminal_themes);
     assert_eq!(screen.host_theme_dark_styling, host_theme_dark);
     assert_eq!(screen.host_theme_light_styling, host_theme_light);
     assert_eq!(screen.configured_explicit_theme_hue, explicit_theme_hue);

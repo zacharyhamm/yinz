@@ -635,6 +635,12 @@ fn picker_theme_reaches_plugins_new_panes_and_clients() {
     let original = screen.style.colors;
     let preview = styling_with_background(TEST_LIGHT_BG);
     screen.themes.insert("preview".into(), preview);
+    let terminal = yinz_types::style::TerminalTheme {
+        foreground: (1, 2, 3),
+        background: (4, 5, 6),
+        ansi: [(7, 8, 9); 16],
+    };
+    screen.terminal_themes.insert("preview".into(), terminal);
     screen.toggle_command_palette(CLIENT_1);
     screen.command_palette_handles_input(&None, b"Change theme", false, CLIENT_1);
     capture.drain_plugin_updates();
@@ -669,8 +675,125 @@ fn picker_theme_reaches_plugins_new_panes_and_clients() {
         )
         .unwrap();
     assert_eq!(screen.tabs[&TabId::new(1)].style.colors, preview);
+    assert_eq!(screen.tabs[&TabId::new(1)].style.terminal, Some(terminal));
+    assert_eq!(
+        terminal_background_reply(&mut screen, TabId::new(1), 2),
+        vec![b"\x1b]11;rgb:0404/0505/0606\x07".to_vec()]
+    );
     screen.close_command_palette(CLIENT_1);
     assert_eq!(screen.tabs[&TabId::new(0)].style.colors, original);
     assert_eq!(screen.tabs[&TabId::new(1)].style.colors, original);
+    assert!(terminal_background_reply(&mut screen, TabId::new(1), 2).is_empty());
     assert_eq!(screen.mode_info[&other].style.colors, original);
+}
+
+fn terminal_background_reply(screen: &mut Screen, tab: TabId, id: u32) -> Vec<Vec<u8>> {
+    let pane = screen
+        .tabs
+        .get_mut(&tab)
+        .unwrap()
+        .get_pane_with_id_mut(PaneId::Terminal(TerminalId::new(id)))
+        .unwrap();
+    pane.handle_pty_bytes(b"\x1b]11;?\x07".to_vec());
+    pane.drain_messages_to_pty()
+}
+
+#[test]
+fn terminal_themes_follow_reload_switching_new_floating_and_hidden_panes() {
+    use yinz_types::style::{HostTerminalThemeMode, TerminalTheme};
+    let (mut screen, _capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
+    let tab = TabId::new(0);
+    new_tab(&mut screen, 1, tab);
+    add_pane_to_tab(
+        &mut screen,
+        tab,
+        PaneId::Terminal(TerminalId::new(10)),
+        false,
+    );
+    add_pane_to_tab(
+        &mut screen,
+        tab,
+        PaneId::Terminal(TerminalId::new(11)),
+        true,
+    );
+    screen
+        .tabs
+        .get_mut(&tab)
+        .unwrap()
+        .suppress_pane(PaneId::Terminal(TerminalId::new(10)), Some(CLIENT_1));
+    let dark = TerminalTheme {
+        foreground: (1, 2, 3),
+        background: (4, 5, 6),
+        ansi: [(7, 8, 9); 16],
+    };
+    let light = TerminalTheme {
+        background: (240, 240, 240),
+        ..dark
+    };
+    let mut config = test_screen_config();
+    config.terminal_theme = Some(dark);
+    screen
+        .reconfigure(config.clone(), Keybinds::default(), CLIENT_1)
+        .unwrap();
+    screen
+        .change_mode(InputMode::Locked, None, CLIENT_1)
+        .unwrap();
+    assert_eq!(screen.style.terminal, Some(dark));
+    screen
+        .change_mode(InputMode::Normal, None, CLIENT_1)
+        .unwrap();
+
+    for id in [10, 11] {
+        assert_eq!(
+            terminal_background_reply(&mut screen, tab, id),
+            vec![b"\x1b]11;rgb:0404/0505/0606\x07".to_vec()]
+        );
+    }
+    add_pane_to_tab(
+        &mut screen,
+        tab,
+        PaneId::Terminal(TerminalId::new(12)),
+        false,
+    );
+    assert_eq!(
+        terminal_background_reply(&mut screen, tab, 12),
+        vec![b"\x1b]11;rgb:0404/0505/0606\x07".to_vec()]
+    );
+    screen.host_theme_dark_styling = Some(Styling::default());
+    screen.host_theme_light_styling = Some(Styling::default());
+    screen.theme_dark_name = Some("dark".into());
+    screen.theme_light_name = Some("light".into());
+    screen.terminal_themes = BTreeMap::from([("dark".into(), dark), ("light".into(), light)]);
+    screen
+        .update_host_terminal_theme_mode(HostTerminalThemeMode::Light)
+        .unwrap();
+    for id in [10, 11, 12] {
+        assert_eq!(
+            terminal_background_reply(&mut screen, tab, id),
+            vec![b"\x1b]11;rgb:f0f0/f0f0/f0f0\x07".to_vec()]
+        );
+    }
+    screen
+        .tabs
+        .get_mut(&tab)
+        .unwrap()
+        .unsuppress_pane(PaneId::Terminal(TerminalId::new(10)), false);
+    assert_eq!(
+        terminal_background_reply(&mut screen, tab, 10),
+        vec![b"\x1b]11;rgb:f0f0/f0f0/f0f0\x07".to_vec()]
+    );
+    screen
+        .update_host_terminal_theme_mode(HostTerminalThemeMode::Dark)
+        .unwrap();
+    assert_eq!(
+        terminal_background_reply(&mut screen, tab, 10),
+        vec![b"\x1b]11;rgb:0404/0505/0606\x07".to_vec()]
+    );
+    config.terminal_theme = None;
+    screen
+        .reconfigure(config, Keybinds::default(), CLIENT_1)
+        .unwrap();
+    for id in [10, 11, 12] {
+        assert!(terminal_background_reply(&mut screen, tab, id).is_empty());
+    }
 }

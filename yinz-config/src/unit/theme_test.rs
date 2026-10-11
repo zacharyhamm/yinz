@@ -97,3 +97,64 @@ fn valid_hex_colors_deserialize() {
         assert_eq!(rgb, expected, "for {input}");
     }
 }
+
+#[test]
+fn terminal_palettes_are_complete_and_optional() {
+    for file in YINZ_DEFAULT_THEMES.files() {
+        let themes = Themes::from_string(file.contents_utf8().unwrap(), false).unwrap();
+        for (name, theme) in themes.inner() {
+            assert_eq!(theme.terminal.is_some(), name != "ansi", "{name}");
+        }
+    }
+    let legacy = include_str!("fixtures/themes/dracula.kdl");
+    let themes = Themes::from_string(legacy, false).unwrap();
+    assert!(themes
+        .inner()
+        .values()
+        .all(|theme| theme.terminal.is_none()));
+}
+
+#[test]
+fn terminal_palette_validation_and_legacy_ui() {
+    let mut colors = String::from("foreground \"#123\"; background 4 5 6;\n");
+    for name in yinz_types::style::TerminalTheme::ANSI_NAMES {
+        colors.push_str(&format!("{name} 10 20 30;\n"));
+    }
+    let source = format!("themes {{ test {{ terminal {{ {colors} }}; }}; }}");
+    let parsed = Themes::from_string(&source, false).unwrap();
+    let terminal = parsed.get_theme("test").unwrap().terminal.unwrap();
+    assert_eq!(terminal.foreground, (17, 34, 51));
+    assert_eq!(terminal.background, (4, 5, 6));
+    assert_eq!(terminal.ansi, [(10, 20, 30); 16]);
+    assert_eq!(
+        parsed,
+        Themes::from_string(&parsed.to_kdl().unwrap().to_string(), false).unwrap()
+    );
+    for invalid in [
+        source.replace("bright_white 10 20 30;", ""),
+        source.replace("foreground \"#123\"", "foreground 7"),
+        source.replace("background 4 5 6", "background 256 5 6"),
+        source.replace("background 4 5 6", "background -1 5 6"),
+        source.replace("background 4 5 6", "background \"#xyz\""),
+        source.replace("background 4 5 6;", "background 4 5 6; background 7 8 9;"),
+        source.replace("bright_white", "unknown"),
+    ] {
+        assert!(Themes::from_string(&invalid, false).is_err(), "{invalid}");
+    }
+    let legacy = include_str!("fixtures/themes/dracula.kdl");
+    let original = Themes::from_string(legacy, false).unwrap();
+    let with_terminal = legacy.replacen(
+        "dracula {",
+        &format!("dracula {{ terminal {{ {colors} }}\n"),
+        1,
+    );
+    let parsed = Themes::from_string(&with_terminal, false).unwrap();
+    assert_eq!(
+        original.get_theme("dracula").unwrap().palette,
+        parsed.get_theme("dracula").unwrap().palette
+    );
+    assert_eq!(
+        parsed.get_theme("dracula").unwrap().terminal,
+        Some(terminal)
+    );
+}

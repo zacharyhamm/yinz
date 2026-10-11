@@ -1,5 +1,26 @@
 themes {
     terafox {
+        // Terminal palette: https://github.com/EdenEast/nightfox.nvim/blob/main/extra/terafox/kitty.conf
+        terminal {
+            foreground "#e6eaea"
+            background "#152528"
+            black "#2f3239"
+            red "#e85c51"
+            green "#7aa4a1"
+            yellow "#fda47f"
+            blue "#5a93aa"
+            magenta "#ad5c7c"
+            cyan "#a1cdd8"
+            white "#ebebeb"
+            bright_black "#4e5157"
+            bright_red "#eb746b"
+            bright_green "#8eb2af"
+            bright_yellow "#fdb292"
+            bright_blue "#73a3b7"
+            bright_magenta "#b97490"
+            bright_cyan "#afd4de"
+            bright_white "#eeeeee"
+        }
         text_unselected {
             base 203 217 216
             background 37 65 71

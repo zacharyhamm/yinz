@@ -1203,6 +1203,19 @@ fn command_palette_agent_history_event_back_focus_and_archive_resume() {
     yinz.quit();
 }
 
+fn assert_terminal_background(shell: &yinz_integration_tests::FakePtyHandle, rgb: (u8, u8, u8)) {
+    // Querying apps use raw mode: echoing the reply would set an application color override.
+    shell.disable_echo();
+    let before = shell.stdin_bytes().len();
+    shell.output(b"\x1b]11;?\x07");
+    let (r, g, b) = rgb;
+    let expected = format!("\x1b]11;rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x07");
+    let bytes = shell.wait_for_stdin("terminal background reply", |bytes| {
+        bytes[before..].starts_with(b"\x1b]11;") && bytes[before..].ends_with(b"\x07")
+    });
+    assert_eq!(String::from_utf8_lossy(&bytes[before..]), expected);
+}
+
 #[test]
 fn theme_picker_can_cancel_while_config_file_is_locked() {
     let directory = tempfile::tempdir().unwrap();
@@ -1243,6 +1256,7 @@ fn theme_picker_can_cancel_while_config_file_is_locked() {
     yinz.wait_until("contended save reports an error", |snapshot| {
         snapshot.contains("Configuration is busy") && snapshot.contains("> dracula")
     });
+    assert_terminal_background(&shell, (0x19, 0x23, 0x30));
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until(
         "cancel restores the theme while the lock is held",
@@ -1255,10 +1269,11 @@ fn theme_picker_can_cancel_while_config_file_is_locked() {
             && snapshot.contains("$")
             && snapshot.cell_foreground(0, 0) == frame
     });
+    let before_paste = shell.stdin_bytes().len();
     yinz.send_stdin(b"\x1b[200~after cancellation\x1b[201~");
     shell.wait_for_stdin(
         "input reaches the shell while the config lock is held",
-        |bytes| bytes == b"after cancellation",
+        |bytes| &bytes[before_paste..] == b"after cancellation",
     );
     shell.output(b"\r\nRENDER WHILE LOCKED\r\n");
     yinz.wait_until(
@@ -1310,6 +1325,7 @@ fn theme_picker_preview_cancel_save_and_reload() {
     shell.output(PROMPT);
     let initial = yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
     let frame = initial.cell_foreground(0, 0);
+    assert_terminal_background(&shell, (0x19, 0x23, 0x30));
     let managed = directory.path().join("config.d/yinz-managed.kdl");
     yinz.send_stdin(DO);
     yinz.send_stdin(b"Change theme");
@@ -1323,12 +1339,14 @@ fn theme_picker_preview_cancel_save_and_reload() {
             && snapshot.contains("> dracula")
             && snapshot.cell_foreground(0, 0) != frame
     });
+    assert_terminal_background(&shell, (0x28, 0x2a, 0x36));
     assert!(!managed.exists());
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("cancel restores frame", |snapshot| {
         snapshot.contains("Esc Close") && snapshot.cell_foreground(0, 0) == frame
     });
     assert!(!managed.exists());
+    assert_terminal_background(&shell, (0x19, 0x23, 0x30));
     yinz.send_stdin(b"\r");
     yinz.wait_until("theme picker reopened", |snapshot| {
         snapshot.contains("Enter Save")
@@ -1345,6 +1363,7 @@ fn theme_picker_preview_cancel_save_and_reload() {
             && snapshot.contains("$")
             && snapshot.cell_foreground(0, 0) == preview.cell_foreground(0, 0)
     });
+    assert_terminal_background(&shell, (0x28, 0x2a, 0x36));
     let saved = std::fs::read_to_string(&managed).unwrap();
     assert!(saved.contains("theme \"dracula\""), "{saved}");
     assert!(!saved.contains("theme_dark"), "{saved}");
@@ -1361,6 +1380,7 @@ fn theme_picker_preview_cancel_save_and_reload() {
     reloaded.wait_until("saved theme survives reload", |snapshot| {
         snapshot.contains("$") && snapshot.cell_foreground(0, 0) == preview.cell_foreground(0, 0)
     });
+    assert_terminal_background(&shell, (0x28, 0x2a, 0x36));
     reloaded.quit();
 }
 

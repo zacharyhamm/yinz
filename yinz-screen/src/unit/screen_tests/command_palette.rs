@@ -4472,6 +4472,14 @@ fn theme_screen() -> Screen {
     beta.text_unselected.background = yinz_types::colors::PaletteColor::Rgb((220, 230, 240));
     screen.themes =
         std::collections::BTreeMap::from([("alpha".into(), alpha), ("beta".into(), beta)]);
+    screen.terminal_themes.insert(
+        "alpha".into(),
+        yinz_types::style::TerminalTheme {
+            foreground: (1, 2, 3),
+            background: (4, 5, 6),
+            ansi: [(7, 8, 9); 16],
+        },
+    );
     screen.theme_name = Some("beta".into());
     screen.repaint_theme(beta).unwrap();
     screen
@@ -4487,9 +4495,11 @@ fn theme_preview_initial_selection_filter_empty_and_cancel() {
     let mut screen = theme_screen();
     let receiver = screen_wired_to_server(&mut screen);
     let original = screen.style.colors;
+    assert_eq!(screen.style.terminal, None);
     open_themes(&mut screen);
     assert_eq!(screen.style.colors, original);
     palette_key(&mut screen, BareKey::Up);
+    assert_eq!(screen.style.terminal, Some(screen.terminal_themes["alpha"]));
     assert_eq!(screen.style.colors, screen.themes["alpha"]);
     assert_eq!(
         screen.default_mode_info.style.colors,
@@ -4499,6 +4509,7 @@ fn theme_preview_initial_selection_filter_empty_and_cancel() {
     assert_eq!(screen.style.colors, original);
     palette_key(&mut screen, BareKey::Esc);
     assert!(screen.theme_preview.is_none());
+    assert_eq!(screen.style.terminal, None);
     assert_eq!(screen.style.colors, original);
     assert!(!receiver
         .try_iter()
@@ -4578,7 +4589,8 @@ fn theme_preview_disconnect_reload_and_failed_save() {
         .unwrap();
     assert_ne!(retry, request);
     screen.palette_theme_saved(CLIENT, retry, Err("still read-only".into()));
-    assert_eq!(screen.style.colors, screen.themes["alpha"]);
+    assert_eq!(screen.style.colors, screen.themes["beta"]);
+    assert_eq!(screen.style.terminal, None);
     palette_key(&mut screen, BareKey::Esc);
     assert_eq!(screen.style.colors, screen.themes["beta"]);
     screen.close_command_palette(CLIENT);

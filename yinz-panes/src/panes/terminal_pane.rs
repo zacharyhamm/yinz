@@ -506,6 +506,10 @@ impl Pane for TerminalPane {
     fn set_selectable(&mut self, selectable: bool) {
         self.selectable = selectable;
     }
+    fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
+        self.style.terminal = theme;
+        self.grid.update_terminal_theme(theme);
+    }
     fn set_pane_default_colors(&mut self, fg: Option<String>, bg: Option<String>) {
         self.grid.set_pane_default_colors(fg, bg);
         self.set_should_render(true);

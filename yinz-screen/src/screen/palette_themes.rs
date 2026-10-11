@@ -12,6 +12,7 @@ use yinz_types::style::{HostTerminalThemeMode, Styling};
 pub(crate) struct Preview {
     pub(crate) client: ClientId,
     original: Styling,
+    original_terminal: Option<yinz_types::style::TerminalTheme>,
     saving: Option<uuid::Uuid>,
     cancelled: Arc<AtomicBool>,
 }
@@ -42,11 +43,17 @@ impl Screen {
                 self.theme_name.as_deref().or(Some("default"))
             };
         let active = configured
-            .filter(|name| self.themes.get(*name) == Some(&self.style.colors))
+            .filter(|name| {
+                self.themes.get(*name) == Some(&self.style.colors)
+                    && self.terminal_themes.get(*name).copied() == self.style.terminal
+            })
             .or_else(|| {
                 self.themes
                     .iter()
-                    .find(|(_, theme)| **theme == self.style.colors)
+                    .find(|(name, theme)| {
+                        **theme == self.style.colors
+                            && self.terminal_themes.get(*name).copied() == self.style.terminal
+                    })
                     .map(|(name, _)| name.as_str())
             })
             .map(|name| format!("theme:{name}"));
@@ -58,6 +65,7 @@ impl Screen {
             self.theme_preview = Some(Preview {
                 client,
                 original: self.style.colors,
+                original_terminal: self.style.terminal,
                 saving: None,
                 cancelled: Arc::new(AtomicBool::new(false)),
             });
@@ -75,6 +83,7 @@ impl Screen {
             return;
         }
         if let Some(preview) = self.theme_preview.take() {
+            self.style.terminal = preview.original_terminal;
             self.repaint_theme(preview.original).non_fatal();
             if let Some(mode) = self.host_terminal_theme_mode {
                 self.repaint_theme_mode(mode).non_fatal();
@@ -116,8 +125,21 @@ impl Screen {
             } else {
                 None
             };
+        let terminal = match selected {
+            Some(Builtin::Theme(name)) => self.terminal_themes.get(name).copied(),
+            _ if normal.is_some() => {
+                let name = match self.host_terminal_theme_mode {
+                    Some(HostTerminalThemeMode::Light) => self.theme_light_name.as_ref(),
+                    _ => self.theme_dark_name.as_ref(),
+                };
+                name.and_then(|name| self.terminal_themes.get(name))
+                    .copied()
+            },
+            _ => preview.original_terminal,
+        };
         let theme = theme.or(normal).unwrap_or(preview.original);
-        if self.style.colors != theme {
+        if self.style.colors != theme || self.style.terminal != terminal {
+            self.style.terminal = terminal;
             self.repaint_theme(theme).non_fatal();
         }
     }
@@ -172,6 +194,9 @@ impl Screen {
                 super::notify(&self.bus.senders, format!("Could not save theme: {error}"));
                 if let Some(preview) = self.theme_preview.as_mut() {
                     preview.saving = None;
+                    let original = preview.original;
+                    self.style.terminal = preview.original_terminal;
+                    self.repaint_theme(original).non_fatal();
                 }
                 if let Some(state) = self.command_palettes.get_mut(&client) {
                     state.widget.busy = false;

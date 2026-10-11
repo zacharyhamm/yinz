@@ -89,8 +89,39 @@ pub struct Palette {
     pub brown: PaletteColor,
 }
 
+/// Literal pane colors, independent of host colors and application overrides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TerminalTheme {
+    pub foreground: (u8, u8, u8),
+    pub background: (u8, u8, u8),
+    pub ansi: [(u8, u8, u8); 16],
+}
+
+impl TerminalTheme {
+    pub const ANSI_NAMES: [&'static str; 16] = [
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "magenta",
+        "cyan",
+        "white",
+        "bright_black",
+        "bright_red",
+        "bright_green",
+        "bright_yellow",
+        "bright_blue",
+        "bright_magenta",
+        "bright_cyan",
+        "bright_white",
+    ];
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct Style {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<TerminalTheme>,
     pub colors: Styling,
     pub rounded_corners: bool,
     pub hide_session_name: bool,
@@ -499,6 +530,7 @@ mod compatibility_tests {
             assert_eq!(serde_json::from_str::<ThemeHue>(alias).unwrap(), hue);
         }
         let style = Style {
+            terminal: None,
             rounded_corners: true,
             hide_session_name: false,
             ..Default::default()

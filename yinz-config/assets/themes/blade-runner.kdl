@@ -1,5 +1,26 @@
 themes {
     blade-runner {
+        // Terminal palette: Yinz-specific palette, matched to the UI colors below.
+        terminal {
+            foreground "#ffffff"
+            background "#000000"
+            black "#000000"
+            red "#ff3333"
+            green "#00cc44"
+            yellow "#ff8c0d"
+            blue "#3366ff"
+            magenta "#cc33ff"
+            cyan "#00b8b8"
+            white "#cccccc"
+            bright_black "#666666"
+            bright_red "#ff6666"
+            bright_green "#00ff00"
+            bright_yellow "#ffc266"
+            bright_blue "#6699ff"
+            bright_magenta "#ff00ff"
+            bright_cyan "#00e5e5"
+            bright_white "#ffffff"
+        }
         text_unselected {
             base 255 255 255
             background 0 0 0

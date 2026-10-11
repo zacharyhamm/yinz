@@ -1,5 +1,26 @@
 themes {
     catppuccin-frappe {
+        // Terminal palette: https://github.com/catppuccin/kitty/blob/main/themes/frappe.conf
+        terminal {
+            foreground "#c6d0f5"
+            background "#303446"
+            black "#51576d"
+            red "#e78284"
+            green "#a6d189"
+            yellow "#e5c890"
+            blue "#8caaee"
+            magenta "#f4b8e4"
+            cyan "#81c8be"
+            white "#b5bfe2"
+            bright_black "#626880"
+            bright_red "#e78284"
+            bright_green "#a6d189"
+            bright_yellow "#e5c890"
+            bright_blue "#8caaee"
+            bright_magenta "#f4b8e4"
+            bright_cyan "#81c8be"
+            bright_white "#a5adce"
+        }
         text_unselected {
             base 198 208 245
             background 41 44 60

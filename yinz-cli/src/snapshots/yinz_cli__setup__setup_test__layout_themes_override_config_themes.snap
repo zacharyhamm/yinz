@@ -8086,6 +8086,7 @@ Config {
     },
     themes: {
         "other-theme-from-config": Theme {
+            terminal: None,
             sourced_from_external_file: false,
             palette: Styling {
                 text_unselected: StyleDeclaration {
@@ -8676,6 +8677,7 @@ Config {
             },
         },
         "theme-from-config": Theme {
+            terminal: None,
             sourced_from_external_file: false,
             palette: Styling {
                 text_unselected: StyleDeclaration {
@@ -9266,6 +9268,7 @@ Config {
             },
         },
         "theme-from-layout": Theme {
+            terminal: None,
             sourced_from_external_file: false,
             palette: Styling {
                 text_unselected: StyleDeclaration {

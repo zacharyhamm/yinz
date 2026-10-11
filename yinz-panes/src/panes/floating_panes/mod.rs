@@ -1796,6 +1796,12 @@ impl FloatingPanes {
             },
         }
     }
+    pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
+        self.style.terminal = theme;
+        for pane in self.panes.values_mut() {
+            pane.update_terminal_theme(theme);
+        }
+    }
     pub fn update_pane_themes(&mut self, theme: Styling) {
         self.style.colors = theme;
         for pane in self.panes.values_mut() {
