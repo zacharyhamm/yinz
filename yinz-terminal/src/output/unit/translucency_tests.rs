@@ -300,6 +300,14 @@ fn serialize_and_parse_row(
 ) -> VecDeque<TerminalCharacter> {
     let mut bytes = String::new();
     serialize_chunks(&mut bytes, chunks, None, None, None, true, true, None, None).unwrap();
+    parse_row(bytes.as_bytes(), cols)
+        .viewport
+        .pop_front()
+        .unwrap()
+        .columns
+}
+
+fn parse_row(bytes: &[u8], cols: usize) -> crate::panes::Grid {
     let mut grid = crate::panes::Grid::new(
         1,
         cols,
@@ -316,8 +324,8 @@ fn serialize_and_parse_row(
         true,
         false,
     );
-    vte::Parser::new().advance(&mut grid, bytes.as_bytes());
-    grid.viewport.pop_front().unwrap().columns
+    vte::Parser::new().advance(&mut grid, bytes);
+    grid
 }
 
 #[test]
@@ -1020,51 +1028,87 @@ fn theme_backgrounds_allow_opacity_but_explicit_pane_colors_stay_solid() {
 }
 
 #[test]
-fn serialization_remaps_all_ansi_colors_without_changing_extended_or_truecolor() {
-    let palette: [_; 16] = std::array::from_fn(|i| (i as u8, 40, 80));
-    let mut themed = chunk("0123456789abcdefETD", 0);
-    let mut colors = [None; 256];
-    for (i, rgb) in palette.iter().enumerate() {
-        colors[i] = Some(AnsiCode::RgbCode(*rgb));
-        themed.terminal_characters[i].styles = DEFAULT_STYLES
-            .foreground(Some(AnsiCode::ColorIndex(i as u8)))
-            .background(Some(AnsiCode::ColorIndex(i as u8)))
-            .into();
+fn serialization_remaps_sgr_colors_with_theme_and_application_palettes() {
+    use yinz_types::style::{Style, TerminalTheme};
+
+    let theme = TerminalTheme {
+        foreground: (1, 2, 3),
+        background: (4, 5, 6),
+        ansi: std::array::from_fn(|i| (i as u8, 40, 80)),
+    };
+    for named in [false, true] {
+        let mut input = String::new();
+        for i in 0..16 {
+            if named {
+                let fg = if i < 8 { 30 + i } else { 90 + i - 8 };
+                let bg = fg + 10;
+                input.push_str(&format!("\x1b[{fg};{bg};58;5;{i}mX"));
+            } else {
+                input.push_str(&format!("\x1b[38;5;{i};48;5;{i};58;5;{i}mX"));
+            }
+        }
+        input.push_str("\x1b[38;5;200;48;5;200;58;5;200mE");
+        input.push_str("\x1b[38;2;11;22;33;48;2;44;55;66;58;2;77;88;99mT\x1b[0mD");
+        for themed in [false, true] {
+            for overridden in [false, true] {
+                let mut grid = parse_row(input.as_bytes(), 19);
+                let original = grid.viewport[0].columns.clone();
+                if themed {
+                    grid.update_terminal_theme(Some(theme));
+                }
+                if overridden {
+                    vte::Parser::new().advance(&mut grid, b"\x1b]4;1;#123456;200;#abcdef\x07");
+                }
+                let (chunks, _, _, _) = grid.render(0, 0, &Style::default()).unwrap().unwrap();
+                let cells = serialize_and_parse_row(chunks, 19);
+                assert_eq!(grid.viewport[0].columns, original);
+                for (i, cell) in cells.iter().take(17).enumerate() {
+                    let replacement = if overridden && i == 1 {
+                        Some(AnsiCode::RgbCode((0x12, 0x34, 0x56)))
+                    } else if overridden && i == 16 {
+                        Some(AnsiCode::RgbCode((0xab, 0xcd, 0xef)))
+                    } else if themed && i < 16 {
+                        Some(AnsiCode::RgbCode(theme.ansi[i]))
+                    } else {
+                        None
+                    };
+                    assert_eq!(
+                        cell.styles.foreground,
+                        replacement.or(original[i].styles.foreground)
+                    );
+                    assert_eq!(
+                        cell.styles.background,
+                        replacement.or(original[i].styles.background)
+                    );
+                    assert_eq!(
+                        cell.styles.underline_color,
+                        replacement.or(original[i].styles.underline_color)
+                    );
+                }
+                assert_eq!(cells[17].styles.foreground, original[17].styles.foreground);
+                assert_eq!(cells[17].styles.background, original[17].styles.background);
+                assert_eq!(
+                    cells[17].styles.underline_color,
+                    original[17].styles.underline_color
+                );
+                assert_eq!(
+                    cells[18].styles.foreground,
+                    Some(if themed {
+                        AnsiCode::RgbCode(theme.foreground)
+                    } else {
+                        AnsiCode::Reset
+                    })
+                );
+                assert_eq!(
+                    cells[18].styles.background,
+                    Some(if themed {
+                        AnsiCode::RgbCode(theme.background)
+                    } else {
+                        AnsiCode::Reset
+                    })
+                );
+                assert_eq!(cells[18].styles.underline_color, Some(AnsiCode::Reset));
+            }
+        }
     }
-    themed.terminal_characters[16].styles = DEFAULT_STYLES
-        .foreground(Some(AnsiCode::ColorIndex(200)))
-        .background(Some(AnsiCode::ColorIndex(255)))
-        .into();
-    themed.terminal_characters[17].styles = DEFAULT_STYLES
-        .foreground(Some(AnsiCode::RgbCode((11, 22, 33))))
-        .background(Some(AnsiCode::RgbCode((44, 55, 66))))
-        .into();
-    themed.add_changed_colors(Some(colors));
-    themed.add_pane_defaults(
-        Some(AnsiCode::RgbCode((1, 2, 3))),
-        Some(AnsiCode::RgbCode((4, 5, 6))),
-    );
-    let cells = serialize_and_parse_row(vec![themed], 19);
-    for (i, rgb) in palette.into_iter().enumerate() {
-        assert_eq!(cells[i].styles.foreground, Some(AnsiCode::RgbCode(rgb)));
-        assert_eq!(cells[i].styles.background, Some(AnsiCode::RgbCode(rgb)));
-    }
-    assert_eq!(cells[16].styles.foreground, Some(AnsiCode::ColorIndex(200)));
-    assert_eq!(cells[16].styles.background, Some(AnsiCode::ColorIndex(255)));
-    assert_eq!(
-        cells[17].styles.foreground,
-        Some(AnsiCode::RgbCode((11, 22, 33)))
-    );
-    assert_eq!(
-        cells[17].styles.background,
-        Some(AnsiCode::RgbCode((44, 55, 66)))
-    );
-    assert_eq!(
-        cells[18].styles.foreground,
-        Some(AnsiCode::RgbCode((1, 2, 3)))
-    );
-    assert_eq!(
-        cells[18].styles.background,
-        Some(AnsiCode::RgbCode((4, 5, 6)))
-    );
 }
