@@ -3,16 +3,20 @@ use crate::consts::YINZ_DEFAULT_THEMES;
 use crate::theme::Themes;
 #[cfg(not(test))]
 pub fn get_default_themes() -> Themes {
-    let mut themes = Themes::default();
-    for file in YINZ_DEFAULT_THEMES.files() {
-        if let Some(content) = file.contents_utf8() {
-            let sourced_from_external_file = true;
-            if let Ok(theme) = Themes::from_string(content, sourced_from_external_file) {
-                themes = themes.merge(theme)
+    // Embedded assets are immutable; repeated config loads can reuse the parsed themes.
+    static THEMES: std::sync::LazyLock<Themes> = std::sync::LazyLock::new(|| {
+        let mut themes = Themes::default();
+        for file in YINZ_DEFAULT_THEMES.files() {
+            if let Some(content) = file.contents_utf8() {
+                let sourced_from_external_file = true;
+                if let Ok(theme) = Themes::from_string(content, sourced_from_external_file) {
+                    themes = themes.merge(theme)
+                }
             }
         }
-    }
-    themes
+        themes
+    });
+    THEMES.clone()
 }
 
 #[cfg(test)]

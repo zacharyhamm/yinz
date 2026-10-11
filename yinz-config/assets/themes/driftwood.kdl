@@ -1,0 +1,150 @@
+themes {
+    "driftwood" {
+        // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Driftwood
+        // UI colors are derived for readability; terminal colors match the source.
+        terminal {
+            foreground "#e6ddd0"
+            background "#2a2622"
+            black "#211d19"
+            red "#e77467"
+            green "#aab971"
+            yellow "#e1b869"
+            blue "#78b3b5"
+            magenta "#c9a0bd"
+            cyan "#a5c4b1"
+            white "#c2b7a6"
+            bright_black "#9a8e7c"
+            bright_red "#f38f7e"
+            bright_green "#becc8a"
+            bright_yellow "#e39962"
+            bright_blue "#92c6c7"
+            bright_magenta "#dab6d1"
+            bright_cyan "#bbd6c3"
+            bright_white "#f2eadb"
+        }
+        text_unselected {
+            base "#e6ddd0"
+            background "#2a2622"
+            emphasis_0 "#e1b869"
+            emphasis_1 "#a5c4b1"
+            emphasis_2 "#aab971"
+            emphasis_3 "#c9a0bd"
+        }
+        text_selected {
+            base "#9d9b98"
+            background "#39332b"
+            emphasis_0 "#e1b869"
+            emphasis_1 "#a5c4b1"
+            emphasis_2 "#aab971"
+            emphasis_3 "#c9a0bd"
+        }
+        table_cell_unselected {
+            base "#e6ddd0"
+            background "#2a2622"
+            emphasis_0 "#e1b869"
+            emphasis_1 "#a5c4b1"
+            emphasis_2 "#aab971"
+            emphasis_3 "#c9a0bd"
+        }
+        table_cell_selected {
+            base "#9d9b98"
+            background "#39332b"
+            emphasis_0 "#e1b869"
+            emphasis_1 "#a5c4b1"
+            emphasis_2 "#aab971"
+            emphasis_3 "#c9a0bd"
+        }
+        list_unselected {
+            base "#e6ddd0"
+            background "#2a2622"
+            emphasis_0 "#e1b869"
+            emphasis_1 "#a5c4b1"
+            emphasis_2 "#aab971"
+            emphasis_3 "#c9a0bd"
+        }
+        list_selected {
+            base "#9d9b98"
+            background "#39332b"
+            emphasis_0 "#e1b869"
+            emphasis_1 "#a5c4b1"
+            emphasis_2 "#aab971"
+            emphasis_3 "#c9a0bd"
+        }
+        ribbon_selected {
+            base "#2a2622"
+            background "#aab971"
+            emphasis_0 "#6b3630"
+            emphasis_1 "#524326"
+            emphasis_2 "#50404c"
+            emphasis_3 "#31494a"
+        }
+        ribbon_unselected {
+            base "#2a2622"
+            background "#e6ddd0"
+            emphasis_0 "#984c44"
+            emphasis_1 "#e6ddd0"
+            emphasis_2 "#466869"
+            emphasis_3 "#725b6b"
+        }
+        table_title {
+            base "#aab971"
+            background "#2a2622"
+            emphasis_0 "#e1b869"
+            emphasis_1 "#a5c4b1"
+            emphasis_2 "#aab971"
+            emphasis_3 "#c9a0bd"
+        }
+        frame_unselected {
+            base "#e6ddd0"
+            background "#2a2622"
+            emphasis_0 "#e6ddd0"
+            emphasis_1 "#e6ddd0"
+            emphasis_2 "#e6ddd0"
+            emphasis_3 "#e6ddd0"
+        }
+        frame_selected {
+            base "#aab971"
+            background "#2a2622"
+            emphasis_0 "#e1b869"
+            emphasis_1 "#a5c4b1"
+            emphasis_2 "#aab971"
+            emphasis_3 "#c9a0bd"
+        }
+        frame_highlight {
+            base "#e1b869"
+            background "#2a2622"
+            emphasis_0 "#c9a0bd"
+            emphasis_1 "#e1b869"
+            emphasis_2 "#e1b869"
+            emphasis_3 "#e1b869"
+        }
+        exit_code_success {
+            base "#aab971"
+            background "#2a2622"
+            emphasis_0 "#a5c4b1"
+            emphasis_1 "#e6ddd0"
+            emphasis_2 "#c9a0bd"
+            emphasis_3 "#78b3b5"
+        }
+        exit_code_error {
+            base "#e77467"
+            background "#2a2622"
+            emphasis_0 "#e1b869"
+            emphasis_1 "#e6ddd0"
+            emphasis_2 "#c9a0bd"
+            emphasis_3 "#78b3b5"
+        }
+        multiplayer_user_colors {
+            player_1 "#c9a0bd"
+            player_2 "#78b3b5"
+            player_3 "#dab6d1"
+            player_4 "#e1b869"
+            player_5 "#a5c4b1"
+            player_6 "#e39962"
+            player_7 "#e77467"
+            player_8 "#c2b7a6"
+            player_9 "#f38f7e"
+            player_10 "#92c6c7"
+        }
+    }
+}
