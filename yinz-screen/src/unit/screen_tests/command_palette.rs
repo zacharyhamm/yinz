@@ -1664,6 +1664,34 @@ fn palette_shortcut_cache_reuses_hits_and_misses_and_tracks_live_targets() {
 }
 
 #[test]
+fn palette_skips_shortcut_searches_for_entries_without_actions() {
+    let mut screen = screen();
+    screen.default_mode_info.keybinds = Config::from_default_assets()
+        .unwrap()
+        .keybinds
+        .to_keybinds_vec();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    screen.toggle_command_palette(CLIENT);
+    let lookups = screen.command_palettes[&CLIENT].shortcut_lookups;
+
+    screen
+        .themes
+        .insert("test-theme".into(), screen.style.colors);
+    screen.projects.insert("test-project".into());
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_eq!(screen.command_palettes[&CLIENT].shortcut_lookups, lookups);
+
+    screen.command_palette_handles_input(&None, b"Change theme", false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(rendered.contains("test-theme"), "{rendered}");
+    screen.close_command_palette(CLIENT);
+    screen.toggle_command_palette(CLIENT);
+    assert_eq!(screen.command_palettes[&CLIENT].shortcut_lookups, lookups);
+}
+
+#[test]
 fn palette_shortcut_caches_use_independent_client_bindings() {
     let mut screen = screen();
     let other = ClientId::new(2);
