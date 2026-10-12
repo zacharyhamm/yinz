@@ -106,6 +106,126 @@ fn background(grid: &GridSnapshot, label: &str) -> Option<AnsiCode> {
 }
 
 #[test]
+fn claude_file_diff_and_syntax_repaint_on_dark_light_switch_and_opt_out() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            "load_plugins clear-defaults=true {}\npane_animations false\ntheme \"nightfox\"",
+        )
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let claude = yinz.expect_pty_spawn();
+    claude.disable_echo();
+    let snapshot = serde_json::from_str(include_str!(
+        "../../yinz-process/src/agent_theme/unit/fixtures/claude-light-code.json"
+    ))
+    .unwrap();
+    let encoded = STANDARD.encode(
+        serde_json::to_vec(&AgentThemeEvent {
+            version: EVENT_VERSION,
+            launch_id: "claude-code".into(),
+            snapshot: Some(snapshot),
+        })
+        .unwrap(),
+    );
+    claude.output(format!("\x1b]777;yinz-agent-theme;{encoded}\x1b\\").as_bytes());
+    claude.output(include_bytes!(
+        "../../yinz-process/src/agent_theme/unit/fixtures/claude-light-code.ansi"
+    ));
+
+    // Retained output must repaint without another application write.
+    for (theme, [fg, accent, success, error, muted], [add, remove, add_word, remove_word]) in [
+        (
+            "nightfox",
+            [
+                (205, 206, 207),
+                (99, 205, 207),
+                (129, 178, 154),
+                (201, 79, 109),
+                (142, 146, 151),
+            ],
+            [(44, 61, 67), (57, 43, 59), (56, 78, 80), (78, 48, 66)],
+        ),
+        (
+            "dayfox",
+            [
+                (61, 43, 90),
+                (31, 93, 99),
+                (51, 93, 64),
+                (162, 33, 46),
+                (126, 113, 142),
+            ],
+            [
+                (211, 215, 207),
+                (231, 204, 203),
+                (188, 197, 186),
+                (221, 179, 180),
+            ],
+        ),
+        (
+            "nightfox",
+            [
+                (205, 206, 207),
+                (99, 205, 207),
+                (129, 178, 154),
+                (201, 79, 109),
+                (142, 146, 151),
+            ],
+            [(44, 61, 67), (57, 43, 59), (56, 78, 80), (78, 48, 66)],
+        ),
+    ] {
+        let (code, error_message) = yinz.run_actions_reporting(vec![Action::Reconfigure {
+            config: format!("theme \"{theme}\""),
+            write_to_disk: false,
+        }]);
+        assert_eq!(code, 0, "{error_message}");
+        yinz.wait_until(
+            "retained Claude code and diffs use the selected theme",
+            |grid| {
+                [
+                    ("plain alpha", fg),
+                    ("unchanged", fg),
+                    ("removed", fg),
+                    ("added", fg),
+                    ("-removed", error),
+                    ("+added", success),
+                    ("const", accent),
+                    ("identifier", accent),
+                    ("\"string\"", success),
+                    ("42", accent),
+                    ("// comment", muted),
+                    ("indexed-string", success),
+                    ("indexed-comment", muted),
+                ]
+                .into_iter()
+                .all(|(label, color)| foreground(grid, label) == Some(AnsiCode::RgbCode(color)))
+                    && [
+                        ("removed", remove),
+                        ("old", remove_word),
+                        ("added", add),
+                        ("new", add_word),
+                    ]
+                    .into_iter()
+                    .all(|(label, color)| background(grid, label) == Some(AnsiCode::RgbCode(color)))
+            },
+        );
+    }
+    let (code, error) = yinz.run_actions_reporting(vec![Action::Reconfigure {
+        config: "agent_theme_mapping \"off\"".into(),
+        write_to_disk: false,
+    }]);
+    assert_eq!(code, 0, "{error}");
+    yinz.wait_until("opt out restores Claude's code palette", |grid| {
+        foreground(grid, "plain alpha") == Some(AnsiCode::RgbCode((51, 51, 51)))
+            && foreground(grid, "const") == Some(AnsiCode::RgbCode((167, 29, 93)))
+            && background(grid, "removed") == Some(AnsiCode::RgbCode((255, 220, 220)))
+            && background(grid, "old") == Some(AnsiCode::RgbCode((255, 199, 199)))
+            && background(grid, "added") == Some(AnsiCode::RgbCode((220, 255, 220)))
+            && background(grid, "new") == Some(AnsiCode::RgbCode((178, 255, 178)))
+    });
+    yinz.quit();
+}
+
+#[test]
 fn codex_composer_repaints_on_theme_switch_preview_cancel_and_typing() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config("load_plugins clear-defaults=true {}\npane_animations false\ntheme \"nightfox\"\nkeybinds { normal { bind \"Ctrl Alt p\" { ToggleCommandPalette; }; }; }")

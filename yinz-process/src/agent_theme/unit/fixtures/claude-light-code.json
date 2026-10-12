@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "provider": "claude",
+  "provider_version": "2.1.296",
+  "theme": "light",
+  "provenance": ["claude-2.1.296/palettes-v2"],
+  "availability": "Available",
+  "collisions": [],
+  "definitions": [
+    {"token":"code.foreground","channel":"Foreground","color":{"Rgb":[51,51,51]},"pair":null,"target":{"role":"Foreground","shimmer":false}},
+    {"token":"code.addLine","channel":"Background","color":{"Rgb":[220,255,220]},"pair":null,"target":{"role":"AdditionBackground","shimmer":false}},
+    {"token":"code.addWord","channel":"Background","color":{"Rgb":[178,255,178]},"pair":null,"target":{"role":"AdditionWord","shimmer":false}},
+    {"token":"code.addDecoration","channel":"Foreground","color":{"Rgb":[36,138,61]},"pair":null,"target":{"role":"Success","shimmer":false}},
+    {"token":"code.deleteLine","channel":"Background","color":{"Rgb":[255,220,220]},"pair":null,"target":{"role":"RemovalBackground","shimmer":false}},
+    {"token":"code.deleteWord","channel":"Background","color":{"Rgb":[255,199,199]},"pair":null,"target":{"role":"RemovalWord","shimmer":false}},
+    {"token":"code.deleteDecoration","channel":"Foreground","color":{"Rgb":[207,34,46]},"pair":null,"target":{"role":"Error","shimmer":false}},
+    {"token":"code.keyword","channel":"Foreground","color":{"Rgb":[167,29,93]},"pair":null,"target":{"role":"Accent","shimmer":false}},
+    {"token":"code.type","channel":"Foreground","color":{"Rgb":[0,134,179]},"pair":null,"target":{"role":"Accent","shimmer":false}},
+    {"token":"code.number","channel":"Foreground","color":{"Rgb":[0,134,179]},"pair":null,"target":{"role":"Warning","shimmer":false}},
+    {"token":"code.string","channel":"Foreground","color":{"Rgb":[24,54,145]},"pair":null,"target":{"role":"Success","shimmer":false}},
+    {"token":"code.comment","channel":"Foreground","color":{"Rgb":[150,152,150]},"pair":null,"target":{"role":"Muted","shimmer":false}},
+    {"token":"code.comment.index","channel":"Foreground","color":{"Index":246},"pair":null,"target":{"role":"Muted","shimmer":false}},
+    {"token":"code.string.index","channel":"Foreground","color":{"Index":24},"pair":null,"target":{"role":"Success","shimmer":false}},
+    {"token":"terminal.default","channel":"Background","color":"Default","pair":null,"target":{"role":"Background","shimmer":false}}
+  ]
+}

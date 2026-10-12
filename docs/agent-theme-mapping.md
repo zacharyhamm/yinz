@@ -41,12 +41,21 @@ ignored.
   managed settings directories, host-managed/cowork configuration, inherited
   repository-local theme settings requiring ownership checks, and invocation
   flags that change config or the working directory inside Claude produce an
-  unavailable result. Syntax-only colors and dynamic gradients are outside this
-  descriptor. Static labels, mascot foreground, informational accents, spinner
-  palette endpoints and usage indicators follow accent/subtle roles. Diff-summary
-  foregrounds use success/error. Line, dimmed and word backgrounds retain their
-  respective diff roles. Independent subagent and rainbow colors pass through
-  unless they share a mapped source color.
+  unavailable result. The built-in code/diff renderer is covered, including
+  its separate syntax palettes and RGB-to-256 conversion. Automatic mode includes
+  both light and dark palettes. Other highlighters and dynamic gradients remain
+  outside this descriptor.
+
+  Static labels, mascot foreground, informational accents, spinner palette endpoints
+  and usage indicators follow accent/subtle roles. Diff-summary
+  foregrounds and code-renderer gutters use success/error. Line, dimmed and word
+  backgrounds retain their respective diff roles, including custom diff overrides.
+
+  Code text and punctuation use foreground, comments use muted, and keywords,
+  operators, types and identifiers use accent. Strings and regex use success.
+  Numbers and literals use warning. Attributes such as bold and dim remain intact.
+  Shared source colors follow the collision rules below. Independent subagent and
+  rainbow colors pass through unless they share a mapped source color.
 - Codex CLI **0.162.1**: the pinned provider's read-only `config/read` API resolves
   machine policy, trusted project layers, environment roots and CLI TOML
   overrides. The pinned v2 profile file's theme is inserted below enabled
@@ -90,6 +99,9 @@ equally specific conflicting meanings unchanged. Decisions
 compare expressions rather than destination RGB values, so theme switches do
 not change collision policy. There is no hue classification or nearby-color
 matching. Identical emitted styles cannot distinguish their underlying meaning.
+For example, Claude's light code palette shares colors between numbers and types,
+so both use accent. Its indexed removal line and word fills can coincide, so both
+use the line background. ANSI gutters can share UI accent colors and follow accent.
 
 Normal text/background use the terminal theme (falling back to unselected text).
 Muted/subtle text blend 65%/40% foreground over background. Accents use
@@ -103,6 +115,16 @@ backgrounds blend 18% success/error (10% dimmed, 30% word). Shimmer variants ble
 
 Claude palette data was extracted from the installed 2.1.296 Linux binary
 (SHA-256 `24972e3bc859fab2b46ed4c1e51f7d6130f06d3bd550811a114640de3370d0de`).
+Descriptor revision `palettes-v2` also includes the built-in code/diff renderer in
+`chunk-48q0pbgp.js`: palettes `Q`, scope maps `G`/`P`/`he`, override handling `ke`,
+and color emission `N`/`fe`. Dark addition fills use explicit indexed alternatives.
+ANSI code palettes leave diff backgrounds at terminal default unless overridden.
+
+The shared render fixture contains representative light code/diff SGR, including
+plain file output, unchanged lines, gutters, word fills, syntax and indexed colors.
+Resolver tests check its definitions and collision results against the descriptor.
+New launches capture this expanded descriptor. Relaunch existing Claude sessions
+to capture the added mappings. Earlier output retains its original launch snapshot.
 The parser follows the [Claude theme reference](https://code.claude.com/docs/en/terminal-config#create-a-custom-theme).
 
 Codex data and behavior follow the official

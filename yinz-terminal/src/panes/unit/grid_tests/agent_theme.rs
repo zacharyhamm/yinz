@@ -1026,3 +1026,111 @@ fn claude_ui_and_diffs_recolor_existing_content_and_preserve_capture() {
     );
     assert_eq!(grid.serialize(None).unwrap(), capture);
 }
+
+#[test]
+fn claude_code_renderer_recolors_retained_file_diff_and_syntax_output() {
+    let palette = serde_json::from_str(include_str!(
+        "../../../../../yinz-process/src/agent_theme/unit/fixtures/claude-light-code.json"
+    ))
+    .unwrap();
+    let mut grid = create_grid_with_content("");
+    event(&mut grid, "claude-code", Some(palette));
+    feed_bytes(
+        &mut grid,
+        include_bytes!(
+            "../../../../../yinz-process/src/agent_theme/unit/fixtures/claude-light-code.ansi"
+        ),
+    );
+    let capture = grid.serialize(None).unwrap();
+    assert!(capture.contains("38;2;51;51;51"));
+    assert!(capture.contains("48;2;220;255;220"));
+    assert!(capture.contains("38;5;246"));
+
+    // Repaint both ways, then opt out, without feeding another PTY byte.
+    for (fg, bg, accent, muted, add, remove, add_word, remove_word, mapping) in [
+        (200, 0, 50, 130, 18, 36, 30, 60, AgentThemeMapping::Semantic),
+        (
+            0,
+            250,
+            150,
+            88,
+            223,
+            241,
+            205,
+            235,
+            AgentThemeMapping::Semantic,
+        ),
+        (200, 0, 50, 130, 18, 36, 30, 60, AgentThemeMapping::Semantic),
+        (200, 0, 50, 130, 18, 36, 30, 60, AgentThemeMapping::Off),
+    ] {
+        let mut theme = terminal_style((fg, fg, fg), (bg, bg, bg));
+        theme.colors.text_unselected.emphasis_1 = PaletteColor::Rgb((accent, accent, accent));
+        theme.colors.exit_code_success.base = PaletteColor::Rgb((100, 100, 100));
+        theme.colors.exit_code_error.base = PaletteColor::Rgb((200, 200, 200));
+        grid.update_theme(theme.colors);
+        grid.set_agent_theme_mapping(mapping);
+        let chunks = grid.render(0, 0, &theme).unwrap().unwrap().0;
+        let cells = chunks
+            .iter()
+            .flat_map(|chunk| {
+                chunk.terminal_characters.iter().map(|cell| {
+                    let original = *cell.styles;
+                    let mapped = chunk.application_styles(original);
+                    let mut attributes = mapped;
+                    attributes.foreground = original.foreground;
+                    attributes.background = original.background;
+                    assert_eq!(attributes, original);
+                    if mapping == AgentThemeMapping::Off {
+                        assert_eq!(mapped, original);
+                    }
+                    (cell.character, mapped)
+                })
+            })
+            .collect::<Vec<_>>();
+        let text = cells.iter().map(|(c, _)| c).collect::<String>();
+        for (label, foreground, background) in [
+            ("plain alpha", fg, bg),
+            ("unchanged", fg, bg),
+            ("-", 200, remove),
+            ("removed", fg, remove),
+            ("old", fg, remove_word),
+            ("+", 100, add),
+            ("added", fg, add),
+            ("new", fg, add_word),
+            ("const", accent, bg),
+            ("identifier", accent, bg),
+            ("=", accent, bg),
+            ("\"string\"", 100, bg),
+            ("42", accent, bg),
+            (";", fg, bg),
+            ("// comment", muted, bg),
+            ("indexed-string", 100, bg),
+            ("indexed-comment", muted, bg),
+        ] {
+            let offset = text.find(label).unwrap();
+            let styles = cells[text[..offset].chars().count()].1;
+            if mapping == AgentThemeMapping::Semantic {
+                assert_eq!(
+                    styles.foreground,
+                    Some(AnsiCode::RgbCode((foreground, foreground, foreground))),
+                    "{label}"
+                );
+                assert_eq!(
+                    styles.background,
+                    Some(AnsiCode::RgbCode((background, background, background))),
+                    "{label}"
+                );
+            }
+            if label == "const" {
+                assert_eq!(styles.bold, Some(AnsiCode::On));
+            }
+            if label == "\"string\"" {
+                assert_eq!(styles.italic, Some(AnsiCode::On));
+            }
+            if label == "// comment" {
+                assert_eq!(styles.dim, Some(AnsiCode::On));
+            }
+        }
+        assert_eq!(grid.serialize(None).unwrap(), capture);
+    }
+}
