@@ -2228,3 +2228,98 @@ exec '{}' --exact '{}' --nocapture
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn mother_trust_override_survives_bridge_and_conversation_reset() {
+    let work = "/tmp/Mother's workspace";
+    let env = HashMap::from([("YINZ_PANE_REF".into(), "mother-pane".into())]);
+    let config = json!({
+        "projects": {work: {"trust_level": "trusted"}},
+        "sandbox_workspace_write.network_access": true,
+    });
+    assert!(bridge_options(&[
+        "-c".into(),
+        format!(
+            "projects={{{}={{trust_level=\"trusted\"}}}}",
+            serde_json::to_string(work).unwrap()
+        ),
+        "-c".into(),
+        "sandbox_workspace_write.network_access=true".into(),
+    ])
+    .is_some());
+    for method in ["thread/start", "thread/resume", "thread/fork"] {
+        let mut request = json!({"method": method, "params": {"cwd": work, "config": config}});
+        assert!(inject_pane_env(&mut request, &env));
+        assert_eq!(request["params"]["config"]["projects"], config["projects"]);
+        assert_eq!(
+            request["params"]["config"]["sandbox_workspace_write.network_access"],
+            true
+        );
+        assert_eq!(
+            request["params"]["config"]["shell_environment_policy.set.YINZ_PANE_REF"],
+            "mother-pane"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the installed Codex CLI"]
+fn mother_local_rules_load_through_private_bridge_without_global_trust() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    std::env::remove_var("YINZ_BUBBLEWRAP");
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let work = root.path().join("Mother's workspace");
+    std::fs::create_dir(&work).unwrap();
+    yinz_runtime::mother::provision(&work, "test session").unwrap();
+    let args = yinz_runtime::mother::coordination_args("codex", &work, "test session").unwrap();
+    let options = bridge_options(&args).unwrap();
+    assert!(!options.project_overrides.is_empty());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let socket = root.path().join("backend.sock");
+            let program = Path::new("codex");
+            let _backend = private_backend(program, &socket, &options.project_overrides)
+                .await
+                .unwrap();
+            let (_proxy, stream) = daemon_connection(program, Some(&socket)).unwrap();
+            let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", stream)
+                .await
+                .unwrap();
+            trust_request(
+                &mut ws,
+                1,
+                "initialize",
+                json!({"clientInfo":{"name":"yinz-mother-rules-test","version":"1"}}),
+            )
+            .await
+            .unwrap();
+            ws.send(Message::text(r#"{"method":"initialized"}"#))
+                .await
+                .unwrap();
+            let config = trust_request(
+                &mut ws,
+                2,
+                "config/read",
+                json!({"cwd": work,"includeLayers":true}),
+            )
+            .await
+            .unwrap();
+            let layers = config["layers"].as_array().unwrap();
+            let project = layers
+                .iter()
+                .find(|layer| layer["name"]["dotCodexFolder"] == json!(work.join(".codex")))
+                .unwrap();
+            assert!(project["disabledReason"].is_null(), "{project}");
+            let user = layers
+                .iter()
+                .find(|layer| layer["name"]["type"] == "user" && layer["name"]["profile"].is_null())
+                .unwrap();
+            assert!(user["config"]["projects"][work.to_str().unwrap()].is_null());
+        });
+}

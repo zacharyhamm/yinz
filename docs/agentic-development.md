@@ -142,7 +142,7 @@ Mother is the pane, so `/clear`, `/new`, or a replaced conversation keeps it.
 Once its agent exits, the pane stops following you. The next toggle brings what is left of it to your tab and offers a new mother over it.
 Launching one closes the old pane. Dismissing the offer leaves the pane to read or to restart the agent in.
 Closing the pane, or moving it to another session, also ends it.
-Being mother grants no additional permissions. Session resurrection does not restore it.
+Mother uses the same server-side guards as other agents. Its Claude and Codex launches pre-approve specific Yinz coordination commands, effective on the next launch. Worker permission answers require explicit user delegation saved in its checkpoint. Session resurrection does not restore it.
 
 `yinz agent spawn` preserves the attached client's active pane and tab.
 Workers use tiled placement. When space is insufficient, the worker uses another tab or creates a tab in the background.

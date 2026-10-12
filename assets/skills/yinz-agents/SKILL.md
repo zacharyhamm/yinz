@@ -149,7 +149,7 @@ Only the user launches it, from that key or the command palette's **Launch mothe
 Mother starts in a persistent private folder at `YINZ_CACHE_DIR/mother/<session-key>/work`, with the pane title `mother: <agent>`.
 It attempts Bubblewrap isolation automatically. Unsupported agent state layouts or sandbox setup failures produce a visible explanation and a local, unsandboxed launch.
 Sandboxed mother can write its own folder and shared agent state, and can still request host changes through Yinz.
-Mother is listed by `agent list` like any managed agent and has no additional agent permissions.
+Mother is listed by `agent list` like any managed agent and uses the same server-side guards. Its Claude and Codex launches pre-approve specific Yinz coordination commands; worker permission answers still require explicit user delegation.
 It stays mother across `/clear`, `/new`, and conversation changes. After its agent exits, the user's next toggle shows the pane and offers a new mother, and launching one closes the old pane; closing the pane or moving it to another session also ends it. Session resurrection does not restore it.
 Plugins see its terminal pane ID in `SessionInfo.mother`, which is `null` when none is running.
 `SessionInfo.mother_supervision` reports watching, processing, queued, paused, degraded, or needs_attention with pending and blocker counts.

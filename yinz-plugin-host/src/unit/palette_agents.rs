@@ -330,6 +330,10 @@ fn palette_current_directory_and_fresh_duplicate_targets() {
         let (reply, commands) = run(&duplicate, &data);
         assert!(!commands.is_empty(), "{reply:?}");
         assert_eq!(commands[0].target, target);
+        assert!(!commands[0]
+            .args
+            .iter()
+            .any(|arg| arg.contains("allowedTools") || arg.contains("trust_level")));
         assert_eq!(commands[0].cwd.as_deref(), Some(repo.path()));
         assert!(commands[0].args.iter().any(|arg| arg == "claude"));
         assert!(!commands[0]
@@ -492,6 +496,11 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
     let [(command, placement, target)] = launches.as_slice() else {
         panic!("expected one launch, got {launches:?}");
     };
+    assert!(command
+        .args
+        .contains(&"--allowedTools=Bash(yinz agent send-keys:*)".into()));
+    assert!(command.args.iter().any(|arg| arg == "--settings"));
+    assert!(cwd.join(".codex/rules/yinz-mother.rules").is_file());
     assert_eq!(command.cwd.as_deref(), Some(cwd.as_path()));
     assert_eq!(command.target.is_bubblewrap(), cfg!(target_os = "linux"));
     assert!(
@@ -572,6 +581,19 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
                 .args
                 .iter()
                 .any(|arg| arg == "sandbox_workspace_write.network_access=true"));
+            assert!(launches[0]
+                .0
+                .args
+                .iter()
+                .any(|arg| arg.starts_with("projects={")
+                    && arg.ends_with("trust_level=\"trusted\"}}")));
+        } else {
+            assert!(launches[0].0.args.iter().any(|arg| arg == "--extension"));
+            assert!(!launches[0]
+                .0
+                .args
+                .iter()
+                .any(|arg| arg.contains("allowedTools") || arg.contains("trust_level")));
         }
     }
     let (reply, launches, screen) = launch(false, "claude", "mother: claude");
@@ -1024,6 +1046,9 @@ fn mother_sandbox_selection_and_fallback_are_independent_of_bubblewrap() {
     let root = tempfile::tempdir().unwrap();
     let cwd = root.path().to_str().unwrap();
     let mut sandboxed = existing_command("codex", cwd, PaneTarget::Local).unwrap();
+    let permissions =
+        yinz_runtime::mother::coordination_args("codex", root.path(), "test").unwrap();
+    sandboxed.command.args.extend(permissions.clone());
     let args = sandboxed.command.args.clone();
     let profile = root.path().join("profile-codex");
     mother_target(&mut sandboxed, Ok(profile.clone())).unwrap();
@@ -1042,9 +1067,11 @@ fn mother_sandbox_selection_and_fallback_are_independent_of_bubblewrap() {
     assert_eq!(invalid.command.path, original);
 
     let mut local = existing_command("codex", cwd, PaneTarget::Local).unwrap();
+    local.command.args.extend(permissions.clone());
     mother_target(&mut local, Err(anyhow::anyhow!("namespace setup failed"))).unwrap();
     assert_eq!(local.command.target, PaneTarget::Local);
     assert_eq!(local.command.path, Path::new("/bin/sh"));
+    assert!(local.command.args.ends_with(&permissions));
     assert_eq!(
         yinz_types::agent::agent_kind_of(&local.command.path, &local.command.args).as_deref(),
         Some("codex")
