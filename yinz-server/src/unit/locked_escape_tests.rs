@@ -438,7 +438,7 @@ fn a_client_disconnect_cancels_its_pending_escape() {
         "expected RemoveClient, got {instruction:?}"
     );
     // there is nobody left to write to: not even the unblock that follows a handled message
-    let sent = os.server_to_client_messages.lock().unwrap();
+    let sent = os.server_to_client_messages.lock();
     assert!(
         sent.is_empty(),
         "a client that only hung up was sent {sent:?}"
