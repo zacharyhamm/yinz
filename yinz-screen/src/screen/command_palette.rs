@@ -967,6 +967,9 @@ impl Screen {
                 Builtin::Action(action) => Some(action.clone()),
                 _ => None,
             };
+            if original.is_none() && target.is_none() {
+                continue;
+            }
             if let Some(cached) = state.shortcuts.get(&entry.id) {
                 if cached.original == original && cached.target == target {
                     entry.shortcut.clone_from(&cached.hint);

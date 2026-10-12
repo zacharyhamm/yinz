@@ -121,11 +121,11 @@ pub fn shortcut_for_action(
     base_mode: InputMode,
     is_target_action: impl Fn(&Action) -> bool,
 ) -> Option<Vec<KeyWithModifier>> {
-    let mode_binds = |mode: InputMode| -> Vec<(KeyWithModifier, Vec<Action>)> {
-        let mut binds = keybinds
+    let mode_binds = |mode: InputMode| -> Vec<&(KeyWithModifier, Vec<Action>)> {
+        let mut binds: Vec<_> = keybinds
             .iter()
             .find(|(bind_mode, _)| *bind_mode == mode)
-            .map(|(_, binds)| binds.clone())
+            .map(|(_, binds)| binds.iter().collect())
             .unwrap_or_default();
         binds.sort_by(|(a, _), (b, _)| a.cmp(b));
         binds
@@ -135,17 +135,16 @@ pub fn shortcut_for_action(
     for _ in 0..MAX_SHORTCUT_SEARCH_DEPTH {
         let mut next_queue: Vec<(InputMode, Vec<KeyWithModifier>)> = vec![];
         for (mode, path) in &queue {
-            for (key, actions) in mode_binds(*mode) {
+            let binds = mode_binds(*mode);
+            for (key, actions) in &binds {
                 if actions.iter().any(&is_target_action) {
                     let mut shortcut = path.clone();
-                    shortcut.push(key);
+                    shortcut.push(key.clone());
                     return Some(shortcut);
                 }
             }
-        }
-        for (mode, path) in &queue {
-            for (key, actions) in mode_binds(*mode) {
-                for action in &actions {
+            for (key, actions) in binds {
+                for action in actions {
                     if let Action::SwitchToMode {
                         input_mode: next_mode,
                     } = action
@@ -187,3 +186,7 @@ fn handle_ctrl_j(
         }])
     }
 }
+
+#[cfg(test)]
+#[path = "unit/keybinds.rs"]
+mod tests;
