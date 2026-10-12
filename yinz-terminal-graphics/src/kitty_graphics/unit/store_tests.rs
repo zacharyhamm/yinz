@@ -412,7 +412,10 @@ impl KittyImageStoreModel {
     fn write_frame(&mut self, tc: hegel::TestCase) {
         let id = self.any_id(&tc);
         let bytes = tc.draw(generators::binary().max_size(64));
-        let _ = self.store.write_frame(id, None, bytes, 40);
+        let edit = tc
+            .draw(generators::booleans())
+            .then(|| tc.draw(generators::integers::<u32>().max_value(4)));
+        let _ = self.store.write_frame(id, edit, bytes, 40);
     }
 
     #[rule]
@@ -426,6 +429,19 @@ impl KittyImageStoreModel {
         let id = self.any_id(&tc);
         let frame = tc.draw(generators::integers::<u32>().max_value(4));
         let _ = self.store.set_current_frame(id, frame);
+    }
+
+    #[rule]
+    fn protect_completed_frame(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        self.store
+            .protect_completed_frame_image(id, tc.draw(generators::booleans()));
+    }
+
+    #[rule]
+    fn release_completed_frame(&mut self, tc: hegel::TestCase) {
+        let id = self.any_id(&tc);
+        self.store.release_completed_frame_image(id);
     }
 
     #[invariant]
@@ -646,4 +662,116 @@ fn batch_resize_checks_deduplicated_bytes_and_overflow_before_generating_pixels(
         .map(|size| ScaledImageKey { size, ..key(1, 1) });
     assert!(!store.replace_scaled_variants(HashMap::from([(id, HashSet::from(keys))])));
     assert_eq!(store.total_bytes(), 20);
+}
+
+#[test]
+fn revisions_follow_displayed_pixels_and_not_cache_reconstruction() {
+    let mut store = KittyImageStore::with_quota(100);
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    store.write_frame(id, None, vec![1; 4], 40).unwrap();
+    store.write_frame(id, None, vec![2; 4], 40).unwrap();
+    assert_eq!(store.raster_revision(id), Some(0));
+    store.set_current_frame(id, 2).unwrap().unwrap();
+    assert_eq!(store.raster_revision(id), Some(1));
+    assert!(store.ensure_scaled_variant(id, key(2, 2)));
+    store.zlib_base64_for(id, None).unwrap();
+    store.write_frame(id, Some(1), vec![3; 4], 40).unwrap();
+    store.write_frame(id, Some(2), vec![1; 4], 80).unwrap();
+    assert!(store.write_frame(id, Some(2), vec![4; 101], 40).is_err());
+    assert_eq!(store.set_current_frame(id, 4).unwrap(), None);
+    assert_eq!(store.remove_frames(id, Some(1)).unwrap(), None);
+    assert_eq!(store.raster_revision(id), Some(1));
+    // Deleting frame 2 shifts frame 3 into the displayed slot without changing its index.
+    store.remove_frames(id, Some(2)).unwrap().unwrap();
+    assert_eq!(store.get(id).unwrap().displayed_rgba(), &[2; 4]);
+    assert_eq!(store.raster_revision(id), Some(2));
+    assert!(store.scaled_variant(id, key(2, 2)).is_none());
+    assert!(store.ensure_scaled_variant(id, key(2, 2)));
+    assert_eq!(store.raster_revision(id), Some(2));
+    store.remove_frames(id, None).unwrap().unwrap();
+    assert_eq!(store.raster_revision(id), Some(3));
+    assert_eq!(store.get(id).unwrap().displayed_rgba(), &[3; 4]);
+    store.remove_frames(id, None).unwrap().unwrap();
+    assert_eq!(store.raster_revision(id), Some(3));
+}
+
+#[test]
+fn completed_pixels_survive_edits_selection_deletion_and_repeated_locks() {
+    for unscaled in [false, true] {
+        let mut store = KittyImageStore::with_quota(100);
+        let id = store.store_image(rgba_image(1, 1)).unwrap();
+        store.write_frame(id, None, vec![1; 4], 40).unwrap();
+        assert!(store.ensure_scaled_variant(id, key(2, 2)));
+        store.protect_completed_frame_image(id, unscaled);
+        let original = store.zlib_base64_for(id, Some(key(2, 2))).unwrap().unwrap();
+        let original_root = store.zlib_base64_for(id, None).unwrap().unwrap();
+        for value in [2, 3] {
+            store.write_frame(id, Some(1), vec![value; 4], 40).unwrap();
+            store.protect_completed_frame_image(id, unscaled);
+            assert_eq!(store.raster_revision(id), Some(0));
+            assert_eq!(store.scaled_variant(id, key(2, 2)).unwrap(), &[0; 16]);
+            assert_eq!(store.get(id).unwrap().displayed_rgba(), &[value; 4]);
+        }
+        store.set_current_frame(id, 2).unwrap().unwrap();
+        store.remove_frames(id, Some(2)).unwrap().unwrap();
+        assert!(store.write_frame(id, Some(1), vec![9; 101], 40).is_err());
+        // Quota pressure may discard encodings; locked repaint must rebuild the original pixels.
+        store.remove_all_base64_caches(id);
+        assert_eq!(
+            *store.zlib_base64_for(id, Some(key(2, 2))).unwrap().unwrap(),
+            *original
+        );
+        if unscaled {
+            assert_eq!(
+                *store.zlib_base64_for(id, None).unwrap().unwrap(),
+                *original_root
+            );
+        }
+        store.remove_all_base64_caches(id);
+        assert_eq!(store.total_bytes(), 20 + if unscaled { 4 } else { 0 });
+        store.release_completed_frame_image(id);
+        assert_eq!(store.total_bytes(), 4);
+        assert_eq!(store.raster_revision(id), Some(1));
+        assert!(store.ensure_scaled_variant(id, key(2, 2)));
+        assert_eq!(store.scaled_variant(id, key(2, 2)).unwrap(), &[3; 16]);
+        store.release_completed_frame_image(id);
+        assert_eq!(store.raster_revision(id), Some(1));
+    }
+}
+
+#[test]
+fn unscaled_snapshot_reservation_is_atomic_and_deletion_credits_removed_frames() {
+    let mut store = KittyImageStore::with_quota(8);
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    store.write_frame(id, None, vec![1; 4], 40).unwrap();
+    store.protect_completed_frame_image(id, true);
+    assert_eq!(
+        store
+            .write_frame(id, Some(1), vec![2; 4], 40)
+            .unwrap_err()
+            .code,
+        KittyErrorCode::Enospc
+    );
+    assert_eq!(
+        store.set_current_frame(id, 2).unwrap_err().code,
+        KittyErrorCode::Enospc
+    );
+    assert_eq!(store.total_bytes(), 8);
+    assert_eq!(store.raster_revision(id), Some(0));
+    assert_eq!(store.get(id).unwrap().displayed_rgba(), &[0; 4]);
+    assert!(store.images[&id].completed_rgba.is_none());
+    store.release_completed_frame_image(id);
+    assert_eq!(store.raster_revision(id), Some(0));
+    store.set_current_frame(id, 2).unwrap().unwrap();
+    store.protect_completed_frame_image(id, true);
+    store.remove_frames(id, None).unwrap().unwrap();
+    assert_eq!(store.total_bytes(), 8);
+    assert_eq!(
+        store.images[&id].completed_rgba.as_deref(),
+        Some([1; 4].as_slice())
+    );
+    assert_eq!(store.get(id).unwrap().displayed_rgba(), &[0; 4]);
+    store.release_completed_frame_image(id);
+    assert_eq!(store.total_bytes(), 4);
+    assert_eq!(store.raster_revision(id), Some(2));
 }

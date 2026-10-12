@@ -193,7 +193,7 @@ pub struct KittyGrid {
     split_rows: u64,
     commands_handled: u64,
     previous_cell_size: Option<SizeInPixels>,
-    completed_frame_keys: HashSet<(InternalImageId, ScaledImageKey)>,
+    completed_frame_keys: HashSet<(InternalImageId, Option<ScaledImageKey>)>,
     rows_below_the_viewport: Option<KittyRowsBelowTheViewport>,
 }
 
@@ -307,14 +307,17 @@ impl KittyGrid {
         self.completed_frame_keys.extend(
             chunks
                 .iter()
-                .filter(|chunk| {
-                    chunk.scaled_px.is_some() && owned.contains(&chunk.internal_image_id)
-                })
-                .map(|chunk| (chunk.internal_image_id, chunk.variant_key)),
+                .filter(|chunk| owned.contains(&chunk.internal_image_id))
+                .map(|chunk| {
+                    (
+                        chunk.internal_image_id,
+                        chunk.scaled_px.map(|_| chunk.variant_key),
+                    )
+                }),
         );
         let mut store = self.kitty_image_store.borrow_mut();
-        for &(id, _) in &self.completed_frame_keys {
-            store.protect_completed_frame_image(id);
+        for &(id, key) in &self.completed_frame_keys {
+            store.protect_completed_frame_image(id, key.is_none());
         }
     }
     pub fn release_completed_frame(&mut self) {
@@ -352,7 +355,7 @@ impl KittyGrid {
                 self.completed_frame_keys
                     .iter()
                     .filter(|(id, _)| *id == internal)
-                    .map(|(_, key)| *key),
+                    .filter_map(|(_, key)| *key),
             )
             .collect()
     }
@@ -555,6 +558,7 @@ impl KittyGrid {
         if let Some(current) = command.base_frame() {
             store
                 .set_current_frame(internal, current)
+                .map_err(|error| with_command_fields(error, command))?
                 .ok_or_else(|| enoent(command, "no such frame"))?;
         }
         store.set_animation_state(
@@ -663,6 +667,7 @@ impl KittyGrid {
         self.kitty_image_store
             .borrow_mut()
             .remove_frames(internal, command.frame_target())
+            .map_err(|error| with_command_fields(error, command))?
             .ok_or_else(|| enoent(command, "no such frame"))?;
         self.retransmit_placements_of(internal);
         Ok(())
@@ -1783,7 +1788,7 @@ impl KittyGrid {
         {
             let store = self.kitty_image_store.borrow();
             for &(id, key) in &self.completed_frame_keys {
-                if store.get(id).is_some() {
+                if let Some(key) = key.filter(|_| store.get(id).is_some()) {
                     keys.entry(id).or_default().insert(key);
                 }
             }

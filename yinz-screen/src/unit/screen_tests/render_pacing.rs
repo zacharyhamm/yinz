@@ -1527,7 +1527,7 @@ fn overlays_wait_with_a_held_back_tab_and_arrive_with_its_cursor() {
 /// rather than making every pass dirty and sending everyone else empty frames meanwhile.
 #[test]
 fn deletes_owed_by_a_held_back_client_wait_for_its_next_frame() {
-    use crate::output::HostKittyState;
+    use crate::output::{HostImageRecord, HostKittyState};
     let mut paced = screen_with_backlog();
     paced.screen.add_client(OTHER_CLIENT).unwrap();
     new_tab(&mut paced.screen, 2, TabId::new(1));
@@ -1544,7 +1544,13 @@ fn deletes_owed_by_a_held_back_client_wait_for_its_next_frame() {
         .insert(CLIENT, true);
     // An image the host still holds, and the store has since freed.
     let mut host_state = HostKittyState::default();
-    host_state.transmitted.insert((1, None), 9);
+    host_state.transmitted.insert(
+        (1, None),
+        HostImageRecord {
+            host_image_id: 9,
+            raster_revision: 0,
+        },
+    );
     paced
         .screen
         .client_kitty_host_state

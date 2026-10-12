@@ -86,6 +86,10 @@ struct StoredImage {
     refcount: usize,
     lru_stamp: u64,
     base64_cache: HashMap<Option<ScaledImageKey>, Rc<String>>,
+    raster_revision: u64,
+    pending_invalidation: bool,
+    protect_unscaled: bool,
+    completed_rgba: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +180,10 @@ impl KittyImageStore {
                 refcount: 0,
                 lru_stamp,
                 base64_cache: HashMap::new(),
+                raster_revision: 0,
+                pending_invalidation: false,
+                protect_unscaled: false,
+                completed_rgba: None,
             },
         );
         self.total_bytes += size;
@@ -183,6 +191,9 @@ impl KittyImageStore {
     }
     pub fn get(&self, id: InternalImageId) -> Option<&KittyImage> {
         self.images.get(&id).map(|stored| &stored.image)
+    }
+    pub fn raster_revision(&self, id: InternalImageId) -> Option<u64> {
+        self.images.get(&id).map(|stored| stored.raster_revision)
     }
     pub fn scaled_variant(&self, id: InternalImageId, key: ScaledImageKey) -> Option<&[u8]> {
         self.images
@@ -353,7 +364,10 @@ impl KittyImageStore {
                     Some(bytes) => bytes,
                     None => return Ok(None),
                 },
-                None => stored.image.displayed_rgba(),
+                None => stored
+                    .completed_rgba
+                    .as_deref()
+                    .unwrap_or_else(|| stored.image.displayed_rgba()),
             };
             let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
             encoder.write_all(bytes)?;
@@ -484,12 +498,10 @@ impl KittyImageStore {
                 None => 0,
             }
         };
-        // Frame writes invalidate the encoded displayed raster. Dropping a cache on a refused
-        // write changes only future encoding work, not protocol-visible image state.
-        self.remove_all_base64_caches(id);
-        if !self.make_room(rgba.len().saturating_sub(old_len), Some(id)) {
-            return Err(Self::quota_error("animation frame exceeds storage quota"));
-        }
+        let displayed_changes = self.images.get(&id).is_some_and(|stored| {
+            edit == Some(stored.image.current_frame as u32) && stored.image.displayed_rgba() != rgba
+        });
+        self.prepare_frame_mutation(id, displayed_changes, rgba.len(), old_len)?;
         let new_len = rgba.len();
         let Some(stored) = self.images.get_mut(&id) else {
             return Ok(None);
@@ -515,14 +527,8 @@ impl KittyImageStore {
             },
         };
         self.total_bytes = self.total_bytes - old_len + new_len;
-        if stored.image.current_frame == frame_number as usize {
-            self.total_bytes -= stored
-                .image
-                .scaled_variants
-                .values()
-                .map(Vec::len)
-                .sum::<usize>();
-            stored.image.scaled_variants.clear();
+        if displayed_changes {
+            self.invalidate_rasters(id);
         }
         let lru_stamp = self.bump_lru();
         if let Some(stored) = self.images.get_mut(&id) {
@@ -532,27 +538,26 @@ impl KittyImageStore {
     }
     /// Set which frame is displayed. Changing it invalidates every cached raster derived from the
     /// old one — the scaled variants the render path reads and their base64 encodings.
-    pub fn set_current_frame(&mut self, id: InternalImageId, frame_number: u32) -> Option<()> {
-        let stored = self.images.get_mut(&id)?;
-        stored.image.frame_rgba(frame_number)?;
-        if stored.image.current_frame != frame_number as usize {
+    pub fn set_current_frame(
+        &mut self,
+        id: InternalImageId,
+        frame_number: u32,
+    ) -> Result<Option<()>, KittyError> {
+        let Some(stored) = self.images.get(&id) else {
+            return Ok(None);
+        };
+        let Some(pixels) = stored.image.frame_rgba(frame_number) else {
+            return Ok(None);
+        };
+        let displayed_changes = stored.image.displayed_rgba() != pixels;
+        self.prepare_frame_mutation(id, displayed_changes, 0, 0)?;
+        if let Some(stored) = self.images.get_mut(&id) {
             stored.image.current_frame = frame_number as usize;
-            let freed: usize = stored
-                .image
-                .scaled_variants
-                .values()
-                .map(Vec::len)
-                .sum::<usize>()
-                + stored
-                    .base64_cache
-                    .values()
-                    .map(|b64| b64.len())
-                    .sum::<usize>();
-            stored.image.scaled_variants.clear();
-            stored.base64_cache.clear();
-            self.total_bytes -= freed;
         }
-        Some(())
+        if displayed_changes {
+            self.invalidate_rasters(id);
+        }
+        Ok(Some(()))
     }
     pub fn set_frame_gap(
         &mut self,
@@ -590,33 +595,99 @@ impl KittyImageStore {
     }
     /// Delete frame `frame_number`, or every frame when none is named. The root image is never
     /// removed this way — spec, `d=f`: it deletes "the animation frames" and leaves the image.
-    pub fn remove_frames(&mut self, id: InternalImageId, frame_number: Option<u32>) -> Option<()> {
-        let (before, after) = {
-            let stored = self.images.get_mut(&id)?;
-            let before = Self::stored_image_bytes(stored);
+    pub fn remove_frames(
+        &mut self,
+        id: InternalImageId,
+        frame_number: Option<u32>,
+    ) -> Result<Option<()>, KittyError> {
+        let Some(stored) = self.images.get(&id) else {
+            return Ok(None);
+        };
+        let image = &stored.image;
+        let (removed_bytes, remaining_count) = match frame_number {
+            Some(0) | Some(1) => return Ok(None),
+            Some(n) => {
+                let Some(frame) = image.frames.get(n as usize - 2) else {
+                    return Ok(None);
+                };
+                (frame.rgba.len(), image.frame_count() as usize - 1)
+            },
+            None => (image.frame_bytes(), 1),
+        };
+        let next_current = if image.current_frame > remaining_count {
+            1
+        } else {
+            image.current_frame
+        };
+        let old_number = match frame_number {
+            Some(n) if next_current >= n as usize => next_current + 1,
+            _ => next_current,
+        };
+        let displayed_changes = image.frame_rgba(old_number as u32) != Some(image.displayed_rgba());
+        self.prepare_frame_mutation(id, displayed_changes, 0, removed_bytes)?;
+        if let Some(stored) = self.images.get_mut(&id) {
             match frame_number {
-                // Frame 1 is the root image, which `d=f` may not take away.
-                Some(0) | Some(1) => return None,
                 Some(n) => {
-                    let index = n as usize - 2;
-                    if index >= stored.image.frames.len() {
-                        return None;
-                    }
-                    stored.image.frames.remove(index);
+                    stored.image.frames.remove(n as usize - 2);
                 },
                 None => stored.image.frames.clear(),
             }
-            // The frames after a removed one shift down, so a current frame past the end has to
-            // come back to something that exists.
-            if stored.image.current_frame > stored.image.frame_count() as usize {
-                stored.image.current_frame = 1;
-                stored.image.scaled_variants.clear();
+            stored.image.current_frame = next_current;
+        }
+        self.total_bytes -= removed_bytes;
+        if displayed_changes {
+            self.invalidate_rasters(id);
+        }
+        Ok(Some(()))
+    }
+    // Preserve unscaled completed pixels only when a successful mutation needs a copy.
+    fn prepare_frame_mutation(
+        &mut self,
+        id: InternalImageId,
+        displayed_changes: bool,
+        incoming: usize,
+        reclaimed: usize,
+    ) -> Result<(), KittyError> {
+        let snapshot_bytes = self.images.get(&id).map_or(0, |stored| {
+            if displayed_changes && stored.protect_unscaled && stored.completed_rgba.is_none() {
+                stored.image.displayed_rgba().len()
+            } else {
+                0
             }
-            stored.base64_cache.clear();
-            (before, Self::stored_image_bytes(stored))
+        });
+        if !self.make_room(
+            (incoming + snapshot_bytes).saturating_sub(reclaimed),
+            Some(id),
+        ) {
+            return Err(Self::quota_error("animation frame exceeds storage quota"));
+        }
+        if snapshot_bytes > 0 {
+            if let Some(stored) = self.images.get_mut(&id) {
+                stored.completed_rgba = Some(stored.image.displayed_rgba().to_vec());
+                self.total_bytes += snapshot_bytes;
+            }
+        }
+        Ok(())
+    }
+    fn invalidate_rasters(&mut self, id: InternalImageId) {
+        let Some(stored) = self.images.get_mut(&id) else {
+            return;
         };
-        self.total_bytes = self.total_bytes - before + after;
-        Some(())
+        if self.completed_frame_images.contains(&id) {
+            stored.pending_invalidation = true;
+            return;
+        }
+        self.total_bytes -= stored
+            .image
+            .scaled_variants
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+            + Self::base64_cache_bytes(stored);
+        stored.image.scaled_variants.clear();
+        stored.base64_cache.clear();
+        stored.raster_revision += 1;
+        stored.pending_invalidation = false;
     }
     /// Remove the image outright, whatever its refcount. `d=F` frees the data even while it is on
     /// screen, unlike the refcounted [`Self::free`].
@@ -658,6 +729,7 @@ impl KittyImageStore {
                 .map(|bytes| bytes.len())
                 .sum::<usize>()
             + stored.image.frame_bytes()
+            + stored.completed_rgba.as_ref().map_or(0, Vec::len)
     }
     fn stored_image_bytes(stored: &StoredImage) -> usize {
         Self::stored_image_data_bytes(stored) + Self::base64_cache_bytes(stored)
@@ -671,11 +743,24 @@ impl KittyImageStore {
     fn has_room(&self, incoming_bytes: usize) -> bool {
         incoming_bytes <= self.quota_bytes.saturating_sub(self.total_bytes)
     }
-    pub(super) fn protect_completed_frame_image(&mut self, id: InternalImageId) {
+    pub(super) fn protect_completed_frame_image(&mut self, id: InternalImageId, unscaled: bool) {
         self.completed_frame_images.insert(id);
+        if let Some(stored) = self.images.get_mut(&id) {
+            stored.protect_unscaled |= unscaled;
+        }
     }
     pub(super) fn release_completed_frame_image(&mut self, id: InternalImageId) {
         self.completed_frame_images.remove(&id);
+        if let Some(stored) = self.images.get_mut(&id) {
+            stored.protect_unscaled = false;
+            self.total_bytes -= stored
+                .completed_rgba
+                .take()
+                .map_or(0, |pixels| pixels.len());
+            if stored.pending_invalidation {
+                self.invalidate_rasters(id);
+            }
+        }
     }
     fn remove_base64_cache(&mut self, id: InternalImageId, variant: Option<ScaledImageKey>) {
         let removed = self
