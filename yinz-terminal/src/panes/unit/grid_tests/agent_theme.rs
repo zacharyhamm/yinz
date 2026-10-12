@@ -784,3 +784,186 @@ fn codex_forwarded_observations_ignore_invalid_missing_and_previous_launch_repli
         .iter()
         .any(|c| c.0 == 'X' && c.2 == Some(AnsiCode::RgbCode((235, 235, 235)))));
 }
+
+#[test]
+fn claude_ui_and_diffs_recolor_existing_content_and_preserve_capture() {
+    let mut palette = source("claude", Role::Accent);
+    palette.definitions.clear();
+    let cases = [
+        (
+            "briefLabelYou",
+            Channel::Foreground,
+            Role::Accent,
+            (37, 99, 235),
+        ),
+        (
+            "clawd_body",
+            Channel::Foreground,
+            Role::Accent,
+            (215, 119, 87),
+        ),
+        (
+            "rate_limit_empty",
+            Channel::Background,
+            Role::Subtle,
+            (39, 47, 111),
+        ),
+        (
+            "diffAddedWord",
+            Channel::Foreground,
+            Role::Success,
+            (47, 157, 68),
+        ),
+        (
+            "diffRemovedWord",
+            Channel::Foreground,
+            Role::Error,
+            (209, 69, 75),
+        ),
+        (
+            "diffAdded",
+            Channel::Background,
+            Role::AdditionBackground,
+            (105, 219, 124),
+        ),
+        (
+            "diffRemoved",
+            Channel::Background,
+            Role::RemovalBackground,
+            (255, 168, 180),
+        ),
+        (
+            "diffAddedDimmed",
+            Channel::Background,
+            Role::AdditionDimmed,
+            (199, 225, 203),
+        ),
+        (
+            "diffRemovedDimmed",
+            Channel::Background,
+            Role::RemovalDimmed,
+            (253, 210, 216),
+        ),
+        (
+            "diffAddedWord",
+            Channel::Background,
+            Role::AdditionWord,
+            (47, 157, 68),
+        ),
+        (
+            "diffRemovedWord",
+            Channel::Background,
+            Role::RemovalWord,
+            (209, 69, 75),
+        ),
+        (
+            "rate_limit_fill",
+            Channel::Foreground,
+            Role::Accent,
+            (87, 105, 247),
+        ),
+    ];
+    for (token, channel, role, (r, g, b)) in cases {
+        palette.definitions.push(Definition {
+            token: token.into(),
+            channel,
+            color: SourceColor::Rgb(r, g, b),
+            pair: None,
+            target: Some(role.into()),
+        });
+    }
+    // The mascot shares Claude's accent; identities with that color follow it too.
+    palette.definitions.push(Definition {
+        token: "identity".into(),
+        channel: Channel::Foreground,
+        color: SourceColor::Rgb(215, 119, 87),
+        pair: None,
+        target: None,
+    });
+    let mut grid = create_grid_with_content("");
+    event(&mut grid, "claude-ui", Some(palette));
+    for (i, (_, channel, _, (r, g, b))) in cases.iter().enumerate() {
+        let channel = if *channel == Channel::Foreground {
+            38
+        } else {
+            48
+        };
+        feed_bytes(
+            &mut grid,
+            format!(
+                "\x1b[0;{channel};2;{r};{g};{b}m{}",
+                (b'A' + i as u8) as char
+            )
+            .as_bytes(),
+        );
+    }
+    feed_bytes(
+        &mut grid,
+        "\x1b[0;38;2;87;105;247;48;2;39;47;111m▌".as_bytes(),
+    );
+    let capture = grid.serialize(None).unwrap();
+    assert!(capture.contains("48;2;39;47;111"));
+    assert!(capture.contains("38;2;87;105;247"));
+    assert!(capture.contains("48;2;47;157;68"));
+    assert!(capture.contains("38;2;47;157;68"));
+    for (fg, bg, expected) in [
+        (200, 0, [50, 50, 80, 100, 200, 18, 36, 10, 20, 30, 60, 50]),
+        (
+            0,
+            250,
+            [150, 150, 150, 100, 200, 223, 241, 235, 245, 205, 235, 150],
+        ),
+    ] {
+        let mut theme = terminal_style((fg, fg, fg), (bg, bg, bg));
+        theme.colors.text_unselected.emphasis_1 =
+            PaletteColor::Rgb((expected[0], expected[0], expected[0]));
+        theme.colors.exit_code_success.base = PaletteColor::Rgb((100, 100, 100));
+        theme.colors.exit_code_error.base = PaletteColor::Rgb((200, 200, 200));
+        grid.update_theme(theme.colors);
+        let cells = painted(&mut grid);
+        for (i, (_, channel, _, _)) in cases.iter().enumerate() {
+            let actual = if *channel == Channel::Foreground {
+                cells[i].1
+            } else {
+                cells[i].2
+            };
+            let value = expected[i];
+            assert_eq!(
+                actual,
+                Some(AnsiCode::RgbCode((value, value, value))),
+                "{}",
+                cases[i].0
+            );
+        }
+        let accent = expected[0];
+        let subtle = expected[2];
+        assert_eq!(
+            cells[cases.len()],
+            (
+                '▌',
+                Some(AnsiCode::RgbCode((accent, accent, accent))),
+                Some(AnsiCode::RgbCode((subtle, subtle, subtle))),
+            )
+        );
+        assert_eq!(grid.serialize(None).unwrap(), capture);
+    }
+    grid.set_agent_theme_mapping(AgentThemeMapping::Off);
+    let cells = painted(&mut grid);
+    for (i, (_, channel, _, rgb)) in cases.iter().enumerate() {
+        let actual = if *channel == Channel::Foreground {
+            cells[i].1
+        } else {
+            cells[i].2
+        };
+        assert_eq!(actual, Some(AnsiCode::RgbCode(*rgb)));
+    }
+    assert_eq!(
+        cells[cases.len()],
+        (
+            '▌',
+            Some(AnsiCode::RgbCode((87, 105, 247))),
+            Some(AnsiCode::RgbCode((39, 47, 111))),
+        )
+    );
+    assert_eq!(grid.serialize(None).unwrap(), capture);
+}
