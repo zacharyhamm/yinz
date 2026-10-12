@@ -163,3 +163,86 @@ fn moving_a_fullscreen_hidden_pane_preserves_both_panes() {
         assert_eq!(tiled_pane_geoms(&tab), before);
     }
 }
+
+#[test]
+fn fixed_height_singleton_stack_rejects_splits_without_changing_geometry() {
+    let mut tab = create_new_tab_with_layout(
+        Size {
+            cols: 120,
+            rows: 40,
+        },
+        TiledPaneLayout {
+            children: vec![
+                TiledPaneLayout {
+                    split_size: Some(SplitSize::Fixed(7)),
+                    ..Default::default()
+                },
+                TiledPaneLayout::default(),
+            ],
+            ..Default::default()
+        },
+    );
+    let root = PaneId::Terminal(TerminalId::new(0));
+    let new = PaneId::Terminal(TerminalId::new(2));
+    let pane = tab.tiled_panes.panes.get_mut(&root).unwrap();
+    let mut geom = pane.position_and_size();
+    geom.stacked = Some(999);
+    pane.set_geom(geom);
+    let before = tiled_pane_geoms(&tab);
+    let bounds = tab.tiled_panes.position_and_size_of_stack(&root).unwrap();
+    assert_eq!(bounds.cols.as_usize(), 120);
+    assert_eq!(bounds.rows, yinz_types::pane_size::Dimension::fixed(7));
+    assert!(!tab.tiled_panes.can_split_pane_id_vertically(root));
+    assert!(!tab.tiled_panes.can_split_pane_id_horizontally(root));
+
+    tab.vertical_split_of_pane_id(new, None, None, root, None, None)
+        .unwrap();
+    tab.horizontal_split_of_pane_id(new, None, None, root, None, None)
+        .unwrap();
+    assert_eq!(tiled_pane_geoms(&tab), before);
+    assert!(!tab.has_pane_with_pid(&new));
+}
+
+#[test]
+fn fixed_height_stack_list_preserves_full_height_after_resize() {
+    let mut tab = tab_with_small_fixed_pane();
+    let root = PaneId::Terminal(TerminalId::new(0));
+    let new = PaneId::Terminal(TerminalId::new(3));
+    tab.new_pane(
+        new,
+        None,
+        None,
+        false,
+        false,
+        NewPanePlacement::Stacked {
+            pane_id_to_stack_under: Some(root),
+            borderless: None,
+        },
+        Some(ClientId::new(1)),
+        None,
+    )
+    .unwrap();
+    let pane = tab.extract_pane(new, true).unwrap();
+    tab.stack_panes(root, vec![pane]);
+    assert!(tab.tiled_panes.panes.contains_key(&new));
+    let bounds = tab.tiled_panes.position_and_size_of_stack(&root).unwrap();
+    assert_eq!(bounds.rows, yinz_types::pane_size::Dimension::fixed(7));
+
+    *tab.stacked_pane_list.borrow_mut() = true;
+    tab.sync_stacked_pane_list_mode();
+    assert!(tab.pane_is_hidden_stack_list_member(&root));
+    for size in [
+        Size {
+            cols: 120,
+            rows: 40,
+        },
+        Size {
+            cols: 130,
+            rows: 50,
+        },
+    ] {
+        tab.resize_whole_tab(size).unwrap();
+        let geom = tab.get_pane_with_id(new).unwrap().position_and_size();
+        assert_eq!(geom.rows, yinz_types::pane_size::Dimension::fixed(7));
+    }
+}

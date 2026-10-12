@@ -901,9 +901,12 @@ impl TiledPanes {
             let mut full_pane_size = active_pane.position_and_size();
 
             if full_pane_size.is_stacked() {
+                let stack = StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide);
+                if stack.flexible_pane_id_in_stack(&active_pane_id).is_none() {
+                    return false;
+                }
                 let Some(position_and_size_of_stack) =
-                    StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
-                        .position_and_size_of_stack(&active_pane_id)
+                    stack.position_and_size_of_stack(&active_pane_id)
                 else {
                     log::error!("Failed to find position and size of stack");
                     return false;
@@ -930,9 +933,12 @@ impl TiledPanes {
             let mut full_pane_size = active_pane.position_and_size();
 
             if full_pane_size.is_stacked() {
+                let stack = StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide);
+                if stack.flexible_pane_id_in_stack(&active_pane_id).is_none() {
+                    return false;
+                }
                 let Some(position_and_size_of_stack) =
-                    StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
-                        .position_and_size_of_stack(&active_pane_id)
+                    stack.position_and_size_of_stack(&active_pane_id)
                 else {
                     log::error!("Failed to find position and size of stack");
                     return false;

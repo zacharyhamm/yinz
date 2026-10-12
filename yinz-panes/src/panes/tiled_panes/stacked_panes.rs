@@ -175,13 +175,13 @@ impl<'a> StackedPanes<'a> {
         let all_stacked_pane_positions = self.positions_in_stack(id).ok()?;
         let (_, first_pane_in_stack) = all_stacked_pane_positions.first()?;
         let (_, last_pane_in_stack) = all_stacked_pane_positions.last()?;
+        let full_stack_height =
+            (last_pane_in_stack.y - first_pane_in_stack.y) + last_pane_in_stack.rows.as_usize();
         let mut rows = match self.position_of_flexible_pane(&all_stacked_pane_positions) {
             Ok(position) => all_stacked_pane_positions.get(position)?.1.rows,
-            Err(_) => first_pane_in_stack.rows,
+            Err(_) => Dimension::fixed(full_stack_height),
         };
-        rows.set_inner(
-            (last_pane_in_stack.y - first_pane_in_stack.y) + last_pane_in_stack.rows.as_usize(),
-        );
+        rows.set_inner(full_stack_height);
         Some(PaneGeom {
             y: first_pane_in_stack.y,
             x: first_pane_in_stack.x,

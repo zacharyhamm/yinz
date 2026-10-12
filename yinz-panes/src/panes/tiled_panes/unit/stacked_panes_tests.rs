@@ -1347,3 +1347,32 @@ fn closing_expanded_pane_preserves_replacement_logical_position() {
         }
     }
 }
+
+#[test]
+fn stack_bounds_preserve_full_height_and_constraint() {
+    for fixed in [true, false] {
+        let mut mock_panes = HashMap::new();
+        let above = PaneId::Terminal(crate::TerminalId::new(1));
+        let below = PaneId::Terminal(crate::TerminalId::new(2));
+        mock_stacked_pane!(above, Dimension::fixed(1), 1, 3, 4, None, mock_panes);
+        let expanded_rows = if fixed {
+            Dimension::fixed(6)
+        } else {
+            Dimension::percent(50.0)
+        };
+        mock_stacked_pane!(below, expanded_rows, 6, 3, 5, None, mock_panes);
+        let stack = StackedPanes::new(Rc::new(RefCell::new(mock_panes)));
+        let mut expected_rows = if fixed {
+            Dimension::fixed(7)
+        } else {
+            Dimension::percent(50.0)
+        };
+        expected_rows.set_inner(7);
+        for id in [above, below] {
+            let bounds = stack.position_and_size_of_stack(&id).unwrap();
+            assert_eq!((bounds.x, bounds.y), (3, 4));
+            assert_eq!(bounds.rows, expected_rows);
+            assert!(!bounds.is_stacked());
+        }
+    }
+}
