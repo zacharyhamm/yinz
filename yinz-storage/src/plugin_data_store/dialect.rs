@@ -1,10 +1,4 @@
-//! What differs between the SQL engines the store runs on.
-//!
-//! The composer in [`super::query`], [`super::write`], [`super::registry`] and [`super::ddl`] is
-//! written once; everything that SQLite and Postgres spell differently comes through here. The
-//! list is deliberately short — one method per difference actually found while porting, not a
-//! general abstraction over SQL — so that adding a third engine means answering these questions
-//! and nothing more.
+//! SQL syntax supplied by each backend to the shared statement composers.
 
 use yinz_types::plugin_data::{AttrKind, DataError, DataValue};
 
@@ -13,8 +7,7 @@ use super::schema::EntitySchema;
 pub(super) trait Dialect: Send + Sync + 'static {
     /// The placeholder naming the `index`-th bound parameter, 1-based: `?3` or `$3`.
     ///
-    /// Numbered on both engines, so that one parameter can be referenced twice in a statement —
-    /// a search term appears in the `WHERE` and again in the `ORDER BY` on Postgres.
+    /// Numbered so one parameter can be referenced twice in a statement.
     fn placeholder(&self, index: usize) -> String;
 
     /// Normalize a generated ASCII index name to the engine's identifier limit.
@@ -45,13 +38,12 @@ pub(super) trait Dialect: Send + Sync + 'static {
 
     /// Render a default as a literal for a column definition.
     ///
-    /// Defaults are the one place a value cannot be a bound parameter — both engines require a
-    /// literal in DDL — and the one place the engines render booleans and blobs differently.
+    /// Defaults in DDL require literals rather than bound parameters.
     fn literal(&self, value: &DataValue) -> Result<String, DataError>;
 
     /// A case-insensitive pattern match of `column` against the parameter at `placeholder`.
     ///
-    /// SQLite's `LIKE` folds ASCII case by default; Postgres needs `ILIKE`. The pattern has
+    /// SQLite's `LIKE` folds ASCII case by default. The pattern has
     /// already been through [`super::predicate::escape_like`], which escapes with a backslash.
     fn like(&self, column: &str, placeholder: &str) -> String;
 
@@ -61,7 +53,7 @@ pub(super) trait Dialect: Send + Sync + 'static {
 
     /// DDL that removes the full-text index, whether or not one exists.
     ///
-    /// Has to be able to run before an attribute column is dropped: both engines refuse to drop a
+    /// Has to be able to run before an attribute column is dropped: SQLite refuses to drop a
     /// column their full-text machinery still names.
     fn full_text_drop(&self, schema: &EntitySchema) -> String;
 
@@ -69,8 +61,7 @@ pub(super) trait Dialect: Send + Sync + 'static {
     fn search(&self, schema: &EntitySchema, placeholder: &str) -> SearchSql;
 
     /// Whether a search term the engine rejects as bad syntax should be retried as a literal
-    /// phrase. FTS5 has a query language and errors on unbalanced quotes; `websearch_to_tsquery`
-    /// accepts anything, so there is nothing to retry.
+    /// phrase. FTS5 has a query language and errors on unbalanced quotes.
     fn retries_search_as_phrase(&self) -> bool;
 }
 

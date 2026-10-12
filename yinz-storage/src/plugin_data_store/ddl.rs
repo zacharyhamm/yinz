@@ -1,6 +1,6 @@
 //! The DDL behind an entity: its table, its secondary indexes, and its full-text index.
 //!
-//! Tables and indexes are spelled the same on both engines; the full-text index is not, and comes
+//! Tables and indexes use standard SQL; full-text index syntax comes
 //! from the dialect.
 
 use yinz_types::plugin_data::{AttrDef, DataError};
@@ -81,9 +81,7 @@ pub(super) fn drop_attr_indexes(
 
 /// Remove the entity's full-text index, whether or not it has one.
 ///
-/// Has to run *before* any `ALTER TABLE ... DROP COLUMN`: both engines refuse to drop a column
-/// their full-text machinery still names — SQLite revalidates the triggers, Postgres tracks the
-/// generated column's dependency.
+/// Run before dropping a column because SQLite revalidates the full-text triggers.
 pub(super) fn drop_full_text(
     exec: &mut dyn Executor,
     schema: &EntitySchema,

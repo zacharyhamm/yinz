@@ -433,9 +433,7 @@ impl EntityDef {
 
 /// Reject a text value holding a NUL byte.
 ///
-/// SQLite would store one; Postgres cannot (`TEXT` is NUL-free by definition), and a value that
-/// round-trips on one engine and not the other is worse than a refusal on both. Text is for
-/// text; a plugin with bytes to keep has `Blob`.
+/// Text is for text; a plugin with bytes to keep has `Blob`.
 fn reject_nul(attr: &str, value: &DataValue) -> Result<(), DataError> {
     if let DataValue::Text(text) = value {
         if text.contains('\0') {
@@ -1392,8 +1390,7 @@ mod tests {
         assert!(matches!(def.validate(), Err(DataError::InvalidSchema(_))));
     }
 
-    /// Postgres cannot store a NUL in text, so no engine is allowed to: the value is refused at
-    /// the boundary, on both sides of it, wherever text can be supplied.
+    /// NUL is refused at the boundary wherever text can be supplied.
     #[test]
     fn a_nul_byte_in_text_is_rejected_wherever_text_is_supplied() {
         let put = Mutation::put("agent").set("project", "a\0b").build();

@@ -489,17 +489,6 @@ export default {
 
 #[test]
 fn deno_data_helpers_preserve_values_rollback_conflicts_watch_disposal_and_reload_persistence() {
-    data_helpers_persistence(None);
-}
-
-#[test]
-#[ignore = "requires cargo x postgres-test --build and YINZ_PLUGIN_DATA_TEST_URL"]
-fn deno_data_helpers_on_postgres() {
-    let url = std::env::var("YINZ_PLUGIN_DATA_TEST_URL").expect("Postgres test URL");
-    data_helpers_persistence(Some(DataAccess::postgres(&url, "deno_sdk_tests")));
-}
-
-fn data_helpers_persistence(data_access: Option<DataAccess>) {
     let harness = Harness::with_services(
         "ts",
         r#"
@@ -553,7 +542,7 @@ export default {
 "#,
         Some(PermissionStatus::Granted),
         None,
-        data_access,
+        None,
     );
     harness.load();
     let frame = harness.rendered("data helpers");

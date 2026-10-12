@@ -141,7 +141,7 @@ Project registry writes from another server do not wake local database watches. 
 
 Follow `CLAUDE.md` shared-data rules. Every identity and saved cursor includes both `host_id` and Yinz session. Use `agent_proto::agents::rows::Owner` or the existing project-data owner helpers for persisted assignment queries. Carry server host identity from startup. Never call `get_plugin_ids()` from library code.
 
-There are no database writes in the proposed replay design. If project integration later adds writes, preserve author-read `expect_rev`. Never claim legacy empty-host records as live events. Preserve the documented legacy run/import behavior. Shared SQLite/Postgres storage does not make live events multi-session or cross-host.
+There are no database writes in the proposed replay design. If project integration later adds writes, preserve author-read `expect_rev`. Never claim legacy empty-host records as live events. Preserve the documented legacy run/import behavior. Shared SQLite storage does not make live events multi-session or cross-host.
 
 Version one watches one explicitly resolved session. For several sessions, launch one watch per session and maintain separate cursors. There is no global order across them. Remote panes report through their owning Yinz session, whose host/session identify the event. A pane's SSH target is separate metadata. A pane moved to another session produces source removal and destination adoption. `run_id` can help link them, but the stream does not promise an atomic cross-session move.
 
@@ -165,7 +165,7 @@ Use `yinz_test_support::Watched<T>::wait_until(what, timeout, predicate)` and ev
 
 Implement in small reviewable steps matching the sequence above. Keep the public command experimental until replay, cleanup, and semantic tests pass. Add project filtering after the core stream works, but complete it before claiming this goal is delivered. Leave existing list/wait/prompt and raw `yinz events` supported throughout.
 
-For each implementation step, run affected crate tests through `cargo x`. Before branch handoff, run `cargo x ci check`. Shared IPC/types, screen, and plugin-host changes require full `cargo x test` and `cargo x integration-test -j 16`. The CI command includes those phases. Use sandbox escalation on the first socket-binding suite attempt. Build this worktree's plugins/binary with its own real `target/`. Never set `CARGO_TARGET_DIR` or share artifacts. If server-OS code changes, include `cargo x test -p yinz-server-os -p yinz`. Remote suites are needed if those spawning/transport paths change. Storage changes require the Postgres suite with `--build` before `--test`.
+For each implementation step, run affected crate tests through `cargo x`. Before branch handoff, run `cargo x ci check`. Shared IPC/types, screen, and plugin-host changes require full `cargo x test` and `cargo x integration-test -j 16`. The CI command includes those phases. Use sandbox escalation on the first socket-binding suite attempt. Build this worktree's plugins/binary with its own real `target/`. Never set `CARGO_TARGET_DIR` or share artifacts. If server-OS code changes, include `cargo x test -p yinz-server-os -p yinz`. Remote suites are needed if those spawning/transport paths change.
 
 This planning-only change requires document/path checks, not builds or runtime suites.
 

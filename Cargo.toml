@@ -292,8 +292,6 @@ unstable = ["yinz-client/unstable"]
 # The dockerized end-to-end suite. Off by default so an ordinary `cargo test` does not build
 # libssh2 and OpenSSL for five `#[ignore]`d tests; `cargo x ci e2e` turns it on.
 e2e = ["dep:ssh2"]
-# The plugin-data store suite against a real Postgres in docker; see `cargo x postgres-test`.
-postgres-tests = ["yinz-storage/postgres-tests"]
 
 [[test]]
 name = "notes_todos"

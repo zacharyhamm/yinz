@@ -1064,8 +1064,8 @@ pub fn session_run_id(kind: &str, session_id: &str) -> String {
 /// legacy hook scripts that do not.
 ///
 /// The fallback names the machine too, and has to. A pane id means nothing outside the server
-/// that handed it out, so `kind:pane:5:<epoch>` is a name two servers can mint at once — two
-/// machines sharing a Postgres, or two yinz servers sharing this machine's data dir. The row
+/// that handed it out, so `kind:pane:5:<epoch>` is a name two servers sharing a data dir
+/// can mint at once. The row
 /// is written with an unguarded `Put` keyed on this id, so a collision does not fail: it
 /// interleaves two agents' timelines under one uid and says nothing.
 ///
@@ -1642,10 +1642,7 @@ pub mod rows {
 
     /// A pane's row key: the machine, the session on it, and the pane.
     ///
-    /// All three, because none of the shorter keys is unique. A bare pane id makes two sessions'
-    /// pane 5 into one row — every yinz server on a machine shares one store. Adding the
-    /// session fixed that and stopped there, which was right while the store was a file per
-    /// machine; pointed at a shared Postgres it puts two machines' `main:5` back into one row.
+    /// Session and host identity keep local pane ids distinct across servers and installations.
     fn pane_uid(owner: &Owner, pane_id: u32) -> String {
         format!("{}:{}:{}", owner.host_id, owner.yinz_session_name, pane_id)
     }
@@ -4997,7 +4994,7 @@ mod tests {
     /// The fallback id names the machine, and has to.
     ///
     /// A pane id means nothing outside the server that handed it out, so two servers sharing a
-    /// store — two machines on one Postgres, or two yinz servers on this machine's data dir —
+    /// store in this machine's data dir
     /// can reach for the same `kind:pane:5:<epoch>`. The row is written with an unguarded `Put`
     /// keyed on it, so a collision would not fail: it would interleave two agents' timelines
     /// under one uid and say nothing.
@@ -5916,7 +5913,7 @@ mod tests {
         );
     }
 
-    /// The same collision one size up: two *machines*, one Postgres, one session name, one pane
+    /// The same collision one size up: two host identities in one store, one session name, one pane
     /// id. Session names are not unique between machines — `main` is the obvious case — so
     /// scoping by session alone put two machines' pane 5 back into the row the session key had
     /// just separated, and each machine's prune deleted the other's.

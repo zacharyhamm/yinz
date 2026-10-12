@@ -166,38 +166,6 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let session_serialization =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_serialization")
             .map(|(v, _)| v);
-    let plugin_data_url =
-        match kdl_property_first_arg_as_string_or_error!(kdl_options, "plugin_data_url") {
-            Some((value, entry)) => {
-                // The scheme is all that can be checked here: `kdl` is compiled for plugins
-                // too, and the Postgres client that parses the rest is host-only.
-                if !(value.starts_with("postgres://") || value.starts_with("postgresql://")) {
-                    return Err(kdl_parsing_error!(
-                        format!(
-                            "plugin_data_url must be a postgres:// or postgresql:// URL, \
-                                 got {value:?}; leave it unset for the SQLite file in the data dir"
-                        ),
-                        entry
-                    ));
-                }
-                Some(value.to_owned())
-            },
-            None => None,
-        };
-    let plugin_data_schema =
-        match kdl_property_first_arg_as_string_or_error!(kdl_options, "plugin_data_schema") {
-            Some((value, entry)) => {
-                yinz_types::plugin_data::validate_name(
-                    value,
-                    yinz_types::plugin_data::NameKind::Namespace,
-                )
-                .map_err(|error| {
-                    kdl_parsing_error!(format!("plugin_data_schema: {error}"), entry)
-                })?;
-                Some(value.to_owned())
-            },
-            None => None,
-        };
     let host_id = match kdl_property_first_arg_as_string_or_error!(kdl_options, "host_id") {
         Some((value, entry)) => {
             if !yinz_runtime::host_identity::is_valid_host_id(value) {
@@ -340,8 +308,6 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         attach_to_session,
         auto_layout,
         session_serialization,
-        plugin_data_url,
-        plugin_data_schema,
         host_id,
         serialize_pane_viewport,
         scrollback_lines_to_serialize,
@@ -1368,22 +1334,6 @@ fn session_serialization_to_kdl(value: &Options, add_comments: bool) -> Option<K
         None
     }
 }
-/// Emitted only when set. The commented-out template lives in `default.kdl`, next to the
-/// other options, and a URL with a password in it is not something to write out unasked.
-fn plugin_data_url_to_kdl(value: &Options) -> Option<KdlNode> {
-    value.plugin_data_url.as_ref().map(|url| {
-        let mut node = KdlNode::new("plugin_data_url");
-        node.push(url.clone());
-        node
-    })
-}
-fn plugin_data_schema_to_kdl(value: &Options) -> Option<KdlNode> {
-    value.plugin_data_schema.as_ref().map(|schema| {
-        let mut node = KdlNode::new("plugin_data_schema");
-        node.push(schema.clone());
-        node
-    })
-}
 fn host_id_to_kdl(value: &Options) -> Option<KdlNode> {
     value.host_id.as_ref().map(|host_id| {
         let mut node = KdlNode::new("host_id");
@@ -2201,12 +2151,6 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
     }
     if let Some(session_serialization) = session_serialization_to_kdl(value, add_comments) {
         nodes.push(session_serialization);
-    }
-    if let Some(plugin_data_url) = plugin_data_url_to_kdl(value) {
-        nodes.push(plugin_data_url);
-    }
-    if let Some(plugin_data_schema) = plugin_data_schema_to_kdl(value) {
-        nodes.push(plugin_data_schema);
     }
     if let Some(host_id) = host_id_to_kdl(value) {
         nodes.push(host_id);

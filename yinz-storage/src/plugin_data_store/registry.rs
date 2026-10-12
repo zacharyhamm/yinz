@@ -61,8 +61,6 @@ pub(super) fn catalog(
     namespace: Option<&str>,
 ) -> Result<Vec<DataEntityInfo>, DataError> {
     let mut params = Params::new(exec.dialect());
-    // Two statements rather than `(?1 IS NULL OR namespace = ?1)`: Postgres cannot infer the type
-    // of a parameter that is only ever compared with NULL.
     let filter = match namespace {
         Some(namespace) => format!(
             "WHERE namespace = {}",

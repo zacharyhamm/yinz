@@ -334,39 +334,6 @@ fn osc8_hyperlinks_config_parsing() {
 }
 
 #[test]
-fn plugin_data_options_kdl_roundtrip() {
-    let fake_config = r#"
-        plugin_data_url "postgres://yinz:secret@127.0.0.1:5432/yinz"
-        plugin_data_schema "yinz_test"
-    "#;
-    let document: KdlDocument = fake_config.parse().unwrap();
-    let options = crate::kdl::options::from_kdl(&document).unwrap();
-    assert_eq!(
-        options.plugin_data_url.as_deref(),
-        Some("postgres://yinz:secret@127.0.0.1:5432/yinz")
-    );
-    assert_eq!(options.plugin_data_schema.as_deref(), Some("yinz_test"));
-
-    let serialized = crate::kdl::options::to_kdl(&options, false);
-    let mut fake_document = KdlDocument::new();
-    let mut serialized_clone = serialized.clone();
-    fake_document.nodes_mut().append(&mut serialized_clone);
-    let reparsed =
-        crate::kdl::options::from_kdl(&fake_document.to_string().parse::<KdlDocument>().unwrap())
-            .unwrap();
-    assert_eq!(reparsed.plugin_data_url, options.plugin_data_url);
-    assert_eq!(reparsed.plugin_data_schema, options.plugin_data_schema);
-
-    // Unset, neither is written out - not even as a commented template - so a serialized config
-    // never carries a database URL nobody put there.
-    let unset = crate::kdl::options::to_kdl(&Options::default(), true);
-    let mut doc = KdlDocument::new();
-    let mut unset_clone = unset.clone();
-    doc.nodes_mut().append(&mut unset_clone);
-    assert!(!doc.to_string().contains("plugin_data_url"));
-}
-
-#[test]
 fn host_id_kdl_roundtrip() {
     let document: KdlDocument = "host_id \"build-box-1\"".parse().unwrap();
     let options = crate::kdl::options::from_kdl(&document).unwrap();
@@ -403,24 +370,6 @@ fn host_id_rejects_shapes_that_would_break_a_uid() {
         "host_id \"has space\"",
         "host_id \"has/slash\"",
         "host_id \"\"",
-    ] {
-        let document: KdlDocument = bad.parse().unwrap();
-        assert!(
-            crate::kdl::options::from_kdl(&document).is_err(),
-            "{bad} should have been rejected"
-        );
-    }
-}
-
-#[test]
-fn plugin_data_options_reject_other_databases_and_bad_schema_names() {
-    for bad in [
-        "plugin_data_url \"sqlite:///tmp/x.db\"",
-        "plugin_data_url \"mysql://x/y\"",
-        "plugin_data_url \"/var/lib/yinz/plugin-data.db\"",
-        "plugin_data_schema \"Public\"",
-        "plugin_data_schema \"_private\"",
-        "plugin_data_schema \"yinz-data\"",
     ] {
         let document: KdlDocument = bad.parse().unwrap();
         assert!(

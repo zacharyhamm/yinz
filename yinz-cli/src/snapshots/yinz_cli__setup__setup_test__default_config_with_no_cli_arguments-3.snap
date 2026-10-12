@@ -41,8 +41,6 @@ Options {
     attach_to_session: None,
     auto_layout: None,
     session_serialization: None,
-    plugin_data_url: None,
-    plugin_data_schema: None,
     host_id: None,
     serialize_pane_viewport: None,
     scrollback_lines_to_serialize: None,

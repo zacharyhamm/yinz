@@ -2,13 +2,8 @@
 //!
 //! # Why a row needs to say which machine wrote it
 //!
-//! With `plugin_data_url` pointing at Postgres, several yinz servers on *different machines*
-//! share one plugin data store as one user. The store was already shared between the servers on
-//! one machine — `plugin-data.db` lives in the data dir rather than a session cache dir — and the
-//! entities that care about it scope their rows by `yinz_session_name` for that reason. A
-//! session name does not survive the widening: two machines can each run a session called `main`,
-//! so a row written by one is indistinguishable from a row written by the other, and a pane id
-//! means nothing outside the server that allocated it.
+//! Servers share `plugin-data.db` within a data directory. Rows carry both session and
+//! installation identity because pane ids and session names are not globally unique.
 //!
 //! [`host_id`] is what makes those rows distinguishable. It identifies an *installation* — a data
 //! dir on a machine — rather than a host in the network sense, which is the granularity that
@@ -49,8 +44,7 @@ pub const MAX_HOST_ID_LEN: usize = 64;
 ///
 /// Alphanumerics, `_` and `-` only. A `:` is excluded because the uids that carry a host id
 /// join their parts with one, and a host id containing a separator would make
-/// `{host}:{session}:{pane}` ambiguous. Everything else — whitespace, NUL, which Postgres cannot
-/// store at all — falls out of the same rule.
+/// `{host}:{session}:{pane}` ambiguous. Whitespace and NUL are excluded by the same rule.
 pub fn is_valid_host_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_HOST_ID_LEN

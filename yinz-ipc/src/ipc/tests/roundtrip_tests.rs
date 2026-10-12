@@ -757,8 +757,6 @@ fn test_client_messages() {
                 agent_double_escape: Some(true),
                 // Intentionally not carried over the wire; see the field's docs.
                 detachable_panes: None,
-                plugin_data_url: None,
-                plugin_data_schema: None,
                 host_id: None,
 
                 pane_frames: Some(true),

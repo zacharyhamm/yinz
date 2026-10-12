@@ -604,7 +604,7 @@ recorded probe coverage, so historical uncertainty remains explicit after resolu
 Subscribers without project filters receive the original facts. Completed probes restore
 normal filtering for subsequent facts, including checkpoints for resolved non-members.
 Closure and replacement records retain the previous identity and project membership.
-External database changes require resubscription. Shared Postgres storage does not
+External database changes require resubscription. Shared storage does not
 provide cross-session event delivery.
 
 | Event type | Meaning |

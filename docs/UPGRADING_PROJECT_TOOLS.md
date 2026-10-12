@@ -2,7 +2,7 @@
 
 This release removes the built-in Hocus chat agent. External agents, project panels, workflows, plugin authoring, and stateless LLM completions remain available.
 
-1. Stop all Yinz servers that share the database. Include servers on other machines that use the same Postgres database.
+1. Stop all Yinz servers that share the database.
 2. Upgrade Yinz on every machine before you start any server. Mixed-version operation is unsupported.
 3. Update custom configuration and plugins with the names below. There are no compatibility aliases.
 4. Move endpoint, summary, and completion settings from `hocus` to the `agent-service` configuration block.

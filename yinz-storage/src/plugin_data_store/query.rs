@@ -33,7 +33,7 @@ pub(super) fn is_default_ordering(request: &FetchRequest) -> bool {
 }
 
 /// The search term as it is bound. NUL is stripped rather than rejected: a search is something a
-/// person pastes, and Postgres refuses a NUL anywhere in a text parameter.
+/// person pastes, and NUL is not part of a text search.
 pub(super) fn search_term(request: &FetchRequest) -> Option<String> {
     request.search.as_ref().map(|s| s.replace('\0', ""))
 }
@@ -177,9 +177,7 @@ pub(super) fn build_where<'d>(
 /// The `ORDER BY` terms: the request's sort, or the search ranking when there is one, and always
 /// `id` last.
 ///
-/// Null placement is spelled out because the engines disagree — SQLite puts nulls first in an
-/// ascending sort and Postgres puts them last — and a plugin paging through a sorted set should
-/// see the same order wherever its data lives. SQLite's native placement is the one kept.
+/// Explicit null placement keeps pagination ordering consistent across backends.
 pub(super) fn build_order(
     schema: &EntitySchema,
     request: &FetchRequest,

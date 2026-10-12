@@ -26,9 +26,8 @@ integration-test workers. Docker suites run separately:
 | Command | Requirement |
 |---|---|
 | `cargo x remote-test` | Docker with a real SSH server |
-| `cargo x postgres-test` | Docker with Postgres |
 
-For each of these two suites, run `--build` before `--test`.
+For the remote suite, run `--build` before `--test`.
 
 Remote SSH and the older E2E suite build GNU release binaries in
 Debian 13 slim through Docker. The builder matches the host architecture
@@ -38,7 +37,7 @@ a debug build if the host binary runs with Debian 13's libraries.
 
 For the older E2E suite, run `cargo x ci e2e --build`, then
 `docker compose up -d --build`, then `cargo x ci e2e --test tests::e2e::`.
-The filter selects the five terminal tests and leaves Postgres to its own suite.
+The filter selects the five terminal tests.
 The SSH fixture listens on localhost port 2222 with user/password `test`/`test`.
 
 **Never set `CARGO_TARGET_DIR` or change `build.target-dir`.** Checkout plugin
@@ -87,8 +86,7 @@ To list tests, including ignored ones, use
 `cargo nextest list --workspace --all-features --run-ignored all`.
 Doctests are not listable.
 
-Remote tests accept `--test -- --exact <name>`. Postgres tests accept
-`--test -- -E 'test(/postgres::oracle/)'` and enable the `postgres-tests` feature.
+Remote tests accept `--test -- --exact <name>`.
 
 For a bare `cargo test` inner loop, run from the repo root without `--target`.
 Build plugins first with `cargo x build --plugins-only` if tests load Wasm.
@@ -111,7 +109,6 @@ root package's tests and the integration suite's plugin-test sessions. For
 `yinz-server-os/` changes, run `cargo x test -p yinz-server-os -p yinz`
 and `cargo x integration-test -j 16`, plus `cargo x remote-test` when remote spawning changes.
 
-For `yinz-storage/src/plugin_data_store/`, also run the Postgres suite.
 Full test and integration suites bind TCP and Unix sockets: use sandbox
 escalation on the first attempt.
 
@@ -179,7 +176,7 @@ escalation on the first attempt.
 | `default-plugins/project-data/` | Agent store seam, entity schemas, project/todo/note registry; re-exported by `agent-proto`, linked by the plugin host |
 | `yinz-integration-tests/` | Whole-app tests |
 | `src/tests/e2e/`, `yinz-server/tests/` | Docker E2E and remote-pane tests |
-| `docker/`, `docker-compose.postgres.yml` | Test containers |
+| `docker/` | Test containers |
 | `xtask/` | Build and test commands |
 
 ## Conventions
@@ -201,8 +198,7 @@ escalation on the first attempt.
 
 ## Shared plugin data
 
-One `plugin-data.db` serves all local servers. With `plugin_data_url` set to
-Postgres, one database can serve multiple machines.
+One SQLite `plugin-data.db` serves all local servers using the same data directory.
 
 - Scope server rows by **both `host_id` and `yinz_session_name`**, using
   `agent_proto::agents::rows::Owner`. Carry `PluginIds.host_id` from startup.
@@ -218,8 +214,8 @@ Postgres, one database can serve multiple machines.
   Conflicts return `DataError::Conflict` and roll back the batch. Include `rev`
   in selected columns and carry it through `todo_edit` and `note_edit`, including
   tags-only edits. Reuse `store::guarded_rev`. Setting a flag alone does not need a guard.
-- Watches react only to writes from their own server process. Another machine's
-  Postgres write does not wake them.
+- Watches react only to writes from their own server process. Another server's
+  database write does not wake them.
 
 ## Swamp integration
 

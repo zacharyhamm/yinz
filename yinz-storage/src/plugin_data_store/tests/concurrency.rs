@@ -1,9 +1,7 @@
 //! `rev`, the row revision the store keeps so that two writers can tell a row they read from a
 //! row somebody else has since changed.
 //!
-//! Runs against both engines, which is the point: a compare-and-set that behaved differently on
-//! SQLite and Postgres would be worse than none, because the case it exists for — several yinz
-//! servers sharing one database — only arises on the engine the tests would have skipped.
+//! Several servers can share one database; stale revisions must fail atomically.
 
 use super::*;
 use yinz_types::internal_ids::{DataRevision, DataRowId};

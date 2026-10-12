@@ -978,7 +978,7 @@ pub fn plan_edit(
     // Guarded on the revision the text was composed from. An edit replaces the whole of an
     // item's text with something composed from what the caller saw, so a write that lands on a
     // row somebody else has since edited destroys their wording outright — and the store is
-    // shared by every session, and with Postgres by every machine, pointed at it.
+    // shared by every session using the data directory.
     //
     // Completion instead guards the whole project snapshot: its cascade and reopening
     // decisions depend on the tree, even when two writers agree on the flag itself.

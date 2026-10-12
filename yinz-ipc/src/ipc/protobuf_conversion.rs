@@ -1127,8 +1127,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             // file it loads itself, and it has no per-invocation CLI form.
             detachable_panes: None,
             // Likewise, and the URL may carry a database password.
-            plugin_data_url: None,
-            plugin_data_schema: None,
             // Likewise. The server resolves its host id once at startup from its own data dir,
             // and a client has no business naming which machine the server it is talking to is.
             host_id: None,

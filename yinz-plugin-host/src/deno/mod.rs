@@ -659,8 +659,7 @@ impl DenoPlugin {
         else {
             return Ok(T::default());
         };
-        // Host operations run synchronously on the pinned executor. Entering
-        // Tokio here prevents the PostgreSQL backend from driving its own runtime.
+        // Host operations run synchronously on the pinned executor.
         RUNTIMES.with(|instances| {
             let mut instances = instances
                 .try_borrow_mut()
