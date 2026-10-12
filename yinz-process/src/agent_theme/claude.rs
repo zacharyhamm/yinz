@@ -161,19 +161,35 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
             }
         }
     }
-    snapshot.definitions = tokens
-        .into_iter()
-        .filter_map(|(token, value)| {
-            let (channel, target) = token_role(&token);
-            Some(Definition {
-                token,
+    snapshot.definitions.clear();
+    for (token, value) in tokens {
+        let Some(color) = color(&value) else {
+            continue;
+        };
+        let (channel, target) = token_role(&token);
+        let extra_role = match token.as_str() {
+            "diffAddedWord" => Some((Channel::Foreground, Role::Success)),
+            "diffRemovedWord" => Some((Channel::Foreground, Role::Error)),
+            "rate_limit_empty" => Some((Channel::Background, Role::Subtle)),
+            _ => None,
+        };
+        if let Some((channel, role)) = extra_role {
+            snapshot.definitions.push(Definition {
+                token: token.clone(),
                 channel,
-                color: color(&value)?,
+                color,
                 pair: None,
-                target,
-            })
-        })
-        .collect();
+                target: Some(role.into()),
+            });
+        }
+        snapshot.definitions.push(Definition {
+            token,
+            channel,
+            color,
+            pair: None,
+            target,
+        });
+    }
     terminal_defaults(&mut snapshot.definitions);
     // Syntax highlighters and dynamic spinner gradients are outside the palette descriptor.
     snapshot.availability = Availability::Partial(
@@ -210,6 +226,7 @@ fn check_inherited_local_theme(context: &LaunchContext) -> Result<()> {
 
 fn token_role(token: &str) -> (Channel, Option<Target>) {
     use Role::*;
+    let token = token.strip_suffix("_FOR_SYSTEM_SPINNER").unwrap_or(token);
     let (base, shimmer) = token
         .strip_suffix("Shimmer")
         .map_or((token, false), |s| (s, true));
@@ -218,11 +235,11 @@ fn token_role(token: &str) -> (Channel, Option<Target>) {
         "background" => (Channel::Background, Some(Role::Background)),
         "inverseText" => (Channel::Foreground, Some(SelectionForeground)),
         "inactive" => (Channel::Foreground, Some(Muted)),
-        "subtle" => (Channel::Foreground, Some(Subtle)),
+        "subtle" | "rate_limit_empty" => (Channel::Foreground, Some(Subtle)),
         "claude" | "permission" | "promptBorder" | "planMode" | "remember" | "suggestion"
-        | "bashBorder" | "ide" | "fastMode" | "autoAccept" | "skill" | "effortUltra" => {
-            (Channel::Foreground, Some(Accent))
-        },
+        | "bashBorder" | "ide" | "fastMode" | "autoAccept" | "skill" | "effortUltra"
+        | "briefLabelYou" | "briefLabelClaude" | "clawd_body" | "professionalBlue"
+        | "chromeYellow" | "claudeBlue" | "rate_limit_fill" => (Channel::Foreground, Some(Accent)),
         "success" | "merged" => (Channel::Foreground, Some(Success)),
         "error" => (Channel::Foreground, Some(Error)),
         "warning" => (Channel::Foreground, Some(Warning)),

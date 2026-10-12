@@ -42,7 +42,11 @@ ignored.
   repository-local theme settings requiring ownership checks, and invocation
   flags that change config or the working directory inside Claude produce an
   unavailable result. Syntax-only colors and dynamic gradients are outside this
-  descriptor.
+  descriptor. Static labels, mascot foreground, informational accents, spinner
+  palette endpoints and usage indicators follow accent/subtle roles. Diff-summary
+  foregrounds use success/error. Line, dimmed and word backgrounds retain their
+  respective diff roles. Independent subagent and rainbow colors pass through
+  unless they share a mapped source color.
 - Codex CLI **0.162.1**: the pinned provider's read-only `config/read` API resolves
   machine policy, trusted project layers, environment roots and CLI TOML
   overrides. The pinned v2 profile file's theme is inserted below enabled
@@ -70,7 +74,7 @@ reports cannot overwrite observations. Selected secondary text uses the theme's
 selection foreground and background after resolving Codex's contrast corrections.
 
 Other versions return unavailable, with original colors preserved. A single
-launch diagnostic records partial/unavailable resolution and unresolved
+launch diagnostic records partial/unavailable resolution and color
 collisions. Metadata contains normalized colors, semantic expressions, token
 names and source provenance, never whole configuration or environment values.
 
@@ -78,8 +82,11 @@ names and source provenance, never whole configuration or environment values.
 
 Foreground, background and underline channels are independent. Explicit
 foreground/background pairs take precedence over individual colors. Equivalent
-semantic expressions merge. Equally specific conflicting meanings, including
-known unsupported syntax or decorative tokens, remain unchanged. Decisions
+semantic expressions merge. Claude and Codex prefer mapped roles over unmapped
+syntax or decorative tokens sharing the same color. Conflicting mapped roles use
+the stable role order (base text, then accent, then status colors). Codex's explicit
+accent takes priority. Collisions remain in diagnostics. Other providers leave
+equally specific conflicting meanings unchanged. Decisions
 compare expressions rather than destination RGB values, so theme switches do
 not change collision policy. There is no hue classification or nearby-color
 matching. Identical emitted styles cannot distinguish their underlying meaning.

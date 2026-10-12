@@ -121,7 +121,16 @@ fn claude_inherits_base_and_tracks_unmapped_identity_collisions() {
     );
     let mut snapshot = snapshot();
     claude::resolve(&context(dir.path()), &mut snapshot).unwrap();
+    snapshot.provider = "claude".into();
     snapshot.finish();
+    assert_eq!(
+        snapshot.compile().0[&MatchKey {
+            channel: Channel::Foreground,
+            color: SourceColor::Rgb(18, 52, 86),
+            pair: None
+        }],
+        Some(Role::Success.into())
+    );
     assert_eq!(snapshot.theme, "custom:test");
     assert!(snapshot
         .definitions
@@ -413,5 +422,124 @@ fn codex_launch_options_preserve_clap_compact_values_and_final_directory() {
         assert_eq!(cwd, dir.path().join("project").canonicalize().unwrap());
         assert_eq!(overrides, ["tui.theme='ada'"]);
         assert_eq!(profile.as_deref(), Some("work"));
+    }
+}
+
+#[test]
+fn claude_presets_and_custom_overrides_map_ui_and_both_diff_channels() {
+    let presets: BTreeMap<String, BTreeMap<String, String>> =
+        serde_json::from_str(include_str!("../descriptors/claude-2.1.296.json")).unwrap();
+    assert_eq!(presets.len(), 6);
+    let dir = tempfile::tempdir().unwrap();
+    for preset in presets.keys() {
+        for custom in [false, true] {
+            let theme = if custom { "custom:test" } else { preset };
+            write(
+                dir.path(),
+                ".claude.json",
+                &serde_json::json!({"theme": theme}).to_string(),
+            );
+            write(
+                dir.path(),
+                ".claude/themes/test.json",
+                &serde_json::json!({
+                    "base": preset,
+                    "overrides": {
+                        "diffAddedWord": "ansi:greenBright",
+                        "diffRemovedWord": "ansi:redBright",
+                        "rate_limit_empty": "rgb(12,34,56)"
+                    }
+                })
+                .to_string(),
+            );
+            let mut source = snapshot();
+            source.provider = "claude".into();
+            claude::resolve(&context(dir.path()), &mut source).unwrap();
+            let result = source.compile();
+            for (token, channel, role) in [
+                ("briefLabelYou", Channel::Foreground, Role::Accent),
+                ("briefLabelClaude", Channel::Foreground, Role::Accent),
+                ("clawd_body", Channel::Foreground, Role::Accent),
+                ("professionalBlue", Channel::Foreground, Role::Accent),
+                ("chromeYellow", Channel::Foreground, Role::Accent),
+                (
+                    "claudeBlue_FOR_SYSTEM_SPINNER",
+                    Channel::Foreground,
+                    Role::Accent,
+                ),
+                ("rate_limit_fill", Channel::Foreground, Role::Accent),
+                ("rate_limit_empty", Channel::Foreground, Role::Subtle),
+                ("rate_limit_empty", Channel::Background, Role::Subtle),
+                ("diffAddedWord", Channel::Foreground, Role::Success),
+                ("diffRemovedWord", Channel::Foreground, Role::Error),
+                ("diffAddedWord", Channel::Background, Role::AdditionWord),
+                ("diffRemovedWord", Channel::Background, Role::RemovalWord),
+                ("diffAdded", Channel::Background, Role::AdditionBackground),
+                ("diffRemoved", Channel::Background, Role::RemovalBackground),
+                ("diffAddedDimmed", Channel::Background, Role::AdditionDimmed),
+                (
+                    "diffRemovedDimmed",
+                    Channel::Background,
+                    Role::RemovalDimmed,
+                ),
+            ] {
+                let d = source
+                    .definitions
+                    .iter()
+                    .find(|d| d.token == token && d.channel == channel)
+                    .unwrap();
+                assert_eq!(d.target, Some(role.into()), "{preset}: {token}");
+                assert!(
+                    result.0[&MatchKey {
+                        channel,
+                        color: d.color,
+                        pair: None
+                    }]
+                        .is_some(),
+                    "{preset}: {token}"
+                );
+                if custom && token == "diffAddedWord" {
+                    assert_eq!(d.color, SourceColor::Index(10));
+                }
+                if custom && token == "diffRemovedWord" {
+                    assert_eq!(d.color, SourceColor::Index(9));
+                }
+                if token == "rate_limit_empty" {
+                    if custom {
+                        assert_eq!(d.color, SourceColor::Rgb(12, 34, 56));
+                    }
+                    if channel == Channel::Background {
+                        assert_eq!(
+                            result.0[&MatchKey {
+                                channel,
+                                color: d.color,
+                                pair: None
+                            }],
+                            Some(Role::Subtle.into()),
+                            "{preset}: {token}"
+                        );
+                    }
+                }
+            }
+            let shimmer = source
+                .definitions
+                .iter()
+                .find(|d| d.token == "claudeBlueShimmer_FOR_SYSTEM_SPINNER")
+                .unwrap();
+            assert_eq!(
+                shimmer.target,
+                Some(Target {
+                    role: Role::Accent,
+                    shimmer: true
+                })
+            );
+            assert!(source
+                .definitions
+                .iter()
+                .filter(|d| d.token.contains("SUBAGENTS_ONLY") || d.token.starts_with("rainbow_"))
+                .all(|d| d.target.is_none()));
+            source.definitions.reverse();
+            assert_eq!(source.compile(), result);
+        }
     }
 }
