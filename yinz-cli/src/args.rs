@@ -62,7 +62,7 @@ fn validate_session(name: &str) -> Result<String, String> {
 )]
 pub struct CliArgs {
     /// Maximum panes on screen, caution: opening more panes will close old ones
-    #[clap(long, value_parser)]
+    #[clap(long, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
     pub max_panes: Option<usize>,
 
     /// Change where yinz looks for plugins
@@ -2644,6 +2644,17 @@ mod tests {
             .expect("failed to spawn cli parse thread")
             .join()
             .expect("cli parse thread panicked")
+    }
+
+    #[test]
+    fn max_panes_must_be_positive_when_provided() {
+        let error = try_parse_cli(["yinz", "--max-panes", "0"]).unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        for limit in [1, 12, usize::MAX] {
+            let cli = try_parse_cli(["yinz", "--max-panes", &limit.to_string()]).unwrap();
+            assert_eq!(cli.max_panes, Some(limit));
+        }
+        assert_eq!(try_parse_cli(["yinz"]).unwrap().max_panes, None);
     }
 
     #[test]
