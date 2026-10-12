@@ -14,12 +14,12 @@ themes {
             emphasis_3 5
         }
         text_selected {
-            base 15
-            background 8
-            emphasis_0 9
-            emphasis_1 6
-            emphasis_2 2
-            emphasis_3 5
+            base 0
+            background 15
+            emphasis_0 0
+            emphasis_1 0
+            emphasis_2 0
+            emphasis_3 0
         }
         ribbon_unselected {
             base 0

@@ -66,6 +66,43 @@ fn contrast_ratio(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
 }
 
 #[test]
+fn builtin_text_selection_is_readable_and_distinct_on_both_hosts() {
+    for file in YINZ_DEFAULT_THEMES.files() {
+        let source = file.contents_utf8().unwrap();
+        let themes = Themes::from_string(source, false).unwrap();
+        for (name, theme) in themes.inner() {
+            let selected = theme.palette.text_selected;
+            for host in [&DARK_HOST, &LIGHT_HOST] {
+                let background = color_rgb(selected.background, host);
+                // Mouse and keyboard pane selection use text_selected, also used by plugin UI.
+                for (role, foreground) in [
+                    ("base", selected.base),
+                    ("emphasis_0", selected.emphasis_0),
+                    ("emphasis_1", selected.emphasis_1),
+                    ("emphasis_2", selected.emphasis_2),
+                    ("emphasis_3", selected.emphasis_3),
+                ] {
+                    let ratio = contrast_ratio(color_rgb(foreground, host), background);
+                    assert!(
+                        ratio >= 4.5,
+                        "{name}: text_selected.{role}: contrast {ratio:.2}:1 < 4.5:1"
+                    );
+                }
+                let panel = color_rgb(theme.palette.text_unselected.background, host);
+                let terminal = theme.terminal.map(|terminal| terminal.background);
+                for unselected in [Some(panel), terminal].into_iter().flatten() {
+                    let ratio = contrast_ratio(background, unselected);
+                    assert!(
+                        ratio >= 3.0,
+                        "{name}: selection on {unselected:?}: contrast {ratio:.2}:1 < 3:1"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn builtin_light_themes_have_readable_ui_colors() {
     for name in [
         "ayu-light",

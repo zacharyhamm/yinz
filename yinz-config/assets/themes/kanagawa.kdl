@@ -32,10 +32,10 @@ themes {
         text_selected {
             base 22 22 29
             background 118 148 106
-            emphasis_0 255 160 102
-            emphasis_1 127 180 202
-            emphasis_2 118 148 106
-            emphasis_3 149 127 184
+            emphasis_0 "#352115"
+            emphasis_1 "#1b272c"
+            emphasis_2 "#1f271c"
+            emphasis_3 "#282232"
         }
         ribbon_selected {
             base 22 22 29
