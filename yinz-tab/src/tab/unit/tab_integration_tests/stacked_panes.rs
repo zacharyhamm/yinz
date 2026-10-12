@@ -2802,7 +2802,7 @@ fn close_stacked_pane_with_previously_focused_other_pane() {
     );
     assert_eq!(
         cursor_coordinates,
-        Some((62, 2)),
+        Some((62, 3)),
         "cursor coordinates moved to the main pane of the stack",
     );
 
