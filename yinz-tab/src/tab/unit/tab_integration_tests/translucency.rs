@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::damage::CellRect;
 
 fn paint(tab: &mut Tab, terminal: u32, letter: char) {
     let pane = tab
@@ -234,6 +235,106 @@ fn add_translucent_overlay(tab: &mut Tab, terminal: u32, x: usize) {
 }
 
 #[test]
+fn translucent_cursor_cell_restores_transparency_when_moved_hidden_or_unfocused() {
+    let mut tab =
+        create_new_tab_without_pane_frames(Size { cols: 60, rows: 20 }, ModeInfo::default());
+    paint(&mut tab, 1, 'a');
+    add_translucent_overlay(&mut tab, 2, 5);
+    let mut history = String::new();
+    for (bytes, expected) in [
+        ("LABEL\x1b[?25h", "LABEL aaaa"),
+        ("\x1b[C", "LABELa aaa"),
+        ("\x1b[?25l", "LABELaaaaa"),
+        ("\x1b[?25h", "LABELa aaa"),
+        ("\x1b[?2026h\x1b[C", "LABELaaaaa"),
+        ("\x1b[?2026l", "LABELaa aa"),
+    ] {
+        tab.handle_pty_bytes(TerminalId::new(2), bytes.as_bytes().to_vec())
+            .unwrap();
+        let snapshot = frame(&mut tab, &mut history);
+        assert!(snapshot.contains(expected), "{bytes:?}: {snapshot}");
+    }
+
+    let client = ClientId::new(1);
+    tab.focus_pane_with_id(PaneId::Terminal(TerminalId::new(1)), false, false, client)
+        .unwrap();
+    let unfocused = frame(&mut tab, &mut history);
+    assert!(unfocused.contains("LABELaaaaa"), "{unfocused}");
+    tab.focus_pane_with_id(PaneId::Terminal(TerminalId::new(2)), false, false, client)
+        .unwrap();
+    let focused = frame(&mut tab, &mut history);
+    assert!(focused.contains("LABELaa aa"), "{focused}");
+
+    let (x, y, true) = tab.get_active_terminal_cursor_position(client).unwrap() else {
+        panic!("expected a visible cursor");
+    };
+    let mut output = Output::default();
+    output.set_context_menu_rects(HashMap::from([(
+        client,
+        vec![CellRect {
+            x,
+            y,
+            cols: 1,
+            rows: 1,
+        }],
+    )]));
+    tab.render(&mut output, None).unwrap();
+    let bytes = output.serialize().unwrap();
+    assert!(!bytes[&client].contains("\x1b[?25h"));
+    history.push_str(&bytes[&client]);
+    let occluded = take_snapshot(&history, 20, 60, Palette::default());
+    assert!(occluded.contains("LABELaaaaa"), "{occluded}");
+}
+
+#[test]
+fn translucent_plugin_cursor_cells_follow_each_clients_cursor() {
+    use yinz_types::internal_ids::PluginId;
+    let (mut tab, _receiver) =
+        create_new_tab_with_plugin_receiver(Size { cols: 60, rows: 20 }, ModeInfo::default());
+    tab.set_pane_frames(PaneFrameStyle::None);
+    let clients = [ClientId::new(1), ClientId::new(2)];
+    tab.add_client(clients[1], None).unwrap();
+    let plugin = PluginId::new(9);
+    tab.new_pane(
+        PaneId::Plugin(plugin),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement {
+            background_opacity: Some(50),
+            coordinates: Some(FloatingPaneCoordinates {
+                x: Some(PercentOrFixed::Fixed(5)),
+                y: Some(PercentOrFixed::Fixed(5)),
+                width: Some(PercentOrFixed::Fixed(20)),
+                height: Some(PercentOrFixed::Fixed(8)),
+                borderless: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        Some(clients[0]),
+        None,
+    )
+    .unwrap();
+    paint(&mut tab, 1, 'a');
+    for (client, cursor_column) in clients.into_iter().zip([5, 7]) {
+        tab.focus_pane_with_id(PaneId::Plugin(plugin), false, false, client)
+            .unwrap();
+        tab.handle_plugin_bytes(plugin, client, b"LABEL".to_vec())
+            .unwrap();
+        tab.show_plugin_cursor(plugin, client, Some((cursor_column, 0)));
+    }
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    let bytes = output.serialize().unwrap();
+    for (client, expected) in clients.into_iter().zip(["LABEL aaaa", "LABELaa aa"]) {
+        let snapshot = take_snapshot(&bytes[&client], 20, 60, Palette::default());
+        assert!(snapshot.contains(expected), "{client}: {snapshot}");
+    }
+}
+
+#[test]
 fn translucent_overlay_created_during_sync_keeps_completed_text_until_unlock() {
     let mut tab =
         create_new_tab_without_pane_frames(Size { cols: 60, rows: 20 }, ModeInfo::default());
@@ -248,7 +349,10 @@ fn translucent_overlay_created_during_sync_keeps_completed_text_until_unlock() {
         tab.handle_pty_bytes(TerminalId::new(2), format!("\x1b[H{label}").into_bytes())
             .unwrap();
         let snapshot = frame(&mut tab, &mut history);
-        assert!(snapshot.contains(&format!("{label}aaaaaaaa")), "{snapshot}");
+        assert!(
+            snapshot.contains(&format!("{label} aaaaaaaa")),
+            "{snapshot}"
+        );
         assert!(!snapshot.contains("bbbb"), "{snapshot}");
     }
     tab.change_overlay_coordinates_batch(
@@ -265,13 +369,13 @@ fn translucent_overlay_created_during_sync_keeps_completed_text_until_unlock() {
     .unwrap();
     let moved = frame(&mut tab, &mut history);
     assert!(
-        moved.contains(&format!("{}THIRDaaaaaaaa", "a".repeat(30))),
+        moved.contains(&format!("{}THIRD aaaaaaaa", "a".repeat(30))),
         "{moved}"
     );
     tab.handle_pty_bytes(TerminalId::new(1), b"\x1b[?2026l".to_vec())
         .unwrap();
     let unlocked = frame(&mut tab, &mut history);
-    assert!(unlocked.contains("THIRDbbbbbbbb"), "{unlocked}");
+    assert!(unlocked.contains("THIRD bbbbbbbb"), "{unlocked}");
     assert!(!unlocked.contains("aaaa"), "{unlocked}");
 }
 
@@ -320,7 +424,7 @@ fn translucent_overlay_beyond_original_fullscreen_bounds_retains_idle_text() {
         for _ in 0..3 {
             let snapshot = frame(&mut tab, &mut history);
             assert!(
-                snapshot.contains("LABELaaaaaaaa"),
+                snapshot.contains("LABEL aaaaaaaa"),
                 "floating={floating}: {snapshot}"
             );
         }

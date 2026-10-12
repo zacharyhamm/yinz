@@ -5934,6 +5934,17 @@ impl Tab {
         self.sync_pane_tabs()?;
         self.render_tiled_panes_and_chrome(output, client_id_override)?;
         self.render_floating_panes_and_overlays(output, client_id_override)?;
+        for client in self.clients_in_frame(client_id_override) {
+            let Some((x, y, true)) = self.get_active_terminal_cursor_position(client) else {
+                continue;
+            };
+            let z_index = self.active_pane_z_index(client);
+            if !self.active_terminal_is_mid_frame(client).unwrap_or(false)
+                && output.cursor_is_visible(x, y, z_index, client)
+            {
+                output.protect_translucent_cursor_cell(client, x, y, z_index);
+            }
+        }
         output.finish_translucent_composition();
         Ok(())
     }
@@ -6137,6 +6148,18 @@ impl Tab {
             self.should_clear_display_before_rendering = false;
         }
     }
+    fn active_pane_z_index(&self, client_id: ClientId) -> Option<usize> {
+        // Match the flat floating-then-overlay order used by occlusion_stack and rendering.
+        self.get_active_pane_id(client_id).and_then(|pane_id| {
+            self.floating_panes.get_pane_z_index(pane_id).or_else(|| {
+                self.overlay_panes
+                    .get_pane_z_index(pane_id)
+                    .filter(|_| self.overlays_are_rendered())
+                    .map(|index| index + self.floating_layer_count())
+            })
+        })
+    }
+
     fn render_cursor(&mut self, output: &mut Output, client_id_override: Option<ClientId>) {
         for client_id in self.clients_in_frame(client_id_override) {
             let memo_key = match client_id_override {
@@ -6150,17 +6173,7 @@ impl Tab {
             let already_hidden_this_frame = output.cursor_was_hidden_for(client_id);
             match self.get_active_terminal_cursor_position(client_id) {
                 Some((cursor_position_x, cursor_position_y, is_cursor_visible)) => {
-                    // the same flat list `occlusion_stack` builds, so an overlay's index has to
-                    // be offset past the floating layers exactly as it is when it renders
-                    let active_pane_z_index =
-                        self.get_active_pane_id(client_id).and_then(|pane_id| {
-                            self.floating_panes.get_pane_z_index(pane_id).or_else(|| {
-                                self.overlay_panes
-                                    .get_pane_z_index(pane_id)
-                                    .filter(|_| self.overlays_are_rendered())
-                                    .map(|index| index + self.floating_layer_count())
-                            })
-                        });
+                    let active_pane_z_index = self.active_pane_z_index(client_id);
                     output.set_cursor_coordinates(client_id, cursor_position_x, cursor_position_y);
                     let not_occluded = output.cursor_is_visible(
                         cursor_position_x,

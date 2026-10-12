@@ -139,6 +139,24 @@ fn same_styles(a: &RcCharacterStyles, b: &RcCharacterStyles) -> bool {
 }
 
 impl Composition {
+    pub(super) fn protect_cursor_cell(&mut self, x: usize, y: usize, layer: usize) {
+        if !self.contains_layer(layer) {
+            return;
+        }
+        let Some(index) = x.checked_sub(self.left) else {
+            return;
+        };
+        if let Some(cell) = self
+            .layers
+            .get_mut(&layer)
+            .and_then(|cells| cells.get_mut(&y))
+            .and_then(|row| row.get_mut(index))
+            .and_then(Option::as_mut)
+        {
+            cell.transparent = false;
+        }
+    }
+
     pub(super) fn contains_layer(&self, layer: usize) -> bool {
         self.overlays.iter().any(|(z, _, _)| *z == layer)
     }

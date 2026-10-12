@@ -32,6 +32,66 @@ fn compose(opacity: u8, under: CharacterChunk, over: CharacterChunk) -> Vec<Char
 }
 
 #[test]
+fn cursor_cell_preserves_foreground_and_clips_underlying_wide_characters() {
+    for (under, over, cursor, expected) in [
+        ("abcde", "     ", 2, "ab de"),
+        ("abcde", "  X  ", 2, "abXde"),
+        ("a界de", "     ", 1, "a  de"),
+        ("a界de", "     ", 2, "a  de"),
+    ] {
+        let mut composition =
+            translucency::Composition::new(vec![(1, rect(0, 5), 50)], FG, BG, TINT, [None; 256]);
+        composition.add(&[chunk(under, 0)], 0);
+        composition.add(&[chunk(over, 0)], 1);
+        composition.protect_cursor_cell(cursor, 0, 1);
+        let cells = serialize_and_parse_row(composition.finish(), 5);
+        assert_eq!(
+            cells.iter().map(|c| c.character).collect::<String>(),
+            expected
+        );
+        assert_eq!(cells[cursor].styles.background, Some(TINT.into()));
+    }
+}
+
+#[test]
+fn cursor_cell_protection_is_per_client_and_uses_cursor_layer_indices() {
+    let clients = HashSet::from([ClientId::new(1), ClientId::new(2)]);
+    let mut output = Output::default();
+    output.add_clients(&clients, Rc::new(RefCell::new(LinkHandler::new())), None);
+    output.begin_translucent_composition(
+        &clients,
+        vec![(1, rect(2, 5), 50)],
+        FG,
+        BG,
+        TINT,
+        &HashMap::new(),
+    );
+    for client in &clients {
+        output
+            .add_character_chunks_to_client(*client, vec![chunk("abcde", 2)], None)
+            .unwrap();
+        output
+            .add_character_chunks_to_client(*client, vec![chunk("     ", 2)], Some(1))
+            .unwrap();
+    }
+    output.protect_translucent_cursor_cell(ClientId::new(1), 4, 0, Some(0));
+    // A tiled cursor and coordinates outside the overlay cannot punch holes in it.
+    output.protect_translucent_cursor_cell(ClientId::new(2), 4, 0, None);
+    output.protect_translucent_cursor_cell(ClientId::new(2), 0, 0, Some(0));
+    output.protect_translucent_cursor_cell(ClientId::new(2), 8, 0, Some(0));
+    output.protect_translucent_cursor_cell(ClientId::new(2), 4, 1, Some(0));
+    output.finish_translucent_composition();
+    assert_eq!(
+        text(&output.client_character_chunks[&ClientId::new(1)]),
+        "ab de"
+    );
+    assert_eq!(
+        text(&output.client_character_chunks[&ClientId::new(2)]),
+        "abcde"
+    );
+}
+
+#[test]
 fn screen_overlay_composes_fresh_content_and_notifications_in_paint_order() {
     let client = ClientId::new(1);
     for content in ["abcdefgh", "12345678"] {

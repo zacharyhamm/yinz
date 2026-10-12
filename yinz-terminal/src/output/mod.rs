@@ -936,6 +936,20 @@ impl Output {
             .get(&client)
             .is_some_and(|composition| composition.contains_layer(z_index.unwrap_or(0)))
     }
+    /// Keep background text out of the visible cursor's cell in a translucent pane.
+    pub fn protect_translucent_cursor_cell(
+        &mut self,
+        client: ClientId,
+        x: usize,
+        y: usize,
+        z_index: Option<usize>,
+    ) {
+        if let Some(composition) = self.compositions.get_mut(&client) {
+            // Cursor indices address the occlusion stack; text layer zero is the tiled panes.
+            composition.protect_cursor_cell(x, y, z_index.map(|z| z + 1).unwrap_or(0));
+        }
+    }
+
     /// Flush before screen menus and notifications contribute their opaque cells.
     pub fn finish_translucent_composition(&mut self) {
         for (client, composition) in self.compositions.drain() {
