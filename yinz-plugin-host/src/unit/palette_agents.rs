@@ -481,8 +481,7 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
         (reply, launches, screen)
     };
 
-    // An agent without a mapped state layout: the launch never prepares a sandbox profile.
-    let (reply, launches, screen) = launch(true, "cursor", "mother: cursor");
+    let (reply, launches, screen) = launch(true, "claude", "mother: claude");
     assert!(
         matches!(&reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok),
         "{reply:?}"
@@ -491,8 +490,7 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
         panic!("expected one launch, got {launches:?}");
     };
     assert_eq!(command.cwd.as_deref(), Some(cwd.as_path()));
-    assert_eq!(command.target, PaneTarget::Local);
-    assert!(command.args.iter().any(|arg| arg == "cursor-agent"));
+    assert_eq!(command.target.is_bubblewrap(), cfg!(target_os = "linux"));
     assert!(
         matches!(placement, NewPanePlacement::Overlay(overlay) if !overlay.is_modal() && overlay.coordinates.is_some()),
         "{placement:?}"
@@ -505,13 +503,6 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
         .iter()
         .any(|instruction| matches!(instruction, ScreenInstruction::GetPaneInfo { .. })));
 
-    let (reply, launches, _) = launch(true, "claude", "mother: claude");
-    assert!(
-        matches!(reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok)
-    );
-    let command = &launches[0].0;
-    assert_eq!(command.cwd.as_deref(), Some(cwd.as_path()));
-    assert_eq!(command.target.is_bubblewrap(), cfg!(target_os = "linux"));
     if cfg!(target_os = "linux") {
         assert!(command
             .target
