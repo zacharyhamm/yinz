@@ -747,6 +747,18 @@ impl MouseHandler {
     ) -> Result<bool> {
         let err_context = || "failed to continue pane resize with mouse";
 
+        if let Some(state) = &tab.pane_being_resized_with_mouse {
+            let exists = match state.target {
+                ResizeDragTarget::Floating => tab.floating_panes.panes_contain(&state.pane_id),
+                ResizeDragTarget::Overlay => tab.overlay_panes.panes_contain(&state.pane_id),
+                ResizeDragTarget::Tiled => tab.tiled_panes.panes_contain(&state.pane_id),
+            };
+            if !exists {
+                tab.pane_being_resized_with_mouse = None;
+                return Ok(false);
+            }
+        }
+
         let (pane_id, edge, target, delta_x, delta_y) =
             if let Some(resize_state) = &tab.pane_being_resized_with_mouse {
                 let delta_x = current_position.column() as isize
@@ -770,29 +782,30 @@ impl MouseHandler {
 
         let strategies = edge_and_delta_to_strategies(edge, delta_x, delta_y);
 
-        match target {
+        let resize_result = match target {
             ResizeDragTarget::Floating => Self::resize_floating_pane_with_strategies(
                 tab,
                 pane_id,
                 &strategies,
                 (delta_x.unsigned_abs(), delta_y.unsigned_abs()),
-            )
-            .with_context(err_context)?,
+            ),
             ResizeDragTarget::Overlay => Self::resize_overlay_with_strategies(
                 tab,
                 pane_id,
                 &strategies,
                 (delta_x.unsigned_abs(), delta_y.unsigned_abs()),
-            )
-            .with_context(err_context)?,
+            ),
             ResizeDragTarget::Tiled => Self::resize_tiled_pane_with_strategies(
                 tab,
                 pane_id,
                 &strategies,
                 (delta_x.abs() as f64, delta_y.abs() as f64),
-            )
-            .with_context(err_context)?,
+            ),
+        };
+        if resize_result.is_err() {
+            tab.pane_being_resized_with_mouse = None;
         }
+        resize_result.with_context(err_context)?;
 
         if let Some(resize_state) = tab.pane_being_resized_with_mouse.as_mut() {
             resize_state.start_position = current_position;
@@ -818,8 +831,10 @@ impl MouseHandler {
             .pane_being_resized_with_mouse
             .as_ref()
             .map(|p| p.pane_id);
-        let _resized = Self::continue_pane_resize_with_mouse(tab, final_position, client_id)
-            .with_context(err_context)?;
+        let resize_result = Self::continue_pane_resize_with_mouse(tab, final_position, client_id)
+            .with_context(err_context);
+        tab.pane_being_resized_with_mouse = None;
+        resize_result?;
         let last_geom = pane_id
             .and_then(|pane_id| tab.get_pane_with_id(pane_id))
             .map(|p| p.position_and_size());
@@ -827,8 +842,6 @@ impl MouseHandler {
             (Some(start_geom), Some(last_geom)) => start_geom == last_geom,
             _ => false,
         };
-
-        tab.pane_being_resized_with_mouse = None;
 
         Ok(never_resized)
     }

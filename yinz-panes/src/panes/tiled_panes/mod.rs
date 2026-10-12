@@ -1193,11 +1193,6 @@ impl TiledPanes {
         }
     }
     pub fn focus_pane(&mut self, pane_id: PaneId, client_id: ClientId) {
-        if let Some(focused_pane) = self.active_panes.get(&client_id).copied() {
-            if pane_id != focused_pane {
-                self.active_panes.set_last_pane(client_id, focused_pane);
-            }
-        }
         let pane_is_selectable = self
             .panes
             .get(&pane_id)
@@ -1206,6 +1201,11 @@ impl TiledPanes {
         if !pane_is_selectable {
             log::error!("Cannot focus pane {:?} as it is not selectable!", pane_id);
             return;
+        }
+        if let Some(focused_pane) = self.active_panes.get(&client_id).copied() {
+            if pane_id != focused_pane {
+                self.active_panes.set_last_pane(client_id, focused_pane);
+            }
         }
         if self.panes_to_hide.contains(&pane_id) {
             // this means there is a fullscreen pane that is not the current pane, let's unset it
@@ -2172,15 +2172,24 @@ impl TiledPanes {
             *self.viewport.borrow(),
         );
 
-        for strategy in strategies {
-            let _ = pane_grid
-                .change_pane_size(&pane_id, strategy, change_by)
-                .with_context(err_context);
-        }
-
+        let result = strategies
+            .iter()
+            .filter(|strategy| match strategy.direction {
+                Some(direction) if direction.is_horizontal() => change_by.0 != 0.0,
+                Some(_) => change_by.1 != 0.0,
+                None => change_by != (0.0, 0.0),
+            })
+            .try_for_each(|strategy| {
+                pane_grid
+                    .change_pane_size(&pane_id, strategy, change_by)
+                    .map(|_| ())
+                    .with_context(err_context)
+            });
+        drop(pane_grid);
+        // A corner drag may have changed one axis before the other failed.
         self.resize_ptys_of_panes_changed_since(&sizes_before);
         self.reset_boundaries();
-        Ok(())
+        result
     }
 
     /// Whether the client's active pane is the last one in focus-cycling order (ie. the next
@@ -2297,14 +2306,13 @@ impl TiledPanes {
             return;
         }
 
-        let previously_active_pane = self.panes.get_mut(&previously_active_pane_id).unwrap();
-
-        previously_active_pane.set_should_render(true);
-        // we render the full viewport to remove any ui elements that might have been
-        // there before (eg. another user's cursor)
-        previously_active_pane.render_full_viewport();
-
-        let next_active_pane = self.panes.get_mut(&last_pane_id).unwrap();
+        if let Some(previously_active_pane) = self.panes.get_mut(&previously_active_pane_id) {
+            previously_active_pane.set_should_render(true);
+            previously_active_pane.render_full_viewport();
+        }
+        let Some(next_active_pane) = self.panes.get_mut(&last_pane_id) else {
+            return;
+        };
         let stacked = next_active_pane.current_geom().stacked;
         next_active_pane.set_should_render(true);
         // we render the full viewport to remove any ui elements that might have been
@@ -2356,7 +2364,9 @@ impl TiledPanes {
         // there before (eg. another user's cursor)
         previously_active_pane.render_full_viewport();
 
-        let next_active_pane = self.panes.get_mut(&next_index).unwrap();
+        let Some(next_active_pane) = self.panes.get_mut(&next_index) else {
+            return;
+        };
         next_active_pane.set_should_render(true);
         // we render the full viewport to remove any ui elements that might have been
         // there before (eg. another user's cursor)
@@ -2415,23 +2425,15 @@ impl TiledPanes {
                 let next_index = pane_grid.next_selectable_pane_id_to_the_left(&active_pane_id);
                 match next_index {
                     Some(p) => {
-                        // render previously active pane so that its frame does not remain actively
-                        // colored
-                        let previously_active_pane = self
-                            .panes
-                            .get_mut(self.active_panes.get(&client_id).unwrap())
-                            .unwrap();
+                        if let Some(previously_active_pane) = self.panes.get_mut(&active_pane_id) {
+                            previously_active_pane.set_should_render(true);
+                            previously_active_pane.render_full_viewport();
+                        }
 
-                        previously_active_pane.set_should_render(true);
-                        // we render the full viewport to remove any ui elements that might have been
-                        // there before (eg. another user's cursor)
-                        previously_active_pane.render_full_viewport();
-
-                        let next_active_pane = self.panes.get_mut(&p).unwrap();
-                        next_active_pane.set_should_render(true);
-                        // we render the full viewport to remove any ui elements that might have been
-                        // there before (eg. another user's cursor)
-                        next_active_pane.render_full_viewport();
+                        if let Some(next_active_pane) = self.panes.get_mut(&p) {
+                            next_active_pane.set_should_render(true);
+                            next_active_pane.render_full_viewport();
+                        }
 
                         self.focus_pane(p, client_id);
                         self.set_pane_active_at(p);
@@ -2458,24 +2460,17 @@ impl TiledPanes {
                     .or_else(|| pane_grid.progress_stack_down_if_in_stack(&active_pane_id));
                 match next_index {
                     Some(p) => {
-                        // render previously active pane so that its frame does not remain actively
-                        // colored
-                        let previously_active_pane = self
-                            .panes
-                            .get_mut(self.active_panes.get(&client_id).unwrap())
-                            .unwrap();
+                        if let Some(previously_active_pane) = self.panes.get_mut(&active_pane_id) {
+                            previously_active_pane.set_should_render(true);
+                            previously_active_pane.render_full_viewport();
+                        }
 
-                        previously_active_pane.set_should_render(true);
-                        // we render the full viewport to remove any ui elements that might have been
-                        // there before (eg. another user's cursor)
-                        previously_active_pane.render_full_viewport();
-
-                        let next_active_pane = self.panes.get_mut(&p).unwrap();
-                        let next_active_pane_stack_id = next_active_pane.current_geom().stacked;
-                        next_active_pane.set_should_render(true);
-                        // we render the full viewport to remove any ui elements that might have been
-                        // there before (eg. another user's cursor)
-                        next_active_pane.render_full_viewport();
+                        let mut next_active_pane_stack_id = None;
+                        if let Some(next_active_pane) = self.panes.get_mut(&p) {
+                            next_active_pane_stack_id = next_active_pane.current_geom().stacked;
+                            next_active_pane.set_should_render(true);
+                            next_active_pane.render_full_viewport();
+                        }
 
                         self.focus_pane(p, client_id);
                         self.set_pane_active_at(p);
@@ -2509,24 +2504,17 @@ impl TiledPanes {
                     .or_else(|| pane_grid.progress_stack_up_if_in_stack(&active_pane_id));
                 match next_index {
                     Some(p) => {
-                        // render previously active pane so that its frame does not remain actively
-                        // colored
-                        let previously_active_pane = self
-                            .panes
-                            .get_mut(self.active_panes.get(&client_id).unwrap())
-                            .unwrap();
+                        if let Some(previously_active_pane) = self.panes.get_mut(&active_pane_id) {
+                            previously_active_pane.set_should_render(true);
+                            previously_active_pane.render_full_viewport();
+                        }
 
-                        previously_active_pane.set_should_render(true);
-                        // we render the full viewport to remove any ui elements that might have been
-                        // there before (eg. another user's cursor)
-                        previously_active_pane.render_full_viewport();
-
-                        let next_active_pane = self.panes.get_mut(&p).unwrap();
-                        let next_active_pane_stack_id = next_active_pane.current_geom().stacked;
-                        next_active_pane.set_should_render(true);
-                        // we render the full viewport to remove any ui elements that might have been
-                        // there before (eg. another user's cursor)
-                        next_active_pane.render_full_viewport();
+                        let mut next_active_pane_stack_id = None;
+                        if let Some(next_active_pane) = self.panes.get_mut(&p) {
+                            next_active_pane_stack_id = next_active_pane.current_geom().stacked;
+                            next_active_pane.set_should_render(true);
+                            next_active_pane.render_full_viewport();
+                        }
 
                         self.focus_pane(p, client_id);
                         self.set_pane_active_at(p);
@@ -2558,23 +2546,15 @@ impl TiledPanes {
                 let next_index = pane_grid.next_selectable_pane_id_to_the_right(&active_pane_id);
                 match next_index {
                     Some(p) => {
-                        // render previously active pane so that its frame does not remain actively
-                        // colored
-                        let previously_active_pane = self
-                            .panes
-                            .get_mut(self.active_panes.get(&client_id).unwrap())
-                            .unwrap();
+                        if let Some(previously_active_pane) = self.panes.get_mut(&active_pane_id) {
+                            previously_active_pane.set_should_render(true);
+                            previously_active_pane.render_full_viewport();
+                        }
 
-                        previously_active_pane.set_should_render(true);
-                        // we render the full viewport to remove any ui elements that might have been
-                        // there before (eg. another user's cursor)
-                        previously_active_pane.render_full_viewport();
-
-                        let next_active_pane = self.panes.get_mut(&p).unwrap();
-                        next_active_pane.set_should_render(true);
-                        // we render the full viewport to remove any ui elements that might have been
-                        // there before (eg. another user's cursor)
-                        next_active_pane.render_full_viewport();
+                        if let Some(next_active_pane) = self.panes.get_mut(&p) {
+                            next_active_pane.set_should_render(true);
+                            next_active_pane.render_full_viewport();
+                        }
 
                         self.focus_pane(p, client_id);
                         self.set_pane_active_at(p);
@@ -2833,21 +2813,16 @@ impl TiledPanes {
         if let Some(fullscreen_pane_id) = self.fullscreen_is_active {
             let panes_to_hide: Vec<_> = self.panes_to_hide.iter().copied().collect();
             for pane_id in panes_to_hide {
-                let pane = self.get_pane_mut(pane_id).unwrap();
-                pane.set_should_render(true);
-                pane.set_should_render_boundaries(true);
+                if let Some(pane) = self.get_pane_mut(pane_id) {
+                    pane.set_should_render(true);
+                    pane.set_should_render_boundaries(true);
+                }
             }
-            let viewport_pane_ids: Vec<_> = self
-                .panes
-                .keys()
-                .copied()
-                .filter(|id| {
-                    !is_inside_viewport(&self.viewport.borrow(), self.get_pane(*id).unwrap())
-                })
-                .collect();
-            for pid in viewport_pane_ids {
-                let viewport_pane = self.get_pane_mut(pid).unwrap();
-                viewport_pane.reset_size_and_position_override();
+            let viewport = *self.viewport.borrow();
+            for pane in self.panes.values_mut() {
+                if !is_inside_viewport(&viewport, pane) {
+                    pane.reset_size_and_position_override();
+                }
             }
             self.panes_to_hide.clear();
             if let Some(fullscreen_pane) = self.get_pane_mut(fullscreen_pane_id) {
@@ -2871,6 +2846,9 @@ impl TiledPanes {
     }
 
     pub fn toggle_pane_fullscreen(&mut self, pane_id: PaneId) {
+        if !self.panes.contains_key(&pane_id) {
+            return;
+        }
         if self.fullscreen_is_active.is_some() {
             let was_no_ui = *self.fullscreen_covers_ui.borrow();
             self.unset_fullscreen();
@@ -2883,6 +2861,9 @@ impl TiledPanes {
     }
 
     pub fn toggle_pane_no_ui_fullscreen(&mut self, pane_id: PaneId) {
+        if !self.panes.contains_key(&pane_id) {
+            return;
+        }
         if self.fullscreen_is_active.is_some() {
             let was_no_ui = *self.fullscreen_covers_ui.borrow();
             self.unset_fullscreen();
@@ -2895,6 +2876,9 @@ impl TiledPanes {
     }
 
     fn set_fullscreen(&mut self, pane_id: PaneId, covers_ui: bool) {
+        if !self.panes.contains_key(&pane_id) {
+            return;
+        }
         self.panes_to_hide = self.panes_covered_by_fullscreen(pane_id, covers_ui);
         if self.panes_to_hide.is_empty() && !covers_ui {
             return;
@@ -2916,26 +2900,20 @@ impl TiledPanes {
         fullscreen_pane_id: PaneId,
         covers_ui: bool,
     ) -> HashSet<PaneId> {
+        let viewport = *self.viewport.borrow();
         self.panes
-            .keys()
-            .copied()
-            .filter(|&id| {
-                id != fullscreen_pane_id
-                    && (covers_ui
-                        || is_inside_viewport(&self.viewport.borrow(), self.get_pane(id).unwrap()))
+            .iter()
+            .filter(|(id, pane)| {
+                **id != fullscreen_pane_id && (covers_ui || is_inside_viewport(&viewport, pane))
             })
+            .map(|(id, _)| *id)
             .collect()
     }
 
     fn pin_panes_outside_viewport_in_place(&mut self) {
-        let pane_ids_outside_viewport: Vec<_> = self
-            .panes
-            .keys()
-            .copied()
-            .filter(|id| !is_inside_viewport(&self.viewport.borrow(), self.get_pane(*id).unwrap()))
-            .collect();
-        for pane_id in pane_ids_outside_viewport {
-            if let Some(pane) = self.get_pane_mut(pane_id) {
+        let viewport = *self.viewport.borrow();
+        for pane in self.panes.values_mut() {
+            if !is_inside_viewport(&viewport, pane) {
                 pane.set_geom_override(pane.position_and_size());
             }
         }
@@ -3057,10 +3035,12 @@ impl TiledPanes {
         self.panes_to_hide.remove(&pid);
     }
     pub fn unfocus_all_panes(&mut self) {
-        self.active_panes.unfocus_all_panes(&self.panes);
+        self.active_panes
+            .unfocus_all_panes(&self.panes, &self.connected_clients.borrow());
     }
     pub fn focus_all_panes(&mut self) {
-        self.active_panes.focus_all_panes(&self.panes);
+        self.active_panes
+            .focus_all_panes(&self.panes, &self.connected_clients.borrow());
     }
     pub fn drain(&mut self) -> BTreeMap<PaneId, Box<dyn Pane>> {
         self.unset_fullscreen();

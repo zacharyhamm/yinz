@@ -687,3 +687,46 @@ fn no_frame_style_with_split_row_of_ui_panes_at_top() {
     let snapshot = render_split_row_of_ui_panes_at_top(PaneFrameStyle::None);
     assert_snapshot!(snapshot);
 }
+
+#[test]
+fn bulk_focus_events_are_unique_and_only_for_connected_clients() {
+    use yinz_panes::panes::ActivePanes;
+    let os_api = Box::new(FakeInputOutput::default());
+    let mut tab = create_new_tab_with_os_api(
+        Size {
+            cols: 120,
+            rows: 20,
+        },
+        ModeInfo::default(),
+        &os_api,
+    );
+    let first = ClientId::new(1);
+    let second = ClientId::new(2);
+    let absent = ClientId::new(3);
+    let left = PaneId::Terminal(TerminalId::new(1));
+    let right = PaneId::Terminal(TerminalId::new(2));
+    tab.vertical_split(right, None, None, first, None, None)
+        .unwrap();
+    for id in [TerminalId::new(1), TerminalId::new(2)] {
+        tab.handle_pty_bytes(id, b"\x1b[?1004h".to_vec()).unwrap();
+    }
+    let panes = tab.tiled_panes.drain();
+    let tty_stdin = os_api.tty_stdin_bytes.clone();
+    let os_api: Box<dyn ServerOsApi> = os_api;
+    let mut active = ActivePanes::new(&os_api);
+    active.insert(first, left, &panes);
+    active.insert(second, left, &panes);
+    active.insert(absent, right, &panes);
+    tty_stdin.lock().unwrap().clear();
+    let connected = HashSet::from([first, second]);
+    active.unfocus_all_panes(&panes, &connected);
+    active.focus_all_panes(&panes, &connected);
+    assert_eq!(
+        *tty_stdin.lock().unwrap(),
+        BTreeMap::from([(TerminalId::new(1), b"\x1b[O\x1b[I".to_vec())])
+    );
+    tty_stdin.lock().unwrap().clear();
+    active.insert(first, PaneId::Terminal(TerminalId::new(99)), &panes);
+    assert_eq!(active.get(&first), Some(&left));
+    assert!(tty_stdin.lock().unwrap().is_empty());
+}

@@ -3562,3 +3562,66 @@ fn clipboard_without_terminal_bytes_still_reports_completion() {
                 matches!(event, Event::CopyToClipboard(actual) if *actual == destination)))));
     }
 }
+
+#[test]
+fn closing_a_pane_during_mouse_resize_cancels_the_drag_on_every_surface() {
+    use crate::tab::ResizeDragTarget;
+    let client = ClientId::new(1);
+    let pane_id = PaneId::Terminal(TerminalId::new(2));
+    for target in [
+        ResizeDragTarget::Tiled,
+        ResizeDragTarget::Floating,
+        ResizeDragTarget::Overlay,
+    ] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 120,
+                rows: 40,
+            },
+            ModeInfo::default(),
+        );
+        match target {
+            ResizeDragTarget::Tiled => tab
+                .vertical_split(pane_id, None, None, client, None, None)
+                .unwrap(),
+            ResizeDragTarget::Floating => {
+                tab.new_floating_pane(pane_id, None, None, false, true, None, None)
+                    .unwrap();
+                tab.floating_panes.toggle_show_panes(true);
+            },
+            ResizeDragTarget::Overlay => tab
+                .new_pane(
+                    pane_id,
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+                    Some(client),
+                    None,
+                )
+                .unwrap(),
+        }
+        let geom = tab.get_pane_with_id(pane_id).unwrap().current_geom();
+        let press = Position::new(geom.y as i32 + 2, geom.x as u16);
+        tab.handle_mouse_event(&MouseEvent::new_left_press_with_ctrl_event(press), client)
+            .unwrap();
+        assert_eq!(
+            tab.pane_being_resized_with_mouse
+                .as_ref()
+                .map(|state| state.target),
+            Some(target)
+        );
+        assert!(tab.extract_pane(pane_id, true).is_some());
+        let motion = Position::new(geom.y as i32 + 2, geom.x as u16 + 1);
+        tab.handle_mouse_event(&MouseEvent::new_left_motion_with_ctrl_event(motion), client)
+            .unwrap();
+        assert!(tab.pane_being_resized_with_mouse.is_none(), "{target:?}");
+        tab.handle_mouse_event(
+            &MouseEvent::new_left_release_with_ctrl_event(motion),
+            client,
+        )
+        .unwrap();
+        assert!(tab.pane_being_resized_with_mouse.is_none());
+    }
+}
