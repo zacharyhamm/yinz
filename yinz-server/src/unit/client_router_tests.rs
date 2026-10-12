@@ -374,11 +374,7 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
     done.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
     router.join().unwrap();
     assert_eq!(
-        os.server_to_client_messages
-            .lock()
-            .unwrap()
-            .get(&CLIENT_99)
-            .unwrap(),
+        os.server_to_client_messages.lock().get(&CLIENT_99).unwrap(),
         &vec![ServerToClientMsg::AgentReportAccepted {
             report_id: report.report_id.clone()
         }]
@@ -489,7 +485,7 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
                 ScreenInstruction::AgentControl(queued, CLIENT_99) if queued == clear));
         }
         assert!(threads.screen_receiver.is_empty());
-        let replies = os.server_to_client_messages.lock().unwrap();
+        let replies = os.server_to_client_messages.lock();
         let replies = replies.get(&CLIENT_99).unwrap();
         let mut expected = Vec::new();
         if !ready {
@@ -612,6 +608,90 @@ fn kitty_probe_routing_preserves_client_lifecycle_order() {
         assert!(
             threads.screen_receiver.is_empty(),
             "the probe bypassed client registration"
+        );
+    }
+}
+
+#[test]
+fn startup_retries_without_client_traffic_and_preserves_fifo_after_timeout() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use yinz_ipc::ipc::IpcSenderWithContext;
+
+    for timeout_first in [false, true] {
+        let (session, threads) = paused_session();
+        let session_data = Arc::new(RwLock::new(None));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("startup.sock");
+        let listener = ListenerOptions::new()
+            .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+            .create_sync()
+            .unwrap();
+        let client =
+            LocalSocketStream::connect(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+                .unwrap();
+        let server = listener.accept().unwrap();
+        let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
+        let os = CapturingOs::default();
+        let router_os = os.clone();
+        let router_session = session_data.clone();
+        let to_server = threads.to_server.clone();
+        let router = thread::spawn(move || {
+            route_thread_main(
+                router_session,
+                Arc::new(RwLock::new(SessionState::new())),
+                Box::new(router_os),
+                to_server,
+                IpcReceiverWithContext::new(server),
+                CLIENT_1,
+                Duration::from_secs(5),
+            )
+        });
+        sender
+            .send_client_msg(ClientToServerMsg::SixelSupport { supported: true })
+            .unwrap();
+        if timeout_first {
+            os.server_to_client_messages.wait_until(
+                "the readiness timeout to unblock the client",
+                Duration::from_secs(15),
+                |messages| {
+                    messages
+                        .get(&CLIENT_1)
+                        .filter(|messages| {
+                            messages.contains(&ServerToClientMsg::UnblockInputThread)
+                        })
+                        .map(|_| ())
+                },
+            );
+            assert!(threads.screen_receiver.is_empty());
+        }
+        sender
+            .send_client_msg(ClientToServerMsg::SixelSupport { supported: false })
+            .unwrap();
+        // No startup instruction may reach Screen while session metadata is absent.
+        assert!(threads
+            .screen_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        *session_data.write().unwrap() = Some(session);
+        // Publishing metadata is the only wakeup: send no further client traffic.
+        for expected in [true, false] {
+            assert!(
+                matches!(threads.screen_receiver.recv_timeout(Duration::from_secs(5)).unwrap().0,
+                ScreenInstruction::SetSixelSupport { client_id: CLIENT_1, supported } if supported == expected)
+            );
+        }
+        sender
+            .send_client_msg(ClientToServerMsg::ClientExited)
+            .unwrap();
+        router.join().unwrap().unwrap();
+        assert!(threads.screen_receiver.is_empty());
+        assert_eq!(
+            threads
+                .server_receiver
+                .try_iter()
+                .filter(|(message, _)| matches!(message, ServerInstruction::RemoveClient(CLIENT_1)))
+                .count(),
+            1
         );
     }
 }

@@ -6,16 +6,16 @@ use crate::ClientId;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use yinz_ipc::ipc::{ClientToServerMsg, IpcReceiverWithContext, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
+use yinz_test_support::Watched;
 use yinz_types::data::Palette;
 use yinz_types::input::command::{RunCommand, TerminalAction};
 use yinz_types::internal_ids::{ProcessId, TerminalId};
 
 /// Every message the route thread sent to each client, shared with the `CapturingOs` that
 /// records them.
-type CapturedClientMessages = Arc<Mutex<HashMap<ClientId, Vec<ServerToClientMsg>>>>;
+type CapturedClientMessages = Watched<HashMap<ClientId, Vec<ServerToClientMsg>>>;
 
 /// An OS API that records what a route thread sends its client. Clones share the record, so a
 /// test keeps one and hands the route thread another. Nothing else is reachable from the route
@@ -68,7 +68,6 @@ impl ServerOsApi for CapturingOs {
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         self.server_to_client_messages
             .lock()
-            .unwrap()
             .entry(client_id)
             .or_default()
             .push(msg);
