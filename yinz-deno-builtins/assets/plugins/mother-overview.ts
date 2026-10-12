@@ -104,7 +104,7 @@ function workerLines(): string[] {
 }
 function lines(): string[] {
   if (!overview) return ["Mother Overview", error || "Loading supervision…"];
-  const { status, checkpoint } = overview;
+  const { status, checkpoint, batches } = overview;
   const memory = checkpoint.value ?? {};
   const result = [
     `Supervision: ${overview.paused ? "paused" : status.state} | ${status.pending} pending | ${status.blockers} need attention`,
@@ -136,7 +136,11 @@ function lines(): string[] {
     "Attention",
     "Archives are not loaded by Overview. Missing evidence remains unknown.",
   );
-  for (const receipt of overview.receipts.filter((item) => !item.settled))
+  for (const receipt of overview.receipts.filter(
+    (item) =>
+      !item.settled ||
+      (item.response?.outcome === "failed" && batches.some((batch) => batch.id === item.batch)),
+  ))
     result.push(`${receipt.submission}: ${receipt.response?.outcome ?? "operation in progress"}`);
   result.push(
     "",

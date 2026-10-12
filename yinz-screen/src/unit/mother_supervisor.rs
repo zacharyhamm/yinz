@@ -630,6 +630,50 @@ fn uncertain_delivery_never_requeues_an_unknown_submission() {
 }
 
 #[test]
+fn failed_turn_needs_attention_until_batch_acknowledgement_without_retrying() {
+    for delivery in [false, true] {
+        let mut memory = Memory::default();
+        memory.batch("original".into(), false);
+        memory.pending[0].attempted = true;
+        let batch = memory.pending[0].id.clone();
+        memory.receipts.push_back(Receipt {
+            batch: batch.clone(),
+            conversation: "conversation".into(),
+            submission: "failed-submission".into(),
+            response: None,
+            settled: false,
+        });
+        let mut result = AgentResponse::new(AgentOutcome::Failed);
+        result.submission_id = Some("failed-submission".into());
+        result.acknowledged = true;
+        memory.receipt_response(result, delivery);
+        assert!(memory.receipts[0].settled);
+        assert!(memory.pending[0].attempted);
+        assert_eq!(memory.status(true, false).state, "needs_attention");
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("memory.json");
+        memory.save(&path).unwrap();
+        let mut memory = Memory::load(&path, "session").unwrap();
+        assert_eq!(memory.status(true, false).state, "needs_attention");
+        assert!(memory.pending.iter().all(|b| b.attempted));
+
+        memory.receipts.push_back(Receipt {
+            batch: "later-batch".into(),
+            conversation: "conversation".into(),
+            submission: "later-submission".into(),
+            response: Some(AgentResponse::new(AgentOutcome::Completed)),
+            settled: true,
+        });
+        assert_eq!(memory.status(true, false).state, "needs_attention");
+        memory.command(MotherRequest::Ack { batch }).unwrap();
+        assert_eq!(memory.status(true, false).state, "watching");
+        assert!(memory.pending.is_empty());
+        assert!(memory.receipts[0].settled);
+    }
+}
+
+#[test]
 fn confirmed_interrupt_settles_without_retrying_the_batch() {
     for acknowledged in [false, true] {
         let directory = tempfile::tempdir().unwrap();
