@@ -7661,3 +7661,73 @@ fn disconnected_plugin_grids_are_removed_from_inactive_suppressed_and_overlay_pa
         }
     }
 }
+
+#[test]
+fn suppressed_plugins_are_active_tab_broadcast_targets_without_duplicates() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
+    let (sender, receiver) = channels::unbounded();
+    screen
+        .bus
+        .senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+    new_tab(&mut screen, 1, TabId::new(0));
+    let client = ClientId::new(1);
+    let plugin = PluginId::new(9);
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .new_pane(
+            PaneId::Plugin(plugin),
+            None,
+            None,
+            true,
+            true,
+            yinz_types::data::NewPanePlacement::default(),
+            Some(client),
+            None,
+        )
+        .unwrap();
+    for event_type in [
+        EventType::ModeUpdate,
+        EventType::TabUpdate,
+        EventType::PaneUpdate,
+        EventType::InputReceived,
+    ] {
+        assert_eq!(screen.targeted_plugin_ids(client, event_type), vec![plugin]);
+        screen
+            .background_plugin_subscriptions
+            .entry((plugin, client))
+            .or_default()
+            .insert(event_type);
+        assert_eq!(screen.targeted_plugin_ids(client, event_type), vec![plugin]);
+    }
+    receiver.try_iter().for_each(drop);
+    screen
+        .broadcast_mode_update(ModeInfo::default(), Some(client))
+        .unwrap();
+    screen.generate_and_report_tab_state().unwrap();
+    screen.generate_and_report_pane_state().unwrap();
+    screen.notify_plugins_of_input(client);
+    let updates: Vec<_> = receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates,
+            _ => vec![],
+        })
+        .collect();
+    assert_eq!(updates.len(), 4);
+    assert!(updates
+        .iter()
+        .all(|(pid, cid, _)| *pid == Some(plugin) && *cid == Some(client)));
+    assert!(matches!(updates[0].2, Event::ModeUpdate(_)));
+    assert!(matches!(updates[1].2, Event::TabUpdate(_)));
+    assert!(matches!(updates[2].2, Event::PaneUpdate(_)));
+    assert!(matches!(updates[3].2, Event::InputReceived));
+    screen.background_plugin_subscriptions.clear();
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen.go_to_tab(TabNumber::new(2), client).unwrap();
+    assert!(!screen
+        .targeted_plugin_ids(client, EventType::InputReceived)
+        .contains(&plugin));
+}

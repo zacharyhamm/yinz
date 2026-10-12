@@ -378,7 +378,7 @@ impl Screen {
         // Active-tab plugins
         if let Some(active_tab_id) = self.active_tab_ids.get(&client_id) {
             if let Some(tab) = self.tabs.get(active_tab_id) {
-                plugin_ids.extend(tab.get_plugin_ids());
+                plugin_ids.extend(tab.get_plugin_ids_including_suppressed());
             }
         }
         // An overlay follows the client between tabs under its own steam - agent moves itself on

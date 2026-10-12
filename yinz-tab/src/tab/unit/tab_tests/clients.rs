@@ -1,5 +1,7 @@
 use super::*;
+use crate::plugins::PluginInstruction;
 use yinz_bus::loading_indication::LoadingIndication;
+use yinz_types::data::Event;
 use yinz_types::position::Position;
 
 #[test]
@@ -253,4 +255,74 @@ fn removing_clients_preserves_shared_hover_until_the_last_client_leaves() {
             .set_hover_position(None));
         assert!(tab.mouse_hover_pane_id.is_empty());
     }
+}
+
+#[test]
+fn disconnect_only_forces_render_for_members_or_stale_dimming() {
+    for (client, dimmed, redraw) in [(99, false, false), (1, false, true), (99, true, true)] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            false,
+        );
+        let client = ClientId::new(client);
+        if dimmed {
+            tab.set_client_dimmed(client, true);
+        }
+        assert!(!tab.tiled_panes.panes.is_empty());
+        for pane in tab.tiled_panes.panes.values_mut() {
+            pane.set_should_render(false);
+        }
+        tab.remove_client(client);
+        assert!(!tab.dimmed_clients.contains(&client));
+        assert!(tab
+            .tiled_panes
+            .panes
+            .values()
+            .all(|pane| pane.should_render() == redraw));
+    }
+}
+
+#[test]
+fn suppressed_plugins_receive_tab_mode_updates_once() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        false,
+    );
+    let (sender, receiver) = unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+    let client = ClientId::new(1);
+    let plugin = crate::PluginId::new(9);
+    tab.new_pane(
+        PaneId::Plugin(plugin),
+        None,
+        None,
+        true,
+        true,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    assert!(!tab.get_plugin_ids().contains(&plugin));
+    assert_eq!(tab.get_plugin_ids_including_suppressed(), vec![plugin]);
+    receiver.try_iter().for_each(drop);
+    tab.update_input_modes().unwrap();
+    let updates: Vec<_> = receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates,
+            _ => vec![],
+        })
+        .collect();
+    assert_eq!(updates.len(), 1);
+    assert!(
+        matches!(&updates[0], (Some(pid), Some(cid), Event::ModeUpdate(_)) if *pid == plugin && *cid == client)
+    );
 }
