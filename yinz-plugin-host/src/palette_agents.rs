@@ -372,23 +372,15 @@ fn mother(
         session.as_str(),
     )
     .map_err(|error| format!("Mother cannot create its working directory: {error:#}"))?;
-    yinz_runtime::mother::provision(&cwd)
+    yinz_runtime::mother::provision(&cwd, session.as_str())
         .map_err(|error| format!("Mother cannot provision instructions: {error:#}"))?;
     launch(request, senders, spec, |_| {
         let mut prepared = existing_command(&kind, &cwd.to_string_lossy(), PaneTarget::Local)?;
-        if kind == "codex" {
-            prepared
-                .command
-                .args
-                .extend(yinz_runtime::agent::launch::codex_yinz_args());
-            let path = serde_json::to_string(cwd.to_str().ok_or("Mother path is not UTF-8")?)
-                .map_err(|error| format!("encode Mother trust path: {error}"))?;
-            // Codex splits override keys on dots even inside quotes; quote the table key instead.
-            prepared.command.args.extend([
-                "-c".into(),
-                format!("projects={{{path}={{trust_level=\"trusted\"}}}}"),
-            ]);
-        } else if kind == "pi" {
+        prepared.command.args.extend(
+            yinz_runtime::mother::coordination_args(&kind, &cwd, session.as_str())
+                .map_err(|error| format!("Mother cannot prepare permissions: {error:#}"))?,
+        );
+        if kind == "pi" {
             prepared.command.args.push("--approve".into());
         }
         let sandbox = yinz_config::project_config::bubblewrap::Environment::at_root(&cwd)
