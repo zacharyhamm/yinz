@@ -793,3 +793,68 @@ fn layer_ordering() {
     assert!(HighlightLayer::Hint < HighlightLayer::Tool);
     assert!(HighlightLayer::Tool < HighlightLayer::ActionFeedback);
 }
+
+#[test]
+fn highlight_iterator_preserves_context_and_advances_over_utf8() {
+    use super::super::highlight_matches;
+    for (pattern, text, expected) in [
+        (
+            r"(?:^|\s)(\S+)(?:\s|$)",
+            "é 你 x",
+            vec![(0, 2), (3, 6), (7, 8)],
+        ),
+        (r"()", "é你", vec![(0, 0), (2, 2), (5, 5)]),
+        (r"(é)?你", "你", vec![(0, 3)]),
+        (r"你", "你你", vec![(0, 3), (3, 6)]),
+        (r"$", "é", vec![(2, 2)]),
+    ] {
+        let regex = regex::Regex::new(pattern).unwrap();
+        let ranges: Vec<_> = highlight_matches(&regex, text)
+            .map(|m| (m.start(), m.end()))
+            .collect();
+        assert_eq!(ranges, expected, "{pattern:?} on {text:?}");
+    }
+}
+
+#[test]
+fn adjacent_capture_highlights_agree_in_lookup_tooltips_and_rendering() {
+    for width in [10, 40] {
+        for on_hover in [false, true] {
+            let mut grid = create_grid_with_size_and_raw(5, width, b"abc.rs b.rs");
+            let mut highlight = create_highlight(
+                r"(?:^|\s)([a-z]+\.rs)(?:\s|$)",
+                on_hover,
+                true,
+                false,
+                false,
+                HighlightLayer::Hint,
+            );
+            highlight.tooltip_text = Some("file".into());
+            grid.set_plugin_regex_highlights(PluginId::new(1), vec![highlight], &Style::default());
+            assert_eq!(
+                grid.plugin_highlight_at(&Position::new(0, 0)).unwrap().2,
+                "abc.rs"
+            );
+            assert_eq!(
+                grid.plugin_highlight_at(&Position::new(0, 8)).unwrap().2,
+                "b.rs"
+            );
+            assert!(grid.plugin_highlight_at(&Position::new(0, 6)).is_none());
+            grid.set_hover_position(Some(Position::new(0, 8)));
+            assert_eq!(
+                grid.cached_hover_tooltip.as_deref(),
+                on_hover.then_some("file")
+            );
+            assert_eq!(
+                grid.compute_plugin_highlight_selections().len(),
+                if on_hover { 1 } else { 2 }
+            );
+            let (chunks, _, _, _) = grid.render(0, 0, &Style::default()).unwrap().unwrap();
+            let row = chunks.iter().find(|chunk| chunk.y == 0).unwrap();
+            assert_eq!(
+                row.selection_and_colors().iter().filter(|h| h.bold).count(),
+                if on_hover { 1 } else { 2 }
+            );
+        }
+    }
+}
