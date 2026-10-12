@@ -151,6 +151,9 @@ fn journal_and_pending_batches_are_bounded_with_explicit_gaps() {
         .iter()
         .any(|v| v["reason"] == "mother_journal_overflow"));
     assert!(memory.gap);
+    let inbox = memory.command(MotherRequest::Inbox).unwrap();
+    assert_eq!(inbox["journal"], json!(memory.journal));
+    assert_eq!(inbox["gap"], true);
     for _ in 0..300 {
         memory.pending.back_mut().unwrap().attempted = true;
         memory.batch("completion".into(), false);
@@ -183,6 +186,167 @@ fn filters_are_validated_and_force_a_new_snapshot() {
             lifecycle_types: vec![]
         })
         .is_err());
+}
+
+#[test]
+fn lifecycle_filters_select_wakes_without_staling_the_roster() {
+    let mut memory = Memory {
+        filters: EventSubscription {
+            lifecycle_types: vec!["turn_failed".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    memory.event(event(1, "terminal_2", "snapshot"), MOTHER);
+    memory.event(event(2, "terminal_2", "turn_failed"), MOTHER);
+    assert_eq!(memory.status(true, false).blockers, 1);
+    assert_eq!(memory.pending[0].events, 1);
+    assert!(memory.selects_wake("turn_failed"));
+    assert!(!memory.selects_wake("needs_input"));
+
+    memory.event(event(3, "terminal_2", "submission_acknowledged"), MOTHER);
+    assert_eq!(memory.status(true, false).blockers, 0);
+    let mut busy = event(4, "terminal_2", "state_changed");
+    busy["state"] = "running".into();
+    memory.event(busy, MOTHER);
+    assert_eq!(memory.roster["terminal_2"]["state"], "running");
+    assert_eq!(memory.pending[0].events, 1);
+    memory.event(event(5, "terminal_2", "turn_failed"), MOTHER);
+    memory.event(event(6, "terminal_2", "pane_closed"), MOTHER);
+    assert!(memory.roster.is_empty());
+    assert_eq!(memory.status(true, false).blockers, 0);
+    assert_eq!(memory.pending[0].events, 2);
+    assert_eq!(memory.journal.len(), 6);
+}
+
+#[test]
+fn lifecycle_wake_filters_use_unfiltered_subscription_cursors() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.json");
+    let mut memory = Memory {
+        filters: EventSubscription {
+            panes: vec!["terminal_2".into()],
+            projects: vec!["app".into()],
+            kinds: vec!["codex".into()],
+            lifecycle_types: vec!["turn_failed".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut expected = memory.filters.clone();
+    expected.lifecycle_types.clear();
+    assert_eq!(json!(memory.subscription_filters()), json!(expected));
+    let mut cursor: Value = serde_json::from_str(&cursor("session", 10)).unwrap();
+    cursor["filters"] = json!(expected);
+    memory.cursor = Some(cursor.to_string());
+    memory.batch("keep".into(), false);
+    memory.save(&path).unwrap();
+    let restored = Memory::load(&path, "session").unwrap();
+    assert_eq!(restored.cursor, memory.cursor);
+    assert_eq!(restored.filters.lifecycle_types, vec!["turn_failed"]);
+
+    cursor["filters"] = json!(memory.filters);
+    memory.cursor = Some(cursor.to_string());
+    memory.save(&path).unwrap();
+    let restored = Memory::load(&path, "session").unwrap();
+    assert!(restored.cursor.is_none());
+    assert_eq!(restored.pending[0].id, memory.pending[0].id);
+}
+
+#[test]
+fn reconciled_failures_survive_state_updates_and_clear_on_recovery() {
+    let mut memory = Memory::default();
+    memory.event(event(1, "terminal_2", "turn_failed"), MOTHER);
+    memory.event(event(2, "", "snapshot_begin"), MOTHER);
+    let mut fact = event(2, "terminal_2", "snapshot");
+    fact["submission_id"] = "submission".into();
+    memory.event(fact.clone(), MOTHER);
+    memory.event(event(2, "", "ready"), MOTHER);
+    let request = AgentRequest::WaitTurn {
+        pane_id: "terminal_2".parse().unwrap(),
+        expected_session_id: Some("conversation".into()),
+        submission_id: "submission".into(),
+        timeout_ms: 1,
+    };
+    let mut result = AgentResponse::new(AgentOutcome::Failed);
+    result.submission_id = Some("submission".into());
+    assert!(memory.reconcile(&request, result.clone()));
+    assert_eq!(memory.status(true, false).blockers, 0);
+    result.acknowledged = true;
+    assert!(memory.reconcile(&request, result.clone()));
+    assert_eq!(memory.status(true, false).blockers, 1);
+    assert_eq!(memory.status(true, false).state, "needs_attention");
+
+    fact["event_type"] = "state_changed".into();
+    fact["cursor"] = cursor("session", 3).into();
+    memory.event(fact.clone(), MOTHER);
+    assert_eq!(memory.status(true, false).blockers, 1);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.json");
+    memory.save(&path).unwrap();
+    let mut memory = Memory::load(&path, "session").unwrap();
+    assert_eq!(memory.status(true, false).blockers, 1);
+    fact["event_type"] = "submission_acknowledged".into();
+    fact["submission_id"] = "new-submission".into();
+    fact["cursor"] = cursor("session", 4).into();
+    memory.event(fact, MOTHER);
+    assert_eq!(memory.status(true, false).blockers, 0);
+    assert!(!memory.reconcile(&request, result));
+    assert!(memory.roster["terminal_2"]["retained_result"].is_null());
+}
+
+#[test]
+fn reconciliation_rejects_replaced_conversations_closed_panes_and_mismatched_results() {
+    let request = AgentRequest::WaitTurn {
+        pane_id: "terminal_2".parse().unwrap(),
+        expected_session_id: Some("conversation".into()),
+        submission_id: "submission".into(),
+        timeout_ms: 1,
+    };
+    for change in ["conversation", "closed", "result"] {
+        let mut memory = Memory::default();
+        let mut fact = event(1, "terminal_2", "snapshot");
+        fact["submission_id"] = "submission".into();
+        if change == "conversation" {
+            fact["conversation_id"] = "replacement".into();
+        }
+        memory.event(fact, MOTHER);
+        if change == "closed" {
+            memory.event(event(2, "terminal_2", "pane_closed"), MOTHER);
+        }
+        let mut result = AgentResponse::new(AgentOutcome::Failed);
+        result.acknowledged = true;
+        result.submission_id = Some(if change == "result" {
+            "other".into()
+        } else {
+            "submission".into()
+        });
+        assert!(!memory.reconcile(&request, result), "{change}");
+        assert_eq!(memory.status(true, false).blockers, 0);
+    }
+}
+
+#[test]
+fn inbox_retains_closed_worker_identities_across_pause_and_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.json");
+    let mut memory = Memory::default();
+    memory.command(MotherRequest::Pause).unwrap();
+    let mut completed = event(1, "terminal_2", "turn_completed");
+    completed["submission_id"] = "submission".into();
+    completed["turn_id"] = "turn".into();
+    completed["run_id"] = "run".into();
+    memory.event(completed.clone(), MOTHER);
+    memory.event(event(2, "terminal_2", "pane_closed"), MOTHER);
+    memory.save(&path).unwrap();
+    let mut restored = Memory::load(&path, "session").unwrap();
+    let inbox = restored.command(MotherRequest::Inbox).unwrap();
+    assert!(restored.paused);
+    assert!(restored.roster.is_empty());
+    assert_eq!(inbox["journal"][0], completed);
+    assert_eq!(inbox["journal"][1]["event_type"], "pane_closed");
+    assert_eq!(inbox["batches"][0]["events"], 2);
+    assert_eq!(inbox["gap"], false);
 }
 
 #[test]
