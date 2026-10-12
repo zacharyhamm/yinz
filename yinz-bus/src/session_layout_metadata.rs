@@ -583,6 +583,8 @@ pub struct PaneLayoutMetadata {
 
 impl PaneLayoutMetadata {
     pub fn with_pane_tabs(mut self, tabs: Option<&yinz_types::pane_tabs::PaneTabsInfo>) -> Self {
+        // Terminal-backed groups are runtime-only; layout descriptors can only restore plugins.
+        let tabs = tabs.filter(|tabs| tabs.tabs.iter().all(|slot| slot.terminal_id.is_none()));
         self.pane_tabs = tabs.map(|tabs| yinz_types::pane_tabs::PaneTabsLayout {
             active: tabs.active,
             tabs: tabs
@@ -727,6 +729,10 @@ impl ClientMetadata {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "unit/session_layout_metadata.rs"]
+mod pane_tabs_tests;
 
 #[cfg(test)]
 mod tests {
