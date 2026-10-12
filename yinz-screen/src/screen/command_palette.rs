@@ -752,7 +752,7 @@ impl Screen {
                     Entry {
                         id: format!("mother:{kind}"),
                         label: kind.clone(),
-                        description: String::new(),
+                        description: if kind == "codex" { "Enables Yinz socket and internet access; keeps approval and sandbox settings".into() } else { String::new() },
                         shortcut: String::new(),
                         aliases: vec![],
                         kind: EntryKind::Mother,

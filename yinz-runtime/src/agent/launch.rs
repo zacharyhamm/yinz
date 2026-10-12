@@ -899,6 +899,24 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
         .filter(|text| !text.is_empty())
 }
 
+/// Codex needs network access to connect to Yinz's Unix socket; this also enables internet access.
+pub fn allow_sandboxed_yinz(spec: &mut AgentSpawnSpec) -> Result<(), String> {
+    if kind_for_spec(spec).as_deref() != Some("codex") {
+        return Err(
+            "--allow-yinz applies only to Codex launches (--kind codex or a Codex command)".into(),
+        );
+    }
+    spec.args.extend(codex_yinz_args());
+    Ok(())
+}
+
+pub fn codex_yinz_args() -> [String; 2] {
+    [
+        "-c".into(),
+        "sandbox_workspace_write.network_access=true".into(),
+    ]
+}
+
 #[cfg(test)]
 #[path = "unit/launch_tests.rs"]
 mod launch_tests;

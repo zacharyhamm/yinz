@@ -698,6 +698,9 @@ pub trait Pane {
         _views: std::collections::HashMap<ClientId, crate::pane_tabs::PaneTabsView>,
     ) {
     }
+    fn pane_tabs_view(&self, _client: ClientId) -> crate::pane_tabs::PaneTabsView {
+        Default::default()
+    }
     fn set_pane_tabs(&mut self, _tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>) {}
     fn pane_tabs(&self) -> Option<&yinz_types::pane_tabs::PaneTabsInfo> {
         None

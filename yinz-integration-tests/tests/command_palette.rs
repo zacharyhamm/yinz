@@ -691,6 +691,27 @@ fn mother_launches_from_its_keybinding_toggles_and_follows_tab_switches() {
     yinz.wait_until("mother is shown and the palette is gone", |snapshot| {
         snapshot.contains("MOTHER READY") && !snapshot.contains("Launch mother")
     });
+    yinz.wait_until("Mother terminal has both pane tabs", |snapshot| {
+        snapshot.contains("Conversation") && snapshot.contains("Overview")
+    });
+    yinz.run_cli_action(CliAction::NextPaneTab);
+    yinz.wait_until("Overview reads supervision", |snapshot| {
+        snapshot.contains("Supervision:") && snapshot.contains("pending")
+    });
+    yinz.send_stdin(b"p");
+    yinz.wait_until("Overview pauses supervision", |snapshot| {
+        snapshot.contains("Supervision: paused")
+    });
+    yinz.send_stdin(b"p");
+    yinz.wait_until("Overview resumes supervision", |snapshot| {
+        snapshot.contains("Supervision:") && !snapshot.contains("Supervision: paused")
+    });
+    mother.output(b"MOTHER RETAINED IN BACKGROUND\r\n");
+    yinz.run_cli_action(CliAction::PreviousPaneTab);
+    yinz.wait_until(
+        "Conversation retains background terminal output",
+        |snapshot| snapshot.contains("MOTHER RETAINED IN BACKGROUND"),
+    );
     yinz.send_stdin(b"to-mother");
     mother.wait_for_stdin("mother has the keyboard", |bytes| {
         bytes.ends_with(b"to-mother")

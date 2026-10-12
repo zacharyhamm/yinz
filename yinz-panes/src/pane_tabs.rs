@@ -47,3 +47,59 @@ pub fn bar_cells(
     let keep = focus.or(view.reveal).unwrap_or(info.active);
     yinz_types::tab_bar::overflow(&labels, width, info.active, focus, keep)
 }
+
+/// Render the common strip for terminal and plugin members.
+pub fn render_bar(
+    info: &PaneTabsInfo,
+    view: PaneTabsView,
+    focused: bool,
+    columns: usize,
+    style: &yinz_types::style::Style,
+) -> Vec<crate::panes::TerminalCharacter> {
+    use crate::panes::terminal_character::EMPTY_TERMINAL_CHARACTER;
+    let mut characters: Vec<_> = crate::pane_tabs::bar_cells(info, view, focused, columns)
+        .into_iter()
+        .flat_map(|cell| {
+            use crate::panes::terminal_character::{AnsiCode, RESET_STYLES};
+            let colors = if cell.focused {
+                style.colors.text_selected
+            } else {
+                style.colors.text_unselected
+            };
+            let styles = RESET_STYLES
+                .foreground(Some(if cell.focused {
+                    AnsiCode::from(colors.base)
+                } else if cell.active {
+                    AnsiCode::from(colors.emphasis_2)
+                } else {
+                    AnsiCode::Reset
+                }))
+                .background(Some(AnsiCode::from(colors.background)))
+                .bold(Some(if cell.active {
+                    AnsiCode::On
+                } else {
+                    AnsiCode::Reset
+                }))
+                .dim(Some(if !cell.active && !cell.focused {
+                    AnsiCode::On
+                } else {
+                    AnsiCode::Reset
+                }));
+            cell.text
+                .chars()
+                .map(|ch| {
+                    let mut character = crate::panes::TerminalCharacter::new(ch);
+                    character.styles = styles.into();
+                    character
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let length: usize = characters.iter().map(|ch| ch.width()).sum();
+    characters.extend(vec![
+        EMPTY_TERMINAL_CHARACTER;
+        columns.saturating_sub(length)
+    ]);
+
+    characters
+}

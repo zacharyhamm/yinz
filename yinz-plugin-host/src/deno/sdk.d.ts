@@ -502,7 +502,7 @@ export interface PaneContents {lines_above_viewport: string[]; lines_below_viewp
 export type PaneTabsId = number;
 export interface PaneTabDescriptor { label: string; location: string; configuration: StringMap; initial_cwd?: string | null; }
 export type PaneTabLoadState = "Unloaded" | "Loading" | "PermissionPending" | "Ready" | { Failed: string };
-export interface PaneTabInfo { descriptor: PaneTabDescriptor; plugin_id: number | null; state: PaneTabLoadState; }
+export interface PaneTabInfo { descriptor: PaneTabDescriptor; plugin_id: number | null; terminal_id?: number | null; state: PaneTabLoadState; }
 export interface PaneTabsInfo { id: PaneTabsId; pane_id: PaneId; tabs: PaneTabInfo[]; active: number; bar_focused: number[]; }
 export interface PaneTabsLayout { tabs: PaneTabDescriptor[]; active?: number; }
 export type PaneTabsCommand = { Mount: { pane_id: PaneId; layout: PaneTabsLayout; existing: number } }
@@ -961,11 +961,39 @@ export interface AgentInput {
   submit_key?: string; submit_delay_ms?: number; paste_prefix?: string; command_prefixes?: string[]; newline?: "\n" | "\r" | "\r\n";
 }
 export interface AgentHookArtifact {base?: "config" | "home"; path: string; content: string; marker: string; executable?: boolean;}
+export type MotherRequest = "Status" | "Overview" | "Inbox" | "Pause" | "Resume"
+  | {Journal: {after?: number | null; through?: number | null; limit?: number | null}}
+  | {Resolve: {submission_id: string; expect_rev: number}}
+  | {Ack: {batch: string}}
+  | {Checkpoint: {expect_rev?: number | null; value?: unknown}}
+  | {Configure: {panes: readonly string[]; projects: readonly string[]; kinds: readonly string[]; lifecycle_types: readonly string[]}};
+/** Version 1 memory; readers must preserve unknown and legacy checkpoint fields. */
+export interface MotherCheckpointV1 {
+  version: 1; goal: unknown; scope: unknown; assignments: unknown; decisions: unknown;
+  blockers: unknown; questions: unknown; journal_cursor: number | null;
+  [key: string]: unknown;
+}
+export interface MotherJournalPage {
+  records: Record<string, unknown>[]; next_cursor: number | null; cursor: number;
+  high_water: number; oldest_cursor: number | null; retention_gap: boolean;
+}
+export interface MotherOverview {
+  status: {state: string; pending: number; blockers: number};
+  filters: {panes: string[]; projects: string[]; kinds: string[]; lifecycle_types: string[]; cursor: string | null};
+  checkpoint: {revision: number; value: Record<string, unknown> | null};
+  roster: Record<string, Record<string, unknown>>;
+  batches: {id: string; summary: string[]; events: number; urgent: boolean; attempted: boolean; frozen: boolean}[];
+  receipts: {batch: string; conversation: string; submission: string; response: AgentResponse | null; settled: boolean}[];
+  delivery_blocked: string | null; operation_in_flight: boolean; gap: boolean;
+  paused: boolean; observation_ready: boolean; journal_high_water: number; recent: MotherJournalPage;
+}
 export type AgentRequest =
+  | {Mother: MotherRequest}
+  | {WaitTurn: {pane_id: PaneId; expected_session_id?: string | null; submission_id: string; timeout_ms: number}}
   | {List: {project?: string | null}}
   | {Status: {pane_id: PaneId; expected_session_id?: string | null}}
   | {Spawn: {spec: AgentSpawnSpec; cwd?: string | null; project?: string | null; remote_host?: string | null}}
-  | {Prompt: {pane_id: PaneId; expected_session_id?: string | null; prompt: string; wait: boolean; timeout_ms: number}}
+  | {Prompt: {pane_id: PaneId; expected_session_id?: string | null; prompt: string; wait: boolean; timeout_ms: number; submission_id?: string | null; preserve_draft?: boolean}}
   | {Wait: {pane_id: PaneId; expected_session_id?: string | null; until: AgentState; timeout_ms: number}}
   | {Read: {pane_id: PaneId; expected_session_id?: string | null; lines: number}}
   | {ClearDraft: {pane_id: PaneId; expected_session_id: string; input_revision: number; confirm_discard: boolean; interrupted?: boolean; timeout_ms: number}}
@@ -991,6 +1019,7 @@ export interface AgentStatus {
   prompt_supported: boolean; readiness?: AgentReadiness | null; background_tasks?: string[];
 }
 export interface AgentResponse {
+  submission_id?: string | null;
   outcome: AgentOutcome; agents: AgentStatus[]; spawned: (Omit<SpawnedAgent,"pane_id"> & {pane_id:string}) | null;
   output: string | null; message: string | null; acknowledged: boolean; turn_id: string | null; background_tasks?: string[];
 }

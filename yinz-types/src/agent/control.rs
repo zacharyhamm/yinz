@@ -107,6 +107,8 @@ pub enum AgentRequest {
         /// Caller-chosen retry identity, or a server-generated UUID when omitted.
         #[serde(default)]
         submission_id: Option<String>,
+        #[serde(default)]
+        preserve_draft: bool,
         prompt: String,
         wait: bool,
         timeout_ms: u64,

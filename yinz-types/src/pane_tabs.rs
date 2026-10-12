@@ -67,7 +67,17 @@ pub enum PaneTabLoadState {
 pub struct PaneTabInfo {
     pub descriptor: PaneTabDescriptor,
     pub plugin_id: Option<PluginId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_id: Option<crate::internal_ids::TerminalId>,
     pub state: PaneTabLoadState,
+}
+
+impl PaneTabInfo {
+    pub fn pane_id(&self) -> Option<PaneId> {
+        self.terminal_id
+            .map(PaneId::Terminal)
+            .or_else(|| self.plugin_id.map(PaneId::Plugin))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

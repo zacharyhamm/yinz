@@ -113,6 +113,9 @@ pub struct TerminalPane {
     vte_batches: usize,
     selection_scrolled_at: time::Instant,
     content_offset: Offset,
+    pane_tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>,
+    pane_tabs_views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>,
+    pane_tabs_transfer: Option<crate::pane_tabs::PaneTabsTransfer>,
     subtitle: Option<String>,
     subtitle_enabled: bool,
     pane_title: String,
@@ -299,6 +302,11 @@ impl Pane for TerminalPane {
             if self.guest_modal.contains_key(&client_id) {
                 return None;
             }
+        }
+        if self.pane_tabs.as_ref().is_some_and(|tabs| {
+            tabs.tabs[tabs.active].pane_id() != Some(PaneId::Terminal(self.pid))
+        }) {
+            return None;
         }
         if self.get_content_rows() < 1 || self.get_content_columns() < 1 {
             // do not render cursor if there's no room for it
@@ -545,6 +553,40 @@ impl Pane for TerminalPane {
             }
             match self.grid.render(content_x, content_y, &self.style) {
                 Ok(rendered_assets) => {
+                    let mut rendered_assets = rendered_assets;
+                    if let Some(tabs) = &self.pane_tabs {
+                        if tabs.tabs[tabs.active].pane_id() != Some(PaneId::Terminal(self.pid)) {
+                            let message = match &tabs.tabs[tabs.active].state {
+                                yinz_types::pane_tabs::PaneTabLoadState::Failed(error) => {
+                                    format!("{error} (r: retry; select Conversation to return)")
+                                },
+                                _ => "Loading Overview… Select Conversation to return.".into(),
+                            };
+                            let chunks = &mut rendered_assets
+                                .get_or_insert_with(|| (vec![], None, vec![], vec![]))
+                                .0;
+                            chunks.clear();
+                            for row in 0..rows {
+                                let mut characters: Vec<_> = if row == 0 {
+                                    yinz_types::text::clean_string_from_control_and_linebreak(
+                                        &message,
+                                    )
+                                    .chars()
+                                    .take(columns)
+                                    .map(TerminalCharacter::new)
+                                    .collect()
+                                } else {
+                                    vec![]
+                                };
+                                characters.resize(columns, EMPTY_TERMINAL_CHARACTER);
+                                chunks.push(CharacterChunk::new(
+                                    characters,
+                                    content_x,
+                                    content_y + row,
+                                ));
+                            }
+                        }
+                    }
                     self.set_should_render(false);
                     Ok(rendered_assets)
                 },
@@ -567,7 +609,12 @@ impl Pane for TerminalPane {
         let subtitle = (self.subtitle_rows() > 0)
             .then(|| self.subtitle.clone())
             .flatten()
-            .map(|text| (text, self.get_content_y() - 1));
+            .map(|text| {
+                (
+                    text,
+                    self.get_content_y() - (self.content_header_rows() - self.subtitle_rows()) - 1,
+                )
+            });
         let err_context = || format!("failed to render frame for client {client_id}");
         frame_params.omit_title = frame_params.omit_title
             && !(input_mode == InputMode::RenamePane && frame_params.is_main_client);
@@ -1071,6 +1118,47 @@ impl Pane for TerminalPane {
         self.subtitle_enabled
     }
 
+    fn content_header_rows(&self) -> usize {
+        self.subtitle_rows()
+            + usize::from(
+                self.pane_tabs.is_some()
+                    && self.rows()
+                        > self.content_offset.top
+                            + self.content_offset.bottom
+                            + self.subtitle_rows(),
+            )
+    }
+    fn take_pane_tabs_transfer(&mut self) -> Option<crate::pane_tabs::PaneTabsTransfer> {
+        self.pane_tabs_transfer.take()
+    }
+    fn set_pane_tabs_transfer(&mut self, transfer: crate::pane_tabs::PaneTabsTransfer) {
+        self.pane_tabs_transfer = Some(transfer);
+    }
+    fn set_pane_tabs_views(&mut self, views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>) {
+        if self.pane_tabs_views != views {
+            self.pane_tabs_views = views;
+            self.set_should_render(true);
+        }
+    }
+    fn pane_tabs_view(&self, client: ClientId) -> crate::pane_tabs::PaneTabsView {
+        self.pane_tabs_views
+            .get(&client)
+            .copied()
+            .unwrap_or_default()
+    }
+    fn set_pane_tabs(&mut self, tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>) {
+        if self.pane_tabs != tabs {
+            let had_bar = self.pane_tabs.is_some();
+            self.pane_tabs = tabs;
+            if had_bar != self.pane_tabs.is_some() {
+                self.reflow_lines();
+            }
+            self.set_should_render(true);
+        }
+    }
+    fn pane_tabs(&self) -> Option<&yinz_types::pane_tabs::PaneTabsInfo> {
+        self.pane_tabs.as_ref()
+    }
     fn get_content_offset(&self) -> Offset {
         self.content_offset
     }
@@ -1953,6 +2041,9 @@ impl TerminalPane {
             pending_agent_escape_clients: HashSet::new(),
             frame: HashMap::new(),
             content_offset: Offset::default(),
+            pane_tabs: None,
+            pane_tabs_views: HashMap::new(),
+            pane_tabs_transfer: None,
             subtitle: None,
             subtitle_enabled: true,
             pid,

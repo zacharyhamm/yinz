@@ -1611,6 +1611,7 @@ fn codex_control_survives_pane_tab_and_failed_adoption_without_reinitialization(
         if enabled {
             control
                 .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Prompt {
+                    preserve_draft: false,
                     submission_id: None,
                     pane_id,
                     expected_session_id: Some("warp-conversation".into()),
@@ -1693,6 +1694,7 @@ fn codex_control_survives_pane_tab_and_failed_adoption_without_reinitialization(
         if enabled {
             control
                 .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Prompt {
+                    preserve_draft: false,
                     submission_id: None,
                     pane_id,
                     expected_session_id: Some("warp-conversation".into()),

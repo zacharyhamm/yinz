@@ -165,6 +165,7 @@ fn report_state(screen: &mut Screen, kind: &str, hook: HookEvent, state: AgentRe
 
 fn prompt(wait: bool) -> AgentRequest {
     AgentRequest::Prompt {
+        preserve_draft: false,
         submission_id: None,
         pane_id: PANE,
         expected_session_id: None,
@@ -2611,6 +2612,7 @@ fn recover() -> AgentRequest {
 
 fn clear_prompt() -> AgentRequest {
     AgentRequest::Prompt {
+        preserve_draft: false,
         submission_id: None,
         pane_id: PANE,
         expected_session_id: None,
@@ -2710,6 +2712,7 @@ fn cli_codex_new_restores_readiness_like_claude_clear() {
         report_kind(&mut screen, "codex", hook("SessionStart"));
         screen.agent_control(
             AgentRequest::Prompt {
+                preserve_draft: false,
                 submission_id: None,
                 pane_id: PANE,
                 expected_session_id: None,
@@ -2840,6 +2843,7 @@ fn failed_or_unsubmitted_clear_cannot_restore_readiness() {
         } else {
             let request = if reason == "not_exact" {
                 AgentRequest::Prompt {
+                    preserve_draft: false,
                     submission_id: None,
                     pane_id: PANE,
                     expected_session_id: None,
@@ -3786,6 +3790,7 @@ fn collapsed_claude_pastes_acknowledge_the_prompt_they_wrap() {
         .join("\n");
     screen.agent_control(
         AgentRequest::Prompt {
+            preserve_draft: false,
             submission_id: None,
             pane_id: PANE,
             expected_session_id: None,
@@ -3841,6 +3846,7 @@ fn prompt_delivery_normalizes_only_claude_format_controls() {
             report_kind(&mut screen, kind, hook("SessionStart"));
             screen.agent_control(
                 AgentRequest::Prompt {
+                    preserve_draft: false,
                     submission_id: None,
                     pane_id: PANE,
                     expected_session_id: None,
@@ -3911,6 +3917,7 @@ fn commands_are_rejected_before_claiming_or_writing_input() {
             report_kind(&mut screen, kind, hook("SessionStart"));
             screen.agent_control(
                 AgentRequest::Prompt {
+                    preserve_draft: false,
                     submission_id: None,
                     pane_id: PANE,
                     expected_session_id: None,
@@ -4273,6 +4280,7 @@ fn claude_pastes_wait_for_settling_and_quiet_output_and_enter_only_once() {
             report_kind(&mut screen, "claude", hook("SessionStart"));
             screen.agent_control(
                 AgentRequest::Prompt {
+                    preserve_draft: false,
                     submission_id: None,
                     pane_id: PANE,
                     expected_session_id: None,
@@ -5646,6 +5654,7 @@ fn cli_pi_new_restores_readiness() {
         report_kind(&mut screen, "pi", hook("SessionStart"));
         screen.agent_control(
             AgentRequest::Prompt {
+                preserve_draft: false,
                 submission_id: None,
                 pane_id: PANE,
                 expected_session_id: None,
@@ -5717,6 +5726,7 @@ fn pi_normalized_prompt_completes_and_allows_another_prompt() {
     ] {
         screen.agent_control(
             AgentRequest::Prompt {
+                preserve_draft: false,
                 submission_id: None,
                 pane_id: PANE,
                 expected_session_id: Some("conversation".into()),
@@ -5767,6 +5777,7 @@ fn pi_rejects_commands_and_empty_text_after_trimming() {
     ] {
         screen.agent_control(
             AgentRequest::Prompt {
+                preserve_draft: false,
                 submission_id: None,
                 pane_id: PANE,
                 expected_session_id: None,
@@ -6316,7 +6327,7 @@ fn submission_history_is_bounded_and_closing_a_pane_releases_it() {
     screen.agent_control(wait_submission("receipt-0"), CLIENT);
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,
-        AgentOutcome::Rejected
+        AgentOutcome::StatusUnavailable
     );
     screen.agent_control(wait_submission(&format!("receipt-{limit}")), CLIENT);
     assert_eq!(
@@ -6344,7 +6355,7 @@ fn submission_wait_checks_conversation_pins_and_unknown_ids() {
     report(&mut screen, hook("UserPromptSubmit"));
     replies(&messages, CLIENT);
     for (id, conversation, outcome) in [
-        ("unknown", "conversation", AgentOutcome::Rejected),
+        ("unknown", "conversation", AgentOutcome::StatusUnavailable),
         ("receipt", "replacement", AgentOutcome::TargetChanged),
     ] {
         screen.agent_control(
@@ -6379,7 +6390,7 @@ fn submission_wait_checks_conversation_pins_and_unknown_ids() {
     );
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,
-        AgentOutcome::Rejected
+        AgentOutcome::StatusUnavailable
     );
 }
 
@@ -6513,6 +6524,7 @@ fn plugin_agent_input_uses_declared_bytes_delay_and_correlated_hooks() {
     report_kind(&mut screen, kind, hook("SessionStart"));
     screen.agent_control(
         AgentRequest::Prompt {
+            preserve_draft: false,
             pane_id: PANE,
             expected_session_id: Some("conversation".into()),
             prompt: "review\ncode".into(),
@@ -6595,6 +6607,7 @@ fn plugin_agent_capability_and_command_prefixes_refuse_unsafe_prompt_input() {
         report_kind(&mut screen, kind, hook("SessionStart"));
         screen.agent_control(
             AgentRequest::Prompt {
+                preserve_draft: false,
                 pane_id: PANE,
                 expected_session_id: Some("conversation".into()),
                 prompt: ":reset".into(),
@@ -8038,6 +8051,96 @@ fn mother_focus_race_after_paste_never_sends_enter_or_clears_the_composer() {
         assert_eq!(result.submission_id.as_deref(), Some("mother-batch"));
         screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(2));
         assert!(finish_paste(&writes).is_empty());
+        assert!(screen.agent_draft_clears.is_empty());
+    }
+}
+
+#[test]
+fn preserve_draft_refuses_worker_drafts_and_unknown_composers_without_writes() {
+    for kind in ["claude", "codex", "pi"] {
+        for known in [true, false] {
+            let (mut screen, messages, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            if known {
+                draft_frame(&mut screen, kind, "keep my draft", 0, Instant::now());
+            }
+            let mut request = prompt(false);
+            if let AgentRequest::Prompt { preserve_draft, .. } = &mut request {
+                *preserve_draft = true;
+            }
+            screen.agent_control(request, CLIENT);
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::Rejected,
+                "{kind}/{known}"
+            );
+            assert!(finish_paste(&writes).is_empty(), "{kind}/{known}");
+            assert!(screen.agent_draft_clears.is_empty());
+        }
+    }
+}
+
+#[test]
+fn mother_delivery_reaches_terminal_while_overview_is_selected() {
+    use yinz_types::internal_ids::PluginId;
+    use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+    for kind in ["claude", "codex", "pi"] {
+        let (mut screen, _, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        screen.mother = Some(TerminalId::new(7));
+        screen.mother_supervisor =
+            Some(crate::screen::mother_supervisor::Supervisor::for_test(PANE));
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        let (sender, _plugin_receiver) = channels::unbounded();
+        tab.senders.to_plugin = Some(SenderWithContext::new(sender));
+        let info = tab
+            .mount_pane_tabs(
+                PANE,
+                PaneTabsLayout {
+                    active: 0,
+                    tabs: ["Conversation", "Overview"]
+                        .into_iter()
+                        .map(|label| PaneTabDescriptor {
+                            label: label.into(),
+                            location: "yinz:mother-overview".into(),
+                            configuration: Default::default(),
+                            initial_cwd: None,
+                        })
+                        .collect(),
+                },
+                0,
+                CLIENT,
+            )
+            .unwrap();
+        tab.select_pane_tab(info.id, 1, CLIENT).unwrap();
+        let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "yinz:mother-overview",
+            &None,
+            None,
+            None,
+        )
+        .unwrap();
+        tab.pane_tab_loaded(info.id, 1, 1, Ok((PluginId::new(101), run)))
+            .unwrap();
+        assert_eq!(
+            screen.get_active_pane_id(&CLIENT),
+            Some(PaneId::Plugin(PluginId::new(101)))
+        );
+        draft_frame(&mut screen, kind, "", 0, Instant::now());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        screen.deliver_mother(
+            "test-generation".into(),
+            "conversation".into(),
+            screen.agent_status_for_test().input_revision.unwrap(),
+            "background-batch".into(),
+            "Check the inbox".into(),
+            tx,
+        );
+        let bytes = finish_paste(&writes);
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("Check the inbox"),
+            "{kind}: {bytes:?}"
+        );
         assert!(screen.agent_draft_clears.is_empty());
     }
 }

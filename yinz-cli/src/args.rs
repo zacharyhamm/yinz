@@ -576,6 +576,23 @@ pub struct AgentWatchFilters {
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Mother {
     Status,
+    /// Inspect supervision without acknowledging or freezing batches.
+    Overview,
+    /// Read retained events in stable cursor order (50 records by default, at most 200).
+    Journal {
+        #[clap(long)]
+        after: Option<u64>,
+        #[clap(long)]
+        through: Option<u64>,
+        #[clap(long)]
+        limit: Option<usize>,
+    },
+    /// After reviewing unavailable evidence, continue without replaying the original prompt.
+    Resolve {
+        submission_id: String,
+        #[clap(long)]
+        expect_rev: u64,
+    },
     Inbox,
     Ack {
         batch: String,
@@ -766,6 +783,9 @@ pub enum Agent {
         /// lose the response. After uncertainty, wait for this ID instead of resubmitting.
         #[clap(long, value_parser = parse_submission_id)]
         submission: Option<String>,
+        /// Refuse delivery if a draft exists or the composer cannot be verified empty.
+        #[clap(long)]
+        preserve_draft: bool,
         /// Wait for this turn's outcome after the agent acknowledges the prompt. If Claude left
         /// background work running, the reply lists `background_tasks`; `agent wait --until idle`
         /// returns its final answer.

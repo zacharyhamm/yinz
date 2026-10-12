@@ -534,54 +534,13 @@ impl Pane for PluginPane {
                     .get(&client_id)
                     .copied()
                     .unwrap_or_default();
-                let mut characters: Vec<_> = crate::pane_tabs::bar_cells(
+                let characters = crate::pane_tabs::render_bar(
                     tabs,
                     view,
                     tabs.bar_focused.contains(&client_id),
                     columns,
-                )
-                .into_iter()
-                .flat_map(|cell| {
-                    use crate::panes::terminal_character::{AnsiCode, RESET_STYLES};
-                    let colors = if cell.focused {
-                        self.style.colors.text_selected
-                    } else {
-                        self.style.colors.text_unselected
-                    };
-                    let styles = RESET_STYLES
-                        .foreground(Some(if cell.focused {
-                            AnsiCode::from(colors.base)
-                        } else if cell.active {
-                            AnsiCode::from(colors.emphasis_2)
-                        } else {
-                            AnsiCode::Reset
-                        }))
-                        .background(Some(AnsiCode::from(colors.background)))
-                        .bold(Some(if cell.active {
-                            AnsiCode::On
-                        } else {
-                            AnsiCode::Reset
-                        }))
-                        .dim(Some(if !cell.active && !cell.focused {
-                            AnsiCode::On
-                        } else {
-                            AnsiCode::Reset
-                        }));
-                    cell.text
-                        .chars()
-                        .map(|ch| {
-                            let mut character = crate::panes::TerminalCharacter::new(ch);
-                            character.styles = styles.into();
-                            character
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-                let length: usize = characters.iter().map(|ch| ch.width()).sum();
-                characters.extend(vec![
-                    EMPTY_TERMINAL_CHARACTER;
-                    columns.saturating_sub(length)
-                ]);
+                    &self.style,
+                );
                 rendered
                     .0
                     .push(CharacterChunk::new(characters, content_x, content_y - 1));
@@ -640,7 +599,7 @@ impl Pane for PluginPane {
         let subtitle = (self.subtitle_rows() > 0)
             .then(|| self.subtitle.clone())
             .flatten()
-            .map(|text| (text, self.get_content_y() - 1));
+            .map(|text| (text, self.get_content_y() - self.tab_bar_rows() - 1));
         let frame_geom = frame_params
             .frame_geom_override
             .unwrap_or_else(|| self.current_geom());

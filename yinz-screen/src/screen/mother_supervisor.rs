@@ -33,7 +33,7 @@ pub(super) struct Supervisor {
     pub generation: String,
     pane: PaneId,
     session: String,
-    commands: Option<mpsc::Sender<(MotherRequest, Reply)>>,
+    commands: Option<mpsc::Sender<(MotherRequest, Reply, Option<String>)>>,
     thread: Option<std::thread::JoinHandle<()>>,
     stopped: Arc<AtomicBool>,
     observations: mpsc::SyncSender<Value>,
@@ -88,6 +88,8 @@ struct Memory {
     paused: bool,
     roster: BTreeMap<String, Value>,
     journal: VecDeque<Value>,
+    #[serde(default)]
+    journal_sequence: u64,
     pending: VecDeque<Batch>,
     receipts: VecDeque<Receipt>,
     conversation: Option<String>,
@@ -137,6 +139,15 @@ impl Memory {
             })
         {
             memory.cursor = None;
+        }
+        // Upgrade old journals once, retaining their complete event bodies.
+        for event in &mut memory.journal {
+            if let Some(cursor) = event["journal_cursor"].as_u64() {
+                memory.journal_sequence = memory.journal_sequence.max(cursor);
+            } else {
+                memory.journal_sequence += 1;
+                event["journal_cursor"] = json!(memory.journal_sequence);
+            }
         }
         Ok(memory)
     }
@@ -311,7 +322,7 @@ impl Memory {
             }
             return true;
         }
-        self.journal.push_back(event);
+        self.record(event);
         let mut bytes: usize = self.journal.iter().map(|v| v.to_string().len()).sum();
         let overflow = self.journal.len() > JOURNAL_RECORDS || bytes > JOURNAL_BYTES;
         while overflow && (self.journal.len() > JOURNAL_RECORDS / 2 || bytes > JOURNAL_BYTES / 2) {
@@ -321,8 +332,7 @@ impl Memory {
             self.gap = true;
         }
         if overflow {
-            self.journal
-                .push_back(json!({"event_type":"gap","reason":"mother_journal_overflow"}));
+            self.record(json!({"event_type":"gap","reason":"mother_journal_overflow"}));
             self.batch(
                 "Journal overflow: reconcile live agents and retained results".into(),
                 true,
@@ -334,10 +344,13 @@ impl Memory {
         true
     }
 
-    fn receipt_response(&mut self, result: AgentResponse, delivery: bool) {
+    fn receipt_response(&mut self, mut result: AgentResponse, delivery: bool) {
         let Some(receipt) = self.receipts.back_mut() else {
             return;
         };
+        if !delivery && result.submission_id.is_none() {
+            result.submission_id = Some(receipt.submission.clone());
+        }
         // Only the delivery path can prove rejection happened before any terminal write.
         if delivery && result.submission_id.is_none() && receipt.response.is_none() {
             self.delivery_blocked = result.message.clone();
@@ -430,15 +443,109 @@ impl Memory {
         }
     }
 
+    fn record(&mut self, mut event: Value) {
+        self.journal_sequence += 1;
+        event["journal_cursor"] = json!(self.journal_sequence);
+        self.journal.push_back(event);
+    }
+
+    fn journal_page(
+        &self,
+        after: Option<u64>,
+        through: Option<u64>,
+        limit: Option<usize>,
+    ) -> Result<Value> {
+        let limit = limit.unwrap_or(50);
+        if !(1..=200).contains(&limit) {
+            bail!("journal limit must be between 1 and 200");
+        }
+        let after = after.unwrap_or(0);
+        let through = through.unwrap_or(self.journal_sequence);
+        if through > self.journal_sequence || after > through {
+            bail!("journal cursor is beyond the requested high-water boundary");
+        }
+        let oldest = self
+            .journal
+            .front()
+            .and_then(|event| event["journal_cursor"].as_u64());
+        let mut records = vec![];
+        let mut bytes = 0;
+        let mut cursor = after;
+        let mut more = false;
+        for event in &self.journal {
+            let sequence = event["journal_cursor"].as_u64().unwrap_or(0);
+            if sequence <= after || sequence > through {
+                continue;
+            }
+            let size = event.to_string().len();
+            if records.len() == limit || (!records.is_empty() && bytes + size > 256 * 1024) {
+                more = true;
+                break;
+            }
+            // An oversized record remains addressable without making a page unbounded.
+            if size > 256 * 1024 {
+                records.push(json!({"journal_cursor":sequence,"event_type":"evidence_unavailable","reason":"record exceeds page byte limit"}));
+            } else {
+                records.push(event.clone());
+            }
+            bytes += size.min(256 * 1024);
+            cursor = sequence;
+        }
+        Ok(
+            json!({"records":records,"next_cursor":more.then_some(cursor),"cursor":cursor,"high_water":through,"oldest_cursor":oldest,"retention_gap":oldest.is_some_and(|oldest| after.saturating_add(1) < oldest)}),
+        )
+    }
+
+    fn overview(&self, ready: bool, failed: bool) -> Value {
+        json!({"status":self.status(ready, failed),"filters":self.filters,
+            "checkpoint":{"revision":self.revision,"value":self.checkpoint},
+            "roster":self.roster,"batches":self.pending,"receipts":self.receipts,
+            "gap":self.gap,"delivery_blocked":self.delivery_blocked,
+            "paused":self.paused, "observation_ready":ready && !failed, "journal_high_water":self.journal_sequence, "recent":self.journal_page(Some(self.journal_sequence.saturating_sub(50)), None, None).ok()})
+    }
+
     fn command(&mut self, request: MotherRequest) -> Result<Value> {
         Ok(match request {
             MotherRequest::Status => json!(self.status(true, false)),
+            MotherRequest::Overview => self.overview(true, false),
+            MotherRequest::Journal {
+                after,
+                through,
+                limit,
+            } => self.journal_page(after, through, limit)?,
+            MotherRequest::Resolve {
+                submission_id,
+                expect_rev,
+            } => {
+                if expect_rev != self.revision {
+                    bail!("checkpoint revision conflict; review the current checkpoint before resolving");
+                }
+                let receipt = self
+                    .receipts
+                    .back_mut()
+                    .filter(|r| r.submission == submission_id && !r.settled)
+                    .context("no unresolved receipt with that submission identity")?;
+                if !receipt.response.as_ref().is_some_and(|r| {
+                    r.outcome == AgentOutcome::StatusUnavailable
+                        && r.submission_id.as_deref() == Some(submission_id.as_str())
+                }) {
+                    bail!("only an explicitly unavailable result can be resolved after review");
+                }
+                receipt.settled = true;
+                self.revision = self
+                    .revision
+                    .checked_add(1)
+                    .context("checkpoint revision exhausted")?;
+                self.record(json!({"event_type":"supervision_result_resolved","submission_id":submission_id,"outcome":"unknown","checkpoint_revision":self.revision}));
+                self.batch("Reviewed unavailable supervision result: reconcile live agents and archives; never replay the original prompt".into(), true);
+                json!({"resolved":submission_id,"outcome":"unknown","revision":self.revision})
+            },
             MotherRequest::Inbox => {
                 // An acknowledgement must cover only the events the reader saw.
                 for batch in &mut self.pending {
                     batch.frozen = true;
                 }
-                json!({"batches":self.pending,"roster":self.roster,"journal":self.journal,"receipts":self.receipts,"gap":self.gap,"cursor":self.cursor,"delivery_blocked":self.delivery_blocked})
+                json!({"batches":self.pending,"roster":self.roster,"journal":self.journal_page(None, None, None)?,"receipts":self.receipts,"gap":self.gap,"cursor":self.cursor,"delivery_blocked":self.delivery_blocked})
             },
             MotherRequest::Checkpoint { expect_rev, value } => {
                 if let Some(value) = value {
@@ -641,7 +748,7 @@ fn run(
     pane: PaneId,
     generation: String,
     senders: ThreadSenders,
-    commands: &mpsc::Receiver<(MotherRequest, Reply)>,
+    commands: &mpsc::Receiver<(MotherRequest, Reply, Option<String>)>,
     observations: mpsc::Receiver<Value>,
     observation_gap: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -666,16 +773,30 @@ fn run(
     let mut activity = BTreeMap::<String, Value>::new();
     loop {
         match commands.try_recv() {
-            Ok((request, target)) => {
+            Ok((request, target, delivery_blocked)) => {
                 let reconnect = matches!(request, MotherRequest::Configure { .. });
+                let read_only = matches!(
+                    request,
+                    MotherRequest::Status
+                        | MotherRequest::Overview
+                        | MotherRequest::Journal { .. }
+                        | MotherRequest::Checkpoint { value: None, .. }
+                );
                 let mut next = memory.clone();
-                let result = if matches!(request, MotherRequest::Status) {
+                let result = if matches!(request, MotherRequest::Resolve { .. }) && response.is_some() {
+                    Err(anyhow!("original supervision operation is still in flight; wait for its result before resolving"))
+                } else if matches!(request, MotherRequest::Status) {
                     Ok(json!(memory.status(ready, failed)))
+                } else if matches!(request, MotherRequest::Overview) {
+                    let mut overview = memory.overview(ready, failed);
+                    overview["operation_in_flight"] = json!(response.is_some());
+                    overview["delivery_blocked"] = json!(delivery_blocked);
+                    Ok(overview)
                 } else {
                     next.command(request)
                 }
                 .and_then(|value| {
-                    next.save(&path)?;
+                    if !read_only { next.save(&path)?; }
                     Ok(value)
                 });
                 let mut response = AgentResponse::new(if result.is_ok() {
@@ -1058,7 +1179,7 @@ impl Screen {
                         .context("report Mother failure")
                         .non_fatal();
                     // Keep rejecting queued and racing commands until resume replaces this worker.
-                    for (_, target) in rx {
+                    for (_, target, _) in rx {
                         let mut response = AgentResponse::new(AgentOutcome::Rejected);
                         response.message = Some(format!(
                             "Mother supervisor stopped: {error:#}; use `yinz mother resume` to retry"
@@ -1111,12 +1232,23 @@ impl Screen {
     }
 
     pub(super) fn mother_command(&mut self, request: MotherRequest, target: Reply) {
+        if let MotherRequest::Resolve { submission_id, .. } = &request {
+            if self.mother_submission_in_flight(submission_id) {
+                let mut response = AgentResponse::new(AgentOutcome::Rejected);
+                response.message = Some("Original operation is still in flight. Wait for it to settle before resolving.".into());
+                reply(&self.bus.senders, target, response);
+                return;
+            }
+        }
         if matches!(request, MotherRequest::Resume)
             && self.mother_supervisor.as_ref().is_none_or(|s| !s.running())
         {
             self.mother_supervisor = None;
             self.sync_mother_supervisor();
         }
+        let delivery_blocked = self
+            .live_mother()
+            .and_then(|pane| self.mother_delivery_blocker(pane));
         let result = self
             .mother_supervisor
             .as_ref()
@@ -1128,7 +1260,7 @@ impl Screen {
                 s.commands
                     .as_ref()
                     .context("Mother supervisor stopped")?
-                    .send((request, target.clone()))
+                    .send((request, target.clone(), delivery_blocked))
                     .context("Mother supervisor is unavailable; use `yinz mother resume` to retry")
             });
         if let Err(error) = result {

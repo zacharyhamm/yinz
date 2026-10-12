@@ -5251,24 +5251,19 @@ impl Tab {
     pub fn take_overlay_container(&mut self, pane_id: PaneId) -> Option<OverlayTransfer> {
         let container = self.overlay_panes.take_container(pane_id)?;
         let mut members: HashSet<_> = container.pane_ids().collect();
-        let tab_ids: Vec<_> = members
-            .iter()
-            .filter_map(|pane| self.pane_tabs_of(*pane))
-            .collect();
         let mut pane_tabs = BTreeMap::new();
-        for id in tab_ids {
-            if let Some(tabs) = self.pane_tabs.remove(&id) {
-                members.extend(
-                    tabs.info
-                        .tabs
-                        .iter()
-                        .filter_map(|slot| slot.plugin_id.map(PaneId::Plugin)),
-                );
-                pane_tabs.insert(id, tabs);
-            }
-        }
         loop {
             let previous = members.len();
+            let tab_ids: Vec<_> = members
+                .iter()
+                .filter_map(|pane| self.pane_tabs_of(*pane))
+                .collect();
+            for id in tab_ids {
+                if let Some(tabs) = self.pane_tabs.remove(&id) {
+                    members.extend(tabs.info.tabs.iter().filter_map(|slot| slot.pane_id()));
+                    pane_tabs.insert(id, tabs);
+                }
+            }
             for (id, pane) in &self.suppressed_panes {
                 if pane
                     .restored_by
@@ -7483,11 +7478,17 @@ impl Tab {
     ) {
         if !ignore_suppressed_panes {
             if let Some(tabs_id) = self.pane_tabs_of(id) {
+                if matches!(id, PaneId::Terminal(_)) {
+                    if let Some(command) = self.pane_run_command(id) {
+                        self.hold_pane(id, exit_status, false, command);
+                    }
+                    return;
+                }
                 if let Some(index) = self.pane_tabs[&tabs_id]
                     .info
                     .tabs
                     .iter()
-                    .position(|slot| slot.plugin_id.map(PaneId::Plugin) == Some(id))
+                    .position(|slot| slot.pane_id() == Some(id))
                 {
                     self.close_pane_tab_child(tabs_id, index).non_fatal();
                     return;
@@ -7889,7 +7890,7 @@ impl Tab {
                         .info
                         .tabs
                         .iter()
-                        .filter_map(|tab| tab.plugin_id.map(PaneId::Plugin))
+                        .filter_map(|tab| tab.pane_id())
                         .chain([tabs.info.pane_id])
                     {
                         if !closed.contains(&pane) {
@@ -9165,9 +9166,12 @@ impl Tab {
                     .info
                     .tabs
                     .iter()
-                    .position(|slot| slot.plugin_id.map(PaneId::Plugin) == Some(pane_id))
+                    .position(|slot| slot.pane_id() == Some(pane_id))
                 {
                     self.select_pane_tab(id, index, client_id)?;
+                    if self.pane_tabs[&id].info.pane_id != pane_id {
+                        return Ok(());
+                    }
                 }
             }
         }

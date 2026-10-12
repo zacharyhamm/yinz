@@ -3,7 +3,7 @@ use crate::errors::prelude::*;
 use std::{fs, io::Write, path::Path};
 
 pub const SKILL: &str = include_str!("../../assets/skills/yinz-mother/SKILL.md");
-const BOOTSTRAP: &str = "# Mother\n\nRead .agents/skills/yinz-mother/SKILL.md, then .agents/skills/yinz-agents/SKILL.md and .agents/skills/yinz-sessions/SKILL.md. Load durable memory with `yinz mother checkpoint` and reconcile `yinz mother inbox` before coordinating this session. Follow the user's scope and permission boundaries.\n";
+const BOOTSTRAP: &str = "# Mother\n\nRead .agents/skills/yinz-mother/SKILL.md, then .agents/skills/yinz-agents/SKILL.md and .agents/skills/yinz-sessions/SKILL.md. Load durable memory with `yinz mother checkpoint` and reconcile `yinz mother inbox` before coordinating this session. With no assignment, ask for a goal once and remain observational. Read bounded journal pages through the inbox high-water boundary. Preserve worker drafts with --preserve-draft. Save scope and decisions before acknowledging batches. Follow the user's scope and permission boundaries.\n";
 
 pub fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("Mother file has no parent")?;

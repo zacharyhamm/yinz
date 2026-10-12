@@ -1736,3 +1736,41 @@ fn a_failed_mother_transfer_insertion_closes_the_homeless_process() {
         |(instruction, _)| matches!(instruction, PtyInstruction::ClosePane(id, _) if id == MOTHER)
     ));
 }
+
+#[test]
+fn mother_carries_loaded_overview_behind_an_in_place_replacement() {
+    use yinz_types::internal_ids::PluginId;
+    let mut screen = screen_with_mother();
+    screen.toggle_mother(CLIENT).unwrap();
+    let tab = screen.tab_containing_pane_mut(MOTHER).unwrap();
+    let (sender, _receiver) = channels::unbounded();
+    tab.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let id = tab.pane_tabs_of(MOTHER).unwrap();
+    tab.select_pane_tab(id, 1, CLIENT).unwrap();
+    let plugin = PluginId::new(42);
+    let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "yinz:mother-overview",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.pane_tab_loaded(id, 1, 1, Ok((plugin, run))).unwrap();
+    tab.select_pane_tab(id, 0, CLIENT).unwrap();
+    let editor = PaneId::Terminal(TerminalId::new(4));
+    tab.replace_pane_with_editor_pane(editor, MOTHER).unwrap();
+    new_tab(&mut screen, 3, TabId::new(1));
+    screen.toggle_mother(CLIENT).unwrap();
+    let tab = screen.tab_containing_pane_mut(MOTHER).unwrap();
+    assert!(tab.pane_tabs_info(id).is_some());
+    assert!(tab.get_pane_with_id(PaneId::Plugin(plugin)).is_some());
+    tab.close_pane(editor, false, None);
+    tab.select_pane_tab(id, 1, CLIENT).unwrap();
+    assert_eq!(
+        tab.pane_tabs_info(id).unwrap().pane_id,
+        PaneId::Plugin(plugin)
+    );
+    tab.close_pane_tabs(id).unwrap();
+    assert!(tab.get_pane_with_id(MOTHER).is_none());
+    assert!(tab.get_pane_with_id(PaneId::Plugin(plugin)).is_none());
+}
