@@ -644,3 +644,67 @@ fn crop_replacement_withdraws_obsolete_host_rasters_and_emits_the_new_pixels() {
     }
     assert_eq!(&decoded.unwrap().bytes[..4], &[0, 0, 0, 255]);
 }
+
+#[test]
+fn changing_one_shared_crop_deletes_only_its_old_host_placement() {
+    use crate::panes::sixel::PixelRect;
+    // Spec: "If an image with the same id and placement id already exists, it must be replaced."
+    let parts = create_test_kitty_parts();
+    let internal = store_test_kitty_image(&parts.0, 2, 1);
+    let mut changed = kitty_chunk(internal, 1, 0, 0);
+    changed.scaled_px = Some((10, 20));
+    changed.variant_key.source = PixelRect::new(0, 0, 1, 1);
+    changed.variant_key.size = (10, 20);
+    changed.source_px_width = 10;
+    changed.source_px_height = 20;
+    changed.dest_cells = (1, 1);
+    let sibling = crate::panes::kitty_graphics::KittyImageChunk {
+        placement_uid: 2,
+        cell_x: 4,
+        ..changed
+    };
+    let first = extract_kitty_commands(&run_kitty_frame(&parts, vec![changed, sibling], None));
+    let placements: Vec<_> = first
+        .iter()
+        .filter(|c| action_of(c) == "p")
+        .map(|c| control_of(c))
+        .collect();
+    assert_eq!(placements.len(), 2);
+    assert_eq!(value_of(&placements[0], "i"), value_of(&placements[1], "i"));
+    let old_image = value_of(&placements[0], "i").unwrap();
+    let placement = value_of(&placements[0], "p").unwrap();
+    assert_ne!(Some(placement), value_of(&placements[1], "p"));
+
+    changed.variant_key.source.x = 1;
+    let frame = extract_kitty_commands(&run_kitty_frame(&parts, vec![changed, sibling], None));
+    let actions: Vec<_> = frame.iter().map(|c| action_of(c)).collect();
+    assert_eq!(actions, ["t", "d", "p"]);
+    let deletion = control_of(&frame[1]);
+    assert_eq!(value_of(&deletion, "d"), Some("i"));
+    assert_eq!(value_of(&deletion, "i"), Some(old_image));
+    assert_eq!(value_of(&deletion, "p"), Some(placement));
+    let replacement = control_of(&frame[2]);
+    assert_ne!(value_of(&replacement, "i"), Some(old_image));
+    assert_eq!(value_of(&replacement, "p"), Some(placement));
+
+    changed.cell_x = 2;
+    let moved = extract_kitty_commands(&run_kitty_frame(&parts, vec![changed, sibling], None));
+    assert_eq!(moved.len(), 1);
+    let moved = control_of(&moved[0]);
+    assert_eq!(value_of(&moved, "a"), Some("p"));
+    assert_eq!(value_of(&moved, "i"), value_of(&replacement, "i"));
+    assert_eq!(value_of(&moved, "p"), Some(placement));
+    let deleted = extract_kitty_commands(&run_kitty_frame(&parts, vec![sibling], None));
+    assert_eq!(deleted.len(), 1);
+    let deleted = control_of(&deleted[0]);
+    assert_eq!(value_of(&deleted, "a"), Some("d"));
+    assert_eq!(value_of(&deleted, "d"), Some("i"));
+    assert_eq!(value_of(&deleted, "i"), value_of(&replacement, "i"));
+    assert_eq!(value_of(&deleted, "p"), Some(placement));
+    assert!(extract_kitty_commands(&run_kitty_frame(&parts, vec![sibling], None)).is_empty());
+    assert!(parts
+        .0
+        .borrow()
+        .scaled_variant(internal, sibling.variant_key)
+        .is_some());
+}

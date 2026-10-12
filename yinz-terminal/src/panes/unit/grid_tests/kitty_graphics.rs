@@ -1,4 +1,6 @@
 use super::*;
+use crate::panes::kitty_graphics::KittyImageChunk;
+use std::collections::HashSet;
 
 #[test]
 fn kitty_transmit_and_display_raw_rgb() {
@@ -1968,4 +1970,336 @@ fn locked_repaints_keep_completed_kitty_placements_with_current_overlay_clipping
         .unwrap()
         .3
         .is_empty());
+}
+
+// Use a fresh host so every repaint must transmit pixels, even if a previous host cached them.
+fn assert_kitty_host_pixels(session: &KittySession, chunks: Vec<KittyImageChunk>, red: u8) {
+    use crate::output::Output;
+    use crate::panes::PaneId;
+    use crate::ClientId;
+    use yinz_types::internal_ids::TerminalId;
+    let client = ClientId::new(1);
+    let mut output = Output::new(
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        session.grid.character_cell_size.clone(),
+        true,
+        true,
+        session.store.clone(),
+        Rc::new(RefCell::new(HashMap::from([(client, true)]))),
+        Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(HashMap::new())),
+    );
+    output.add_clients(
+        &HashSet::from([client]),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
+    output.add_kitty_image_chunks_to_client(
+        client,
+        PaneId::Terminal(TerminalId::new(1)),
+        chunks,
+        None,
+    );
+    let emitted = output.serialize().unwrap().remove(&client).unwrap();
+    let mut host = KittySession::new(10, 20);
+    host.feed(emitted.as_bytes());
+    assert!(
+        host.placement_count() > 0,
+        "the host must receive a visible image"
+    );
+    for placement in host.grid.kitty_placements() {
+        assert_eq!(
+            &host.store.borrow().get(placement.internal_id).unwrap().rgba[..4],
+            &[red, 0, 0, 255]
+        );
+    }
+}
+
+#[test]
+fn locked_crop_replacement_preserves_completed_pixels_under_quota_pressure() {
+    // Spec: "If an image with the same id and placement id already exists, it must be replaced."
+    // A refused replacement must keep the completed frame available for synchronized repaints.
+    for quota in [832, 1732] {
+        let mut session = KittySession::with_quota(10, 20, quota);
+        let pixels: Vec<u8> = (0..8).flat_map(|i| [i, 0, 0, 255]).collect();
+        session.ok("a=T,f=32,s=4,v=2,i=1,p=1,w=1,h=2,c=1,r=1,C=1", &pixels);
+        let original = session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3;
+        let id = original[0].internal_image_id;
+        let old_key = original[0].variant_key;
+        session.feed(b"\x1b[?2026h");
+        let before = session.grid.kitty_placements().to_vec();
+        let replacement = "a=p,i=1,p=1,x=1,w=1,h=2,c=1,r=1,C=1";
+        if quota == 832 {
+            assert_eq!(session.err(replacement, &[]).code, "ENOSPC");
+            assert_eq!(session.grid.kitty_placements(), before);
+        } else {
+            session.ok(replacement, &[]);
+        }
+        for _ in 0..2 {
+            // Reset alone does not replace the completed frame; another lock protects the same keys.
+            session.feed(b"\x1b[?2026l\x1b[?2026h");
+            session.grid.render_full_viewport();
+            let repaint = session
+                .grid
+                .render(0, 0, &Style::default())
+                .unwrap()
+                .unwrap()
+                .3;
+            assert_eq!(repaint, original);
+            assert_kitty_host_pixels(&session, repaint, 0);
+            assert!(session.store.borrow().total_bytes() <= quota);
+            assert_eq!(session.store.borrow().refcount(id), Some(1));
+        }
+        session.feed(b"\x1b[?2026l");
+        assert!(session.store.borrow().scaled_variant(id, old_key).is_some());
+        let next = session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3;
+        if quota == 832 {
+            assert_kitty_host_pixels(&session, next, 0);
+            // Failed commands are not queued for the next frame.
+            session.ok(replacement, &[]);
+        } else {
+            assert!(session.store.borrow().scaled_variant(id, old_key).is_none());
+            assert_eq!(session.store.borrow().total_bytes(), 832);
+            assert_kitty_host_pixels(&session, next, 1);
+        }
+    }
+}
+
+#[test]
+fn locked_shared_placeholder_crop_survives_refresh_deletion_and_quota_eviction() {
+    use test_support::{placeholder_cells, PlaceholderCell, PlaceholderColor};
+    let mut session = KittySession::with_quota(10, 20, 1732);
+    let pixels: Vec<u8> = (0..8).flat_map(|i| [i, 0, 0, 255]).collect();
+    session.ok("a=T,f=32,s=4,v=2,i=1,p=1,w=1,h=2,c=1,r=1,C=1", &pixels);
+    session.ok("a=p,i=1,p=2,U=1,w=1,h=2,c=1,r=1", &[]);
+    session.feed(
+        placeholder_cells(
+            PlaceholderColor::Indexed(1),
+            Some(2),
+            &[PlaceholderCell::at(0, 0)],
+        )
+        .as_bytes(),
+    );
+    let original = session
+        .grid
+        .render(0, 0, &Style::default())
+        .unwrap()
+        .unwrap()
+        .3;
+    assert_eq!(original.len(), 2);
+    assert_eq!(original[0].variant_key, original[1].variant_key);
+    let id = original[0].internal_image_id;
+    session.feed(b"\x1b[?2026h");
+    session.ok("a=p,i=1,p=2,U=1,x=1,w=1,h=2,c=1,r=1", &[]);
+    // Refresh slices while locked, then remove every owner without deleting the image data.
+    session.grid.read_changes(0, 0);
+    session.ok("a=d,d=i,i=1", &[]);
+    assert_eq!(session.store.borrow().refcount(id), Some(0));
+    assert_eq!(session.store.borrow().total_bytes(), 832);
+    assert_eq!(
+        session.err("a=t,f=32,s=20,v=20,i=2", &[255; 1600]).code,
+        "ENOSPC"
+    );
+    session.grid.render_full_viewport();
+    let repaint = session
+        .grid
+        .render(0, 0, &Style::default())
+        .unwrap()
+        .unwrap()
+        .3;
+    assert_eq!(repaint, original);
+    assert_kitty_host_pixels(&session, repaint, 0);
+    session.feed(b"\x1b[?2026l");
+    assert!(session
+        .grid
+        .render(0, 0, &Style::default())
+        .unwrap()
+        .unwrap()
+        .3
+        .is_empty());
+    assert_eq!(session.store.borrow().total_bytes(), 32);
+    session.ok("a=t,f=32,s=20,v=20,i=2", &[255; 1600]);
+}
+
+#[test]
+fn completed_crop_protection_follows_its_alternate_buffer_owner() {
+    let mut session = KittySession::with_quota(10, 20, 1732);
+    session.ok("a=T,f=32,s=4,v=2,i=1,p=1,w=1,h=2,c=1,r=1,C=1", &[255; 32]);
+    let original = session
+        .grid
+        .render(0, 0, &Style::default())
+        .unwrap()
+        .unwrap()
+        .3;
+    let id = original[0].internal_image_id;
+    let key = original[0].variant_key;
+    session.feed(b"\x1b[?1049h\x1b[?2026h");
+    // The completed frame belongs to the saved primary buffer, not the new active buffer.
+    session
+        .grid
+        .alternate_screen_state
+        .as_mut()
+        .unwrap()
+        .kitty_grid
+        .delete(
+            &crate::panes::kitty_graphics::KittyCommand {
+                delete_specifier: Some('a'),
+                ..Default::default()
+            },
+            (0, 0),
+            (20, 10),
+            0,
+        )
+        .unwrap();
+    assert!(session.store.borrow().scaled_variant(id, key).is_some());
+    assert_eq!(session.store.borrow().refcount(id), Some(0));
+    assert_eq!(
+        session.err("a=t,f=32,s=20,v=20,i=1", &[255; 1600]).code,
+        "ENOSPC"
+    );
+    session.grid.render_full_viewport();
+    assert_eq!(
+        session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3,
+        original
+    );
+    session.feed(b"\x1b[?2026l");
+    session.grid.render(0, 0, &Style::default()).unwrap();
+    assert!(session.store.borrow().scaled_variant(id, key).is_none());
+    assert_eq!(session.store.borrow().total_bytes(), 32);
+    session.ok("a=T,f=32,s=4,v=2,i=1,c=1,r=1,C=1", &[255; 32]);
+    session.grid.render(0, 0, &Style::default()).unwrap();
+    session.feed(b"\x1b[?2026h");
+    session.grid.kitty_grid.teardown();
+    session
+        .grid
+        .alternate_screen_state
+        .as_mut()
+        .unwrap()
+        .kitty_grid
+        .teardown();
+    assert_eq!(session.store.borrow().total_bytes(), 0);
+}
+
+#[test]
+fn resize_retry_does_not_repeat_vertical_anchor_reprojection() {
+    let mut session = KittySession::with_quota(10, 20, 3232);
+    session.feed(b"\x1b[3;3H");
+    session.ok("a=T,f=32,s=4,v=2,i=1,p=1,c=1,r=1,C=1", &[255; 32]);
+    session.ok("a=T,f=32,s=10,v=20,i=2,C=1", &[255; 800]);
+    *session.grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 20,
+        height: 40,
+    });
+    session.grid.change_size(10, 20);
+    let placement = &session.grid.kitty_placements()[0];
+    assert_eq!(
+        (placement.display_rect.x, placement.display_rect.y),
+        (20, 40)
+    );
+    assert_eq!(
+        placement.position_cell_size,
+        SizeInPixels {
+            width: 10,
+            height: 40
+        }
+    );
+    session.ok("a=d,d=I,i=2", &[]);
+    session.grid.character_cell_size_possibly_changed();
+    let placement = &session.grid.kitty_placements()[0];
+    assert_eq!(
+        (placement.display_rect.x, placement.display_rect.y),
+        (40, 40)
+    );
+}
+
+#[test]
+fn resizing_after_deletion_or_retransmission_while_locked_keeps_survivors() {
+    for retransmit in [false, true] {
+        let mut session = KittySession::new(10, 20);
+        for id in [1, 2] {
+            session.ok(
+                &format!("a=T,f=32,s=1,v=1,i={id},p=1,c=1,r=1,C=1"),
+                &[255; 4],
+            );
+        }
+        let completed = session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3;
+        let deleted_id = completed[0].internal_image_id;
+        let survivor_id = completed[1].internal_image_id;
+        let survivor_key = completed[1].variant_key;
+        session.feed(b"\x1b[?2026h");
+        if retransmit {
+            // Spec: "When re-transmitting image data for a specific id, the existing image and all its placements must be deleted."
+            session.ok("a=T,f=32,s=1,v=1,i=1,p=1,c=1,r=1,C=1", &[100; 4]);
+        } else {
+            session.ok("a=d,d=I,i=1", &[]);
+        }
+        assert!(session.store.borrow().get(deleted_id).is_none());
+        *session.grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+            width: 20,
+            height: 40,
+        });
+        session.grid.character_cell_size_possibly_changed();
+        for placement in session.grid.kitty_placements() {
+            assert_eq!(placement.variant_key.size, (20, 40));
+            assert_eq!(
+                (placement.display_rect.width, placement.display_rect.height),
+                (20, 40)
+            );
+        }
+        assert!(session
+            .store
+            .borrow()
+            .scaled_variant(survivor_id, survivor_key)
+            .is_some());
+        session.grid.render_full_viewport();
+        assert_eq!(
+            session
+                .grid
+                .render(0, 0, &Style::default())
+                .unwrap()
+                .unwrap()
+                .3,
+            completed
+        );
+        session.feed(b"\x1b[?2026l");
+        let refreshed = session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3;
+        assert_eq!(refreshed.len(), if retransmit { 2 } else { 1 });
+        assert!(refreshed
+            .iter()
+            .all(|chunk| chunk.variant_key.size == (20, 40)));
+        assert!(refreshed
+            .iter()
+            .any(|chunk| chunk.internal_image_id == survivor_id));
+        assert!(session
+            .store
+            .borrow()
+            .scaled_variant(survivor_id, survivor_key)
+            .is_none());
+    }
 }

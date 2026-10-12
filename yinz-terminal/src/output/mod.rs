@@ -667,7 +667,17 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
                 {
                     continue;
                 },
-                Some((host_placement_id, _, _)) => host_placement_id,
+                Some((host_placement_id, _, existing_host_image_id)) => {
+                    if existing_host_image_id != host_image_id {
+                        write!(
+                            out,
+                            "\u{1b}_Ga=d,q=2,d=i,i={},p={}\u{1b}\\",
+                            existing_host_image_id, host_placement_id
+                        )
+                        .context(err_context)?;
+                    }
+                    host_placement_id
+                },
                 None => {
                     let host_placement_id = host_state.next_host_placement_id;
                     host_state.next_host_placement_id += 1;

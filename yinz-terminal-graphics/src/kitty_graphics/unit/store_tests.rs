@@ -492,8 +492,8 @@ fn replacement_credits_obsolete_rasters_and_drops_their_compressed_caches() {
     assert!(store.add_scaled_variant(id, key(4, 4), vec![1; 64]));
     let retained = store.zlib_base64_for(id, Some(key(4, 4))).unwrap().unwrap();
     assert!(store.total_bytes() > 68);
-    let replace = |key, count| HashMap::from([(id, HashMap::from([(key, vec![2; count])]))]);
-    assert!(store.replace_scaled_variants(replace(key(7, 7), 196)));
+    let replace = |key| HashMap::from([(id, HashSet::from([key]))]);
+    assert!(store.replace_scaled_variants(replace(key(7, 7))));
     assert_eq!(store.total_bytes(), 200);
     assert!(store.scaled_variant(id, key(4, 4)).is_none());
     assert!(store
@@ -501,9 +501,9 @@ fn replacement_credits_obsolete_rasters_and_drops_their_compressed_caches() {
         .unwrap()
         .is_none());
     assert!(!retained.is_empty());
-    assert!(!store.replace_scaled_variants(replace(key(8, 8), 256)));
+    assert!(!store.replace_scaled_variants(replace(key(8, 8))));
     assert_eq!(store.total_bytes(), 200);
-    assert_eq!(store.scaled_variant(id, key(7, 7)).unwrap(), &[2; 196]);
+    assert_eq!(store.scaled_variant(id, key(7, 7)).unwrap(), &[0; 196]);
     store.write_frame(id, None, vec![3; 4], 40).unwrap();
     store.set_current_frame(id, 2).unwrap();
     assert_eq!(store.total_bytes(), 8);
@@ -586,4 +586,64 @@ fn placement_transaction_does_not_credit_caches_twice_when_making_room() {
     assert!(store.get(unplaced).is_none());
     assert!(store.get(placed).is_some());
     assert_eq!(store.total_bytes(), 160);
+}
+
+#[test]
+fn frame_writes_invalidate_only_successful_edits_of_the_displayed_frame() {
+    let mut store = KittyImageStore::with_quota(100);
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    store.write_frame(id, None, vec![1; 4], 40).unwrap();
+    for displayed in [1, 2] {
+        store.set_current_frame(id, displayed).unwrap();
+        assert!(store.ensure_scaled_variant(id, key(2, 2)));
+        let original = store.scaled_variant(id, key(2, 2)).unwrap().to_vec();
+        store
+            .write_frame(id, Some(3 - displayed), vec![2; 4], 40)
+            .unwrap();
+        assert_eq!(store.scaled_variant(id, key(2, 2)).unwrap(), original);
+        assert_eq!(store.total_bytes(), 24);
+        assert_eq!(
+            store.write_frame(id, Some(3), vec![3; 4], 40).unwrap(),
+            None
+        );
+        assert!(store
+            .write_frame(id, Some(displayed), vec![3; 101], 40)
+            .is_err());
+        assert_eq!(store.scaled_variant(id, key(2, 2)).unwrap(), original);
+        assert_eq!(store.total_bytes(), 24);
+        store
+            .write_frame(id, Some(displayed), vec![4; 4], 40)
+            .unwrap();
+        assert!(store.scaled_variant(id, key(2, 2)).is_none());
+        assert_eq!(store.total_bytes(), 8);
+        assert!(store.ensure_scaled_variant(id, key(2, 2)));
+        assert_eq!(store.scaled_variant(id, key(2, 2)).unwrap(), &[4; 16]);
+        assert_eq!(store.total_bytes(), 24);
+    }
+}
+
+#[test]
+fn batch_resize_checks_deduplicated_bytes_and_overflow_before_generating_pixels() {
+    let mut store = KittyImageStore::with_quota(20);
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    store.add_placement_ref(id);
+    let keys = HashSet::from([key(2, 2), key(2, 2)]);
+    assert!(store.replace_scaled_variants(HashMap::from([(id, keys)])));
+    assert_eq!(store.total_bytes(), 20);
+    // These sizes would overflow Vec's capacity limit or the byte count if rasterized.
+    for size in [
+        (usize::MAX / 4, 1),
+        (usize::MAX, 2),
+        (usize::MAX / 4 + 1, 1),
+    ] {
+        let oversized = ScaledImageKey { size, ..key(1, 1) };
+        assert!(!store.replace_scaled_variants(HashMap::from([(id, HashSet::from([oversized]))])));
+        assert_eq!(store.total_bytes(), 20);
+        assert_eq!(store.scaled_variant(id, key(2, 2)).unwrap(), &[0; 16]);
+    }
+    // Each raster fits usize, but their combined byte count does not.
+    let keys = [(usize::MAX / 4, 1), (usize::MAX / 4 - 1, 1)]
+        .map(|size| ScaledImageKey { size, ..key(1, 1) });
+    assert!(!store.replace_scaled_variants(HashMap::from([(id, HashSet::from(keys))])));
+    assert_eq!(store.total_bytes(), 20);
 }

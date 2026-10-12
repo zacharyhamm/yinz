@@ -1542,6 +1542,7 @@ impl Grid {
                 placement_uid,
                 internal_id: run.internal_id,
                 display_rect,
+                position_cell_size: cell,
                 source_rect: PixelRect {
                     x: slice_x,
                     y: slice_y as isize,
@@ -1739,6 +1740,7 @@ impl Grid {
                 Self::kitty_pixel_y_from_anchor(&placement.vertical_anchor, cell_height, &starts)
             {
                 placement.display_rect.y = pixel_y;
+                placement.position_cell_size.height = cell_height as usize;
             }
         }
     }
@@ -2485,6 +2487,10 @@ impl Grid {
                 chunk
             })
             .collect();
+        self.kitty_grid.release_completed_frame();
+        if let Some(alternate) = self.alternate_screen_state.as_mut() {
+            alternate.kitty_grid.release_completed_frame();
+        }
         // OutputBuffer emits complete rows. Cache all palette spans of each changed row.
         self.completed_text.resize_with(self.height, Vec::new);
         character_chunks = character_chunks
@@ -4874,6 +4880,13 @@ impl Grid {
         }
     }
     pub fn lock_renders(&mut self) {
+        self.kitty_grid
+            .protect_completed_frame(&self.completed_kitty);
+        if let Some(alternate) = self.alternate_screen_state.as_mut() {
+            alternate
+                .kitty_grid
+                .protect_completed_frame(&self.completed_kitty);
+        }
         self.lock_renders = true;
     }
     pub fn unlock_renders(&mut self) {

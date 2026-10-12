@@ -38,6 +38,8 @@ pub struct KittyPlacement {
     pub placement_uid: u64,
     pub internal_id: InternalImageId,
     pub display_rect: PixelRect,
+    /// Each axis can be reprojected independently while a raster resize is pending.
+    pub position_cell_size: SizeInPixels,
     pub source_rect: PixelRect,
     pub emit_x: usize,
     pub emit_y: usize,
@@ -191,6 +193,7 @@ pub struct KittyGrid {
     split_rows: u64,
     commands_handled: u64,
     previous_cell_size: Option<SizeInPixels>,
+    completed_frame_keys: HashSet<(InternalImageId, ScaledImageKey)>,
     rows_below_the_viewport: Option<KittyRowsBelowTheViewport>,
 }
 
@@ -274,6 +277,7 @@ impl KittyGrid {
             split_rows: 0,
             commands_handled: 0,
             previous_cell_size,
+            completed_frame_keys: HashSet::new(),
             rows_below_the_viewport: None,
         }
     }
@@ -298,6 +302,34 @@ impl KittyGrid {
     pub fn placements_mut(&mut self) -> &mut [KittyPlacement] {
         &mut self.placements
     }
+    pub fn protect_completed_frame(&mut self, chunks: &[KittyImageChunk]) {
+        let owned: HashSet<_> = self.image_ids.values().copied().collect();
+        self.completed_frame_keys.extend(
+            chunks
+                .iter()
+                .filter(|chunk| {
+                    chunk.scaled_px.is_some() && owned.contains(&chunk.internal_image_id)
+                })
+                .map(|chunk| (chunk.internal_image_id, chunk.variant_key)),
+        );
+        let mut store = self.kitty_image_store.borrow_mut();
+        for &(id, _) in &self.completed_frame_keys {
+            store.protect_completed_frame_image(id);
+        }
+    }
+    pub fn release_completed_frame(&mut self) {
+        let affected: HashSet<_> = self
+            .completed_frame_keys
+            .drain()
+            .map(|(id, _)| id)
+            .collect();
+        let mut store = self.kitty_image_store.borrow_mut();
+        for &id in &affected {
+            store.release_completed_frame_image(id);
+        }
+        drop(store);
+        self.reclaim_scaled_variants(affected);
+    }
     fn live_scaled_keys(
         &self,
         internal: InternalImageId,
@@ -315,6 +347,12 @@ impl KittyGrid {
                         p.internal_id == internal && p.pending_geometry.is_none() && keep_virtual(p)
                     })
                     .map(VirtualPlacement::variant_key),
+            )
+            .chain(
+                self.completed_frame_keys
+                    .iter()
+                    .filter(|(id, _)| *id == internal)
+                    .map(|(_, key)| *key),
             )
             .collect()
     }
@@ -807,6 +845,7 @@ impl KittyGrid {
             placement_uid,
             internal_id: internal,
             display_rect,
+            position_cell_size: cell,
             source_rect: PixelRect {
                 x: source_x,
                 y: source_y as isize,
@@ -1685,22 +1724,30 @@ impl KittyGrid {
         if self.previous_cell_size == Some(cell) {
             return;
         }
-        let previous = self.previous_cell_size.unwrap_or(cell);
         let mut placements = self.placements.clone();
         let mut virtual_placements = self.virtual_placements.clone();
-        let mut keys: HashMap<InternalImageId, Vec<ScaledImageKey>> = HashMap::new();
+        let mut keys: HashMap<InternalImageId, HashSet<ScaledImageKey>> = HashMap::new();
         for placement in &mut placements {
             if placement.is_placeholder {
                 continue;
             }
-            placement.display_rect.x = placement.display_rect.x / previous.width * cell.width;
-            placement.display_rect.y =
-                placement.display_rect.y / previous.height as isize * cell.height as isize;
+            let previous = placement.position_cell_size;
+            if previous.width != cell.width {
+                placement.display_rect.x = placement.display_rect.x / previous.width * cell.width;
+            }
+            if previous.height != cell.height {
+                placement.display_rect.y =
+                    placement.display_rect.y / previous.height as isize * cell.height as isize;
+            }
+            placement.position_cell_size = cell;
             if placement.scaled_px.is_some() {
-                let size = (
-                    placement.dest_cells.0 as usize * cell.width,
-                    placement.dest_cells.1 as usize * cell.height,
-                );
+                let (Some(width), Some(height)) = (
+                    (placement.dest_cells.0 as usize).checked_mul(cell.width),
+                    (placement.dest_cells.1 as usize).checked_mul(cell.height),
+                ) else {
+                    return;
+                };
+                let size = (width, height);
                 placement.variant_key = ScaledImageKey {
                     source: placement.source_rect,
                     size,
@@ -1712,7 +1759,7 @@ impl KittyGrid {
                 placement.emit_y = 0;
                 keys.entry(placement.internal_id)
                     .or_default()
-                    .push(placement.variant_key);
+                    .insert(placement.variant_key);
             }
         }
         for placement in &mut virtual_placements {
@@ -1722,53 +1769,29 @@ impl KittyGrid {
                 placement.columns = columns as u16;
                 placement.rows = rows as u16;
             }
-            placement.fitted_px = fit_into_box(
-                (width, height),
-                (
-                    placement.columns as usize * cell.width,
-                    placement.rows as usize * cell.height,
-                ),
-            );
+            let (Some(box_width), Some(box_height)) = (
+                (placement.columns as usize).checked_mul(cell.width),
+                (placement.rows as usize).checked_mul(cell.height),
+            ) else {
+                return;
+            };
+            placement.fitted_px = fit_into_box((width, height), (box_width, box_height));
             keys.entry(placement.internal_id)
                 .or_default()
-                .push(placement.variant_key());
+                .insert(placement.variant_key());
         }
-        let mut replacements = HashMap::new();
         {
             let store = self.kitty_image_store.borrow();
-            for (id, keys) in keys {
-                let Some(image) = store.get(id) else {
-                    return;
-                };
-                let mut variants = HashMap::new();
-                for key in keys {
-                    variants.entry(key).or_insert_with(|| {
-                        let source = key.source;
-                        let cropped = crop_rgba(
-                            image.displayed_rgba(),
-                            image.width as usize,
-                            image.height as usize,
-                            source.x,
-                            source.y as usize,
-                            source.width,
-                            source.height,
-                        );
-                        scale_rgba(
-                            &cropped,
-                            source.width,
-                            source.height,
-                            key.size.0,
-                            key.size.1,
-                        )
-                    });
+            for &(id, key) in &self.completed_frame_keys {
+                if store.get(id).is_some() {
+                    keys.entry(id).or_default().insert(key);
                 }
-                replacements.insert(id, variants);
             }
         }
         if !self
             .kitty_image_store
             .borrow_mut()
-            .replace_scaled_variants(replacements)
+            .replace_scaled_variants(keys)
         {
             return;
         }
@@ -1781,6 +1804,7 @@ impl KittyGrid {
     /// Release this grid's namespace when it is permanently discarded. Clones are snapshots,
     /// so ownership cleanup is explicit rather than an implicit `Drop` implementation.
     pub fn teardown(&mut self) {
+        self.release_completed_frame();
         self.clear_all_placements();
         self.remove_virtual_placements(|_| true);
         let mut store = self.kitty_image_store.borrow_mut();

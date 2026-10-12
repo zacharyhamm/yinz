@@ -33,6 +33,10 @@ fn test_placement(y: isize, height: usize) -> KittyPlacement {
         placement_id: 0,
         placement_uid: 0,
         internal_id: 1,
+        position_cell_size: SizeInPixels {
+            width: 10,
+            height: 20,
+        },
         display_rect: PixelRect {
             x: 0,
             y,

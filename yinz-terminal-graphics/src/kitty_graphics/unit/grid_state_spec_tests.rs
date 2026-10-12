@@ -1035,3 +1035,155 @@ fn relative_delete_cascade_reclaims_the_child_variant_without_freeing_its_image(
     assert_eq!(model.store.borrow().total_bytes(), 32);
     assert_eq!(model.image_count(), 1);
 }
+
+#[test]
+fn resize_retry_uses_each_placements_position_basis() {
+    let mut model = Model::new();
+    *model.store.borrow_mut() = KittyImageStore::with_quota(32 + 12800 + 3200);
+    model.ok("a=t,f=32,s=4,v=2,i=1", &rgba_block(4, 2));
+    model.at_cell(2, 2).ok("a=p,i=1,p=1,c=2,r=2", &[]);
+    model.ok("a=p,i=1,p=2", &[]);
+    model.ok("a=T,f=32,s=50,v=20,i=2", &rgba_block(50, 20));
+    let target = SizeInPixels {
+        width: 20,
+        height: 40,
+    };
+    *model.kitty.character_cell_size.borrow_mut() = Some(target);
+    for _ in 0..2 {
+        model.kitty.character_cell_size_possibly_changed();
+        assert_eq!(model.kitty.placements()[0].display_rect.x, 20);
+        assert_eq!(model.kitty.previous_cell_size, Some(CELL));
+    }
+    model.cursor_px = (40, 80);
+    model.ok("a=p,i=1,p=3,c=1,r=1", &[]);
+    model.ok("a=p,i=1,p=4,X=3,Y=7", &[]);
+    let before = model.kitty.placements().to_vec();
+    for _ in 0..2 {
+        model.kitty.character_cell_size_possibly_changed();
+        assert_eq!(model.kitty.placements(), before);
+    }
+    model.ok("a=d,d=I,i=2", &[]);
+    model.kitty.character_cell_size_possibly_changed();
+    for placement in model.kitty.placements() {
+        let expected = if placement.placement_id == 4 {
+            (43, 87)
+        } else {
+            (40, 80)
+        };
+        assert_eq!(
+            (placement.display_rect.x, placement.display_rect.y),
+            expected
+        );
+        assert_eq!(placement.position_cell_size, target);
+    }
+    assert_eq!(model.kitty.previous_cell_size, Some(target));
+    *model.kitty.character_cell_size.borrow_mut() = Some(CELL);
+    model.kitty.character_cell_size_possibly_changed();
+    for placement in model.kitty.placements() {
+        assert_eq!(
+            (placement.display_rect.x, placement.display_rect.y),
+            (20, 40)
+        );
+        assert_eq!(placement.position_cell_size, CELL);
+    }
+}
+
+#[test]
+fn resize_accounts_for_completed_rasters_until_the_frame_is_released() {
+    for quota in [3232, 4032] {
+        let mut model = Model::new();
+        *model.store.borrow_mut() = KittyImageStore::with_quota(quota);
+        model.ok("a=T,f=32,s=4,v=2,i=1,p=1,c=1,r=1", &rgba_block(4, 2));
+        let completed = model.kitty.viewport_kitty_chunks(10, 0, 20, 0, 0);
+        let id = completed[0].internal_image_id;
+        let key = completed[0].variant_key;
+        let old = model.kitty.placements().to_vec();
+        model.kitty.protect_completed_frame(&completed);
+        *model.kitty.character_cell_size.borrow_mut() = Some(SizeInPixels {
+            width: 20,
+            height: 40,
+        });
+        for _ in 0..2 {
+            model.kitty.character_cell_size_possibly_changed();
+            assert!(model.store.borrow().scaled_variant(id, key).is_some());
+            if quota == 3232 {
+                assert_eq!(model.kitty.placements(), old);
+                assert_eq!(model.store.borrow().total_bytes(), 832);
+            } else {
+                assert_eq!(model.store.borrow().total_bytes(), 4032);
+                assert_eq!(model.kitty.placements()[0].variant_key.size, (20, 40));
+            }
+        }
+        model.kitty.release_completed_frame();
+        model.kitty.character_cell_size_possibly_changed();
+        assert_eq!(model.kitty.placements()[0].variant_key.size, (20, 40));
+        assert!(model.store.borrow().scaled_variant(id, key).is_none());
+        assert_eq!(model.store.borrow().total_bytes(), 3232);
+        model.kitty.teardown();
+        assert_eq!(model.store.borrow().total_bytes(), 0);
+    }
+}
+
+#[test]
+fn editing_and_composing_the_displayed_frame_refreshes_the_same_crop() {
+    // Spec: "If an image with the same id and placement id already exists, it must be replaced."
+    for displayed in [1, 2] {
+        for compose in [false, true] {
+            let mut model = Model::new();
+            model.ok("a=t,f=32,s=2,v=1,i=1", &[255; 8]);
+            model.ok("a=f,f=32,s=2,v=1,i=1", &[255; 8]);
+            model.ok(&format!("a=a,i=1,c={displayed}"), &[]);
+            let placement = "a=p,i=1,p=1,x=1,w=1,h=1,c=1,r=1";
+            model.ok(placement, &[]);
+            let id = model.kitty.placements()[0].internal_id;
+            let key = model.kitty.placements()[0].variant_key;
+            model
+                .store
+                .borrow_mut()
+                .zlib_base64_for(id, Some(key))
+                .unwrap();
+            let pixels = [10, 20, 30, 255].repeat(2);
+            if compose {
+                model.ok(
+                    &format!("a=f,f=32,s=2,v=1,i=1,r={}", 3 - displayed),
+                    &pixels,
+                );
+                assert!(model.store.borrow().scaled_variant(id, key).is_some());
+                model.ok(&format!("a=c,i=1,r={},c={displayed}", 3 - displayed), &[]);
+            } else {
+                model.ok(&format!("a=f,f=32,s=2,v=1,i=1,r={displayed}"), &pixels);
+            }
+            assert!(model.store.borrow().scaled_variant(id, key).is_none());
+            assert_eq!(model.store.borrow().total_bytes(), 16);
+            model.ok(placement, &[]);
+            assert_eq!(model.kitty.placements()[0].variant_key, key);
+            assert_eq!(
+                model.store.borrow().scaled_variant(id, key).unwrap(),
+                [10, 20, 30, 255].repeat(200)
+            );
+            assert_eq!(model.store.borrow().total_bytes(), 816);
+        }
+    }
+}
+
+#[test]
+fn resize_deduplicates_shared_rasters_and_rejects_unallocatable_geometry() {
+    let mut model = Model::new();
+    *model.store.borrow_mut() = KittyImageStore::with_quota(4 + 12 * 24 * 4);
+    model.ok("a=T,f=32,s=1,v=1,i=1,p=1,c=1,r=1", &[255; 4]);
+    model.ok("a=p,i=1,p=2,c=1,r=1", &[]);
+    *model.kitty.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 12,
+        height: 24,
+    });
+    model.kitty.character_cell_size_possibly_changed();
+    assert_eq!(model.store.borrow().total_bytes(), 4 + 12 * 24 * 4);
+    let before = model.kitty.placements().to_vec();
+    assert_eq!(before[0].variant_key, before[1].variant_key);
+    for width in [usize::MAX / 4, usize::MAX] {
+        *model.kitty.character_cell_size.borrow_mut() = Some(SizeInPixels { width, height: 1 });
+        model.kitty.character_cell_size_possibly_changed();
+        assert_eq!(model.kitty.placements(), before);
+        assert_eq!(model.store.borrow().total_bytes(), 4 + 12 * 24 * 4);
+    }
+}

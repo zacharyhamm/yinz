@@ -96,6 +96,8 @@ pub struct KittyImageStore {
     quota_bytes: usize,
     total_bytes: usize,
     next_placement_uid: u64,
+    // A locked frame can still display an image after its last placement was deleted.
+    completed_frame_images: HashSet<InternalImageId>,
 }
 
 impl Default for KittyImageStore {
@@ -113,6 +115,7 @@ impl KittyImageStore {
             quota_bytes,
             total_bytes: 0,
             next_placement_uid: 1,
+            completed_frame_images: HashSet::new(),
         }
     }
     pub fn next_placement_uid(&mut self) -> u64 {
@@ -254,7 +257,10 @@ impl KittyImageStore {
                 .images
                 .iter()
                 .map(|(other_id, stored)| {
-                    if *other_id != id && stored.refcount == 0 {
+                    if *other_id != id
+                        && stored.refcount == 0
+                        && !self.completed_frame_images.contains(other_id)
+                    {
                         Self::stored_image_bytes(stored)
                     } else {
                         Self::base64_cache_bytes(stored)
@@ -397,10 +403,10 @@ impl KittyImageStore {
     /// Replace a grid's rasters together, crediting obsolete pixels before checking the quota.
     pub(super) fn replace_scaled_variants(
         &mut self,
-        replacements: HashMap<InternalImageId, HashMap<ScaledImageKey, Vec<u8>>>,
+        replacements: HashMap<InternalImageId, HashSet<ScaledImageKey>>,
     ) -> bool {
         let mut reclaimed = 0;
-        let mut incoming = 0;
+        let mut incoming = 0usize;
         for (id, variants) in &replacements {
             let Some(stored) = self.images.get(id) else {
                 return false;
@@ -411,13 +417,37 @@ impl KittyImageStore {
                 .values()
                 .map(Vec::len)
                 .sum::<usize>();
-            incoming += variants.values().map(Vec::len).sum::<usize>();
+            for key in variants {
+                let Some(bytes) = key
+                    .size
+                    .0
+                    .checked_mul(key.size.1)
+                    .and_then(|n| n.checked_mul(4))
+                else {
+                    return false;
+                };
+                let Some(total) = incoming.checked_add(bytes) else {
+                    return false;
+                };
+                incoming = total;
+            }
         }
-        // All affected images have placement references, so make_room cannot evict them.
+        // Affected images have placement references or completed-frame protection.
         if !self.make_room(incoming.saturating_sub(reclaimed), None) {
             return false;
         }
-        for (id, variants) in replacements {
+        for (id, keys) in replacements {
+            let mut variants = HashMap::new();
+            for key in keys {
+                let pixels = self
+                    .images
+                    .get_mut(&id)
+                    .and_then(|stored| stored.image.scaled_variants.remove(&key))
+                    .or_else(|| self.scaled_variant_pixels(id, key));
+                if let Some(pixels) = pixels {
+                    variants.insert(key, pixels);
+                }
+            }
             self.remove_all_base64_caches(id);
             if let Some(stored) = self.images.get_mut(&id) {
                 stored.image.scaled_variants = variants;
@@ -485,6 +515,15 @@ impl KittyImageStore {
             },
         };
         self.total_bytes = self.total_bytes - old_len + new_len;
+        if stored.image.current_frame == frame_number as usize {
+            self.total_bytes -= stored
+                .image
+                .scaled_variants
+                .values()
+                .map(Vec::len)
+                .sum::<usize>();
+            stored.image.scaled_variants.clear();
+        }
         let lru_stamp = self.bump_lru();
         if let Some(stored) = self.images.get_mut(&id) {
             stored.lru_stamp = lru_stamp;
@@ -624,12 +663,19 @@ impl KittyImageStore {
         Self::stored_image_data_bytes(stored) + Self::base64_cache_bytes(stored)
     }
     pub(super) fn remove_entry(&mut self, id: InternalImageId) {
+        self.completed_frame_images.remove(&id);
         if let Some(stored) = self.images.remove(&id) {
             self.total_bytes -= Self::stored_image_bytes(&stored);
         }
     }
     fn has_room(&self, incoming_bytes: usize) -> bool {
         incoming_bytes <= self.quota_bytes.saturating_sub(self.total_bytes)
+    }
+    pub(super) fn protect_completed_frame_image(&mut self, id: InternalImageId) {
+        self.completed_frame_images.insert(id);
+    }
+    pub(super) fn release_completed_frame_image(&mut self, id: InternalImageId) {
+        self.completed_frame_images.remove(&id);
     }
     fn remove_base64_cache(&mut self, id: InternalImageId, variant: Option<ScaledImageKey>) {
         let removed = self
@@ -679,7 +725,11 @@ impl KittyImageStore {
         let reclaimable: usize = self
             .images
             .iter()
-            .filter(|(id, stored)| stored.refcount == 0 && Some(**id) != protected)
+            .filter(|(id, stored)| {
+                stored.refcount == 0
+                    && Some(**id) != protected
+                    && !self.completed_frame_images.contains(id)
+            })
             .map(|(_, stored)| Self::stored_image_bytes(stored))
             .sum();
         let bytes_needed = incoming_bytes - self.quota_bytes.saturating_sub(self.total_bytes);
@@ -690,7 +740,11 @@ impl KittyImageStore {
             let candidate = self
                 .images
                 .iter()
-                .filter(|(id, stored)| stored.refcount == 0 && Some(**id) != protected)
+                .filter(|(id, stored)| {
+                    stored.refcount == 0
+                        && Some(**id) != protected
+                        && !self.completed_frame_images.contains(id)
+                })
                 .min_by_key(|(_, stored)| stored.lru_stamp)
                 .map(|(id, _)| *id);
             match candidate {
