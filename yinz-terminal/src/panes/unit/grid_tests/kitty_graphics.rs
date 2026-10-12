@@ -2222,6 +2222,55 @@ fn completed_crop_protection_follows_its_alternate_buffer_owner() {
 }
 
 #[test]
+fn unlocked_render_retries_resize_deferred_by_completed_frame() {
+    let quota = 3232;
+    let mut session = KittySession::with_quota(10, 20, quota);
+    session.ok("a=T,f=32,s=4,v=2,i=1,p=1,c=1,r=1,C=1", &[255; 32]);
+    let completed = session
+        .grid
+        .render(0, 0, &Style::default())
+        .unwrap()
+        .unwrap()
+        .3;
+    assert_eq!(completed.len(), 1);
+    assert_eq!(completed[0].scaled_px, Some((10, 20)));
+    session.feed(b"\x1b[?2026h");
+    *session.grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 20,
+        height: 40,
+    });
+    // The quota fits the new raster, but not both it and the protected completed raster.
+    session.grid.character_cell_size_possibly_changed();
+    assert_eq!(session.grid.kitty_placements()[0].scaled_px, Some((10, 20)));
+    session.grid.render_full_viewport();
+    assert_eq!(
+        session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3,
+        completed
+    );
+    session.feed(b"\x1b[?2026l");
+    for _ in 0..2 {
+        let refreshed = session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3;
+        assert_eq!(refreshed.len(), 1);
+        assert_eq!(refreshed[0].scaled_px, Some((20, 40)));
+        assert_eq!(
+            (refreshed[0].source_px_width, refreshed[0].source_px_height),
+            (20, 40)
+        );
+        assert!(session.store.borrow().total_bytes() <= quota);
+    }
+}
+
+#[test]
 fn resize_retry_does_not_repeat_vertical_anchor_reprojection() {
     let mut session = KittySession::with_quota(10, 20, 3232);
     session.feed(b"\x1b[3;3H");

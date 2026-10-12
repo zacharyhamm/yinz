@@ -2349,10 +2349,8 @@ impl Grid {
         if let Some(alternate) = self.alternate_screen_state.as_mut() {
             alternate.kitty_grid.release_completed_frame();
         }
-        self.kitty_grid.release_completed_frame();
-        if let Some(alternate) = self.alternate_screen_state.as_mut() {
-            alternate.kitty_grid.release_completed_frame();
-        }
+        // Retry resizes that could not fit alongside the protected completed frame.
+        self.kitty_grid.character_cell_size_possibly_changed();
         let raw_vte_output = String::new();
 
         let (mut character_chunks, sixel_image_chunks, kitty_image_chunks) =
