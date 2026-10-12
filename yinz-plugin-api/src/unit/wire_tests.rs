@@ -223,3 +223,106 @@ fn picker_and_instance_info_commands_round_trip() {
         );
     }
 }
+
+#[test]
+fn keybind_events_discard_only_malformed_bindings() {
+    use crate::event::{ProtobufInputMode, ProtobufInputModeKeybinds, ProtobufKeyBind};
+    use crate::key::{ProtobufKey, ProtobufMainKey};
+    use yinz_types::data::{InputMode, ModeInfo};
+    use yinz_types::keys::{BareKey, KeyWithModifier};
+
+    let key = |c| KeyWithModifier::new(BareKey::Char(c));
+    let binding = |c, actions: Vec<Action>| ProtobufKeyBind {
+        key: Some(key(c).try_into().unwrap()),
+        action: actions.into_iter().map(|a| a.try_into().unwrap()).collect(),
+    };
+    let mut mixed_actions = binding('b', vec![Action::Quit, Action::NoOp]);
+    mixed_actions.action.insert(
+        1,
+        ProtobufAction {
+            name: i32::MAX,
+            optional_payload: None,
+        },
+    );
+    let invalid_keys = [
+        None,
+        Some(ProtobufKey::default()),
+        Some(ProtobufKey {
+            main_key: Some(ProtobufMainKey::Key(i32::MAX)),
+            ..Default::default()
+        }),
+        Some(ProtobufKey {
+            main_key: Some(ProtobufMainKey::Char(-1)),
+            ..Default::default()
+        }),
+    ];
+    for invalid_key in invalid_keys {
+        let wire_keybinds = vec![
+            ProtobufInputModeKeybinds {
+                mode: ProtobufInputMode::Normal as i32,
+                key_bind: vec![
+                    binding('a', vec![Action::Quit]),
+                    ProtobufKeyBind {
+                        key: invalid_key,
+                        action: vec![],
+                    },
+                    mixed_actions.clone(),
+                    binding('c', vec![]),
+                ],
+            },
+            ProtobufInputModeKeybinds {
+                mode: i32::MAX,
+                key_bind: vec![binding('d', vec![])],
+            },
+            ProtobufInputModeKeybinds {
+                mode: ProtobufInputMode::Locked as i32,
+                key_bind: vec![],
+            },
+            ProtobufInputModeKeybinds {
+                mode: ProtobufInputMode::Pane as i32,
+                key_bind: vec![binding('e', vec![Action::NoOp])],
+            },
+        ];
+        let expected = vec![
+            (
+                InputMode::Normal,
+                vec![
+                    (key('a'), vec![Action::Quit]),
+                    (key('b'), vec![Action::Quit, Action::NoOp]),
+                    (key('c'), vec![]),
+                ],
+            ),
+            (InputMode::Locked, vec![]),
+            (InputMode::Pane, vec![(key('e'), vec![Action::NoOp])]),
+        ];
+        for event in [
+            Event::InitialKeybinds(vec![]),
+            Event::ModeUpdate(ModeInfo::default()),
+        ] {
+            let mut wire = ProtobufEvent::try_from(event).unwrap();
+            match wire.payload.as_mut().unwrap() {
+                ProtobufEventPayload::InitialKeybindsPayload(payload) => {
+                    payload.keybinds = wire_keybinds.clone()
+                },
+                ProtobufEventPayload::ModeUpdatePayload(payload) => {
+                    payload.keybinds = wire_keybinds.clone()
+                },
+                _ => unreachable!(),
+            }
+            let wire = ProtobufEvent::decode(wire.encode_to_vec().as_slice()).unwrap();
+            let decoded = Event::try_from(wire).unwrap();
+            let actual = match &decoded {
+                Event::InitialKeybinds(keybinds) => keybinds,
+                Event::ModeUpdate(mode_info) => &mode_info.keybinds,
+                _ => unreachable!(),
+            };
+            assert_eq!(actual, &expected);
+            let wire = ProtobufEvent::try_from(decoded.clone()).unwrap();
+            assert_eq!(
+                Event::try_from(ProtobufEvent::decode(wire.encode_to_vec().as_slice()).unwrap())
+                    .unwrap(),
+                decoded
+            );
+        }
+    }
+}
