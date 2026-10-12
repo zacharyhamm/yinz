@@ -58,7 +58,7 @@ pub fn print_table_with_coordinates(
     let width = width.map(|w| w.to_string()).unwrap_or_default();
     let height = height.map(|h| h.to_string()).unwrap_or_default();
     print!(
-        "{UI_COMPONENT_DCS_PREFIX}table;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}table;{}/{}/{}/{};{}",
         x,
         y,
         width,
@@ -81,7 +81,7 @@ pub fn serialize_table_with_coordinates(
     let width = width.map(|w| w.to_string()).unwrap_or_default();
     let height = height.map(|h| h.to_string()).unwrap_or_default();
     format!(
-        "{UI_COMPONENT_DCS_PREFIX}table;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}table;{}/{}/{}/{};{}",
         x,
         y,
         width,
@@ -89,3 +89,7 @@ pub fn serialize_table_with_coordinates(
         table.serialize()
     )
 }
+
+#[cfg(test)]
+#[path = "unit/table_tests.rs"]
+mod tests;
