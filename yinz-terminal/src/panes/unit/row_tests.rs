@@ -550,3 +550,108 @@ fn row_caches_survive_any_sequence_of_mutations(tc: hegel::TestCase) {
     };
     hegel::stateful::run(model, tc);
 }
+
+#[test]
+fn erase_line_end_uses_display_columns() {
+    for (content, from, to, expected) in [
+        ("ab你cd", 2, 6, "ab    "),
+        ("ab你cd", 3, 6, "ab    "),
+        ("ab你c好", 3, 8, "ab      "),
+        ("ab你c好", 5, 8, "ab你c   "),
+        ("你好你好", 3, 8, "你      "),
+        ("你好你好", 2, 8, "你      "),
+        ("你好", 0, 6, "      "),
+        ("ab", 4, 6, "ab    "),
+    ] {
+        let mut row = row_of(content);
+        row.width_cached();
+        row.replace_and_pad_end(from, to, EMPTY_TERMINAL_CHARACTER);
+        assert_eq!(text_of(&row), expected, "{content:?}, {from}");
+        assert_eq!(row.width(), to);
+        assert_caches_are_honest(&mut row, content);
+    }
+}
+
+#[test]
+fn erase_line_beginning_uses_display_columns() {
+    for (content, to, expected, width) in [
+        ("ab你c好", 2, "    c好", 7),
+        ("ab你c好", 3, "    c好", 7),
+        ("ab你c好", 4, "     好", 7),
+        ("你好你好", 2, "    你好", 8),
+        ("你好你好", 3, "    你好", 8),
+        ("ab", 0, " b", 2),
+        ("ab", 4, "     ", 5),
+    ] {
+        let mut row = row_of(content);
+        row.width_cached();
+        row.replace_and_pad_beginning(to, EMPTY_TERMINAL_CHARACTER);
+        assert_eq!(text_of(&row), expected, "{content:?}, {to}");
+        assert_eq!(row.width(), width);
+        assert_caches_are_honest(&mut row, content);
+    }
+}
+
+#[test]
+fn erase_line_end_preserves_gap_background_and_metadata() {
+    use crate::panes::terminal_character::AnsiCode;
+    for content in ["ab", "ab你好"] {
+        let mut row = row_of(content);
+        row.bg_color = Some(AnsiCode::ColorIndex(2));
+        let mut erase = EMPTY_TERMINAL_CHARACTER;
+        erase
+            .styles
+            .update(|s| s.background = Some(AnsiCode::ColorIndex(1)));
+        for column in [1, 3, 5] {
+            row.add_osc133_marker(column, Osc133MarkerKind::Prompt);
+            row.begin_placeholder_marks(column);
+        }
+        row.replace_and_pad_end(3, 8, erase.clone());
+        assert_eq!(text_of(&row), "ab      ");
+        assert_eq!(
+            row.columns[2].styles.background,
+            Some(AnsiCode::ColorIndex(2))
+        );
+        assert!(row.columns.iter().skip(3).all(|c| *c == erase));
+        assert_eq!(
+            row.osc133_markers
+                .iter()
+                .map(|m| m.column)
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(
+            row.placeholder_marks
+                .iter()
+                .map(|m| m.column)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_caches_are_honest(&mut row, content);
+    }
+}
+
+#[test]
+fn erase_line_beginning_retains_metadata_after_wide_character() {
+    let mut row = row_of("ab你好");
+    for column in [2, 3, 4, 5] {
+        row.add_osc133_marker(column, Osc133MarkerKind::Prompt);
+        row.begin_placeholder_marks(column);
+    }
+    row.replace_and_pad_beginning(3, EMPTY_TERMINAL_CHARACTER);
+    assert_eq!(text_of(&row), "    好");
+    assert_eq!(
+        row.osc133_markers
+            .iter()
+            .map(|m| m.column)
+            .collect::<Vec<_>>(),
+        vec![4, 5]
+    );
+    assert_eq!(
+        row.placeholder_marks
+            .iter()
+            .map(|m| m.column)
+            .collect::<Vec<_>>(),
+        vec![4, 5]
+    );
+}
