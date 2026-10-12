@@ -32,7 +32,7 @@ themes {
         }
         text_selected {
             base "#0f1817"
-            background "#717cb4"
+            background "#cccccc"
             emphasis_0 "#1b150b"
             emphasis_1 "#0f171b"
             emphasis_2 "#13170e"

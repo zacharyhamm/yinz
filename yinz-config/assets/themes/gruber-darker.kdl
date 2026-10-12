@@ -30,12 +30,12 @@ themes {
             emphasis_3 255 221 51
         }
         text_selected {
-            base 228 228 239
-            background 40 40 40
-            emphasis_0 255 255 255
-            emphasis_1 255 221 51
-            emphasis_2 115 201 54
-            emphasis_3 150 166 200
+            base 24 24 24
+            background 228 228 239
+            emphasis_0 "#666666"
+            emphasis_1 "#766618"
+            emphasis_2 "#41721f"
+            emphasis_3 "#5d677c"
         }
         ribbon_unselected {
             base 228 228 239

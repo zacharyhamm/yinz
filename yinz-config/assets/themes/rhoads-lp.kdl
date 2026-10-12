@@ -31,12 +31,12 @@ themes {
             emphasis_3 "#8761ae"
         }
         text_selected {
-            base "#685219"
-            background "#e0c878"
-            emphasis_0 "#625426"
-            emphasis_1 "#215d5d"
-            emphasis_2 "#3e5d33"
-            emphasis_3 "#644881"
+            base "#fdf7e8"
+            background "#2b2618"
+            emphasis_0 "#968d6e"
+            emphasis_1 "#6c9494"
+            emphasis_2 "#7e9377"
+            emphasis_3 "#9885ab"
         }
         table_cell_unselected {
             base "#2b2618"
