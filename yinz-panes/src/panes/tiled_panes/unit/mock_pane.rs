@@ -95,6 +95,7 @@ pub fn with_override(base: PaneSpec, geom_override: PaneGeom) -> PaneSpec {
 }
 
 pub struct MockPane {
+    selectable: bool,
     pid: PaneId,
     geom: PaneGeom,
     geom_override: Option<PaneGeom>,
@@ -103,6 +104,7 @@ pub struct MockPane {
 impl MockPane {
     pub fn from_spec(spec: PaneSpec) -> Self {
         MockPane {
+            selectable: true,
             pid: spec.id,
             geom: spec.geom(),
             geom_override: spec.geom_override,
@@ -208,10 +210,10 @@ impl Pane for MockPane {
         unimplemented!()
     }
     fn selectable(&self) -> bool {
-        unimplemented!()
+        self.selectable
     }
-    fn set_selectable(&mut self, _selectable: bool) {
-        unimplemented!()
+    fn set_selectable(&mut self, selectable: bool) {
+        self.selectable = selectable;
     }
     fn render(
         &mut self,

@@ -134,3 +134,140 @@ fn hole_filling_characterization() {
         }
     }
 }
+
+#[test]
+fn rejected_directional_stacking_does_not_change_any_geometry() {
+    for direction in [
+        Direction::Up,
+        Direction::Down,
+        Direction::Left,
+        Direction::Right,
+    ] {
+        for nonselectable in [2, 3] {
+            // Unequal neighbors require hole filling, which must not run before validation.
+            let mut specs = [
+                spec(1, 0, 0, dim_pct(100.0, 100), dim_pct(20.0, 20)),
+                spec(2, 0, 20, dim_pct(50.0, 50), dim_pct(30.0, 30)),
+                spec(3, 50, 20, dim_pct(50.0, 50), dim_pct(50.0, 50)),
+            ];
+            if matches!(direction, Direction::Up | Direction::Left) {
+                for pane in &mut specs {
+                    pane.y = 70 - pane.y - pane.rows.as_usize();
+                }
+            }
+            let mut panes: HashMap<_, Box<dyn Pane>> = specs
+                .iter()
+                .map(|s| {
+                    let mut pane = MockPane::from_spec(oriented(*s, direction));
+                    pane.set_selectable(
+                        s.id != PaneId::Terminal(crate::TerminalId::new(nonselectable)),
+                    );
+                    (s.id, Box::new(pane) as Box<dyn Pane>)
+                })
+                .collect();
+            let mut grid = TiledPaneGrid::new(
+                &mut panes,
+                &HashSet::new(),
+                Viewport::default(),
+                Viewport::default(),
+            );
+            let root = specs[0].id;
+            let result = match direction {
+                Direction::Up => grid.stack_pane_up(&root),
+                Direction::Down => grid.stack_pane_down(&root),
+                Direction::Left => grid.stack_pane_left(&root),
+                Direction::Right => grid.stack_pane_right(&root),
+            };
+            assert!(result.is_none());
+            drop(grid);
+            for pane in specs {
+                assert_eq!(
+                    panes[&pane.id].position_and_size(),
+                    oriented(pane, direction).geom(),
+                    "{direction:?}, nonselectable {nonselectable}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn stack_without_flexible_member_uses_complete_height_for_borders() {
+    let mut first = spec(1, 0, 3, dim_pct(100.0, 80), Dimension::fixed(1));
+    first.stacked = Some(9);
+    let mut last = spec(2, 0, 4, dim_pct(100.0, 80), Dimension::fixed(2));
+    last.stacked = Some(9);
+    let mut panes: HashMap<_, Box<dyn Pane>> = [first, last]
+        .into_iter()
+        .map(|s| (s.id, Box::new(MockPane::from_spec(s)) as Box<dyn Pane>))
+        .collect();
+    let grid = TiledPaneGrid::new(
+        &mut panes,
+        &HashSet::new(),
+        Viewport::default(),
+        Viewport::default(),
+    );
+    let geom = grid.get_pane_geom(&last.id).unwrap();
+    assert_eq!(geom.y, 3);
+    assert!(geom.rows.is_fixed());
+    assert_eq!(geom.rows.as_usize(), 3);
+    assert_eq!(
+        grid.horizontal_borders(&[first.id, last.id]),
+        HashSet::from([3, 6])
+    );
+    assert!(grid.pane_is_between_horizontal_borders(&last.id, 3, 6));
+    assert!(!grid.pane_is_between_horizontal_borders(&last.id, 4, 6));
+}
+
+#[test]
+fn missing_geometry_is_ignored_by_width_reduction_and_border_checks() {
+    let mut panes = HashMap::new();
+    let mut grid = TiledPaneGrid::new(
+        &mut panes,
+        &HashSet::new(),
+        Viewport::default(),
+        Viewport::default(),
+    );
+    let missing = PaneId::Terminal(crate::TerminalId::new(99));
+    grid.reduce_pane_width(&missing, 5.0);
+    assert!(!grid.pane_is_between_horizontal_borders(&missing, 0, 20));
+    assert!(!grid.pane_is_between_vertical_borders(&missing, 0, 80));
+    assert!(grid.horizontal_borders(&[missing]).is_empty());
+    assert!(grid.find_panes_to_grow(missing).unwrap().is_none());
+    assert!(!grid.fill_space_over_pane(missing));
+}
+
+#[test]
+fn closing_with_unavailable_neighbor_geometry_removes_only_the_grid_reference() {
+    let closing = spec(1, 0, 0, dim_pct(50.0, 40), dim_pct(100.0, 20));
+    let mut neighbor = spec(2, 40, 0, dim_pct(50.0, 40), dim_pct(100.0, 20));
+    // The override refers to a stack that has no members in the base layout.
+    neighbor.geom_override = Some(PaneGeom {
+        stacked: Some(9),
+        ..neighbor.geom()
+    });
+    let mut panes: HashMap<_, Box<dyn Pane>> = [closing, neighbor]
+        .into_iter()
+        .map(|s| (s.id, Box::new(MockPane::from_spec(s)) as Box<dyn Pane>))
+        .collect();
+    let viewport = Viewport {
+        x: 0,
+        y: 0,
+        cols: 80,
+        rows: 20,
+    };
+    let mut grid = TiledPaneGrid::new(&mut panes, &HashSet::new(), viewport, viewport);
+    assert!(grid.find_panes_to_grow(closing.id).is_err());
+    assert!(grid.fill_space_over_pane(closing.id));
+    assert!(!grid.panes.borrow().contains_key(&closing.id));
+    assert!(grid.panes.borrow().contains_key(&neighbor.id));
+    drop(grid);
+    assert_eq!(panes.len(), 2, "the caller still owns both panes");
+    assert_eq!(panes[&neighbor.id].position_and_size(), neighbor.geom());
+
+    panes.remove(&neighbor.id);
+    let mut grid = TiledPaneGrid::new(&mut panes, &HashSet::new(), viewport, viewport);
+    assert!(grid.find_panes_to_grow(closing.id).unwrap().is_none());
+    assert!(!grid.fill_space_over_pane(closing.id));
+    assert!(grid.panes.borrow().contains_key(&closing.id));
+}

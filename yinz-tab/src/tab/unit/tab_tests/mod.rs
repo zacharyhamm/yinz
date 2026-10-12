@@ -565,6 +565,7 @@ mod resize_right;
 mod resize_up;
 mod scroll_forwarding;
 mod splitting;
+mod stack_hardening;
 mod stack_resize;
 mod text_selection;
 mod viewport_clamp;
