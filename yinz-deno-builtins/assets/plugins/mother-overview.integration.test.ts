@@ -5,8 +5,12 @@ test(
   { grants: ["RunCommands"] },
   async () => {
     session.fixture(
-      {},
-      { claude: "printf 'MOTHER FIXTURE READY\\r\\n'\nwhile IFS= read -r line; do :; done\n" },
+      { ".claude/settings.json": "{}", ".claude.json": "{}" },
+      {
+        // Keep the agent on the fixture PATH instead of Bubblewrap's host-derived PATH.
+        bwrap: "exit 1\n",
+        claude: "printf 'MOTHER FIXTURE READY\\r\\n'\nwhile IFS= read -r line; do :; done\n",
+      },
     );
     session.start({ columns: 180, rows: 36 });
     await session.waitForText("yinz-test>");
