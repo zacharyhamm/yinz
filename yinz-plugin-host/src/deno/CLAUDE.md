@@ -32,7 +32,8 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   command replies, data watches and pane-output subscriptions carry it, so a reply, tick or chunk
   addressed to an instance that has since been reloaded is dropped rather than delivered to its
   replacement. Reload order: `BeforeClose` to the old instance, its registrations cleared, then
-  the replacement loads. Unload clears them after guest cleanup. The optional `unload` hook runs once during
+  the replacement loads. A reload waits out a call in flight for the unload grace before
+  interrupting it; an interrupted instance gets no `BeforeClose`. Unload clears them after guest cleanup. The optional `unload` hook runs once during
   normal disposal (also on reload), before promises and workers are cancelled. The pinned
   executor owns a `thread_bus::DenoReplies` mailbox from before guest initialization until
   disposal. Generation-scoped replies stay there while notifications wait on the bus, in a

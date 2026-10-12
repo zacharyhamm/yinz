@@ -3108,6 +3108,72 @@ export default {
     );
 }
 
+/// A reload that arrives while a healthy guest is inside a call must wait that call out: a
+/// guest stopped mid-call is not given `BeforeClose`.
+#[test]
+#[serial(plugin_tests)]
+fn deno_reload_by_url_waits_out_a_short_update_before_delivering_before_close() {
+    let harness = Harness::new(
+        "js",
+        r#"
+export default {
+  load() { yinz.subscribe(["BeforeClose", "Key"]); },
+  update(event) {
+    if (event === "BeforeClose") {
+      yinz.command("SetSelectable", false);
+      return false;
+    }
+    yinz.command("SetSelectable", true);
+    // Longer than the cancellation watcher's 10 ms poll, so a token set on arrival
+    // would always catch this call; far shorter than the grace a reload gives it.
+    const end = Date.now() + 100;
+    while (Date.now() < end) {}
+    return false;
+  },
+  render() { return "original ready for a short update"; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    harness.rendered("original ready for a short update");
+    harness.event(Event::Key(KeyWithModifier::new(BareKey::Char('a'))));
+    harness.log.wait_until(
+        "the old instance entered its update",
+        default_timeout(),
+        |log| {
+            log.iter()
+                .any(|i| matches!(i, ScreenInstruction::SetSelectable(_, true)))
+                .then_some(())
+        },
+    );
+    std::fs::write(
+        &harness.path,
+        r#"export default { render() { return "replacement after a short update"; } };"#,
+    )
+    .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::ReloadPluginByUrl(run_plugin(
+            &harness.path,
+        )))
+        .unwrap();
+    harness.rendered("replacement after a short update");
+    let log = harness.finish();
+    let selectable: Vec<bool> = log
+        .iter()
+        .filter_map(|i| match i {
+            ScreenInstruction::SetSelectable(_, value) => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        selectable,
+        [true, false],
+        "the update returns on its own, then the original's BeforeClose runs once"
+    );
+}
+
 #[test]
 #[serial(plugin_tests)]
 fn deno_reload_by_url_delivers_idle_before_close_before_loading_the_replacement() {

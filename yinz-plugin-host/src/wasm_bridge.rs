@@ -20,7 +20,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
+        Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak,
     },
     time::{Duration, Instant},
 };
@@ -1382,15 +1382,27 @@ impl WasmBridge {
             })
             .context("invalidate notification requests on reload")
             .non_fatal();
-        // Configuration is cached outside the guest mutex. Interrupt Deno before any
-        // getter waits on an entrypoint, and give the replacement its own uncancelled token.
+        // Configuration is cached outside the guest mutex. Give the replacement its own
+        // uncancelled token, and the old instance the grace an unload gets: a token set at
+        // once also stops a call that was about to return, and an instance stopped mid-call
+        // is not given `BeforeClose`.
         if self
             .plugin_config_of_plugin_id(plugin_id)
             .is_some_and(|config| config.runtime() == yinz_config::plugins::PluginRuntime::Deno)
         {
-            self.cancel_token(plugin_id).store(true, Ordering::Release);
+            let cancel = self.cancel_token(plugin_id);
             self.cancel_tokens
                 .insert(plugin_id, Arc::new(AtomicBool::new(false)));
+            let instances = self
+                .plugin_map
+                .lock()
+                .unwrap()
+                .running_plugins_and_subscriptions()
+                .into_iter()
+                .filter(|(id, ..)| *id == plugin_id)
+                .map(|(_, _, running_plugin, _)| Arc::downgrade(&running_plugin))
+                .collect();
+            arm_reload_watchdog(plugin_id, cancel, instances);
         }
         let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
             log::error!("Failed to find plugin with id: {}", plugin_id);
@@ -4453,6 +4465,30 @@ fn arm_unload_watchdog(
             log::warn!(
                 "plugin {plugin_id} has not returned from its entrypoint {UNLOAD_GRACE:?} after \
                  its unload; cancelling it"
+            );
+            cancel.store(true, Ordering::Relaxed);
+        }
+    });
+}
+
+/// `arm_unload_watchdog` for the instances a reload is about to replace, armed when the reload is
+/// requested rather than when its job runs. Weak, so it does not outlive them: an instance the
+/// reload job already dropped is not running.
+fn arm_reload_watchdog(
+    plugin_id: PluginId,
+    cancel: Arc<AtomicBool>,
+    instances: Vec<Weak<Mutex<RunningPlugin>>>,
+) {
+    yinz_bus::global_async_runtime::get_tokio_runtime().spawn(async move {
+        tokio::time::sleep(UNLOAD_GRACE).await;
+        if instances
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|instance| is_inside_entrypoint(&instance))
+        {
+            log::warn!(
+                "plugin {plugin_id} has not returned from its entrypoint {UNLOAD_GRACE:?} after \
+                 its reload; cancelling it"
             );
             cancel.store(true, Ordering::Relaxed);
         }
