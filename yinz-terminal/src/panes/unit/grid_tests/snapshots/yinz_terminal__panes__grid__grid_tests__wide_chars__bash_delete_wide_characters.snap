@@ -5,7 +5,7 @@ expression: "format!(\"{:?}\", grid)"
 ---
 00 (C): Welcome to fish, the friendly interactive shell                                                         
 01 (C): ⋊> ~/c/yinzer on wide-char ⨯ bash                                                               15:35:20
-02 (C): [aram@green yinzer]$ ＨＨＨＨＨＨ                                                                      
+02 (C): [aram@green yinzer]$ ＨＨＨＨＨＨ                                                                       
 03 (C): 
 04 (C): 
 05 (C): 

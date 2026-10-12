@@ -1134,3 +1134,45 @@ fn claude_code_renderer_recolors_retained_file_diff_and_syntax_output() {
         assert_eq!(grid.serialize(None).unwrap(), capture);
     }
 }
+
+#[test]
+fn wide_character_erasure_updates_only_replaced_palette_columns() {
+    let old = Rc::new(crate::agent_theme::SourcePalette::new(
+        Some(source("old", Role::Success)),
+        Style::default(),
+    ));
+    let new = Rc::new(crate::agent_theme::SourcePalette::new(
+        Some(source("new", Role::Error)),
+        Style::default(),
+    ));
+    for erase_beginning in [false, true] {
+        for cursor in [2, 3] {
+            let mut row = Row::from_columns("ab你好".chars().map(TerminalCharacter::new).collect());
+            row.palettes.set(0..6, Some(&old));
+            row.write_palette = Some(new.clone());
+            if erase_beginning {
+                row.replace_and_pad_beginning(
+                    cursor,
+                    crate::panes::terminal_character::EMPTY_TERMINAL_CHARACTER,
+                );
+            } else {
+                row.replace_and_pad_end(
+                    cursor,
+                    6,
+                    crate::panes::terminal_character::EMPTY_TERMINAL_CHARACTER,
+                );
+            }
+            for column in 0..6 {
+                let replaced = if erase_beginning {
+                    column < 4
+                } else {
+                    column >= 2
+                };
+                assert!(Rc::ptr_eq(
+                    row.palettes.at(column).unwrap(),
+                    if replaced { &new } else { &old }
+                ));
+            }
+        }
+    }
+}
