@@ -303,11 +303,14 @@ impl<'a> LayoutApplier<'a> {
             }
             tiled.sort_by_key(|pane| pane.id);
             viewport = (*self.display_area.borrow()).into();
-            for pane in &tiled {
-                if !pane.selectable || (pane.borderless && matches!(pane.id, PaneId::Plugin(_))) {
-                    offset_viewport_for_pane(&mut viewport, pane.geom.into());
-                }
-            }
+            let ui_pane_geoms: Vec<_> = tiled
+                .iter()
+                .filter(|pane| {
+                    !pane.selectable || (pane.borderless && matches!(pane.id, PaneId::Plugin(_)))
+                })
+                .map(|pane| pane.geom.into())
+                .collect();
+            offset_viewport_for_ui_panes(&mut viewport, &ui_pane_geoms);
         }
         let mut floating_positions = vec![];
         let mut retained_floating = vec![];
@@ -1586,9 +1589,7 @@ impl<'a> LayoutApplier<'a> {
         {
             // curly braces here is so that we free viewport immediately when we're done
             let mut viewport = viewport.borrow_mut();
-            for position_and_size in boundary_geoms {
-                offset_viewport_for_pane(&mut viewport, position_and_size);
-            }
+            offset_viewport_for_ui_panes(&mut viewport, &boundary_geoms);
         }
         tiled_panes.set_pane_frames(pane_frame_style);
     }
@@ -1642,23 +1643,61 @@ impl<'a> LayoutApplier<'a> {
     }
 }
 
-fn offset_viewport_for_pane(viewport: &mut Viewport, pane: Viewport) {
-    if pane.x == viewport.x && pane.cols == viewport.cols {
-        if pane.y == viewport.y {
-            viewport.y += pane.rows;
-            viewport.rows = viewport.rows.saturating_sub(pane.rows);
-        } else if pane.y + pane.rows == viewport.y + viewport.rows {
-            viewport.rows = viewport.rows.saturating_sub(pane.rows);
+fn offset_viewport_for_ui_panes(viewport: &mut Viewport, ui_pane_geoms: &[Viewport]) {
+    for geom in ui_pane_geoms {
+        let row_strips = ui_pane_geoms.iter().map(|g| ((g.y, g.rows), (g.x, g.cols)));
+        if let Some(remaining_rows) = shrink_by_edge_strip(
+            (viewport.y, viewport.rows),
+            (viewport.x, viewport.cols),
+            (geom.y, geom.rows),
+            row_strips,
+        ) {
+            (viewport.y, viewport.rows) = remaining_rows;
+        }
+        let col_strips = ui_pane_geoms.iter().map(|g| ((g.x, g.cols), (g.y, g.rows)));
+        if let Some(remaining_cols) = shrink_by_edge_strip(
+            (viewport.x, viewport.cols),
+            (viewport.y, viewport.rows),
+            (geom.x, geom.cols),
+            col_strips,
+        ) {
+            (viewport.x, viewport.cols) = remaining_cols;
         }
     }
-    if pane.y == viewport.y && pane.y + pane.rows == viewport.y + viewport.rows {
-        if pane.x == viewport.x {
-            viewport.x += pane.cols;
-            viewport.cols = viewport.cols.saturating_sub(pane.cols);
-        } else if pane.x + pane.cols == viewport.x + viewport.cols {
-            viewport.cols = viewport.cols.saturating_sub(pane.cols);
-        }
+}
+
+fn shrink_by_edge_strip(
+    (start, len): (usize, usize),
+    (cross_start, cross_len): (usize, usize),
+    (strip_start, strip_len): (usize, usize),
+    geoms: impl Iterator<Item = ((usize, usize), (usize, usize))>,
+) -> Option<(usize, usize)> {
+    let is_at_start = strip_start == start;
+    let is_at_end = strip_start + strip_len == start + len;
+    if strip_len == 0 || strip_len >= len || !(is_at_start || is_at_end) {
+        return None;
     }
+    let mut cross_spans: Vec<(usize, usize)> = geoms
+        .filter(|(span, _)| *span == (strip_start, strip_len))
+        .map(|(_, cross_span)| cross_span)
+        .collect();
+    cross_spans.sort_unstable();
+    let mut covered_until = cross_start;
+    for (cross_span_start, cross_span_len) in cross_spans {
+        if cross_span_start > covered_until {
+            break;
+        }
+        covered_until = covered_until.max(cross_span_start + cross_span_len);
+    }
+    if covered_until < cross_start + cross_len {
+        return None;
+    }
+    let remaining_start = if is_at_start {
+        start + strip_len
+    } else {
+        start
+    };
+    Some((remaining_start, len - strip_len))
 }
 
 struct ExistingTabState {
@@ -2042,3 +2081,7 @@ pub fn arrangement_layout(
     }
     Ok(layout)
 }
+
+#[cfg(test)]
+#[path = "unit/layout_applier_viewport_tests.rs"]
+mod viewport_tests;
