@@ -2318,6 +2318,78 @@ fn agent_double_escape_frame_prefix_restores_title_and_respects_geometry() {
 }
 
 #[test]
+fn recovered_codex_palette_follows_themes_without_repeating_queries() {
+    use yinz_terminal::panes::terminal_character::AnsiCode;
+    use yinz_types::agent::theme::*;
+    let mut pane = agent_pane_with_run(Some(super::Run::Command(RunCommand {
+        agent_theme: Some(AgentThemeLaunch {
+            launch_id: "codex-run".into(),
+            snapshot: AgentThemeSnapshot {
+                version: SNAPSHOT_VERSION,
+                provider: "codex".into(),
+                provider_version: "0.162.1".into(),
+                theme: "automatic".into(),
+                provenance: vec![],
+                availability: Availability::Available,
+                definitions: vec![],
+                collisions: vec![],
+            },
+        }),
+        ..Default::default()
+    })));
+    pane.handle_pty_bytes(b"\x1b]10;?\x07".to_vec());
+    let query = pane.drain_forwarded_queries().remove(0);
+    pane.record_terminal_color_reply(&query, b"\x1b]10;rgb:cd/ce/cf\x07");
+    pane.handle_pty_bytes(b"\x1b]11;?\x07".to_vec());
+    let query = pane.drain_forwarded_queries().remove(0);
+    pane.record_terminal_color_reply(&query, b"\x1b]11;rgb:19/23/30\x07");
+    let learned = pane.drain_agent_theme_updates().pop().unwrap();
+    // Adoption passes the supervisor's command to TerminalPane::new. It has
+    // no serialized grid or startup replies from the still-running process.
+    let mut adopted = agent_pane_with_run(Some(super::Run::Command(RunCommand {
+        agent_theme: Some(AgentThemeLaunch {
+            launch_id: learned.launch_id,
+            snapshot: learned.snapshot.unwrap(),
+        }),
+        ..Default::default()
+    })));
+    adopted.handle_pty_bytes(b"\x1b[48;2;52;61;72mC\x1b[38;2;57;59;62;48;2;99;168;248mS".to_vec());
+    for (fg, bg, surface) in [
+        ((205, 206, 207), (25, 35, 48), (39, 49, 61)),
+        ((20, 20, 20), (255, 255, 255), (236, 236, 236)),
+    ] {
+        let mut style = Style::default();
+        style.colors.text_unselected.base = PaletteColor::Rgb(fg);
+        style.colors.text_unselected.background = PaletteColor::Rgb(bg);
+        style.colors.text_selected.base = PaletteColor::Rgb(fg);
+        style.colors.text_selected.background = PaletteColor::Rgb(bg);
+        adopted.grid.update_theme(style.colors);
+        let chunks = adopted.grid.render(0, 0, &style).unwrap().unwrap().0;
+        let mut found = 0;
+        for chunk in chunks {
+            for cell in &chunk.terminal_characters {
+                let mapped = chunk.application_styles(*cell.styles);
+                match cell.character {
+                    'C' => {
+                        assert_eq!(mapped.background, Some(AnsiCode::RgbCode(surface)));
+                        found += 1;
+                    },
+                    'S' => {
+                        assert_eq!(mapped.foreground, Some(AnsiCode::RgbCode(fg)));
+                        assert_eq!(mapped.background, Some(AnsiCode::RgbCode(bg)));
+                        found += 1;
+                    },
+                    _ => {},
+                }
+            }
+        }
+        assert_eq!(found, 2);
+    }
+    assert!(adopted.drain_agent_theme_updates().is_empty());
+    assert!(adopted.drain_forwarded_queries().is_empty());
+}
+
+#[test]
 fn agent_exit_notification_preserves_palette_for_pending_pty_output() {
     use yinz_terminal::panes::terminal_character::AnsiCode;
     use yinz_types::agent::theme::*;

@@ -18,6 +18,7 @@ use crate::thread_bus::Bus;
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PtyWriteInstruction {
     Write(Vec<u8>, TerminalId, Option<NotificationEnd>),
+    RetainAgentTheme(TerminalId, yinz_types::agent::theme::AgentThemeEvent),
     ResizePty(TerminalId, u16, u16, Option<u16>, Option<u16>),
     StartCachingResizes,
     ApplyCachedResizes,
@@ -156,6 +157,12 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                         )
                         .with_context(err_context);
                     resize_result.non_fatal();
+                },
+                PtyWriteInstruction::RetainAgentTheme(terminal_id, event) => {
+                    os_input
+                        .retain_agent_theme(terminal_id, event)
+                        .context("retain learned agent palette")
+                        .non_fatal();
                 },
                 PtyWriteInstruction::StartCachingResizes => {
                     // we do this because there are some logic traps inside the screen/tab/layout code

@@ -132,6 +132,15 @@ pub trait ServerOsApi: Send + Sync {
     }
     /// Write bytes to the standard input of the virtual terminal referred to by `terminal_id`.
     fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize>;
+    /// Persist observations for the active launch; unsupervised backends have
+    /// no retained launch metadata to update.
+    fn retain_agent_theme(
+        &self,
+        _terminal_id: TerminalId,
+        _event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        Ok(())
+    }
     /// Wait until all output written to the terminal has been transmitted.
     fn tcdrain(&self, terminal_id: TerminalId) -> Result<()>;
     /// Terminate the process with process ID `pid`. (SIGHUP)

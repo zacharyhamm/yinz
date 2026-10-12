@@ -254,6 +254,12 @@ impl Screen {
                     } else {
                         reply_bytes
                     };
+                    if let Some(pane) = self
+                        .tab_containing_pane_mut(pane_id)
+                        .and_then(|tab| tab.get_pane_with_id_mut(pane_id))
+                    {
+                        pane.record_terminal_color_reply(&query, &payload);
+                    }
                     // Route via Tab so the reply lands on the pane in
                     // the correct stream position and any PTY input
                     // the app emitted while waiting is replayed.

@@ -748,3 +748,118 @@ fn non_empty_reply_bypasses_synthesis() {
         "real reply must be forwarded verbatim, not replaced by cached bg"
     );
 }
+
+#[test]
+fn codex_palette_observes_and_retains_local_forwarded_and_cached_color_replies() {
+    use base64::Engine;
+    use yinz_types::agent::theme::*;
+    for mode in ["local", "forwarded", "fallback"] {
+        let (mut screen, capture) =
+            create_new_screen_with_forward_capture(Size { cols: 80, rows: 20 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
+        let snapshot = AgentThemeSnapshot {
+            version: SNAPSHOT_VERSION,
+            provider: "codex".into(),
+            provider_version: "0.162.1".into(),
+            theme: "automatic".into(),
+            provenance: vec![],
+            availability: Availability::Available,
+            definitions: vec![],
+            collisions: vec![],
+        };
+        let event = AgentThemeEvent {
+            version: EVENT_VERSION,
+            launch_id: "codex-colors".into(),
+            snapshot: Some(snapshot),
+        };
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&event).unwrap());
+        screen
+            .tab_containing_pane_mut(pane_id)
+            .unwrap()
+            .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .handle_pty_bytes(format!("\x1b]777;yinz-agent-theme;{encoded}\x1b\\").into_bytes());
+        screen.update_terminal_foreground_color("rgb:dcdc/dcdc/dcdc".into());
+        screen.update_terminal_background_color("rgb:1212/1414/1e1e".into());
+        if mode == "local" {
+            screen
+                .tab_containing_pane_mut(pane_id)
+                .unwrap()
+                .handle_pty_bytes(
+                    TerminalId::new(1),
+                    b"\x1b]10;rgb:dcdc/dcdc/dcdc\x07\x1b]11;rgb:1212/1414/1e1e\x07\x1b]10;?;?\x07"
+                        .to_vec(),
+                )
+                .unwrap();
+        } else {
+            for (query_bytes, reply) in [
+                (
+                    b"\x1b]10;?\x07".as_slice(),
+                    b"\x1b]10;rgb:dcdc/dcdc/dcdc\x07".as_slice(),
+                ),
+                (
+                    b"\x1b]11;?\x07".as_slice(),
+                    b"\x1b]11;rgb:1212/1414/1e1e\x07".as_slice(),
+                ),
+            ] {
+                let pane = screen
+                    .tab_containing_pane_mut(pane_id)
+                    .unwrap()
+                    .get_pane_with_id_mut(pane_id)
+                    .unwrap();
+                pane.handle_pty_bytes(query_bytes.to_vec());
+                let queries = pane.drain_forwarded_queries();
+                assert_eq!(queries.len(), 1);
+                let token = screen.forward_host_query(pane_id, queries[0].clone());
+                screen
+                    .handle_forwarded_reply_from_host(
+                        token,
+                        if mode == "fallback" {
+                            vec![]
+                        } else {
+                            reply.to_vec()
+                        },
+                    )
+                    .unwrap();
+                // Duplicate replies (including timeout callbacks) must not change the sample.
+                screen
+                    .handle_forwarded_reply_from_host(
+                        token,
+                        b"\x1b]11;rgb:ffff/ffff/ffff\x07".to_vec(),
+                    )
+                    .unwrap();
+            }
+        }
+        let pane = screen
+            .tab_containing_pane_mut(pane_id)
+            .unwrap()
+            .get_pane_with_id_mut(pane_id)
+            .unwrap();
+        let (_, metadata) = pane.serialize_handoff(None, 100_000).unwrap();
+        let metadata = metadata.unwrap();
+        let snapshot = &metadata.snapshots[metadata.active.unwrap().palette];
+        assert!(snapshot
+            .definitions
+            .iter()
+            .any(|d| d.token == "codex.terminal.composer-plan"
+                && d.color == SourceColor::Rgb(46, 48, 57)
+                && d.target == Some(Role::Surface.into())));
+        // No output followed either reply: resume must still drain observations.
+        let updates: Vec<_> = capture
+            .pty_writer_rx
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PtyWriteInstruction::RetainAgentTheme(id, event) => {
+                    assert_eq!(PaneId::Terminal(id), pane_id);
+                    Some(event)
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[1].snapshot.as_ref(), Some(snapshot));
+        assert!(pane.drain_agent_theme_updates().is_empty());
+    }
+}

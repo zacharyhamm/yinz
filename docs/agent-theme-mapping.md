@@ -48,9 +48,26 @@ ignored.
   overrides. The pinned v2 profile file's theme is inserted below enabled
   project and session layers. Profiles changing discovery/policy are unavailable.
   The two-face 0.5.1 palettes, six model palettes, custom `.tmTheme` scopes and
-  fixed status/diff colors are supported. Terminal-dependent automatic syntax
-  selection, contrast correction and shaded surfaces produce a partial result:
-  only the independently resolved definitions are mapped.
+  fixed status/diff colors are supported. Successful foreground/background
+  terminal-query replies enrich that launch's palette with composer/plan and
+  submitted-prompt surfaces, secondary text, table separators, warnings, accents,
+  and selection colors. The derivations match the provider's blending, contrast
+  correction and ANSI-256 quantization. Automatic syntax selection, decorative
+  animations and analytics-specific palettes remain outside this descriptor.
+
+Codex observations use the colors actually returned to the application, whether
+answered in the pane, forwarded from the host, or supplied by a successful cached
+fallback. Both foreground and background are required for derived colors. Missing
+or invalid replies leave dependent styles unchanged. Replies from an older launch
+cannot enrich a newer launch. The first samples stay fixed through theme changes
+and previews; Yinz recompiles only their semantic destinations. Existing cells,
+blank fills and completed frames share the enriched palette, so the editor repaints
+without application output or a restart. Handoffs preserve observations and derived
+definitions in the existing snapshot format, including partial observations.
+Local supervisors also retain these enriched snapshots for crash recovery via
+`pty-host adopt`. Updates apply only to the active launch, and duplicate startup
+reports cannot overwrite observations. Selected secondary text uses the theme's
+selection foreground and background after resolving Codex's contrast corrections.
 
 Other versions return unavailable, with original colors preserved. A single
 launch diagnostic records partial/unavailable resolution and unresolved
@@ -84,8 +101,8 @@ The parser follows the [Claude theme reference](https://code.claude.com/docs/en/
 Codex data and behavior follow the official
 [`rust-v0.162.1` source](https://github.com/openai/codex/tree/rust-v0.162.1/codex-rs/tui),
 particularly `render/highlight.rs`, `render/model_themes.rs`, `style.rs`,
-`diff_render.rs`, and the config loader. Model descriptor JSON contains only
-scope names and normalized palette values. Dependencies pin the exact syntect
+`style/contrast.rs`, `color.rs`, `terminal_palette.rs`, `diff_render.rs`, and the
+config loader. Model descriptor JSON contains only scope names and normalized palette values. Dependencies pin the exact syntect
 and two-face versions used by this release.
 
 To support another version, verify its loader, emitted colors and theme formats,

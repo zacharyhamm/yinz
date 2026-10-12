@@ -703,9 +703,25 @@ fn handle_server_msg(
             );
             Ok(ControlOutcome::Continue)
         },
-        ServerToHostMsg::AgentTheme(_)
-        | ServerToHostMsg::Hello { .. }
-        | ServerToHostMsg::Spawn { .. } => {
+        ServerToHostMsg::AgentTheme(event) => {
+            // Only the attached server enriches a launch. Named-socket reports
+            // retain their start/end semantics, so a duplicate startup snapshot
+            // cannot replace colors already learned by the server.
+            if event.valid()
+                && ctx
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.exit_status.is_none())
+            {
+                if let (Some(active), Some(snapshot)) = (&mut ctx.cmd.agent_theme, event.snapshot) {
+                    if active.launch_id == event.launch_id {
+                        active.snapshot = snapshot;
+                    }
+                }
+            }
+            Ok(ControlOutcome::Continue)
+        },
+        ServerToHostMsg::Hello { .. } | ServerToHostMsg::Spawn { .. } => {
             log::warn!("pty-host {} got a duplicate handshake message", ctx.host_id);
             Ok(ControlOutcome::Continue)
         },

@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 use yinz_types::agent::theme::{AgentThemeSnapshot, Channel, MatchKey, Role, SourceColor, Target};
 use yinz_types::{colors::PaletteColor, style::Style};
 
+mod codex_0_162_1;
+pub(crate) use codex_0_162_1::parse_reply as terminal_color_reply;
+
 #[derive(Debug)]
 struct Resolved {
     color: AnsiCode,
@@ -154,23 +157,36 @@ fn resolve(target: Target, style: Style) -> (u8, u8, u8) {
 /// palette; a new managed run gets a different palette without relabeling old scrollback.
 #[derive(Debug)]
 pub struct SourcePalette {
-    snapshot: Option<AgentThemeSnapshot>,
+    snapshot: std::cell::RefCell<Option<AgentThemeSnapshot>>,
     mapping: std::cell::RefCell<Option<Mapping>>,
 }
 impl SourcePalette {
     pub fn new(snapshot: Option<AgentThemeSnapshot>, style: Style) -> Self {
         let palette = Self {
-            snapshot,
+            snapshot: std::cell::RefCell::new(snapshot),
             mapping: Default::default(),
         };
         palette.recompile(style);
         palette
     }
-    pub fn snapshot(&self) -> Option<&AgentThemeSnapshot> {
-        self.snapshot.as_ref()
+    pub fn snapshot(&self) -> Option<std::cell::Ref<'_, AgentThemeSnapshot>> {
+        std::cell::Ref::filter_map(self.snapshot.borrow(), Option::as_ref).ok()
     }
     pub fn has_snapshot(&self) -> bool {
-        self.snapshot.is_some()
+        self.snapshot.borrow().is_some()
+    }
+    /// Enrich the same palette held by existing rows and completed frames. The observed
+    /// source colors are immutable for this launch, even during theme previews.
+    pub fn observe_terminal_color(&self, code: u8, rgb: (u8, u8, u8), style: Style) -> bool {
+        let changed = self
+            .snapshot
+            .borrow_mut()
+            .as_mut()
+            .is_some_and(|snapshot| codex_0_162_1::observe(snapshot, code, rgb));
+        if changed {
+            self.recompile(style);
+        }
+        changed
     }
     pub fn recompile(&self, style: Style) {
         *self.mapping.borrow_mut() =
@@ -178,6 +194,7 @@ impl SourcePalette {
                 None
             } else {
                 self.snapshot
+                    .borrow()
                     .as_ref()
                     .map(|snapshot| Mapping::new(snapshot, style))
             };

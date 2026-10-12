@@ -177,7 +177,8 @@ fn serialize_chunks_with_newlines(
                 character_chunk
                     .agent_theme
                     .as_ref()
-                    .and_then(|p| p.snapshot()),
+                    .and_then(|p| p.snapshot())
+                    .as_deref(),
             );
         }
         if is_canonical || vte_output.is_empty() {

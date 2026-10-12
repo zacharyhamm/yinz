@@ -1189,6 +1189,13 @@ impl ServerOsApi for ServerOsInputOutput {
     fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
         self.pty_backend.write_to_tty_stdin(terminal_id, buf)
     }
+    fn retain_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        self.pty_backend.retain_agent_theme(terminal_id, event)
+    }
     fn tcdrain(&self, terminal_id: TerminalId) -> Result<()> {
         self.pty_backend.tcdrain(terminal_id)
     }
