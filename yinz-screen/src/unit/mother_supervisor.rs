@@ -220,6 +220,64 @@ fn lifecycle_filters_select_wakes_without_staling_the_roster() {
 }
 
 #[test]
+fn project_departures_remove_blockers_but_preserve_the_journal() {
+    for (selected, projects, kind, retained) in [
+        (vec!["app"], json!([]), "project_membership_changed", false),
+        (
+            vec!["app"],
+            json!(["other"]),
+            "project_membership_changed",
+            false,
+        ),
+        (
+            vec!["app", "other"],
+            json!(["other"]),
+            "project_membership_changed",
+            true,
+        ),
+        (vec![], json!([]), "project_membership_changed", true),
+        (vec!["app"], json!([]), "observation_uncertain", true),
+        (vec!["app"], Value::Null, "project_membership_changed", true),
+    ] {
+        for wake_on_departure in [true, false] {
+            let mut memory = Memory {
+                filters: EventSubscription {
+                    projects: selected.iter().map(|project| (*project).into()).collect(),
+                    lifecycle_types: if wake_on_departure {
+                        vec![]
+                    } else {
+                        vec!["turn_failed".into()]
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut failed = event(1, "terminal_2", "turn_failed");
+            failed["projects"] = json!(["app"]);
+            failed["needs_input"] = true.into();
+            memory.event(failed, MOTHER);
+            assert_eq!(memory.status(true, false).blockers, 1);
+
+            let mut departure = event(2, "terminal_2", kind);
+            departure["previous_projects"] = json!(["app"]);
+            departure["projects"] = projects.clone();
+            departure["needs_input"] = true.into();
+            if kind == "observation_uncertain" {
+                departure["reason"] = "project_membership_unresolved".into();
+                departure["observed_event_type"] = "project_membership_changed".into();
+            }
+            assert!(memory.event(departure.clone(), MOTHER));
+            assert_eq!(memory.roster.contains_key("terminal_2"), retained);
+            assert_eq!(memory.status(true, false).blockers, usize::from(retained));
+            assert_eq!(memory.journal.back(), Some(&departure));
+            assert_eq!(memory.journal.len(), 2);
+            assert_eq!(memory.cursor, Some(cursor("session", 2)));
+            assert_eq!(memory.pending[0].events, 1 + usize::from(wake_on_departure));
+        }
+    }
+}
+
+#[test]
 fn lifecycle_wake_filters_use_unfiltered_subscription_cursors() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("memory.json");

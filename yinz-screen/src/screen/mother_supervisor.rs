@@ -232,7 +232,16 @@ impl Memory {
                             .iter()
                             .any(|key| old[key] != event[key])
                     });
-                    if kind == "pane_closed" || kind == "pane_transferred" {
+                    let left_projects = kind == "project_membership_changed"
+                        && !self.filters.projects.is_empty()
+                        && event["projects"].as_array().is_some_and(|projects| {
+                            !self
+                                .filters
+                                .projects
+                                .iter()
+                                .any(|wanted| projects.iter().any(|project| project == wanted))
+                        });
+                    if kind == "pane_closed" || kind == "pane_transferred" || left_projects {
                         self.roster.remove(pane);
                     } else if !event["kind"].is_null() {
                         let mut row = event.clone();
