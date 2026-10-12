@@ -38,17 +38,3 @@ pub struct MotherStatus {
     pub pending: usize,
     pub blockers: usize,
 }
-
-impl MotherStatus {
-    pub fn label(&self) -> String {
-        let state = match self.state.as_str() {
-            "watching" => "watching",
-            "processing" => "working",
-            "queued" => "queued",
-            "paused" => "paused",
-            "needs_attention" => "attention",
-            _ => "degraded",
-        };
-        format!(" Mother: {state} ({}/{}) ", self.pending, self.blockers)
-    }
-}

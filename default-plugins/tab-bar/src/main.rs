@@ -39,8 +39,6 @@ impl LinePart {
 
 #[derive(Default, Debug)]
 struct State {
-    mother_label: Option<String>,
-    mother_range: Option<(usize, usize)>,
     tabs: Vec<TabInfo>,
     active_tab_idx: TabNumber,
     mode_info: ModeInfo,
@@ -104,7 +102,6 @@ impl YinzPlugin for State {
         set_selectable(false);
         subscribe(&[
             EventType::TabUpdate,
-            EventType::SessionUpdate,
             EventType::ModeUpdate,
             EventType::Mouse,
             EventType::InitialKeybinds,
@@ -135,14 +132,6 @@ impl YinzPlugin for State {
                     should_render = true;
                 }
                 self.mode_info = mode_info;
-            },
-            Event::SessionUpdate(sessions, _) => {
-                self.mother_label = sessions
-                    .into_iter()
-                    .find(|s| s.is_current_session)
-                    .and_then(|s| s.mother_supervision)
-                    .map(|s| s.label());
-                return true;
             },
             Event::TabUpdate(tabs) => {
                 if let Some(active_tab_index) = tabs.iter().position(|t| t.active) {
@@ -196,13 +185,6 @@ impl YinzPlugin for State {
             },
             Event::Mouse(me) => match me {
                 Mouse::LeftClick(_, col) => {
-                    if self
-                        .mother_range
-                        .is_some_and(|(start, end)| col >= start && col < end)
-                    {
-                        run_action(actions::Action::ToggleMother, BTreeMap::new());
-                        return false;
-                    }
                     if let Some((start, end)) = self.breadcrumb_range {
                         if col >= start && col < end {
                             focus_host_session();
@@ -272,13 +254,6 @@ impl YinzPlugin for State {
     }
 
     fn render(&mut self, _rows: usize, cols: usize) {
-        let width = self
-            .mother_label
-            .as_ref()
-            .map_or(0, |label| label.len())
-            .min(cols);
-        self.mother_range = (width > 0).then_some((cols - width, cols));
-        let cols = cols.saturating_sub(width);
         if self.tabs.is_empty() {
             return;
         }
@@ -370,9 +345,6 @@ impl YinzPlugin for State {
             PaletteColor::EightBit(color) => {
                 print!("{}\u{1b}[48;5;{}m\u{1b}[0K", output, color);
             },
-        }
-        if let (Some(label), Some((start, end))) = (&self.mother_label, self.mother_range) {
-            print!("\x1b[1;{}H{}", start + 1, &label[..end - start]);
         }
     }
 }

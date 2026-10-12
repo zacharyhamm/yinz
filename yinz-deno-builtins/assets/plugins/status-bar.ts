@@ -1,12 +1,8 @@
-import { motherLabel } from "./status-bar/mother.ts";
 import z, { definePlugin, type Event, type Keybinds } from "yinz:plugin";
 import { defaultMode } from "./status-bar/default-mode.ts";
 import { equal, type ReadonlyWire } from "./status-bar/keys.ts";
 import { render, type Clock, type Range, type RenderState } from "./status-bar/render.ts";
 import { cachedTip } from "./status-bar/tips.ts";
-
-let mother = "";
-let motherRange: Range = null;
 
 const state: RenderState = {
   modeInfo: defaultMode(),
@@ -92,7 +88,6 @@ export default definePlugin({
       "ModifiersHeld",
       "ModeUpdate",
       "TabUpdate",
-      "SessionUpdate",
       "PaneUpdate",
       "CopyToClipboard",
       "InputReceived",
@@ -177,17 +172,12 @@ export default definePlugin({
       state.copied = event.CopyToClipboard;
       return changed;
     }
-    if ("SessionUpdate" in event) {
-      mother = motherLabel(event.SessionUpdate[0]);
-      return true;
-    }
     if ("Mouse" in event) {
       const mouse = event.Mouse;
       if ("LeftClick" in mouse) {
         const col = Number(mouse.LeftClick[1]);
         const changed = notePointer(col);
-        if (inRange(motherRange, col)) z.command("RunAction", ["ToggleMother", {}]);
-        else if (inRange(newPaneRange, col)) z.command("NewPane");
+        if (inRange(newPaneRange, col)) z.command("NewPane");
         else if (inRange(floatingRange, col)) z.command("ToggleFloatingPanes", { tab_id: null });
         return changed;
       }
@@ -211,13 +201,9 @@ export default definePlugin({
       armTick(Date.now());
     }
     state.hintRevealed = revealed();
-    const width = Math.min(mother.length, cols);
-    motherRange = width ? [cols - width, cols] : null;
-    const output = render(state, rows, cols - width, Date.now());
+    const output = render(state, rows, cols, Date.now());
     newPaneRange = output.newPane;
     floatingRange = output.floating;
-    return (
-      output.line.part + (width ? `\u001B[1;${cols - width + 1}H${mother.slice(0, width)}` : "")
-    );
+    return output.line.part;
   },
 });

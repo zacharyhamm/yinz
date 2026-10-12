@@ -46,8 +46,6 @@ pub struct LinePart {
 
 #[derive(Default)]
 struct State {
-    mother_label: Option<String>,
-    mother_range: Option<(usize, usize)>,
     // Tab state
     tabs: Vec<TabInfo>,
     active_tab_idx: TabNumber,
@@ -120,14 +118,6 @@ impl YinzPlugin for State {
                 }
                 self.handle_mode_update(mode_info)
             },
-            Event::SessionUpdate(sessions, _) => {
-                self.mother_label = sessions
-                    .into_iter()
-                    .find(|s| s.is_current_session)
-                    .and_then(|s| s.mother_supervision)
-                    .map(|s| s.label());
-                true
-            },
             Event::TabUpdate(tabs) => self.handle_tab_update(tabs),
             Event::PaneUpdate(pane_manifest) => self.handle_pane_update(pane_manifest),
             Event::Mouse(mouse_event) => {
@@ -163,16 +153,7 @@ impl YinzPlugin for State {
         if self.is_tooltip {
             self.render_tooltip(rows, cols);
         } else {
-            let width = self
-                .mother_label
-                .as_ref()
-                .map_or(0, |label| label.len())
-                .min(cols);
-            self.render_tab_line(cols.saturating_sub(width));
-            self.mother_range = (width > 0).then_some((cols - width, cols));
-            if let Some(label) = &self.mother_label {
-                print!("\x1b[1;{}H{}", cols - width + 1, &label[..width]);
-            }
+            self.render_tab_line(cols);
         }
     }
 }
@@ -206,7 +187,6 @@ impl State {
             vec![
                 EventType::TabUpdate,
                 EventType::PaneUpdate,
-                EventType::SessionUpdate,
                 EventType::ModeUpdate,
                 EventType::Mouse,
                 EventType::CopyToClipboard,
@@ -316,12 +296,7 @@ impl State {
 
         match mouse_event {
             Mouse::LeftClick(_, col) => {
-                if self
-                    .mother_range
-                    .is_some_and(|(start, end)| col >= start && col < end)
-                {
-                    run_action(actions::Action::ToggleMother, BTreeMap::new());
-                } else if self.click_is_on_breadcrumb(col) {
+                if self.click_is_on_breadcrumb(col) {
                     focus_host_session();
                 } else {
                     self.handle_tab_click(col);

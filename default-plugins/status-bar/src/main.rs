@@ -39,8 +39,6 @@ const TO_NORMAL: Action = Action::SwitchToMode {
 
 #[derive(Default)]
 struct State {
-    mother_label: Option<String>,
-    mother_range: Option<(usize, usize)>,
     tabs: Vec<TabInfo>,
     tip_name: String,
     mode_info: ModeInfo,
@@ -276,7 +274,6 @@ impl YinzPlugin for State {
             EventType::ModeUpdate,
             EventType::TabUpdate,
             EventType::PaneUpdate,
-            EventType::SessionUpdate,
             EventType::CopyToClipboard,
             EventType::InputReceived,
             EventType::SystemClipboardFailure,
@@ -288,14 +285,6 @@ impl YinzPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         let mut should_render = false;
         match event {
-            Event::SessionUpdate(sessions, _) => {
-                self.mother_label = sessions
-                    .into_iter()
-                    .find(|s| s.is_current_session)
-                    .and_then(|s| s.mother_supervision)
-                    .map(|s| s.label());
-                should_render = true;
-            },
             Event::InitialKeybinds(keybinds) => {
                 self.cached_keybinds = keybinds;
                 if !self.cached_keybinds.is_empty() {
@@ -394,9 +383,7 @@ impl YinzPlugin for State {
                     // A click is a sample of where the pointer is too, and re-arms the
                     // safety net under a reveal the pointer has been sitting still in.
                     should_render = self.note_pointer(col);
-                    if col_in_range(self.mother_range, col) {
-                        run_action(Action::ToggleMother, BTreeMap::new());
-                    } else if col_in_range(self.new_pane_ribbon_range, col) {
+                    if col_in_range(self.new_pane_ribbon_range, col) {
                         new_pane();
                     } else if col_in_range(self.floating_ribbon_range, col) {
                         toggle_floating_panes(None);
@@ -430,13 +417,6 @@ impl YinzPlugin for State {
             self.last_render_rows = rows;
             self.arm_tick(now_ms().get());
         }
-        let mother_width = self
-            .mother_label
-            .as_ref()
-            .map_or(0, |label| label.len())
-            .min(cols);
-        self.mother_range = (mother_width > 0).then_some((cols - mother_width, cols));
-        let cols = cols.saturating_sub(mother_width);
         let supports_arrow_fonts = !self.mode_info.capabilities.arrow_fonts;
         let separator = if supports_arrow_fonts {
             ARROW_SEPARATOR
@@ -472,7 +452,6 @@ impl YinzPlugin for State {
             self.new_pane_ribbon_range = new_pane_ribbon_range;
             self.floating_ribbon_range = floating_ribbon_range;
             print!("{}{}", line, fill_bg);
-            self.render_mother();
             return;
         }
         self.new_pane_ribbon_range = None;
@@ -518,7 +497,6 @@ impl YinzPlugin for State {
         if rows > 1 {
             print!("\u{1b}[m{}\u{1b}[0K", second_line);
         }
-        self.render_mother();
     }
 }
 
@@ -1005,14 +983,6 @@ pub fn style_key_with_modifier(
     }
 
     ret
-}
-
-impl State {
-    fn render_mother(&self) {
-        if let (Some(label), Some((start, end))) = (&self.mother_label, self.mother_range) {
-            print!("\x1b[1;{}H{}", start + 1, &label[..end - start]);
-        }
-    }
 }
 
 #[cfg(test)]

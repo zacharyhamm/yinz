@@ -1,11 +1,7 @@
-import { motherLabel } from "./status-bar/mother.ts";
 import z, { definePlugin, type Event, type Keybinds, type Mouse } from "yinz:plugin";
 import { defaultMode } from "./status-bar/default-mode.ts";
 import { equal, type ReadonlyWire } from "./status-bar/keys.ts";
 import { render, type Bar, type Part, type Range } from "./tab-bar/render.ts";
-
-let mother = "";
-let motherRange: Range = null;
 
 const state: Bar = {
   hostname: "",
@@ -41,8 +37,7 @@ function tabAt(col: number): number | null {
 function mouse(event: ReadonlyWire<Mouse>): boolean {
   if ("LeftClick" in event) {
     const col = Number(event.LeftClick[1]);
-    if (inRange(motherRange, col)) z.command("RunAction", ["ToggleMother", {}]);
-    else if (inRange(breadcrumbRange, col)) z.command("FocusHostSession");
+    if (inRange(breadcrumbRange, col)) z.command("FocusHostSession");
     else if (inRange(newTabRange, col)) z.command("NewTab", { name: null, cwd: null });
     else {
       const tab = tabAt(col);
@@ -63,7 +58,7 @@ function mouse(event: ReadonlyWire<Mouse>): boolean {
   return false;
 }
 
-// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Each subscribed host event preserves the Wasm state transition and redraw decision.
+// oxlint-disable-next-line eslint/max-lines-per-function -- Each subscribed host event preserves the Wasm state transition and redraw decision.
 function update(event: ReadonlyWire<Event>): boolean {
   if (event === "InputReceived") {
     const changed = state.hint !== null;
@@ -71,10 +66,6 @@ function update(event: ReadonlyWire<Event>): boolean {
     return changed;
   }
   if (typeof event === "string") return false;
-  if ("SessionUpdate" in event) {
-    mother = motherLabel(event.SessionUpdate[0]);
-    return true;
-  }
   if ("InitialKeybinds" in event) {
     cachedKeybinds = event.InitialKeybinds;
     if (cachedKeybinds.length > 0) state.modeInfo = { ...state.modeInfo, keybinds: cachedKeybinds };
@@ -131,7 +122,6 @@ export default definePlugin({
     z.command("SetSelectable", false);
     z.subscribe([
       "TabUpdate",
-      "SessionUpdate",
       "ModeUpdate",
       "Mouse",
       "InitialKeybinds",
@@ -147,15 +137,10 @@ export default definePlugin({
   },
   render(_rows, cols) {
     if (state.tabs.length === 0) return "";
-    const width = Math.min(mother.length, Math.max(0, cols - 1));
-    motherRange = width ? [cols - width - 1, cols - 1] : null;
-    const output = render(state, Math.max(0, cols - width - 1));
+    const output = render(state, Math.max(0, cols - 1));
     parts = output.parts;
     newTabRange = output.button;
     breadcrumbRange = output.breadcrumb;
-    return (
-      parts.map((p) => p.part).join("") +
-      (width ? `\u001B[1;${cols - width}H${mother.slice(0, width)}` : "")
-    );
+    return parts.map((p) => p.part).join("");
   },
 });
