@@ -201,9 +201,7 @@ fn a_blob_round_trips() {
     assert_eq!(column(&rows, "bytes"), vec![DataValue::Blob(payload)]);
 }
 
-/// The engines' defaults are opposite (SQLite puts nulls first ascending, Postgres last), so the
-/// store says which it means. SQLite's is the one kept, and a plugin paging through a sorted set
-/// sees the same order wherever its data lives.
+/// Explicit null ordering keeps paginated results consistent.
 #[test]
 fn nulls_sort_first_ascending_and_last_descending() {
     let (store, _dir) = store();

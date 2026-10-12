@@ -37,10 +37,7 @@ use yinz_tile::prelude::*;
 /// single `yinz_session_name` for as long as the store was per-machine, and every call
 /// site that scopes a row would otherwise have to remember to grow a second one.
 ///
-/// A session name alone stopped being an owner when `plugin_data_url` could point at
-/// Postgres: two machines can each run a session called `main`, and the pane ids those
-/// sessions hand out mean nothing to each other. It was never quite stable either, since a
-/// session can be renamed — the host half is what a row keeps across that.
+/// Host identity distinguishes installations; session names and pane ids are only local.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Owner {
     pub host_id: HostId,
@@ -255,7 +252,7 @@ pub fn import_marker_request(host_id: &HostId, what: &str) -> FetchRequest {
 /// `''` row names no machine, so reading one is not evidence that *this* machine wrote it, and
 /// nothing else in the store can supply the missing attribution: the rows a legacy import
 /// created carry the same backfilled empty host. Deleting it on the strength of having read it
-/// is what the code used to do, and on a shared Postgres it was the whole bug — the machine that
+/// can erase another installation's import marker — the machine that
 /// had genuinely imported found no marker on its next launch and read its entire archive in a
 /// second time, with no dedupe key to collapse the duplicates.
 ///
@@ -302,11 +299,7 @@ pub fn import_recorded(backend: &impl Backend, host_id: &HostId, what: &str) -> 
 /// machine shares one store, so a bare pane id made session A's pane 5 and session B's pane 5
 /// into one row — each overwriting the other's kind, and A's prune deleting B's rows outright.
 ///
-/// The host is the rest of it, and for the same reason one size up. With `plugin_data_url`
-/// pointing at Postgres the store is shared between *machines*, and a session name is not
-/// unique across them: two machines each running a session called `main` put their panes back
-/// into one row, and each prune deletes the other's. A pane id means nothing outside the server
-/// that allocated it, so a row about one has to say which server that was.
+/// Host identity also distinguishes installations with the same session and pane ids.
 /// `pane_id` stays indexed for the prune, but is not unique and never was.
 pub fn agent_latch_def() -> EntityDef {
     EntityDef::new("agent_latch", 3)
@@ -933,7 +926,7 @@ mod tests {
 
     /// The bug the claim used to have, and the one that costs a whole archive.
     ///
-    /// Two machines, one Postgres. Host A imported years ago, before the marker carried a host.
+    /// Two host identities in one store. Host A imported years ago, before the marker carried a host.
     /// Host B has never imported. B launches first: it is told the import is done — which is
     /// the accommodation working as designed, since a bare marker is one every machine answers
     /// to — and claims a marker of its own. What it must *not* do is take A's row away with it,

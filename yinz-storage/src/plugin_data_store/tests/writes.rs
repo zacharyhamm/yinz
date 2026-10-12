@@ -273,8 +273,7 @@ fn a_unique_attribute_rejects_a_duplicate() {
 }
 
 /// `DataValue::fits` lets an integer into a Real attribute, so that a plugin writing `0` to a
-/// float column need not know to write `0.0`. What comes back is a Real on every engine — SQLite
-/// by its column affinity, Postgres because the value is bound as one.
+/// float column need not know to write `0.0`. SQLite column affinity returns a Real.
 #[test]
 fn an_int_written_to_a_real_attribute_reads_back_as_a_real() {
     let (store, _dir) = store();

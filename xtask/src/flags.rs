@@ -120,18 +120,6 @@ xflags::xflags! {
             repeated args: OsString
         }
 
-        /// Run the plugin-data store suite against a real Postgres in a container
-        cmd postgres-test {
-            /// Bring the container up
-            optional --build
-            /// Run the tests (after `--`: extra arguments for the test runner)
-            optional --test
-            /// Take the container down
-            optional --clean
-            /// Additional arguments for `--test`
-            repeated args: OsString
-        }
-
         /// Run the render throughput benchmarks
         cmd bench {
             /// Arguments to pass to criterion (e.g. `--save-baseline main`, `--sample-size 20`,
@@ -177,7 +165,6 @@ pub enum XtaskCmd {
     Test(Test),
     IntegrationTest(IntegrationTest),
     RemoteTest(RemoteTest),
-    PostgresTest(PostgresTest),
     Bench(Bench),
     Build(Build),
 }
@@ -276,15 +263,6 @@ pub struct RemoteTest {
 
     pub build: bool,
     pub native: bool,
-    pub test: bool,
-    pub clean: bool,
-}
-
-#[derive(Debug)]
-pub struct PostgresTest {
-    pub args: Vec<OsString>,
-
-    pub build: bool,
     pub test: bool,
     pub clean: bool,
 }

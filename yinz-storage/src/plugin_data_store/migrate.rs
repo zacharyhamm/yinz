@@ -73,7 +73,7 @@ pub(super) fn migrate_entity(
         .map(|a| a.name.as_str())
         .collect();
     // The full-text index names the columns it covers, so it has to be rebuilt whenever that set
-    // changes. It also has to come down *before* any column is dropped, because both engines
+    // changes. It also has to come down *before* any column is dropped, because SQLite
     // refuse to drop a column it still names.
     let rebuild_needed = stored_ft != new_ft || !removed.is_empty();
     if rebuild_needed && !stored_ft.is_empty() {

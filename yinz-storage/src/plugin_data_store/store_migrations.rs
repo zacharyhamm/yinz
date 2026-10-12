@@ -5,8 +5,8 @@
 //!
 //! The steps are Rust rather than SQL strings because the interesting ones are not expressible as
 //! a statement: adding a column to every entity table means reading the registry first to learn
-//! which tables exist. Each step is written once against [`Executor`] and runs on both engines,
-//! asking [`Dialect`] for whatever the two spell differently — the same arrangement the rest of
+//! which tables exist. Each step is written once against [`Executor`] using backend-provided SQL,
+//! asking [`Dialect`] for backend-specific syntax — the same arrangement the rest of
 //! the store uses.
 //!
 //! A step must be idempotent in effect but is only ever *run* once per database, guarded by the
@@ -40,7 +40,7 @@ pub(super) fn current_version() -> i64 {
 ///
 /// A database *newer* than this binary is refused rather than downgraded: the steps only go
 /// forward, and a yinz that does not know what a later one did cannot safely write to what it
-/// produced. This is the case a shared Postgres makes real — one machine upgrades first.
+/// produced. Servers sharing a database may run different versions.
 pub(super) fn run(exec: &mut dyn Executor, recorded: i64) -> Result<i64, DataError> {
     let current = current_version();
     if recorded > current {
@@ -86,7 +86,7 @@ fn add_rev_to_every_entity(exec: &mut dyn Executor) -> Result<(), DataError> {
 }
 
 /// 3: separate private namespaces. Before this release migrates the database, stop every
-/// server using it, including remote servers sharing Postgres. Mixed-version live operation
+/// server using it. Mixed-version live operation
 /// is intentionally unsupported; this release adds no coordination mechanism.
 fn separate_private_namespaces(exec: &mut dyn Executor) -> Result<(), DataError> {
     let rows = query_all(

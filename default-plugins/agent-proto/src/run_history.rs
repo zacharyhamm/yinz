@@ -9,10 +9,8 @@
 //!
 //! Store-wide is the default rather than a widening, and that is the store's doing: it is not
 //! per session, so a run recorded in a session that has since been closed is as legible as one
-//! still going. With the default SQLite backend that means everything on this machine; with
-//! `plugin_data_url` pointing at Postgres it means everything on every machine sharing it, which
-//! is a better answer to "have I had an agent look at this before" than one machine's share of
-//! it. Narrowing — to a session, to a machine — is the option.
+//! still going. SQLite includes all sessions using the data directory. Narrowing by
+//! session or host identity is optional.
 //!
 //! Its own module rather than more of `agents.rs` for the reason [`crate::notes`] is its own:
 //! reading is a different job from recording, and `agents.rs` is already the largest file in
@@ -125,7 +123,7 @@ const MAX_SCOPE_RUNS: usize = MAX_RUN_SCAN;
 const MAX_SCOPE_SCAN: usize = 4_000;
 
 /// Which runs a caller is asking about. Every field `None` means every run in the store — which
-/// is every run on this machine, or on every machine sharing a Postgres.
+/// includes every session using the data directory.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
     /// One yinz session's runs, by name.
@@ -254,10 +252,7 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
 ///
 /// `host_id` is a second, independent way a run can be on another machine, checked for every
 /// run: `host` is the SSH target the *pane* was opened on, which the run
-/// has always carried, while `host_id` is the machine whose server recorded the run, which only
-/// matters once the store is shared. With `plugin_data_url` pointing at Postgres, a laptop and
-/// a build box writing to one database both record runs whose `host` is empty, and only the
-/// row's own machine tells them apart.
+/// has always carried, while `host_id` identifies the installation that recorded it.
 ///
 /// An **empty** `host_id` matches. It is a row from before the column, and for a run `""` reads
 /// as "this machine" — the same accommodation `agents::rows::owned_or_unclaimed` makes, and for

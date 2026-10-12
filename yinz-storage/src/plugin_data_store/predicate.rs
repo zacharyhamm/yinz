@@ -117,8 +117,7 @@ pub(super) fn compile_pred(
 
 /// Escape the wildcards `LIKE` would otherwise interpret.
 ///
-/// Backslash is the escape character on both engines: SQLite says so in the `ESCAPE` clause the
-/// dialect adds, and it is Postgres's default.
+/// SQLite declares backslash as the escape character in the dialect's `ESCAPE` clause.
 pub(super) fn escape_like(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {

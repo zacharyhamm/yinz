@@ -14,8 +14,7 @@ pub(super) trait Executor {
     /// Serialize schema changes with every other process sharing the database.
     ///
     /// Called at the start of a `define_entity` transaction. SQLite has nothing to do — its
-    /// `BEGIN IMMEDIATE` already took the write lock — while Postgres takes an advisory lock so
-    /// two servers cannot both decide an entity does not exist yet.
+    /// `BEGIN IMMEDIATE` already took the write lock.
     fn lock_schema(&mut self) -> Result<(), DataError>;
 
     /// Block all writers to these tables until this transaction commits.

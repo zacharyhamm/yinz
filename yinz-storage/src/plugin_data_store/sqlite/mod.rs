@@ -163,8 +163,7 @@ fn open_db(db_path: &Path) -> Result<Connection, DataError> {
     }
     // The store's own tables, brought up to date in one write transaction. `BEGIN IMMEDIATE`
     // takes the database's single write lock for its whole length, which is what stops two
-    // servers opening this file at once from both deciding a migration has not run — the same
-    // job Postgres does with its advisory lock.
+    // servers opening this file at once from both deciding a migration has not run.
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .ctx("failed to begin the store migration transaction")?;

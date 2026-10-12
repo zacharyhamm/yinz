@@ -82,11 +82,6 @@ const FILE_LEVEL_ALLOWS: &[(&str, &str)] = &[
         "yinz-key-codec/src/vendored/termwiz/input.rs",
         "clippy::doc_lazy_continuation",
     ),
-    // the store's test files run once per engine, so one file is deliberately two modules
-    (
-        "yinz-storage/src/plugin_data_store/tests/mod.rs",
-        "clippy::duplicate_mod",
-    ),
     // the dockerised e2e smoke suite, `#[ignore]`d and behind the `e2e` feature; a scaffold
     // of helpers only some of its five tests reach
     ("src/tests/e2e/cases.rs", "unused"),

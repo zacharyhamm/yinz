@@ -21,8 +21,7 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   `serde_v8`'s buffer types allocate outside the counted allocator. Resizable buffers and guest
   Wasm are unavailable for the same reason.
 - **An isolate belongs to one executor thread.** `DenoPlugin::with_runtime` bails off its thread;
-  host ops run synchronously on the executor, and nothing here may enter Tokio (the Postgres
-  store is the standing caveat in that comment). `RUNTIMES` is thread-local, keyed by generation.
+  host ops run synchronously on the executor. `RUNTIMES` is thread-local, keyed by generation.
 - **Guest workers own dedicated threads** (`background_worker.rs`). Each declared `workers`
   callback gets a persistent isolate with the same module graph and limits. Its FIFO awaits
   each job before starting the next. `PluginEnv.deno_workers` routes messages through the shared

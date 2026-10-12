@@ -29,19 +29,6 @@ impl EntitySchema {
         format!("e_{}_fts", self.row_id)
     }
 
-    /// Postgres's generated `tsvector` column on the entity table itself.
-    ///
-    /// The leading underscore is what keeps it out of a plugin's way: `validate_name` requires an
-    /// attribute to start with a lowercase letter, so no declared attribute can take this name.
-    pub(super) fn fts_column(&self) -> &'static str {
-        "_fts"
-    }
-
-    /// The GIN index over [`EntitySchema::fts_column`].
-    pub(super) fn fts_index(&self) -> String {
-        format!("e_{}_fts", self.row_id)
-    }
-
     pub(super) fn attr_index(&self, attr: &str) -> String {
         format!("e_{}_a_{}", self.row_id, attr)
     }

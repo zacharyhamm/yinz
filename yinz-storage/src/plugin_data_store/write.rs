@@ -108,10 +108,7 @@ pub(super) fn build_put(
             .chain(std::iter::once(
                 "\"updated_at\" = excluded.\"updated_at\"".to_owned(),
             ))
-            // Read off the stored row rather than `excluded`: the incoming row carries the
-            // column's default, so `excluded."rev"` would reset every upsert to 1. Qualified
-            // because in a `DO UPDATE` an unqualified name is the *target* row's on Postgres but
-            // reads better said outright, and both engines accept the qualified form.
+            // Increment the stored revision, not the incoming row's initial revision.
             .chain(std::iter::once(format!("\"rev\" = {table_q}.\"rev\" + 1")))
             .collect::<Vec<_>>()
             .join(", ");

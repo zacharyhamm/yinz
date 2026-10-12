@@ -27,7 +27,6 @@ mod integration_test;
 mod lint;
 mod metadata;
 mod pipelines;
-mod postgres_test;
 mod remote_test;
 mod test;
 mod test_run;
@@ -117,7 +116,6 @@ fn main() -> anyhow::Result<()> {
         flags::XtaskCmd::Test(flags) => test::test(shell, flags),
         flags::XtaskCmd::IntegrationTest(flags) => integration_test::integration_test(shell, flags),
         flags::XtaskCmd::RemoteTest(flags) => remote_test::main(shell, flags),
-        flags::XtaskCmd::PostgresTest(flags) => postgres_test::main(shell, flags),
         flags::XtaskCmd::Bench(flags) => bench::bench(shell, flags),
         flags::XtaskCmd::Proto(_flags) => build::proto(shell),
         // Pipelines

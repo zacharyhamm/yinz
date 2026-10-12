@@ -157,32 +157,16 @@ pub struct CliOptions {
     #[serde(default)]
     pub session_serialization: Option<bool>,
 
-    /// Where plugin data lives. Unset: the SQLite file in the data dir. A `postgres://` or
-    /// `postgresql://` URL: that database, in the schema named by `plugin_data_schema`.
-    ///
-    /// Config-file only, like `detachable_panes`: the store is built once when the session
-    /// starts, so a per-invocation flag would be misleading on `yinz attach` — and the URL
-    /// may carry a password that has no business in `ps` or on the client socket.
-    #[clap(skip)]
-    #[serde(default)]
-    pub plugin_data_url: Option<String>,
-
-    /// The Postgres schema the plugin data store owns when `plugin_data_url` is set. Default
-    /// `yinz_plugin_data`; must match `^[a-z][a-z0-9_]{0,62}$`.
-    #[clap(skip)]
-    #[serde(default)]
-    pub plugin_data_schema: Option<String>,
-
     /// Pins this installation's host id, which is otherwise generated once and kept in
     /// `<data dir>/host-id`. It says which machine wrote a row in the plugin data store, so
-    /// several servers sharing one Postgres database can tell their rows apart.
+    /// rows retain their installation identity across sessions.
     ///
     /// Only worth setting when the generated one would move: a data dir that gets wiped, a
     /// container built fresh each time, or a test that must not depend on the machine running
     /// it. `YINZ_HOST_ID` overrides this in turn. Alphanumerics, `_` and `-`, up to 64
     /// characters.
     ///
-    /// Config-file only, like `plugin_data_url`: changing it mid-session would orphan every row
+    /// Config-file only: changing it mid-session would orphan every row
     /// the session had already written.
     #[clap(skip)]
     #[serde(default)]
@@ -393,8 +377,6 @@ impl From<CliOptions> for Options {
             attach_to_session: value.attach_to_session,
             auto_layout: value.auto_layout,
             session_serialization: value.session_serialization,
-            plugin_data_url: value.plugin_data_url,
-            plugin_data_schema: value.plugin_data_schema,
             host_id: value.host_id.map(HostId::new),
             serialize_pane_viewport: value.serialize_pane_viewport,
             scrollback_lines_to_serialize: value.scrollback_lines_to_serialize,
@@ -467,8 +449,6 @@ impl From<Options> for CliOptions {
             attach_to_session: value.attach_to_session,
             auto_layout: value.auto_layout,
             session_serialization: value.session_serialization,
-            plugin_data_url: value.plugin_data_url,
-            plugin_data_schema: value.plugin_data_schema,
             host_id: value.host_id.map(|id| id.into_string()),
             serialize_pane_viewport: value.serialize_pane_viewport,
             scrollback_lines_to_serialize: value.scrollback_lines_to_serialize,
@@ -527,15 +507,6 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
     let auto_layout = merge_bool(other.auto_layout, base.auto_layout);
     let mirror_session = merge_bool(other.mirror_session, base.mirror_session);
     let session_serialization = merge_bool(other.session_serialization, base.session_serialization);
-    // Config-file only, so the CLI side never carries them; keep what the config said.
-    let plugin_data_url = other
-        .plugin_data_url
-        .clone()
-        .or_else(|| base.plugin_data_url.clone());
-    let plugin_data_schema = other
-        .plugin_data_schema
-        .clone()
-        .or_else(|| base.plugin_data_schema.clone());
     let host_id = other.host_id.clone().or_else(|| base.host_id.clone());
     let serialize_pane_viewport =
         merge_bool(other.serialize_pane_viewport, base.serialize_pane_viewport);
@@ -655,8 +626,6 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         attach_to_session,
         auto_layout,
         session_serialization,
-        plugin_data_url,
-        plugin_data_schema,
         host_id,
         serialize_pane_viewport,
         scrollback_lines_to_serialize,

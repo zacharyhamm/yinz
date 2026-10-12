@@ -1,20 +1,4 @@
-//! The store's tests, grouped the way the engine is — and run once per database.
-//!
-//! The files beside this one hold the tests; none of them names a database. Each harness module
-//! ([`sqlite`], and `postgres` behind the `postgres-tests` feature) supplies `store()`,
-//! `defined()` and a `Guard` that keeps the database alive for the test, then includes every
-//! test file with `#[path]`, so the same ~1900 lines run against both engines and a divergence
-//! between them fails a test rather than a plugin. The fixtures every file shares are here, and
-//! reach the files through the harness's `use super::*`.
-//!
-//! Loading one file as two modules is exactly what clippy's `duplicate_mod` warns about, and
-//! exactly the point.
-#![allow(clippy::duplicate_mod)]
-
 mod dialect;
-#[cfg(feature = "postgres-tests")]
-pub(crate) mod postgres;
-mod postgres_offline;
 mod sqlite;
 
 use super::*;

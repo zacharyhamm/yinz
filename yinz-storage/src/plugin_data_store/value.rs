@@ -1,4 +1,4 @@
-//! The parts of value handling both engines share.
+//! Value handling shared by SQL backends.
 //!
 //! [`DataValue`] is defined in [`yinz_types::plugin_data`] so that plugins can speak it too; each
 //! backend's driver conversions live beside that backend, and what is left here is the clock and
@@ -15,11 +15,7 @@ pub(super) fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Render the defaults both engines spell the same way, or `None` for one they differ on.
-///
-/// Text is escaped by doubling quotes, which is the standard SQL rule and holds on both engines
-/// (Postgres with `standard_conforming_strings`, its default since 9.1). Booleans and blobs are
-/// left to [`super::dialect::Dialect::literal`].
+/// Render standard SQL literals, leaving booleans and blobs to the dialect.
 pub(super) fn common_literal(value: &DataValue) -> Option<Result<String, DataError>> {
     Some(Ok(match value {
         DataValue::Null => "NULL".to_owned(),

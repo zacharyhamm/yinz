@@ -4,7 +4,7 @@ description: Discover Yinz plugin schemas, query and paginate shared or private 
 ---
 
 Use `yinz --session NAME data ...`. Access is served by that session's configured
-PluginDataStore, including Postgres when configured. It does not open an offline
+PluginDataStore backed by local SQLite. It does not open an offline
 database. Prefer project, note, todo, and agent domain commands for their records.
 Use generic data operations when those commands do not cover the requested task.
 
@@ -46,4 +46,4 @@ One JSON result is returned on success, including the apply report. Failures are
 nonzero with diagnostics on stderr. After conflict, reconcile with a fresh read.
 After timeout or disconnection, read before repeating a mutation: it may have
 committed. Verify by fetching the affected rows. Writes notify watches in the
-selected server; another server's Postgres writes do not wake local watches.
+selected server; another server's database writes do not wake local watches.

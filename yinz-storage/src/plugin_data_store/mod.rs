@@ -1,55 +1,25 @@
 //! The engine behind the plugin data store, and the databases it runs on.
 //!
-//! Host-only: neither `rusqlite` nor `postgres` builds for `wasm32-wasip1`, and even if they
-//! could, plugins run under `wasmi` — a pure interpreter with a 16 MiB linear memory configured to
-//! trap rather than fail when it can't grow. A database client does not belong there. The types
-//! plugins speak in live in [`crate::plugin_data`], which is compiled for both sides; this module
-//! turns them into SQL.
+//! Host-only: plugins use the shared types in [`crate::plugin_data`]; the host owns storage.
 //!
-//! # Layout
+//! One real table per `(namespace, entity)`, named `e_<n>` after its row in the
+//! `store_entities` registry. Attribute names pass through
+//! [`yinz_types::plugin_data::validate_name`] before SQL composition.
 //!
-//! One real table per `(namespace, entity)`, named `e_<n>` after its row in the `store_entities`
-//! registry. No plugin-supplied string is ever interpolated into a table name. Attribute names
-//! *are* interpolated as column names, which is why [`yinz_types::plugin_data::validate_name`] is the
-//! boundary that keeps a plugin from writing SQL, and why every entry point runs it before
-//! composing anything.
+//! [`engine`] composes operations using [`dialect`] and [`executor`]. The [`sqlite`]
+//! backend opens the database and supplies both interfaces. Other backends can implement
+//! [`PluginDataBackend`]; validation and [`watch`] remain independent of storage.
 //!
-//! # One engine, two databases
-//!
-//! The SQL is composed once. [`dialect`] names what SQLite and Postgres spell differently —
-//! placeholders, column types, the pattern-match operator, the full-text index — and
-//! [`executor`] is the one seam through which composed statements reach a driver. [`engine`]
-//! holds the five operations written against those two traits; [`predicate`], [`query`],
-//! [`write`], [`registry`], [`ddl`] and [`migrate`] are the composers it calls, and [`schema`]
-//! is what one entity looks like once read back and the source of every name derived from it.
-//! [`sqlite`] and [`postgres`] are the backends: each opens its database, wraps its connection in
-//! an executor, and answers the dialect's questions.
-//!
-//! [`watch`] re-runs standing fetches and never sees SQL at all.
-//!
-//! # Full text
-//!
-//! SQLite uses an external-content FTS5 table kept exact by triggers, ranked by `bm25`; Postgres
-//! uses a stored generated `tsvector` column with a GIN index, ranked by `ts_rank_cd`. A single
-//! word searches the same on both. The query languages differ past that — FTS5 has `AND`, `OR`,
-//! `NOT`, `NEAR` and `prefix*`; `websearch_to_tsquery` has quoted phrases, `OR` and `-term` —
-//! and a plugin that leans on either is tied to that engine. FTS5 rejects unbalanced quotes,
-//! which the store retries as a literal phrase; Postgres accepts anything.
-//!
-//! # Where the engines are made to agree
-//!
-//! Text is compared and ordered byte-wise on both (Postgres columns carry `COLLATE "C"`), a
-//! prefix or substring match folds ASCII case on both (`LIKE` on SQLite, `ILIKE` on Postgres),
-//! nulls sort first ascending and last descending on both (spelled out, since the engines'
-//! defaults are opposite), and a NUL byte in text is rejected on both before it reaches either,
-//! because Postgres cannot store one.
+//! SQLite uses external-content FTS5 tables maintained by triggers and ranked by `bm25`.
+//! Invalid search syntax is retried as a literal phrase. Text ordering is byte-wise,
+//! pattern matching folds ASCII case, and nulls sort first ascending and last descending.
+//! Text values reject NUL bytes; binary values belong in blobs.
 
 mod ddl;
 mod dialect;
 mod engine;
 mod executor;
 mod migrate;
-mod postgres;
 mod predicate;
 mod query;
 mod registry;
@@ -78,7 +48,6 @@ use yinz_types::plugin_data::{
 
 use self::watch::{apply_watch_mode, WatchRegistry};
 
-pub use self::postgres::{redact_url, PostgresPluginDataBackend};
 pub use self::sqlite::SqlitePluginDataBackend;
 pub use self::watch::WatchChange;
 

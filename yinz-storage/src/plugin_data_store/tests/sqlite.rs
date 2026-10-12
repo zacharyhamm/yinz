@@ -78,10 +78,6 @@ fn a_nul_byte_in_text_is_rejected_before_it_reaches_sqlite() {
 
 /// A database created before the store tracked its own version, and before `rev` existed.
 ///
-/// The SQLite half of the migration story, and it can only be told here: the fixture has to
-/// build the *old* shape by hand, which means writing engine-specific DDL, and the shapes differ.
-/// The Postgres half is `postgres::a_database_from_before_rev_is_migrated_in_place`.
-///
 /// A store this old is at version 0 by having no `store_meta` at all, not by being empty — which
 /// is why migration 1 creates the registry with `IF NOT EXISTS` rather than assuming it is gone.
 #[test]

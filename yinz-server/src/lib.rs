@@ -2432,11 +2432,7 @@ fn init_session(
     // the data dir and the options the id is resolved from, and every later reader takes what is
     // cached here. See `yinz_runtime::host_identity`.
     yinz_runtime::host_identity::init_host_id(&data_dir, config.options.host_id.as_ref());
-    let data_access = Arc::new(DataAccess::configured(
-        config.options.plugin_data_url.as_deref(),
-        config.options.plugin_data_schema.as_deref(),
-        &data_dir,
-    ));
+    let data_access = Arc::new(DataAccess::sqlite(&data_dir));
 
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);
