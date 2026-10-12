@@ -66,6 +66,8 @@ struct Batch {
     events: usize,
     urgent: bool,
     attempted: bool,
+    #[serde(default)]
+    frozen: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -147,13 +149,14 @@ impl Memory {
     }
 
     fn batch(&mut self, summary: String, urgent: bool) {
-        if self.pending.back().is_none_or(|b| b.attempted) {
+        if self.pending.back().is_none_or(|b| b.attempted || b.frozen) {
             self.pending.push_back(Batch {
                 id: uuid::Uuid::new_v4().to_string(),
                 summary: vec![],
                 events: 0,
                 urgent,
                 attempted: false,
+                frozen: false,
             });
         }
         if let Some(batch) = self.pending.back_mut() {
@@ -431,6 +434,10 @@ impl Memory {
         Ok(match request {
             MotherRequest::Status => json!(self.status(true, false)),
             MotherRequest::Inbox => {
+                // An acknowledgement must cover only the events the reader saw.
+                for batch in &mut self.pending {
+                    batch.frozen = true;
+                }
                 json!({"batches":self.pending,"roster":self.roster,"journal":self.journal,"receipts":self.receipts,"gap":self.gap,"cursor":self.cursor,"delivery_blocked":self.delivery_blocked})
             },
             MotherRequest::Checkpoint { expect_rev, value } => {
@@ -951,6 +958,7 @@ fn run(
                     next.delivery_blocked = None;
                     if let Some(b) = next.pending.iter_mut().find(|b| b.id == batch.id) {
                         b.attempted = true;
+                        b.frozen = true;
                     }
                     next.receipts.push_back(Receipt {
                         batch: batch.id,

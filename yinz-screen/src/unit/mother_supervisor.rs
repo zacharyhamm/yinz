@@ -423,11 +423,73 @@ fn incomplete_snapshot_restarts_from_a_snapshot_not_a_partial_cursor() {
 }
 
 #[test]
+fn acknowledging_inbox_preserves_later_worker_events() {
+    for paused in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("memory.json");
+        let mut memory = Memory {
+            paused,
+            ..Default::default()
+        };
+        memory.event(event(1, "terminal_2", "turn_completed"), MOTHER);
+        memory.event(event(2, "terminal_3", "turn_completed"), MOTHER);
+        assert_eq!(memory.pending.len(), 1);
+        let inbox = memory.command(MotherRequest::Inbox).unwrap();
+        let batch = inbox["batches"][0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(inbox["batches"][0]["events"], 2);
+        assert!(!memory.pending[0].attempted);
+        assert_eq!(
+            memory.status(true, false).state,
+            if paused { "paused" } else { "queued" }
+        );
+        if paused {
+            memory.save(&path).unwrap();
+            memory = Memory::load(&path, "session").unwrap();
+        }
+        memory.event(event(3, "terminal_4", "turn_failed"), MOTHER);
+        assert_eq!(memory.pending.len(), 2);
+        assert_eq!(memory.pending[0].events, 2);
+        memory
+            .command(MotherRequest::Ack {
+                batch: batch.clone(),
+            })
+            .unwrap();
+        assert_eq!(memory.pending.len(), 1);
+        assert_ne!(memory.pending[0].id, batch);
+        assert_eq!(memory.pending[0].events, 1);
+        assert!(memory.pending[0].urgent);
+        assert!(!memory.pending[0].attempted);
+        assert!(memory.pending[0].summary[0].contains("terminal_4"));
+    }
+}
+
+#[test]
+fn legacy_batches_load_and_unexposed_batches_still_coalesce() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("memory.json");
+    let mut memory = Memory::default();
+    memory.batch("first".into(), false);
+    let mut legacy = json!(memory);
+    legacy["pending"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("frozen");
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let mut memory = Memory::load(&path, "session").unwrap();
+    assert!(!memory.pending[0].frozen);
+    memory.batch("second".into(), true);
+    assert_eq!(memory.pending.len(), 1);
+    assert_eq!(memory.pending[0].events, 2);
+    assert!(memory.pending[0].urgent);
+}
+
+#[test]
 fn uncertain_delivery_never_requeues_an_unknown_submission() {
     let mut memory = Memory::default();
     memory.batch("work finished".into(), false);
     let batch = memory.pending[0].id.clone();
     memory.pending[0].attempted = true;
+    memory.pending[0].frozen = true;
     let receipt = Receipt {
         batch,
         conversation: "conv".into(),
@@ -445,6 +507,10 @@ fn uncertain_delivery_never_requeues_an_unknown_submission() {
     memory.receipt_response(AgentResponse::new(AgentOutcome::Rejected), true);
     assert!(!memory.pending[0].attempted);
     assert!(memory.receipts.is_empty());
+    memory.batch("later".into(), false);
+    assert_eq!(memory.pending.len(), 2);
+    assert_eq!(memory.pending[0].events, 1);
+    assert_ne!(memory.pending[0].id, memory.pending[1].id);
 }
 
 #[test]
