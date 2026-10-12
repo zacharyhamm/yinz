@@ -166,7 +166,10 @@ impl Tab {
     ) -> Result<()> {
         let info = self.pane_tabs_info(id).context("unknown pane tabs")?;
         if index != info.active
-            && matches!(info.pane_id, PaneId::Terminal(_))
+            && info
+                .tabs
+                .get(info.active)
+                .is_some_and(|slot| slot.terminal_id.is_some())
             && self.connected_clients.borrow().iter().any(|other| {
                 *other != client && self.get_active_pane_id(*other) == Some(info.pane_id)
             })

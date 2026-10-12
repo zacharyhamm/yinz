@@ -914,6 +914,59 @@ fn navigation_recovery_leaves_hidden_pane_tab_children_untouched() {
 }
 
 #[test]
+fn clients_can_return_to_conversation_while_panel_load_is_pending_or_failed() {
+    for failed in [false, true] {
+        for recovering in [ClientId::new(1), ClientId::new(2)] {
+            let (mut tab, receiver) = create_new_tab_with_plugin_receiver(
+                Size { cols: 80, rows: 24 },
+                ModeInfo::default(),
+            );
+            let client = ClientId::new(1);
+            let other = ClientId::new(2);
+            let terminal = PaneId::Terminal(TerminalId::new(100));
+            tab.new_pane(
+                terminal,
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::Floating(None),
+                Some(client),
+                None,
+            )
+            .unwrap();
+            let info = tab.mount_pane_tabs(terminal, layout(), 0, client).unwrap();
+            tab.select_pane_tab(info.id, 1, client).unwrap();
+            assert_eq!(
+                tab.pane_tabs_info(info.id).unwrap().tabs[1].state,
+                PaneTabLoadState::Loading
+            );
+            if failed {
+                let generation = receiver
+                    .try_iter()
+                    .find_map(|(instruction, _)| match instruction {
+                        PluginInstruction::LoadPaneTab { generation, .. } => Some(generation),
+                        _ => None,
+                    })
+                    .unwrap();
+                tab.pane_tab_loaded(info.id, 1, generation, Err("load failed".into()))
+                    .unwrap();
+            }
+            tab.connected_clients.borrow_mut().insert(other);
+            tab.focus_pane_with_id(terminal, false, false, other)
+                .unwrap();
+            assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 1);
+            assert_eq!(tab.pane_tabs_info(info.id).unwrap().pane_id, terminal);
+            tab.select_pane_tab(info.id, 0, recovering).unwrap();
+            assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 0);
+            for client in [client, other] {
+                assert_eq!(tab.get_active_pane_id(client), Some(terminal));
+            }
+        }
+    }
+}
+
+#[test]
 fn terminal_and_panel_tabs_retain_terminal_through_switch_transfer_and_close() {
     let (mut tab, receiver) =
         create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
