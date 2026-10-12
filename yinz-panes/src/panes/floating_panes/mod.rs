@@ -273,6 +273,7 @@ impl FloatingPanes {
         self.desired_pane_positions
             .insert(pane_id, pane.position_and_size());
         self.panes.insert(pane_id, pane);
+        self.z_indices.retain(|id| *id != pane_id);
         self.z_indices.push(pane_id);
         self.make_sure_pinned_panes_are_on_top();
     }
@@ -293,61 +294,53 @@ impl FloatingPanes {
         pane_id: PaneId,
         mut with_pane: Box<dyn Pane>,
     ) -> Result<Box<dyn Pane>> {
-        let err_context = || format!("failed to replace pane {pane_id:?} with pane");
-
         let with_pane_id = with_pane.pid();
-        with_pane.set_content_offset(Offset::frame(1));
         let removed_pane = self
             .panes
             .remove(&pane_id)
-            .with_context(|| format!("failed to remove unknown pane with ID {pane_id:?}"))
-            .and_then(|removed_pane| {
-                let removed_pane_id = removed_pane.pid();
-                let with_pane_id = with_pane.pid();
-                // Copy the base geometry and the override separately: `current_geom()`
-                // would bake a fullscreen override into the replacement's base geometry,
-                // leaving nothing to fall back to when fullscreen is toggled off.
-                let removed_pane_geom = removed_pane.position_and_size();
-                let removed_pane_geom_override = removed_pane.geom_override();
-                with_pane.set_geom(removed_pane_geom);
-                match removed_pane_geom_override {
-                    Some(geom_override) => with_pane.set_geom_override(geom_override),
-                    None => with_pane.reset_size_and_position_override(),
-                };
-                self.panes.insert(with_pane_id, with_pane);
-                // The replacement inherits the removed pane's geom_override (above);
-                // if the removed pane was the fullscreen pane, retarget the fullscreen
-                // bookkeeping so unset_fullscreen can later reset the override on the
-                // pane that actually carries it.
-                if self.fullscreen_pane_id == Some(pane_id) {
-                    self.fullscreen_pane_id = Some(with_pane_id);
-                }
-                let z_index = self
-                    .z_indices
-                    .iter()
-                    .position(|pane_id| pane_id == &removed_pane_id)
-                    .context("no z-index found for pane to be removed with ID {removed_pane_id:?}")
-                    .with_context(err_context)?;
-                self.z_indices.remove(z_index);
-                self.z_indices.insert(z_index, with_pane_id);
-                self.make_sure_pinned_panes_are_on_top();
-                Ok(removed_pane)
-            });
-
-        // update the desired_pane_positions to relate to the new pane
-        if let Some(desired_pane_position) = self.desired_pane_positions.remove(&pane_id) {
-            self.desired_pane_positions
-                .insert(with_pane_id, desired_pane_position);
+            .with_context(|| format!("failed to replace unknown floating pane {pane_id:?}"))?;
+        with_pane.set_content_offset(Offset::frame(1));
+        // Keep the base geometry separate so leaving fullscreen restores the original size.
+        with_pane.set_geom(removed_pane.position_and_size());
+        match removed_pane.geom_override() {
+            Some(geom) => with_pane.set_geom_override(geom),
+            None => with_pane.reset_size_and_position_override(),
         }
-        // move clients from the previously active pane to the new pane we just inserted
+        self.panes.insert(with_pane_id, with_pane);
+        if self.fullscreen_pane_id == Some(pane_id) {
+            self.fullscreen_pane_id = Some(with_pane_id);
+        }
+        match self.z_indices.iter().position(|id| *id == pane_id) {
+            Some(index) => self.z_indices[index] = with_pane_id,
+            None => self.z_indices.push(with_pane_id),
+        }
+        self.make_sure_pinned_panes_are_on_top();
+        if let Some(position) = self.desired_pane_positions.remove(&pane_id) {
+            self.desired_pane_positions.insert(with_pane_id, position);
+        }
         self.move_clients_between_panes(pane_id, with_pane_id);
-        let _ = self.set_pane_frames();
-        removed_pane
+        self.active_panes.retarget_last_pane(pane_id, with_pane_id);
+        if let Some((id, _, _)) = self.pane_being_moved_with_mouse.as_mut() {
+            if *id == pane_id {
+                *id = with_pane_id;
+            }
+        }
+        self.set_pane_frames().non_fatal();
+        Ok(removed_pane)
     }
     pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<Box<dyn Pane>> {
+        if self.fullscreen_pane_id == Some(pane_id) {
+            self.unset_fullscreen();
+        }
+        if self.pane_being_moved_with_mouse.map(|(id, _, _)| id) == Some(pane_id) {
+            self.pane_being_moved_with_mouse = None;
+        }
         self.z_indices.retain(|p_id| *p_id != pane_id);
         self.desired_pane_positions.remove(&pane_id);
-        self.panes.remove(&pane_id)
+        let removed_pane = self.panes.remove(&pane_id);
+        self.move_clients_out_of_pane(pane_id);
+        self.active_panes.remove_last_pane(pane_id);
+        removed_pane
     }
     pub fn hold_pane(
         &mut self,
@@ -410,9 +403,11 @@ impl FloatingPanes {
         self.window_title = None; // clear so that it will be re-rendered once we toggle back
         self.show_panes = should_show_floating_panes;
         if should_show_floating_panes {
-            self.active_panes.focus_all_panes(&self.panes);
+            self.active_panes
+                .focus_all_panes(&self.panes, &self.connected_clients.borrow());
         } else {
-            self.active_panes.unfocus_all_panes(&self.panes);
+            self.active_panes
+                .unfocus_all_panes(&self.panes, &self.connected_clients.borrow());
         }
     }
     /// Which clients have this pane focused. Needed when a pane leaves this collection for
@@ -506,8 +501,8 @@ impl FloatingPanes {
         if position.rows.as_usize() > viewport.rows {
             position.rows = Dimension::fixed(viewport.rows);
         }
-        let right_edge = viewport.cols;
-        let bottom_edge = viewport.rows;
+        let right_edge = viewport.x + viewport.cols;
+        let bottom_edge = viewport.y + viewport.rows;
         if position.x + position.cols.as_usize() > right_edge {
             position.x = position
                 .x
@@ -857,10 +852,12 @@ impl FloatingPanes {
         strategy: &ResizeStrategy,
     ) -> Result<bool> {
         // true => successfully resized
-        if let Some(active_floating_pane_id) = self.active_panes.get(&client_id) {
-            return self.resize_pane_with_id(*strategy, *active_floating_pane_id);
+        match self.active_panes.get(&client_id).copied() {
+            Some(pane_id) if self.panes.contains_key(&pane_id) => {
+                self.resize_pane_with_id(*strategy, pane_id)
+            },
+            _ => Ok(false),
         }
-        Ok(false)
     }
     pub fn resize_pane_with_id(
         &mut self,
@@ -930,9 +927,18 @@ impl FloatingPanes {
         }
     }
 
-    fn reenter_fullscreen_on_active_pane(&mut self, client_id: ClientId, covers_ui: bool) {
-        if let Some(active_pane_id) = self.get_active_pane_id(client_id) {
-            self.set_fullscreen(active_pane_id, covers_ui);
+    fn reenter_fullscreen_on_active_pane(
+        &mut self,
+        client_id: ClientId,
+        previous_pane: Option<PaneId>,
+        covers_ui: bool,
+    ) {
+        let pane_id = self
+            .get_active_pane_id(client_id)
+            .filter(|id| self.panes.contains_key(id))
+            .or_else(|| previous_pane.filter(|id| self.panes.contains_key(id)));
+        if let Some(pane_id) = pane_id {
+            self.set_fullscreen(pane_id, covers_ui);
         }
     }
     pub fn move_focus(
@@ -946,14 +952,20 @@ impl FloatingPanes {
             format!("failed to move focus of floating pane {direction:?} for client {client_id}")
         };
         // An unfocused client has no starting pane; leave other clients and the stack alone.
-        let Some(active_pane_id) = self.active_panes.get(&client_id).copied() else {
+        let Some(active_pane_id) = self
+            .active_panes
+            .get(&client_id)
+            .copied()
+            .filter(|id| self.panes.contains_key(id))
+        else {
             return Ok(false);
         };
         if self.fullscreen_pane_id.is_some() {
             let covers_ui = self.floating_fullscreen_covers_ui;
+            let previous_pane = self.fullscreen_pane_id;
             self.unset_fullscreen();
             let ret = self.move_focus(client_id, connected_clients, direction);
-            self.reenter_fullscreen_on_active_pane(client_id, covers_ui);
+            self.reenter_fullscreen_on_active_pane(client_id, previous_pane, covers_ui);
             return ret;
         }
 
@@ -1029,9 +1041,10 @@ impl FloatingPanes {
     pub fn focus_pane_on_edge(&mut self, direction: Direction, client_id: ClientId) {
         if self.fullscreen_pane_id.is_some() {
             let covers_ui = self.floating_fullscreen_covers_ui;
+            let previous_pane = self.fullscreen_pane_id;
             self.unset_fullscreen();
             self.focus_pane_on_edge(direction, client_id);
-            self.reenter_fullscreen_on_active_pane(client_id, covers_ui);
+            self.reenter_fullscreen_on_active_pane(client_id, previous_pane, covers_ui);
             return;
         }
         let display_area = *self.display_area.borrow();
@@ -1093,9 +1106,10 @@ impl FloatingPanes {
     pub fn focus_last_pane(&mut self, client_id: ClientId) {
         if self.fullscreen_pane_id.is_some() {
             let covers_ui = self.floating_fullscreen_covers_ui;
+            let previous_pane = self.fullscreen_pane_id;
             self.unset_fullscreen();
             self.focus_last_pane(client_id);
-            self.reenter_fullscreen_on_active_pane(client_id, covers_ui);
+            self.reenter_fullscreen_on_active_pane(client_id, previous_pane, covers_ui);
             return;
         }
         let rendered_pane_ids = self.rendered_pane_ids();
@@ -1357,15 +1371,15 @@ impl FloatingPanes {
         }
     }
     pub fn focus_pane_for_all_clients(&mut self, pane_id: PaneId) {
+        if !self.pane_is_selectable(&pane_id) {
+            return;
+        }
         let connected_clients: Vec<ClientId> =
             self.connected_clients.borrow().iter().copied().collect();
         for client_id in connected_clients {
             self.active_panes.insert(client_id, pane_id, &self.panes);
         }
-        self.z_indices.retain(|p_id| *p_id != pane_id);
-        self.z_indices.push(pane_id);
-        self.make_sure_pinned_panes_are_on_top();
-        self.set_pane_active_at(pane_id);
+        self.raise_pane(pane_id);
         self.set_force_render();
     }
     pub fn fullscreen_is_active(&self) -> bool {
@@ -1431,13 +1445,9 @@ impl FloatingPanes {
                 pane.set_content_offset(Offset::default());
             }
         }
-        resize_pty!(
-            self.panes.get_mut(&pane_id).unwrap(),
-            os_api,
-            self.senders,
-            self.character_cell_size
-        )
-        .non_fatal();
+        if let Some(pane) = self.panes.get_mut(&pane_id) {
+            resize_pty!(pane, os_api, self.senders, self.character_cell_size).non_fatal();
+        }
         self.fullscreen_pane_id = Some(pane_id);
         self.floating_fullscreen_covers_ui = covers_ui;
         self.focus_pane_for_all_clients(pane_id);
@@ -1460,6 +1470,9 @@ impl FloatingPanes {
         }
     }
     pub fn toggle_pane_fullscreen(&mut self, pane_id: PaneId) {
+        if !self.panes.contains_key(&pane_id) {
+            return;
+        }
         if self.fullscreen_pane_id.is_some() {
             let was_no_ui = self.floating_fullscreen_covers_ui;
             self.unset_fullscreen();
@@ -1471,6 +1484,9 @@ impl FloatingPanes {
         }
     }
     pub fn toggle_pane_no_ui_fullscreen(&mut self, pane_id: PaneId) {
+        if !self.panes.contains_key(&pane_id) {
+            return;
+        }
         if self.fullscreen_pane_id.is_some() {
             let was_no_ui = self.floating_fullscreen_covers_ui;
             self.unset_fullscreen();
@@ -1498,37 +1514,54 @@ impl FloatingPanes {
         }
     }
     pub fn focus_pane(&mut self, pane_id: PaneId, client_id: ClientId) {
+        if !self.pane_is_selectable(&pane_id) {
+            log::error!("Cannot focus pane {:?} as it is not selectable!", pane_id);
+            return;
+        }
         if let Some(focused_pane) = self.active_panes.get(&client_id) {
             if pane_id != *focused_pane {
                 self.active_panes.set_last_pane(client_id, *focused_pane);
             }
         }
-        let pane_is_selectable = self
-            .panes
-            .get(&pane_id)
-            .map(|p| p.selectable())
-            .unwrap_or(false);
-        if !pane_is_selectable {
-            log::error!("Cannot focus pane {:?} as it is not selectable!", pane_id);
-            return;
-        }
         self.active_panes.insert(client_id, pane_id, &self.panes);
         self.focus_pane_for_all_clients(pane_id);
     }
-    pub fn focus_pane_if_client_not_focused(&mut self, pane_id: PaneId, client_id: ClientId) {
-        match self.active_panes.get(&client_id) {
-            Some(already_focused_pane_id) => self.focus_pane(*already_focused_pane_id, client_id),
-            None => self.focus_pane(pane_id, client_id),
-        }
+    fn pane_is_selectable(&self, pane_id: &PaneId) -> bool {
+        self.panes
+            .get(pane_id)
+            .is_some_and(|pane| pane.selectable())
     }
-    pub fn focus_first_pane_if_client_not_focused(&mut self, client_id: ClientId) {
-        match self.active_panes.get(&client_id) {
-            Some(already_focused_pane_id) => self.focus_pane(*already_focused_pane_id, client_id),
-            None => {
-                if let Some(first_pane_id) = self.panes.iter().next().map(|(p_id, _)| *p_id) {
-                    self.focus_pane(first_pane_id, client_id);
-                }
-            },
+    fn raise_pane(&mut self, pane_id: PaneId) {
+        self.z_indices.retain(|id| *id != pane_id);
+        self.z_indices.push(pane_id);
+        self.make_sure_pinned_panes_are_on_top();
+        self.set_pane_active_at(pane_id);
+    }
+    pub fn focus_pane_for_joining_client(&mut self, client_id: ClientId) {
+        let focused_by_others = {
+            let connected_clients = self.connected_clients.borrow();
+            self.active_panes
+                .iter()
+                .filter(|(id, _)| **id != client_id && connected_clients.contains(id))
+                .map(|(_, pane_id)| *pane_id)
+                .find(|pane_id| self.pane_is_selectable(pane_id))
+        };
+        let remembered = self
+            .active_panes
+            .get(&client_id)
+            .copied()
+            .filter(|pane_id| self.pane_is_selectable(pane_id));
+        let pane_to_focus = focused_by_others
+            .or(remembered)
+            .or_else(|| self.most_recently_active_selectable_pane(None, &self.z_indices));
+        if let Some(pane_id) = pane_to_focus {
+            if let Some(previous) = remembered.filter(|previous| *previous != pane_id) {
+                self.active_panes.set_last_pane(client_id, previous);
+            }
+            self.active_panes.insert(client_id, pane_id, &self.panes);
+            self.raise_pane(pane_id);
+        } else {
+            self.active_panes.remove(&client_id, &self.panes);
         }
     }
     pub fn defocus_pane(&mut self, client_id: ClientId) {
@@ -1688,6 +1721,8 @@ impl FloatingPanes {
         self.panes.len()
     }
     pub fn drain(&mut self) -> BTreeMap<PaneId, Box<dyn Pane>> {
+        self.unset_fullscreen();
+        self.pane_being_moved_with_mouse = None;
         self.z_indices.clear();
         self.desired_pane_positions.clear();
         match self.panes.iter().next().map(|(pid, _p)| *pid) {
@@ -1708,9 +1743,26 @@ impl FloatingPanes {
         }
     }
     pub fn reapply_pane_focus(&mut self) {
-        if let Some(focused_pane) = self.first_active_floating_pane_id() {
-            // floating pane focus is the same for all clients
-            self.focus_pane_for_all_clients(focused_pane);
+        let focused_by_connected_client = {
+            let connected_clients = self.connected_clients.borrow();
+            self.active_panes
+                .iter()
+                .filter(|(id, _)| connected_clients.contains(id))
+                .map(|(_, pane_id)| *pane_id)
+                .find(|pane_id| self.pane_is_selectable(pane_id))
+        };
+        if let Some(pane_id) = focused_by_connected_client {
+            self.focus_pane_for_all_clients(pane_id);
+        } else {
+            let remembered = self
+                .active_panes
+                .values()
+                .copied()
+                .find(|pane_id| self.pane_is_selectable(pane_id))
+                .or_else(|| self.most_recently_active_selectable_pane(None, &self.z_indices));
+            if let Some(pane_id) = remembered {
+                self.raise_pane(pane_id);
+            }
         }
     }
     pub fn switch_active_pane_with(&mut self, _os_api: &mut Box<dyn ServerOsApi>, pane_id: PaneId) {

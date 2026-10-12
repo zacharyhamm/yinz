@@ -220,7 +220,7 @@ fn stack_without_flexible_member_uses_complete_height_for_borders() {
 }
 
 #[test]
-fn missing_geometry_is_ignored_by_width_reduction_and_border_checks() {
+fn missing_geometry_is_ignored_by_resize_and_border_checks() {
     let mut panes = HashMap::new();
     let mut grid = TiledPaneGrid::new(
         &mut panes,
@@ -230,6 +230,11 @@ fn missing_geometry_is_ignored_by_width_reduction_and_border_checks() {
     );
     let missing = PaneId::Terminal(crate::TerminalId::new(99));
     grid.reduce_pane_width(&missing, 5.0);
+    grid.increase_pane_width(&missing, 5.0);
+    grid.reduce_pane_height(&missing, 5.0);
+    grid.increase_pane_height(&missing, 5.0);
+    assert!(!grid.is_inside_viewport(&missing));
+    assert!(grid.vertical_borders(&[missing]).is_empty());
     assert!(!grid.pane_is_between_horizontal_borders(&missing, 0, 20));
     assert!(!grid.pane_is_between_vertical_borders(&missing, 0, 80));
     assert!(grid.horizontal_borders(&[missing]).is_empty());

@@ -900,16 +900,63 @@ fn fixed_and_degenerate_percents() {
 
 #[test]
 fn zero_flex_space_division() {
-    let f = fixture("zero_flex_space_division");
-    let run = f.run();
-    println!("{} = {}", f.name, canonical(&run));
+    let mut f = fixture("zero_flex_space_division");
+    for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
+        f.direction = direction;
+        if direction == SplitDirection::Vertical {
+            for pane in &mut f.specs {
+                std::mem::swap(&mut pane.x, &mut pane.y);
+                std::mem::swap(&mut pane.cols, &mut pane.rows);
+            }
+        }
+        let run = f.run();
+        assert!(
+            matches!(&run.outcome, Outcome::OtherErr(error) if error.contains("Ran out of room")),
+            "{:?}",
+            run.outcome
+        );
+        assert_no_mutation(&run, &f.specs, f.name);
+    }
 }
 
 #[test]
 fn saturated_flex_space_division() {
-    let f = fixture("saturated_flex_space_division");
-    let run = f.run();
-    println!("{} = {}", f.name, canonical(&run));
+    let mut f = fixture("saturated_flex_space_division");
+    for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
+        f.direction = direction;
+        if direction == SplitDirection::Vertical {
+            for pane in &mut f.specs {
+                std::mem::swap(&mut pane.x, &mut pane.y);
+                std::mem::swap(&mut pane.cols, &mut pane.rows);
+            }
+        }
+        let run = f.run();
+        assert!(
+            matches!(&run.outcome, Outcome::OtherErr(error) if error.contains("Ran out of room")),
+            "{:?}",
+            run.outcome
+        );
+        assert_no_mutation(&run, &f.specs, f.name);
+    }
+}
+
+#[test]
+fn fixed_panes_that_exactly_fill_the_space_are_accepted() {
+    for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
+        let mut panes = vec![
+            spec(1, 0, 0, dim_fixed(20), dim_pct(100.0, 10)),
+            spec(2, 20, 0, dim_fixed(30), dim_pct(100.0, 10)),
+        ];
+        if direction == SplitDirection::Vertical {
+            for pane in &mut panes {
+                std::mem::swap(&mut pane.x, &mut pane.y);
+                std::mem::swap(&mut pane.cols, &mut pane.rows);
+            }
+        }
+        let run = run_layout(&panes, direction, 50);
+        assert_eq!(run.outcome, Outcome::PaneSizeUnchanged);
+        assert_no_mutation(&run, &panes, "exact fixed fit");
+    }
 }
 
 #[test]

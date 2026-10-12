@@ -564,69 +564,77 @@ impl<'a> TiledPaneGrid<'a> {
 
     fn reduce_pane_height(&mut self, id: &PaneId, percent: f64) {
         if self.can_reduce_pane_height(id, percent).unwrap_or(false) {
-            let current_pane_is_stacked = self
+            let Some(current_pane_is_stacked) = self
                 .panes
                 .borrow()
                 .get(id)
-                .unwrap()
-                .current_geom()
-                .is_stacked();
+                .map(|p| p.current_geom().is_stacked())
+            else {
+                return;
+            };
             if current_pane_is_stacked {
                 let _ = StackedPanes::new(self.panes.clone()).reduce_stack_height(id, percent);
             } else {
                 let mut panes = self.panes.borrow_mut();
-                let terminal = panes.get_mut(id).unwrap();
-                terminal.reduce_height(percent);
+                if let Some(terminal) = panes.get_mut(id) {
+                    terminal.reduce_height(percent);
+                }
             }
         }
     }
     fn increase_pane_height(&mut self, id: &PaneId, percent: f64) {
-        let current_pane_is_stacked = self
+        let Some(current_pane_is_stacked) = self
             .panes
             .borrow()
             .get(id)
-            .unwrap()
-            .current_geom()
-            .is_stacked();
+            .map(|p| p.current_geom().is_stacked())
+        else {
+            return;
+        };
         if current_pane_is_stacked {
             let _ = StackedPanes::new(self.panes.clone()).increase_stack_height(id, percent);
         } else {
             let mut panes = self.panes.borrow_mut();
-            let terminal = panes.get_mut(id).unwrap();
-            terminal.increase_height(percent);
+            if let Some(terminal) = panes.get_mut(id) {
+                terminal.increase_height(percent);
+            }
         }
     }
     fn increase_pane_width(&mut self, id: &PaneId, percent: f64) {
-        let current_pane_is_stacked = self
+        let Some(current_pane_is_stacked) = self
             .panes
             .borrow()
             .get(id)
-            .unwrap()
-            .current_geom()
-            .is_stacked();
+            .map(|p| p.current_geom().is_stacked())
+        else {
+            return;
+        };
         if current_pane_is_stacked {
             let _ = StackedPanes::new(self.panes.clone()).increase_stack_width(id, percent);
         } else {
             let mut panes = self.panes.borrow_mut();
-            let pane = panes.get_mut(id).unwrap();
-            pane.increase_width(percent);
+            if let Some(pane) = panes.get_mut(id) {
+                pane.increase_width(percent);
+            }
         }
     }
     fn reduce_pane_width(&mut self, id: &PaneId, percent: f64) {
         if self.can_reduce_pane_width(id, percent).unwrap_or(false) {
-            let current_pane_is_stacked = self
+            let Some(current_pane_is_stacked) = self
                 .panes
                 .borrow()
                 .get(id)
-                .unwrap()
-                .current_geom()
-                .is_stacked();
+                .map(|p| p.current_geom().is_stacked())
+            else {
+                return;
+            };
             if current_pane_is_stacked {
                 let _ = StackedPanes::new(self.panes.clone()).reduce_stack_width(id, percent);
             } else {
                 let mut panes = self.panes.borrow_mut();
-                let terminal = panes.get_mut(id).unwrap();
-                terminal.reduce_width(percent);
+                if let Some(terminal) = panes.get_mut(id) {
+                    terminal.reduce_width(percent);
+                }
             }
         }
     }
@@ -866,7 +874,11 @@ impl<'a> TiledPaneGrid<'a> {
     }
 
     fn is_inside_viewport(&self, pane_id: &PaneId) -> bool {
-        is_inside_viewport(&self.viewport, self.panes.borrow().get(pane_id).unwrap())
+        self.panes
+            .borrow()
+            .get(pane_id)
+            .map(|pane| is_inside_viewport(&self.viewport, pane))
+            .unwrap_or(false)
     }
 
     /// The selectable panes in focus-cycling order: top-to-bottom, then left-to-right.
@@ -1154,9 +1166,10 @@ impl<'a> TiledPaneGrid<'a> {
     fn vertical_borders(&self, pane_ids: &[PaneId]) -> HashSet<usize> {
         pane_ids.iter().fold(HashSet::new(), |mut borders, p| {
             let panes = self.panes.borrow();
-            let pane = panes.get(p).unwrap();
-            borders.insert(pane.x());
-            borders.insert(pane.x() + pane.cols());
+            if let Some(pane) = panes.get(p) {
+                borders.insert(pane.x());
+                borders.insert(pane.x() + pane.cols());
+            }
             borders
         })
     }
@@ -1172,7 +1185,7 @@ impl<'a> TiledPaneGrid<'a> {
             let panes_to_the_left = self.pane_ids_directly_next_to(&id, &Direction::Left)?;
             let mut selectable_panes: Vec<_> = panes_to_the_left
                 .into_iter()
-                .filter(|pid| panes.get(pid).unwrap().selectable())
+                .filter(|pid| panes.get(pid).is_some_and(|p| p.selectable()))
                 .collect();
             let pane_borders_to_the_left = self.horizontal_borders(&selectable_panes);
             if pane_borders_to_the_left.contains(&upper_close_border)
@@ -1202,7 +1215,7 @@ impl<'a> TiledPaneGrid<'a> {
             let panes_to_the_right = self.pane_ids_directly_next_to(&id, &Direction::Right)?;
             let mut selectable_panes: Vec<_> = panes_to_the_right
                 .into_iter()
-                .filter(|pid| panes.get(pid).unwrap().selectable())
+                .filter(|pid| panes.get(pid).is_some_and(|p| p.selectable()))
                 .collect();
             let pane_borders_to_the_right = self.horizontal_borders(&selectable_panes);
             if pane_borders_to_the_right.contains(&upper_close_border)
@@ -1229,7 +1242,7 @@ impl<'a> TiledPaneGrid<'a> {
             let panes_above = self.pane_ids_directly_next_to(&id, &Direction::Up)?;
             let mut selectable_panes: Vec<_> = panes_above
                 .into_iter()
-                .filter(|pid| panes.get(pid).unwrap().selectable())
+                .filter(|pid| panes.get(pid).is_some_and(|p| p.selectable()))
                 .collect();
             let pane_borders_above = self.vertical_borders(&selectable_panes);
             if pane_borders_above.contains(&left_close_border)
@@ -1252,7 +1265,7 @@ impl<'a> TiledPaneGrid<'a> {
             let panes_below = self.pane_ids_directly_next_to(&id, &Direction::Down)?;
             let mut selectable_panes: Vec<_> = panes_below
                 .into_iter()
-                .filter(|pid| panes[pid].selectable())
+                .filter(|pid| panes.get(pid).map(|p| p.selectable()).unwrap_or(false))
                 .collect();
             let pane_borders_below = self.vertical_borders(&selectable_panes);
             if pane_borders_below.contains(&left_close_border)

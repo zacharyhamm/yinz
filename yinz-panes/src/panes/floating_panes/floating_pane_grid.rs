@@ -205,8 +205,9 @@ impl<'a> FloatingPaneGrid<'a> {
                         } else {
                             new_pane_geom.cols.set_inner(
                                 new_pane_geom.cols.as_usize()
-                                    + (max_right_coords
-                                        - (new_pane_geom.x + new_pane_geom.cols.as_usize())),
+                                    + max_right_coords.saturating_sub(
+                                        new_pane_geom.x + new_pane_geom.cols.as_usize(),
+                                    ),
                             );
                         }
                     }
@@ -243,8 +244,9 @@ impl<'a> FloatingPaneGrid<'a> {
                         } else {
                             new_pane_geom.rows.set_inner(
                                 new_pane_geom.rows.as_usize()
-                                    + (max_bottom_coords
-                                        - (new_pane_geom.y + new_pane_geom.rows.as_usize())),
+                                    + max_bottom_coords.saturating_sub(
+                                        new_pane_geom.y + new_pane_geom.rows.as_usize(),
+                                    ),
                             );
                         }
                     }
@@ -816,7 +818,7 @@ pub fn geom_resized_within(
         geometry.x += increment;
         geometry
             .cols
-            .set_inner(geometry.cols.as_usize() - increment);
+            .set_inner(geometry.cols.as_usize().saturating_sub(increment));
     };
 
     // Move right border
@@ -840,7 +842,7 @@ pub fn geom_resized_within(
         );
         geometry
             .cols
-            .set_inner(geometry.cols.as_usize() - increment);
+            .set_inner(geometry.cols.as_usize().saturating_sub(increment));
     };
 
     // Move upper border
@@ -863,7 +865,7 @@ pub fn geom_resized_within(
         geometry.y += increment;
         geometry
             .rows
-            .set_inner(geometry.rows.as_usize() - increment);
+            .set_inner(geometry.rows.as_usize().saturating_sub(increment));
     }
 
     // Move lower border
@@ -887,7 +889,7 @@ pub fn geom_resized_within(
         );
         geometry
             .rows
-            .set_inner(geometry.rows.as_usize() - increment);
+            .set_inner(geometry.rows.as_usize().saturating_sub(increment));
     }
 
     geometry
@@ -925,7 +927,10 @@ fn half_size_top_left_geom(space: &Viewport, offset: usize) -> PaneGeom {
 
 fn half_size_top_right_geom(space: &Viewport, offset: usize) -> PaneGeom {
     let mut geom = PaneGeom {
-        x: ((space.x + space.cols) - (space.cols / 3) - 2).saturating_sub(offset),
+        x: (space.x + space.cols)
+            .saturating_sub(space.cols / 3)
+            .saturating_sub(2)
+            .saturating_sub(offset),
         y: space.y + 2 + offset,
         cols: Dimension::fixed(space.cols / 3),
         rows: Dimension::fixed(space.rows / 3),
@@ -941,7 +946,10 @@ fn half_size_top_right_geom(space: &Viewport, offset: usize) -> PaneGeom {
 fn half_size_bottom_left_geom(space: &Viewport, offset: usize) -> PaneGeom {
     let mut geom = PaneGeom {
         x: space.x + 2 + offset,
-        y: ((space.y + space.rows) - (space.rows / 3) - 2).saturating_sub(offset),
+        y: (space.y + space.rows)
+            .saturating_sub(space.rows / 3)
+            .saturating_sub(2)
+            .saturating_sub(offset),
         cols: Dimension::fixed(space.cols / 3),
         rows: Dimension::fixed(space.rows / 3),
         stacked: None,
@@ -955,8 +963,14 @@ fn half_size_bottom_left_geom(space: &Viewport, offset: usize) -> PaneGeom {
 
 fn half_size_bottom_right_geom(space: &Viewport, offset: usize) -> PaneGeom {
     let mut geom = PaneGeom {
-        x: ((space.x + space.cols) - (space.cols / 3) - 2).saturating_sub(offset),
-        y: ((space.y + space.rows) - (space.rows / 3) - 2).saturating_sub(offset),
+        x: (space.x + space.cols)
+            .saturating_sub(space.cols / 3)
+            .saturating_sub(2)
+            .saturating_sub(offset),
+        y: (space.y + space.rows)
+            .saturating_sub(space.rows / 3)
+            .saturating_sub(2)
+            .saturating_sub(offset),
         cols: Dimension::fixed(space.cols / 3),
         rows: Dimension::fixed(space.rows / 3),
         stacked: None,
@@ -986,3 +1000,7 @@ fn pane_geom_is_unoccupied_and_inside_viewport(
 ) -> bool {
     pane_geom_is_inside_viewport(viewport, geom) && !existing_geoms.iter().any(|p| p == geom)
 }
+
+#[cfg(test)]
+#[path = "unit/geometry_tests.rs"]
+mod geometry_tests;

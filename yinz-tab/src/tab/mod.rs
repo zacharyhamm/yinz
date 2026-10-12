@@ -2302,12 +2302,6 @@ impl Tab {
         // client registered before that question is asked can be the one answering it - and it
         // has no focused pane yet.
         if other_clients_exist_in_tab {
-            if let Some(first_active_floating_pane_id) =
-                self.floating_panes.first_active_floating_pane_id()
-            {
-                self.floating_panes
-                    .focus_pane_if_client_not_focused(first_active_floating_pane_id, client_id);
-            }
             if let Some(first_active_tiled_pane_id) = self.tiled_panes.first_active_pane_id() {
                 self.tiled_panes
                     .focus_pane_if_client_not_focused(first_active_tiled_pane_id, client_id);
@@ -2336,9 +2330,8 @@ impl Tab {
                 self.tiled_panes
                     .focus_pane_if_client_not_focused(focus_pane_id, client_id);
             }
-            self.floating_panes
-                .focus_first_pane_if_client_not_focused(client_id);
         }
+        self.floating_panes.focus_pane_for_joining_client(client_id);
         // Unconditional. A tab with no tiled panes is an ordinary state here - floating panes, an
         // overlay, a pane suppressed behind a hook plugin, a tab still applying its layout - and
         // this used to return `Ok(())` for one without registering the client at all. Callers
@@ -7315,7 +7308,7 @@ impl Tab {
         if let Some(max_panes) = self.max_panes {
             self.dissolve_stack_lists_for_classic_mutation();
             let terminals = self.get_tiled_pane_ids();
-            for &pid in terminals.iter().skip(max_panes - 1) {
+            for &pid in terminals.iter().skip(max_panes.saturating_sub(1)) {
                 self.senders
                     .send_to_pty(PtyInstruction::ClosePane(pid, None))
                     .context("failed to close down to max terminals")?;
@@ -7583,7 +7576,6 @@ impl Tab {
                 self.floating_panes.unset_fullscreen();
             }
             let closed_pane = self.floating_panes.remove_pane(id);
-            self.floating_panes.move_clients_out_of_pane(id);
             if !self.floating_panes.has_selectable_panes() {
                 self.swap_layouts.reset_floating_damage();
                 self.hide_floating_panes();
@@ -7699,7 +7691,6 @@ impl Tab {
                 self.floating_panes.unset_fullscreen();
             }
             let mut closed_pane = self.floating_panes.remove_pane(id);
-            self.floating_panes.move_clients_out_of_pane(id);
             if !self.floating_panes.has_panes() {
                 self.swap_layouts.reset_floating_damage();
                 self.hide_floating_panes();
