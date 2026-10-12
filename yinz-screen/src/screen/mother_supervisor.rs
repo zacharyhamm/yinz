@@ -99,6 +99,22 @@ struct Memory {
 }
 
 impl Memory {
+    fn subscription_filters(&self) -> EventSubscription {
+        let mut filters = self.filters.clone();
+        filters.lifecycle_types.clear();
+        filters.cursor = None;
+        filters
+    }
+
+    fn selects_wake(&self, kind: &str) -> bool {
+        self.filters.lifecycle_types.is_empty()
+            || self
+                .filters
+                .lifecycle_types
+                .iter()
+                .any(|wanted| wanted == kind)
+    }
+
     fn load(path: &Path, session: &str) -> Result<Self> {
         let mut memory: Self = match std::fs::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes).context("read Mother checkpoint"),
@@ -114,7 +130,7 @@ impl Memory {
                         || !cursor["host"].is_string()
                         || !cursor["epoch"].is_string()
                         || cursor["sequence"].as_u64().is_none()
-                        || cursor["filters"] != json!(memory.filters)
+                        || cursor["filters"] != json!(memory.subscription_filters())
                 })
             })
         {
@@ -225,6 +241,9 @@ impl Memory {
                             .get(pane)
                             .filter(|old| old["conversation_id"] == event["conversation_id"])
                         {
+                            if old["submission_id"] == row["submission_id"] {
+                                row["retained_result"] = old["retained_result"].clone();
+                            }
                             for key in [
                                 "assignment",
                                 "last_outcome",
@@ -240,6 +259,7 @@ impl Memory {
                         }
                         if kind == "submission_acknowledged" {
                             row["last_outcome"] = Value::Null;
+                            row["retained_result"] = Value::Null;
                         }
                         if kind == "observation_uncertain"
                             || kind == "turn_completed"
@@ -247,6 +267,7 @@ impl Memory {
                             || kind == "turn_interrupted"
                         {
                             row["last_outcome"] = event.clone();
+                            row["retained_result"] = Value::Null;
                         }
                         if !event["detail"].is_null() {
                             row["current_activity"] = event["detail"].clone();
@@ -256,9 +277,10 @@ impl Memory {
                     let urgent = kind == "needs_input"
                         || kind == "turn_failed"
                         || kind == "observation_uncertain";
-                    if !matches!(kind, "snapshot" | "activity" | "state_changed")
-                        || urgent
-                        || (kind == "state_changed" && state_changed)
+                    if self.selects_wake(kind)
+                        && (!matches!(kind, "snapshot" | "activity" | "state_changed")
+                            || urgent
+                            || (kind == "state_changed" && state_changed))
                     {
                         self.batch(
                             format!(
@@ -326,12 +348,38 @@ impl Memory {
         }
     }
 
+    fn reconcile(&mut self, request: &AgentRequest, result: AgentResponse) -> bool {
+        let AgentRequest::WaitTurn {
+            pane_id,
+            expected_session_id,
+            submission_id,
+            ..
+        } = request
+        else {
+            return false;
+        };
+        let Some(row) = self.roster.get_mut(&pane_id.to_string()).filter(|row| {
+            row["conversation_id"].as_str() == expected_session_id.as_deref()
+                && row["submission_id"].as_str() == Some(submission_id.as_str())
+                && result.submission_id.as_deref() == Some(submission_id.as_str())
+        }) else {
+            return false;
+        };
+        row["retained_result"] = json!({"outcome":result.outcome,"acknowledged":result.acknowledged,"submission_id":result.submission_id,"turn_id":result.turn_id,"message":result.message.as_ref().map(|s| s.chars().take(4096).collect::<String>()),"background_tasks":result.background_tasks});
+        true
+    }
+
     fn status(&self, ready: bool, error: bool) -> MotherStatus {
         let blockers = self
             .roster
             .values()
             .filter(|r| {
-                r["needs_input"] == true || r["last_outcome"]["event_type"] == "turn_failed"
+                r["needs_input"] == true
+                    || r["last_outcome"]["event_type"] == "turn_failed"
+                    || (r["last_outcome"].is_null()
+                        && r["retained_result"]["outcome"] == "failed"
+                        && r["retained_result"]["acknowledged"] == true
+                        && r["retained_result"]["submission_id"] == r["submission_id"])
             })
             .count();
         let unsettled = self.receipts.back().is_some_and(|r| !r.settled);
@@ -374,7 +422,7 @@ impl Memory {
         Ok(match request {
             MotherRequest::Status => json!(self.status(true, false)),
             MotherRequest::Inbox => {
-                json!({"batches":self.pending,"roster":self.roster,"receipts":self.receipts,"gap":self.gap,"cursor":self.cursor,"delivery_blocked":self.delivery_blocked})
+                json!({"batches":self.pending,"roster":self.roster,"journal":self.journal,"receipts":self.receipts,"gap":self.gap,"cursor":self.cursor,"delivery_blocked":self.delivery_blocked})
             },
             MotherRequest::Checkpoint { expect_rev, value } => {
                 if let Some(value) = value {
@@ -448,7 +496,7 @@ impl Stream {
         receiver
             .set_recv_timeout(Some(TICK))
             .context("bound Mother lifecycle read")?;
-        let mut options = memory.filters.clone();
+        let mut options = memory.subscription_filters();
         options.cursor = memory.cursor.clone();
         sender
             .send_client_msg(ClientToServerMsg::SubscribeToEvents {
@@ -594,7 +642,7 @@ fn run(
     let mut status_reply: Option<mpsc::Receiver<AgentResponse>> = None;
     let mut status_due = Instant::now();
     let mut reconcile = VecDeque::new();
-    let mut reconcile_reply: Option<(String, mpsc::Receiver<AgentResponse>)> = None;
+    let mut reconcile_reply: Option<(AgentRequest, mpsc::Receiver<AgentResponse>)> = None;
     let mut input_revision = None;
     let mut response_delivery = false;
     let mut last_status = None;
@@ -684,6 +732,7 @@ fn run(
                         .context("decode Mother lifecycle fact")?;
                     let was_ready = event["event_type"] == "ready";
                     let urgent = event["pane_id"] != pane.to_string()
+                        && memory.selects_wake(event["event_type"].as_str().unwrap_or_default())
                         && matches!(
                             event["event_type"].as_str(),
                             Some("needs_input" | "turn_failed")
@@ -757,17 +806,14 @@ fn run(
                             if let (Ok(pane_id), Some(submission)) =
                                 (pane.parse::<PaneId>(), row["submission_id"].as_str())
                             {
-                                reconcile.push_back((
-                                    pane.clone(),
-                                    AgentRequest::WaitTurn {
-                                        pane_id,
-                                        expected_session_id: row["conversation_id"]
-                                            .as_str()
-                                            .map(str::to_owned),
-                                        submission_id: submission.to_owned(),
-                                        timeout_ms: 1,
-                                    },
-                                ));
+                                reconcile.push_back(AgentRequest::WaitTurn {
+                                    pane_id,
+                                    expected_session_id: row["conversation_id"]
+                                        .as_str()
+                                        .map(str::to_owned),
+                                    submission_id: submission.to_owned(),
+                                    timeout_ms: 1,
+                                });
                             }
                         }
                         memory.gap = false;
@@ -792,18 +838,17 @@ fn run(
             std::thread::sleep(TICK);
         }
         if ready && reconcile_reply.is_none() {
-            if let Some((pane, request)) = reconcile.pop_front() {
+            if let Some(request) = reconcile.pop_front() {
                 let (tx, rx) = mpsc::channel();
                 senders
-                    .send_to_screen(ScreenInstruction::AgentControlReply(request, tx))
+                    .send_to_screen(ScreenInstruction::AgentControlReply(request.clone(), tx))
                     .context("reconcile roster submission")?;
-                reconcile_reply = Some((pane, rx));
+                reconcile_reply = Some((request, rx));
             }
         }
-        if let Some((pane, rx)) = &reconcile_reply {
+        if let Some((request, rx)) = &reconcile_reply {
             if let Ok(result) = rx.try_recv() {
-                if let Some(row) = memory.roster.get_mut(pane) {
-                    row["retained_result"] = json!({"outcome":result.outcome,"acknowledged":result.acknowledged,"submission_id":result.submission_id,"turn_id":result.turn_id,"message":result.message.as_ref().map(|s| s.chars().take(4096).collect::<String>()),"background_tasks":result.background_tasks});
+                if memory.reconcile(request, result) {
                     memory.save(&path)?;
                 }
                 reconcile_reply = None;

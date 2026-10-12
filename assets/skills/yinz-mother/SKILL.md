@@ -25,6 +25,13 @@ and existing agent archives before explaining completion. Idle means idle, not
 success. Claude background tasks can outlive a foreground turn. Missing outcome
 text or lost observation is unknown; say so and reconcile before acting.
 
+The inbox's `journal` contains retained lifecycle facts in chronological order,
+including conversation, submission, turn, and run IDs for workers that have closed.
+Use these identities to find correlated results and archives. Retention is bounded;
+gap markers mean some evidence is missing. Lifecycle-type filters in `configure`
+select worker wakes and notifications; roster and journal maintenance continues
+for all lifecycle types within the configured pane, project, and provider scope.
+
 Keep detailed reports in this conversation. Report meaningful progress, failures,
 and blockers without narrating every tool call. Continue authorized assignments,
 using guarded agent prompts and existing session controls. Ask the user for new

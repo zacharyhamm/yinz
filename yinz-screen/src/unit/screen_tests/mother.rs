@@ -297,10 +297,12 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
             panes: vec![],
             projects: vec![],
             kinds: vec!["codex".into()],
-            lifecycle_types: vec![],
+            lifecycle_types: vec!["turn_failed".into()],
         },
     );
     let configured = connect();
+    assert_eq!(configured.2.kinds, vec!["codex"]);
+    assert!(configured.2.lifecycle_types.is_empty());
     drop(configured);
     let reconnected = connect();
     assert_eq!(
