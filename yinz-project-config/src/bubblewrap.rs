@@ -101,7 +101,8 @@ impl ClaudeState {
         };
         Ok(Self {
             root: resolved_path(&root)?,
-            global: resolved_path(&global)?,
+            // Claude locks the selected filename, even when it is a symlink.
+            global,
             home: resolved_path(&home)?,
         })
     }
@@ -121,24 +122,163 @@ impl ClaudeState {
         Ok(env)
     }
 
+    fn settings_path(&self) -> Result<PathBuf> {
+        let legacy = self.root.join(".config.json");
+        if legacy
+            .try_exists()
+            .context("inspect legacy Claude settings")?
+        {
+            Ok(legacy)
+        } else {
+            Ok(self.global.clone())
+        }
+    }
+
     fn settings(&self) -> Result<ClaudeSettings> {
         settings_snapshot(|| {
-            let legacy = self.root.join(".config.json");
-            let path = if legacy
-                .try_exists()
-                .context("inspect legacy Claude settings")?
-            {
-                &legacy
-            } else {
-                &self.global
-            };
-            fs::read(path).with_context(|| {
+            let path = self.settings_path()?;
+            fs::read(&path).with_context(|| {
                 format!(
                     "read host Claude settings {}; run Claude on the host to complete setup first",
                     path.display()
                 )
             })
         })
+    }
+
+    fn trust_mother(&self, work: &Path) -> Result<()> {
+        let work = work
+            .canonicalize()
+            .context("resolve Mother trust directory")?;
+        let path = self.settings_path()?;
+        let mut lock_path = path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let _lock = ClaudeConfigLock::acquire(PathBuf::from(lock_path), Duration::from_secs(2))?;
+        let settings = settings_snapshot(|| {
+            fs::read(&path)
+                .with_context(|| format!("read Claude trust settings {}", path.display()))
+        })?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(&settings.0).context("parse Claude trust settings")?;
+        if value
+            .get("projects")
+            .is_some_and(|projects| !projects.is_object())
+        {
+            bail!("Claude projects setting must be a JSON object");
+        }
+        if value.get("projects").is_none() {
+            value["projects"] = serde_json::json!({});
+        }
+        let key = work.to_str().context("Mother path is not UTF-8")?;
+        let projects = value["projects"]
+            .as_object_mut()
+            .context("Claude projects setting")?;
+        let project = projects.entry(key).or_insert_with(|| serde_json::json!({}));
+        let project = project
+            .as_object_mut()
+            .context("Claude project setting must be a JSON object")?;
+        if project.get("hasTrustDialogAccepted") == Some(&serde_json::Value::Bool(true)) {
+            return Ok(());
+        }
+        project.insert("hasTrustDialogAccepted".into(), true.into());
+        // Preserve symlinked global settings while replacing their contents atomically.
+        let destination = path
+            .canonicalize()
+            .context("resolve Claude trust settings")?;
+        let parent = destination
+            .parent()
+            .context("Claude settings have no parent")?;
+        let mut file =
+            tempfile::NamedTempFile::new_in(parent).context("create Claude trust settings")?;
+        serde_json::to_writer_pretty(&mut file, &value).context("write Claude trust settings")?;
+        file.as_file()
+            .sync_all()
+            .context("sync Claude trust settings")?;
+        file.persist(&destination)
+            .context("replace Claude trust settings")?;
+        Ok(())
+    }
+}
+
+struct ClaudeConfigLock {
+    path: PathBuf,
+    stop: std::sync::mpsc::Sender<()>,
+    heartbeat: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ClaudeConfigLock {
+    fn acquire(path: PathBuf, timeout: Duration) -> Result<Self> {
+        let start = Instant::now();
+        loop {
+            let acquired = fs::create_dir(&path).or_else(|error| {
+                if error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(error);
+                }
+                let metadata = match fs::metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return fs::create_dir(&path);
+                    },
+                    Err(error) => return Err(error),
+                };
+                // Match proper-lockfile's ten-second mtime expiry, including future timestamps.
+                let expired = std::time::SystemTime::now()
+                    .duration_since(metadata.modified()?)
+                    .is_ok_and(|age| age > Duration::from_secs(10));
+                if !expired {
+                    return Err(error);
+                }
+                match fs::remove_dir(&path) {
+                    Ok(()) => {},
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                    Err(error) => return Err(error),
+                }
+                fs::create_dir(&path)
+            });
+            match acquired {
+                Ok(()) => break,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AlreadyExists
+                        && start.elapsed() < timeout =>
+                {
+                    std::thread::sleep(Duration::from_millis(25));
+                },
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("acquire Claude config lock {}", path.display()))
+                },
+            }
+        }
+        let (stop, receiver) = std::sync::mpsc::channel();
+        let heartbeat_path = path.clone();
+        // Claude's proper-lockfile considers a lock stale after ten seconds.
+        let heartbeat = std::thread::spawn(move || {
+            while receiver.recv_timeout(Duration::from_secs(1))
+                == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                File::open(&heartbeat_path)
+                    .and_then(|file| file.set_modified(std::time::SystemTime::now()))
+                    .context("refresh Claude config lock")
+                    .non_fatal();
+            }
+        });
+        Ok(Self {
+            path,
+            stop,
+            heartbeat: Some(heartbeat),
+        })
+    }
+}
+
+impl Drop for ClaudeConfigLock {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(heartbeat) = self.heartbeat.take() {
+            let _ = heartbeat.join();
+        }
+        fs::remove_dir(&self.path)
+            .context("release Claude config lock")
+            .non_fatal();
     }
 }
 
@@ -732,15 +872,18 @@ impl Environment {
     /// Prepare an internal profile without reading project configuration or requiring Git.
     /// Runtime probes belong to the PTY spawn, where mother failures can fall back locally.
     pub fn prepare_mother(&self, kind: &str) -> Result<Self> {
-        // Claude must validate its launch snapshot before an unavailable runtime can fall back.
-        if kind != "claude" || !cfg!(target_os = "linux") {
-            platform()?;
-        }
         if kind == "claude" {
-            self.accept_mother(kind).context(MotherSetupError)
-        } else {
-            self.accept_mother(kind)
+            let profile = self.accept_mother(kind).context(MotherSetupError)?;
+            ClaudeState::resolve()
+                .and_then(|state| state.trust_mother(&self.root))
+                .context(MotherSetupError)?;
+            if !cfg!(target_os = "linux") {
+                platform()?;
+            }
+            return Ok(profile);
         }
+        platform()?;
+        self.accept_mother(kind)
     }
 
     fn accept_mother(&self, kind: &str) -> Result<Self> {

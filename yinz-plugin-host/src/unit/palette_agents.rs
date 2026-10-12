@@ -425,7 +425,10 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
         return;
     }
     std::env::set_var("YINZ_SESSION_NAME", "mother-test");
-    let start = tempfile::tempdir().unwrap();
+    let start = tempfile::Builder::new()
+        .prefix("mother space \"quote\".dot")
+        .tempdir()
+        .unwrap();
     claude_mother_fixture(start.path());
     std::env::set_var("YINZ_TEST_CACHE_ROOT", start.path());
     assert!(yinz_runtime::consts::YINZ_CACHE_DIR.starts_with(start.path()));
@@ -530,6 +533,39 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
             matches!(reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok)
         );
         assert_eq!(launches.len(), 1);
+        let command = &launches[0].0;
+        let ordinary = existing_command(
+            kind.trim().to_lowercase().as_str(),
+            cwd.to_str().unwrap(),
+            PaneTarget::Local,
+        )
+        .unwrap();
+        assert!(!ordinary
+            .command
+            .args
+            .iter()
+            .any(|arg| arg == "--approve" || arg.contains("trust_level")));
+        let expected = if kind.trim().eq_ignore_ascii_case("codex") {
+            format!(
+                "projects={{{}={{trust_level=\"trusted\"}}}}",
+                serde_json::to_string(cwd.to_str().unwrap()).unwrap()
+            )
+        } else {
+            "--approve".to_owned()
+        };
+        assert!(command.args.contains(&expected), "{:?}", command.args);
+        let mut fallback = ordinary;
+        fallback.command.args.clone_from(&command.args);
+        mother_target(
+            &mut fallback,
+            Err(anyhow::anyhow!("namespace setup failed")),
+        )
+        .unwrap();
+        assert!(
+            fallback.command.args.contains(&expected),
+            "{:?}",
+            fallback.command.args
+        );
         if kind.trim().eq_ignore_ascii_case("codex") {
             assert!(launches[0]
                 .0

@@ -1046,12 +1046,7 @@ fn unavailable_runtime_does_not_hide_invalid_claude_configuration() {
     let profile = Environment::at_root(&work.root.with_file_name("profile-claude"));
     let assert_failure = || {
         let error = work.prepare_mother("claude").err().unwrap();
-        if cfg!(target_os = "linux") {
-            assert!(error.is::<MotherSetupError>(), "{error:#}");
-        } else {
-            assert!(!error.is::<MotherSetupError>(), "{error:#}");
-            assert!(format!("{error:#}").contains("Bubblewrap"));
-        }
+        assert!(error.is::<MotherSetupError>(), "{error:#}");
         assert!(!profile.metadata.join("accepted.json").exists());
     };
     assert_failure();
@@ -1082,23 +1077,224 @@ fn supported_mother_keeps_claude_setup_errors_fatal() {
         if let Some(contents) = contents {
             fs::write(home.join(".claude.json"), contents).unwrap();
         }
-        let profile = work.prepare_mother("claude").unwrap();
-        let error = profile
-            .check_launch(&work.root, Path::new("sh"))
-            .unwrap_err();
+        let error = work.prepare_mother("claude").err().unwrap();
         assert!(error.is::<MotherSetupError>(), "{error:#}");
     }
     fs::rename(unavailable, bin.join("bwrap")).unwrap();
-    let profile = work.prepare_mother("claude").unwrap();
-    assert!(profile
-        .check_launch(&work.root, Path::new("sh"))
-        .unwrap_err()
+    assert!(work
+        .prepare_mother("claude")
+        .err()
+        .unwrap()
         .is::<MotherSetupError>());
     fs::write(home.join(".claude.json"), "{}").unwrap();
+    let profile = work.prepare_mother("claude").unwrap();
     assert!(matches!(
         profile.check_launch(&work.root, Path::new("sh")).unwrap(),
         LaunchCheck::MotherFallback(_)
     ));
+}
+
+#[test]
+fn claude_mother_trust_preserves_settings_at_each_effective_location() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    std::env::set_var("HOME", &home);
+    std::env::set_var("XDG_DATA_HOME", home.join("data"));
+    let work = mother_directory(&home.join("space \"quote\".dot"), "owner").unwrap();
+    for (override_dir, legacy) in [(false, false), (true, false), (false, true), (true, true)] {
+        let root = home.join(if override_dir { "custom" } else { ".claude" });
+        fs::create_dir_all(&root).unwrap();
+        if override_dir {
+            std::env::set_var("CLAUDE_CONFIG_DIR", &root);
+        } else {
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
+        let global = if override_dir {
+            root.join(".claude.json")
+        } else {
+            home.join(".claude.json")
+        };
+        let path = if legacy {
+            root.join(".config.json")
+        } else {
+            global.clone()
+        };
+        let before = serde_json::json!({
+            "oauthAccount": {"accountUuid": "keep"}, "mcpServers": {"keep": {}},
+            "projects": {"/other": {"hasTrustDialogAccepted": false}, work.to_str().unwrap(): {"allowedTools": ["keep"]}}
+        });
+        fs::write(&global, "{}").unwrap();
+        fs::write(&path, serde_json::to_vec(&before).unwrap()).unwrap();
+        let state = ClaudeState::resolve().unwrap();
+        state.trust_mother(&work).unwrap();
+        let mut expected = before;
+        expected["projects"][work.to_str().unwrap()]["hasTrustDialogAccepted"] = true.into();
+        let contents = fs::read(&path).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&contents).unwrap(),
+            expected
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&state.settings().unwrap().0).unwrap(),
+            expected
+        );
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        state.trust_mother(&work).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), contents);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        if legacy {
+            assert_eq!(fs::read_to_string(&global).unwrap(), "{}");
+        }
+    }
+}
+
+#[test]
+fn claude_mother_trust_fails_without_changing_bad_or_unwritable_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = ClaudeState {
+        root: temp.path().into(),
+        global: temp.path().join(".claude.json"),
+        home: temp.path().into(),
+    };
+    let lock = state.global.with_extension("json.lock");
+    for contents in [
+        "invalid",
+        "[]",
+        r#"{"projects":null}"#,
+        r#"{"projects":[]}"#,
+    ] {
+        fs::write(&state.global, contents).unwrap();
+        assert!(state.trust_mother(temp.path()).is_err());
+        assert_eq!(fs::read_to_string(&state.global).unwrap(), contents);
+        assert!(!lock.exists());
+    }
+    let invalid_project = serde_json::json!({"projects": {temp.path().canonicalize().unwrap().to_str().unwrap(): false}});
+    fs::write(&state.global, invalid_project.to_string()).unwrap();
+    assert!(state.trust_mother(temp.path()).is_err());
+    assert_eq!(
+        fs::read_to_string(&state.global).unwrap(),
+        invalid_project.to_string()
+    );
+
+    let destination = temp.path().join("read-only");
+    fs::create_dir(&destination).unwrap();
+    let settings = destination.join("settings.json");
+    fs::write(&settings, "{}").unwrap();
+    fs::remove_file(&state.global).unwrap();
+    std::os::unix::fs::symlink(&settings, &state.global).unwrap();
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o500)).unwrap();
+    let result = state.trust_mother(temp.path());
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(format!("{:#}", result.unwrap_err()).contains("create Claude trust settings"));
+    assert_eq!(fs::read_to_string(&settings).unwrap(), "{}");
+    assert!(!lock.exists());
+    state.trust_mother(temp.path()).unwrap();
+    assert!(state.global.is_symlink());
+}
+
+#[test]
+fn claude_config_lock_recovers_expired_locks() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("settings.lock");
+    fs::create_dir(&path).unwrap();
+    File::open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(20))
+        .unwrap();
+
+    let lock = ClaudeConfigLock::acquire(path.clone(), Duration::ZERO).unwrap();
+    assert!(path.is_dir());
+    assert!(ClaudeConfigLock::acquire(path.clone(), Duration::ZERO).is_err());
+    drop(lock);
+    assert!(!path.exists());
+}
+
+#[test]
+fn claude_config_lock_preserves_fresh_and_future_locks() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("settings.lock");
+    fs::create_dir(&path).unwrap();
+    for offset in [Duration::ZERO, Duration::from_secs(60)] {
+        File::open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + offset)
+            .unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(ClaudeConfigLock::acquire(path.clone(), Duration::from_millis(30)).is_err());
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+    }
+}
+
+#[test]
+fn claude_config_lock_preserves_nonempty_expired_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("settings.lock");
+    fs::create_dir(&path).unwrap();
+    let contents = path.join("keep");
+    fs::write(&contents, "preserve").unwrap();
+    File::open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(20))
+        .unwrap();
+
+    assert!(ClaudeConfigLock::acquire(path, Duration::ZERO).is_err());
+    assert_eq!(fs::read_to_string(contents).unwrap(), "preserve");
+}
+
+#[test]
+fn claude_mother_trust_recovers_expired_config_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = ClaudeState {
+        root: temp.path().into(),
+        global: temp.path().join(".claude.json"),
+        home: temp.path().into(),
+    };
+    fs::write(&state.global, r#"{"unrelated":"keep"}"#).unwrap();
+    let path = state.global.with_extension("json.lock");
+    fs::create_dir(&path).unwrap();
+    File::open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(20))
+        .unwrap();
+
+    state.trust_mother(temp.path()).unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&state.settings().unwrap().0).unwrap();
+    assert_eq!(settings["unrelated"], "keep");
+    let work = temp.path().canonicalize().unwrap();
+    assert_eq!(
+        settings["projects"][work.to_str().unwrap()]["hasTrustDialogAccepted"],
+        true
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn claude_config_lock_bounds_contention_and_trust_reads_after_release() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = ClaudeState {
+        root: temp.path().into(),
+        global: temp.path().join(".claude.json"),
+        home: temp.path().into(),
+    };
+    fs::write(&state.global, "{}").unwrap();
+    let path = state.global.with_extension("json.lock");
+    let lock = ClaudeConfigLock::acquire(path.clone(), Duration::ZERO).unwrap();
+    assert!(ClaudeConfigLock::acquire(path.clone(), Duration::from_millis(30)).is_err());
+    std::thread::scope(|scope| {
+        let pending = scope.spawn(|| state.trust_mother(temp.path()));
+        fs::write(&state.global, r#"{"concurrent":"keep"}"#).unwrap();
+        drop(lock);
+        pending.join().unwrap().unwrap();
+    });
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&state.settings().unwrap().0).unwrap()
+            ["concurrent"],
+        "keep"
+    );
+    assert!(!path.exists());
 }
 
 #[test]
@@ -1701,6 +1897,12 @@ fn real_claude_mother_supports_symlinked_storage_and_settings() {
             .settings()
             .unwrap(),
     );
+    let trusted_settings = profile.settings.as_ref().unwrap().0.clone();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&trusted_settings).unwrap()["projects"]
+            [work.root.to_str().unwrap()]["hasTrustDialogAccepted"],
+        true
+    );
     profile
         .validate_launch_cwd(&work.root, &accepted.declaration)
         .unwrap();
@@ -1708,6 +1910,7 @@ fn real_claude_mother_supports_symlinked_storage_and_settings() {
         let output = profile
             .command(&accepted.declaration, &work.root, false)
             .unwrap()
+            .args(["--setenv", "EXPECTED_CLAUDE_SETTINGS", &trusted_settings])
             .args([
                 "--",
                 "/bin/sh",
@@ -1715,7 +1918,7 @@ fn real_claude_mother_supports_symlinked_storage_and_settings() {
                 "-c",
                 r#"
                 for name in .claude.json .config.json; do
-                    test "$(cat "$CLAUDE_CONFIG_DIR/$name")" = '{"host":true}'
+                    test "$(cat "$CLAUDE_CONFIG_DIR/$name")" = "$EXPECTED_CLAUDE_SETTINGS"
                     echo private > "$CLAUDE_CONFIG_DIR/$name.tmp"
                     mv "$CLAUDE_CONFIG_DIR/$name.tmp" "$CLAUDE_CONFIG_DIR/$name"
                     test "$(cat "$CLAUDE_CONFIG_DIR/$name")" = private
@@ -1734,7 +1937,7 @@ fn real_claude_mother_supports_symlinked_storage_and_settings() {
         );
         assert_eq!(
             fs::read_to_string(home.join("settings.json")).unwrap(),
-            r#"{"host":true}"#
+            trusted_settings
         );
         assert_eq!(
             fs::read_to_string(home.join("host-projects/host.jsonl")).unwrap(),

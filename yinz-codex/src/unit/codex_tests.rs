@@ -138,6 +138,20 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
     const TEST: &str = "tests::launcher_forwards_its_directory_unless_overridden_or_bypassed";
     const ARGS_ENV: &str = "YINZ_TEST_CODEX_ARGS";
     const OUTPUT_ENV: &str = "YINZ_TEST_CODEX_OUTPUT";
+    if let Ok(socket) = std::env::var("YINZ_TEST_TRUST_SOCKET") {
+        assert_eq!(
+            std::fs::metadata(Path::new(&socket).parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        loop {
+            let _ = listener.accept().unwrap();
+        }
+    }
     if std::env::var_os("YINZ_TEST_TRUST_BACKEND").is_some() {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -308,6 +322,11 @@ if [ "$1" = --version ]; then
 fi
 if [ "$1" = app-server ]; then
     [ "$2" = daemon ] && exit 0
+    if [ "$2" = --listen ]; then
+        printf '%s\0' "$@" > "$YINZ_TEST_CODEX_OUTPUT.backend"
+        export YINZ_TEST_TRUST_SOCKET="${3#unix://}"
+        exec "$YINZ_TEST_TRUST_EXE" --exact "$YINZ_TEST_TRUST_TEST" --nocapture
+    fi
     if [ "$YINZ_TEST_CODEX_THEME" = 1 ] && [ -z "$2" ]; then
         theme=catppuccin-latte
         [ -f "$YINZ_TEST_CODEX_OUTPUT.registered" ] && theme=dracula
@@ -370,6 +389,19 @@ exit 23
         (&["resume", "--", "--cd"], true, Some(false)),
         (&["--model=--cd", "prompt"], true, None),
         (&["--config", "model='--cd'"], true, Some(false)),
+        (
+            &[
+                "-c",
+                r#"projects={"/mother space \"quote\".dot"={trust_level="trusted"}}"#,
+            ],
+            true,
+            Some(false),
+        ),
+        (
+            &[r#"--config=projects={"/mother.dot"={trust_level="trusted"}}"#],
+            true,
+            Some(false),
+        ),
         (&["prompt"], false, None),
         (&["--cd", "../other"], false, None),
         (&["exec", "prompt"], true, None),
@@ -389,6 +421,7 @@ exit 23
                     || args.iter().any(|arg| arg.ends_with(worktree_name))
             });
             let _ = std::fs::remove_file(&output);
+            let _ = std::fs::remove_file(output.with_extension("backend"));
             let _ = std::fs::remove_file(output.with_extension("registered"));
             let result = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST])
@@ -427,6 +460,23 @@ exit 23
                 }
             }
             assert_eq!(&actual, args, "{args:?}");
+            let options =
+                bridge_options(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>());
+            let overrides = options
+                .map(|options| options.project_overrides)
+                .unwrap_or_default();
+            let backend = std::fs::read_to_string(output.with_extension("backend"));
+            if overrides.is_empty() {
+                assert!(
+                    backend.is_err(),
+                    "ordinary launch started a private backend"
+                );
+            } else {
+                let backend = backend.unwrap();
+                let backend: Vec<_> = backend.split_terminator('\0').collect();
+                assert_eq!(&backend[..2], &["app-server", "--listen"]);
+                assert_eq!(&backend[3..], &["-c", overrides[0].as_str()]);
+            }
             assert_eq!(
                 output.with_extension("registered").exists(),
                 expected_trust,
@@ -2090,9 +2140,10 @@ fn bubblewrap_private_backend_uses_its_socket_and_dies_with_its_owner() {
             .unwrap()
             .block_on(async {
                 use tokio::io::AsyncReadExt;
-                let (mut child, mut stream) = daemon_connection(Path::new(
-                    &std::env::var("YINZ_TEST_PRIVATE_PROGRAM").unwrap(),
-                ))
+                let (mut child, mut stream) = daemon_connection(
+                    Path::new(&std::env::var("YINZ_TEST_PRIVATE_PROGRAM").unwrap()),
+                    Some(Path::new(PRIVATE_BACKEND)),
+                )
                 .unwrap();
                 let mut args = String::new();
                 stream.read_to_string(&mut args).await.unwrap();
@@ -2142,7 +2193,7 @@ exec '{}' --exact '{}' --nocapture
         .unwrap()
         .block_on(async {
             let socket = root.path().join("private.sock");
-            let child = private_backend(&program, &socket).await.unwrap();
+            let child = private_backend(&program, &socket, &[]).await.unwrap();
             let pid = child.id().unwrap();
             drop(child);
             // SIGKILL on drop is observed through waitpid, without a scheduling-dependent sleep.

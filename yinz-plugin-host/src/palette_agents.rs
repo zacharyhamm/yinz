@@ -381,6 +381,15 @@ fn mother(
                 .command
                 .args
                 .extend(yinz_runtime::agent::launch::codex_yinz_args());
+            let path = serde_json::to_string(cwd.to_str().ok_or("Mother path is not UTF-8")?)
+                .map_err(|error| format!("encode Mother trust path: {error}"))?;
+            // Codex splits override keys on dots even inside quotes; quote the table key instead.
+            prepared.command.args.extend([
+                "-c".into(),
+                format!("projects={{{path}={{trust_level=\"trusted\"}}}}"),
+            ]);
+        } else if kind == "pi" {
+            prepared.command.args.push("--approve".into());
         }
         let sandbox = yinz_config::project_config::bubblewrap::Environment::at_root(&cwd)
             .prepare_mother(&kind);
