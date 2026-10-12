@@ -357,6 +357,14 @@ fn mother(
     kind: &str,
     senders: &ThreadSenders,
 ) -> Result<AgentReply, String> {
+    let spec = AgentSpawnSpec {
+        kind: Some(kind.to_owned()),
+        allow_outside_worktree: Some(true),
+        ..Default::default()
+    };
+    let kind = yinz_runtime::agent::launch::kind_for_spec(&spec)
+        .filter(|kind| yinz_runtime::agent::launch::supports_mother(kind))
+        .ok_or("Mother supports only Claude, Codex, and Pi")?;
     let session = yinz_runtime::envs::get_session_name()
         .map_err(|error| format!("Mother requires a session: {error}"))?;
     let cwd = yinz_config::project_config::bubblewrap::mother_directory(
@@ -366,14 +374,7 @@ fn mother(
     .map_err(|error| format!("Mother cannot create its working directory: {error:#}"))?;
     yinz_runtime::mother::provision(&cwd)
         .map_err(|error| format!("Mother cannot provision instructions: {error:#}"))?;
-    let spec = AgentSpawnSpec {
-        kind: Some(kind.to_owned()),
-        allow_outside_worktree: Some(true),
-        ..Default::default()
-    };
-    launch(request, senders, spec, |spec| {
-        let kind = yinz_runtime::agent::launch::kind_for_spec(spec)
-            .ok_or("mother requires an agent kind")?;
+    launch(request, senders, spec, |_| {
         let mut prepared = existing_command(&kind, &cwd.to_string_lossy(), PaneTarget::Local)?;
         let sandbox = yinz_config::project_config::bubblewrap::Environment::at_root(&cwd)
             .prepare_mother(&kind);

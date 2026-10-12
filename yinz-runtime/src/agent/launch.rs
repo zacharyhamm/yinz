@@ -43,6 +43,11 @@ pub const WORKTREE_PREFIX: &str = ".worktrees/";
 /// disagree about which agents you may ask for.
 pub const OFFERED: &[&str] = &["codex", "claude", "pi", "cursor", "muse", "agy"];
 
+/// Canonical providers with verified composer guards for Mother's automatic turns.
+pub fn supports_mother(kind: &str) -> bool {
+    matches!(kind, "claude" | "codex" | "pi")
+}
+
 pub fn offered() -> Vec<String> {
     OFFERED
         .iter()

@@ -99,12 +99,28 @@ struct Memory {
 }
 
 impl Memory {
-    fn load(path: &Path) -> Result<Self> {
-        match std::fs::read(path) {
+    fn load(path: &Path, session: &str) -> Result<Self> {
+        let mut memory: Self = match std::fs::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes).context("read Mother checkpoint"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).context("read Mother checkpoint"),
+        }?;
+        // Renames preserve operational memory, but lifecycle cursors belong to one session.
+        if memory.snapshotting
+            || memory.cursor.as_deref().is_some_and(|cursor| {
+                serde_json::from_str::<Value>(cursor).map_or(true, |cursor| {
+                    cursor["v"] != 1
+                        || cursor["session"] != session
+                        || !cursor["host"].is_string()
+                        || !cursor["epoch"].is_string()
+                        || cursor["sequence"].as_u64().is_none()
+                        || cursor["filters"] != json!(memory.filters)
+                })
+            })
+        {
+            memory.cursor = None;
         }
+        Ok(memory)
     }
 
     fn save(&self, path: &Path) -> Result<()> {
@@ -567,11 +583,8 @@ fn run(
 ) -> Result<()> {
     let path = memory_path(&yinz_runtime::consts::YINZ_CACHE_DIR, &session)?;
     let _lock = writer_lock(&path)?;
-    let mut memory = Memory::load(&path)?;
+    let mut memory = Memory::load(&path, &session)?;
     memory.conversation = None;
-    if memory.snapshotting {
-        memory.cursor = None;
-    }
     memory.save(&path)?;
     let mut stream = None;
     let mut ready = false;

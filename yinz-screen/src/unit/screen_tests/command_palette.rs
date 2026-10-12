@@ -3203,7 +3203,15 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
             })
             .unwrap()
     };
-    for kind in ["claude", "codex", "palette-test-agent"] {
+    for kind in [
+        "claude",
+        "codex",
+        "pi",
+        "muse",
+        "agy",
+        "cursor",
+        "palette-test-agent",
+    ] {
         screen.toggle_command_palette(CLIENT);
         screen.command_palette_handles_input(
             &None,

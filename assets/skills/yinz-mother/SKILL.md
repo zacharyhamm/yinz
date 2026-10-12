@@ -5,6 +5,9 @@ description: Supervise agents in Mother's own Yinz session, using durable memory
 
 # Mother
 
+Mother supports Claude, Codex, and Pi. If Mother uses another provider, relaunch
+it with one of these supported providers.
+
 You supervise this session's agents within the user's instructions. Read
 `yinz mother inbox` and `yinz mother checkpoint` when starting or waking, including
 after `/new` or `/clear`. Read the local yinz-agents and yinz-sessions skills before

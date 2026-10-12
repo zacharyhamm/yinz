@@ -140,7 +140,10 @@ fn failed_mother_supervisor_requires_resume_and_recovers_in_the_same_pane() {
 fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
     use crate::screen::agent_control::Reply;
     use interprocess::local_socket::prelude::*;
-    use std::{sync::mpsc, time::Duration};
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
     use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext};
     use yinz_types::agent::{control::AgentOutcome, mother::MotherRequest};
 
@@ -148,6 +151,23 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
     let old = format!("mother-old-{}", uuid::Uuid::new_v4());
     let new = format!("mother-new-{}", uuid::Uuid::new_v4());
     screen.session_name = old.clone().into();
+    screen.get_active_tab_mut(CLIENT).unwrap().set_pane_agent(
+        SHELL,
+        Some(yinz_types::agent::AgentInfo {
+            kind: "codex".into(),
+            state: yinz_types::agent::AgentState::Idle,
+            source: yinz_types::agent::AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: Some("worker-conversation".into()),
+            run_id: None,
+        }),
+    );
+    let os = FakeInputOutput::default();
+    let messages = os.server_to_client_messages.clone();
+    screen.bus.os_input = Some(Box::new(os));
     let socket_dir = &*yinz_runtime::consts::YINZ_SOCK_DIR;
     std::fs::create_dir_all(socket_dir).unwrap();
     let listener = yinz_ipc::consts::ipc_bind(&socket_dir.join(&old)).unwrap();
@@ -167,11 +187,12 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
         receiver
             .set_recv_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        assert!(matches!(
-            receiver.recv_client_msg(),
-            IpcRecv::Msg(ClientToServerMsg::SubscribeToEvents { .. }, _)
-        ));
-        (sender, receiver)
+        let IpcRecv::Msg(ClientToServerMsg::SubscribeToEvents { options, .. }, _) =
+            receiver.recv_client_msg()
+        else {
+            panic!("expected a lifecycle subscription");
+        };
+        (sender, receiver, options)
     };
     let command = |screen: &mut Screen, request| {
         let (reply, response) = mpsc::channel();
@@ -180,10 +201,35 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
         assert_eq!(response.outcome, AgentOutcome::Ok, "{:?}", response.message);
         serde_json::from_str::<serde_json::Value>(&response.output.unwrap()).unwrap()
     };
-    let (instructions, _received) = channels::unbounded();
+    let snapshot =
+        |screen: &mut Screen, sender: &mut IpcSenderWithContext<ServerToClientMsg>, options| {
+            let watcher = ClientId::new(99);
+            screen.subscribe_agent_events(watcher, options);
+            let events = messages.lock().unwrap().remove(&watcher).unwrap();
+            let facts: Vec<serde_json::Value> = events
+                .iter()
+                .filter_map(|event| match event {
+                    ServerToClientMsg::EventUpdate { event_json, .. } => {
+                        Some(serde_json::from_str(event_json).unwrap())
+                    },
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(facts.first().unwrap()["event_type"], "snapshot_begin");
+            assert!(facts.iter().any(|fact| fact["event_type"] == "snapshot"));
+            let ready = facts.last().unwrap();
+            assert_eq!(ready["event_type"], "ready");
+            let cursor = ready["cursor"].as_str().unwrap().to_owned();
+            for event in events {
+                sender.send_server_msg(event).unwrap();
+            }
+            cursor
+        };
+    let (instructions, received) = channels::unbounded();
     screen.bus.senders.to_screen = Some(SenderWithContext::new(instructions));
     screen.sync_mother_supervisor();
-    let initial = connect();
+    let mut initial = connect();
+    assert!(initial.2.cursor.is_none());
     command(&mut screen, MotherRequest::Pause);
     command(
         &mut screen,
@@ -191,6 +237,24 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
             expect_rev: Some(0),
             value: Some(serde_json::json!({"assignment":"preserved"})),
         },
+    );
+    let old_cursor = snapshot(&mut screen, &mut initial.0, initial.2.clone());
+    let ready = || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (instruction, _) = received
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            if matches!(instruction, ScreenInstruction::MotherStatus(_, status) if status.state == "paused")
+            {
+                break;
+            }
+        }
+    };
+    ready();
+    assert_eq!(
+        command(&mut screen, MotherRequest::Inbox)["cursor"],
+        old_cursor
     );
     let generation = screen
         .mother_supervisor
@@ -205,7 +269,28 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
         generation
     );
     assert!(!socket_dir.join(&old).exists());
-    let renamed = connect();
+    let mut renamed = connect();
+    assert!(renamed.2.cursor.is_none());
+    let work = yinz_config::project_config::bubblewrap::mother_directory(
+        &yinz_runtime::consts::YINZ_CACHE_DIR,
+        &new,
+    )
+    .unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(work.parent().unwrap().join("supervision.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        saved["cursor"].is_null(),
+        "reset must be durable before connecting"
+    );
+    let new_cursor = snapshot(&mut screen, &mut renamed.0, renamed.2.clone());
+    ready();
+    assert_ne!(old_cursor, new_cursor);
+    assert_eq!(
+        command(&mut screen, MotherRequest::Inbox)["cursor"],
+        new_cursor
+    );
     command(
         &mut screen,
         MotherRequest::Configure {
@@ -295,6 +380,16 @@ fn palette_key(screen: &mut Screen, key: BareKey) {
 
 #[test]
 fn toggle_without_a_mother_opens_the_palette_at_the_agents_to_launch() {
+    use yinz_types::agent::provider::{self, AgentProvider};
+    provider::register(
+        98982,
+        AgentProvider {
+            kind: "mother-test-choice".into(),
+            executable: "mother-test-choice".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let mut screen = screen();
     let (plugin_sender, plugins) = channels::unbounded();
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
@@ -304,11 +399,14 @@ fn toggle_without_a_mother_opens_the_palette_at_the_agents_to_launch() {
     screen.toggle_mother(CLIENT).unwrap();
     let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
     assert!(frame.contains("Launch mother"), "{frame}");
-    assert!(
-        frame.contains("claude") && frame.contains("codex"),
-        "{frame}"
-    );
+    for kind in ["claude", "codex", "pi"] {
+        assert!(frame.contains(kind), "{frame}");
+    }
+    for kind in ["muse", "agy", "cursor", "mother-test-choice"] {
+        assert!(!frame.contains(kind), "{frame}");
+    }
     assert!(!frame.contains("New pane"), "{frame}");
+    provider::unregister_owner(98982);
 
     assert!(screen.command_palette_handles_input(&None, b"codex", false, CLIENT));
     palette_key(&mut screen, BareKey::Enter);
