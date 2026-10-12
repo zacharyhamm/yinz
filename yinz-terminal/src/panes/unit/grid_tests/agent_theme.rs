@@ -786,6 +786,65 @@ fn codex_forwarded_observations_ignore_invalid_missing_and_previous_launch_repli
 }
 
 #[test]
+fn claude_auto_inline_code_recolors_without_output_and_preserves_bold_and_capture() {
+    let mut palette = source("claude", Role::Accent);
+    palette.theme = "auto".into();
+    palette.definitions = [(87, 105, 247), (177, 185, 249)]
+        .into_iter()
+        .map(|(r, g, b)| Definition {
+            token: "permission".into(),
+            channel: Channel::Foreground,
+            color: SourceColor::Rgb(r, g, b),
+            pair: None,
+            target: Some(Role::Accent.into()),
+        })
+        .collect();
+    let mut grid = create_grid_with_content("");
+    event(&mut grid, "claude-auto", Some(palette));
+    feed_bytes(
+        &mut grid,
+        b"\x1b[38;2;87;105;247mL\x1b[1mB\x1b[0;38;2;177;185;249mD\x1b[1mB\x1b[0m",
+    );
+    let capture = grid.serialize(None).unwrap();
+    assert!(capture.contains("38;2;87;105;247"));
+    assert!(capture.contains("38;2;177;185;249"));
+    for (fg, bg, accent, mapping) in [
+        (200, 0, (11, 22, 33), AgentThemeMapping::Semantic),
+        (0, 250, (44, 55, 66), AgentThemeMapping::Semantic),
+        (0, 250, (44, 55, 66), AgentThemeMapping::Off),
+    ] {
+        let mut theme = terminal_style((fg, fg, fg), (bg, bg, bg));
+        theme.colors.text_unselected.emphasis_1 = PaletteColor::Rgb(accent);
+        grid.update_theme(theme.colors);
+        grid.set_agent_theme_mapping(mapping);
+        let chunks = grid.render(0, 0, &theme).unwrap().unwrap().0;
+        let mut checked = 0;
+        for chunk in &chunks {
+            for cell in &chunk.terminal_characters {
+                if !matches!(cell.character, 'L' | 'D' | 'B') {
+                    continue;
+                }
+                let original = *cell.styles;
+                let mapped = chunk.application_styles(original);
+                assert_eq!(
+                    mapped.foreground,
+                    if mapping == AgentThemeMapping::Off {
+                        original.foreground
+                    } else {
+                        Some(AnsiCode::RgbCode(accent))
+                    }
+                );
+                assert_eq!(mapped.bold, original.bold);
+                assert_eq!(mapped.bold == Some(AnsiCode::On), cell.character == 'B');
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 4);
+        assert_eq!(grid.serialize(None).unwrap(), capture);
+    }
+}
+
+#[test]
 fn claude_ui_and_diffs_recolor_existing_content_and_preserve_capture() {
     let mut palette = source("claude", Role::Accent);
     palette.definitions.clear();
