@@ -247,6 +247,7 @@ fn test_client_messages() {
                 remote_host: None,
             },
             AgentRequest::Prompt {
+                preserve_draft: false,
                 submission_id: None,
                 pane_id,
                 expected_session_id: expected_session_id.clone(),

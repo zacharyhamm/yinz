@@ -539,6 +539,13 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
             matches!(reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok)
         );
         assert_eq!(launches.len(), 1);
+        if kind.trim().eq_ignore_ascii_case("codex") {
+            assert!(launches[0]
+                .0
+                .args
+                .iter()
+                .any(|arg| arg == "sandbox_workspace_write.network_access=true"));
+        }
     }
     let (reply, launches, screen) = launch(false, "claude", "mother: claude");
     assert!(reply.unwrap_err().contains("cancelled"));

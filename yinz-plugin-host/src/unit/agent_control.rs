@@ -9,6 +9,7 @@ fn lost_host_control_replies_keep_the_submission_identity_sent_to_screen() {
     let directory = tempfile::tempdir().unwrap();
     let data = DataAccess::sqlite(directory.path());
     let prompt = |submission_id| AgentRequest::Prompt {
+        preserve_draft: false,
         pane_id: PaneId::Terminal(TerminalId::new(7)),
         expected_session_id: Some("conversation".into()),
         submission_id,
@@ -70,6 +71,7 @@ fn host_control_routing_rejection_keeps_the_prompt_submission_identity() {
     let data = DataAccess::sqlite(directory.path());
     let response = control_agent(
         AgentRequest::Prompt {
+            preserve_draft: false,
             pane_id: PaneId::Terminal(TerminalId::new(7)),
             expected_session_id: None,
             submission_id: Some("not-routed".into()),

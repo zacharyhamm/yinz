@@ -419,6 +419,7 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
         let server = listener.accept().unwrap();
         let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
         let prompt = AgentRequest::Prompt {
+            preserve_draft: false,
             submission_id: None,
             pane_id: PaneId::Terminal(TerminalId::new(2)),
             expected_session_id: Some("conversation-7".into()),

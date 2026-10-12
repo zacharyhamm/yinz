@@ -110,6 +110,34 @@ While an editor or in-place plugin replaces mother, toggles control that replace
 The replacement carries mother with it across tabs, and closing it restores mother.
 A mother that was parked, or brought back from parking as a floating or tiled pane, returns to the overlay on the next toggle.
 
+Mother's overlay has **Conversation** and **Overview** tabs. Conversation opens first and keeps the live terminal and drafts.
+Use the existing pane-tab keyboard controls or click the strip to switch. Selection persists while the overlay exists.
+Overview shows supervision state, the saved assignment, workers, attention items, and bounded lifecycle history.
+Use Conversation for new assignments, worker launches, and permission decisions.
+A panel load failure leaves Conversation available. Select Overview and press `r` to retry.
+
+Automatic turns can run while Overview is selected. They wait while any client focuses Conversation, a draft exists, or Mother is busy.
+Another client cannot switch away from a Conversation that you are using.
+`yinz mother pause` stops future automatic turns and keeps observation active. It does not interrupt a running turn.
+`yinz mother resume` permits future automatic turns. `yinz mother configure` replaces all filters, including empty filters.
+Missing lifecycle hooks or startup dialogs require setup in Conversation. Install hooks with `yinz hooks install`.
+
+`yinz mother overview` and `status` inspect supervision without changing batches or checkpoint memory.
+The inbox contains a bounded journal page. Use `yinz mother journal --after <cursor> --through <high_water>` for subsequent pages.
+Pages default to 50 records, permit at most 200, and have a 256 KiB record budget. Oversized records and retention gaps are explicit.
+Journal cursors persist across restarts. Read all pages through the inbox boundary before acknowledging its batches.
+A turn ending does not prove completion. Inspect correlated results and available archives. Missing archives or results remain unknown.
+
+If a supervision result is unavailable, inspect its receipt and workers before continuing.
+Then use Overview's review control or `yinz mother resolve <submission-id> --expect-rev <revision>`.
+Work may already have occurred. Recovery preserves the unknown outcome, releases the wait, and queues reconciliation without replaying the prompt.
+Stale revisions and operations still in flight cannot be resolved.
+
+Checkpoints persist goals, scope, assignments, decisions, blockers, questions, and journal progress across conversation resets.
+Checkpoint writes require the revision the author read. Legacy checkpoint fields remain readable and are preserved during upgrades.
+Codex Mother uses the same network setting as `agent spawn --allow-yinz`. This permits Yinz socket connections and internet access.
+Other approval and sandbox settings remain in effect.
+
 Mother is the pane, so `/clear`, `/new`, or a replaced conversation keeps it.
 Once its agent exits, the pane stops following you. The next toggle brings what is left of it to your tab and offers a new mother over it.
 Launching one closes the old pane. Dismissing the offer leaves the pane to read or to restart the agent in.

@@ -43,6 +43,7 @@ pub const BUILTIN_DENO_PLUGIN_NAMES: &[&str] = &[
     "swamp-bridge",
     "swamp-workflow",
     "agent-exit",
+    "mother-overview",
 ];
 
 /// The per-file source budget of a script plugin: configuration applies it when it reads one,

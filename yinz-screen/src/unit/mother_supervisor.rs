@@ -152,7 +152,7 @@ fn journal_and_pending_batches_are_bounded_with_explicit_gaps() {
         .any(|v| v["reason"] == "mother_journal_overflow"));
     assert!(memory.gap);
     let inbox = memory.command(MotherRequest::Inbox).unwrap();
-    assert_eq!(inbox["journal"], json!(memory.journal));
+    assert!(inbox["journal"]["records"].as_array().unwrap().len() <= 50);
     assert_eq!(inbox["gap"], true);
     for _ in 0..300 {
         memory.pending.back_mut().unwrap().attempted = true;
@@ -269,7 +269,10 @@ fn project_departures_remove_blockers_but_preserve_the_journal() {
             assert!(memory.event(departure.clone(), MOTHER));
             assert_eq!(memory.roster.contains_key("terminal_2"), retained);
             assert_eq!(memory.status(true, false).blockers, usize::from(retained));
-            assert_eq!(memory.journal.back(), Some(&departure));
+            assert_eq!(
+                memory.journal.back().unwrap()["event_type"],
+                departure["event_type"]
+            );
             assert_eq!(memory.journal.len(), 2);
             assert_eq!(memory.cursor, Some(cursor("session", 2)));
             assert_eq!(memory.pending[0].events, 1 + usize::from(wake_on_departure));
@@ -401,8 +404,11 @@ fn inbox_retains_closed_worker_identities_across_pause_and_reload() {
     let inbox = restored.command(MotherRequest::Inbox).unwrap();
     assert!(restored.paused);
     assert!(restored.roster.is_empty());
-    assert_eq!(inbox["journal"][0], completed);
-    assert_eq!(inbox["journal"][1]["event_type"], "pane_closed");
+    assert_eq!(
+        inbox["journal"]["records"][0]["event_type"],
+        completed["event_type"]
+    );
+    assert_eq!(inbox["journal"]["records"][1]["event_type"], "pane_closed");
     assert_eq!(inbox["batches"][0]["events"], 2);
     assert_eq!(inbox["gap"], false);
 }
@@ -646,4 +652,83 @@ fn private_activity_enriches_only_matching_conversations_without_waking() {
         .journal
         .iter()
         .all(|fact| fact["assignment"].is_null()));
+}
+
+#[test]
+fn overview_and_journal_are_read_only_and_pages_survive_restart() {
+    let mut memory = Memory::default();
+    for sequence in 1..=130 {
+        memory.event(event(sequence, "terminal_2", "turn_completed"), MOTHER);
+    }
+    let before = json!(memory);
+    memory.command(MotherRequest::Overview).unwrap();
+    let first = memory
+        .command(MotherRequest::Journal {
+            after: None,
+            through: None,
+            limit: None,
+        })
+        .unwrap();
+    assert_eq!(json!(memory), before);
+    assert_eq!(first["records"].as_array().unwrap().len(), 50);
+    assert_eq!(first["next_cursor"], 50);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("memory.json");
+    memory.save(&path).unwrap();
+    let mut restored = Memory::load(&path, "session").unwrap();
+    restored.event(event(131, "terminal_2", "turn_completed"), MOTHER);
+    let page = restored.journal_page(Some(100), Some(130), None).unwrap();
+    assert_eq!(page["records"].as_array().unwrap().len(), 30);
+    assert!(page["next_cursor"].is_null());
+    restored.journal.drain(..100);
+    assert_eq!(
+        restored.journal_page(Some(50), Some(130), None).unwrap()["retention_gap"],
+        true
+    );
+    assert!(restored.journal_page(None, None, Some(201)).is_err());
+}
+
+#[test]
+fn reviewed_unavailable_result_preserves_unknown_and_never_retries_original_batch() {
+    let mut memory = Memory::default();
+    memory.batch("original".into(), false);
+    memory.pending[0].attempted = true;
+    let mut response = AgentResponse::new(AgentOutcome::StatusUnavailable);
+    response.submission_id = Some("submission".into());
+    memory.receipts.push_back(Receipt {
+        batch: memory.pending[0].id.clone(),
+        conversation: "conversation".into(),
+        submission: "submission".into(),
+        response: Some(response),
+        settled: false,
+    });
+    for (id, rev) in [("wrong", 0), ("submission", 1)] {
+        assert!(memory
+            .command(MotherRequest::Resolve {
+                submission_id: id.into(),
+                expect_rev: rev
+            })
+            .is_err());
+    }
+    memory
+        .command(MotherRequest::Resolve {
+            submission_id: "submission".into(),
+            expect_rev: 0,
+        })
+        .unwrap();
+    assert!(memory.receipts[0].settled);
+    assert_eq!(
+        memory.receipts[0].response.as_ref().unwrap().outcome,
+        AgentOutcome::StatusUnavailable
+    );
+    assert!(memory.pending[0].attempted);
+    assert!(!memory.pending[1].attempted);
+    assert_eq!(memory.revision, 1);
+    assert_eq!(memory.journal.back().unwrap()["outcome"], "unknown");
+    assert!(memory
+        .command(MotherRequest::Resolve {
+            submission_id: "submission".into(),
+            expect_rev: 1
+        })
+        .is_err());
 }

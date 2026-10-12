@@ -291,6 +291,7 @@ fn pane_tabs_bar_keeps_active_label_reachable_at_every_width() {
             .tabs
             .into_iter()
             .map(|descriptor| PaneTabInfo {
+                terminal_id: None,
                 descriptor,
                 plugin_id: None,
                 state: PaneTabLoadState::Unloaded,
@@ -910,4 +911,96 @@ fn navigation_recovery_leaves_hidden_pane_tab_children_untouched() {
     assert_eq!(tab.pane_tabs_info(info.id).unwrap(), before);
     assert_eq!(tab.pane_tabs_of(PaneId::Plugin(child)), Some(info.id));
     assert!(tab.suppressed_panes.contains_key(&PaneId::Plugin(child)));
+}
+
+#[test]
+fn terminal_and_panel_tabs_retain_terminal_through_switch_transfer_and_close() {
+    let (mut tab, receiver) =
+        create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let client = ClientId::new(1);
+    let terminal = PaneId::Terminal(TerminalId::new(100));
+    tab.new_pane(
+        terminal,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(None),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let before = tab.get_pane_with_id(terminal).unwrap().get_content_rows();
+    let info = tab.mount_pane_tabs(terminal, layout(), 0, client).unwrap();
+    assert_eq!(
+        tab.get_pane_with_id(terminal).unwrap().get_content_rows(),
+        before - 1
+    );
+    let other = ClientId::new(2);
+    tab.connected_clients.borrow_mut().insert(other);
+    tab.focus_pane_with_id(terminal, false, false, other)
+        .unwrap();
+    tab.select_pane_tab(info.id, 1, client).unwrap();
+    assert_eq!(
+        tab.pane_tabs_info(info.id).unwrap().active,
+        0,
+        "another client owns Conversation"
+    );
+    tab.connected_clients.borrow_mut().remove(&other);
+    tab.select_pane_tab(info.id, 1, client).unwrap();
+    let generation = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::LoadPaneTab { generation, .. } => Some(generation),
+            _ => None,
+        })
+        .unwrap();
+    tab.pane_tab_loaded(info.id, 1, generation, Err("load failed".into()))
+        .unwrap();
+    tab.select_pane_tab(info.id, 0, client).unwrap();
+    assert!(tab.get_pane_with_id(terminal).is_some());
+    tab.select_pane_tab(info.id, 1, client).unwrap();
+    let generation = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::LoadPaneTab { generation, .. } => Some(generation),
+            _ => None,
+        })
+        .unwrap();
+    let panel = PluginId::new(101);
+    let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "yinz:fixture-plugin-for-tests",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.pane_tab_loaded(info.id, 1, generation, Ok((panel, run)))
+        .unwrap();
+    assert!(tab.get_pane_info(terminal).unwrap().is_suppressed);
+    assert!(
+        !tab.pane_tabs_input(terminal, &None, None).unwrap(),
+        "host delivery reaches inactive terminal"
+    );
+    assert!(
+        tab.pane_tabs_input(terminal, &None, Some(client)).unwrap(),
+        "client input cannot reach inactive terminal"
+    );
+    let mut destination = create_new_tab(Size { cols: 50, rows: 16 }, ModeInfo::default());
+    let moved = tab.extract_pane(PaneId::Plugin(panel), true).unwrap();
+    assert!(matches!(
+        destination.accept_extracted_pane(moved, ExtractedPanePlacement::Tiled),
+        AcceptedPane::Accepted
+    ));
+    assert!(destination.get_pane_with_id(terminal).is_some());
+    destination.select_pane_tab(info.id, 0, client).unwrap();
+    assert_eq!(
+        destination.pane_tabs_info(info.id).unwrap().pane_id,
+        terminal
+    );
+    destination.close_pane_tabs(info.id).unwrap();
+    assert!(destination.get_pane_with_id(terminal).is_none());
+    assert!(destination
+        .get_pane_with_id(PaneId::Plugin(panel))
+        .is_none());
 }

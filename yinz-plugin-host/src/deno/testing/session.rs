@@ -47,6 +47,12 @@ pub(super) fn environment(command: &mut Command, root: &Path) {
         .env("TERM", "xterm-256color");
 }
 
+fn session_socket(root: &Path) -> PathBuf {
+    root.join("sockets")
+        .join(yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR.as_str())
+        .join("plugin-test")
+}
+
 pub(super) struct OwnedSession {
     root: tempfile::TempDir,
     child: Child,
@@ -64,11 +70,17 @@ impl OwnedSession {
         ] {
             fs::create_dir(root.path().join(dir)).context("create test directory")?;
         }
+        fs::create_dir_all(
+            session_socket(root.path())
+                .parent()
+                .context("test socket directory")?,
+        )
+        .context("create test socket directory")?;
         let mut command = Command::new(binary()?);
         environment(&mut command, root.path());
         let child = command
             .arg("--plugin-test-server")
-            .arg(root.path().join("session"))
+            .arg(session_socket(root.path()))
             .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -109,7 +121,7 @@ impl OwnedSession {
             }
             return Ok(());
         }
-        if let Ok(stream) = ipc_connect(&self.root.path().join("session")) {
+        if let Ok(stream) = ipc_connect(&session_socket(self.root.path())) {
             let mut sender = IpcSenderWithContext::<ClientMsg>::new(stream);
             sender
                 .send_client_msg(ClientMsg::KillSession)
@@ -359,6 +371,9 @@ impl Controller {
                 "NewTab",
                 "CloseTab",
                 "TogglePaneFrames",
+                "NextPaneTab",
+                "PreviousPaneTab",
+                "FocusPaneTabs",
             ]
             .contains(&node.name().value())
             {
@@ -531,7 +546,7 @@ impl Controller {
                     .context("write test layout")?;
                 let deadline = Instant::now() + Duration::from_secs(10);
                 let stream = loop {
-                    match ipc_connect(&self.root.join("session")) {
+                    match ipc_connect(&session_socket(&self.root)) {
                         Ok(stream) => break stream,
                         Err(error) if Instant::now() >= deadline => {
                             return Err(error).context("connect test server")
@@ -690,7 +705,7 @@ impl Controller {
                     },
                     _ => Duration::from_secs(30),
                 };
-                let socket = self.root.join("session");
+                let socket = session_socket(&self.root);
                 let (sender, receiver) = mpsc::channel();
                 std::thread::spawn(move || {
                     let response = exchange(
@@ -770,7 +785,7 @@ impl Controller {
                 };
                 yinz_runtime::agent::report::validate_report(&report)?;
                 return exchange(
-                    &self.root.join("session"),
+                    &session_socket(&self.root),
                     ClientMsg::AgentReport(report),
                     Duration::from_secs(5),
                     |message| match message {
@@ -895,7 +910,7 @@ impl Controller {
         Ok(Value::Null)
     }
     fn pipe(&self, arg: &Value, plugin: Option<String>, timeout: Duration) -> Result<Value> {
-        let stream = ipc_connect(&self.root.join("session")).context("connect test pipe")?;
+        let stream = ipc_connect(&session_socket(&self.root)).context("connect test pipe")?;
         let mut sender = IpcSenderWithContext::<ClientMsg>::new(stream);
         let mut receiver = sender
             .get_receiver::<ServerMsg>()

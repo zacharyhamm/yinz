@@ -98,6 +98,7 @@ fn prompt_sources_name_the_mistake() {
 fn prompt_request_keeps_conversation_and_wait_deadline() {
     let (request, json, timeout) = request(
         Agent::Prompt {
+            preserve_draft: false,
             target: "terminal_7".parse::<PaneId>().unwrap(),
             text: None,
             file: Some("-".into()),

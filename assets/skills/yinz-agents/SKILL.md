@@ -228,3 +228,5 @@ Muse, AGY, custom editors, hidden cursors, and unfamiliar layouts require manual
 Ambiguous suggestions, attachments, and paste labels do not prove emptiness.
 Pi needs its existing `PI_HARDWARE_CURSOR=1` setting for cursor verification. Verification can fail after partial clearing.
 Inspect failures instead of retrying. Clearing preserves the conversation but does not verify task completion or remove provider history.
+
+Use `yinz agent prompt --preserve-draft` for supervised worker assignments. This refuses a draft or unknown composer without clearing input. Save a submission ID before delivery and inspect that ID after a lost reply instead of resending the prompt.

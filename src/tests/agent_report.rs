@@ -938,6 +938,7 @@ fn delivered_agent_prompts_keep_their_submission_id_after_transport_disconnect()
             .unwrap();
         let IpcRecv::Msg(
             ClientToServerMsg::AgentControl(AgentRequest::Prompt {
+                preserve_draft: false,
                 pane_id,
                 expected_session_id,
                 submission_id,

@@ -42,18 +42,17 @@ impl Tab {
                 .info
                 .tabs
                 .iter()
-                .filter_map(|slot| slot.plugin_id)
-                .filter_map(|id| {
-                    self.suppressed_panes
-                        .remove(&PaneId::Plugin(id))
-                        .map(|child| (PaneId::Plugin(id), child))
-                })
+                .filter_map(PaneTabInfo::pane_id)
+                .filter_map(|id| self.suppressed_panes.remove(&id).map(|child| (id, child)))
                 .collect();
             pane.set_pane_tabs_transfer(PaneTabsTransfer::new(PaneTabsCarry { tabs, children }));
         }
     }
 
     pub(super) fn update_pane_tab_label(&mut self, pane: PaneId) -> Result<()> {
+        if matches!(pane, PaneId::Terminal(_)) {
+            return Ok(());
+        }
         let Some(id) = self.pane_tabs_of(pane) else {
             return Ok(());
         };
@@ -65,7 +64,7 @@ impl Tab {
             tabs.info
                 .tabs
                 .iter_mut()
-                .find(|slot| slot.plugin_id.map(PaneId::Plugin) == Some(pane))
+                .find(|slot| slot.pane_id() == Some(pane))
         }) {
             slot.descriptor.label = title;
         }
@@ -83,7 +82,7 @@ impl Tab {
                     .info
                     .tabs
                     .iter()
-                    .any(|slot| slot.plugin_id.map(PaneId::Plugin) == Some(pane)))
+                    .any(|slot| slot.pane_id() == Some(pane)))
             .then_some(*id)
         })
     }
@@ -96,8 +95,13 @@ impl Tab {
         client: ClientId,
     ) -> Result<PaneTabsInfo> {
         layout.validate().map_err(|error| anyhow!(error))?;
-        let PaneId::Plugin(plugin_id) = pane else {
-            return Err(anyhow!("pane tabs require a plugin pane"));
+        let plugin_id = match pane {
+            PaneId::Plugin(id) => Some(id),
+            _ => None,
+        };
+        let terminal_id = match pane {
+            PaneId::Terminal(id) => Some(id),
+            _ => None,
         };
         if existing >= layout.tabs.len()
             || self.pane_tabs_of(pane).is_some()
@@ -129,7 +133,8 @@ impl Tab {
                 .enumerate()
                 .map(|(index, descriptor)| PaneTabInfo {
                     descriptor,
-                    plugin_id: (index == existing).then_some(plugin_id),
+                    plugin_id: (index == existing).then_some(plugin_id).flatten(),
+                    terminal_id: (index == existing).then_some(terminal_id).flatten(),
                     state: if index == existing {
                         PaneTabLoadState::Ready
                     } else {
@@ -159,13 +164,22 @@ impl Tab {
         index: usize,
         client: ClientId,
     ) -> Result<()> {
+        let info = self.pane_tabs_info(id).context("unknown pane tabs")?;
+        if index != info.active
+            && matches!(info.pane_id, PaneId::Terminal(_))
+            && self.connected_clients.borrow().iter().any(|other| {
+                *other != client && self.get_active_pane_id(*other) == Some(info.pane_id)
+            })
+        {
+            return Ok(());
+        }
         let tabs = self.pane_tabs.get_mut(&id).context("unknown pane tabs")?;
         let slot = tabs
             .info
             .tabs
             .get(index)
             .context("invalid pane tab index")?;
-        let target = slot.plugin_id.map(PaneId::Plugin);
+        let target = slot.pane_id();
         tabs.info.active = index;
         // Activation is shared; other clients keep their own highlight and overflow window.
         if let Some(view) = tabs.views.get_mut(&client) {
@@ -333,7 +347,7 @@ impl Tab {
             .info
             .tabs
             .iter()
-            .any(|slot| slot.plugin_id.map(PaneId::Plugin) == Some(current))
+            .any(|slot| slot.pane_id() == Some(current))
         {
             self.park_pane(previous);
         }
@@ -373,6 +387,9 @@ impl Tab {
             .tabs
             .get_mut(index)
             .context("invalid pane tab index")?;
+        if slot.terminal_id.is_some() {
+            bail!("close the Mother overlay to close Conversation");
+        }
         tabs.generations[index] += 1;
         slot.state = PaneTabLoadState::Unloaded;
         if let Some(plugin) = slot.plugin_id.take() {
@@ -430,11 +447,7 @@ impl Tab {
 
     pub fn refresh_pane_tabs(&mut self, id: PaneTabsId) -> Result<()> {
         let info = self.pane_tabs_info(id).context("unknown pane tabs")?;
-        let mut members: Vec<_> = info
-            .tabs
-            .iter()
-            .filter_map(|tab| tab.plugin_id.map(PaneId::Plugin))
-            .collect();
+        let mut members: Vec<_> = info.tabs.iter().filter_map(|tab| tab.pane_id()).collect();
         if !members.contains(&info.pane_id) {
             members.push(info.pane_id);
         }
@@ -458,14 +471,9 @@ impl Tab {
                 pane.set_pane_tabs_views(views.clone());
             }
             if let Some(pane) = self.get_pane_with_id(member) {
+                resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                    .context("failed to resize pane tab")?;
                 if let PaneId::Plugin(plugin) = member {
-                    self.senders
-                        .send_to_plugin(PluginInstruction::Resize(
-                            plugin,
-                            pane.get_content_columns(),
-                            pane.get_content_rows(),
-                        ))
-                        .context("failed to resize pane tab")?;
                     let effective_visibility = visible
                         && member == info.pane_id
                         && info.tabs[info.active].plugin_id == Some(plugin);
@@ -498,6 +506,10 @@ impl Tab {
         key: &Option<KeyWithModifier>,
         client: Option<ClientId>,
     ) -> Result<bool> {
+        // Guarded host input addresses the retained terminal, bypassing the tab's keyboard focus.
+        if client.is_none() && matches!(pane, PaneId::Terminal(_)) {
+            return Ok(false);
+        }
         let Some(id) = self.pane_tabs_of(pane) else {
             return Ok(false);
         };
@@ -506,7 +518,7 @@ impl Tab {
         if pane != info.pane_id {
             return Ok(true);
         }
-        let content_available = selected.plugin_id.map(PaneId::Plugin) == Some(pane)
+        let content_available = selected.pane_id() == Some(pane)
             && !matches!(selected.state, PaneTabLoadState::Failed(_));
         let Some(client) =
             client.filter(|client| info.bar_focused.contains(client) || !content_available)
@@ -590,7 +602,7 @@ impl Tab {
         let info = self.pane_tabs_info(id).context("pane tabs disappeared")?;
         if event.position.line() != y as isize {
             let selected = &info.tabs[info.active];
-            let content_available = selected.plugin_id.map(PaneId::Plugin) == Some(pane_id)
+            let content_available = selected.pane_id() == Some(pane_id)
                 && !matches!(selected.state, PaneTabLoadState::Failed(_));
             if content_available
                 && event.event_type == yinz_types::mouse::MouseEventType::Press

@@ -1455,6 +1455,7 @@ impl Screen {
                 }
             },
             Prompt {
+                preserve_draft,
                 prompt,
                 wait,
                 timeout_ms,
@@ -1584,6 +1585,12 @@ impl Screen {
                     || self
                         .draft_composer(pane, &status.agent.kind)
                         .is_some_and(|composer| !composer.empty);
+                if preserve_draft
+                    && (needs_clear || self.draft_composer(pane, &status.agent.kind).is_none())
+                {
+                    reject(self, AgentOutcome::Rejected, "Draft preserved: clear or submit it yourself; an unknown composer must be inspected before delivery");
+                    return;
+                }
                 if automatic
                     && (needs_clear
                         || self.mother_focused(pane)
@@ -1591,7 +1598,16 @@ impl Screen {
                         || self.claude_background_pending(pane)
                         || !status.background_tasks.is_empty())
                 {
-                    reject(self, AgentOutcome::Rejected, &format!("Mother delivery queued: focused={}, draft_or_unconsumed_input={}, composer_known={}, background_work={}", self.mother_focused(pane), needs_clear, self.draft_composer(pane, &status.agent.kind).is_some(), self.claude_background_pending(pane) || !status.background_tasks.is_empty()));
+                    let reason = if self.mother_focused(pane) {
+                        "Conversation is focused. Switch to Overview or another pane to allow automatic turns."
+                    } else if needs_clear {
+                        "Conversation contains a draft or unconsumed input. Submit or clear it yourself."
+                    } else if self.draft_composer(pane, &status.agent.kind).is_none() {
+                        "Composer unavailable. Open Conversation, finish startup dialogs, and verify lifecycle hooks."
+                    } else {
+                        "Background work is active. Wait for it to finish."
+                    };
+                    reject(self, AgentOutcome::Rejected, reason);
                     return;
                 }
                 if needs_clear {
@@ -1702,8 +1718,10 @@ impl Screen {
                     return;
                 }
                 let Some(submission) = self.submission(pane, &submission_id) else {
-                    reject(self, AgentOutcome::Rejected,
-                        "submission is unknown or no longer retained; inspect the pane before retrying any prompt");
+                    let mut result = self.agent_result(pane, AgentOutcome::StatusUnavailable,
+                        Some("submission is unknown or no longer retained; inspect the pane before retrying any prompt".into()));
+                    result.submission_id = Some(submission_id);
+                    self.agent_reply(&client, result);
                     return;
                 };
                 if expected_session_id.is_some() && expected_session_id != submission.conversation {
@@ -3274,6 +3292,43 @@ impl Screen {
 }
 
 impl Screen {
+    pub(super) fn mother_delivery_blocker(&self, pane: PaneId) -> Option<String> {
+        let Some(status) = self.agent_status(pane, None) else {
+            return Some("Mother has not reported lifecycle hooks. Open Conversation, finish startup, and run yinz hooks install.".into());
+        };
+        let reason = if !status.prompt_supported {
+            "Setup is incomplete. Open Conversation, finish dialogs, and verify lifecycle hooks."
+        } else if self.mother_focused(pane) {
+            "Conversation is focused. Switch to Overview or another pane to allow automatic turns."
+        } else if status.agent.state != AgentState::Idle
+            || self.claude_background_pending(pane)
+            || !status.background_tasks.is_empty()
+        {
+            "Mother is working or awaiting input. Inspect Conversation and let the active turn finish."
+        } else if self.draft_composer(pane, &status.agent.kind).is_none() {
+            "Composer unavailable. Inspect Conversation before allowing automatic delivery."
+        } else if self
+            .draft_composer(pane, &status.agent.kind)
+            .is_some_and(|composer| !composer.empty)
+            || self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                lifecycle.input_revision != Some(self.agent_input_revision(pane))
+            })
+        {
+            "Conversation contains a draft or unconsumed input. Submit or clear it yourself."
+        } else {
+            return None;
+        };
+        Some(reason.into())
+    }
+
+    pub(super) fn mother_submission_in_flight(&self, submission: &str) -> bool {
+        self.agent_controls.iter().any(|pending| {
+            pending.submission_id.as_deref() == Some(submission)
+                && pending.prompt.is_some()
+                && !pending.resolved
+        })
+    }
+
     fn mother_focused(&self, pane: PaneId) -> bool {
         self.connected_clients
             .borrow()
@@ -3310,6 +3365,7 @@ impl Screen {
         }
         self.agent_control_inner(
             AgentRequest::Prompt {
+                preserve_draft: false,
                 pane_id: pane,
                 expected_session_id: Some(conversation),
                 submission_id: Some(submission),

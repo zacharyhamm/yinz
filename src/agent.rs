@@ -292,6 +292,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             file,
             conversation,
             submission,
+            preserve_draft,
             wait,
             timeout: requested,
             json,
@@ -310,6 +311,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                     timeout_ms: timeout_millis(timeout)?,
                     expected_session_id: conversation,
                     submission_id: submission,
+                    preserve_draft,
                 },
                 json,
             )
@@ -466,14 +468,7 @@ fn read_prompt(text: Option<String>, file: Option<&Path>, stdin: &mut impl Read)
 /// Codex's Linux sandbox blocks `connect()` on every socket, the session's included, unless
 /// the sandbox has network access. Neither writable roots nor a Unix socket allowlist lifts it.
 fn allow_sandboxed_yinz(spec: &mut AgentSpawnSpec) -> Result<()> {
-    if yinz_runtime::agent::launch::kind_for_spec(spec).as_deref() != Some("codex") {
-        bail!("--allow-yinz applies only to Codex launches (--kind codex or a Codex command)");
-    }
-    spec.args.extend([
-        "-c".to_owned(),
-        "sandbox_workspace_write.network_access=true".to_owned(),
-    ]);
-    Ok(())
+    yinz_runtime::agent::launch::allow_sandboxed_yinz(spec).map_err(anyhow::Error::msg)
 }
 
 fn exchange(session: &str, request: AgentRequest, timeout: Duration) -> Result<AgentResponse> {
@@ -774,6 +769,23 @@ pub(crate) fn mother(command: yinz_cli::args::Mother, opts: &CliArgs) -> Result<
     use yinz_types::agent::mother::MotherRequest;
     let request = match command {
         Mother::Status => MotherRequest::Status,
+        Mother::Overview => MotherRequest::Overview,
+        Mother::Journal {
+            after,
+            through,
+            limit,
+        } => MotherRequest::Journal {
+            after,
+            through,
+            limit,
+        },
+        Mother::Resolve {
+            submission_id,
+            expect_rev,
+        } => MotherRequest::Resolve {
+            submission_id,
+            expect_rev,
+        },
         Mother::Inbox => MotherRequest::Inbox,
         Mother::Ack { batch } => MotherRequest::Ack { batch },
         Mother::Pause => MotherRequest::Pause,

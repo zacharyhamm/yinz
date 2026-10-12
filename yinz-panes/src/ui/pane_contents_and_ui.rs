@@ -147,8 +147,8 @@ impl<'a> PaneContentsAndUi<'a> {
         // and we can clear them from the UI below
         drop(self.pane.drain_fake_cursors());
 
+        let clients: Vec<ClientId> = clients.collect();
         if let Some(rendered) = self.pane.render(None).context(err_context)? {
-            let clients: Vec<ClientId> = clients.collect();
             if self
                 .output
                 .pane_change_client
@@ -188,6 +188,34 @@ impl<'a> PaneContentsAndUi<'a> {
                             raw_vte_output
                         ),
                     );
+                }
+            }
+        }
+        if let Some(tabs) = self
+            .pane
+            .pane_tabs()
+            .filter(|_| matches!(self.pane.pid(), PaneId::Terminal(_)))
+        {
+            if self.pane.get_content_y() > self.pane.y() && self.pane.get_content_rows() > 0 {
+                for client in clients {
+                    let characters = crate::pane_tabs::render_bar(
+                        tabs,
+                        self.pane.pane_tabs_view(client),
+                        tabs.bar_focused.contains(&client),
+                        self.pane.get_content_columns(),
+                        &self.style,
+                    );
+                    self.output
+                        .add_character_chunks_to_client(
+                            client,
+                            vec![CharacterChunk::new(
+                                characters,
+                                self.pane.get_content_x(),
+                                self.pane.get_content_y() - 1,
+                            )],
+                            self.z_index,
+                        )
+                        .context("render terminal pane tabs")?;
                 }
             }
         }

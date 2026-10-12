@@ -12,6 +12,7 @@ fn companion_visibility_tracks_the_panel_without_giving_agents_the_keyboard() {
             .into_iter()
             .enumerate()
             .map(|(index, descriptor)| PaneTabInfo {
+                terminal_id: None,
                 descriptor,
                 plugin_id: Some(PluginId::new(index as u32)),
                 state: PaneTabLoadState::Ready,

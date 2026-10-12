@@ -376,6 +376,12 @@ fn mother(
         .map_err(|error| format!("Mother cannot provision instructions: {error:#}"))?;
     launch(request, senders, spec, |_| {
         let mut prepared = existing_command(&kind, &cwd.to_string_lossy(), PaneTarget::Local)?;
+        if kind == "codex" {
+            prepared
+                .command
+                .args
+                .extend(yinz_runtime::agent::launch::codex_yinz_args());
+        }
         let sandbox = yinz_config::project_config::bubblewrap::Environment::at_root(&cwd)
             .prepare_mother(&kind);
         mother_target(

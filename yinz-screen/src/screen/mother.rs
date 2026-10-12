@@ -59,6 +59,9 @@ impl Screen {
     /// Follow restoration links without pulling a pane out from behind its stand-in.
     pub(super) fn mother_presentation(&self, mut pane: PaneId) -> Option<PaneId> {
         let tab = self.tab_containing_pane(pane)?;
+        if let Some(info) = tab.pane_tabs_of(pane).and_then(|id| tab.pane_tabs_info(id)) {
+            pane = info.pane_id;
+        }
         let mut visited = HashSet::new();
         while visited.insert(pane) {
             if tab.has_non_suppressed_pane_with_pid(&pane) {
@@ -250,6 +253,33 @@ impl Screen {
         };
         if let Some(previous) = self.mother.replace(id).filter(|previous| *previous != id) {
             self.close_pane_explicitly(PaneId::Terminal(previous), None);
+        }
+        let client = self.connected_clients.borrow().iter().next().copied();
+        if let Some(tab) = self.tab_containing_pane_mut(pane) {
+            if tab.pane_tabs_of(pane).is_none() {
+                if let Some(client) = client {
+                    use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+                    tab.mount_pane_tabs(
+                        pane,
+                        PaneTabsLayout {
+                            active: 0,
+                            tabs: ["Conversation", "Overview"]
+                                .into_iter()
+                                .map(|label| PaneTabDescriptor {
+                                    label: label.into(),
+                                    location: "yinz:mother-overview".into(),
+                                    configuration: Default::default(),
+                                    initial_cwd: None,
+                                })
+                                .collect(),
+                        },
+                        0,
+                        client,
+                    )
+                    .context("mount Mother overview")
+                    .non_fatal();
+                }
+            }
         }
         self.log_and_report_session_state()
             .context("failed to report session state after registering mother")

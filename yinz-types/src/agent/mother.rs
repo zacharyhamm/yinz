@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MotherRequest {
     Status,
+    Overview,
+    Journal {
+        after: Option<u64>,
+        through: Option<u64>,
+        limit: Option<usize>,
+    },
+    Resolve {
+        submission_id: String,
+        expect_rev: u64,
+    },
     Inbox,
     Ack {
         batch: String,
