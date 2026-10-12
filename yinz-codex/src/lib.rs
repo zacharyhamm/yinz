@@ -41,6 +41,7 @@ struct Registration {
     env: HashMap<String, String>,
     /// The yinz binary that announces selected conversations to the pane, if any.
     reporter: Option<PathBuf>,
+    backend_socket: Option<PathBuf>,
 }
 
 impl Registration {
@@ -70,6 +71,7 @@ impl Registration {
             _lease: lease,
             env,
             reporter: None,
+            backend_socket: sandboxed().then(|| PathBuf::from(PRIVATE_BACKEND)),
         })
     }
 
@@ -81,7 +83,7 @@ impl Registration {
         }
         let ready = match tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            verify_capability(program, &hook),
+            verify_capability(program, &hook, self.backend_socket.as_deref()),
         )
         .await
         .context("timed out checking Codex reporting hooks")
@@ -391,7 +393,7 @@ async fn proxy(
     let ui = tokio_tungstenite::accept_async(stream)
         .await
         .context("accept Codex UI connection")?;
-    let (backend, stream) = daemon_connection(program)?;
+    let (backend, stream) = daemon_connection(program, registration.backend_socket.as_deref())?;
     let result = relay(ui, stream, registration, program).await;
     drop(backend);
     result
@@ -400,11 +402,12 @@ async fn proxy(
 // Keep the proxy child alive for the lifetime of its WebSocket; cancellation kills it.
 fn daemon_connection(
     program: &Path,
+    socket: Option<&Path>,
 ) -> Result<(tokio::process::Child, impl AsyncRead + AsyncWrite + Unpin)> {
     let mut command = tokio::process::Command::new(program);
     command.args(["app-server", "proxy"]);
-    if sandboxed() {
-        command.args(["--sock", PRIVATE_BACKEND]);
+    if let Some(socket) = socket {
+        command.arg("--sock").arg(socket);
     }
     let mut backend = command
         .stdin(Stdio::piped())
@@ -457,7 +460,7 @@ async fn capability_request<S: AsyncRead + AsyncWrite + Unpin>(
     Err(anyhow!("Codex capability connection ended"))
 }
 
-async fn verify_capability(program: &Path, hook: &Value) -> Result<()> {
+async fn verify_capability(program: &Path, hook: &Value, socket: Option<&Path>) -> Result<()> {
     if hook["_yinz_codex_hooks_ready"] != true {
         return Err(anyhow!("selected Codex conversation is not idle"));
     }
@@ -474,7 +477,7 @@ async fn verify_capability(program: &Path, hook: &Value) -> Result<()> {
         })
         .context("cannot locate Codex reporting script")?;
     let script = root.join("yinz/yinz-hook.sh");
-    let (_child, stream) = daemon_connection(program)?;
+    let (_child, stream) = daemon_connection(program, socket)?;
     let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", stream)
         .await
         .context("connect Codex capability WebSocket")?;
@@ -669,6 +672,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
 #[derive(Default)]
 struct BridgeOptions {
     cd: Option<PathBuf>,
+    project_overrides: Vec<String>,
 }
 
 // Only known, unambiguous UI arguments may acquire an implicit --remote endpoint.
@@ -709,6 +713,15 @@ fn bridge_options(args: &[String]) -> Option<BridgeOptions> {
                             == Some("sandbox_workspace_write.writable_roots")
                     {
                         return None;
+                    }
+                    if matches!(option, "--config" | "-c") {
+                        if let Some(value) = value.filter(|value| {
+                            value.split_once('=').is_some_and(|(key, _)| {
+                                key.trim() == "projects" || key.trim().starts_with("projects.")
+                            })
+                        }) {
+                            options.project_overrides.push(value.to_owned());
+                        }
                     }
                     if matches!(option, "--cd" | "-C") {
                         options.cd = value.map(PathBuf::from);
@@ -776,13 +789,18 @@ fn sandboxed() -> bool {
     std::env::var("YINZ_BUBBLEWRAP").as_deref() == Ok("1")
 }
 
-async fn private_backend(program: &Path, socket: &Path) -> Result<tokio::process::Child> {
+async fn private_backend(
+    program: &Path,
+    socket: &Path,
+    overrides: &[String],
+) -> Result<tokio::process::Child> {
     let mut child = tokio::process::Command::new(program)
         .args([
             "app-server",
             "--listen",
             &format!("unix://{}", socket.display()),
         ])
+        .args(overrides.iter().flat_map(|value| ["-c", value.as_str()]))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -836,7 +854,16 @@ fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitSta
     let worktree = worktree_roots(&cwd);
     let mut registration = Registration::new(&directory(), env)?;
     registration.reporter = Some(std::env::current_exe().context("find this yinz binary")?);
-    if !sandboxed() {
+    // Remote UIs read trust from the backend before their thread config overrides take effect.
+    if !options.project_overrides.is_empty() && registration.backend_socket.is_none() {
+        std::fs::set_permissions(
+            registration.dir.path(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .context("protect private Codex backend directory")?;
+        registration.backend_socket = Some(registration.dir.path().join("backend.sock"));
+    }
+    if registration.backend_socket.is_none() {
         let status = Command::new(program)
             .args(["app-server", "daemon", "start"])
             .stdout(Stdio::null())
@@ -851,19 +878,23 @@ fn launch_inner(program: &Path, args: &[String]) -> Result<std::process::ExitSta
         .build()
         .context("start Codex pane bridge")?
         .block_on(async {
-            let _backend = if sandboxed() {
-                Some(private_backend(program, Path::new(PRIVATE_BACKEND)).await?)
+            let _backend = if let Some(socket) = &registration.backend_socket {
+                Some(private_backend(program, socket, &options.project_overrides).await?)
             } else {
                 None
             };
             if let Some((root, primary)) = &worktree {
-                // --remote skips Codex's folder-access prompt, so establish trust first.
-                if !register_worktree_trust(program, root, primary)
-                    .await
-                    .context(
-                        "establish Codex worktree trust; inspect Codex config and retry the launch",
-                    )?
-                {
+                // Establish worktree trust before the UI starts.
+                if !register_worktree_trust(
+                    program,
+                    root,
+                    primary,
+                    registration.backend_socket.as_deref(),
+                )
+                .await
+                .context(
+                    "establish Codex worktree trust; inspect Codex config and retry the launch",
+                )? {
                     return Ok(std::process::ExitStatus::from_raw(1 << 8));
                 }
             }
@@ -950,8 +981,13 @@ impl std::fmt::Display for ConfigVersionConflict {
 
 impl std::error::Error for ConfigVersionConflict {}
 
-async fn register_worktree_trust(program: &Path, root: &Path, primary: &Path) -> Result<bool> {
-    let (_child, stream) = daemon_connection(program)?;
+async fn register_worktree_trust(
+    program: &Path,
+    root: &Path,
+    primary: &Path,
+    socket: Option<&Path>,
+) -> Result<bool> {
+    let (_child, stream) = daemon_connection(program, socket)?;
     let (mut ws, _) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         tokio_tungstenite::client_async("ws://localhost", stream),
