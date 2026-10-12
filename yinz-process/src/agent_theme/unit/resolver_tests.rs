@@ -148,6 +148,82 @@ fn claude_inherits_base_and_tracks_unmapped_identity_collisions() {
 }
 
 #[test]
+fn claude_auto_keeps_both_palettes_and_resolves_collisions_deterministically() {
+    for settings in [".claude.json", ".claude/settings.json"] {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), settings, r#"{"theme":"auto"}"#);
+        let mut source = snapshot();
+        source.provider = "claude".into();
+        claude::resolve(&context(dir.path()), &mut source).unwrap();
+        source.finish();
+        assert_eq!(source.theme, "auto");
+        assert_eq!(source.provenance, ["claude-2.1.296/palettes-v1"]);
+        assert!(matches!(source.availability, Availability::Partial(_)));
+        let compiled = source.compile();
+        assert_eq!(
+            source
+                .definitions
+                .iter()
+                .filter(|d| d.token == "permission")
+                .map(|d| (d.color, d.target))
+                .collect::<Vec<_>>(),
+            [
+                (SourceColor::Rgb(87, 105, 247), Some(Role::Accent.into())),
+                (SourceColor::Rgb(177, 185, 249), Some(Role::Accent.into())),
+            ]
+        );
+        for (channel, color, role) in [
+            (
+                Channel::Foreground,
+                SourceColor::Rgb(87, 105, 247),
+                Role::Accent,
+            ),
+            (
+                Channel::Foreground,
+                SourceColor::Rgb(177, 185, 249),
+                Role::Accent,
+            ),
+            (Channel::Foreground, SourceColor::Default, Role::Foreground),
+            (Channel::Background, SourceColor::Default, Role::Background),
+            (
+                Channel::Foreground,
+                SourceColor::Rgb(0, 0, 0),
+                Role::Foreground,
+            ),
+            (
+                Channel::Foreground,
+                SourceColor::Rgb(255, 255, 255),
+                Role::Foreground,
+            ),
+        ] {
+            let key = MatchKey {
+                channel,
+                color,
+                pair: None,
+            };
+            assert_eq!(compiled.0[&key], Some(role.into()));
+        }
+        for color in [SourceColor::Rgb(0, 0, 0), SourceColor::Rgb(255, 255, 255)] {
+            assert!(source.collisions.iter().any(|collision| {
+                collision.key.channel == Channel::Foreground
+                    && collision.key.color == color
+                    && collision.tokens == ["inverseText", "text"]
+            }));
+        }
+        source.definitions.reverse();
+        assert_eq!(source.compile(), compiled);
+    }
+}
+
+#[test]
+fn claude_auto_is_not_a_custom_theme_base() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), ".claude.json", r#"{"theme":"custom:test"}"#);
+    write(dir.path(), ".claude/themes/test.json", r#"{"base":"auto"}"#);
+    assert!(claude::resolve(&context(dir.path()), &mut snapshot()).is_err());
+}
+
+#[test]
 fn claude_launch_overrides_and_config_roots_are_invocation_local() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), ".claude.json", r#"{"theme":"dark"}"#);

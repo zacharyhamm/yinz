@@ -149,9 +149,13 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
     } else {
         (theme, None)
     };
-    let mut tokens = presets.remove(&base).context(
-        "Claude automatic or unknown base theme cannot be resolved before terminal detection",
-    )?;
+    let mut tokens = presets
+        .remove(if snapshot.theme == "auto" {
+            "light"
+        } else {
+            &base
+        })
+        .context("Claude unknown base theme cannot be resolved")?;
     if let Some(overrides) = overrides.and_then(|v| v.as_object().cloned()) {
         for (token, value) in overrides {
             if let std::collections::btree_map::Entry::Occupied(mut entry) = tokens.entry(token) {
@@ -160,6 +164,15 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
                 }
             }
         }
+    }
+    let mut tokens: Vec<_> = tokens.into_iter().collect();
+    if snapshot.theme == "auto" {
+        // Keep both variants of each token so either automatic palette can match.
+        tokens.extend(
+            presets
+                .remove("dark")
+                .context("verified Claude dark palette is missing")?,
+        );
     }
     snapshot.definitions.clear();
     for (token, value) in tokens {
