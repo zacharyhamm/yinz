@@ -157,7 +157,7 @@ fn claude_auto_keeps_both_palettes_and_resolves_collisions_deterministically() {
         claude::resolve(&context(dir.path()), &mut source).unwrap();
         source.finish();
         assert_eq!(source.theme, "auto");
-        assert_eq!(source.provenance, ["claude-2.1.296/palettes-v1"]);
+        assert_eq!(source.provenance, ["claude-2.1.296/palettes-v2"]);
         assert!(matches!(source.availability, Availability::Partial(_)));
         let compiled = source.compile();
         assert_eq!(
@@ -207,7 +207,8 @@ fn claude_auto_keeps_both_palettes_and_resolves_collisions_deterministically() {
             assert!(source.collisions.iter().any(|collision| {
                 collision.key.channel == Channel::Foreground
                     && collision.key.color == color
-                    && collision.tokens == ["inverseText", "text"]
+                    && collision.tokens.iter().any(|t| t == "inverseText")
+                    && collision.tokens.iter().any(|t| t == "text")
             }));
         }
         source.definitions.reverse();
@@ -619,3 +620,6 @@ fn claude_presets_and_custom_overrides_map_ui_and_both_diff_channels() {
         }
     }
 }
+
+#[path = "claude_code_tests.rs"]
+mod claude_code;

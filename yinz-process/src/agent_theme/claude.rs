@@ -124,7 +124,7 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
         apply(&value, &mut theme)?;
     }
     snapshot.theme = theme.clone();
-    snapshot.provenance = vec!["claude-2.1.296/palettes-v1".into()];
+    snapshot.provenance = vec!["claude-2.1.296/palettes-v2".into()];
     let mut presets: BTreeMap<String, BTreeMap<String, String>> =
         serde_json::from_str(include_str!("descriptors/claude-2.1.296.json"))
             .context("read verified Claude palette descriptor")?;
@@ -158,21 +158,49 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
         .context("Claude unknown base theme cannot be resolved")?;
     if let Some(overrides) = overrides.and_then(|v| v.as_object().cloned()) {
         for (token, value) in overrides {
+            // Custom themes override UI diff tokens, never the renderer's fixed syntax palette.
+            if token.starts_with("code.") {
+                continue;
+            }
+            let Some(value) = value.as_str().filter(|value| color(value).is_some()) else {
+                continue;
+            };
+            let replaced = match token.as_str() {
+                "diffAdded" => Some("code.addLine"),
+                "diffRemoved" => Some("code.deleteLine"),
+                "diffAddedWord" => Some("code.addWord"),
+                "diffRemovedWord" => Some("code.deleteWord"),
+                _ => None,
+            };
+            if let Some(replaced) = replaced {
+                tokens.remove(replaced);
+                tokens.remove(&format!("{replaced}.index"));
+            }
+            if matches!(
+                token.as_str(),
+                "diffAdded"
+                    | "diffRemoved"
+                    | "diffAddedDimmed"
+                    | "diffRemovedDimmed"
+                    | "diffAddedWord"
+                    | "diffRemovedWord"
+            ) {
+                tokens.insert(format!("code.{token}"), value.into());
+            }
             if let std::collections::btree_map::Entry::Occupied(mut entry) = tokens.entry(token) {
-                if let Some(value) = value.as_str().filter(|value| color(value).is_some()) {
-                    entry.insert(value.into());
-                }
+                entry.insert(value.into());
             }
         }
     }
+    add_code_indexes(&mut tokens);
     let mut tokens: Vec<_> = tokens.into_iter().collect();
     if snapshot.theme == "auto" {
         // Keep both variants of each token so either automatic palette can match.
-        tokens.extend(
-            presets
-                .remove("dark")
-                .context("verified Claude dark palette is missing")?,
-        );
+        let mut dark = presets
+            .remove("dark")
+            .context("verified Claude dark palette is missing")?;
+        add_code_indexes(&mut dark);
+        tokens.extend(dark);
     }
     snapshot.definitions.clear();
     for (token, value) in tokens {
@@ -204,9 +232,9 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
         });
     }
     terminal_defaults(&mut snapshot.definitions);
-    // Syntax highlighters and dynamic spinner gradients are outside the palette descriptor.
+    // Other highlighters and dynamic spinner gradients are outside the verified renderer.
     snapshot.availability = Availability::Partial(
-        "palette tokens resolved; dynamic gradients and syntax-only colors pass through".into(),
+        "UI and built-in code/diff palettes resolved; other highlighters and dynamic gradients pass through".into(),
     );
     Ok(())
 }
@@ -239,6 +267,26 @@ fn check_inherited_local_theme(context: &LaunchContext) -> Result<()> {
 
 fn token_role(token: &str) -> (Channel, Option<Target>) {
     use Role::*;
+    if let Some(token) = token.strip_prefix("code.") {
+        let token = token.strip_suffix(".index").unwrap_or(token);
+        if token.starts_with("diff") {
+            return token_role(token);
+        }
+        let (channel, role) = match token {
+            "addLine" => (Channel::Background, AdditionBackground),
+            "deleteLine" => (Channel::Background, RemovalBackground),
+            "addWord" => (Channel::Background, AdditionWord),
+            "deleteWord" => (Channel::Background, RemovalWord),
+            "addDecoration" => (Channel::Foreground, Success),
+            "deleteDecoration" => (Channel::Foreground, Error),
+            "foreground" | "punctuation" | "subst" => (Channel::Foreground, Foreground),
+            "comment" | "meta" => (Channel::Foreground, Muted),
+            "string" | "regexp" => (Channel::Foreground, Success),
+            "number" | "literal" | "symbol" => (Channel::Foreground, Warning),
+            _ => (Channel::Foreground, Accent),
+        };
+        return (channel, Some(role.into()));
+    }
     let token = token.strip_suffix("_FOR_SYSTEM_SPINNER").unwrap_or(token);
     let (base, shimmer) = token
         .strip_suffix("Shimmer")
@@ -272,4 +320,62 @@ fn token_role(token: &str) -> (Channel, Option<Target>) {
         _ => (Channel::Foreground, None),
     };
     (channel, role.map(|role| Target { role, shimmer }))
+}
+
+fn add_code_indexes(tokens: &mut BTreeMap<String, String>) {
+    // Dark addition fills have explicit indexed alternatives in the descriptor.
+    let indexed = tokens
+        .iter()
+        .filter(|(token, _)| token.starts_with("code."))
+        .filter_map(|(token, value)| match color(value)? {
+            SourceColor::Rgb(r, g, b) if !tokens.contains_key(&format!("{token}.index")) => Some((
+                format!("{token}.index"),
+                format!("ansi256({})", code_color_index(r, g, b)),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    tokens.extend(indexed);
+}
+
+// 2.1.296's code renderer chooses the nearer xterm cube or grayscale color.
+pub(super) fn code_color_index(r: u8, g: u8, b: u8) -> u8 {
+    let cube = |v| match v {
+        0..48 => 0,
+        48..115 => 1,
+        115..155 => 2,
+        155..195 => 3,
+        195..235 => 4,
+        _ => 5,
+    };
+    let (ri, gi, bi) = (cube(r), cube(g), cube(b));
+    let index = 16 + 36 * ri + 6 * gi + bi;
+    let average = (f64::from(r) + f64::from(g) + f64::from(b)) / 3.0;
+    let average = average.round();
+    if average < 5.0 {
+        return 16;
+    }
+    if average > 244.0 && ri == gi && gi == bi {
+        return index;
+    }
+    let gray = ((average - 8.0) / 10.0).round().clamp(0.0, 23.0) as u8;
+    let levels = [0, 95, 135, 175, 215, 255];
+    let distance = |rgb: [i32; 3]| {
+        [r, g, b]
+            .into_iter()
+            .zip(rgb)
+            .map(|(v, level)| (i32::from(v) - level).pow(2))
+            .sum::<i32>()
+    };
+    if distance([8 + i32::from(gray) * 10; 3])
+        < distance([
+            levels[ri as usize],
+            levels[gi as usize],
+            levels[bi as usize],
+        ])
+    {
+        232 + gray
+    } else {
+        index
+    }
 }
