@@ -1052,11 +1052,15 @@ fn break_next_to_last_pane_out_of_stack() {
 
 struct MockPane {
     pane_geom: PaneGeom,
+    id: Option<PaneId>,
 }
 
 impl MockPane {
     pub fn new(pane_geom: PaneGeom) -> Self {
-        MockPane { pane_geom }
+        MockPane {
+            pane_geom,
+            id: None,
+        }
     }
 }
 
@@ -1144,7 +1148,7 @@ impl Pane for MockPane {
         unimplemented!()
     }
     fn pid(&self) -> PaneId {
-        unimplemented!()
+        self.id.expect("set the mock ID when testing pane identity")
     }
     fn reduce_height(&mut self, _percent: f64) {
         unimplemented!()
@@ -1244,5 +1248,102 @@ impl Pane for MockPane {
         _max_scrollback_lines: Option<usize>,
     ) -> PaneContents {
         unimplemented!()
+    }
+}
+
+#[test]
+fn focus_transfers_preserve_logical_positions() {
+    let mut mock_panes = HashMap::new();
+    let above = PaneId::Terminal(crate::TerminalId::new(1));
+    let below = PaneId::Terminal(crate::TerminalId::new(2));
+    mock_stacked_pane!(
+        above,
+        Dimension::percent(100.0),
+        9,
+        0,
+        0,
+        Some(7),
+        mock_panes
+    );
+    mock_stacked_pane!(below, Dimension::fixed(1), 1, 0, 9, Some(3), mock_panes);
+    let panes = Rc::new(RefCell::new(mock_panes));
+    let mut stack = StackedPanes::new(panes.clone());
+    stack.move_down(&above, &below).unwrap();
+    assert_eq!(
+        panes.borrow()[&above].position_and_size().logical_position,
+        Some(7)
+    );
+    assert_eq!(
+        panes.borrow()[&below].position_and_size().logical_position,
+        Some(3)
+    );
+    assert!(!panes.borrow()[&below].position_and_size().rows.is_fixed());
+    stack.move_up(&below, &above).unwrap();
+    assert_eq!(
+        panes.borrow()[&above].position_and_size().logical_position,
+        Some(7)
+    );
+    assert_eq!(
+        panes.borrow()[&below].position_and_size().logical_position,
+        Some(3)
+    );
+    assert!(!panes.borrow()[&above].position_and_size().rows.is_fixed());
+}
+
+#[test]
+fn closing_expanded_pane_preserves_replacement_logical_position() {
+    for count in [2, 3] {
+        for expanded_at_top in [true, false] {
+            let expanded_index = if expanded_at_top { 0 } else { count - 1 };
+            let mut owned: Vec<Box<dyn Pane>> = (0..count)
+                .map(|index| {
+                    let expanded = index == expanded_index;
+                    let mut rows = if expanded {
+                        Dimension::percent(100.0)
+                    } else {
+                        Dimension::fixed(1)
+                    };
+                    rows.set_inner(if expanded { 8 } else { 1 });
+                    Box::new(MockPane {
+                        id: Some(PaneId::Terminal(crate::TerminalId::new(index as u32))),
+                        pane_geom: PaneGeom {
+                            y: if expanded_at_top && index > 0 {
+                                index + 7
+                            } else {
+                                index
+                            },
+                            rows,
+                            cols: Dimension::percent(100.0),
+                            logical_position: Some(index + 10),
+                            stacked: Some(0),
+                            ..Default::default()
+                        },
+                    }) as Box<dyn Pane>
+                })
+                .collect();
+            let id = |index| PaneId::Terminal(crate::TerminalId::new(index as u32));
+            let panes = Rc::new(RefCell::new(
+                owned
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(i, pane)| (id(i), pane))
+                    .collect(),
+            ));
+            let mut stack = StackedPanes::new(panes.clone());
+            assert!(stack
+                .fill_space_over_pane_in_stack(&id(expanded_index))
+                .unwrap());
+            let replacement = if expanded_at_top { 1 } else { count - 2 };
+            let panes = panes.borrow();
+            for index in 0..count {
+                assert_eq!(
+                    panes[&id(index)].position_and_size().logical_position,
+                    Some(index + 10)
+                );
+            }
+            let geom = panes[&id(replacement)].position_and_size();
+            assert_eq!(geom.rows.as_usize(), 9);
+            assert_eq!(geom.stacked, if count == 2 { None } else { Some(0) });
+        }
     }
 }
