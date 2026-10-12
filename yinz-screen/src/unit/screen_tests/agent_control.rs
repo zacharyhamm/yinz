@@ -8081,66 +8081,96 @@ fn preserve_draft_refuses_worker_drafts_and_unknown_composers_without_writes() {
 }
 
 #[test]
-fn mother_delivery_reaches_terminal_while_overview_is_selected() {
+fn mother_delivery_checks_selected_slot_across_overview_states_and_clients() {
     use yinz_types::internal_ids::PluginId;
     use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
     for kind in ["claude", "codex", "pi"] {
-        let (mut screen, _, writes) = setup(kind);
-        report_kind(&mut screen, kind, hook("SessionStart"));
-        screen.mother = Some(TerminalId::new(7));
-        screen.mother_supervisor =
-            Some(crate::screen::mother_supervisor::Supervisor::for_test(PANE));
-        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
-        let (sender, _plugin_receiver) = channels::unbounded();
-        tab.senders.to_plugin = Some(SenderWithContext::new(sender));
-        let info = tab
-            .mount_pane_tabs(
-                PANE,
-                PaneTabsLayout {
-                    active: 0,
-                    tabs: ["Conversation", "Overview"]
-                        .into_iter()
-                        .map(|label| PaneTabDescriptor {
-                            label: label.into(),
-                            location: "yinz:mother-overview".into(),
-                            configuration: Default::default(),
-                            initial_cwd: None,
-                        })
-                        .collect(),
-                },
-                0,
-                CLIENT,
-            )
-            .unwrap();
-        tab.select_pane_tab(info.id, 1, CLIENT).unwrap();
-        let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-            "yinz:mother-overview",
-            &None,
-            None,
-            None,
-        )
-        .unwrap();
-        tab.pane_tab_loaded(info.id, 1, 1, Ok((PluginId::new(101), run)))
-            .unwrap();
-        assert_eq!(
-            screen.get_active_pane_id(&CLIENT),
-            Some(PaneId::Plugin(PluginId::new(101)))
-        );
-        draft_frame(&mut screen, kind, "", 0, Instant::now());
-        let (tx, _rx) = std::sync::mpsc::channel();
-        screen.deliver_mother(
-            "test-generation".into(),
-            "conversation".into(),
-            screen.agent_status_for_test().input_revision.unwrap(),
-            "background-batch".into(),
-            "Check the inbox".into(),
-            tx,
-        );
-        let bytes = finish_paste(&writes);
-        assert!(
-            String::from_utf8_lossy(&bytes).contains("Check the inbox"),
-            "{kind}: {bytes:?}"
-        );
-        assert!(screen.agent_draft_clears.is_empty());
+        for view in ["conversation", "loading", "failed", "loaded"] {
+            let (mut screen, _, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            screen.mother = Some(TerminalId::new(7));
+            screen.mother_supervisor =
+                Some(crate::screen::mother_supervisor::Supervisor::for_test(PANE));
+            let observer = ClientId::new(2);
+            screen.add_client(observer).unwrap();
+            let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+            tab.focus_pane_with_id(PANE, false, false, observer)
+                .unwrap();
+            tab.focus_pane_with_id(PaneId::Terminal(TerminalId::new(1)), false, false, CLIENT)
+                .unwrap();
+            let (sender, _plugin_receiver) = channels::unbounded();
+            tab.senders.to_plugin = Some(SenderWithContext::new(sender));
+            let info = tab
+                .mount_pane_tabs(
+                    PANE,
+                    PaneTabsLayout {
+                        active: 0,
+                        tabs: ["Conversation", "Overview"]
+                            .into_iter()
+                            .map(|label| PaneTabDescriptor {
+                                label: label.into(),
+                                location: "yinz:mother-overview".into(),
+                                configuration: Default::default(),
+                                initial_cwd: None,
+                            })
+                            .collect(),
+                    },
+                    0,
+                    observer,
+                )
+                .unwrap();
+            if view != "conversation" {
+                tab.select_pane_tab(info.id, 1, observer).unwrap();
+            }
+            if view == "failed" {
+                tab.pane_tab_loaded(info.id, 1, 1, Err("failed to load Overview".into()))
+                    .unwrap();
+            }
+            if view == "loaded" {
+                let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+                    "yinz:mother-overview",
+                    &None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                tab.pane_tab_loaded(info.id, 1, 1, Ok((PluginId::new(101), run)))
+                    .unwrap();
+            }
+            assert_eq!(
+                screen.get_active_pane_id(&observer),
+                Some(if view == "loaded" {
+                    PaneId::Plugin(PluginId::new(101))
+                } else {
+                    PANE
+                })
+            );
+            assert_ne!(screen.get_active_pane_id(&CLIENT), Some(PANE));
+            draft_frame(&mut screen, kind, "", 0, Instant::now());
+            let (tx, rx) = std::sync::mpsc::channel();
+            screen.deliver_mother(
+                "test-generation".into(),
+                "conversation".into(),
+                screen.agent_status_for_test().input_revision.unwrap(),
+                "background-batch".into(),
+                "Check the inbox".into(),
+                tx,
+            );
+            let bytes = finish_paste(&writes);
+            if view == "conversation" {
+                assert_eq!(
+                    rx.try_recv().unwrap().outcome,
+                    AgentOutcome::Rejected,
+                    "{kind}"
+                );
+                assert!(bytes.is_empty(), "{kind}: {bytes:?}");
+            } else {
+                assert!(
+                    String::from_utf8_lossy(&bytes).contains("Check the inbox"),
+                    "{kind}/{view}: {bytes:?}"
+                );
+            }
+            assert!(screen.agent_draft_clears.is_empty());
+        }
     }
 }

@@ -3330,10 +3330,18 @@ impl Screen {
     }
 
     fn mother_focused(&self, pane: PaneId) -> bool {
-        self.connected_clients
-            .borrow()
-            .iter()
-            .any(|client| self.get_active_pane_id(client) == Some(pane))
+        let conversation_selected = self
+            .tab_containing_pane(pane)
+            .and_then(|tab| tab.pane_tabs_of(pane).and_then(|id| tab.pane_tabs_info(id)))
+            .is_none_or(|tabs| {
+                tabs.tabs.get(tabs.active).and_then(|slot| slot.pane_id()) == Some(pane)
+            });
+        conversation_selected
+            && self
+                .connected_clients
+                .borrow()
+                .iter()
+                .any(|client| self.get_active_pane_id(client) == Some(pane))
     }
 
     pub(super) fn deliver_mother(

@@ -104,6 +104,109 @@ fn activity_does_not_wake_and_idle_is_not_completion() {
 }
 
 #[test]
+fn worker_departures_clear_the_roster_and_only_wake_when_selected() {
+    for kind in [
+        "conversation_replaced",
+        "state_changed",
+        "pane_closed",
+        "pane_transferred",
+    ] {
+        for selected in [true, false] {
+            let mut memory = Memory {
+                filters: EventSubscription {
+                    lifecycle_types: vec![if selected { kind } else { "turn_failed" }.into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut worker = event(1, "terminal_2", "snapshot");
+            worker["needs_input"] = true.into();
+            memory.event(worker, MOTHER);
+            assert_eq!(memory.status(true, false).blockers, 1);
+            let mut departure = event(2, "terminal_2", kind);
+            if kind == "conversation_replaced" {
+                departure["next_kind"] = Value::Null;
+                departure["next_conversation_id"] = Value::Null;
+            } else {
+                departure["kind"] = Value::Null;
+                departure["conversation_id"] = Value::Null;
+                departure["state"] = Value::Null;
+            }
+            memory.event(departure.clone(), MOTHER);
+            assert!(memory.roster.is_empty(), "{kind}");
+            assert_eq!(memory.status(true, false).blockers, 0, "{kind}");
+            assert_eq!(memory.pending.len(), usize::from(selected), "{kind}");
+            assert_eq!(memory.cursor, Some(cursor("session", 2)));
+            departure["journal_cursor"] = 2.into();
+            assert_eq!(memory.journal.back().unwrap().as_ref(), &departure);
+        }
+    }
+}
+
+#[test]
+fn replacement_waits_for_a_selected_agent_state_to_rejoin_the_roster() {
+    for next_kind in ["claude", "codex"] {
+        let mut memory = Memory {
+            filters: EventSubscription {
+                kinds: vec!["claude".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        memory.event(event(1, "terminal_2", "snapshot"), MOTHER);
+        memory.roster.get_mut("terminal_2").unwrap()["assignment"] = "old task".into();
+        let mut replacement = event(2, "terminal_2", "conversation_replaced");
+        replacement["next_kind"] = next_kind.into();
+        replacement["next_conversation_id"] = "replacement".into();
+        memory.event(replacement, MOTHER);
+        assert!(memory.roster.is_empty());
+        assert_eq!(memory.pending[0].events, 1);
+        // The stream excludes the replacement state when its provider is not selected.
+        if next_kind == "claude" {
+            let mut state = event(3, "terminal_2", "state_changed");
+            state["conversation_id"] = "replacement".into();
+            memory.event(state, MOTHER);
+            assert_eq!(
+                memory.roster["terminal_2"]["conversation_id"],
+                "replacement"
+            );
+            assert!(memory.roster["terminal_2"]["assignment"].is_null());
+        } else {
+            memory.event(event(3, "", "checkpoint"), MOTHER);
+            assert!(memory.roster.is_empty());
+        }
+        assert_eq!(memory.cursor, Some(cursor("session", 3)));
+        assert_eq!(memory.journal[1]["conversation_id"], "conversation");
+        assert_eq!(memory.journal[1]["next_kind"], next_kind);
+    }
+}
+
+#[test]
+fn shell_lifecycle_advances_the_cursor_without_queuing_turns() {
+    let mut memory = Memory::default();
+    for (index, kind) in [
+        "pane_spawned",
+        "state_changed",
+        "conversation_replaced",
+        "pane_closed",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let sequence = index + 1;
+        let mut shell = event(sequence, "terminal_2", kind);
+        for key in ["kind", "conversation_id", "state"] {
+            shell[key] = Value::Null;
+        }
+        assert!(memory.event(shell, MOTHER));
+        assert_eq!(memory.cursor, Some(cursor("session", sequence)));
+        assert_eq!(memory.journal.len(), sequence);
+        assert!(memory.pending.is_empty(), "{kind}");
+        assert!(memory.roster.is_empty(), "{kind}");
+    }
+}
+
+#[test]
 fn checkpoint_conflicts_pause_and_recovery_preserve_memory() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("checkpoint.json");
@@ -137,15 +240,22 @@ fn checkpoint_conflicts_pause_and_recovery_preserve_memory() {
 fn journal_and_pending_batches_are_bounded_with_explicit_gaps() {
     let mut memory = Memory {
         journal: (0..JOURNAL_RECORDS)
-            .map(|sequence| event(sequence, "terminal_2", "turn_completed"))
+            .map(|sequence| Arc::new(event(sequence, "terminal_2", "turn_completed")))
             .collect(),
         ..Default::default()
     };
+    let committed = memory.clone();
+    assert!(Arc::ptr_eq(&memory.journal[0], &committed.journal[0]));
     memory.event(
         event(JOURNAL_RECORDS, "terminal_2", "turn_completed"),
         MOTHER,
     );
     assert!(memory.journal.len() <= JOURNAL_RECORDS);
+    assert_eq!(committed.journal.len(), JOURNAL_RECORDS);
+    assert!(!committed.gap);
+    let retained = memory.journal.front().unwrap();
+    let sequence = retained["sequence"].as_u64().unwrap() as usize;
+    assert!(Arc::ptr_eq(retained, &committed.journal[sequence]));
     assert!(memory
         .journal
         .iter()
@@ -661,18 +771,40 @@ fn overview_and_journal_are_read_only_and_pages_survive_restart() {
         memory.event(event(sequence, "terminal_2", "turn_completed"), MOTHER);
     }
     let before = json!(memory);
-    memory.command(MotherRequest::Overview).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    // Saving to a directory fails, so these requests must never attempt persistence.
+    for request in [
+        MotherRequest::Status,
+        MotherRequest::Overview,
+        MotherRequest::Checkpoint {
+            expect_rev: None,
+            value: None,
+        },
+    ] {
+        memory.persist_command(request, directory.path()).unwrap();
+    }
     let first = memory
-        .command(MotherRequest::Journal {
-            after: None,
-            through: None,
-            limit: None,
-        })
+        .persist_command(
+            MotherRequest::Journal {
+                after: None,
+                through: None,
+                limit: None,
+            },
+            directory.path(),
+        )
         .unwrap();
+    assert!(memory
+        .persist_command(
+            MotherRequest::Checkpoint {
+                expect_rev: Some(0),
+                value: None,
+            },
+            directory.path()
+        )
+        .is_err());
     assert_eq!(json!(memory), before);
     assert_eq!(first["records"].as_array().unwrap().len(), 50);
     assert_eq!(first["next_cursor"], 50);
-    let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("memory.json");
     memory.save(&path).unwrap();
     let mut restored = Memory::load(&path, "session").unwrap();
@@ -686,6 +818,82 @@ fn overview_and_journal_are_read_only_and_pages_survive_restart() {
         true
     );
     assert!(restored.journal_page(None, None, Some(201)).is_err());
+}
+
+#[test]
+fn journal_payloads_are_shared_and_legacy_json_remains_compatible() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("memory.json");
+    let mut memory = Memory::default();
+    memory.event(event(1, "terminal_2", "turn_completed"), MOTHER);
+    let mut next = memory.clone();
+    next.event(event(2, "terminal_2", "turn_completed"), MOTHER);
+    assert!(Arc::ptr_eq(&memory.journal[0], &next.journal[0]));
+    assert_eq!(memory.journal.len(), 1);
+    assert_eq!(memory.journal_sequence, 1);
+    next.save(&path).unwrap();
+    let serialized: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(serialized["journal"][0], *memory.journal[0]);
+    assert_eq!(json!(Memory::load(&path, "session").unwrap()), serialized);
+
+    let mut legacy = serialized;
+    legacy.as_object_mut().unwrap().remove("journal_sequence");
+    for record in legacy["journal"].as_array_mut().unwrap() {
+        record.as_object_mut().unwrap().remove("journal_cursor");
+    }
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let migrated = Memory::load(&path, "session").unwrap();
+    assert_eq!(migrated.journal_sequence, 2);
+    assert_eq!(json!(migrated), json!(next));
+}
+
+#[test]
+fn failed_command_persistence_leaves_committed_memory_unchanged() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("memory.json");
+    let mut memory = Memory::default();
+    memory.event(event(1, "terminal_2", "turn_completed"), MOTHER);
+    memory.save(&path).unwrap();
+    let before = json!(memory);
+    let record = memory.journal[0].clone();
+    for request in [
+        MotherRequest::Pause,
+        MotherRequest::Inbox,
+        MotherRequest::Ack {
+            batch: memory.pending[0].id.clone(),
+        },
+        MotherRequest::Checkpoint {
+            expect_rev: Some(0),
+            value: Some(json!({"task":"new"})),
+        },
+        MotherRequest::Configure {
+            panes: vec![],
+            projects: vec![],
+            kinds: vec!["codex".into()],
+            lifecycle_types: vec![],
+        },
+    ] {
+        assert!(memory.persist_command(request, directory.path()).is_err());
+        assert_eq!(json!(memory), before);
+        assert_eq!(json!(Memory::load(&path, "session").unwrap()), before);
+        assert!(Arc::ptr_eq(&memory.journal[0], &record));
+    }
+    memory
+        .persist_command(
+            MotherRequest::Checkpoint {
+                expect_rev: Some(0),
+                value: Some(json!({"task":"saved"})),
+            },
+            &path,
+        )
+        .unwrap();
+    assert_eq!(memory.revision, 1);
+    assert_eq!(memory.checkpoint["task"], "saved");
+    assert_eq!(
+        json!(Memory::load(&path, "session").unwrap()),
+        json!(memory)
+    );
+    assert!(Arc::ptr_eq(&memory.journal[0], &record));
 }
 
 #[test]

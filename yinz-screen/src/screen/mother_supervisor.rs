@@ -87,7 +87,7 @@ struct Memory {
     cursor: Option<String>,
     paused: bool,
     roster: BTreeMap<String, Value>,
-    journal: VecDeque<Value>,
+    journal: VecDeque<Arc<Value>>,
     #[serde(default)]
     journal_sequence: u64,
     pending: VecDeque<Batch>,
@@ -146,7 +146,7 @@ impl Memory {
                 memory.journal_sequence = memory.journal_sequence.max(cursor);
             } else {
                 memory.journal_sequence += 1;
-                event["journal_cursor"] = json!(memory.journal_sequence);
+                Arc::make_mut(event)["journal_cursor"] = json!(memory.journal_sequence);
             }
         }
         Ok(memory)
@@ -241,6 +241,7 @@ impl Memory {
             },
             _ => {
                 if let Some(pane) = event["pane_id"].as_str() {
+                    let observed_worker = self.roster.contains_key(pane);
                     let state_changed = self.roster.get(pane).is_none_or(|old| {
                         ["state", "conversation_id", "needs_input"]
                             .iter()
@@ -255,7 +256,12 @@ impl Memory {
                                 .iter()
                                 .any(|wanted| projects.iter().any(|project| project == wanted))
                         });
-                    if kind == "pane_closed" || kind == "pane_transferred" || left_projects {
+                    if matches!(
+                        kind,
+                        "conversation_replaced" | "pane_closed" | "pane_transferred"
+                    ) || (kind == "state_changed" && event.get("kind") == Some(&Value::Null))
+                        || left_projects
+                    {
                         self.roster.remove(pane);
                     } else if !event["kind"].is_null() {
                         let mut row = event.clone();
@@ -300,7 +306,8 @@ impl Memory {
                     let urgent = kind == "needs_input"
                         || kind == "turn_failed"
                         || kind == "observation_uncertain";
-                    if self.selects_wake(kind)
+                    if (!event["kind"].is_null() || observed_worker)
+                        && self.selects_wake(kind)
                         && (!matches!(kind, "snapshot" | "activity" | "state_changed")
                             || urgent
                             || (kind == "state_changed" && state_changed))
@@ -446,7 +453,7 @@ impl Memory {
     fn record(&mut self, mut event: Value) {
         self.journal_sequence += 1;
         event["journal_cursor"] = json!(self.journal_sequence);
-        self.journal.push_back(event);
+        self.journal.push_back(Arc::new(event));
     }
 
     fn journal_page(
@@ -486,7 +493,7 @@ impl Memory {
             if size > 256 * 1024 {
                 records.push(json!({"journal_cursor":sequence,"event_type":"evidence_unavailable","reason":"record exceeds page byte limit"}));
             } else {
-                records.push(event.clone());
+                records.push(event.as_ref().clone());
             }
             bytes += size.min(256 * 1024);
             cursor = sequence;
@@ -502,6 +509,23 @@ impl Memory {
             "roster":self.roster,"batches":self.pending,"receipts":self.receipts,
             "gap":self.gap,"delivery_blocked":self.delivery_blocked,
             "paused":self.paused, "observation_ready":ready && !failed, "journal_high_water":self.journal_sequence, "recent":self.journal_page(Some(self.journal_sequence.saturating_sub(50)), None, None).ok()})
+    }
+
+    fn persist_command(&mut self, request: MotherRequest, path: &Path) -> Result<Value> {
+        if matches!(
+            request,
+            MotherRequest::Status
+                | MotherRequest::Overview
+                | MotherRequest::Journal { .. }
+                | MotherRequest::Checkpoint { value: None, .. }
+        ) {
+            return self.command(request);
+        }
+        let mut next = self.clone();
+        let value = next.command(request)?;
+        next.save(path)?;
+        *self = next;
+        Ok(value)
     }
 
     fn command(&mut self, request: MotherRequest) -> Result<Value> {
@@ -775,15 +799,9 @@ fn run(
         match commands.try_recv() {
             Ok((request, target, delivery_blocked)) => {
                 let reconnect = matches!(request, MotherRequest::Configure { .. });
-                let read_only = matches!(
-                    request,
-                    MotherRequest::Status
-                        | MotherRequest::Overview
-                        | MotherRequest::Journal { .. }
-                        | MotherRequest::Checkpoint { value: None, .. }
-                );
-                let mut next = memory.clone();
-                let result = if matches!(request, MotherRequest::Resolve { .. }) && response.is_some() {
+                let result = if matches!(request, MotherRequest::Resolve { .. })
+                    && response.is_some()
+                {
                     Err(anyhow!("original supervision operation is still in flight; wait for its result before resolving"))
                 } else if matches!(request, MotherRequest::Status) {
                     Ok(json!(memory.status(ready, failed)))
@@ -793,12 +811,8 @@ fn run(
                     overview["delivery_blocked"] = json!(delivery_blocked);
                     Ok(overview)
                 } else {
-                    next.command(request)
-                }
-                .and_then(|value| {
-                    if !read_only { next.save(&path)?; }
-                    Ok(value)
-                });
+                    memory.persist_command(request, &path)
+                };
                 let mut response = AgentResponse::new(if result.is_ok() {
                     AgentOutcome::Ok
                 } else {
@@ -806,7 +820,6 @@ fn run(
                 });
                 match result {
                     Ok(value) => {
-                        memory = next;
                         response.output = Some(value.to_string());
                         if reconnect {
                             stream = None;
