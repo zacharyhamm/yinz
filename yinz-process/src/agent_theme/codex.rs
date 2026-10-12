@@ -76,7 +76,7 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
     terminal_defaults(&mut snapshot.definitions);
     let Some(theme) = theme else {
         snapshot.theme = "automatic".into();
-        snapshot.availability = Availability::Partial("Codex chooses its automatic syntax palette from a terminal query; only fixed provider colors are resolved".into());
+        snapshot.availability = Availability::Partial("Codex automatic syntax palette is unresolved; fixed provider colors are mapped and terminal-derived UI colors are mapped after successful terminal replies".into());
         return Ok(());
     };
     snapshot.theme = theme.clone();
@@ -94,7 +94,7 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
         }
     };
     definitions(&parsed, &mut snapshot.definitions);
-    snapshot.availability = Availability::Partial("theme scopes and fixed provider colors resolved; terminal-dependent contrast corrections and shaded surfaces pass through".into());
+    snapshot.availability = Availability::Partial("theme scopes and fixed provider colors resolved; terminal-derived surfaces, text, accents and selection are mapped after successful terminal replies".into());
     Ok(())
 }
 

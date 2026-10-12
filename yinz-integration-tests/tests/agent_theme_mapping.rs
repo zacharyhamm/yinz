@@ -97,3 +97,94 @@ fn simultaneous_source_palettes_follow_theme_changes_and_live_opt_out() {
     }
     yinz.quit();
 }
+
+fn background(grid: &GridSnapshot, label: &str) -> Option<AnsiCode> {
+    grid.lines().iter().enumerate().find_map(|(y, line)| {
+        line.find(label)
+            .and_then(|byte| grid.cell_style(line[..byte].chars().count(), y).background)
+    })
+}
+
+#[test]
+fn codex_composer_repaints_on_theme_switch_preview_cancel_and_typing() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false\ntheme \"nightfox\"\nkeybinds { normal { bind \"Ctrl Alt p\" { ToggleCommandPalette; }; }; }")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let codex = yinz.expect_pty_spawn();
+    codex.disable_echo();
+    let snapshot = AgentThemeSnapshot {
+        version: SNAPSHOT_VERSION,
+        provider: "codex".into(),
+        provider_version: "0.162.1".into(),
+        theme: "automatic".into(),
+        provenance: vec![],
+        availability: Availability::Available,
+        definitions: vec![],
+        collisions: vec![],
+    };
+    let encoded = STANDARD.encode(
+        serde_json::to_vec(&AgentThemeEvent {
+            version: EVENT_VERSION,
+            launch_id: "live-codex".into(),
+            snapshot: Some(snapshot),
+        })
+        .unwrap(),
+    );
+    codex.output(format!("\x1b]777;yinz-agent-theme;{encoded}\x1b\\\x1b]10;?\x07\x1b]11;?\x07\x1b[?25l\x1b[48;2;52;61;72mCOMPOSER   \x1b[0m\r\n\x1b[48;2;61;70;81mSUBMITTED\x1b[0m\r\n\x1b[48;2;52;61;72mPLAN\x1b[0m").as_bytes());
+    let night_surface = Some(AnsiCode::RgbCode((39, 49, 61)));
+    let dracula_surface = Some(AnsiCode::RgbCode((57, 58, 69)));
+    yinz.wait_until("Codex surfaces use the launch theme", |grid| {
+        ["COMPOSER", "SUBMITTED", "PLAN"]
+            .iter()
+            .all(|label| background(grid, label) == night_surface)
+    });
+    // No provider output between rendering the editor and switching themes.
+    for (config, expected) in [
+        ("theme \"dracula\"", dracula_surface),
+        ("theme \"dayfox\"", Some(AnsiCode::RgbCode((231, 226, 226)))),
+        ("theme \"nightfox\"", night_surface),
+    ] {
+        let (code, error) = yinz.run_actions_reporting(vec![Action::Reconfigure {
+            config: config.into(),
+            write_to_disk: false,
+        }]);
+        assert_eq!(code, 0, "{error}");
+        yinz.wait_until("existing Codex surfaces repaint", |grid| {
+            ["COMPOSER", "SUBMITTED", "PLAN"]
+                .iter()
+                .all(|label| background(grid, label) == expected)
+        });
+    }
+    // The overlay leaves the first pane column visible, so verify the actual editor fill.
+    yinz.send_stdin(b"\x1b[112;7u");
+    yinz.send_stdin(b"Change theme\r");
+    yinz.wait_until("theme picker opens", |grid| grid.contains("Enter Save"));
+    yinz.send_stdin(b"dracula");
+    yinz.wait_until("preview repaints the retained editor", |grid| {
+        grid.contains("> dracula") && background(grid, "COMPOSER") == dracula_surface
+    });
+    yinz.send_stdin(b"\x1b");
+    yinz.wait_until("cancel restores the retained editor", |grid| {
+        grid.contains("Esc Close") && background(grid, "COMPOSER") == night_surface
+    });
+    yinz.send_stdin(b"\x1b");
+    yinz.wait_until("palette closes", |grid| {
+        !grid.contains("Esc Close") && grid.contains("COMPOSER")
+    });
+    // Simulate Codex repainting a typed draft using its unchanged cached source color.
+    codex.output(b"\x1b[H\x1b[48;2;52;61;72mCOMPOSER typed\x1b[0m");
+    yinz.wait_until("typing retains semantic surface", |grid| {
+        background(grid, "COMPOSER typed") == night_surface
+    });
+    let (code, error) = yinz.run_actions_reporting(vec![Action::Reconfigure {
+        config: "agent_theme_mapping \"off\"".into(),
+        write_to_disk: false,
+    }]);
+    assert_eq!(code, 0, "{error}");
+    yinz.wait_until("opt out restores original Codex fills", |grid| {
+        background(grid, "COMPOSER typed") == Some(AnsiCode::RgbCode((52, 61, 72)))
+            && background(grid, "SUBMITTED") == Some(AnsiCode::RgbCode((61, 70, 81)))
+    });
+    yinz.quit();
+}

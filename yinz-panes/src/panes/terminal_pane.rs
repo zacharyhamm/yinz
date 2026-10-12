@@ -819,9 +819,15 @@ impl Pane for TerminalPane {
     fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.grid.pending_messages_to_pty)
     }
+    fn drain_agent_theme_updates(&mut self) -> Vec<yinz_types::agent::theme::AgentThemeEvent> {
+        std::mem::take(&mut self.grid.pending_agent_theme_updates)
+    }
 
     fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery> {
         std::mem::take(&mut self.grid.pending_forwarded_queries)
+    }
+    fn record_terminal_color_reply(&mut self, query: &crate::host_query::HostQuery, reply: &[u8]) {
+        self.grid.record_terminal_color_reply(query, reply);
     }
 
     fn drain_nested_session_messages(&mut self) -> Vec<NestedSessionMessage> {

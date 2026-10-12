@@ -762,6 +762,9 @@ pub struct Grid {
     agent_theme: Rc<crate::agent_theme::SourcePalette>,
     agent_palettes: Vec<std::rc::Weak<crate::agent_theme::SourcePalette>>,
     agent_launch: Option<yinz_types::agent::theme::AgentThemeLaunch>,
+    pub pending_agent_theme_updates: Vec<yinz_types::agent::theme::AgentThemeEvent>,
+    // The query owns this association, even if a different run starts before its reply.
+    agent_color_queries: VecDeque<(u8, std::rc::Weak<crate::agent_theme::SourcePalette>)>,
     history_replay: Option<(
         yinz_types::agent::theme::AgentThemeHandoff,
         Vec<Rc<crate::agent_theme::SourcePalette>>,
@@ -1217,6 +1220,8 @@ impl Grid {
             agent_theme: Rc::new(crate::agent_theme::SourcePalette::new(None, style)),
             agent_palettes: vec![],
             agent_launch: None,
+            pending_agent_theme_updates: vec![],
+            agent_color_queries: VecDeque::new(),
             history_replay: None,
             title_stack: vec![],
             title: None,
@@ -4908,6 +4913,57 @@ impl Grid {
         self.agent_launch = None;
         self.install_agent_palette(None);
     }
+    fn observe_agent_terminal_color(&mut self, code: u8, rgb: (u8, u8, u8)) {
+        if self.agent_launch.is_some()
+            && self
+                .agent_theme
+                .observe_terminal_color(code, rgb, self.style)
+        {
+            if let (Some(launch), Some(snapshot)) =
+                (&mut self.agent_launch, self.agent_theme.snapshot())
+            {
+                launch.snapshot = snapshot.clone();
+                self.pending_agent_theme_updates
+                    .push(yinz_types::agent::theme::AgentThemeEvent {
+                        version: yinz_types::agent::theme::EVENT_VERSION,
+                        launch_id: launch.launch_id.clone(),
+                        snapshot: Some(launch.snapshot.clone()),
+                    });
+            }
+            self.output_buffer.update_all_lines();
+            self.repaint_completed_text = true;
+            self.should_render = true;
+        }
+    }
+    /// Called only for a completed host query, after the screen's token guard and
+    /// fallback synthesis. Clipboard replies cannot consume color observations.
+    pub fn record_terminal_color_reply(
+        &mut self,
+        query: &crate::host_query::HostQuery,
+        reply: &[u8],
+    ) {
+        use crate::host_query::HostQuery;
+        let code = match query {
+            HostQuery::DefaultForeground { .. } => 10,
+            HostQuery::DefaultBackground { .. } => 11,
+            _ => return,
+        };
+        let Some(index) = self
+            .agent_color_queries
+            .iter()
+            .position(|(c, _)| *c == code)
+        else {
+            return;
+        };
+        let Some((_, palette)) = self.agent_color_queries.remove(index) else {
+            return;
+        };
+        if palette.ptr_eq(&Rc::downgrade(&self.agent_theme)) {
+            if let Some(rgb) = crate::agent_theme::terminal_color_reply(code, reply) {
+                self.observe_agent_terminal_color(code, rgb);
+            }
+        }
+    }
     fn recompile_agent_theme(&mut self) {
         self.agent_theme.recompile(self.style);
         self.agent_palettes.retain(|palette| {
@@ -5330,6 +5386,7 @@ impl Perform for Grid {
                                     _ => None,
                                 };
                                 if let Some(rgb) = local_override {
+                                    self.observe_agent_terminal_color(dynamic_code, rgb);
                                     let reply = format!(
                                         "\u{1b}]{};{}{}",
                                         dynamic_code,
@@ -5363,6 +5420,10 @@ impl Perform for Grid {
                                             continue;
                                         },
                                     };
+                                    self.agent_color_queries.push_back((
+                                        dynamic_code,
+                                        Rc::downgrade(&self.agent_theme),
+                                    ));
                                     self.pending_forwarded_queries.push(query);
                                 }
                             } else {

@@ -586,6 +586,7 @@ pub enum ServerContext {
 )]
 pub enum PtyWriteContext {
     Write,
+    RetainAgentTheme,
     ResizePty,
     StartCachingResizes,
     ApplyCachedResizes,

@@ -276,6 +276,29 @@ impl PtyHostHandle {
 }
 
 impl PtyHostHandle {
+    /// Enrich the active launch without starting or ending a launch. The
+    /// supervisor consumes this before EOF if the owning server crashes.
+    pub fn retain_agent_theme(
+        &mut self,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        if !event.valid() || event.snapshot.is_none() {
+            bail!("invalid agent palette update");
+        }
+        if serde_json::to_vec(&event)
+            .context("encode learned agent palette")?
+            .len()
+            > yinz_types::agent::theme::MAX_SNAPSHOT_BYTES
+        {
+            bail!("agent palette update exceeds metadata limit");
+        }
+        self.control
+            .set_write_timeout(Some(HANDSHAKE_TIMEOUT))
+            .context("bound agent palette update")?;
+        write_msg(&mut self.control, &ServerToHostMsg::AgentTheme(event))
+            .context("send learned palette to supervisor")
+    }
+
     /// Kill the pane's process and shut the supervisor down.
     ///
     /// Deliberately synchronous and deliberately not a channel send: this runs on

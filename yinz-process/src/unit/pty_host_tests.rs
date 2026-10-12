@@ -1422,6 +1422,111 @@ fn agent_theme_retention_tracks_launches_and_rejects_duplicate_starts_and_stale_
     host.join();
 }
 
+#[test]
+fn learned_agent_theme_survives_server_disconnect_and_adoption() {
+    use yinz_types::agent::theme::*;
+
+    for count in [1, 2] {
+        let (mut host, _, socket) = TestHost::start();
+        let socket = socket.unwrap();
+        let (_, master) = host.spawn(sh("while read line; do echo \"$line\"; done"));
+        let initial = AgentThemeEvent {
+            version: EVENT_VERSION,
+            launch_id: "codex-run".into(),
+            snapshot: Some(AgentThemeSnapshot {
+                version: SNAPSHOT_VERSION,
+                provider: "codex".into(),
+                provider_version: "0.162.1".into(),
+                theme: "automatic".into(),
+                provenance: vec![],
+                availability: Availability::Available,
+                definitions: vec![],
+                collisions: vec![],
+            }),
+        };
+        let report = |event: &AgentThemeEvent| {
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            write_msg(&mut stream, &ServerToHostMsg::AgentTheme(event.clone())).unwrap();
+            assert!(matches!(
+                read_msg::<HostToServerMsg, _>(&mut stream).unwrap(),
+                Some(HostToServerMsg::Status(_))
+            ));
+        };
+        report(&initial);
+        let mut learned = initial.clone();
+        for (token, channel, color, role) in [
+            (
+                "foreground",
+                Channel::Foreground,
+                SourceColor::Rgb(205, 206, 207),
+                Role::Foreground,
+            ),
+            (
+                "background",
+                Channel::Background,
+                SourceColor::Rgb(25, 35, 48),
+                Role::Background,
+            ),
+        ]
+        .into_iter()
+        .take(count)
+        {
+            learned
+                .snapshot
+                .as_mut()
+                .unwrap()
+                .definitions
+                .push(Definition {
+                    token: format!("codex.terminal.{token}"),
+                    channel,
+                    color,
+                    pair: None,
+                    target: Some(role.into()),
+                });
+            host.send(&ServerToHostMsg::AgentTheme(learned.clone()));
+            // Query on the same stream is a barrier for this update.
+            host.send(&ServerToHostMsg::Query);
+            assert!(matches!(host.recv(), HostToServerMsg::Status(_)));
+        }
+        // A delayed launcher report must not overwrite the enriched snapshot.
+        host.send(&ServerToHostMsg::AgentTheme(learned.clone()));
+        host.send(&ServerToHostMsg::Query);
+        assert!(matches!(host.recv(), HostToServerMsg::Status(_)));
+        report(&initial);
+        let mut stale = initial.clone();
+        stale.launch_id = "previous-launch".into();
+        host.send(&ServerToHostMsg::AgentTheme(stale));
+        let mut invalid = initial.clone();
+        invalid.version += 1;
+        host.send(&ServerToHostMsg::AgentTheme(invalid));
+
+        // Simulate a crash, not an orderly Release. Updates already written to
+        // this socket must be retained before the supervisor processes EOF.
+        host.control.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(master);
+        wait_until(|| !query_status(&socket).attached, "server disconnect");
+        let (reply, adopted_master) = attach_over_socket(
+            &socket,
+            yinz_types::internal_ids::TerminalId::new(42),
+            Some("recovered"),
+        );
+        let HostToServerMsg::AttachAck { cmd, .. } = reply else {
+            panic!("expected adoption acknowledgement")
+        };
+        assert_eq!(
+            cmd.agent_theme,
+            Some(AgentThemeLaunch {
+                launch_id: learned.launch_id,
+                snapshot: learned.snapshot.unwrap(),
+            })
+        );
+        drop(adopted_master);
+        crate::pty_host::client::terminate_via_socket(&socket).unwrap();
+        host.join();
+    }
+}
+
 /// A supervisor outlives the binary that spawned it, so an upgraded yinz can
 /// meet an older host. Refuse rather than misread its messages.
 #[test]
@@ -2057,14 +2162,24 @@ fn agent_theme_retention_clears_on_end_and_dedicated_child_exit() {
                 Some(HostToServerMsg::Status(_))
             ));
         };
-        report(Some(snapshot));
+        report(Some(snapshot.clone()));
         if teardown {
             master.write_all(b"finish\n").unwrap();
             assert!(matches!(host.recv(), HostToServerMsg::ChildExited { .. }));
         } else {
             report(None);
         }
+        // Late observations cannot resurrect an ended or exited launch.
+        host.send(&ServerToHostMsg::AgentTheme(AgentThemeEvent {
+            version: EVENT_VERSION,
+            launch_id: "run".into(),
+            snapshot: Some(snapshot),
+        }));
         host.send(&ServerToHostMsg::Release);
+        wait_until(
+            || !query_status(&socket).attached,
+            "detachment after late palette update",
+        );
         let (reply, adopted) =
             attach_over_socket(&socket, yinz_types::internal_ids::TerminalId::new(42), None);
         match reply {

@@ -630,3 +630,157 @@ fn blank_background_spans_and_locked_frames_recompile_without_reassigning_owners
         ERROR
     );
 }
+
+fn codex_palette() -> AgentThemeSnapshot {
+    let mut snapshot = source("codex", Role::Success);
+    snapshot.provider_version = "0.162.1".into();
+    snapshot
+}
+
+fn terminal_style(fg: (u8, u8, u8), bg: (u8, u8, u8)) -> Style {
+    let mut style = style();
+    style.colors.text_unselected.base = PaletteColor::Rgb(fg);
+    style.colors.text_unselected.background = PaletteColor::Rgb(bg);
+    style
+}
+
+#[test]
+fn codex_local_queries_enrich_existing_cells_frames_and_handoff_without_output() {
+    let mut grid = create_grid_with_content("");
+    grid.change_size(3, 12);
+    let dark = terminal_style((220, 220, 220), (18, 20, 30));
+    grid.update_theme(dark.colors);
+    event(&mut grid, "codex-run", Some(codex_palette()));
+    // Render before observation to prove enrichment updates retained palette references.
+    feed_bytes(&mut grid, b"\x1b[48;2;46;48;57m\x1b[2JCOMPOSER");
+    let retained = grid.render(0, 0, &dark).unwrap().unwrap().0;
+    let raw = *retained[0].terminal_characters[0].styles;
+    assert_eq!(
+        retained[0].application_styles(raw).background,
+        raw.background
+    );
+    feed_bytes(
+        &mut grid,
+        b"\x1b]10;rgb:dcdc/dcdc/dcdc\x07\x1b]11;rgb:1212/1414/1e1e\x07\x1b]10;?;?\x07",
+    );
+    assert_eq!(grid.pending_messages_to_pty.len(), 2);
+    assert!(grid.pending_forwarded_queries.is_empty());
+    assert_eq!(
+        retained[0].application_styles(raw).background,
+        Some(AnsiCode::RgbCode((34, 36, 45)))
+    );
+    let capture = grid.serialize(None).unwrap();
+    let learned = grid.agent_launch.as_ref().unwrap().snapshot.clone();
+    let updates = std::mem::take(&mut grid.pending_agent_theme_updates);
+    assert_eq!(updates.len(), 2);
+    assert_eq!(updates[0].launch_id, "codex-run");
+    assert!(!updates[0]
+        .snapshot
+        .as_ref()
+        .unwrap()
+        .definitions
+        .iter()
+        .any(|d| d.token == "codex.terminal.composer-plan"));
+    assert_eq!(updates[1].snapshot.as_ref(), Some(&learned));
+    feed_bytes(&mut grid, b"\x1b]10;?;?\x07");
+    assert!(grid.pending_agent_theme_updates.is_empty());
+    grid.lock_renders();
+    for (theme, expected) in [
+        (
+            terminal_style((20, 20, 20), (255, 255, 255)),
+            (236, 236, 236),
+        ),
+        (dark, (34, 36, 45)), // preview cancellation
+    ] {
+        grid.update_theme(theme.colors);
+        let chunks = grid.render(0, 0, &theme).unwrap().unwrap().0;
+        for chunk in &chunks {
+            for cell in &chunk.terminal_characters {
+                assert_eq!(
+                    chunk.application_styles(*cell.styles).background,
+                    Some(AnsiCode::RgbCode(expected))
+                );
+            }
+        }
+        assert_eq!(
+            retained[0].application_styles(raw).background,
+            Some(AnsiCode::RgbCode(expected))
+        );
+        assert_eq!(grid.agent_launch.as_ref().unwrap().snapshot, learned);
+        assert_eq!(grid.serialize(None).unwrap(), capture);
+    }
+    grid.unlock_renders();
+    feed_bytes(
+        &mut grid,
+        b"\r\n\x1b[48;2;55;57;66mSUBMITTED\r\nPLAN\r\nSCROLL",
+    );
+    let (contents, metadata) = grid.serialize_handoff(Some(0), 100_000).unwrap();
+    let metadata = metadata.unwrap();
+    assert_eq!(metadata.snapshots, vec![learned]);
+    let mut adopted = create_grid_with_content("");
+    adopted.change_size(10, 12);
+    adopted.update_theme(terminal_style((20, 20, 20), (255, 255, 255)).colors);
+    feed_bytes(
+        &mut adopted,
+        &crate::agent_theme::handoff_replay(contents, Some(metadata)),
+    );
+    let cells = painted(&mut adopted);
+    for label in ['C', 'S', 'P'] {
+        assert!(cells
+            .iter()
+            .any(|c| c.0 == label && c.2 == Some(AnsiCode::RgbCode((236, 236, 236)))));
+    }
+    adopted.set_agent_theme_mapping(AgentThemeMapping::Off);
+    let cells = painted(&mut adopted);
+    assert!(cells
+        .iter()
+        .any(|c| c.0 == 'C' && c.2 == Some(AnsiCode::RgbCode((46, 48, 57)))));
+    assert!(cells
+        .iter()
+        .any(|c| c.0 == 'S' && c.2 == Some(AnsiCode::RgbCode((55, 57, 66)))));
+}
+
+#[test]
+fn codex_forwarded_observations_ignore_invalid_missing_and_previous_launch_replies() {
+    let mut grid = create_grid_with_content("");
+    event(&mut grid, "old", Some(codex_palette()));
+    feed_bytes(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x07");
+    let old = std::mem::take(&mut grid.pending_forwarded_queries);
+    event(&mut grid, "new", Some(codex_palette()));
+    feed_bytes(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x07");
+    let current = std::mem::take(&mut grid.pending_forwarded_queries);
+    for (query, reply) in old.iter().zip([
+        b"\x1b]10;rgb:ffff/ffff/ffff\x07".as_slice(),
+        b"\x1b]11;rgb:0000/0000/0000\x07",
+    ]) {
+        grid.record_terminal_color_reply(query, reply);
+    }
+    assert_eq!(
+        grid.agent_launch.as_ref().unwrap().snapshot,
+        codex_palette()
+    );
+    grid.record_terminal_color_reply(&current[0], b"\x1b]11;rgb:ffff/ffff/ffff\x07");
+    grid.record_terminal_color_reply(&current[1], b"");
+    assert!(grid.pending_agent_theme_updates.is_empty());
+    assert_eq!(
+        grid.agent_launch.as_ref().unwrap().snapshot,
+        codex_palette()
+    );
+    feed_bytes(&mut grid, b"\x1b]10;?\x07\x1b]11;?\x07");
+    let queries = std::mem::take(&mut grid.pending_forwarded_queries);
+    grid.record_terminal_color_reply(&queries[0], b"\x1b]10;rgb:dcdc/dcdc/dcdc\x07");
+    assert!(!grid
+        .agent_launch
+        .as_ref()
+        .unwrap()
+        .snapshot
+        .definitions
+        .iter()
+        .any(|d| d.target == Some(Role::Surface.into())));
+    grid.update_theme(terminal_style((0, 0, 0), (255, 255, 255)).colors);
+    grid.record_terminal_color_reply(&queries[1], b"\x1b]11;rgb:1212/1414/1e1e\x07");
+    feed_bytes(&mut grid, b"\x1b[48;2;46;48;57mX");
+    assert!(painted(&mut grid)
+        .iter()
+        .any(|c| c.0 == 'X' && c.2 == Some(AnsiCode::RgbCode((235, 235, 235)))));
+}

@@ -33,6 +33,7 @@ unicode-width = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 yinz-cli = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }
 hegeltest = "0.29.3"

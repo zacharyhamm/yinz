@@ -4415,6 +4415,18 @@ impl Tab {
         reply_bytes: Vec<u8>,
     ) -> Result<()> {
         let err_context = || format!("failed to resume pane {pid} after forward");
+        // Forwarded replies can teach a color without producing any buffered
+        // output. Retain that observation before letting the app use the reply.
+        let updates = self
+            .get_pane_with_id_mut(PaneId::Terminal(pid))
+            .map(|pane| pane.drain_agent_theme_updates())
+            .unwrap_or_default();
+        for event in updates {
+            self.senders
+                .send_to_pty_writer(PtyWriteInstruction::RetainAgentTheme(pid, event))
+                .context("send learned agent palette to supervisor")
+                .non_fatal();
+        }
         // Write the reply first so the app sees it on stdin before
         // any subsequent (sync or async) reply that follows in the
         // buffered byte stream.
@@ -4465,6 +4477,7 @@ impl Tab {
             }
             terminal_output.handle_pty_bytes(bytes);
             let messages_to_pty = terminal_output.drain_messages_to_pty();
+            let agent_theme_updates = terminal_output.drain_agent_theme_updates();
             let forwarded_queries = terminal_output.drain_forwarded_queries();
             // If at least one forward was produced, the pane stopped
             // processing its `pending_pty_input` queue at the byte
@@ -4483,6 +4496,12 @@ impl Tab {
             let clipboard_update = terminal_output.drain_clipboard_update();
             let desktop_notifications = terminal_output.drain_desktop_notifications();
             let osc7_cwd = terminal_output.drain_osc7_cwd();
+            for event in agent_theme_updates {
+                self.senders
+                    .send_to_pty_writer(PtyWriteInstruction::RetainAgentTheme(pid, event))
+                    .context("send learned agent palette to supervisor")
+                    .non_fatal();
+            }
             for message in messages_to_pty {
                 self.write_to_pane_id_without_preprocessing(message, PaneId::Terminal(pid))
                     .with_context(err_context)?;

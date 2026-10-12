@@ -783,6 +783,24 @@ impl UnixPtyBackend {
         Ok(())
     }
 
+    pub fn retain_agent_theme(
+        &self,
+        terminal_id: TerminalId,
+        event: yinz_types::agent::theme::AgentThemeEvent,
+    ) -> Result<()> {
+        if let Some(host) = self
+            .terminal_id_to_host
+            .lock()
+            .to_anyhow()
+            .context("lock pane supervisors for palette update")?
+            .get_mut(&terminal_id)
+        {
+            host.retain_agent_theme(event)
+                .context("update supervised pane palette")?;
+        }
+        Ok(())
+    }
+
     pub fn write_to_tty_stdin(&self, terminal_id: TerminalId, buf: &[u8]) -> Result<usize> {
         let err_context = || format!("failed to write to stdin of TTY ID {}", terminal_id);
 

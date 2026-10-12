@@ -388,10 +388,20 @@ pub trait Pane {
     fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>> {
         vec![]
     }
+    /// Learned source palettes to retain in the pane's supervisor.
+    fn drain_agent_theme_updates(&mut self) -> Vec<yinz_types::agent::theme::AgentThemeEvent> {
+        vec![]
+    }
     fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery> {
         // Only terminal panes forward whitelisted queries to the host;
         // plugin panes have no such concept.
         vec![]
+    }
+    fn record_terminal_color_reply(
+        &mut self,
+        _query: &crate::host_query::HostQuery,
+        _reply: &[u8],
+    ) {
     }
     fn drain_nested_session_messages(&mut self) -> Vec<NestedSessionMessage> {
         vec![]

@@ -1,0 +1,1138 @@
+[
+  {
+    "name": "dark",
+    "indexed": false,
+    "foreground": [
+      220,
+      220,
+      220
+    ],
+    "background": [
+      18,
+      20,
+      30
+    ],
+    "colors": {
+      "composer-plan": {
+        "Rgb": [
+          46,
+          48,
+          57
+        ]
+      },
+      "history-prompt": {
+        "Rgb": [
+          55,
+          57,
+          66
+        ]
+      },
+      "secondary": {
+        "Rgb": [
+          139,
+          140,
+          144
+        ]
+      },
+      "table-separator": {
+        "Rgb": [
+          58,
+          60,
+          68
+        ]
+      },
+      "warning": {
+        "Rgb": [
+          196,
+          167,
+          103
+        ]
+      },
+      "accent": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "selection.foreground": {
+        "Rgb": [
+          0,
+          0,
+          46
+        ]
+      },
+      "selection.background": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "selection.secondary": {
+        "Rgb": [
+          59,
+          59,
+          61
+        ]
+      },
+      "composer-accent": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "history-accent": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      }
+    }
+  },
+  {
+    "name": "dark",
+    "indexed": true,
+    "foreground": [
+      220,
+      220,
+      220
+    ],
+    "background": [
+      18,
+      20,
+      30
+    ],
+    "colors": {
+      "composer-plan": {
+        "Index": 236
+      },
+      "history-prompt": {
+        "Index": 237
+      },
+      "secondary": {
+        "Index": 245
+      },
+      "table-separator": {
+        "Index": 237
+      },
+      "warning": {
+        "Index": 179
+      },
+      "accent": {
+        "Index": 75
+      },
+      "selection.foreground": {
+        "Index": 232
+      },
+      "selection.background": {
+        "Index": 75
+      },
+      "selection.secondary": {
+        "Index": 237
+      },
+      "composer-accent": {
+        "Index": 75
+      },
+      "history-accent": {
+        "Index": 75
+      }
+    }
+  },
+  {
+    "name": "light",
+    "indexed": false,
+    "foreground": [
+      20,
+      20,
+      20
+    ],
+    "background": [
+      255,
+      255,
+      255
+    ],
+    "colors": {
+      "composer-plan": {
+        "Rgb": [
+          244,
+          244,
+          244
+        ]
+      },
+      "history-prompt": {
+        "Rgb": [
+          249,
+          249,
+          249
+        ]
+      },
+      "secondary": {
+        "Rgb": [
+          113,
+          113,
+          113
+        ]
+      },
+      "table-separator": {
+        "Rgb": [
+          208,
+          208,
+          208
+        ]
+      },
+      "warning": {
+        "Rgb": [
+          139,
+          98,
+          20
+        ]
+      },
+      "accent": {
+        "Rgb": [
+          28,
+          100,
+          200
+        ]
+      },
+      "selection.foreground": {
+        "Rgb": [
+          0,
+          0,
+          46
+        ]
+      },
+      "selection.background": {
+        "Rgb": [
+          164,
+          205,
+          251
+        ]
+      },
+      "selection.secondary": {
+        "Rgb": [
+          85,
+          85,
+          85
+        ]
+      },
+      "composer-accent": {
+        "Rgb": [
+          28,
+          100,
+          200
+        ]
+      },
+      "history-accent": {
+        "Rgb": [
+          28,
+          100,
+          200
+        ]
+      }
+    }
+  },
+  {
+    "name": "light",
+    "indexed": true,
+    "foreground": [
+      20,
+      20,
+      20
+    ],
+    "background": [
+      255,
+      255,
+      255
+    ],
+    "colors": {
+      "composer-plan": {
+        "Index": 255
+      },
+      "history-prompt": {
+        "Index": 231
+      },
+      "secondary": {
+        "Index": 243
+      },
+      "table-separator": {
+        "Index": 252
+      },
+      "warning": {
+        "Index": 94
+      },
+      "accent": {
+        "Index": 26
+      },
+      "selection.foreground": {
+        "Index": 232
+      },
+      "selection.background": {
+        "Index": 153
+      },
+      "selection.secondary": {
+        "Index": 240
+      },
+      "composer-accent": {
+        "Index": 26
+      },
+      "history-accent": {
+        "Index": 26
+      }
+    }
+  },
+  {
+    "name": "nightfox",
+    "indexed": false,
+    "foreground": [
+      205,
+      206,
+      207
+    ],
+    "background": [
+      25,
+      35,
+      48
+    ],
+    "colors": {
+      "composer-plan": {
+        "Rgb": [
+          52,
+          61,
+          72
+        ]
+      },
+      "history-prompt": {
+        "Rgb": [
+          61,
+          70,
+          81
+        ]
+      },
+      "secondary": {
+        "Rgb": [
+          133,
+          137,
+          143
+        ]
+      },
+      "table-separator": {
+        "Rgb": [
+          61,
+          69,
+          79
+        ]
+      },
+      "warning": {
+        "Rgb": [
+          196,
+          167,
+          103
+        ]
+      },
+      "accent": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "selection.foreground": {
+        "Rgb": [
+          0,
+          0,
+          46
+        ]
+      },
+      "selection.background": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "selection.secondary": {
+        "Rgb": [
+          57,
+          59,
+          62
+        ]
+      },
+      "composer-accent": {
+        "Rgb": [
+          101,
+          169,
+          248
+        ]
+      },
+      "history-accent": {
+        "Rgb": [
+          124,
+          182,
+          249
+        ]
+      }
+    }
+  },
+  {
+    "name": "nightfox",
+    "indexed": true,
+    "foreground": [
+      205,
+      206,
+      207
+    ],
+    "background": [
+      25,
+      35,
+      48
+    ],
+    "colors": {
+      "composer-plan": {
+        "Index": 237
+      },
+      "history-prompt": {
+        "Index": 238
+      },
+      "secondary": {
+        "Index": 245
+      },
+      "table-separator": {
+        "Index": 238
+      },
+      "warning": {
+        "Index": 179
+      },
+      "accent": {
+        "Index": 75
+      },
+      "selection.foreground": {
+        "Index": 232
+      },
+      "selection.background": {
+        "Index": 75
+      },
+      "selection.secondary": {
+        "Index": 237
+      },
+      "composer-accent": {
+        "Index": 75
+      },
+      "history-accent": {
+        "Index": 147
+      }
+    }
+  },
+  {
+    "name": "tinted",
+    "indexed": false,
+    "foreground": [
+      215,
+      220,
+      230
+    ],
+    "background": [
+      42,
+      58,
+      72
+    ],
+    "colors": {
+      "composer-plan": {
+        "Rgb": [
+          67,
+          81,
+          93
+        ]
+      },
+      "history-prompt": {
+        "Rgb": [
+          76,
+          89,
+          101
+        ]
+      },
+      "secondary": {
+        "Rgb": [
+          152,
+          162,
+          172
+        ]
+      },
+      "table-separator": {
+        "Rgb": [
+          76,
+          90,
+          103
+        ]
+      },
+      "warning": {
+        "Rgb": [
+          196,
+          167,
+          103
+        ]
+      },
+      "accent": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "selection.foreground": {
+        "Rgb": [
+          0,
+          0,
+          46
+        ]
+      },
+      "selection.background": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "selection.secondary": {
+        "Rgb": [
+          56,
+          59,
+          63
+        ]
+      },
+      "composer-accent": {
+        "Rgb": [
+          151,
+          197,
+          250
+        ]
+      },
+      "history-accent": {
+        "Rgb": [
+          172,
+          208,
+          251
+        ]
+      }
+    }
+  },
+  {
+    "name": "tinted",
+    "indexed": true,
+    "foreground": [
+      215,
+      220,
+      230
+    ],
+    "background": [
+      42,
+      58,
+      72
+    ],
+    "colors": {
+      "composer-plan": {
+        "Index": 239
+      },
+      "history-prompt": {
+        "Index": 240
+      },
+      "secondary": {
+        "Index": 248
+      },
+      "table-separator": {
+        "Index": 240
+      },
+      "warning": {
+        "Index": 179
+      },
+      "accent": {
+        "Index": 75
+      },
+      "selection.foreground": {
+        "Index": 232
+      },
+      "selection.background": {
+        "Index": 75
+      },
+      "selection.secondary": {
+        "Index": 237
+      },
+      "composer-accent": {
+        "Index": 153
+      },
+      "history-accent": {
+        "Index": 153
+      }
+    }
+  },
+  {
+    "name": "tinted_light",
+    "indexed": false,
+    "foreground": [
+      50,
+      40,
+      30
+    ],
+    "background": [
+      245,
+      240,
+      220
+    ],
+    "colors": {
+      "composer-plan": {
+        "Rgb": [
+          235,
+          230,
+          211
+        ]
+      },
+      "history-prompt": {
+        "Rgb": [
+          240,
+          235,
+          215
+        ]
+      },
+      "secondary": {
+        "Rgb": [
+          116,
+          108,
+          95
+        ]
+      },
+      "table-separator": {
+        "Rgb": [
+          206,
+          200,
+          182
+        ]
+      },
+      "warning": {
+        "Rgb": [
+          139,
+          98,
+          20
+        ]
+      },
+      "accent": {
+        "Rgb": [
+          28,
+          100,
+          200
+        ]
+      },
+      "selection.foreground": {
+        "Rgb": [
+          0,
+          0,
+          46
+        ]
+      },
+      "selection.background": {
+        "Rgb": [
+          164,
+          205,
+          251
+        ]
+      },
+      "selection.secondary": {
+        "Rgb": [
+          90,
+          84,
+          74
+        ]
+      },
+      "composer-accent": {
+        "Rgb": [
+          28,
+          100,
+          200
+        ]
+      },
+      "history-accent": {
+        "Rgb": [
+          28,
+          100,
+          200
+        ]
+      }
+    }
+  },
+  {
+    "name": "tinted_light",
+    "indexed": true,
+    "foreground": [
+      50,
+      40,
+      30
+    ],
+    "background": [
+      245,
+      240,
+      220
+    ],
+    "colors": {
+      "composer-plan": {
+        "Index": 254
+      },
+      "history-prompt": {
+        "Index": 255
+      },
+      "secondary": {
+        "Index": 242
+      },
+      "table-separator": {
+        "Index": 251
+      },
+      "warning": {
+        "Index": 94
+      },
+      "accent": {
+        "Index": 26
+      },
+      "selection.foreground": {
+        "Index": 232
+      },
+      "selection.background": {
+        "Index": 153
+      },
+      "selection.secondary": {
+        "Index": 240
+      },
+      "composer-accent": {
+        "Index": 26
+      },
+      "history-accent": {
+        "Index": 26
+      }
+    }
+  },
+  {
+    "name": "midtone",
+    "indexed": false,
+    "foreground": [
+      220,
+      220,
+      220
+    ],
+    "background": [
+      130,
+      130,
+      130
+    ],
+    "colors": {
+      "composer-plan": {
+        "Rgb": [
+          124,
+          124,
+          124
+        ]
+      },
+      "history-prompt": {
+        "Rgb": [
+          127,
+          127,
+          127
+        ]
+      },
+      "secondary": {
+        "Rgb": [
+          26,
+          26,
+          26
+        ]
+      },
+      "table-separator": {
+        "Rgb": [
+          148,
+          148,
+          148
+        ]
+      },
+      "warning": {
+        "Rgb": [
+          35,
+          25,
+          5
+        ]
+      },
+      "accent": {
+        "Rgb": [
+          7,
+          26,
+          53
+        ]
+      },
+      "selection.foreground": {
+        "Rgb": [
+          0,
+          0,
+          46
+        ]
+      },
+      "selection.background": {
+        "Rgb": [
+          164,
+          205,
+          251
+        ]
+      },
+      "selection.secondary": {
+        "Rgb": [
+          26,
+          26,
+          26
+        ]
+      },
+      "composer-accent": {
+        "Rgb": [
+          10,
+          18,
+          27
+        ]
+      },
+      "history-accent": {
+        "Rgb": [
+          13,
+          23,
+          35
+        ]
+      }
+    }
+  },
+  {
+    "name": "midtone",
+    "indexed": true,
+    "foreground": [
+      220,
+      220,
+      220
+    ],
+    "background": [
+      130,
+      130,
+      130
+    ],
+    "colors": {
+      "composer-plan": {
+        "Index": 244
+      },
+      "history-prompt": {
+        "Index": 244
+      },
+      "secondary": {
+        "Index": 233
+      },
+      "table-separator": {
+        "Index": 246
+      },
+      "warning": {
+        "Index": 233
+      },
+      "accent": {
+        "Index": 17
+      },
+      "selection.foreground": {
+        "Index": 232
+      },
+      "selection.background": {
+        "Index": 153
+      },
+      "selection.secondary": {
+        "Index": 233
+      },
+      "composer-accent": {
+        "Index": 17
+      },
+      "history-accent": {
+        "Index": 17
+      }
+    }
+  },
+  {
+    "name": "blue",
+    "indexed": false,
+    "foreground": [
+      0,
+      0,
+      0
+    ],
+    "background": [
+      164,
+      205,
+      251
+    ],
+    "colors": {
+      "composer-plan": {
+        "Rgb": [
+          157,
+          196,
+          240
+        ]
+      },
+      "history-prompt": {
+        "Rgb": [
+          160,
+          200,
+          245
+        ]
+      },
+      "secondary": {
+        "Rgb": [
+          65,
+          81,
+          100
+        ]
+      },
+      "table-separator": {
+        "Rgb": [
+          131,
+          164,
+          200
+        ]
+      },
+      "warning": {
+        "Rgb": [
+          112,
+          79,
+          16
+        ]
+      },
+      "accent": {
+        "Rgb": [
+          23,
+          82,
+          165
+        ]
+      },
+      "selection.foreground": {
+        "Rgb": [
+          0,
+          0,
+          46
+        ]
+      },
+      "selection.background": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "selection.secondary": {
+        "Rgb": [
+          48,
+          60,
+          75
+        ]
+      },
+      "composer-accent": {
+        "Rgb": [
+          21,
+          77,
+          155
+        ]
+      },
+      "history-accent": {
+        "Rgb": [
+          22,
+          79,
+          159
+        ]
+      }
+    }
+  },
+  {
+    "name": "blue",
+    "indexed": true,
+    "foreground": [
+      0,
+      0,
+      0
+    ],
+    "background": [
+      164,
+      205,
+      251
+    ],
+    "colors": {
+      "composer-plan": {
+        "Index": 153
+      },
+      "history-prompt": {
+        "Index": 153
+      },
+      "secondary": {
+        "Index": 239
+      },
+      "table-separator": {
+        "Index": 110
+      },
+      "warning": {
+        "Index": 52
+      },
+      "accent": {
+        "Index": 17
+      },
+      "selection.foreground": {
+        "Index": 232
+      },
+      "selection.background": {
+        "Index": 75
+      },
+      "selection.secondary": {
+        "Index": 237
+      },
+      "composer-accent": {
+        "Index": 24
+      },
+      "history-accent": {
+        "Index": 24
+      }
+    }
+  },
+  {
+    "name": "black",
+    "indexed": false,
+    "foreground": [
+      255,
+      255,
+      255
+    ],
+    "background": [
+      0,
+      0,
+      0
+    ],
+    "colors": {
+      "composer-plan": {
+        "Rgb": [
+          30,
+          30,
+          30
+        ]
+      },
+      "history-prompt": {
+        "Rgb": [
+          40,
+          40,
+          40
+        ]
+      },
+      "secondary": {
+        "Rgb": [
+          153,
+          153,
+          153
+        ]
+      },
+      "table-separator": {
+        "Rgb": [
+          51,
+          51,
+          51
+        ]
+      },
+      "warning": {
+        "Rgb": [
+          196,
+          167,
+          103
+        ]
+      },
+      "accent": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "selection.foreground": {
+        "Rgb": [
+          0,
+          0,
+          46
+        ]
+      },
+      "selection.background": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "selection.secondary": {
+        "Rgb": [
+          59,
+          59,
+          59
+        ]
+      },
+      "composer-accent": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      },
+      "history-accent": {
+        "Rgb": [
+          99,
+          168,
+          248
+        ]
+      }
+    }
+  },
+  {
+    "name": "black",
+    "indexed": true,
+    "foreground": [
+      255,
+      255,
+      255
+    ],
+    "background": [
+      0,
+      0,
+      0
+    ],
+    "colors": {
+      "composer-plan": {
+        "Index": 234
+      },
+      "history-prompt": {
+        "Index": 235
+      },
+      "secondary": {
+        "Index": 247
+      },
+      "table-separator": {
+        "Index": 236
+      },
+      "warning": {
+        "Index": 179
+      },
+      "accent": {
+        "Index": 75
+      },
+      "selection.foreground": {
+        "Index": 232
+      },
+      "selection.background": {
+        "Index": 75
+      },
+      "selection.secondary": {
+        "Index": 237
+      },
+      "composer-accent": {
+        "Index": 75
+      },
+      "history-accent": {
+        "Index": 75
+      }
+    }
+  }
+]
