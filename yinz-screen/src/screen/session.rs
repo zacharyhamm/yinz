@@ -49,43 +49,56 @@ impl Screen {
             let err_context = || "Failed to rename session".to_string();
             let old_session_name = self.session_name.clone();
 
-            if let Some(os_input) = &self.bus.os_input {
-                if let Err(error) = os_input.rename_pty_host_session(&old_session_name, &name) {
-                    let error_text = format!("Failed to rename session: {error:#}");
-                    os_input
-                        .send_to_client(
-                            client_id,
-                            ServerToClientMsg::LogError {
-                                lines: vec![error_text],
-                            },
-                        )
-                        .non_fatal();
-                    Err::<(), _>(error)
-                        .context("Failed to rename session")
-                        .non_fatal();
-                    return Ok(());
-                }
-            }
-
-            if let Err(error) = self
-                .bus
-                .senders
-                .session_checkpoint
-                .rename(&old_session_name, &name)
-            {
-                let error_text = format!("Failed to rename session: {error:#}");
+            self.mother_supervisor = None;
+            self.mother_status = None;
+            let renamed = super::mother_supervisor::rename_memory(
+                &yinz_runtime::consts::YINZ_CACHE_DIR,
+                old_session_name.as_str(),
+                name.as_str(),
+                || {
+                    if let Some(os_input) = &self.bus.os_input {
+                        os_input.rename_pty_host_session(&old_session_name, &name)?;
+                    }
+                    let result = self
+                        .bus
+                        .senders
+                        .session_checkpoint
+                        .rename(&old_session_name, &name)
+                        .and_then(|()| {
+                            std::fs::rename(
+                                YINZ_SOCK_DIR.join(&old_session_name),
+                                YINZ_SOCK_DIR.join(&name),
+                            )
+                            .context("rename IPC socket")
+                            .inspect_err(|_| {
+                                self.bus
+                                    .senders
+                                    .session_checkpoint
+                                    .rename(&name, &old_session_name)
+                                    .context(
+                                        "restore session checkpoint after socket rename failed",
+                                    )
+                                    .non_fatal();
+                            })
+                        });
+                    if result.is_err() {
+                        if let Some(os_input) = &self.bus.os_input {
+                            os_input
+                                .rename_pty_host_session(&name, &old_session_name)
+                                .context("restore session ownership after rename failed")
+                                .non_fatal();
+                        }
+                    }
+                    result
+                },
+            );
+            if let Err(error) = renamed {
                 if let Some(os_input) = &self.bus.os_input {
                     os_input
-                        .rename_pty_host_session(&name, &old_session_name)
-                        .context(
-                            "Failed to restore session ownership after checkpoint rename failed",
-                        )
-                        .non_fatal();
-                    os_input
                         .send_to_client(
                             client_id,
                             ServerToClientMsg::LogError {
-                                lines: vec![error_text],
+                                lines: vec![format!("Failed to rename session: {error:#}")],
                             },
                         )
                         .non_fatal();
@@ -93,6 +106,7 @@ impl Screen {
                 Err::<(), _>(error)
                     .context("Failed to rename session")
                     .non_fatal();
+                self.sync_mother_supervisor();
                 return Ok(());
             }
 
@@ -106,12 +120,7 @@ impl Screen {
                 tab.rename_session(name.clone()).with_context(err_context)?;
             }
 
-            // rename socket file
-            let old_socket_file_path = YINZ_SOCK_DIR.join(&old_session_name);
-            let new_socket_file_path = YINZ_SOCK_DIR.join(&name);
-            if let Err(e) = std::fs::rename(old_socket_file_path, new_socket_file_path) {
-                log::error!("Failed to rename ipc socket: {:?}", e);
-            }
+            self.sync_mother_supervisor();
 
             // report
             self.log_and_report_session_state()

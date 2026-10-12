@@ -2028,6 +2028,13 @@ fn fast_turn_hooks_preserve_completion_failure_and_interruption() {
             screen.agent_controls.is_empty(),
             outcome != AgentOutcome::Interrupted
         );
+        screen.agent_control(
+            wait_submission(result.submission_id.as_deref().unwrap()),
+            CLIENT,
+        );
+        let retained = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(retained.outcome, outcome);
+        assert_eq!(retained.submission_id, result.submission_id);
     }
 }
 
