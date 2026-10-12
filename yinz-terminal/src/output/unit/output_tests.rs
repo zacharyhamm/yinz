@@ -1,6 +1,6 @@
 use super::super::{
-    ChangedLines, CharacterChunk, FloatingPanesStack, HostKittyState, KittyImageChunk, Output,
-    OutputBuffer, SixelImageChunk,
+    ChangedLines, CharacterChunk, FloatingPanesStack, HostImageRecord, HostKittyState,
+    KittyImageChunk, Output, OutputBuffer, SixelImageChunk,
 };
 use crate::panes::kitty_graphics::parser::{
     DecodedImage, KittyAction, KittyCommandParser, KittyFormat,
@@ -2160,7 +2160,13 @@ fn is_dirty_with_kitty_chunks_and_pending_deletes() {
 
     let pending_parts = create_test_kitty_parts();
     let mut transmitted = HashMap::new();
-    transmitted.insert((1 as InternalImageId, None), 2_000_000_000u32);
+    transmitted.insert(
+        (1 as InternalImageId, None),
+        HostImageRecord {
+            host_image_id: 2_000_000_000,
+            raster_revision: 0,
+        },
+    );
     pending_parts.2.borrow_mut().insert(
         ClientId::new(1),
         HostKittyState {

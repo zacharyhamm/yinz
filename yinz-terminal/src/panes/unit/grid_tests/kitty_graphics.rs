@@ -1972,8 +1972,12 @@ fn locked_repaints_keep_completed_kitty_placements_with_current_overlay_clipping
         .is_empty());
 }
 
-// Use a fresh host so every repaint must transmit pixels, even if a previous host cached them.
-fn assert_kitty_host_pixels(session: &KittySession, chunks: Vec<KittyImageChunk>, red: u8) {
+fn kitty_host_frame(
+    session: &KittySession,
+    chunks: Vec<KittyImageChunk>,
+    host_state: Rc<RefCell<HashMap<crate::ClientId, crate::output::HostKittyState>>>,
+    clear: bool,
+) -> String {
     use crate::output::Output;
     use crate::panes::PaneId;
     use crate::ClientId;
@@ -1986,7 +1990,7 @@ fn assert_kitty_host_pixels(session: &KittySession, chunks: Vec<KittyImageChunk>
         true,
         session.store.clone(),
         Rc::new(RefCell::new(HashMap::from([(client, true)]))),
-        Rc::new(RefCell::new(HashMap::new())),
+        host_state,
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(HashMap::new())),
     );
@@ -2001,7 +2005,28 @@ fn assert_kitty_host_pixels(session: &KittySession, chunks: Vec<KittyImageChunk>
         chunks,
         None,
     );
-    let emitted = output.serialize().unwrap().remove(&client).unwrap();
+    if clear {
+        output.mark_host_display_cleared_for_clients(std::iter::once(client));
+    }
+    output
+        .serialize()
+        .unwrap()
+        .remove(&client)
+        .unwrap_or_default()
+}
+
+// Use a fresh host so every repaint must transmit pixels, even if a previous host cached them.
+fn assert_kitty_host_pixels(session: &KittySession, chunks: Vec<KittyImageChunk>, red: u8) {
+    let emitted = kitty_host_frame(
+        session,
+        chunks,
+        Rc::new(RefCell::new(HashMap::new())),
+        false,
+    );
+    assert_uploaded_kitty_pixels(&emitted, red);
+}
+
+fn assert_uploaded_kitty_pixels(emitted: &str, red: u8) {
     let mut host = KittySession::new(10, 20);
     host.feed(emitted.as_bytes());
     assert!(
@@ -2301,5 +2326,196 @@ fn resizing_after_deletion_or_retransmission_while_locked_keeps_survivors() {
             .borrow()
             .scaled_variant(survivor_id, survivor_key)
             .is_none());
+    }
+}
+
+#[test]
+fn animation_revisions_reach_each_host_and_preserve_locked_repaints() {
+    // Spec, Animation: "The currently displayed frame can be changed using the c key."
+    // Each host must see that change independently, after synchronized output is unlocked.
+    for scaled in [false, true] {
+        for locked in [false, true] {
+            for first in [0, 1] {
+                for mutation in ["edit", "select", "delete"] {
+                    let mut session = KittySession::new(10, 20);
+                    let sizing = if scaled { ",c=1,r=1" } else { "" };
+                    session.ok(
+                        &format!("a=T,f=32,s=1,v=1,i=1,p=1,C=1{sizing}"),
+                        &[1, 0, 0, 255],
+                    );
+                    session.ok("a=f,f=32,s=1,v=1,i=1", &[2, 0, 0, 255]);
+                    session.ok("a=f,f=32,s=1,v=1,i=1", &[3, 0, 0, 255]);
+                    if mutation == "delete" {
+                        session.ok("a=a,i=1,c=2", &[]);
+                    }
+                    let original_red = if mutation == "delete" { 2 } else { 1 };
+                    let original = session
+                        .grid
+                        .render(0, 0, &Style::default())
+                        .unwrap()
+                        .unwrap()
+                        .3;
+                    assert_eq!(original[0].scaled_px.is_some(), scaled);
+                    let hosts = [
+                        Rc::new(RefCell::new(HashMap::new())),
+                        Rc::new(RefCell::new(HashMap::new())),
+                    ];
+                    for index in [first, 1 - first] {
+                        assert_uploaded_kitty_pixels(
+                            &kitty_host_frame(
+                                &session,
+                                original.clone(),
+                                hosts[index].clone(),
+                                false,
+                            ),
+                            original_red,
+                        );
+                    }
+                    if locked {
+                        session.grid.lock_renders();
+                    }
+                    let edited_red = match mutation {
+                        "edit" => {
+                            session.ok("a=f,f=32,s=1,v=1,i=1,r=1", &[4, 0, 0, 255]);
+                            session.ok("a=f,f=32,s=1,v=1,i=1,r=1", &[5, 0, 0, 255]);
+                            5
+                        },
+                        "select" => {
+                            session.ok("a=a,i=1,c=3", &[]);
+                            3
+                        },
+                        _ => {
+                            session.ok("a=d,d=f,i=1,r=2", &[]);
+                            3
+                        },
+                    };
+                    if locked {
+                        for _ in 0..2 {
+                            session.grid.unlock_renders();
+                            session.grid.lock_renders();
+                            session.grid.render_full_viewport();
+                            let repaint = session
+                                .grid
+                                .render(0, 0, &Style::default())
+                                .unwrap()
+                                .unwrap()
+                                .3;
+                            assert_eq!(repaint, original);
+                            for index in [first, 1 - first] {
+                                assert_uploaded_kitty_pixels(
+                                    &kitty_host_frame(
+                                        &session,
+                                        repaint.clone(),
+                                        hosts[index].clone(),
+                                        true,
+                                    ),
+                                    original_red,
+                                );
+                            }
+                        }
+                        session.grid.unlock_renders();
+                    }
+                    let updated = session
+                        .grid
+                        .render(0, 0, &Style::default())
+                        .unwrap()
+                        .unwrap()
+                        .3;
+                    assert_uploaded_kitty_pixels(
+                        &kitty_host_frame(&session, updated.clone(), hosts[first].clone(), false),
+                        edited_red,
+                    );
+                    assert!(
+                        !kitty_host_frame(&session, updated, hosts[first].clone(), false)
+                            .contains("\x1b_Ga=t,")
+                    );
+                    // The second host skips this render and must still notice the next revision.
+                    let current = session
+                        .store
+                        .borrow()
+                        .get(original[0].internal_image_id)
+                        .unwrap()
+                        .current_frame;
+                    session.ok(
+                        &format!("a=f,f=32,s=1,v=1,i=1,r={current}"),
+                        &[9, 0, 0, 255],
+                    );
+                    let latest = session
+                        .grid
+                        .render(0, 0, &Style::default())
+                        .unwrap()
+                        .unwrap()
+                        .3;
+                    for index in [1 - first, first] {
+                        assert_uploaded_kitty_pixels(
+                            &kitty_host_frame(
+                                &session,
+                                latest.clone(),
+                                hosts[index].clone(),
+                                false,
+                            ),
+                            9,
+                        );
+                        assert!(!kitty_host_frame(
+                            &session,
+                            latest.clone(),
+                            hosts[index].clone(),
+                            false
+                        )
+                        .contains("\x1b_Ga=t,"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn unlocked_render_releases_mutated_pixels_in_the_alternate_grid() {
+    for scaled in [false, true] {
+        let mut session = KittySession::new(10, 20);
+        let sizing = if scaled { ",c=1,r=1" } else { "" };
+        session.ok(
+            &format!("a=T,f=32,s=1,v=1,i=1,C=1{sizing}"),
+            &[1, 0, 0, 255],
+        );
+        let completed = session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3;
+        let id = completed[0].internal_image_id;
+        session.feed(b"\x1b[?2026h");
+        session.ok("a=f,f=32,s=1,v=1,i=1,r=1", &[2, 0, 0, 255]);
+        session.feed(b"\x1b[?1049h");
+        session.grid.render_full_viewport();
+        let repaint = session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3;
+        assert_eq!(repaint, completed);
+        assert_kitty_host_pixels(&session, repaint, 1);
+        assert_eq!(session.store.borrow().raster_revision(id), Some(0));
+        session.feed(b"\x1b[?2026l");
+        assert!(session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3
+            .is_empty());
+        assert_eq!(session.store.borrow().raster_revision(id), Some(1));
+        assert_eq!(session.store.borrow().total_bytes(), 4);
+        session.feed(b"\x1b[?1049l");
+        let updated = session
+            .grid
+            .render(0, 0, &Style::default())
+            .unwrap()
+            .unwrap()
+            .3;
+        assert_kitty_host_pixels(&session, updated, 2);
     }
 }

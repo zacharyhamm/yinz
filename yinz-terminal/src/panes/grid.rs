@@ -2345,6 +2345,14 @@ impl Grid {
             }
             return Ok(Some((chunks, None, sixel, kitty)));
         }
+        self.kitty_grid.release_completed_frame();
+        if let Some(alternate) = self.alternate_screen_state.as_mut() {
+            alternate.kitty_grid.release_completed_frame();
+        }
+        self.kitty_grid.release_completed_frame();
+        if let Some(alternate) = self.alternate_screen_state.as_mut() {
+            alternate.kitty_grid.release_completed_frame();
+        }
         let raw_vte_output = String::new();
 
         let (mut character_chunks, sixel_image_chunks, kitty_image_chunks) =
@@ -2487,10 +2495,6 @@ impl Grid {
                 chunk
             })
             .collect();
-        self.kitty_grid.release_completed_frame();
-        if let Some(alternate) = self.alternate_screen_state.as_mut() {
-            alternate.kitty_grid.release_completed_frame();
-        }
         // OutputBuffer emits complete rows. Cache all palette spans of each changed row.
         self.completed_text.resize_with(self.height, Vec::new);
         character_chunks = character_chunks

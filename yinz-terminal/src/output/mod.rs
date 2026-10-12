@@ -453,8 +453,14 @@ pub struct HostPlacementRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct HostImageRecord {
+    pub host_image_id: u32,
+    pub raster_revision: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct HostKittyState {
-    pub transmitted: HashMap<HostImageKey, u32>,
+    pub transmitted: HashMap<HostImageKey, HostImageRecord>,
     pub live_placements: HashMap<KittyChunkKey, HostPlacementRecord>,
     next_host_image_id: u32,
     next_host_placement_id: u32,
@@ -541,16 +547,16 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
         .iter()
         // A full repaint may erase placements without freeing host image data. Delete our
         // old host IDs before forgetting them and transmitting replacement IDs.
-        .filter(|(image_key, _)| {
+        .filter(|(image_key, record)| {
             host_display_cleared
-                || kitty_image_store.get(image_key.0).is_none()
+                || kitty_image_store.raster_revision(image_key.0) != Some(record.raster_revision)
                 || image_key.1.is_some_and(|variant| {
                     kitty_image_store
                         .scaled_variant(image_key.0, variant)
                         .is_none()
                 })
         })
-        .map(|(image_key, host_id)| (*image_key, *host_id))
+        .map(|(image_key, record)| (*image_key, record.host_image_id))
         .collect();
     freed.sort_by_key(|(_, host_id)| *host_id);
     for (image_key, host_id) in freed {
@@ -626,7 +632,7 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
             };
             let image_key = (chunk.internal_image_id, variant);
             let host_image_id = match host_state.transmitted.get(&image_key) {
-                Some(host_image_id) => *host_image_id,
+                Some(record) => record.host_image_id,
                 None => {
                     let raster_dims = match variant {
                         Some(variant) => kitty_image_store
@@ -650,7 +656,15 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
                     let host_image_id = host_state.next_host_image_id;
                     host_state.next_host_image_id += 1;
                     emit_kitty_transmit(out, host_image_id, width, height, &b64)?;
-                    host_state.transmitted.insert(image_key, host_image_id);
+                    host_state.transmitted.insert(
+                        image_key,
+                        HostImageRecord {
+                            host_image_id,
+                            raster_revision: kitty_image_store
+                                .raster_revision(chunk.internal_image_id)
+                                .context("transmitted kitty image is missing")?,
+                        },
+                    );
                     host_image_id
                 },
             };
