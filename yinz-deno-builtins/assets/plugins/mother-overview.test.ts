@@ -33,6 +33,7 @@ const overview = {
   status: { state: "watching", pending: 0, blockers: 0 },
   checkpoint: { revision: 3, value: null },
   roster: {},
+  batches: [],
   receipts: [],
   delivery_blocked: null,
   operation_in_flight: false,
@@ -58,6 +59,31 @@ test("Overview polls only while visible and keeps one request in flight", async 
   await plugin.advance(3000);
   assertEquals(requests(plugin).length, 2);
   assert((await plugin.render(24, 100)).includes("Supervision: paused"));
+});
+
+test("Overview keeps settled failures visible until their batches are acknowledged", async () => {
+  const plugin = await loadPlugin("./mother-overview.ts", {
+    replies: { AgentControl: null },
+  });
+  const receipts = [
+    { batch: "pending", submission: "failed-turn", settled: true, response: { outcome: "failed" } },
+    { batch: "acked", submission: "acked-turn", settled: true, response: { outcome: "failed" } },
+    {
+      batch: "pending",
+      submission: "later-turn",
+      settled: true,
+      response: { outcome: "completed" },
+    },
+  ];
+  await plugin.event({ Visible: true });
+  await answer(plugin, { ...overview, batches: [{ id: "pending" }], receipts });
+  const rendered = await plugin.render(24, 100);
+  assert(rendered.includes("failed-turn: failed"));
+  assert(!rendered.includes("acked-turn"));
+  assert(!rendered.includes("later-turn"));
+  await plugin.advance(1000);
+  await answer(plugin, { ...overview, receipts });
+  assert(!(await plugin.render(24, 100)).includes("failed-turn"));
 });
 
 test("Overview recovery uses the reviewed revision and requires a visible confirmation", async () => {

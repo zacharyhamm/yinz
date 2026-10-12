@@ -422,6 +422,12 @@ impl Memory {
                 "paused"
             } else if blockers > 0
                 || self.gap
+                || self.receipts.iter().any(|r| {
+                    r.response
+                        .as_ref()
+                        .is_some_and(|result| result.outcome == AgentOutcome::Failed)
+                        && self.pending.iter().any(|b| b.id == r.batch)
+                })
                 || self.receipts.back().is_some_and(|r| {
                     !r.settled
                         && r.response.as_ref().is_some_and(|result| {
