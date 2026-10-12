@@ -32,10 +32,22 @@ const TICK: Duration = Duration::from_millis(200);
 pub(super) struct Supervisor {
     pub generation: String,
     pane: PaneId,
+    session: String,
     commands: Option<mpsc::Sender<(MotherRequest, Reply)>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    stopped: Arc<AtomicBool>,
     observations: mpsc::SyncSender<Value>,
     observation_gap: Arc<AtomicBool>,
+}
+
+impl Supervisor {
+    fn running(&self) -> bool {
+        !self.stopped.load(Ordering::Acquire)
+            && self
+                .thread
+                .as_ref()
+                .is_none_or(|thread| !thread.is_finished())
+    }
 }
 
 impl Drop for Supervisor {
@@ -291,7 +303,9 @@ impl Memory {
                     | AgentOutcome::TargetChanged
                     | AgentOutcome::TargetClosed
                     | AgentOutcome::TargetExited
-            ) || (result.outcome == AgentOutcome::Failed && result.acknowledged);
+            ) || (result.outcome == AgentOutcome::Failed && result.acknowledged)
+                // WaitTurn reports Interrupted only for a retained terminal result.
+                || (!delivery && result.outcome == AgentOutcome::Interrupted);
             receipt.response = Some(result);
         }
     }
@@ -488,23 +502,16 @@ fn enrich_row(row: &mut Value, observation: &Value) -> bool {
     changed
 }
 
-fn run(
-    session: String,
-    pane: PaneId,
-    generation: String,
-    senders: ThreadSenders,
-    commands: mpsc::Receiver<(MotherRequest, Reply)>,
-    observations: mpsc::Receiver<Value>,
-    observation_gap: Arc<AtomicBool>,
-) -> Result<()> {
-    let work = yinz_config::project_config::bubblewrap::mother_directory(
-        &yinz_runtime::consts::YINZ_CACHE_DIR,
-        &session,
-    )?;
-    let path: PathBuf = work
-        .parent()
-        .context("Mother workspace has no parent")?
-        .join("supervision.json");
+fn memory_path(cache: &Path, session: &str) -> Result<PathBuf> {
+    Ok(
+        yinz_config::project_config::bubblewrap::mother_directory(cache, session)?
+            .parent()
+            .context("Mother workspace has no parent")?
+            .join("supervision.json"),
+    )
+}
+
+fn writer_lock(path: &Path) -> Result<std::fs::File> {
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -513,6 +520,53 @@ fn run(
         .context("open Mother writer lock")?;
     lock.try_lock()
         .context("Mother supervisor already owns this workspace")?;
+    Ok(lock)
+}
+
+pub(super) fn rename_memory(
+    cache: &Path,
+    old: &str,
+    new: &str,
+    rename: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if old == new {
+        return rename();
+    }
+    let source = memory_path(cache, old)?;
+    let destination = memory_path(cache, new)?;
+    let _source_lock = writer_lock(&source)?;
+    let _destination_lock = writer_lock(&destination)?;
+    match std::fs::symlink_metadata(&destination) {
+        Ok(_) => bail!("Mother memory already exists for session {new}"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => return Err(error).context("inspect destination Mother memory"),
+    }
+    let moved = match std::fs::rename(&source, &destination) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error).context("rename Mother memory"),
+    };
+    if let Err(error) = rename() {
+        if moved {
+            std::fs::rename(&destination, &source)
+                .with_context(|| format!("restore Mother memory after rename failed: {error:#}"))?;
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn run(
+    session: String,
+    pane: PaneId,
+    generation: String,
+    senders: ThreadSenders,
+    commands: &mpsc::Receiver<(MotherRequest, Reply)>,
+    observations: mpsc::Receiver<Value>,
+    observation_gap: Arc<AtomicBool>,
+) -> Result<()> {
+    let path = memory_path(&yinz_runtime::consts::YINZ_CACHE_DIR, &session)?;
+    let _lock = writer_lock(&path)?;
     let mut memory = Memory::load(&path)?;
     memory.conversation = None;
     if memory.snapshotting {
@@ -875,7 +929,17 @@ fn run(
 impl Screen {
     pub(super) fn sync_mother_supervisor(&mut self) {
         let pane = self.live_mother();
-        if self.mother_supervisor.as_ref().map(|s| s.pane) == pane {
+        if let Some(supervisor) = self
+            .mother_supervisor
+            .as_ref()
+            .filter(|s| Some(s.pane) == pane && s.session == self.session_name.as_str())
+        {
+            if !supervisor.running() {
+                self.mother_status = Some(MotherStatus {
+                    state: "degraded".into(),
+                    ..Default::default()
+                });
+            }
             return;
         }
         self.mother_supervisor = None;
@@ -889,20 +953,24 @@ impl Screen {
         let observation_gap = Arc::new(AtomicBool::new(false));
         let worker_gap = observation_gap.clone();
         let session = self.session_name.to_string();
+        let worker_session = session.clone();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stopped = stopped.clone();
         let senders = self.bus.senders.clone();
         let id = generation.clone();
-        match std::thread::Builder::new()
+        let thread = match std::thread::Builder::new()
             .name("mother-supervisor".into())
             .spawn(move || {
                 if let Err(error) = run(
-                    session,
+                    worker_session,
                     pane,
                     id.clone(),
                     senders.clone(),
-                    rx,
+                    &rx,
                     observed,
                     worker_gap,
                 ) {
+                    worker_stopped.store(true, Ordering::Release);
                     log::error!("Mother supervisor stopped: {error:#}");
                     senders
                         .send_to_screen(ScreenInstruction::MotherStatus(
@@ -914,20 +982,33 @@ impl Screen {
                         ))
                         .context("report Mother failure")
                         .non_fatal();
+                    // Keep rejecting queued and racing commands until resume replaces this worker.
+                    for (_, target) in rx {
+                        let mut response = AgentResponse::new(AgentOutcome::Rejected);
+                        response.message = Some(format!(
+                            "Mother supervisor stopped: {error:#}; use `yinz mother resume` to retry"
+                        ));
+                        reply(&senders, target, response);
+                    }
                 }
             }) {
-            Ok(thread) => {
-                self.mother_supervisor = Some(Supervisor {
-                    generation,
-                    pane,
-                    commands: Some(tx),
-                    thread: Some(thread),
-                    observations,
-                    observation_gap,
-                })
+            Ok(thread) => Some(thread),
+            Err(error) => {
+                stopped.store(true, Ordering::Release);
+                log::error!("Cannot start Mother supervisor: {error}");
+                None
             },
-            Err(error) => log::error!("Cannot start Mother supervisor: {error}"),
-        }
+        };
+        self.mother_supervisor = Some(Supervisor {
+            generation,
+            pane,
+            session,
+            commands: Some(tx),
+            thread,
+            stopped,
+            observations,
+            observation_gap,
+        });
     }
 
     pub(super) fn observe_mother_activity(
@@ -955,16 +1036,25 @@ impl Screen {
     }
 
     pub(super) fn mother_command(&mut self, request: MotherRequest, target: Reply) {
+        if matches!(request, MotherRequest::Resume)
+            && self.mother_supervisor.as_ref().is_none_or(|s| !s.running())
+        {
+            self.mother_supervisor = None;
+            self.sync_mother_supervisor();
+        }
         let result = self
             .mother_supervisor
             .as_ref()
             .context("Mother is not running")
             .and_then(|s| {
+                if !s.running() {
+                    bail!("Mother supervisor stopped; use `yinz mother resume` to retry");
+                }
                 s.commands
                     .as_ref()
                     .context("Mother supervisor stopped")?
                     .send((request, target.clone()))
-                    .context("Mother supervisor is unavailable")
+                    .context("Mother supervisor is unavailable; use `yinz mother resume` to retry")
             });
         if let Err(error) = result {
             let mut response = AgentResponse::new(AgentOutcome::Rejected);
@@ -985,8 +1075,10 @@ impl Supervisor {
         Self {
             generation: "test-generation".into(),
             pane,
+            session: String::new(),
             commands: Some(tx),
             thread: None,
+            stopped: Arc::new(AtomicBool::new(false)),
             observations: mpsc::sync_channel(1).0,
             observation_gap: Arc::new(AtomicBool::new(false)),
         }

@@ -169,6 +169,109 @@ fn uncertain_delivery_never_requeues_an_unknown_submission() {
 }
 
 #[test]
+fn confirmed_interrupt_settles_without_retrying_the_batch() {
+    for acknowledged in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("memory.json");
+        let mut memory = Memory::default();
+        memory.batch("first".into(), false);
+        memory.pending[0].attempted = true;
+        let batch = memory.pending[0].id.clone();
+        memory.receipts.push_back(Receipt {
+            batch: batch.clone(),
+            conversation: "conversation".into(),
+            submission: "submission".into(),
+            response: None,
+            settled: false,
+        });
+        let mut result = AgentResponse::new(AgentOutcome::Interrupted);
+        result.submission_id = Some("submission".into());
+        result.acknowledged = acknowledged;
+        memory.receipt_response(result.clone(), true);
+        memory.command(MotherRequest::Ack { batch }).unwrap();
+        memory.command(MotherRequest::Pause).unwrap();
+        memory.command(MotherRequest::Resume).unwrap();
+        memory.batch("later".into(), false);
+        memory.save(&path).unwrap();
+        let mut memory = Memory::load(&path).unwrap();
+        assert!(!memory.receipts[0].settled);
+        assert_eq!(memory.status(true, false).state, "needs_attention");
+        memory.receipt_response(AgentResponse::new(AgentOutcome::TimedOut), false);
+        assert!(!memory.receipts[0].settled);
+        memory.receipt_response(result, false);
+        assert!(memory.receipts[0].settled);
+        assert_eq!(memory.status(true, false).state, "queued");
+        assert_eq!(memory.pending.len(), 1);
+        assert_eq!(memory.pending[0].summary, vec!["later"]);
+    }
+}
+
+#[test]
+fn rename_preserves_memory_and_rolls_back_failed_session_rename() {
+    let cache = tempfile::tempdir().unwrap();
+    let source = memory_path(cache.path(), "old").unwrap();
+    let destination = memory_path(cache.path(), "new").unwrap();
+    let mut memory = Memory {
+        revision: 12,
+        checkpoint: json!({"assignment":"keep"}),
+        paused: true,
+        ..Default::default()
+    };
+    memory.batch("pending".into(), false);
+    memory.pending[0].attempted = true;
+    memory.receipts.push_back(Receipt {
+        batch: memory.pending[0].id.clone(),
+        conversation: "conversation".into(),
+        submission: "submission".into(),
+        response: None,
+        settled: false,
+    });
+    memory.save(&source).unwrap();
+    let bytes = std::fs::read(&source).unwrap();
+    assert!(rename_memory(cache.path(), "old", "new", || {
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+        assert!(writer_lock(&source).is_err());
+        assert!(writer_lock(&destination).is_err());
+        bail!("session checkpoint rename failed")
+    })
+    .is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    assert!(!destination.exists());
+    rename_memory(cache.path(), "old", "new", || Ok(())).unwrap();
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+    let restored = Memory::load(&destination).unwrap();
+    assert!(restored.paused);
+    assert!(restored.pending[0].attempted);
+    assert!(!restored.receipts[0].settled);
+    assert_eq!(restored.revision, 12);
+}
+
+#[test]
+fn rename_refuses_existing_memory_and_active_writers() {
+    let cache = tempfile::tempdir().unwrap();
+    let source = memory_path(cache.path(), "old").unwrap();
+    let destination = memory_path(cache.path(), "new").unwrap();
+    Memory::default().save(&source).unwrap();
+    let bytes = std::fs::read(&source).unwrap();
+    Memory::default().save(&destination).unwrap();
+    assert!(rename_memory(cache.path(), "old", "new", || panic!("must not rename")).is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+    std::fs::remove_file(&destination).unwrap();
+    for path in [&source, &destination] {
+        let _lock = writer_lock(path).unwrap();
+        assert!(rename_memory(cache.path(), "old", "new", || panic!("must not rename")).is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), bytes);
+        assert!(!destination.exists());
+    }
+    std::fs::remove_file(&source).unwrap();
+    rename_memory(cache.path(), "old", "new", || Ok(())).unwrap();
+    assert!(!destination.exists());
+}
+
+#[test]
 fn private_activity_enriches_only_matching_conversations_without_waking() {
     let mut memory = Memory::default();
     memory.event(event(1, "terminal_2", "snapshot"), MOTHER);

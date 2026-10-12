@@ -40,6 +40,221 @@ fn screen_with_mother() -> Screen {
     screen
 }
 
+#[test]
+fn failed_mother_supervisor_requires_resume_and_recovers_in_the_same_pane() {
+    use crate::screen::agent_control::Reply;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use yinz_types::agent::{control::AgentOutcome, mother::MotherRequest};
+
+    let mut screen = screen_with_mother();
+    screen.session_name = format!("mother-recovery-{}", uuid::Uuid::new_v4()).into();
+    let work = yinz_config::project_config::bubblewrap::mother_directory(
+        &yinz_runtime::consts::YINZ_CACHE_DIR,
+        screen.session_name.as_str(),
+    )
+    .unwrap();
+    let memory = work.parent().unwrap().join("supervision.json");
+    std::fs::create_dir(&memory).unwrap();
+    let (instructions, received) = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(instructions));
+    screen.sync_mother_supervisor();
+    let generation = screen
+        .mother_supervisor
+        .as_ref()
+        .unwrap()
+        .generation
+        .clone();
+    let (reply, response) = mpsc::channel();
+    screen.mother_command(MotherRequest::Inbox, Reply::Host(reply));
+    let result = response.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Rejected);
+    assert!(result.message.unwrap().contains("resume"));
+    let (instruction, _) = received.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(
+        matches!(instruction, ScreenInstruction::MotherStatus(_, status) if status.state == "degraded")
+    );
+    for _ in 0..3 {
+        screen.sync_mother_supervisor();
+        assert_eq!(
+            screen.mother_supervisor.as_ref().unwrap().generation,
+            generation
+        );
+        assert_eq!(screen.mother_status.as_ref().unwrap().state, "degraded");
+    }
+
+    // A failed explicit retry still replies instead of losing the queued command.
+    let (reply, response) = mpsc::channel();
+    screen.mother_command(MotherRequest::Resume, Reply::Host(reply));
+    assert_eq!(
+        response
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .outcome,
+        AgentOutcome::Rejected
+    );
+    let generation = screen
+        .mother_supervisor
+        .as_ref()
+        .unwrap()
+        .generation
+        .clone();
+    std::fs::remove_dir(&memory).unwrap();
+    let (reply, response) = mpsc::channel();
+    screen.mother_command(MotherRequest::Resume, Reply::Host(reply));
+    assert_eq!(
+        response
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .outcome,
+        AgentOutcome::Ok
+    );
+    assert_ne!(
+        screen.mother_supervisor.as_ref().unwrap().generation,
+        generation
+    );
+    assert_eq!(screen.live_mother(), Some(MOTHER));
+    let (reply, response) = mpsc::channel();
+    screen.mother_command(
+        MotherRequest::Checkpoint {
+            expect_rev: Some(0),
+            value: Some(serde_json::json!({"recovered":true})),
+        },
+        Reply::Host(reply),
+    );
+    assert_eq!(
+        response
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .outcome,
+        AgentOutcome::Ok
+    );
+    screen.mother_supervisor = None;
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&memory).unwrap()).unwrap();
+    assert_eq!(saved["checkpoint"]["recovered"], true);
+    std::fs::remove_dir_all(work.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
+    use crate::screen::agent_control::Reply;
+    use interprocess::local_socket::prelude::*;
+    use std::{sync::mpsc, time::Duration};
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext};
+    use yinz_types::agent::{control::AgentOutcome, mother::MotherRequest};
+
+    let mut screen = screen_with_mother();
+    let old = format!("mother-old-{}", uuid::Uuid::new_v4());
+    let new = format!("mother-new-{}", uuid::Uuid::new_v4());
+    screen.session_name = old.clone().into();
+    let socket_dir = &*yinz_runtime::consts::YINZ_SOCK_DIR;
+    std::fs::create_dir_all(socket_dir).unwrap();
+    let listener = yinz_ipc::consts::ipc_bind(&socket_dir.join(&old)).unwrap();
+    let (connections, accepted) = mpsc::channel();
+    let acceptor = std::thread::spawn(move || {
+        for _ in 0..5 {
+            if connections.send(listener.accept().unwrap()).is_err() {
+                return;
+            }
+        }
+    });
+    let connect = || {
+        let sender = IpcSenderWithContext::<yinz_ipc::ipc::ServerToClientMsg>::new(
+            accepted.recv_timeout(Duration::from_secs(10)).unwrap(),
+        );
+        let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+        receiver
+            .set_recv_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        assert!(matches!(
+            receiver.recv_client_msg(),
+            IpcRecv::Msg(ClientToServerMsg::SubscribeToEvents { .. }, _)
+        ));
+        (sender, receiver)
+    };
+    let command = |screen: &mut Screen, request| {
+        let (reply, response) = mpsc::channel();
+        screen.mother_command(request, Reply::Host(reply));
+        let response = response.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Ok, "{:?}", response.message);
+        serde_json::from_str::<serde_json::Value>(&response.output.unwrap()).unwrap()
+    };
+    let (instructions, _received) = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(instructions));
+    screen.sync_mother_supervisor();
+    let initial = connect();
+    command(&mut screen, MotherRequest::Pause);
+    command(
+        &mut screen,
+        MotherRequest::Checkpoint {
+            expect_rev: Some(0),
+            value: Some(serde_json::json!({"assignment":"preserved"})),
+        },
+    );
+    let generation = screen
+        .mother_supervisor
+        .as_ref()
+        .unwrap()
+        .generation
+        .clone();
+    screen.rename_session(new.clone().into(), CLIENT).unwrap();
+    assert_eq!(screen.session_name.as_str(), new);
+    assert_ne!(
+        screen.mother_supervisor.as_ref().unwrap().generation,
+        generation
+    );
+    assert!(!socket_dir.join(&old).exists());
+    let renamed = connect();
+    command(
+        &mut screen,
+        MotherRequest::Configure {
+            panes: vec![],
+            projects: vec![],
+            kinds: vec!["codex".into()],
+            lifecycle_types: vec![],
+        },
+    );
+    let configured = connect();
+    drop(configured);
+    let reconnected = connect();
+    assert_eq!(
+        command(
+            &mut screen,
+            MotherRequest::Checkpoint {
+                expect_rev: None,
+                value: None
+            }
+        )["value"]["assignment"],
+        "preserved"
+    );
+    screen.mother_supervisor = None;
+    screen.sync_mother_supervisor();
+    let relaunched = connect();
+    assert_eq!(
+        command(
+            &mut screen,
+            MotherRequest::Checkpoint {
+                expect_rev: None,
+                value: None
+            }
+        )["revision"],
+        1
+    );
+    screen.mother_supervisor = None;
+    drop((initial, renamed, reconnected, relaunched));
+    acceptor.join().unwrap();
+    std::fs::remove_file(socket_dir.join(&new)).unwrap();
+    for session in [old, new] {
+        let work = yinz_config::project_config::bubblewrap::mother_directory(
+            &yinz_runtime::consts::YINZ_CACHE_DIR,
+            &session,
+        )
+        .unwrap();
+        std::fs::remove_dir_all(work.parent().unwrap()).unwrap();
+    }
+}
+
 fn mother_tab(screen: &Screen) -> TabId {
     screen.tab_containing_overlay(MOTHER).unwrap().id
 }
