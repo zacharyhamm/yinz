@@ -744,7 +744,10 @@ impl Screen {
             ));
         }
         if self.live_mother().is_none() {
-            for kind in offered_agents {
+            for kind in offered_agents
+                .into_iter()
+                .filter(|kind| yinz_runtime::agent::launch::supports_mother(kind))
+            {
                 entries.push((
                     Entry {
                         id: format!("mother:{kind}"),

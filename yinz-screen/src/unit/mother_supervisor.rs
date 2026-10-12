@@ -4,8 +4,65 @@ use yinz_types::internal_ids::TerminalId;
 const MOTHER: PaneId = PaneId::Terminal(TerminalId::new(1));
 
 fn event(sequence: usize, pane: &str, kind: &str) -> Value {
-    json!({"cursor":sequence.to_string(),"sequence":sequence,"pane_id":pane,"event_type":kind,
+    json!({"cursor":cursor("session", sequence),"sequence":sequence,"pane_id":pane,"event_type":kind,
         "kind":"claude","conversation_id":"conversation","state":"idle","background_tasks":[]})
+}
+
+fn cursor(session: &str, sequence: usize) -> String {
+    json!({"v":1,"host":"host","session":session,"epoch":"epoch","sequence":sequence,
+        "filters":EventSubscription::default()})
+    .to_string()
+}
+
+#[test]
+fn loading_resets_stale_malformed_and_incomplete_cursors_without_losing_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("memory.json");
+    let mut memory = Memory {
+        revision: 12,
+        checkpoint: json!({"assignment":"keep"}),
+        paused: true,
+        filters: EventSubscription {
+            kinds: vec!["codex".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    memory.batch("pending".into(), false);
+    memory.pending[0].attempted = true;
+    memory.receipts.push_back(Receipt {
+        batch: memory.pending[0].id.clone(),
+        conversation: "conversation".into(),
+        submission: "submission".into(),
+        response: None,
+        settled: false,
+    });
+    let mut valid: Value = serde_json::from_str(&cursor("session", 10)).unwrap();
+    valid["filters"] = json!(memory.filters);
+    let mut stale = valid.clone();
+    stale["session"] = "old-session".into();
+    let mut malformed = valid.clone();
+    malformed["sequence"] = "invalid".into();
+    for (cursor, snapshotting, keep) in [
+        (Some(valid.to_string()), false, true),
+        (Some(valid.to_string()), true, false),
+        (Some(stale.to_string()), false, false),
+        (Some(malformed.to_string()), false, false),
+        (Some("not json".into()), false, false),
+        (Some("null".into()), false, false),
+        (Some(json!({"session":"session"}).to_string()), false, false),
+        (None, false, false),
+    ] {
+        memory.cursor = cursor.clone();
+        memory.snapshotting = snapshotting;
+        memory.save(&path).unwrap();
+        let restored = Memory::load(&path, "session").unwrap();
+        let mut expected = json!(memory);
+        expected["cursor"] = if keep { json!(cursor) } else { Value::Null };
+        assert_eq!(json!(restored), expected);
+        assert!(restored.pending[0].attempted);
+        assert!(!restored.receipts[0].settled);
+    }
 }
 
 #[test]
@@ -66,14 +123,14 @@ fn checkpoint_conflicts_pause_and_recovery_preserve_memory() {
     memory.command(MotherRequest::Pause).unwrap();
     memory.event(event(1, "terminal_2", "needs_input"), MOTHER);
     memory.save(&path).unwrap();
-    let recovered = Memory::load(&path).unwrap();
+    let recovered = Memory::load(&path, "session").unwrap();
     assert_eq!(recovered.revision, 1);
     assert_eq!(recovered.checkpoint["goals"], json!(["finish"]));
     assert!(recovered.paused);
     assert_eq!(recovered.pending[0].id, memory.pending[0].id);
     assert_eq!(recovered.cursor, memory.cursor);
     assert!(memory.save(directory.path()).is_err());
-    assert_eq!(Memory::load(&path).unwrap().revision, 1);
+    assert_eq!(Memory::load(&path, "session").unwrap().revision, 1);
 }
 
 #[test]
@@ -136,11 +193,11 @@ fn incomplete_snapshot_restarts_from_a_snapshot_not_a_partial_cursor() {
     memory.event(event(1, "", "snapshot_begin"), MOTHER);
     memory.event(event(1, "terminal_2", "snapshot"), MOTHER);
     memory.save(&path).unwrap();
-    let mut restored = Memory::load(&path).unwrap();
+    let mut restored = Memory::load(&path, "session").unwrap();
     assert!(restored.cursor.is_none());
     assert!(restored.snapshotting);
     restored.event(event(1, "", "ready"), MOTHER);
-    assert_eq!(restored.cursor.as_deref(), Some("1"));
+    assert_eq!(restored.cursor, Some(cursor("session", 1)));
 }
 
 #[test]
@@ -193,7 +250,7 @@ fn confirmed_interrupt_settles_without_retrying_the_batch() {
         memory.command(MotherRequest::Resume).unwrap();
         memory.batch("later".into(), false);
         memory.save(&path).unwrap();
-        let mut memory = Memory::load(&path).unwrap();
+        let mut memory = Memory::load(&path, "session").unwrap();
         assert!(!memory.receipts[0].settled);
         assert_eq!(memory.status(true, false).state, "needs_attention");
         memory.receipt_response(AgentResponse::new(AgentOutcome::TimedOut), false);
@@ -214,6 +271,7 @@ fn rename_preserves_memory_and_rolls_back_failed_session_rename() {
     let mut memory = Memory {
         revision: 12,
         checkpoint: json!({"assignment":"keep"}),
+        cursor: Some(cursor("old", 10)),
         paused: true,
         ..Default::default()
     };
@@ -241,11 +299,12 @@ fn rename_preserves_memory_and_rolls_back_failed_session_rename() {
     rename_memory(cache.path(), "old", "new", || Ok(())).unwrap();
     assert!(!source.exists());
     assert_eq!(std::fs::read(&destination).unwrap(), bytes);
-    let restored = Memory::load(&destination).unwrap();
+    let restored = Memory::load(&destination, "new").unwrap();
     assert!(restored.paused);
     assert!(restored.pending[0].attempted);
     assert!(!restored.receipts[0].settled);
     assert_eq!(restored.revision, 12);
+    assert!(restored.cursor.is_none());
 }
 
 #[test]

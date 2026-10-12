@@ -370,6 +370,56 @@ fn claude_mother_fixture(home: &Path) {
 }
 
 #[test]
+fn unsupported_mother_providers_do_not_provision_or_spawn() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let start = tempfile::tempdir().unwrap();
+    let cache = start.path().join("cache");
+    std::env::set_var("YINZ_TEST_CACHE_ROOT", &cache);
+    std::env::set_var("YINZ_SESSION_NAME", "unsupported-mother");
+    let data = DataAccess::sqlite(&start.path().join("data"));
+    yinz_types::agent::provider::register(
+        9182,
+        yinz_types::agent::provider::AgentProvider {
+            kind: "mother-test-provider".into(),
+            executable: "custom-agent".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for kind in [
+        "muse",
+        "agy",
+        "antigravity",
+        "cursor",
+        "Cursor-Agent",
+        "mother-test-provider",
+        "unknown",
+    ] {
+        let request = request(start.path(), AgentAction::Mother { kind: kind.into() });
+        let (screen_tx, screen_rx) = unbounded();
+        let (pty_tx, pty_rx) = unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(screen_tx)),
+            to_pty: Some(SenderWithContext::new(pty_tx)),
+            ..Default::default()
+        };
+        assert_eq!(
+            execute(&request, &senders, &data).unwrap_err(),
+            "Mother supports only Claude, Codex, and Pi"
+        );
+        assert!(screen_rx.is_empty());
+        assert!(pty_rx.is_empty());
+        assert!(
+            !cache.exists(),
+            "unsupported Mother provisioned a directory"
+        );
+    }
+    yinz_types::agent::provider::unregister_owner(9182);
+}
+
+#[test]
 fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane() {
     if yinz_test_support::reexec_test() {
         return;
@@ -385,15 +435,6 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
     )
     .unwrap();
     let data = DataAccess::sqlite(&start.path().join("data"));
-    yinz_types::agent::provider::register(
-        9182,
-        yinz_types::agent::provider::AgentProvider {
-            kind: "mother-test-provider".into(),
-            executable: "custom-agent".into(),
-            ..Default::default()
-        },
-    )
-    .unwrap();
     let launch = |active: bool, kind: &str, expected_title: &str| {
         // The pane the palette opened from is somewhere else, and may be gone by now.
         let request = request(
@@ -492,17 +533,13 @@ fn mother_launches_as_an_overlay_in_its_private_directory_without_a_source_pane(
         std::env::set_var("CLAUDE_CONFIG_DIR", start.path().join("claude"));
     }
 
-    for (kind, title) in [
-        ("antigravity", "mother: agy"),
-        ("mother-test-provider", "mother: mother-test-provider"),
-    ] {
+    for (kind, title) in [(" CODEX ", "mother: codex"), ("Pi", "mother: pi")] {
         let (reply, launches, _) = launch(true, kind, title);
         assert!(
             matches!(reply, Ok(AgentReply::Launched(response)) if response.outcome == AgentOutcome::Ok)
         );
         assert_eq!(launches.len(), 1);
     }
-    yinz_types::agent::provider::unregister_owner(9182);
     let (reply, launches, screen) = launch(false, "claude", "mother: claude");
     assert!(reply.unwrap_err().contains("cancelled"));
     assert!(launches.is_empty());
