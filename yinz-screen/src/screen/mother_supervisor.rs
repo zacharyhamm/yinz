@@ -797,6 +797,7 @@ fn run(
     let mut reconcile = VecDeque::new();
     let mut reconcile_reply: Option<(AgentRequest, mpsc::Receiver<AgentResponse>)> = None;
     let mut input_revision = None;
+    let mut mother_agent: Option<yinz_types::agent::AgentInfo> = None;
     let mut response_delivery = false;
     let mut last_status = None;
     let mut failed = false;
@@ -813,6 +814,15 @@ fn run(
                     Ok(json!(memory.status(ready, failed)))
                 } else if matches!(request, MotherRequest::Overview) {
                     let mut overview = memory.overview(ready, failed);
+                    overview["mother"] = json!({
+                        "pane_id": pane.to_string(),
+                        "conversation_id": memory.conversation,
+                        "host_id": yinz_runtime::host_identity::host_id(),
+                        "yinz_session_name": session,
+                        "kind": mother_agent.as_ref().map(|agent| &agent.kind),
+                        "state": mother_agent.as_ref().map(|agent| agent.state),
+                        "needs_input": mother_agent.as_ref().is_some_and(|agent| agent.is_waiting_on_a_person()),
+                    });
                     overview["operation_in_flight"] = json!(response.is_some());
                     overview["delivery_blocked"] = json!(delivery_blocked);
                     Ok(overview)
@@ -1027,6 +1037,7 @@ fn run(
             if let Ok(result) = rx.try_recv() {
                 if let Some(status) = result.agents.first() {
                     input_revision = status.input_revision;
+                    mother_agent = Some(status.agent.clone());
                     if status.agent.session_id.is_some()
                         && memory.conversation != status.agent.session_id
                     {

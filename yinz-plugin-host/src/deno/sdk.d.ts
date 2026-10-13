@@ -979,6 +979,7 @@ export interface MotherJournalPage {
   high_water: number; oldest_cursor: number | null; retention_gap: boolean;
 }
 export interface MotherOverview {
+  mother?: {pane_id: string; conversation_id: string | null; host_id: string; yinz_session_name: string; kind?: string | null; state?: AgentState | null; needs_input?: boolean};
   status: {state: string; pending: number; blockers: number};
   filters: {panes: string[]; projects: string[]; kinds: string[]; lifecycle_types: string[]; cursor: string | null};
   checkpoint: {revision: number; value: Record<string, unknown> | null};

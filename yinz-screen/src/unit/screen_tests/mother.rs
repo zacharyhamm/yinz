@@ -137,6 +137,79 @@ fn failed_mother_supervisor_requires_resume_and_recovers_in_the_same_pane() {
 }
 
 #[test]
+fn mother_overview_only_needs_input_while_waiting_on_a_person() {
+    use crate::screen::agent_control::Reply;
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    use yinz_types::agent::{control::AgentOutcome, mother::MotherRequest, AgentState};
+
+    for (state, wait_needs_a_person, expected) in [
+        (AgentState::Busy, true, false),
+        (AgentState::Idle, true, false),
+        (AgentState::Waiting, false, false),
+        (AgentState::Waiting, true, true),
+    ] {
+        let mut screen = screen_with_mother();
+        screen.session_name = format!("mother-attention-{}", uuid::Uuid::new_v4()).into();
+        screen.get_active_tab_mut(CLIENT).unwrap().set_pane_agent(
+            MOTHER,
+            Some(yinz_types::agent::AgentInfo {
+                kind: "codex".into(),
+                state,
+                source: yinz_types::agent::AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person,
+                cwd: None,
+                session_id: Some("mother-conversation".into()),
+                run_id: None,
+            }),
+        );
+        let (instructions, received) = channels::unbounded();
+        screen.bus.senders.to_screen = Some(SenderWithContext::new(instructions));
+        screen.sync_mother_supervisor();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (instruction, _) = received
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            if let ScreenInstruction::AgentControlReply(request, reply) = instruction {
+                screen.agent_control_with_reply(request, Reply::Host(reply));
+                break;
+            }
+        }
+        let overview = loop {
+            assert!(
+                Instant::now() < deadline,
+                "Mother identity was not observed"
+            );
+            let (reply, response) = mpsc::channel();
+            screen.mother_command(MotherRequest::Overview, Reply::Host(reply));
+            let response = response
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            assert_eq!(response.outcome, AgentOutcome::Ok, "{:?}", response.message);
+            let overview: serde_json::Value =
+                serde_json::from_str(&response.output.unwrap()).unwrap();
+            if overview["mother"]["conversation_id"] == "mother-conversation" {
+                break overview;
+            }
+        };
+        let work = yinz_config::project_config::bubblewrap::mother_directory(
+            &yinz_runtime::consts::YINZ_CACHE_DIR,
+            screen.session_name.as_str(),
+        )
+        .unwrap();
+        screen.mother_supervisor = None;
+        std::fs::remove_dir_all(work.parent().unwrap()).unwrap();
+        assert_eq!(overview["mother"]["state"], serde_json::json!(state));
+        assert_eq!(overview["mother"]["needs_input"], expected, "{state}");
+    }
+}
+
+#[test]
 fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
     use crate::screen::agent_control::Reply;
     use interprocess::local_socket::prelude::*;
@@ -231,6 +304,14 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
     let mut initial = connect();
     assert!(initial.2.cursor.is_none());
     command(&mut screen, MotherRequest::Pause);
+    let overview = command(&mut screen, MotherRequest::Overview);
+    assert_eq!(overview["mother"]["pane_id"], MOTHER.to_string());
+    assert_eq!(overview["mother"]["yinz_session_name"], old);
+    assert_eq!(
+        overview["mother"]["host_id"],
+        serde_json::json!(yinz_runtime::host_identity::host_id())
+    );
+    assert!(overview["mother"]["conversation_id"].is_null());
     command(
         &mut screen,
         MotherRequest::Checkpoint {
