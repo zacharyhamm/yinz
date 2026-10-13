@@ -1844,7 +1844,7 @@ pub fn waiting_agent_bell_persists_until_the_reported_wait_ends() {
     for focused in [false, true, false, true] {
         pane.set_agent_info(Some(waiting.clone()));
         assert!(render(&mut pane, focused).contains("🔔 [1] my agent"));
-        assert_eq!(pane.stack_list_entry_label(), "🔔 [1] my agent");
+        assert_eq!(pane.stack_list_entry_label(false), "🔔 [1] my agent");
         assert_eq!(
             pane.display_title(),
             "my agent",
@@ -1877,13 +1877,13 @@ pub fn waiting_agent_bell_persists_until_the_reported_wait_ends() {
         assert!(pane.set_agent_info(next));
         assert!(pane.should_render(), "reports repaint idle panes");
         assert!(!render(&mut pane, true).contains('🔔'));
-        assert_eq!(pane.stack_list_entry_label(), "[1] my agent");
+        assert_eq!(pane.stack_list_entry_label(false), "[1] my agent");
     }
     pane.set_agent_info(Some(waiting));
     pane.set_bell_notification(true);
-    assert_eq!(pane.stack_list_entry_label(), "🔔 [1] my agent [!]");
+    assert_eq!(pane.stack_list_entry_label(false), "🔔 [1] my agent [!]");
     pane.set_bell_notification(false);
-    assert_eq!(pane.stack_list_entry_label(), "🔔 [1] my agent");
+    assert_eq!(pane.stack_list_entry_label(false), "🔔 [1] my agent");
 }
 
 /// A pane the host opened for `agent_spawn` starts with the kind the planner resolved,
@@ -2116,7 +2116,7 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
     pane.set_agent_info(Some(waiting.clone()));
     assert_eq!(pane.waiting_pulse_started_at(), Some(start));
     assert_eq!(pane.waiting_pulse(), Some(0.7));
-    assert!(pane.stack_list_entry_label().contains('🔔'));
+    assert!(pane.stack_list_entry_label(false).contains('🔔'));
 
     for next in [
         None,
@@ -2132,7 +2132,7 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
         pane.set_agent_info(next);
         assert_eq!(pane.waiting_pulse_started_at(), None);
         assert_eq!(pane.waiting_pulse(), None);
-        assert!(!pane.stack_list_entry_label().contains('🔔'));
+        assert!(!pane.stack_list_entry_label(false).contains('🔔'));
         pane.sample_waiting_pulse(start, true);
         assert_eq!(pane.waiting_pulse(), None);
         pane.set_agent_info(Some(waiting.clone()));
@@ -2145,18 +2145,18 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
             true,
         );
         assert_eq!(pane.waiting_pulse(), Some(0.7));
-        assert!(pane.stack_list_entry_label().contains('🔔'));
+        assert!(pane.stack_list_entry_label(false).contains('🔔'));
     }
     pane.hold(Some(0), false, RunCommand::default());
     assert_eq!(pane.waiting_pulse_started_at(), None);
     assert_eq!(pane.waiting_pulse(), None);
-    assert!(!pane.stack_list_entry_label().contains('🔔'));
+    assert!(!pane.stack_list_entry_label(false).contains('🔔'));
     pane.set_agent_info(Some(waiting.clone()));
     assert!(pane.waiting_pulse_started_at().is_some());
     pane.respawn(Some(RunCommand::default()), false).unwrap();
     assert_eq!(pane.waiting_pulse_started_at(), None);
     assert_eq!(pane.waiting_pulse(), None);
-    assert!(!pane.stack_list_entry_label().contains('🔔'));
+    assert!(!pane.stack_list_entry_label(false).contains('🔔'));
 }
 
 fn frame_params(is_main_client: bool) -> FrameParams {
@@ -2183,10 +2183,60 @@ fn frame_params(is_main_client: bool) -> FrameParams {
         frame_geom_override: None,
         stack_list_entry: None,
         blank_title: false,
+        same_worktree: false,
         mouse_scroll_resize: false,
         dimmed: false,
         guest_choice_indicator: None,
         opening_ripple: None,
+    }
+}
+
+#[test]
+fn same_worktree_title_respects_blank_omitted_narrow_and_cached_frames() {
+    let mut pane = agent_pane();
+    pane.update_name("my agent");
+    let params = || {
+        let mut params = frame_params(false);
+        params.same_worktree = true;
+        params
+    };
+    let render = |pane: &mut TerminalPane, params| {
+        pane.render_frame(ClientId::new(1), params, InputMode::Normal)
+            .unwrap()
+            .unwrap()
+            .0
+            .into_iter()
+            .flat_map(|chunk| chunk.terminal_characters)
+            .map(|character| character.character)
+            .collect::<String>()
+    };
+    assert!(render(&mut pane, params()).contains("👯 [1] my agent"));
+    assert!(pane
+        .render_frame(ClientId::new(1), params(), InputMode::Normal)
+        .unwrap()
+        .is_none());
+    assert_eq!(pane.stack_list_entry_label(true), "👯 [1] my agent");
+    assert_eq!(pane.display_title(), "my agent");
+    assert!(!render(&mut pane, frame_params(false)).contains('👯'));
+    for (blank, omit) in [(true, false), (false, true)] {
+        let mut hidden = params();
+        hidden.blank_title = blank;
+        hidden.omit_title = omit;
+        assert!(!render(&mut pane, hidden).contains('👯'));
+    }
+    for cols in 5..30 {
+        let mut geom = pane.current_geom();
+        geom.cols.set_inner(cols);
+        pane.set_geom(geom);
+        let chunks = pane
+            .render_frame(ClientId::new(1), params(), InputMode::Normal)
+            .unwrap()
+            .unwrap()
+            .0;
+        for chunk in chunks {
+            let width: usize = chunk.terminal_characters.iter().map(|c| c.width()).sum();
+            assert!(chunk.x + width <= cols, "title overflow at {cols} columns");
+        }
     }
 }
 

@@ -623,6 +623,7 @@ impl FloatingPanes {
         client_id_override: Option<ClientId>,
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
+        same_worktree_panes: &HashMap<ClientId, HashSet<PaneId>>,
     ) -> Result<()> {
         let err_context = || "failed to render output";
         let mut connected_clients: HashSet<ClientId> =
@@ -735,6 +736,11 @@ impl FloatingPanes {
                 self.dimmed_clients.clone(),
             );
             for client_id in &connected_clients {
+                pane_contents_and_ui.set_same_worktree(
+                    same_worktree_panes
+                        .get(client_id)
+                        .is_some_and(|panes| panes.contains(kind)),
+                );
                 let client_mode = self
                     .mode_info
                     .borrow()

@@ -146,7 +146,7 @@ fn waiting_pulse_repaints_idle_frames_boundaries_and_both_stack_headers() {
         assert!(screen.tabs[&TAB]
             .get_pane_with_id(WAITING)
             .unwrap()
-            .stack_list_entry_label()
+            .stack_list_entry_label(false)
             .contains('🔔'));
     }
 }
@@ -651,7 +651,7 @@ fn waiting_pulse_survives_focus_for_any_client_until_waiting_clears() {
     assert_eq!(waiting_since(&screen), Some(start));
     let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
     assert_eq!(pane.waiting_pulse().unwrap(), 0.7);
-    assert!(pane.stack_list_entry_label().contains('🔔'));
+    assert!(pane.stack_list_entry_label(false).contains('🔔'));
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
     drain_background_jobs(&jobs);
 
@@ -668,7 +668,7 @@ fn waiting_pulse_survives_focus_for_any_client_until_waiting_clears() {
     assert_eq!(waiting_since(&screen), None);
     let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
     assert_eq!(pane.waiting_pulse(), None);
-    assert!(!pane.stack_list_entry_label().contains('🔔'));
+    assert!(!pane.stack_list_entry_label(false).contains('🔔'));
     assert_eq!(screen.animation_clock_period(start), None);
     assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StopAnimationClock));
 }

@@ -672,7 +672,7 @@ impl Pane for TerminalPane {
         }
 
         if !frame_params.blank_title {
-            pane_title = self.title_with_agent_indicator(pane_title);
+            pane_title = self.title_with_agent_indicator(pane_title, frame_params.same_worktree);
         }
 
         let frame_geom = self.constrain_render_geom(
@@ -1559,8 +1559,11 @@ impl Pane for TerminalPane {
             (false, None) => lead.join(" "),
         }
     }
-    fn stack_list_entry_label(&self) -> String {
-        self.title_with_agent_indicator(self.title_with_bell_indicator(self.framed_title()))
+    fn stack_list_entry_label(&self, same_worktree: bool) -> String {
+        self.title_with_agent_indicator(
+            self.title_with_bell_indicator(self.framed_title()),
+            same_worktree,
+        )
     }
     fn custom_title(&self) -> Option<String> {
         if self.pane_name.is_empty() {
@@ -1981,7 +1984,12 @@ impl TerminalPane {
     fn framed_title(&self) -> String {
         format!("[{}] {}", self.pid, self.display_title())
     }
-    fn title_with_agent_indicator(&self, title: String) -> String {
+    fn title_with_agent_indicator(&self, title: String, same_worktree: bool) -> String {
+        let title = if same_worktree {
+            format!("👯 {title}")
+        } else {
+            title
+        };
         if self
             .agent
             .as_ref()

@@ -763,7 +763,7 @@ pub trait Pane {
     fn display_title(&self) -> String {
         self.current_title()
     }
-    fn stack_list_entry_label(&self) -> String {
+    fn stack_list_entry_label(&self, _same_worktree: bool) -> String {
         self.display_title()
     }
     fn custom_title(&self) -> Option<String>;

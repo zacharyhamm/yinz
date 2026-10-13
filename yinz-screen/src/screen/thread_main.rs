@@ -3520,6 +3520,13 @@ pub fn screen_thread_main(
                         screen.restore_warped_agent_input(pane_id, input);
                     }
                 },
+                ScreenInstruction::AgentWorktreeResolved {
+                    cwd,
+                    generation,
+                    root,
+                } => {
+                    screen.agent_worktree_resolved(cwd, generation, root)?;
+                },
                 ScreenInstruction::SetPaneAgent(pane_id, agent, _completion) => {
                     if !apply_pane_agent_report(&mut screen, pane_id, agent.clone())? {
                         let pending_events = pending.waiting_for_pane.entry(pane_id).or_default();

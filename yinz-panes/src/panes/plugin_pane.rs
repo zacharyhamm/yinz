@@ -1333,6 +1333,7 @@ mod tests {
             frame_geom_override: None,
             stack_list_entry: None,
             blank_title: false,
+            same_worktree: false,
             mouse_scroll_resize: false,
             dimmed: false,
             guest_choice_indicator: None,

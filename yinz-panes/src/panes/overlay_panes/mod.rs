@@ -1706,6 +1706,7 @@ impl OverlayPanes {
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
         z_index_offset: usize,
+        same_worktree_panes: &HashMap<ClientId, HashSet<PaneId>>,
     ) -> Result<()> {
         let err_context = || "failed to render overlays";
 
@@ -1818,6 +1819,11 @@ impl OverlayPanes {
                 );
                 pane_contents_and_ui.set_opening_ripple(overlay.ripple);
                 for client_id in &connected_clients {
+                    pane_contents_and_ui.set_same_worktree(
+                        same_worktree_panes
+                            .get(client_id)
+                            .is_some_and(|panes| panes.contains(&pane_id)),
+                    );
                     let client_mode = client_modes
                         .get(client_id)
                         .copied()
