@@ -141,3 +141,16 @@ fn registry_size_limit_rejects_insertions_and_replacements_atomically() {
     assert!(insert(&mut registry, 9, descriptor).is_err());
     assert_eq!(registry.len(), 8);
 }
+
+#[test]
+fn clear_key_defaults_and_overrides_are_validated() {
+    let input: AgentInput = serde_json::from_str("{}").unwrap();
+    assert_eq!(input.clear_key, "Ctrl c");
+    let mut descriptor = fixture("provider-clear-test");
+    descriptor.input = Some(input);
+    descriptor.validate().unwrap();
+    descriptor.input.as_mut().unwrap().clear_key = "Ctrl u".into();
+    descriptor.validate().unwrap();
+    descriptor.input.as_mut().unwrap().clear_key = "not a key".into();
+    assert!(descriptor.validate().is_err());
+}

@@ -55,6 +55,8 @@ pub struct AgentRestart {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentInput {
+    /// Clears the whole composer after a marker paste, before each explicit prompt.
+    pub clear_key: String,
     pub submit_key: String,
     pub submit_delay_ms: u64,
     pub paste_prefix: String,
@@ -65,6 +67,7 @@ pub struct AgentInput {
 impl Default for AgentInput {
     fn default() -> Self {
         Self {
+            clear_key: "Ctrl c".into(),
             submit_key: "Enter".into(),
             submit_delay_ms: 100,
             paste_prefix: String::new(),
@@ -221,7 +224,8 @@ impl AgentProvider {
             }
         }
         if let Some(input) = &self.input {
-            if input.submit_key.parse::<KeyWithModifier>().is_err()
+            if input.clear_key.parse::<KeyWithModifier>().is_err()
+                || input.submit_key.parse::<KeyWithModifier>().is_err()
                 || input.submit_delay_ms > 10_000
                 || input.paste_prefix.len() > 4096
                 || input.paste_prefix.chars().any(char::is_control)

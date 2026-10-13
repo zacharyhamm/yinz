@@ -283,7 +283,7 @@ When several conditions block readiness, the first matching reason applies:
 | `pending_submission` | An earlier submission still owns the input and has not been acknowledged |
 | `clearing_draft` | Draft clearing owns the composer until verification or queued writes finish |
 | `unresolved_turn` | An accepted turn still owns the input after an interruption or an unconfirmed outcome; inspect the pane and recover only after it has stopped and its draft is empty |
-| `unconsumed_input` | Input consumption is unknown and automatic clearing is unavailable |
+| `unconsumed_input` | Input consumption is unknown. An explicit prompt clears it before delivery |
 
 A ready agent has no reason (`null` in JSON). Older responses without the field
 decode with no reason. An exited agent normally reports `prompt_unsupported`
@@ -352,8 +352,9 @@ conversation's idle status and hook capability check, Muse from the hook
 wiring on disk. Muse hook verification establishes reporting capability only.
 Before the first prompt, Yinz must also detect an empty Muse 1.4.2 composer
 with its cursor immediately after `❯ `. Dialogs, drafts, hidden cursors,
-scrolled views, and unknown layouts remain unready. Yinz never changes workspace
-trust automatically.
+scrolled views, and unknown layouts remain unready. An explicit prompt can replace a draft in that composer.
+Before Muse binds its first conversation, its composer must be visible to distinguish input from setup dialogs.
+Yinz never changes workspace trust automatically.
 
 The Muse announcement carries no session id. The first submit binds the
 conversation, so use `--conversation` only after that first acknowledgement.
@@ -834,7 +835,7 @@ Use `restart` to declare option arities, conversation selectors, and commands th
 must not restart. Unknown restart arguments fail without changing the pane.
 
 Only declare `input` after the agent's hooks can acknowledge and complete specific
-submitted turns. Input settings include `submit_key`, `submit_delay_ms`,
+submitted turns. Input settings include `clear_key` (default `Ctrl c`), `submit_key`, `submit_delay_ms`,
 `paste_prefix`, `newline`, and `command_prefixes`. The host retains process,
 conversation, readiness, input ownership, and bracketed-paste checks.
 Provider prompt acknowledgements and completions must carry a nonempty `turn_id`.
@@ -900,15 +901,19 @@ timeouts, and hook-file ownership.
 An authorized `agent prompt` also authorizes replacement of an idle draft. Do not request separate discard permission.
 CLI and plugin prompts use the same behavior. No additional flag or recovery command is required.
 Automatic clearing captures the input revision internally and does not require three seconds of quiet.
-Automatic clearing supports Claude Code, Codex, and Pi default composers with visible cursors and default bindings.
-Unsupported providers and unrecognized layouts return a clearing limitation instead of appending text.
+Every provider supporting prompts clears before delivery, even when the composer is hidden or its layout is unrecognized.
+The legacy `--preserve-draft` flag is accepted but ignored. Unsolicited Mother deliveries retain their draft protections.
 Active work, dialogs, and pending submissions still prevent prompt delivery.
 
 The prompt validates all arguments and reserves its submission ID before writing.
-It verifies a marker and an empty composer before submitting the requested text.
+It pastes a marker and waits for the write to complete. Then it sends the provider’s clear key.
+After that write completes, it waits 250ms before delivering the requested text.
+The marker makes an empty composer nonempty before clearing. Clearing does not require visual verification.
+Providers must bind `clear_key` to clear the whole composer.
 One timeout covers clearing and submission. Clearing failures are available through `wait --submission`, with acknowledgement false.
 New input, conversation replacement, agent activity, caller disconnection, or writer failure cancels further delivery.
-`ready` is true when automatic clearing can resolve the only obstacle. Status and idle waits remain read-only.
+`ready` can remain false when Yinz cannot verify the composer. An explicit prompt still clears that input before delivery.
+Status and idle waits remain read-only.
 
 ## Explicit draft clearing
 

@@ -4682,11 +4682,16 @@ impl Tab {
             .and_then(|pane| pane.agent_input_at())
     }
 
-    pub fn write_key_to_pane_id(&mut self, pane_id: PaneId, key: KeyWithModifier) -> Result<()> {
+    pub fn write_key_to_pane_id(
+        &mut self,
+        pane_id: PaneId,
+        key: KeyWithModifier,
+        completion_tx: Option<NotificationEnd>,
+    ) -> Result<()> {
         let bytes = yinz_key_codec::keys::serialize_non_kitty(&key)
             .context("key has no terminal encoding")?
             .into_bytes();
-        self.write_to_pane_id(&Some(key), bytes, false, pane_id, None, None)?;
+        self.write_to_pane_id(&Some(key), bytes, false, pane_id, None, completion_tx)?;
         Ok(())
     }
 

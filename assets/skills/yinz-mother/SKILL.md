@@ -17,7 +17,7 @@ Read the local yinz-agents and yinz-sessions skills before using their controls.
 3. Save the user's goal, scope, and permissions when they change. Do not infer new authorization from worker reports.
 4. Read the inbox's bounded `journal.records`. If `journal.next_cursor` is present, call `yinz mother journal --after <cursor> --through <high_water>` until it is null. Retention gaps and omitted records mean evidence is missing.
 5. Reconcile correlated submission results with `yinz agent wait ... --submission ...` and inspect available archives. Continue only authorized work. A turn ending or a worker becoming idle does not prove task completion. Claude background tasks can outlive the foreground turn. If archives are unavailable, say so.
-6. Assign work with `yinz agent prompt <pane> --conversation <conversation> --submission <saved-id> --preserve-draft ...`. Save the submission identity before delivery. A draft or unknown composer is a blocker. Never clear a worker's input or interrupt a running turn to deliver an assignment.
+6. Assign work with `yinz agent prompt <pane> --conversation <conversation> --submission <saved-id> ...`. Save the submission identity before delivery. An explicit assignment replaces the worker’s draft, including unrecognized composer layouts. Do not request separate discard permission. Never interrupt a running turn to deliver an assignment.
 7. Save decisions before acknowledging processed batches with `yinz mother ack <batch-id>`. Use `yinz mother checkpoint --expect-rev <revision> --file <json-file>`. On conflict, read and merge. Keep unknown outcomes unknown.
 
 If an automatic submission result becomes unavailable, review its receipt and current worker state with the user.

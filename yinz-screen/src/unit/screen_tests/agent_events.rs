@@ -95,14 +95,14 @@ fn lifecycle_atomic_snapshot_replay_and_filtered_checkpoints() {
 
 #[test]
 fn lifecycle_submission_survives_detach_and_multiple_waiters() {
-    let (mut screen, messages, _writes) = setup("codex");
+    let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     start(&mut screen, &messages, Default::default());
     let mut request = prompt(false);
     if let AgentRequest::Prompt { submission_id, .. } = &mut request {
         *submission_id = Some("chosen".into());
     }
-    screen.agent_control(request, CLIENT);
+    screen.agent_control_with_clear(request, CLIENT, &writes);
     screen.detach_agent_controls(CLIENT);
     report(&mut screen, hook("UserPromptSubmit"));
     for client in [2, 3] {
@@ -166,10 +166,10 @@ fn lifecycle_idle_is_not_completion_and_provider_confirmation_is_required() {
 
 #[test]
 fn lifecycle_uncertainty_keeps_observing_and_interrupt_is_definite() {
-    let (mut screen, messages, _writes) = setup("codex");
+    let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     start(&mut screen, &messages, Default::default());
-    screen.agent_control(prompt(true), CLIENT);
+    screen.agent_control_with_clear(prompt(true), CLIENT, &writes);
     report(&mut screen, hook("UserPromptSubmit"));
     screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(31));
     let uncertain = events(&mut screen, &messages);
@@ -441,14 +441,14 @@ fn lifecycle_filters_combine_or_with_and_and_replay_precedes_live() {
 
 #[test]
 fn lifecycle_identical_human_prompt_does_not_inherit_a_submission_id() {
-    let (mut screen, messages, _writes) = setup("codex");
+    let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     start(&mut screen, &messages, Default::default());
     let mut request = prompt(false);
     if let AgentRequest::Prompt { submission_id, .. } = &mut request {
         *submission_id = Some("chosen".into());
     }
-    screen.agent_control(request, CLIENT);
+    screen.agent_control_with_clear(request, CLIENT, &writes);
     report(&mut screen, hook("UserPromptSubmit"));
     events(&mut screen, &messages);
     let human = HookEvent {
@@ -706,14 +706,14 @@ fn lifecycle_restart_of_the_same_conversation_reports_uncertain_observation() {
 
 #[test]
 fn lifecycle_busy_edge_uses_the_new_turns_correlation() {
-    let (mut screen, messages, _writes) = setup("codex");
+    let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     start(&mut screen, &messages, Default::default());
     let mut request = prompt(false);
     if let AgentRequest::Prompt { submission_id, .. } = &mut request {
         *submission_id = Some("old-submission".into());
     }
-    screen.agent_control(request, CLIENT);
+    screen.agent_control_with_clear(request, CLIENT, &writes);
     report(&mut screen, hook("UserPromptSubmit"));
     report(&mut screen, hook("Stop"));
     events(&mut screen, &messages);
@@ -736,14 +736,14 @@ fn lifecycle_busy_edge_uses_the_new_turns_correlation() {
 
 #[test]
 fn lifecycle_older_turn_uncertainty_preserves_identity_and_outcome() {
-    let (mut screen, messages, _writes) = setup("claude");
+    let (mut screen, messages, writes) = setup("claude");
     report_kind(&mut screen, "claude", hook("SessionStart"));
     start(&mut screen, &messages, Default::default());
     let mut request = prompt(false);
     if let AgentRequest::Prompt { submission_id, .. } = &mut request {
         *submission_id = Some("older-submission".into());
     }
-    screen.agent_control(request, CLIENT);
+    screen.agent_control_with_clear(request, CLIENT, &writes);
     report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
     report_kind(
         &mut screen,
@@ -842,14 +842,14 @@ fn lifecycle_human_and_background_uncertainty_is_deduplicated_per_turn() {
 
 #[test]
 fn lifecycle_submission_uncertainty_never_inherits_the_latest_turn() {
-    let (mut screen, messages, _writes) = setup("codex");
+    let (mut screen, messages, writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     start(&mut screen, &messages, Default::default());
     let mut request = prompt(false);
     if let AgentRequest::Prompt { submission_id, .. } = &mut request {
         *submission_id = Some("older-submission".into());
     }
-    screen.agent_control(request, CLIENT);
+    screen.agent_control_with_clear(request, CLIENT, &writes);
     report(&mut screen, hook("UserPromptSubmit"));
     report(
         &mut screen,
@@ -1039,14 +1039,14 @@ fn lifecycle_project_uncertainty_is_immediate_and_replayed_after_resolution() {
 #[test]
 fn lifecycle_queued_replacements_and_rejected_reruns_preserve_the_turn() {
     for queued in [false, true] {
-        let (mut screen, messages, _writes) = setup("codex");
+        let (mut screen, messages, writes) = setup("codex");
         report(&mut screen, hook("SessionStart"));
         start(&mut screen, &messages, Default::default());
         let mut request = prompt(false);
         if let AgentRequest::Prompt { submission_id, .. } = &mut request {
             *submission_id = Some("chosen".into());
         }
-        screen.agent_control(request, CLIENT);
+        screen.agent_control_with_clear(request, CLIENT, &writes);
         report(&mut screen, hook("UserPromptSubmit"));
         let acknowledged = events(&mut screen, &messages)
             .into_iter()

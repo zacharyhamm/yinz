@@ -761,7 +761,7 @@ pub enum Agent {
         json: bool,
     },
     /// Submit to an idle agent, replacing its draft, and wait for acknowledgement or the resulting turn.
-    /// Automatically clears verified Claude, Codex, and Pi composers. Does not interrupt work or answer dialogs.
+    /// Clears the composer before every prompt, including unrecognized layouts. Does not interrupt work or answer dialogs.
     /// Claude delivery removes U+200B and U+202E; other characters and Codex text are preserved.
     Prompt {
         /// Terminal pane ID, such as terminal_7 or 7.
@@ -780,8 +780,8 @@ pub enum Agent {
         /// lose the response. After uncertainty, wait for this ID instead of resubmitting.
         #[clap(long, value_parser = parse_submission_id)]
         submission: Option<String>,
-        /// Refuse delivery if a draft exists or the composer cannot be verified empty.
-        #[clap(long)]
+        /// Ignored compatibility option: explicit prompts always replace drafts.
+        #[clap(long, hide = true)]
         preserve_draft: bool,
         /// Wait for this turn's outcome after the agent acknowledges the prompt. If Claude left
         /// background work running, the reply lists `background_tasks`; `agent wait --until idle`

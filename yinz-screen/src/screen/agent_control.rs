@@ -1455,7 +1455,7 @@ impl Screen {
                 }
             },
             Prompt {
-                preserve_draft,
+                preserve_draft: _,
                 prompt,
                 wait,
                 timeout_ms,
@@ -1491,6 +1491,18 @@ impl Screen {
                         NotReadyReason::Unmanaged => (AgentOutcome::NotAgent, "target runs an agent that Yinz did not launch; relaunch it with agent spawn to control it"),
                     };
                     reject(self, outcome, message);
+                    return;
+                }
+                // Muse's bootstrap precedes workspace trust; only its composer proves startup finished.
+                if status.agent.kind == "muse"
+                    && status.agent.session_id.is_none()
+                    && !self.muse_composer(pane, false)
+                {
+                    reject(
+                        self,
+                        AgentOutcome::Rejected,
+                        "Muse startup is incomplete; finish its setup dialogs before submitting",
+                    );
                     return;
                 }
                 let trimmed = if status.agent.kind == "pi" {
@@ -1585,12 +1597,6 @@ impl Screen {
                     || self
                         .draft_composer(pane, &status.agent.kind)
                         .is_some_and(|composer| !composer.empty);
-                if preserve_draft
-                    && (needs_clear || self.draft_composer(pane, &status.agent.kind).is_none())
-                {
-                    reject(self, AgentOutcome::Rejected, "Draft preserved: clear or submit it yourself; an unknown composer must be inspected before delivery");
-                    return;
-                }
                 if automatic
                     && (needs_clear
                         || self.mother_focused(pane)
@@ -1610,26 +1616,30 @@ impl Screen {
                     reject(self, AgentOutcome::Rejected, reason);
                     return;
                 }
-                if needs_clear {
-                    let limitation = if !matches!(
-                        status.agent.kind.as_str(),
-                        "claude" | "codex" | "pi"
-                    ) {
-                        Some("provider does not support automatic draft clearing")
-                    } else if self.draft_composer(pane, &status.agent.kind).is_none() {
-                        Some("unsupported or hidden composer layout for automatic draft clearing")
-                    } else if !status.background_tasks.is_empty()
-                        || self.claude_background_pending(pane)
-                    {
-                        Some("background work is still running")
-                    } else {
-                        None
-                    };
-                    if let Some(message) = limitation {
-                        reject(self, AgentOutcome::Rejected, message);
-                        return;
-                    }
+                if !automatic
+                    && (!status.background_tasks.is_empty() || self.claude_background_pending(pane))
+                {
+                    reject(
+                        self,
+                        AgentOutcome::Rejected,
+                        "background work is still running",
+                    );
+                    return;
                 }
+                let clear_key = match input
+                    .map_or("Ctrl c", |input| input.clear_key.as_str())
+                    .parse::<KeyWithModifier>()
+                {
+                    Ok(key) => key,
+                    _ => {
+                        reject(
+                            self,
+                            AgentOutcome::StatusUnavailable,
+                            "agent provider has an invalid clear key",
+                        );
+                        return;
+                    },
+                };
                 let submissions = self.agent_submissions.entry(pane).or_default();
                 while submissions.len() >= SUBMISSION_HISTORY_LIMIT {
                     submissions.pop_front();
@@ -1694,14 +1704,14 @@ impl Screen {
                 } else {
                     (Vec::new(), prompt.into_bytes())
                 };
-                if needs_clear {
+                if !automatic {
                     self.begin_draft_clear(
                         pane,
                         status.agent,
                         client,
                         now,
                         deadline,
-                        Some((pending, prefix, paste)),
+                        Some((pending, prefix, paste, clear_key)),
                     );
                 } else {
                     self.deliver_agent_prompt(pending, prefix, paste);
@@ -1907,7 +1917,7 @@ impl Screen {
     fn agent_write_key(&mut self, pane: PaneId, key: KeyWithModifier) -> Result<()> {
         self.tab_containing_pane_mut(pane)
             .context("agent pane no longer exists")?
-            .write_key_to_pane_id(pane, key)
+            .write_key_to_pane_id(pane, key, None)
     }
 
     fn finish_agent_control(
@@ -2843,7 +2853,16 @@ pub(super) struct DraftClear {
 
 enum DraftStage {
     Marker,
-    Empty { since: Option<Instant> },
+    Empty {
+        since: Option<Instant>,
+    },
+    PromptMarker {
+        clear_key: KeyWithModifier,
+        since: Option<Instant>,
+    },
+    PromptCleared {
+        since: Option<Instant>,
+    },
 }
 
 struct Composer {
@@ -3085,14 +3104,32 @@ impl Screen {
         client: Reply,
         now: Instant,
         deadline: Instant,
-        prompt: Option<(Pending, Vec<u8>, Vec<u8>)>,
+        prompt: Option<(Pending, Vec<u8>, Vec<u8>, KeyWithModifier)>,
     ) {
-        let Some(composer) = self.draft_composer(pane, &agent.kind) else {
-            return;
-        };
-        // Automatic clearing always verifies a marker, even when the last render is empty:
-        // recently queued input may not have reached the composer yet.
-        let marker_required = prompt.is_some() || !composer.empty;
+        let (prompt, stage, marker_required) =
+            if let Some((pending, prefix, paste, clear_key)) = prompt {
+                (
+                    Some((pending, prefix, paste)),
+                    DraftStage::PromptMarker {
+                        clear_key,
+                        since: None,
+                    },
+                    true,
+                )
+            } else {
+                let Some(composer) = self.draft_composer(pane, &agent.kind) else {
+                    return;
+                };
+                (
+                    None,
+                    if composer.empty {
+                        DraftStage::Empty { since: Some(now) }
+                    } else {
+                        DraftStage::Marker
+                    },
+                    !composer.empty,
+                )
+            };
         let Some(lifecycle) = self.agent_lifecycle.get(&pane) else {
             return;
         };
@@ -3103,11 +3140,7 @@ impl Screen {
             report: lifecycle.last_report,
             deadline,
             marker: format!("yz{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
-            stage: if !marker_required {
-                DraftStage::Empty { since: Some(now) }
-            } else {
-                DraftStage::Marker
-            },
+            stage,
             wrote_at: None,
             delivery: None,
             failure: None,
@@ -3118,7 +3151,7 @@ impl Screen {
         }
         if marker_required {
             let bytes = format!("\x1b[200~{}\x1b[201~", operation.marker).into_bytes();
-            self.write_draft_stage(pane, &mut operation, bytes, now);
+            self.write_draft_stage(pane, &mut operation, None, bytes, now);
         }
         self.agent_draft_clears.insert(pane, operation);
     }
@@ -3127,21 +3160,24 @@ impl Screen {
         &mut self,
         pane: PaneId,
         operation: &mut DraftClear,
+        key: Option<KeyWithModifier>,
         bytes: Vec<u8>,
         now: Instant,
     ) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         operation.delivery = Some(rx);
         operation.wrote_at = Some(now);
-        // One queued write owns the entire bracketed paste, including its closing delimiter.
-        if let Err(error) = self.write_to_pane_id(
-            &None,
-            bytes,
-            false,
-            pane,
-            None,
-            Some(yinz_bus::route::NotificationEnd::new(tx)),
-        ) {
+        let completion = Some(yinz_bus::route::NotificationEnd::new(tx));
+        let result = if let Some(key) = key {
+            self.tab_containing_pane_mut(pane)
+                .context("agent pane no longer exists")
+                .and_then(|tab| tab.write_key_to_pane_id(pane, key, completion))
+        } else {
+            // One queued write owns the entire bracketed paste, including its closing delimiter.
+            self.write_to_pane_id(&None, bytes, false, pane, None, completion)
+                .map(|_| ())
+        };
+        if let Err(error) = result {
             operation.failure = Some((AgentOutcome::Failed, error.to_string()));
         }
         operation.revision = self.agent_input_revision(pane);
@@ -3197,7 +3233,7 @@ impl Screen {
                     "agent activity changed during clearing",
                 ))
             } else if now >= operation.deadline {
-                Some((AgentOutcome::TimedOut, "composer verification timed out"))
+                Some((AgentOutcome::TimedOut, "composer clearing timed out"))
             } else {
                 None
             };
@@ -3212,6 +3248,33 @@ impl Screen {
                         .is_some_and(|output| *output > at)
                 });
                 match (&mut operation.stage, composer) {
+                    (DraftStage::PromptMarker { clear_key, since }, _) => {
+                        let since = since.get_or_insert(now);
+                        // Pi exits on two Ctrl-C keys within 500 ms, even with a marker present.
+                        if operation.agent.kind != "pi"
+                            || now.saturating_duration_since(*since) >= Duration::from_millis(600)
+                        {
+                            let key = clear_key.clone();
+                            operation.stage = DraftStage::PromptCleared { since: None };
+                            self.write_draft_stage(
+                                pane,
+                                &mut operation,
+                                Some(key),
+                                Vec::new(),
+                                now,
+                            );
+                        }
+                    },
+                    (DraftStage::PromptCleared { since }, _) => {
+                        let since = since.get_or_insert(now);
+                        if now.saturating_duration_since(*since) >= Duration::from_millis(250) {
+                            if let Some((mut pending, prefix, paste)) = operation.prompt.take() {
+                                pending.input_revision = operation.revision;
+                                self.deliver_agent_prompt(pending, prefix, paste);
+                                continue;
+                            }
+                        }
+                    },
                     // A provider can hide its cursor between chunks of a redraw.
                     // Do not write or count stability until a complete layout returns.
                     (DraftStage::Empty { since }, None) => *since = None,
@@ -3220,7 +3283,7 @@ impl Screen {
                         if fresh && composer.before_cursor.ends_with(&operation.marker) =>
                     {
                         operation.stage = DraftStage::Empty { since: None };
-                        self.write_draft_stage(pane, &mut operation, vec![3], now);
+                        self.write_draft_stage(pane, &mut operation, None, vec![3], now);
                     },
                     (DraftStage::Empty { since }, Some(composer)) if fresh && composer.empty => {
                         let since = since.get_or_insert(now);
@@ -3232,11 +3295,6 @@ impl Screen {
                             .unwrap_or(*since)
                             .max(*since);
                         if now.saturating_duration_since(stable) >= Duration::from_millis(250) {
-                            if let Some((mut pending, prefix, paste)) = operation.prompt.take() {
-                                pending.input_revision = operation.revision;
-                                self.deliver_agent_prompt(pending, prefix, paste);
-                                continue;
-                            }
                             self.finalize_agent_recovery(
                                 pane,
                                 &operation.agent,

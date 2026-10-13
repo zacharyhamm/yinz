@@ -95,10 +95,10 @@ fn prompt_sources_name_the_mistake() {
 }
 
 #[test]
-fn prompt_request_keeps_conversation_and_wait_deadline() {
+fn prompt_request_ignores_preserve_draft_and_keeps_conversation_and_wait_deadline() {
     let (request, json, timeout) = request(
         Agent::Prompt {
-            preserve_draft: false,
+            preserve_draft: true,
             target: "terminal_7".parse::<PaneId>().unwrap(),
             text: None,
             file: Some("-".into()),
@@ -111,6 +111,13 @@ fn prompt_request_keeps_conversation_and_wait_deadline() {
         &mut &b"review the diff"[..],
     )
     .unwrap();
+    assert!(matches!(
+        &request,
+        AgentRequest::Prompt {
+            preserve_draft: false,
+            ..
+        }
+    ));
     assert!(json);
     assert_eq!(timeout, Duration::from_secs(600));
     assert!(
