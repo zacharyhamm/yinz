@@ -4459,9 +4459,15 @@ fn arm_unload_watchdog(
     cancel: Arc<AtomicBool>,
     instances: Vec<Arc<Mutex<RunningPlugin>>>,
 ) {
+    // Observing a call must not keep its disposed instance and temporary directory alive.
+    let instances: Vec<_> = instances.iter().map(Arc::downgrade).collect();
     yinz_bus::global_async_runtime::get_tokio_runtime().spawn(async move {
         tokio::time::sleep(UNLOAD_GRACE).await;
-        if instances.iter().any(is_inside_entrypoint) {
+        if instances
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|instance| is_inside_entrypoint(&instance))
+        {
             log::warn!(
                 "plugin {plugin_id} has not returned from its entrypoint {UNLOAD_GRACE:?} after \
                  its unload; cancelling it"

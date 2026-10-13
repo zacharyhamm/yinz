@@ -2105,6 +2105,7 @@ impl Pty {
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
+        log::info!("startup: PTY NewTab tab={tab_index:?} client={client_id} begin");
         let mut default_shell =
             default_shell.unwrap_or_else(|| self.get_default_terminal(cwd, None));
         self.fill_cwd(&mut default_shell, client_id);
@@ -2174,6 +2175,7 @@ impl Pty {
     }
 
     fn finish_layout_spawn(&mut self, pending: PendingLayoutSpawn) -> Result<()> {
+        let startup_started = std::time::Instant::now();
         let err_context = || "failed to spawn terminals for layout for".to_string();
         let PendingLayoutSpawn {
             layout,
@@ -2252,6 +2254,10 @@ impl Pty {
             None
         };
 
+        log::info!(
+            "startup: PTY NewTab tab={tab_index:?} client={client_id} sending ApplyLayout at {:?}",
+            startup_started.elapsed()
+        );
         // Prepare blocking_terminal for ApplyLayout
         let (direct_completion_tx, blocking_terminal) =
             if let Some(terminal_id) = first_initial_pane_terminal_id {

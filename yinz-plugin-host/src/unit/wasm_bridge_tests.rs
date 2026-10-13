@@ -217,6 +217,35 @@ impl TestBridge {
 }
 
 #[test]
+fn unload_watchdog_does_not_keep_disposed_instances_alive() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let client = ClientId::new(1);
+    test.bridge.add_client(client).unwrap();
+    let context = test.context(1, 1, RECOVERABLE_WASM);
+    test.load(context).unwrap();
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, Some(client))
+        .unwrap();
+    let owners = Arc::strong_count(&instance);
+    arm_unload_watchdog(
+        plugin,
+        Arc::new(AtomicBool::new(false)),
+        vec![instance.clone()],
+    );
+    assert_eq!(
+        Arc::strong_count(&instance),
+        owners,
+        "an observer must not retain a disposed plugin or its temporary directory"
+    );
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+#[test]
 fn pane_render_history_survives_deferred_clients() {
     use yinz_types::{data::PaneId, internal_ids::TerminalId};
 

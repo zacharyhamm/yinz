@@ -347,7 +347,10 @@ fn join_server_thread_with_timeout(join_handle: JoinHandle<()>) {
     match done_rx.recv_timeout(CLIENT_JOIN_TIMEOUT) {
         Ok(Ok(())) => {},
         Ok(Err(_)) => panic!("server thread panicked"),
-        Err(mpsc::RecvTimeoutError::Timeout) => panic!("timed out waiting for server thread"),
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+            "timed out waiting for server thread\n{}",
+            crate::test_env::log_tail(80)
+        ),
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             panic!("server join watchdog disconnected")
         },

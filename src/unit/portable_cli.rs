@@ -1,10 +1,11 @@
 //! Process-level acceptance: stdin, JSON, live background services, and installation.
 use serde_json::{json, Value};
 use std::{
-    io::Write,
+    io::{Read, Write},
     os::unix::process::CommandExt,
     path::Path,
     process::{Command, Output, Stdio},
+    sync::{Arc, Mutex},
 };
 use yinz_types::plugin_data::{DataRows, DataValue, FetchRequest, Mutation, Pred};
 
@@ -64,7 +65,53 @@ fn failure(out: Output, expected: &str) {
     );
 }
 struct Session(tempfile::TempDir, String, Option<AttachedClient>);
-struct AttachedClient(std::process::Child, Option<std::thread::JoinHandle<()>>);
+const ATTACH_OUTPUT_LIMIT: usize = 32 * 1024;
+
+fn capture_tail(mut reader: impl Read, output: &Mutex<Vec<u8>>) {
+    let mut buffer = [0; 4096];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                let mut output = output.lock().unwrap();
+                let excess = (output.len() + count).saturating_sub(ATTACH_OUTPUT_LIMIT);
+                output.drain(..excess);
+                output.extend_from_slice(&buffer[..count]);
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+}
+
+fn attachment_logs(root: &Path, output: &mut Vec<u8>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_symlink() {
+            continue;
+        }
+        if path.is_dir() {
+            attachment_logs(&path, output);
+        } else if path.file_name().is_some_and(|name| name == "yinz.log") {
+            use std::io::{Seek, SeekFrom};
+            if let Ok(mut file) = std::fs::File::open(&path) {
+                let _ = file.seek(SeekFrom::End(-(ATTACH_OUTPUT_LIMIT as i64)));
+                let tail = Mutex::new(std::mem::take(output));
+                capture_tail(file, &tail);
+                *output = tail.into_inner().unwrap();
+            }
+        }
+    }
+}
+
+struct AttachedClient(
+    std::process::Child,
+    Option<std::thread::JoinHandle<()>>,
+    Arc<Mutex<Vec<u8>>>,
+);
 impl AttachedClient {
     fn new(dir: &Path) -> Self {
         let pty = nix::pty::openpty(
@@ -91,11 +138,12 @@ impl AttachedClient {
             .stderr(slave)
             .spawn()
             .unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let captured = output.clone();
         let reader = std::thread::spawn(move || {
-            let mut master = std::fs::File::from(pty.master);
-            let _ = std::io::copy(&mut master, &mut std::io::sink());
+            capture_tail(std::fs::File::from(pty.master), &captured);
         });
-        Self(child, Some(reader))
+        Self(child, Some(reader), output)
     }
 }
 impl Drop for AttachedClient {
@@ -149,19 +197,35 @@ impl Session {
         if attach {
             session.2 = Some(AttachedClient::new(dir));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            while output_text(session.run(&["action", "list-clients"], None))
-                .lines()
-                .count()
-                < 2
-            {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "terminal client did not attach"
-                );
-                assert!(
-                    session.2.as_mut().unwrap().0.try_wait().unwrap().is_none(),
-                    "terminal client exited"
-                );
+            loop {
+                let response = session.run(&["action", "list-clients"], None);
+                let client = session.2.as_mut().unwrap();
+                let status = client.0.try_wait().unwrap();
+                let response_text = std::str::from_utf8(&response.stdout);
+                let attached = response_text.is_ok_and(|text| text.trim().lines().count() >= 2);
+                if status.is_some()
+                    || !response.status.success()
+                    || !response.stderr.is_empty()
+                    || response_text.is_err()
+                    || (!attached && std::time::Instant::now() >= deadline)
+                {
+                    let _ = client.0.kill();
+                    let final_status = client.0.wait().unwrap();
+                    client.1.take().unwrap().join().unwrap();
+                    let mut logs = Vec::new();
+                    attachment_logs(session.0.path(), &mut logs);
+                    panic!(
+                        "terminal client failed to attach: {final_status}; observed exit: {status:?}\nterminal output:\n{}\nlist-clients: {}\nstdout: {}\nstderr: {}\nserver logs:\n{}",
+                        String::from_utf8_lossy(&client.2.lock().unwrap()),
+                        response.status,
+                        String::from_utf8_lossy(&response.stdout),
+                        String::from_utf8_lossy(&response.stderr),
+                        String::from_utf8_lossy(&logs),
+                    );
+                }
+                if attached {
+                    break;
+                }
             }
         }
         let pane = session.run(
@@ -1353,3 +1417,32 @@ mod agent_theme_launch;
 #[cfg(target_os = "linux")]
 #[path = "claude_mother.rs"]
 mod claude_mother;
+
+#[test]
+fn attached_client_capture_keeps_only_the_byte_tail() {
+    let output = Mutex::new(Vec::new());
+    let mut input = vec![b'x'; ATTACH_OUTPUT_LIMIT + 1024];
+    input.extend_from_slice(b"last bytes");
+    capture_tail(input.as_slice(), &output);
+    assert_eq!(
+        *output.lock().unwrap(),
+        input[input.len() - ATTACH_OUTPUT_LIMIT..]
+    );
+}
+
+#[test]
+fn attached_client_capture_retains_early_exit_output() {
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "printf 'attachment failed'; exit 23"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let captured = output.clone();
+    let stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || capture_tail(stdout, &captured));
+    let mut client = AttachedClient(child, Some(reader), output);
+    assert_eq!(client.0.wait().unwrap().code(), Some(23));
+    client.1.take().unwrap().join().unwrap();
+    assert_eq!(*client.2.lock().unwrap(), b"attachment failed");
+}

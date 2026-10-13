@@ -24,17 +24,11 @@ const KITTY_PROBE_ACK: &[u8] = b"\x1b_Gi=31;OK\x1b\\";
 /// Complete the capability handshake so the pane believes the host terminal can show images.
 fn setup_kitty_host(yinz: &TestSession, terminal: &FakePtyHandle) {
     terminal.disable_echo();
-    yinz.send_stdin(b"\x1b[6;21;8t");
     yinz.send_stdin(KITTY_PROBE_ACK);
-    yinz.send_stdin(b"Z");
-    terminal.wait_for_stdin(
-        "kitty handshake barrier keystroke reached the pane",
-        |stdin_bytes| stdin_bytes.contains(&b'Z'),
-    );
-    terminal.output(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\");
-    terminal.wait_for_stdin("kitty probe acknowledged", |stdin_bytes| {
-        contains_bytes(stdin_bytes, KITTY_PROBE_ACK)
-    });
+    // Pixel updates follow capability replies through the same server and screen queues.
+    yinz.send_stdin(b"\x1b[6;21;8t");
+    terminal.wait_for_cell_size(8, 21);
+    yinz_integration_tests::kitty_protocol::wait_for_kitty_host(terminal);
 }
 
 /// The replies yinz has written back to the application, once one matching `predicate` arrives.
@@ -305,4 +299,53 @@ fn a_marked_temp_file_is_deleted_after_the_transfer() {
     yinz.quit();
 
     assert!(deleted, "a marked temp file must be deleted after the read");
+}
+
+#[test]
+fn kitty_handshake_waits_for_a_late_positive_host_reply() {
+    let mut yinz = start_yinz();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
+    terminal.disable_echo();
+    yinz.send_stdin(b"\x1b[6;21;8t");
+    // A DA barrier without a probe reply reports unsupported but permits a late OK.
+    yinz.send_stdin(b"\x1b[?62;22c");
+    let replies = terminal.tap_stdin();
+    let deadline = std::time::Instant::now() + yinz_integration_tests::default_timeout();
+    let mut bytes = Vec::new();
+    terminal.output(b"\x1b_Ga=q,i=32,s=1,v=1,t=d,f=24;AAAA\x1b\\");
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "host refusal was not applied"
+        );
+        bytes.extend(
+            replies
+                .recv_deadline(deadline)
+                .expect("initial probe reply"),
+        );
+        if let Some(reply) = parse_replies(&bytes)
+            .into_iter()
+            .find(|r| r.image_id == Some(32))
+        {
+            if reply.code == "ENOTSUPPORTED" {
+                break;
+            }
+            assert!(reply.is_ok(), "{reply:?}");
+            bytes.clear();
+            terminal.output(b"\x1b_Ga=q,i=32,s=1,v=1,t=d,f=24;AAAA\x1b\\");
+        }
+    }
+    let before = terminal.stdin_bytes().len();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            terminal.wait_for_stdin("application saw unsupported before host reply", |bytes| {
+                parse_replies(&bytes[before..])
+                    .iter()
+                    .any(|reply| reply.image_id == Some(31) && reply.code == "ENOTSUPPORTED")
+            });
+            yinz.send_stdin(KITTY_PROBE_ACK);
+        });
+        yinz_integration_tests::kitty_protocol::wait_for_kitty_host(&terminal);
+    });
+    yinz.quit();
 }

@@ -1958,6 +1958,8 @@ pub fn screen_thread_main(
                     completion_tx,
                     blocking_terminal,
                 ) => {
+                    let startup_started = std::time::Instant::now();
+                    log::info!("startup: ApplyLayout tab={tab_id:?} client={client_id} begin");
                     screen.land_layout(
                         layout,
                         floating_panes_layout,
@@ -1972,6 +1974,10 @@ pub fn screen_thread_main(
                         blocking_terminal,
                         &mut pending,
                     )?;
+                    log::info!(
+                        "startup: ApplyLayout tab={tab_id:?} client={client_id} complete at {:?}",
+                        startup_started.elapsed()
+                    );
                     screen.render()?;
                 },
                 ScreenInstruction::LayoutSpawnFailed(tab_id, destination) => {

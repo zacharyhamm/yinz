@@ -584,6 +584,8 @@ pub fn plugin_thread_main(
                 client_id,
                 completion_tx,
             ) => {
+                let startup_started = std::time::Instant::now();
+                log::info!("startup: plugin NewTab tab={tab_id:?} client={client_id} begin");
                 // prefer connected clients so as to avoid opening plugins in the background for
                 // CLI clients unless no-one else is connected
                 let client_id = if wasm_bridge.client_is_connected(&client_id) {
@@ -647,6 +649,11 @@ pub fn plugin_thread_main(
                             .get_initial_cwd()
                             .or_else(|| cwd.clone());
                         let skip_cache = false;
+                        log::info!(
+                            "startup: tab={tab_id:?} client={client_id} loading {:?} at {:?}",
+                            run_plugin.as_ref().map(|plugin| &plugin.location),
+                            startup_started.elapsed()
+                        );
                         match wasm_bridge.load_plugin(
                             &run_plugin,
                             Some(tab_id),
@@ -656,6 +663,7 @@ pub fn plugin_thread_main(
                             Some(client_id),
                         ) {
                             Ok((plugin_id, _client_id)) => {
+                                log::info!("startup: tab={tab_id:?} client={client_id} loaded plugin={plugin_id} at {:?}", startup_started.elapsed());
                                 plugin_ids
                                     .entry(run_plugin_or_alias.clone())
                                     .or_default()
@@ -667,6 +675,7 @@ pub fn plugin_thread_main(
                         }
                     }
                 }
+                log::info!("startup: plugin NewTab tab={tab_id:?} client={client_id} dispatching PTY at {:?}", startup_started.elapsed());
                 drop(bus.senders.send_to_pty(PtyInstruction::NewTab(
                     cwd,
                     terminal_action,

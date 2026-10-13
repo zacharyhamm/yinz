@@ -76,3 +76,41 @@ pub fn base64_encode(bytes: &[u8]) -> String {
     }
     out
 }
+
+/// Wait for the applied capability; keyboard input can overtake the server's host reply.
+pub fn wait_for_kitty_host(terminal: &crate::FakePtyHandle) {
+    let replies = terminal.tap_stdin();
+    let deadline = std::time::Instant::now() + crate::default_timeout();
+    let query = b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\";
+    terminal.output(query);
+    let mut bytes = Vec::new();
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "kitty capability remained unsupported"
+        );
+        let chunk = replies.recv_deadline(deadline).unwrap_or_else(|error| {
+            panic!(
+                "kitty probe acknowledgement: {error}; replies={:?}\n{}",
+                String::from_utf8_lossy(&bytes),
+                crate::test_env::log_tail(40),
+            )
+        });
+        bytes.extend(chunk);
+        if let Some(reply) = parse_replies(&bytes)
+            .into_iter()
+            .find(|r| r.image_id == Some(31))
+        {
+            if reply.is_ok() {
+                return;
+            }
+            assert_eq!(
+                reply.code, "ENOTSUPPORTED",
+                "unexpected probe reply: {reply:?}"
+            );
+            log::info!("kitty handshake: capability not applied yet; {reply:?}");
+            bytes.clear();
+            terminal.output(query);
+        }
+    }
+}

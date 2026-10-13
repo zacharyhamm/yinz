@@ -61,17 +61,11 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 fn setup_kitty_host(yinz: &TestSession, terminal: &FakePtyHandle) {
     terminal.disable_echo();
+    yinz.send_stdin(KITTY_PROBE_ACK);
+    // Pixel updates follow capability replies through the same server and screen queues.
     yinz.send_stdin(b"\x1b[6;21;8t");
-    yinz.send_stdin(b"\x1b_Gi=31;OK\x1b\\");
-    yinz.send_stdin(b"Z");
-    terminal.wait_for_stdin(
-        "kitty handshake barrier keystroke reached the pane",
-        |stdin_bytes| stdin_bytes.contains(&b'Z'),
-    );
-    terminal.output(b"\x1b_Ga=q,i=31,s=1,v=1,t=d,f=24;AAAA\x1b\\");
-    terminal.wait_for_stdin("kitty probe acknowledged", |stdin_bytes| {
-        contains_bytes(stdin_bytes, KITTY_PROBE_ACK)
-    });
+    terminal.wait_for_cell_size(8, 21);
+    yinz_integration_tests::kitty_protocol::wait_for_kitty_host(terminal);
 }
 
 #[test]

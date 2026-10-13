@@ -89,9 +89,11 @@ impl ServerOsApi for FakeServerOsApi {
         id: TerminalId,
         cols: u16,
         rows: u16,
-        _width_in_pixels: Option<u16>,
-        _height_in_pixels: Option<u16>,
+        width_in_pixels: Option<u16>,
+        height_in_pixels: Option<u16>,
     ) -> Result<()> {
+        self.shared_ptys
+            .set_pixel_size(id, width_in_pixels.zip(height_in_pixels));
         if let Some(cached_resizes) = self.cached_resizes.lock().unwrap().as_mut() {
             cached_resizes.insert(id, (cols, rows));
             return Ok(());

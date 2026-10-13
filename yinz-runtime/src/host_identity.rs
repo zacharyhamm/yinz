@@ -77,6 +77,11 @@ fn read_file(data_dir: &Path) -> Option<String> {
 fn persist_id(data_dir: &Path, id: &str) -> std::io::Result<String> {
     use std::io::Write;
 
+    let started = std::time::Instant::now();
+    log::info!(
+        "startup: host identity persistence begin path={}",
+        data_dir.display()
+    );
     std::fs::create_dir_all(data_dir)?;
     // Keep this inode: removing it would let concurrent servers lock different files.
     let lock = std::fs::OpenOptions::new()
@@ -85,12 +90,24 @@ fn persist_id(data_dir: &Path, id: &str) -> std::io::Result<String> {
         .truncate(false)
         .open(data_dir.join(".host-id.lock"))?;
     lock.lock()?;
+    log::info!(
+        "startup: host identity lock acquired after {:?}",
+        started.elapsed()
+    );
     if let Some(stored) = read_file(data_dir) {
         return Ok(stored);
     }
     let mut temp = tempfile::NamedTempFile::new_in(data_dir)?;
     temp.write_all(id.as_bytes())?;
+    log::info!(
+        "startup: host identity sync begin after {:?}",
+        started.elapsed()
+    );
     temp.as_file().sync_all()?;
+    log::info!(
+        "startup: host identity sync complete after {:?}",
+        started.elapsed()
+    );
     temp.persist(host_id_path(data_dir))?;
     Ok(id.to_owned())
 }
