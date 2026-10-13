@@ -681,6 +681,7 @@ pub(crate) struct Screen {
     default_mode_info: ModeInfo,
     style: Style,
     pane_frame_style: PaneFrameStyle,
+    max_fullscreen_agent_width: usize,
     /// Live toast notifications, newest first (index 0 sits in the configured corner).
     notifications: Vec<Notification>,
     notification_mouse_captures: HashSet<ClientId>,
@@ -1268,6 +1269,7 @@ impl Screen {
             host_theme_dark,
             host_theme_light,
             pane_frame_style,
+            max_fullscreen_agent_width,
             simplified_ui,
             pane_animations,
             styled_underlines,
@@ -1389,6 +1391,7 @@ impl Screen {
             mode_info: BTreeMap::new(),
             default_mode_info: mode_info,
             pane_frame_style,
+            max_fullscreen_agent_width,
             notifications: vec![],
             notification_mouse_captures: HashSet::new(),
             context_menus: HashMap::new(),
@@ -1893,6 +1896,7 @@ impl Screen {
         if let Some(aggregate) = self.sixel_host_support_aggregate() {
             tab.update_sixel_host_support(aggregate);
         }
+        tab.max_fullscreen_agent_width = self.max_fullscreen_agent_width;
         tab.update_background_opacity(self.background_opacity);
         tab.update_selection_options(self.osc133_command_selection, self.word_separators.clone());
         self.tabs.insert(tab_id, tab);
@@ -3973,6 +3977,7 @@ impl Screen {
             rounded_corners,
             hide_session_name,
             pane_frame_style,
+            max_fullscreen_agent_width,
             simplified_ui,
             pane_animations,
             styled_underlines,
@@ -4059,6 +4064,7 @@ impl Screen {
         self.copy_options.command = copy_command.clone();
         self.copy_options.copy_on_select = copy_on_select;
         self.pane_frame_style = pane_frame_style;
+        self.max_fullscreen_agent_width = max_fullscreen_agent_width;
         self.advanced_mouse_actions = advanced_mouse_actions;
         self.mouse_scroll_resize = mouse_scroll_resize;
         self.mouse_hover_effects = mouse_hover_effects;
@@ -4118,6 +4124,7 @@ impl Screen {
             tab.update_auto_layout(auto_layout);
             tab.update_copy_options(&self.copy_options);
             tab.set_pane_frames(pane_frame_style);
+            tab.max_fullscreen_agent_width = max_fullscreen_agent_width;
             tab.update_arrow_fonts(should_support_arrow_fonts);
             tab.update_advanced_mouse_actions(advanced_mouse_actions);
             tab.update_mouse_scroll_resize(mouse_scroll_resize);

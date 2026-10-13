@@ -102,7 +102,7 @@ pub trait Pane {
         self.current_geom().cols.as_usize()
     }
     fn get_content_x(&self) -> usize {
-        self.x() + self.get_content_offset().left
+        self.render_geom().x + self.get_content_offset().left
     }
     fn get_content_y(&self) -> usize {
         self.y() + self.get_content_offset().top + self.content_header_rows()
@@ -110,7 +110,10 @@ pub trait Pane {
     /// Content columns can differ from the pane's columns: with a frame they are 2 less.
     fn get_content_columns(&self) -> usize {
         let offset = self.get_content_offset();
-        self.cols().saturating_sub(offset.left + offset.right)
+        self.render_geom()
+            .cols
+            .as_usize()
+            .saturating_sub(offset.left + offset.right)
     }
     /// Content rows can differ from the pane's rows: with a frame they are 2 less, and the
     /// header rows come off too.
@@ -179,6 +182,30 @@ pub trait Pane {
         self.geom_override()
             .unwrap_or_else(|| self.position_and_size())
     }
+    /// Presentation stays separate from the rectangle used by the layout solver and occlusion.
+    fn render_geom(&self) -> PaneGeom {
+        self.constrain_render_geom(self.current_geom())
+    }
+    fn constrain_render_geom(&self, mut geom: PaneGeom) -> PaneGeom {
+        let limit = self.max_content_width();
+        if limit > 0 {
+            let offset = self.get_content_offset();
+            let width = limit
+                .saturating_add(offset.left)
+                .saturating_add(offset.right);
+            let spare = geom.cols.as_usize().saturating_sub(width);
+            geom.x += spare / 2;
+            geom.cols.decrease_inner(spare);
+        }
+        geom
+    }
+    fn max_content_width(&self) -> usize {
+        0
+    }
+    /// Returns whether the displayed rectangle changed.
+    fn set_max_content_width(&mut self, _width: usize) -> bool {
+        false
+    }
     fn geom_override(&self) -> Option<PaneGeom>;
     fn should_render(&self) -> bool;
     fn set_should_render(&mut self, should_render: bool);
@@ -244,7 +271,7 @@ pub trait Pane {
         "\u{1b}[0 q".to_string() // default to non blinking block
     }
     fn contains(&self, position: &Position) -> bool {
-        self.current_geom().contains(position)
+        self.render_geom().contains(position)
     }
     fn start_selection(&mut self, _start: &Position, _client_id: ClientId) {}
     fn update_selection(&mut self, _position: &Position, _client_id: ClientId) {}
@@ -481,11 +508,12 @@ pub trait Pane {
         if !self.contains(position) {
             return false;
         }
-        if (self.x()..self.get_content_x()).contains(&position.column()) {
+        let geom = self.render_geom();
+        if (geom.x..self.get_content_x()).contains(&position.column()) {
             // position is on left border
             return true;
         }
-        if (self.get_content_x() + self.get_content_columns()..(self.x() + self.cols()))
+        if (self.get_content_x() + self.get_content_columns()..(geom.x + geom.cols.as_usize()))
             .contains(&position.column())
         {
             // position is on right border
