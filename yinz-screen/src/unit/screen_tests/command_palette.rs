@@ -2872,6 +2872,8 @@ fn warp_palette_live_refresh_preserves_session_and_tab_identity() {
     let mut grid = grid_for_render_snapshot(SIZE);
     palette_search(&mut screen, "Warp tab");
     palette_key(&mut screen, BareKey::Enter);
+    // Navigation makes the source choice explicit before discovery reorders it.
+    palette_key(&mut screen, BareKey::Up);
     // Inserting an earlier session must not move the selection off the chosen source.
     let earlier = warp_peer(&mut screen, "42");
     screen.peer_sessions_cache.get_mut(&earlier).unwrap().tabs[0].name = "Wrong peer".into();
@@ -2880,6 +2882,7 @@ fn warp_palette_live_refresh_preserves_session_and_tab_identity() {
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(snapshot.contains("› Remote tab"), "{snapshot}");
     assert!(!snapshot.contains("Wrong peer"), "{snapshot}");
+    palette_key(&mut screen, BareKey::Up);
     let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
     let mut inserted = peer.tabs[0].clone();
     inserted.name = "Earlier tab".into();

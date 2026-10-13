@@ -702,9 +702,11 @@ fn plugin_sections_keep_semantic_order_and_selection() {
     palette.set_sections(vec![section(&["inserted", "unrelated", "also unrelated"])]);
     assert_eq!(palette.selected_entry().unwrap().id, "unrelated");
     key(&mut palette, BareKey::Char('x'));
+    assert_eq!(palette.selected_entry().unwrap().id, "inserted");
+    key(&mut palette, BareKey::Down);
     assert_eq!(palette.selected_entry().unwrap().id, "unrelated");
     palette.insert_text("pasted");
-    assert_eq!(palette.selected_entry().unwrap().id, "unrelated");
+    assert_eq!(palette.selected_entry().unwrap().id, "inserted");
     palette.push_view(1, "Static".into());
     let mut static_section = section(&["apple", "banana"]);
     static_section.semantic = false;
@@ -713,7 +715,7 @@ fn plugin_sections_keep_semantic_order_and_selection() {
     assert_eq!(ids(&palette), ["banana"]);
     palette.back();
     assert_eq!(palette.query(), "newxpasted");
-    assert_eq!(palette.selected_entry().unwrap().id, "unrelated");
+    assert_eq!(palette.selected_entry().unwrap().id, "inserted");
     palette.set_sections(vec![section(&["replacement"])]);
     assert_eq!(palette.selected_entry().unwrap().id, "replacement");
 }
@@ -971,7 +973,6 @@ fn mother_picker_is_scoped_and_preserves_navigation_and_project() {
     palette.set_entries(entries.clone());
     assert!(!ids(&palette).contains(&"mother:claude"));
     palette.insert_text("New");
-    let selected = palette.selected_entry().unwrap().id.clone();
     palette.open_picker(kind);
     assert_eq!(ids(&palette), vec!["mother:claude", "mother:codex"]);
     palette.push_view(42, "Plugin view".into());
@@ -1000,7 +1001,7 @@ fn mother_picker_is_scoped_and_preserves_navigation_and_project() {
         .contains("No matches"));
     key(&mut palette, BareKey::Esc);
     assert_eq!(palette.query(), "New");
-    assert_eq!(palette.selected_entry().unwrap().id, selected);
+    assert_eq!(palette.selected_entry().unwrap().id, ids(&palette)[0]);
     palette.open_picker(kind);
     palette.set_entries(vec![entry("pane", "ordinary", EntryKind::Pane)]);
     let text = rendered_lines(&palette, &palette.layout(surface)).join("\n");
@@ -1175,7 +1176,7 @@ fn agent_info_refresh_and_mouse_selection_respect_regions() {
     assert_eq!(palette.selected_entry().unwrap().id, "event:1");
     palette.select_id("event:2");
     palette.set_query("search".into());
-    assert_eq!(palette.selected_entry().unwrap().id, "event:2");
+    assert_eq!(palette.selected_entry().unwrap().id, "event:1");
     palette.set_sections(sections(&["event:1"]));
     assert_eq!(palette.selected_entry().unwrap().id, "event:1");
     assert_eq!(
@@ -1871,4 +1872,84 @@ fn secondary_form_actions_receive_edited_values_and_choices_are_searchable() {
             values: vec!["initial edited".into(), "compact".into()]
         }
     );
+}
+
+#[test]
+fn late_results_select_best_until_navigation_and_reset_on_query_change() {
+    for plugin_first in [false, true] {
+        let mut palette = CommandPalette::default();
+        palette.set_query("pdf".into());
+        let native = vec![entry("native", "pdf", EntryKind::Command)];
+        let sections = vec![PluginSection {
+            title: "Plugin".into(),
+            entries: vec![entry("plugin", "Pretty document finder", EntryKind::Plugin)],
+            semantic: false,
+            status: None,
+        }];
+        if plugin_first {
+            palette.set_sections(sections.clone());
+            palette.set_entries(native.clone());
+        } else {
+            palette.set_entries(vec![entry(
+                "weak",
+                "Pretty document finder",
+                EntryKind::Command,
+            )]);
+            palette.set_sections(vec![PluginSection {
+                entries: vec![entry("plugin", "pdf", EntryKind::Plugin)],
+                ..sections[0].clone()
+            }]);
+        }
+        assert_eq!(palette.selected_entry().unwrap().id, ids(&palette)[0]);
+        key(&mut palette, BareKey::Down);
+        let chosen = palette.selected_entry().unwrap().id.clone();
+        key(&mut palette, BareKey::Left);
+        let mut updated = palette.sections.clone();
+        updated[0].status = Some("updated".into());
+        palette.set_sections(updated);
+        assert_eq!(palette.selected_entry().unwrap().id, chosen);
+        palette.set_query("pdf".into());
+        assert_eq!(palette.selected_entry().unwrap().id, ids(&palette)[0]);
+    }
+}
+
+#[test]
+fn late_results_restore_intent_and_resume_automatic_selection_after_removal() {
+    for explicit in [false, true] {
+        for picker in [false, true] {
+            let mut palette = palette();
+            palette.set_query("new".into());
+            if explicit {
+                let layout = palette.layout(Viewport {
+                    cols: 80,
+                    rows: 24,
+                    ..Default::default()
+                });
+                palette.click(
+                    &layout,
+                    Position::new((layout.options_y + 1) as i32, (layout.rect.x + 2) as u16),
+                );
+                assert_eq!(palette.selected_entry().unwrap().id, "tab");
+            }
+            if picker {
+                palette.open_picker(EntryKind::Pane);
+            } else {
+                palette.push_view(1, "Nested".into());
+            }
+            palette.back();
+            let mut entries = palette.native_entries.clone();
+            entries.insert(0, entry("best", "new", EntryKind::Command));
+            palette.set_entries(entries.clone());
+            assert_eq!(
+                palette.selected_entry().unwrap().id,
+                if explicit { "tab" } else { "best" }
+            );
+            entries.retain(|entry| entry.id != "tab");
+            palette.set_entries(entries.clone());
+            assert_eq!(palette.selected_entry().unwrap().id, "best");
+            entries.insert(0, entry("new-best", "new", EntryKind::Command));
+            palette.set_entries(entries);
+            assert_eq!(palette.selected_entry().unwrap().id, "new-best");
+        }
+    }
 }

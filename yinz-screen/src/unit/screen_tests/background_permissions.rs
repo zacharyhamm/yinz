@@ -796,3 +796,68 @@ fn permission_identities_wrap_without_losing_suffixes_and_controls_follow_resize
         assert_eq!(answers, vec![(token as u64, PermissionStatus::Granted)]);
     }
 }
+
+#[test]
+fn background_permission_waits_for_client_and_pane_in_either_order() {
+    for pane_first in [false, true] {
+        let (mut mock, renders, mut threads) = start();
+        let answers = Watched::new(vec![]);
+        let receiver = mock.plugin_receiver.take().unwrap();
+        threads.push(log_actions_in_thread!(
+            answers,
+            PluginInstruction::Exit,
+            receiver
+        ));
+        mock.to_screen
+            .send(ScreenInstruction::RemoveClient(CLIENT))
+            .unwrap();
+        request(&mock);
+        assert!(pane_info(&mock, PaneId::Plugin(PLUGIN)).is_none());
+        if pane_first {
+            attach(&mock, TabId::new(0));
+            assert!(pane_info(&mock, PaneId::Plugin(PLUGIN)).is_some());
+        }
+        mock.to_screen
+            .send(ScreenInstruction::AddClient(CLIENT, SIZE, None, None))
+            .unwrap();
+        assert_prompt(&renders);
+        if !pane_first {
+            attach(&mock, TabId::new(0));
+            assert!(pane_info(&mock, PaneId::Plugin(PLUGIN)).is_some());
+        }
+        for key in [
+            yinz_types::keys::BareKey::Tab,
+            yinz_types::keys::BareKey::Enter,
+        ] {
+            mock.to_screen
+                .send(ScreenInstruction::WriteCharacter(
+                    Some(yinz_types::keys::KeyWithModifier::new(key)),
+                    vec![],
+                    false,
+                    CLIENT,
+                    None,
+                ))
+                .unwrap();
+        }
+        answers.wait_until(
+            "early permission grant reaches host",
+            yinz_test_support::default_timeout(),
+            |events| {
+                events
+                    .iter()
+                    .any(|event| {
+                        matches!(
+                            event,
+                            PluginInstruction::PermissionAnswer {
+                                request_id: 0,
+                                status: PermissionStatus::Granted,
+                                ..
+                            }
+                        )
+                    })
+                    .then_some(())
+            },
+        );
+        mock.teardown(threads);
+    }
+}
