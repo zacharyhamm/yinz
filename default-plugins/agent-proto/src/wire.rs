@@ -32,16 +32,6 @@ pub const AGENT_SNAPSHOT: &str = "agent_snapshot";
 pub const AGENT_REFRESH: &str = "agent_refresh";
 /// Move the project panel clockwise, from any of its views.
 pub const AGENT_STRIP_REPOSITION: &str = "agent_strip_reposition";
-/// Dismiss the project panel after navigation or a successful launch.
-pub const AGENT_STRIP_HIDE: &str = "agent_strip_hide";
-/// The argument on [`AGENT_STRIP_HIDE`] naming the sender's tab, by position (`TabPosition`,
-/// in decimal).
-///
-/// The modal carries no url and no destination, so its hide reaches a panel whichever tab that
-/// panel is on. A panel on another tab ignores it: the launch was another client's, over a tab
-/// this panel is not drawn on, and the agent it started is not under it. A hide without the
-/// argument - the list's Esc - puts the panel away wherever it is, as it always did.
-pub const PANEL_TAB: &str = "tab";
 /// Focus the project panel's tab bar.
 pub const AGENT_STRIP_YIELD: &str = "agent_strip_yield";
 /// Select the receiving view's focus stop.

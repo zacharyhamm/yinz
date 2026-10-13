@@ -2882,9 +2882,8 @@ impl Tab {
                 // gives the keyboard up here and a modal keeps it - see
                 // `defocus_pane_if_dismissible` for why the two differ. When the modal keeps it,
                 // the new pane opens tiled but unfocused behind it.
-                let keyboard_is_free = client_id.is_none_or(|client_id| {
-                    self.overlay_panes.defocus_pane_if_dismissible(client_id)
-                });
+                let keyboard_is_free =
+                    client_id.is_none_or(|client_id| self.defocus_overlay_pane(client_id, true));
                 if keyboard_is_free {
                     self.add_tiled_pane(new_pane, pid, false, client_id)
                 } else {
@@ -7143,14 +7142,46 @@ impl Tab {
         !self.overlay_panes.a_modal_holds_focus(client_id)
     }
     /// A lower layer has just taken this client's focus, so a dismissible overlay gives the
-    /// keyboard up: it learns it is no longer focused by being told, and that is how a
-    /// dismiss-on-defocus popup closes itself.
+    /// keyboard up. The builtin panel is hidden in this same transition once no client focuses it.
     ///
     /// Called *after* the move rather than before it, and only when the move happened. A
     /// focus-move that found nothing in the direction asked for has changed nothing, and
     /// dismissing a popup on it would make a dead keypress close the thing the user was reading.
     pub fn release_overlay_focus_to_lower_layer(&mut self, client_id: ClientId) {
-        self.overlay_panes.defocus_pane_if_dismissible(client_id);
+        self.defocus_overlay_pane(client_id, !self.floating_panes.panes_are_visible());
+    }
+
+    fn defocus_overlay_pane(&mut self, client_id: ClientId, dismiss_panel: bool) -> bool {
+        if !self.overlay_panes.defocus_pane_if_dismissible(client_id) {
+            return false;
+        }
+        if dismiss_panel {
+            // Floating focus can leave a panel visible after it has given up the keyboard.
+            for pane in self.overlay_panes.rendered_pane_ids() {
+                if self.overlay_panes.is_modal(&pane) {
+                    continue;
+                }
+                let is_panel = self
+                    .pane_tabs_of(pane)
+                    .and_then(|id| self.pane_tabs.get(&id))
+                    .is_some_and(|tabs| {
+                        tabs.info
+                            .tabs
+                            .iter()
+                            .any(|slot| slot.descriptor.location == "yinz:agents")
+                    })
+                    || self
+                        .get_pane_with_id(pane)
+                        .and_then(|pane| pane.invoked_with().as_ref())
+                        .and_then(|run| run.get_run_plugin())
+                        .is_some_and(|run| run.location.display() == "yinz:agents");
+                if is_panel && !self.overlay_panes.has_focused_member(&pane) {
+                    // A plugin reacting to an older manifest could hide a subsequent reveal.
+                    self.hide_overlay_pane(pane);
+                }
+            }
+        }
+        true
     }
     /// Whether an overlay - modal or not - holds this client's keyboard.
     pub fn overlay_holds_focus(&self, client_id: ClientId) -> bool {
@@ -9336,6 +9367,19 @@ impl Tab {
         self.tiled_panes.focus_all_panes();
         self.set_force_render();
         if were_shown {
+            let tiled_clients: Vec<_> = self
+                .connected_clients
+                .borrow()
+                .iter()
+                .copied()
+                .filter(|client_id| {
+                    self.get_active_pane_id(*client_id)
+                        .is_some_and(|pane_id| self.tiled_panes.panes_contain(&pane_id))
+                })
+                .collect();
+            for client_id in tiled_clients {
+                self.release_overlay_focus_to_lower_layer(client_id);
+            }
             self.notify_floating_plugins_of_visibility(false);
         }
     }
@@ -9497,7 +9541,7 @@ impl Tab {
             && !self.overlay_panes.panes_contain(&pane_id)
             && self.get_pane_with_id(pane_id).is_some()
         {
-            self.overlay_panes.defocus_pane_if_dismissible(client_id);
+            self.defocus_overlay_pane(client_id, !self.floating_panes.panes_contain(&pane_id));
         }
         // A modal keeping the keyboard still learns where the user now wants to be, and hands
         // the keyboard there when it goes rather than back to where it was opened from.

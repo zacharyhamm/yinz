@@ -775,6 +775,10 @@ fn command_palette_disconnect_discards_restore_state_without_unlocking_other_cli
         .contains_key(&ClientId::new(2)));
     // Screen's later dismissal notification must not restore the departed client's mode.
     session.set_command_palette_open(CLIENT_1, false).unwrap();
+    assert!(matches!(
+        screen_rx.try_recv().unwrap().0,
+        ScreenInstruction::RemoveClient(CLIENT_1)
+    ));
     assert!(screen_rx.try_recv().is_err());
     assert_eq!(
         session.current_input_modes[&ClientId::new(2)],

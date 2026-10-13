@@ -110,10 +110,8 @@ struct State {
     source_directory: PathBuf,
     projects: Registry,
     plugin_id: yinz_tile::prelude::PluginId,
-    /// The tab this modal is on, off the last `PaneUpdate` that had it: what the panel hide
-    /// names, so only the panel drawn over the new agent's tab goes (see `hand_over_focus`).
-    /// A manifest without this pane keeps the last one known.
-    own_tab: Option<TabPosition>,
+    /// The panel on this modal's tab, retained until a manifest includes the modal again.
+    panel_pane: Option<PaneId>,
     job: Job,
     worktree_dir_edited: bool,
     error: Option<String>,
@@ -219,7 +217,7 @@ impl Default for State {
             source_directory: PathBuf::from("."),
             projects: Registry::new(),
             plugin_id: yinz_tile::prelude::PluginId::new(0),
-            own_tab: None,
+            panel_pane: None,
             job: Job::New,
             worktree_dir_edited: false,
             error: None,
@@ -310,7 +308,7 @@ impl YinzPlugin for State {
             },
             Event::PaneUpdate(manifest) => {
                 if let Some(tab) = tab_of(&manifest, PaneId::Plugin(self.plugin_id)) {
-                    self.own_tab = Some(tab);
+                    self.panel_pane = panel_in_tab(&manifest, tab);
                 }
                 // A source rerun elsewhere (Restart) leaves nothing to fork. The picker's own
                 // launch reruns it too, but that has already sent its result, which
@@ -380,7 +378,7 @@ impl YinzPlugin for State {
                     self.workflow_reply = None;
                     self.workflow_result_pending = false;
                     if let Some(pane) = self.workflow_focus.take() {
-                        hand_over_focus(pane, self.own_tab);
+                        hand_over_focus(pane, self.panel_pane);
                     } else {
                         close_self();
                     }
@@ -1062,7 +1060,7 @@ impl State {
                     ),
             );
         } else if let Some(pane) = pane {
-            hand_over_focus(pane, self.own_tab);
+            hand_over_focus(pane, self.panel_pane);
         } else {
             close_self();
         }
@@ -1339,37 +1337,28 @@ impl State {
 /// other order has nothing left to focus from: the close would already have handed
 /// the keys back, and this plugin is gone by then.
 ///
-/// The agents panel is put away on the way. It stays up under a launcher opened from
-/// it - Todos `n`, or `Ctrl e n` with the panel showing - so that Esc hands the keys
-/// back to it; but once an agent has started, the panel is an overlay drawn over the
-/// pane that now has them. agent puts the panel away on its own when a tiled pane
-/// takes the keyboard from it, a modal holding the keys in between included - but
-/// only a panel that had them when this modal opened, and `Ctrl e n` opens it over
-/// a panel that is merely showing as readily as over one being typed in. So it is
-/// asked (`wire::AGENT_STRIP_HIDE`, what Esc in the list sends). The message carries
-/// no url, so it launches nobody, and a panel already away stays away.
-///
-/// Nor does it carry a destination, so every panel hears it: `tab`, this modal's own,
-/// goes with it (`panel_hide`), and a panel on another tab - another client's, not
-/// drawn over the new agent - stays up. `None` only before the first `PaneUpdate`,
-/// and a hide naming no tab is one every panel takes, as the list's Esc is.
-fn hand_over_focus(pane_id: PaneId, tab: Option<TabPosition>) {
+/// Hide the panel on the screen queue before focusing the terminal and closing the modal.
+/// An asynchronous broadcast hide can outlive the modal and undo a later panel reveal.
+fn hand_over_focus(pane_id: PaneId, panel: Option<PaneId>) {
+    if let Some(panel) = panel {
+        hide_pane_with_id(panel);
+    }
     focus_pane_with_id(pane_id, false, false);
-    pipe_message_to_plugin(panel_hide(tab));
     close_self();
 }
 
-/// The hide `hand_over_focus` sends: `wire::AGENT_STRIP_HIDE`, naming the tab it was
-/// sent from when that is known (`wire::PANEL_TAB`).
-fn panel_hide(tab: Option<TabPosition>) -> MessageToPlugin {
-    let message = MessageToPlugin::new(wire::AGENT_STRIP_HIDE);
-    match tab {
-        Some(tab) => message.with_args(BTreeMap::from([(
-            wire::PANEL_TAB.to_owned(),
-            tab.to_string(),
-        )])),
-        None => message,
-    }
+fn panel_in_tab(manifest: &PaneManifest, tab: TabPosition) -> Option<PaneId> {
+    manifest.panes.get(&tab)?.iter().find_map(|pane| {
+        pane.pane_tabs
+            .as_ref()
+            .filter(|tabs| {
+                tabs.tabs
+                    .iter()
+                    .any(|slot| slot.descriptor.location == "yinz:agents")
+            })
+            .map(|tabs| tabs.pane_id)
+            .or_else(|| (pane.plugin_url.as_deref() == Some("yinz:agents")).then_some(pane.id))
+    })
 }
 
 /// The tab `me` is on in `manifest`, or `None` when the manifest does not list it.
@@ -2754,54 +2743,102 @@ mod tests {
         }
     }
 
-    /// The hide goes to every panel, so it says which tab the launch was on: the panel on
-    /// another client's tab is not over the new agent, and leaves itself up.
     #[test]
-    fn the_hide_names_the_modals_tab() {
-        let me = PaneId::Plugin(yinz_tile::prelude::PluginId::new(12));
-        let two_tabs = |modal_tab: usize| PaneManifest {
-            panes: std::collections::HashMap::from([
-                (
-                    TabPosition::new(modal_tab),
+    fn launcher_detects_only_standalone_agents_on_its_own_tab() {
+        let me = PaneId::Plugin(PluginId::new(12));
+        let panel = PaneId::Plugin(PluginId::new(13));
+        let tab = TabPosition::new(1);
+        for location in ["yinz:agents", "yinz:todos", "yinz:chat"] {
+            for panel_tab in [TabPosition::new(0), tab] {
+                let mut manifest = PaneManifest::default();
+                manifest.panes.insert(
+                    tab,
                     vec![PaneInfo {
                         id: me,
-                        is_floating: true,
+                        ..Default::default()
+                    }],
+                );
+                manifest.panes.entry(panel_tab).or_default().push(PaneInfo {
+                    id: panel,
+                    plugin_url: Some(location.into()),
+                    pane_tabs: None,
+                    ..Default::default()
+                });
+                let mut state = State {
+                    plugin_id: PluginId::new(12),
+                    ..Default::default()
+                };
+                state.update(Event::PaneUpdate(manifest));
+                assert_eq!(
+                    state.panel_pane,
+                    (location == "yinz:agents" && panel_tab == tab).then_some(panel),
+                    "{location} on tab {panel_tab}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn launcher_hides_only_the_panel_on_its_own_tab() {
+        let me = PaneId::Plugin(PluginId::new(12));
+        let panel = PaneId::Plugin(PluginId::new(13));
+        let tab = TabPosition::new(1);
+        let mut manifest = PaneManifest {
+            panes: std::collections::HashMap::from([
+                (
+                    tab,
+                    vec![PaneInfo {
+                        id: me,
                         ..Default::default()
                     }],
                 ),
                 (
-                    TabPosition::new(1 - modal_tab),
+                    TabPosition::new(0),
                     vec![PaneInfo {
-                        id: PaneId::Terminal(TerminalId::new(3)),
+                        id: panel,
+                        pane_tabs: Some(PaneTabsInfo {
+                            id: PaneTabsId(1),
+                            pane_id: panel,
+                            active: 1,
+                            bar_focused: vec![],
+                            tabs: ["agents", "todos"]
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, name)| PaneTabInfo {
+                                    descriptor: PaneTabDescriptor {
+                                        label: name.into(),
+                                        location: format!("yinz:{name}"),
+                                        configuration: Default::default(),
+                                        initial_cwd: None,
+                                    },
+                                    plugin_id: Some(PluginId::new(14 + index as u32)),
+                                    terminal_id: None,
+                                    state: PaneTabLoadState::Ready,
+                                })
+                                .collect(),
+                        }),
                         ..Default::default()
                     }],
                 ),
             ]),
         };
-        assert_eq!(tab_of(&two_tabs(1), me), Some(TabPosition::new(1)));
-        assert_eq!(tab_of(&two_tabs(0), me), Some(TabPosition::new(0)));
-        assert_eq!(tab_of(&PaneManifest::default(), me), None);
-
-        // Every manifest moves it, and one without the modal keeps the last one known.
         let mut state = State {
-            plugin_id: yinz_tile::prelude::PluginId::new(12),
+            plugin_id: PluginId::new(12),
             ..Default::default()
         };
-        state.update(Event::PaneUpdate(two_tabs(1)));
-        assert_eq!(state.own_tab, Some(TabPosition::new(1)));
-        state.update(Event::PaneUpdate(PaneManifest::default()));
-        assert_eq!(state.own_tab, Some(TabPosition::new(1)));
-
-        let hide = panel_hide(Some(TabPosition::new(2)));
-        assert_eq!(hide.message_name, wire::AGENT_STRIP_HIDE);
+        assert_eq!(tab_of(&manifest, me), Some(tab));
+        state.update(Event::PaneUpdate(manifest.clone()));
+        assert_eq!(state.panel_pane, None, "another tab's panel stays open");
+        let panels = manifest.panes.remove(&TabPosition::new(0)).unwrap();
+        manifest.panes.get_mut(&tab).unwrap().extend(panels);
+        state.update(Event::PaneUpdate(manifest));
         assert_eq!(
-            hide.message_args.get(wire::PANEL_TAB).map(String::as_str),
-            Some("2")
+            state.panel_pane,
+            Some(panel),
+            "use the container, including when Todos is active"
         );
-        assert_eq!(hide.plugin_url, None, "a hide launches nobody");
-        let hide = panel_hide(None);
-        assert_eq!(hide.message_name, wire::AGENT_STRIP_HIDE);
-        assert!(hide.message_args.is_empty());
+        state.update(Event::PaneUpdate(PaneManifest::default()));
+        assert_eq!(state.panel_pane, Some(panel));
     }
 
     #[test]

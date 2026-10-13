@@ -6611,6 +6611,8 @@ fn delete_all_dead_sessions_and_reply(env: &mut PluginEnv) {
 // note this removes the requesting plugin
 fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
     use crate::DumpSessionLayoutResponse;
+    let trace = yinz_bus::plugins::LayoutQueryTrace::default();
+    trace.mark("screen queued");
 
     // Create oneshot channel for response
     let (response_sender, response_receiver) = crossbeam::channel::bounded(1);
@@ -6622,6 +6624,7 @@ fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
             plugin_id: env.plugin_id,
             tab_index,
             response_channel: response_sender,
+            trace: trace.clone(),
         });
 
     if let Err(e) = send_result {
@@ -6641,6 +6644,12 @@ fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
         match response_receiver.recv_timeout(Duration::from_secs(1)) {
             Ok(resp) => resp,
             Err(e) => {
+                log::error!(
+                    "layout query timeout: pid={} plugin={} generation={:?} {trace:?}",
+                    std::process::id(),
+                    env.plugin_id,
+                    env.deno_generation
+                );
                 let error_response = ProtobufDumpSessionLayoutResponse {
                     result: Some(dump_session_layout_response::Result::Error(format!(
                         "Timeout waiting for session layout: {}",

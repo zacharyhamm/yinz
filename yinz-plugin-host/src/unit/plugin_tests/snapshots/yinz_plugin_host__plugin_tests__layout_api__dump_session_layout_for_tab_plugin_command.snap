@@ -3,15 +3,14 @@ source: yinz-plugin-host/src/./unit/plugin_tests/layout_api.rs
 expression: "format!(\"{:#?}\", dump_layout_instruction)"
 ---
 Some(
-    DumpLayoutToPlugin {
-        plugin_id: PluginId(
+    (
+        PluginId(
             0,
         ),
-        tab_index: Some(
+        Some(
             TabId(
                 0,
             ),
         ),
-        response_channel: Sender { .. },
-    },
+    ),
 )

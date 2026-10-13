@@ -201,15 +201,13 @@ pub(super) struct Panel {
     rect: Option<Rect>,
     requested: Option<Rect>,
     floating: bool,
-    focus_seen: Option<(TabPosition, bool)>,
-    followed_holder: Option<PaneId>,
 }
 impl State {
     pub(super) fn panel_panes_changed(&mut self, manifest: &PaneManifest) {
-        let Some((tab, own, panes)) = manifest.panes.iter().find_map(|(tab, panes)| {
+        let Some((tab, own)) = manifest.panes.iter().find_map(|(tab, panes)| {
             panel_pane(manifest, self.own_plugin_id)
                 .filter(|own| panes.iter().any(|p| p.id == own.id))
-                .map(|own| (*tab, own, panes))
+                .map(|own| (*tab, own))
         }) else {
             return;
         };
@@ -226,40 +224,6 @@ impl State {
                 cols: own.pane_columns.get(),
                 rows: own.pane_rows.get(),
             });
-        }
-        let armed = self.panel.focus_seen.is_some_and(|(_, armed)| armed);
-        // Each layer reports its own active pane. Ask who actually holds the keyboard
-        // before treating a focused tiled pane under a modal as a departure.
-        #[cfg(target_family = "wasm")]
-        let holder = if armed && !own.is_focused {
-            get_focused_pane_info()
-                .ok()
-                .and_then(|(_, id)| panes.iter().find(|p| p.id == id && p.id != own.id))
-        } else {
-            None
-        };
-        #[cfg(not(target_family = "wasm"))]
-        let holder = panes.iter().find(|p| p.id != own.id && p.is_focused);
-        let arrived = armed && self.panel.focus_seen.is_some_and(|(old, _)| old != tab);
-        if arrived {
-            self.panel.followed_holder = holder.map(|p| p.id);
-        }
-        let kept = holder.is_some_and(|p| self.panel.followed_holder == Some(p.id));
-        let hide = armed
-            && !arrived
-            && !kept
-            && !own.is_suppressed
-            && !own.is_focused
-            && holder.is_some_and(|p| !p.is_floating);
-        if own.is_focused || own.is_suppressed || hide {
-            self.panel.followed_holder = None;
-        }
-        self.panel.focus_seen = Some((
-            tab,
-            own.is_focused || kept || arrived || (armed && holder.is_some_and(|p| p.is_floating)),
-        ));
-        if hide {
-            self.hide_the_panel();
         }
         self.place_panel(false);
     }
@@ -356,6 +320,42 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delayed_focus_updates_cannot_hide_a_revealed_panel() {
+        let agents = PluginId::new(3);
+        let mut state = State {
+            own_plugin_id: agents,
+            pane_shown: true,
+            ..Default::default()
+        };
+        let manifest = |focused| PaneManifest {
+            panes: std::collections::HashMap::from([(
+                TabPosition::new(0),
+                vec![
+                    PaneInfo {
+                        id: PaneId::Plugin(agents),
+                        is_floating: true,
+                        is_focused: focused,
+                        ..Default::default()
+                    },
+                    PaneInfo {
+                        id: PaneId::Terminal(TerminalId::new(1)),
+                        is_focused: !focused,
+                        ..Default::default()
+                    },
+                ],
+            )]),
+        };
+        state.panel_panes_changed(&manifest(true));
+        // The host has dismissed and revealed the panel before delivering this older update.
+        state.panel_panes_changed(&manifest(false));
+        assert_eq!(
+            state.panel_hides, 0,
+            "focus updates must not enqueue a delayed dismissal"
+        );
+        assert!(state.pane_shown);
+    }
+
     #[test]
     fn default_panel_fits_and_moves_clockwise() {
         let rect = rect_in_corner(&BTreeMap::new(), 60, 200, Corner::BottomLeft, None).unwrap();

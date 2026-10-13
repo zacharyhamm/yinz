@@ -365,7 +365,6 @@ impl State {
             self.panel_hides += 1;
         }
         hide_self();
-        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HIDE));
     }
     fn typing(&self) -> bool {
         matches!(self.todos.mode, todos::Mode::Input { .. })

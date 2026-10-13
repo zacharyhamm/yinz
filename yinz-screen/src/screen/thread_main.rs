@@ -273,6 +273,32 @@ pub(super) fn replay_pending_pane_event(
     pending: &mut PendingEvents,
 ) -> Result<()> {
     match event {
+        ScreenInstruction::NewPane(
+            pid,
+            title,
+            hold,
+            invoked_with,
+            placement,
+            suppressed,
+            target,
+            completion,
+            blocking,
+        ) => {
+            screen
+                .place_new_pane(
+                    pid,
+                    title,
+                    hold,
+                    invoked_with,
+                    placement,
+                    suppressed,
+                    target,
+                    completion,
+                    blocking,
+                    pending,
+                )
+                .context("failed to replay pending pane placement")?;
+        },
         ScreenInstruction::AgentReport(report, accepted_at) => {
             apply_queued_agent_report(screen, &report, accepted_at)?;
         },
@@ -1147,10 +1173,13 @@ pub fn screen_thread_main(
                     plugin_id,
                     tab_index,
                     response_channel,
+                    trace,
                 } => {
+                    trace.mark("screen metadata");
                     let err_context = || "Failed to dump layout".to_string();
                     let session_layout_metadata =
                         screen.get_layout_metadata(Some(screen.default_shell.clone()), tab_index);
+                    trace.mark("pty queued");
                     screen
                         .bus
                         .senders
@@ -1158,6 +1187,7 @@ pub fn screen_thread_main(
                             session_layout_metadata,
                             plugin_id,
                             response_channel,
+                            trace,
                         })
                         .with_context(err_context)
                         .non_fatal();
@@ -2691,14 +2721,15 @@ pub fn screen_thread_main(
                     screen
                         .bus
                         .senders
-                        .send_to_plugin(PluginInstruction::Reload(
+                        // ClosePane queues unloading on PTY; reopening must follow that unload.
+                        .send_to_pty(PtyInstruction::ReloadPlugin {
                             should_float,
                             pane_title,
                             run_plugin,
                             tab_index,
                             size,
                             completion_tx,
-                        ))?;
+                        })?;
                 },
                 ScreenInstruction::AddPlugin(
                     should_float,

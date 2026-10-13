@@ -1111,15 +1111,19 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 mut session_layout_metadata,
                 plugin_id,
                 response_channel,
+                trace,
             } => {
+                trace.mark("pty metadata");
                 let err_context = || "Failed to dump layout".to_string();
                 pty.populate_session_layout_metadata(&mut session_layout_metadata);
+                trace.mark("plugin queued");
                 pty.bus
                     .senders
                     .send_to_plugin(PluginInstruction::DumpLayoutToPlugin {
                         session_layout_metadata,
                         plugin_id,
                         response_channel,
+                        trace,
                     })
                     .with_context(err_context)
                     .non_fatal();
@@ -1204,6 +1208,26 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                         log::error!("Failed to serialize layout: {}", e);
                     },
                 };
+            },
+            PtyInstruction::ReloadPlugin {
+                should_float,
+                pane_title,
+                run_plugin,
+                tab_index,
+                size,
+                completion_tx,
+            } => {
+                pty.bus
+                    .senders
+                    .send_to_plugin(PluginInstruction::Reload(
+                        should_float,
+                        pane_title,
+                        run_plugin,
+                        tab_index,
+                        size,
+                        completion_tx,
+                    ))
+                    .context("forward plugin reload after queued pane closures")?;
             },
             PtyInstruction::FillPluginCwd(
                 should_float,

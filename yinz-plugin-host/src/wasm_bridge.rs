@@ -394,7 +394,7 @@ pub struct WasmBridge {
     yinz_data_dir: PathBuf,
     data_access: Arc<DataAccess>,
     deno_watch_generations: super::plugin_map::DenoWatchGenerations,
-    plugin_map: Arc<Mutex<PluginMap>>,
+    pub(super) plugin_map: Arc<Mutex<PluginMap>>,
     plugin_executor: Arc<PinnedExecutor>,
     next_plugin_id: u32,
     next_load_id: u64,
@@ -1514,6 +1514,24 @@ impl WasmBridge {
                         .contains(&EventType::BeforeClose);
                     let old_instance = running_plugin.clone();
                     let mut running_plugin = running_plugin.lock().unwrap();
+                    let cleanup_reason = if running_plugin.is_disposed() {
+                        "disposed"
+                    } else if running_plugin.failed {
+                        "failed"
+                    } else if !wants_before_close {
+                        "unsubscribed"
+                    } else if running_plugin.env().cancel_tripped.load(Ordering::Acquire) {
+                        "interrupted"
+                    } else {
+                        "deliver"
+                    };
+                    log::info!(
+                        "reload cleanup: pid={} plugin={plugin_id} client={client_id} generation={:?} subscribed={wants_before_close} disposed={} failed={} cancel={} tripped={} reason={cleanup_reason}",
+                        std::process::id(), running_plugin.env().deno_generation,
+                        running_plugin.is_disposed(), running_plugin.failed,
+                        running_plugin.env().cancel.load(Ordering::Acquire),
+                        running_plugin.env().cancel_tripped.load(Ordering::Acquire),
+                    );
                     if client_id == first_client_id
                         || running_plugin.env().plugin_config.is_shared()
                     {

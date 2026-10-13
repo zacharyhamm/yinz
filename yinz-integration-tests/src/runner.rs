@@ -449,6 +449,16 @@ impl CliClientHandle {
 }
 
 impl TestSession {
+    /// Hold the PTY thread at its next metadata read until the test releases it.
+    pub fn hold_next_metadata_collection(&self) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+        self.fake_server_os_api.hold_next_metadata_collection()
+    }
+
+    pub fn run_cli_action_async(&self, action: CliAction) -> CliClientHandle {
+        CliClientHandle {
+            thread: self.spawn_cli_client(action).0,
+        }
+    }
     pub fn session_name(&self) -> &str {
         &self.session_name
     }

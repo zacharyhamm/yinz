@@ -416,6 +416,7 @@ pub enum PtyContext {
     LogLayoutToHd,
     SaveSessionToDisk,
     FillPluginCwd,
+    ReloadPlugin,
     DumpLayoutToPlugin,
     ListClientsMetadata,
     Reconfigure,

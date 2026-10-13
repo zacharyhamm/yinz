@@ -223,6 +223,9 @@ impl PluginMap {
     pub(crate) fn remember_plugin(&mut self, id: PluginId, metadata: PluginMetadata) {
         self.plugin_metadata.insert(id, metadata);
     }
+    pub(crate) fn cached_metadata(&self, id: PluginId) -> Option<&PluginMetadata> {
+        self.plugin_metadata.get(&id)
+    }
     pub fn retire_instances(&mut self, plugin: PluginId) {
         for ((id, _), unavailable) in &self.availability {
             if *id == plugin {

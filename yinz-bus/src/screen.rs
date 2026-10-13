@@ -159,6 +159,7 @@ pub enum ScreenInstruction {
         plugin_id: PluginId,
         tab_index: Option<TabId>,
         response_channel: crossbeam::channel::Sender<DumpSessionLayoutResponse>,
+        trace: crate::plugins::LayoutQueryTrace,
     },
     GetFocusedPaneInfo {
         client_id: ClientId,

@@ -63,9 +63,26 @@ pub struct FakeServerOsApi {
     cwds: Arc<Mutex<HashMap<ProcessId, PathBuf>>>,
     orphan_sweeps: Arc<Mutex<Vec<String>>>,
     orphan_sweep_error: Arc<Mutex<Option<String>>>,
+    metadata_barrier: Arc<Mutex<Option<MetadataBarrier>>>,
+}
+
+struct MetadataBarrier {
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 impl FakeServerOsApi {
+    pub fn hold_next_metadata_collection(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered, reached) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *self.metadata_barrier.lock().unwrap() = Some(MetadataBarrier {
+            entered,
+            release: released,
+        });
+        (reached, release)
+    }
     pub fn set_orphan_sweep_error(&self, error: String) {
         *self.orphan_sweep_error.lock().unwrap() = Some(error);
     }
@@ -276,6 +293,14 @@ impl ServerOsApi for FakeServerOsApi {
         &self,
         pids: Vec<ProcessId>,
     ) -> (HashMap<ProcessId, PathBuf>, HashMap<ProcessId, Vec<String>>) {
+        let barrier = self.metadata_barrier.lock().unwrap().take();
+        if let Some(barrier) = barrier {
+            barrier.entered.send(()).unwrap();
+            barrier
+                .release
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+        }
         // A fake pane runs no process of its own, so both halves are answered from
         // what it was spawned with rather than from the OS. The command half used
         // to be left empty, which left every pane looking like it ran nothing —

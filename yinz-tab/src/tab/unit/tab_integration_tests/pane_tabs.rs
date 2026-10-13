@@ -2,6 +2,7 @@ use super::*;
 use crate::tab::{AcceptedPane, ExtractedPanePlacement};
 use yinz_bus::pty::PtyInstruction;
 use yinz_types::data::Event;
+use yinz_types::input::layout::Run;
 use yinz_types::internal_ids::PluginId;
 use yinz_types::keys::{BareKey, KeyWithModifier};
 use yinz_types::pane_tabs::*;
@@ -1056,4 +1057,445 @@ fn terminal_and_panel_tabs_retain_terminal_through_switch_transfer_and_close() {
     assert!(destination
         .get_pane_with_id(PaneId::Plugin(panel))
         .is_none());
+}
+
+#[test]
+fn panel_dismissal_finishes_in_the_focus_transition_before_reveal() {
+    for companion_active in [false, true] {
+        for focus_path in 0..6 {
+            let (mut tab, _receiver) = create_new_tab_with_plugin_receiver(
+                Size { cols: 80, rows: 24 },
+                ModeInfo::default(),
+            );
+            let client = ClientId::new(1);
+            let panel = PaneId::Plugin(PluginId::new(100));
+            tab.new_pane(
+                panel,
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+                Some(client),
+                None,
+            )
+            .unwrap();
+            let mut panel_layout = layout();
+            panel_layout.tabs[usize::from(companion_active)].location = "yinz:agents".into();
+            tab.mount_pane_tabs(panel, panel_layout, 0, client).unwrap();
+            assert_eq!(tab.get_active_pane_id(client), Some(panel));
+            if focus_path >= 3 {
+                let floating = PaneId::Terminal(TerminalId::new(3));
+                tab.new_floating_pane(floating, None, None, false, false, None, None)
+                    .unwrap();
+                tab.focus_pane_with_id(floating, false, false, client)
+                    .unwrap();
+                assert_eq!(tab.get_active_pane_id(client), Some(floating));
+                assert!(!tab.overlay_panes.is_hidden(&panel));
+                if focus_path % 3 != 1 {
+                    tab.hide_floating_panes();
+                }
+            }
+            match focus_path % 3 {
+                0 => tab.release_overlay_focus_to_lower_layer(client),
+                1 => tab
+                    .focus_pane_with_id(PaneId::Terminal(TerminalId::new(1)), false, false, client)
+                    .unwrap(),
+                _ => tab
+                    .new_pane(
+                        PaneId::Terminal(TerminalId::new(2)),
+                        None,
+                        None,
+                        false,
+                        true,
+                        NewPanePlacement::default(),
+                        Some(client),
+                        None,
+                    )
+                    .unwrap(),
+            }
+            assert!(tab.overlay_panes.is_hidden(&panel), "panel must be hidden before focus completes: companion={companion_active}, path={focus_path}");
+            tab.focus_pane_with_id(panel, true, false, client).unwrap();
+            assert!(!tab.overlay_panes.is_hidden(&panel));
+            assert_eq!(tab.get_active_pane_id(client), Some(panel));
+        }
+    }
+}
+
+#[test]
+fn panel_dismissal_preserves_another_clients_panel_during_tiled_navigation() {
+    for companion_active in [false, true] {
+        let (mut tab, _receiver) =
+            create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+        let client = ClientId::new(1);
+        let other = ClientId::new(2);
+        let tiled = PaneId::Terminal(TerminalId::new(1));
+        let next = PaneId::Terminal(TerminalId::new(2));
+        tab.new_pane(
+            next,
+            None,
+            None,
+            false,
+            false,
+            NewPanePlacement::default(),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        tab.connected_clients.borrow_mut().insert(other);
+        let panel = add_agents_panel(&mut tab, companion_active, other);
+        assert_eq!(tab.get_active_pane_id(client), Some(tiled));
+        assert_eq!(tab.get_active_pane_id(other), Some(panel));
+
+        tab.focus_next_pane(client);
+
+        assert_eq!(tab.get_active_pane_id(client), Some(next));
+        assert!(!tab.overlay_panes.is_hidden(&panel));
+        assert_eq!(tab.get_active_pane_id(other), Some(panel));
+    }
+}
+
+#[test]
+fn panel_dismissal_finishes_when_floating_panes_are_hidden_closed_or_extracted() {
+    for companion_active in [false, true] {
+        for action in ["hide", "close", "extract"] {
+            let (mut tab, _receiver) = create_new_tab_with_plugin_receiver(
+                Size { cols: 80, rows: 24 },
+                ModeInfo::default(),
+            );
+            let client = ClientId::new(1);
+            let other = ClientId::new(2);
+            let tiled = PaneId::Terminal(TerminalId::new(1));
+            let floating = PaneId::Terminal(TerminalId::new(2));
+            let panel = add_agents_panel(&mut tab, companion_active, client);
+            tab.new_floating_pane(floating, None, None, false, false, None, None)
+                .unwrap();
+            tab.focus_pane_with_id(floating, false, false, client)
+                .unwrap();
+            let unrelated = PaneId::Plugin(PluginId::new(101));
+            tab.connected_clients.borrow_mut().insert(other);
+            tab.new_pane(
+                unrelated,
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+                Some(other),
+                None,
+            )
+            .unwrap();
+            assert_eq!(tab.get_active_pane_id(client), Some(floating));
+            assert!(!tab.overlay_panes.is_hidden(&panel));
+            assert_eq!(tab.get_active_pane_id(other), Some(unrelated));
+
+            match action {
+                "hide" => tab.hide_floating_panes(),
+                "close" => tab.close_pane(floating, false, None),
+                "extract" => assert!(tab.extract_pane(floating, true).is_some()),
+                _ => unreachable!(),
+            }
+
+            assert!(!tab.floating_panes.panes_are_shown());
+            assert_eq!(tab.get_active_pane_id(client), Some(tiled));
+            assert!(
+                tab.overlay_panes.is_hidden(&panel),
+                "companion={companion_active}, action={action}"
+            );
+            assert!(!tab.overlay_panes.is_hidden(&unrelated));
+            assert_eq!(tab.get_active_pane_id(other), Some(unrelated));
+            tab.focus_pane_with_id(panel, true, false, client).unwrap();
+            assert!(!tab.overlay_panes.is_hidden(&panel));
+            assert_eq!(tab.get_active_pane_id(client), Some(panel));
+            tab.hide_floating_panes();
+            assert!(!tab.overlay_panes.is_hidden(&panel));
+            assert_eq!(tab.get_active_pane_id(client), Some(panel));
+        }
+    }
+}
+
+#[test]
+fn panel_dismissal_preserves_overlay_focus_when_hiding_floating_panes() {
+    for companion_active in [false, true] {
+        for focused_overlay in ["panel", "modal", "unrelated"] {
+            let (mut tab, _receiver) = create_new_tab_with_plugin_receiver(
+                Size { cols: 80, rows: 24 },
+                ModeInfo::default(),
+            );
+            let client = ClientId::new(1);
+            let floating = PaneId::Terminal(TerminalId::new(2));
+            let panel = add_agents_panel(&mut tab, companion_active, client);
+            tab.new_floating_pane(floating, None, None, false, false, None, None)
+                .unwrap();
+            tab.focus_pane_with_id(floating, false, false, client)
+                .unwrap();
+            let focused = if focused_overlay == "panel" {
+                tab.focus_pane_with_id(panel, true, false, client).unwrap();
+                panel
+            } else {
+                let overlay = PaneId::Plugin(PluginId::new(101));
+                tab.new_pane(
+                    overlay,
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::Overlay(if focused_overlay == "modal" {
+                        OverlayPlacement::modal(None)
+                    } else {
+                        OverlayPlacement::dismissible(None)
+                    }),
+                    Some(client),
+                    None,
+                )
+                .unwrap();
+                overlay
+            };
+            assert!(tab.floating_panes.panes_are_shown());
+            assert_eq!(tab.get_active_pane_id(client), Some(focused));
+
+            tab.hide_floating_panes();
+
+            assert!(!tab.floating_panes.panes_are_shown());
+            assert_eq!(tab.get_active_pane_id(client), Some(focused));
+            assert!(!tab.overlay_panes.is_hidden(&focused));
+            assert!(!tab.overlay_panes.is_hidden(&panel));
+        }
+    }
+}
+
+#[test]
+fn panel_dismissal_waits_for_the_last_client_on_any_container_member() {
+    use yinz_types::multipane::*;
+
+    for companion_active in [false, true] {
+        for sibling_focused in [false, true] {
+            for focus_path in 0..4 {
+                let (mut tab, _receiver) = create_new_tab_with_plugin_receiver(
+                    Size { cols: 80, rows: 24 },
+                    ModeInfo::default(),
+                );
+                let client = ClientId::new(1);
+                let other = ClientId::new(2);
+                let tiled = PaneId::Terminal(TerminalId::new(1));
+                let panel = add_agents_panel(&mut tab, companion_active, client);
+                let protected = if sibling_focused {
+                    let sibling = PaneId::Plugin(PluginId::new(101));
+                    tab.new_pane(
+                        sibling,
+                        None,
+                        None,
+                        false,
+                        false,
+                        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+                        Some(client),
+                        None,
+                    )
+                    .unwrap();
+                    tab.create_multipane(
+                        [panel, sibling],
+                        MultipaneSplit {
+                            direction: MultipaneDirection::LeftRight,
+                            ratio: 5000,
+                        },
+                        0,
+                        OverlayPlacement::dismissible(None),
+                    )
+                    .unwrap();
+                    sibling
+                } else {
+                    panel
+                };
+                tab.connected_clients.borrow_mut().insert(other);
+                tab.focus_pane_with_id(protected, true, false, other)
+                    .unwrap();
+                assert_eq!(tab.get_active_pane_id(client), Some(panel));
+                assert_eq!(tab.get_active_pane_id(other), Some(protected));
+
+                match focus_path {
+                    0 => tab.release_overlay_focus_to_lower_layer(client),
+                    1 => tab.focus_pane_with_id(tiled, false, false, client).unwrap(),
+                    2 => tab
+                        .new_pane(
+                            PaneId::Terminal(TerminalId::new(2)),
+                            None,
+                            None,
+                            false,
+                            true,
+                            NewPanePlacement::default(),
+                            Some(client),
+                            None,
+                        )
+                        .unwrap(),
+                    _ => {
+                        let floating = PaneId::Terminal(TerminalId::new(2));
+                        tab.new_floating_pane(floating, None, None, false, false, None, None)
+                            .unwrap();
+                        tab.focus_pane_with_id(floating, false, false, client)
+                            .unwrap();
+                        assert_eq!(tab.get_active_pane_id(client), Some(floating));
+                        tab.hide_floating_panes();
+                        assert_eq!(tab.get_active_pane_id(client), Some(tiled));
+                    },
+                }
+                assert!(!tab.overlay_holds_focus(client));
+                assert!(!tab.overlay_panes.is_hidden(&panel));
+                assert!(!tab.overlay_panes.is_hidden(&protected));
+                assert_eq!(tab.get_active_pane_id(other), Some(protected));
+
+                tab.focus_pane_with_id(tiled, false, false, other).unwrap();
+                assert!(tab.overlay_panes.is_hidden(&panel));
+                assert!(tab.overlay_panes.is_hidden(&protected));
+                assert_eq!(tab.get_active_pane_id(other), Some(tiled));
+                tab.focus_pane_with_id(panel, true, false, other).unwrap();
+                assert!(!tab.overlay_panes.is_hidden(&panel));
+                assert!(!tab.overlay_panes.is_hidden(&protected));
+                assert_eq!(tab.get_active_pane_id(other), Some(panel));
+
+                assert!(tab.hide_overlay_pane(panel));
+                assert!(tab.overlay_panes.is_hidden(&panel));
+                assert!(tab.overlay_panes.is_hidden(&protected));
+            }
+        }
+    }
+}
+
+#[test]
+fn panel_dismissal_ignores_another_clients_unrelated_overlay_focus() {
+    for companion_active in [false, true] {
+        let (mut tab, _receiver) =
+            create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+        let client = ClientId::new(1);
+        let other = ClientId::new(2);
+        let tiled = PaneId::Terminal(TerminalId::new(1));
+        let panel = add_agents_panel(&mut tab, companion_active, client);
+        let unrelated = PaneId::Plugin(PluginId::new(101));
+        tab.connected_clients.borrow_mut().insert(other);
+        tab.new_pane(
+            unrelated,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            Some(other),
+            None,
+        )
+        .unwrap();
+        assert_eq!(tab.get_active_pane_id(client), Some(panel));
+        assert_eq!(tab.get_active_pane_id(other), Some(unrelated));
+
+        tab.focus_pane_with_id(tiled, false, false, client).unwrap();
+
+        assert!(tab.overlay_panes.is_hidden(&panel));
+        assert_eq!(tab.get_active_pane_id(client), Some(tiled));
+        assert!(!tab.overlay_panes.is_hidden(&unrelated));
+        assert_eq!(tab.get_active_pane_id(other), Some(unrelated));
+    }
+}
+
+fn add_agents_panel(tab: &mut Tab, companion_active: bool, client: ClientId) -> PaneId {
+    let panel = PaneId::Plugin(PluginId::new(100));
+    let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        if companion_active {
+            "yinz:fixture-plugin-for-tests"
+        } else {
+            "yinz:agents"
+        },
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.new_pane(
+        panel,
+        None,
+        Some(Run::Plugin(run)),
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    if companion_active {
+        let mut panel_layout = layout();
+        panel_layout.tabs[1].location = "yinz:agents".into();
+        tab.mount_pane_tabs(panel, panel_layout, 0, client).unwrap();
+    }
+    panel
+}
+
+#[test]
+fn panel_dismissal_preserves_modal_focus_and_unrelated_overlays() {
+    for modal in [false, true] {
+        let (mut tab, receiver) =
+            create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+        let client = ClientId::new(1);
+        let tiled = PaneId::Terminal(TerminalId::new(1));
+        let floating = PaneId::Terminal(TerminalId::new(2));
+        let panel = PaneId::Plugin(PluginId::new(100));
+        let other = PaneId::Plugin(PluginId::new(101));
+        let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            "yinz:agents",
+            &None,
+            None,
+            None,
+        )
+        .unwrap();
+        tab.new_pane(
+            panel,
+            None,
+            Some(Run::Plugin(run)),
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        tab.new_floating_pane(floating, None, None, false, false, None, None)
+            .unwrap();
+        tab.focus_pane_with_id(floating, false, false, client)
+            .unwrap();
+        assert_eq!(tab.get_active_pane_id(client), Some(floating));
+        assert!(!tab.overlay_panes.is_hidden(&panel));
+        tab.new_pane(
+            other,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(if modal {
+                OverlayPlacement::modal(None)
+            } else {
+                OverlayPlacement::dismissible(None)
+            }),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        receiver.try_iter().for_each(drop);
+        tab.focus_pane_with_id(tiled, false, false, client).unwrap();
+        assert_eq!(tab.overlay_panes.is_hidden(&panel), !modal);
+        assert!(!tab.overlay_panes.is_hidden(&other));
+        assert_eq!(
+            tab.get_active_pane_id(client),
+            Some(if modal { other } else { tiled })
+        );
+        let panel_hidden = receiver.try_iter().any(|(instruction, _)| {
+            matches!(instruction, PluginInstruction::Update(updates) if updates.contains(&(
+                Some(PluginId::new(100)), None, Event::Visible(false)
+            )))
+        });
+        assert_eq!(panel_hidden, !modal);
+        if modal {
+            tab.hide_overlay_pane(other);
+            tab.focus_pane_with_id(tiled, false, false, client).unwrap();
+            assert!(tab.overlay_panes.is_hidden(&panel));
+        }
+        tab.focus_pane_with_id(panel, true, false, client).unwrap();
+        assert!(!tab.overlay_panes.is_hidden(&panel));
+        assert_eq!(tab.get_active_pane_id(client), Some(panel));
+    }
 }

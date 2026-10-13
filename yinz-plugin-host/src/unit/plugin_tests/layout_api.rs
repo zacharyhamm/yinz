@@ -631,8 +631,14 @@ pub fn dump_session_layout_plugin_command() {
         default_timeout(),
         |instructions| {
             instructions.iter().skip(checkpoint).find_map(|i| {
-                if let ScreenInstruction::DumpLayoutToPlugin { .. } = i {
-                    return Some(i.clone());
+                if let ScreenInstruction::DumpLayoutToPlugin {
+                    plugin_id,
+                    tab_index,
+                    ..
+                } = i
+                {
+                    // The trace records variable timing; snapshot the requested plugin and tab.
+                    return Some((*plugin_id, *tab_index));
                 }
                 None
             })
@@ -717,8 +723,14 @@ pub fn dump_session_layout_for_tab_plugin_command() {
         default_timeout(),
         |instructions| {
             instructions.iter().skip(checkpoint).find_map(|i| {
-                if let ScreenInstruction::DumpLayoutToPlugin { .. } = i {
-                    return Some(i.clone());
+                if let ScreenInstruction::DumpLayoutToPlugin {
+                    plugin_id,
+                    tab_index,
+                    ..
+                } = i
+                {
+                    // The trace records variable timing; snapshot the requested plugin and tab.
+                    return Some((*plugin_id, *tab_index));
                 }
                 None
             })

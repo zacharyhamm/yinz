@@ -40,6 +40,42 @@ pub struct DumpSessionLayoutResponse {
     pub metadata: Option<yinz_types::data::LayoutMetadata>,
 }
 
+/// Bounded progress retained by the synchronous caller even when a downstream thread stalls.
+#[derive(Clone, Debug)]
+pub struct LayoutQueryTrace {
+    started: std::time::Instant,
+    stages: std::sync::Arc<
+        std::sync::Mutex<std::collections::VecDeque<(&'static str, std::time::Duration)>>,
+    >,
+}
+
+impl Default for LayoutQueryTrace {
+    fn default() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            stages: Default::default(),
+        }
+    }
+}
+
+impl LayoutQueryTrace {
+    pub fn mark(&self, stage: &'static str) {
+        let mut stages = self
+            .stages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if stages.len() == 16 {
+            // Keep the six routing stages when a layout contains many plugin lookups.
+            stages.remove(6);
+        }
+        stages.push_back((stage, self.started.elapsed()));
+    }
+}
+
+#[cfg(test)]
+#[path = "unit/layout_query_trace_tests.rs"]
+mod layout_query_trace_tests;
+
 /// The plugin id a state report is addressed to when no plugin wants it but a `yinz events`
 /// client does. No plugin ever has this id, so the plugin thread loads nothing for it and the
 /// report reaches the CLI subscribers alone. See `WasmBridge::forward_events_to_cli_subscribers`.
@@ -236,6 +272,7 @@ pub enum PluginInstruction {
         session_layout_metadata: SessionLayoutMetadata,
         plugin_id: PluginId,
         response_channel: crossbeam::channel::Sender<DumpSessionLayoutResponse>,
+        trace: LayoutQueryTrace,
     },
     LogLayoutToHd(SessionLayoutMetadata),
     CliPipe {

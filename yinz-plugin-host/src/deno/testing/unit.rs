@@ -1,25 +1,44 @@
 use super::*;
 
-#[test]
-fn installed_builtin_unit_suites() {
-    for name in yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES
-        .iter()
-        .copied()
-        .chain(["workflow-view"])
-    {
-        let report = run_named(
-            Path::new("/unused"),
-            name,
-            &PluginTestOptions {
+macro_rules! builtin_unit_suites {
+    ($($test:ident: $name:literal,)*) => {
+        $(#[test]
+        fn $test() {
+            let started = Instant::now();
+            eprintln!("builtin unit start: {}", $name);
+            let report = run_named(Path::new("/unused"), $name, &PluginTestOptions {
                 kind: PluginTestKind::Unit,
                 ..Default::default()
-            },
-            None,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert!(report.passed(), "{name}: {report:#?}");
-    }
+            }, None, &AtomicBool::new(false)).unwrap();
+            eprintln!("builtin unit done: {} {:?}", $name, started.elapsed());
+            assert!(report.passed(), "{}: {report:#?}", $name);
+        })*
+
+        #[test]
+        fn builtin_unit_suites_cover_the_catalog() {
+            let mut covered = vec![$($name),*];
+            let mut catalog = yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES.to_vec();
+            catalog.push("workflow-view");
+            covered.sort_unstable();
+            catalog.sort_unstable();
+            assert_eq!(covered, catalog);
+        }
+    };
+}
+
+builtin_unit_suites! {
+    builtin_unit_compact_bar: "compact-bar",
+    builtin_unit_tab_bar: "tab-bar",
+    builtin_unit_status_bar: "status-bar",
+    builtin_unit_context_menu: "context-menu",
+    builtin_unit_agent_policy: "agent-policy",
+    builtin_unit_agent_opencode: "agent-opencode",
+    builtin_unit_swamp_bridge: "swamp-bridge",
+    builtin_unit_swamp_workflow: "swamp-workflow",
+    builtin_unit_agent_exit: "agent-exit",
+    builtin_unit_mother_overview: "mother-overview",
+    builtin_unit_session_palette: "session-palette",
+    builtin_unit_workflow_view: "workflow-view",
 }
 
 #[test]

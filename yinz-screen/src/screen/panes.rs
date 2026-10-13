@@ -297,6 +297,8 @@ impl Screen {
             c.set_affected_pane_id(pid)
         }
 
+        let client_or_tab_index = self.resolve_pane_placement(client_or_tab_index);
+
         if let Some(c) = completion_tx.as_mut().filter(|_| !set_blocking) {
             c.wait_for_placement();
             if let Some(target) = &c.agent_tab {
@@ -317,15 +319,33 @@ impl Screen {
                 }
             }
         }
+        // The CLI can spawn before the initial NewTab arrives from the plugin thread.
+        if !self.has_created_tab
+            && matches!(
+                client_or_tab_index,
+                ClientTabIndexOrPaneId::ClientId(_) | ClientTabIndexOrPaneId::ClientIdNoFocus(_)
+            )
+            && completion_tx.as_ref().is_none_or(|c| c.agent_tab.is_none())
+        {
+            pending.waiting_for_tab.push(ScreenInstruction::NewPane(
+                pid,
+                initial_pane_title,
+                hold_for_command,
+                invoked_with,
+                new_pane_placement,
+                start_suppressed,
+                client_or_tab_index,
+                completion_tx,
+                set_blocking,
+            ));
+            return Ok(());
+        }
+
         let blocking_notification = if set_blocking {
             completion_tx.take()
         } else {
             None
         };
-
-        // Resolve a plugin-pane target first: when the plugin has not been placed yet,
-        // agent placement must reason from the client's current tab instead.
-        let client_or_tab_index = self.resolve_pane_placement(client_or_tab_index);
 
         // An agent's pane may be sent to a roomier tab than the one it was asked for,
         // or to a tab of its own - `agent_pane_target` says when. Every other pane
@@ -386,6 +406,9 @@ impl Screen {
             }, ?);
                     if should_focus_pane {
                         self.sync_scroll_mode_on_focus(client_id)?;
+                    }
+                    if placed_in.is_none() {
+                        self.forget_unplaced_pane(pid, "destination tab no longer exists".into());
                     }
                 },
                 ClientTabIndexOrPaneId::TabIndex(tab_index)

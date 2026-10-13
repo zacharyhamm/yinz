@@ -487,11 +487,71 @@ fn shortcuts_are_subtle_on_selected_and_unselected_rows() {
                     assert_eq!(character.styles.dim, Some(AnsiCode::On));
                     assert_eq!(
                         character.styles.background,
-                        characters[layout.border].styles.background
+                        characters[layout.border + 2].styles.background
                     );
                 }
             }
         }
+    }
+}
+
+#[test]
+fn semantic_spaces_have_a_background_but_alignment_padding_does_not() {
+    let mut palette = palette();
+    for entry in &mut palette.entries {
+        entry.shortcut = "Ctrl n".into();
+        entry.description = "界".repeat(80);
+    }
+    for selected in ["new", "pane"] {
+        palette.select_id(selected);
+        for cols in [50, 80] {
+            let layout = palette.layout(Viewport {
+                cols,
+                rows: 24,
+                ..Default::default()
+            });
+            for chunk in palette.chunks(&layout, &Style::default()) {
+                let cells = &chunk.terminal_characters;
+                let text: String = cells.iter().map(|cell| cell.character).collect();
+                for semantic in [
+                    "New pane",
+                    "日本語 terminal",
+                    "Ctrl n",
+                    "Do · Project: None",
+                    "Select  Enter",
+                ] {
+                    if let Some(offset) = text.find(semantic) {
+                        let start = text[..offset].chars().count();
+                        for cell in &cells[start..start + semantic.chars().count()] {
+                            assert!(
+                                !matches!(cell.styles.background, None | Some(AnsiCode::Reset)),
+                                "{text:?}"
+                            );
+                        }
+                    }
+                }
+                if !text.contains('›') && text.contains("Ctrl n") {
+                    let end = text.find("Ctrl n").unwrap();
+                    let padding = text[..end].chars().count() - 1;
+                    assert_eq!(cells[padding].character, ' ');
+                    assert_eq!(cells[padding].styles.background, Some(AnsiCode::Reset));
+                }
+            }
+        }
+    }
+    palette.set_query("日本語 ".into());
+    let layout = palette.layout(Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    });
+    let chunks = palette.chunks(&layout, &Style::default());
+    let input = &chunks[layout.input_y - layout.rect.y].terminal_characters;
+    for cell in &input[layout.border..layout.border + "> 日本語 ".chars().count()] {
+        assert!(!matches!(
+            cell.styles.background,
+            None | Some(AnsiCode::Reset)
+        ));
     }
 }
 

@@ -59,8 +59,8 @@ fn companion_visibility_tracks_the_panel_without_giving_agents_the_keyboard() {
     });
     state.update(Event::PaneUpdate(departed));
     assert_eq!(
-        state.panel_hides, 1,
-        "leaving the companion dismisses the panel"
+        state.panel_hides, 0,
+        "the host dismisses on focus departure; an older update must not hide again"
     );
     manifest.panes.get_mut(&TabPosition::new(0)).unwrap()[1].is_suppressed = true;
     state.update(Event::PaneUpdate(manifest));
@@ -5831,4 +5831,31 @@ fn the_key_sheet_wraps_rather_than_cuts_at_the_default_width() {
         state.footer_hint().as_deref(),
         Some("Esc/? close · j/k scroll")
     );
+}
+
+#[test]
+fn a_delayed_launcher_hide_cannot_reverse_a_later_panel_reveal() {
+    let mut state = State::default();
+    state.set_rows(unfocused(strip()));
+    state.selected = 2;
+    state.own_pane_changed(true, true);
+    state.hide_the_panel();
+    state.own_pane_changed(false, false);
+    state.own_pane_changed(true, true);
+    let hides = state.panel_hides;
+    // Deliver the old launcher's asynchronous hide only after the next visit starts.
+    state.pipe(PipeMessage::new(
+        PipeSource::Plugin(PluginId::new(99)),
+        "agent_strip_hide",
+        &None,
+        &None,
+        false,
+    ));
+    assert_eq!(
+        state.panel_hides, hides,
+        "a completed dismissal cannot hide the new visit"
+    );
+    assert!(state.pane_shown);
+    assert!(state.keys_here());
+    assert_eq!(state.selected, 2);
 }

@@ -71,6 +71,63 @@ macro_rules! send_to_screen_or_retry_queue {
     }};
 }
 
+fn subscribe_to_events(
+    senders: Option<&ThreadSenders>,
+    os_input: &dyn ServerOsApi,
+    client_id: ClientId,
+    instruction: ClientToServerMsg,
+    retry_queue: Option<&mut VecDeque<ClientToServerMsg>>,
+) -> Result<()> {
+    let ClientToServerMsg::SubscribeToEvents {
+        ref event_types,
+        ref options,
+    } = instruction
+    else {
+        unreachable!("event subscription handler");
+    };
+    let lifecycle = event_types.iter().any(|t| t == "agent_lifecycle");
+    if !lifecycle && options != &yinz_ipc::ipc::EventSubscription::default() {
+        os_input
+            .send_to_client(
+                client_id,
+                ServerToClientMsg::LogError {
+                    lines: vec!["lifecycle filters require --event-type agent_lifecycle".into()],
+                },
+            )
+            .context("reject event filters")?;
+        return Ok(());
+    }
+    let Some(senders) = senders else {
+        if let Some(retry_queue) = retry_queue {
+            retry_queue.push_back(instruction);
+        }
+        return Ok(());
+    };
+    let event_types: Vec<_> = event_types
+        .iter()
+        .filter(|t| *t != "agent_lifecycle")
+        .cloned()
+        .collect();
+    if lifecycle {
+        senders
+            .send_to_screen(ScreenInstruction::SubscribeAgentEvents(
+                client_id,
+                options.clone(),
+            ))
+            .context("subscribe to agent events")?;
+    }
+    if lifecycle && event_types.is_empty() {
+        return Ok(());
+    }
+    senders
+        .send_to_plugin(PluginInstruction::SubscribeCliClientToEvents {
+            client_id,
+            event_types,
+        })
+        .context("subscribe to CLI events")?;
+    Ok(())
+}
+
 fn enqueue_agent_report(
     senders: Option<&ThreadSenders>,
     report: yinz_types::agent::report::AgentReport,
@@ -899,25 +956,8 @@ pub(crate) fn route_thread_main(
                                 retry_queue
                             );
                         },
-                        ClientToServerMsg::SubscribeToEvents { ref event_types, ref options } => {
-                            let lifecycle = event_types.iter().any(|t| t == "agent_lifecycle");
-                            if !lifecycle && options != &yinz_ipc::ipc::EventSubscription::default() {
-                                os_input.send_to_client(client_id, ServerToClientMsg::LogError { lines: vec!["lifecycle filters require --event-type agent_lifecycle".into()] }).context("reject event filters")?;
-                                return Ok(false);
-                            }
-                            let event_types: Vec<_> = event_types.iter().filter(|t| *t != "agent_lifecycle").cloned().collect();
-                            if lifecycle {
-                                let _ = send_to_screen_or_retry_queue!(senders, ScreenInstruction::SubscribeAgentEvents(client_id, options.clone()), instruction, retry_queue);
-                            }
-                            if lifecycle && event_types.is_empty() { return Ok(false); }
-                            if let Some(senders) = senders.as_ref() {
-                                let _ = senders.send_to_plugin(
-                                    PluginInstruction::SubscribeCliClientToEvents {
-                                        client_id,
-                                        event_types: event_types.clone(),
-                                    },
-                                );
-                            }
+                        ClientToServerMsg::SubscribeToEvents { .. } => {
+                            subscribe_to_events(senders.as_ref(), os_input.as_ref(), client_id, instruction, retry_queue.as_deref_mut())?;
                         },
                         ClientToServerMsg::NestedSessionFrameFromHost { ref payload_bytes } => {
                             match yinz_ipc::nested_session::decode_payload(payload_bytes) {

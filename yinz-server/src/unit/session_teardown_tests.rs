@@ -94,3 +94,32 @@ fn detach_client_tells_both_threads_once() {
         "plugins got {plugin:?}"
     );
 }
+
+#[test]
+fn removal_queues_cleanup_before_reusing_the_connection_id() {
+    let (screen_tx, screen_rx) = channels::unbounded();
+    // Pause cleanup at the plugin queue, after the screen has been notified.
+    let (plugin_tx, plugin_rx) = channels::bounded(0);
+    let session = Arc::new(RwLock::new(Some(session_with(
+        SenderWithContext::new(screen_tx),
+        SenderWithContext::new(plugin_tx),
+    ))));
+    let state = Arc::new(RwLock::new(SessionState::new()));
+    let old = state.write().unwrap().new_client();
+    let removing_state = state.clone();
+    let removing_session = session.clone();
+    let removing = std::thread::spawn(move || {
+        let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
+        remove_client_and_flush_forwards(old, &mut os, &removing_state, &removing_session);
+    });
+    let cleanup = screen_rx.recv_timeout(Duration::from_secs(2));
+    let replacement = state.write().unwrap().new_client();
+    // Always release the sender before asserting, including on a regression.
+    let plugin_cleanup = plugin_rx.recv_timeout(Duration::from_secs(2));
+    drop(plugin_rx);
+    removing.join().unwrap();
+    assert!(matches!(cleanup.unwrap().0, ScreenInstruction::RemoveClient(id) if id == old));
+    assert_ne!(replacement, old, "cleanup still owns the old connection ID");
+    assert!(matches!(plugin_cleanup.unwrap().0, PluginInstruction::RemoveClient(id) if id == old));
+    assert_eq!(state.write().unwrap().new_client(), old);
+}

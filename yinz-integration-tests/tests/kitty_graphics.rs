@@ -130,7 +130,7 @@ export default {{
 
 #[test]
 fn one_shot_deno_image_reaches_host_without_a_recovery_redraw() {
-    for (width, height) in [(10, 20), (23, 43)] {
+    for (width, height, hold_pty) in [(10, 20, false), (23, 43, true)] {
         let directory = tempfile::tempdir().unwrap();
         let plugin = directory.path().join("one-shot.ts");
         let png = include_bytes!("../../yinz-test-support/assets/graphics.png");
@@ -177,6 +177,36 @@ export default {{
                 contains_bytes(bytes, b"\x1b_Ga=t,q=2,") && contains_bytes(bytes, b"\x1b_Ga=p,q=2,")
             },
         );
+        let instance_id = || {
+            let response = yinz_client::store_client::plugin_request(
+                &yinz.session_name().into(),
+                yinz_types::cli::PluginRequest {
+                    operation: yinz_types::cli::PluginOperation::Inspect,
+                    target: Some(plugin.display().to_string()),
+                    configuration: None,
+                    fallback: Some(yinz_types::input::layout::RunPlugin {
+                        location: yinz_types::input::layout::RunPluginLocation::File(
+                            plugin.clone(),
+                        ),
+                        ..Default::default()
+                    }),
+                    candidates: vec![],
+                    caller: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(response.plugins.len(), 1, "{response:?}");
+            response.plugins[0].id
+        };
+        let original_id = instance_id();
+        let held = hold_pty.then(|| {
+            let (entered, release) = yinz.hold_next_metadata_collection();
+            let dump = yinz.run_cli_action_async(yinz_cli::args::CliAction::DumpLayout);
+            entered
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            (release, dump)
+        });
         let before_close = yinz.raw_bytes().len();
         yinz.send_stdin(&keys::ctrl('p'));
         yinz.send_stdin(&keys::key('x'));
@@ -184,17 +214,62 @@ export default {{
             contains_bytes(&bytes[before_close..], b"\x1b_Ga=d,q=2,d=I,i=")
         });
         let before_reopen = yinz.raw_bytes().len();
-        let (code, output) =
-            yinz.run_cli_action_reporting(yinz_cli::args::CliAction::StartOrReloadPlugin {
-                url: format!("file:{}", plugin.display()),
-                configuration: None,
-                configuration_json: None,
-            });
+        let reopen = yinz_cli::args::CliAction::StartOrReloadPlugin {
+            url: format!("file:{}", plugin.display()),
+            configuration: None,
+            configuration_json: None,
+        };
+        let (code, output) = if let Some((release, dump)) = held {
+            std::thread::scope(|scope| {
+                let (finished, completion) = std::sync::mpsc::channel();
+                let session = &yinz;
+                scope.spawn(move || {
+                    finished
+                        .send(session.run_cli_action_reporting(reopen))
+                        .unwrap()
+                });
+                // Screen has removed the pane, but its unload is still behind this barrier.
+                let premature = completion.recv_timeout(std::time::Duration::from_millis(250));
+                release.send(()).unwrap();
+                assert_eq!(dump.wait_for_exit(), 0);
+                assert!(
+                    matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+                    "reopen overtook the queued unload: {premature:?}"
+                );
+                completion
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+            })
+        } else {
+            yinz.run_cli_action_reporting(reopen)
+        };
         assert_eq!(code, 0, "{output}");
         yinz.wait_until_raw_output("another image plugin works in the same session", |bytes| {
             let tail = &bytes[before_reopen..];
             contains_bytes(tail, b"\x1b_Ga=t,q=2,") && contains_bytes(tail, b"\x1b_Ga=p,q=2,")
         });
+        let reopened_id = instance_id();
+        assert_ne!(
+            original_id, reopened_id,
+            "reopening installs a new pane after unload"
+        );
+        let before_reload = yinz.raw_bytes().len();
+        assert_eq!(
+            yinz.run_cli_action(yinz_cli::args::CliAction::StartOrReloadPlugin {
+                url: format!("file:{}", plugin.display()),
+                configuration: None,
+                configuration_json: None,
+            }),
+            0
+        );
+        yinz.wait_until_raw_output(
+            "live reload transmits and places its replacement image",
+            |bytes| {
+                let tail = &bytes[before_reload..];
+                contains_bytes(tail, b"\x1b_Ga=t,q=2,") && contains_bytes(tail, b"\x1b_Ga=p,q=2,")
+            },
+        );
+        assert_eq!(instance_id(), reopened_id, "live reload retains its pane");
         yinz.quit();
     }
 }

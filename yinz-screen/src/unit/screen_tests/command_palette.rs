@@ -13,6 +13,62 @@ fn screen() -> Screen {
     screen
 }
 
+#[test]
+fn palette_text_spaces_cover_dividers_and_dismissal_restores_them() {
+    let mut screen = screen();
+    screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .horizontal_split(
+            PaneId::Terminal(TerminalId::new(2)),
+            None,
+            None,
+            CLIENT,
+            None,
+            None,
+        )
+        .unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    for opacity in [85, 0, 100, 85] {
+        let mut config = test_screen_config();
+        config.background_opacity = opacity;
+        screen
+            .reconfigure(config, Keybinds::default(), CLIENT)
+            .unwrap();
+        let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let cells = grid.as_character_lines();
+        assert_eq!(cells[11][17].character, '─', "{before}");
+        screen.toggle_command_palette(CLIENT);
+        for step in 0..=6 {
+            let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+            assert!(
+                frame.contains("Archived agents…"),
+                "opacity={opacity}, step={step}:\n{frame}"
+            );
+            if step < 5 {
+                palette_key(&mut screen, BareKey::Down);
+            } else {
+                palette_key(&mut screen, BareKey::Up);
+            }
+        }
+        screen
+            .resize_to_screen(Size { cols: 70, rows: 24 })
+            .unwrap();
+        grid.change_size(24, 70);
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("Archived agents…"), "{frame}");
+        screen.resize_to_screen(SIZE).unwrap();
+        grid.change_size(SIZE.rows, SIZE.cols);
+        screen.close_command_palette(CLIENT);
+        assert_eq!(
+            render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+            before
+        );
+        assert_eq!(grid.as_character_lines(), cells);
+    }
+}
+
 fn floating_only_screen() -> Screen {
     let mut screen = screen();
     let tab = screen.get_active_tab_mut(CLIENT).unwrap();

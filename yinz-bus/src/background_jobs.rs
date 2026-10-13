@@ -1266,11 +1266,25 @@ pub fn background_jobs_main(
     };
     if let Some(task) = checkpoint_task {
         let started = Instant::now();
-        log::info!("shutdown: aborting checkpoint task");
+        log::info!(
+            "shutdown: aborting checkpoint task; {}",
+            bus.senders.session_checkpoint.progress()
+        );
         task.abort();
         // Cancellation takes effect at an await point. Join so an in-flight synchronous
         // checkpoint cannot publish after the server confirms shutdown.
-        let _ = runtime.block_on(task);
+        runtime.block_on(async {
+            let mut task = task;
+            loop {
+                tokio::select! {
+                    _ = &mut task => break,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                        log::warn!("shutdown: checkpoint join waiting after {:?}; {}",
+                            started.elapsed(), bus.senders.session_checkpoint.progress());
+                    }
+                }
+            }
+        });
         log::info!(
             "shutdown: checkpoint task joined after {:?}",
             started.elapsed()
@@ -1716,8 +1730,15 @@ fn job_already_running(
 pub struct SessionCheckpointWriter {
     cache_dir: PathBuf,
     name: Mutex<Option<SessionName>>,
+    progress: Mutex<CheckpointProgress>,
     #[cfg(test)]
     before_write: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+#[derive(Default)]
+struct CheckpointProgress {
+    waiting: usize,
+    phase: Option<(&'static str, Instant)>,
 }
 
 impl Default for SessionCheckpointWriter {
@@ -1725,6 +1746,7 @@ impl Default for SessionCheckpointWriter {
         Self {
             cache_dir: YINZ_SESSION_INFO_CACHE_DIR.clone(),
             name: Mutex::new(None),
+            progress: Mutex::default(),
             #[cfg(test)]
             before_write: None,
         }
@@ -1732,6 +1754,19 @@ impl Default for SessionCheckpointWriter {
 }
 
 impl SessionCheckpointWriter {
+    fn progress(&self) -> String {
+        let progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        format!(
+            "writer_mutex_waiters={} active={:?}",
+            progress.waiting,
+            progress
+                .phase
+                .map(|(phase, since)| (phase, since.elapsed()))
+        )
+    }
     pub fn write(
         &self,
         session_name: SessionName,
@@ -1742,18 +1777,35 @@ impl SessionCheckpointWriter {
         if let Some(before_write) = &self.before_write {
             before_write();
         }
-        let mut name = self
-            .name
+        self.progress
             .lock()
-            .map_err(|_| anyhow!("checkpoint lock poisoned"))?;
+            .unwrap_or_else(|error| error.into_inner())
+            .waiting += 1;
+        let name = self.name.lock();
+        self.progress
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .waiting -= 1;
+        let mut name = name.map_err(|_| anyhow!("checkpoint lock poisoned"))?;
         let name = name.get_or_insert(session_name);
         session_info.name = name.clone();
-        yinz_runtime::session_checkpoint::write_checkpoint(
+        let result = yinz_runtime::session_checkpoint::write_checkpoint_with_progress(
             &self.cache_dir.join(&*name),
             &yinz_session::metadata::session_info::to_string(&session_info)
                 .context("Failed to encode session metadata")?,
             layout,
-        )
+            |phase| {
+                self.progress
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .phase = Some((phase, Instant::now()));
+            },
+        );
+        self.progress
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .phase = None;
+        result
     }
 
     pub fn rename(&self, old: &SessionName, new: &SessionName) -> Result<()> {
@@ -1888,6 +1940,7 @@ mod tests {
         let writer = Arc::new(SessionCheckpointWriter {
             cache_dir: root.path().to_owned(),
             name: Mutex::new(None),
+            progress: Mutex::default(),
             #[cfg(test)]
             before_write: None,
         });
@@ -1943,6 +1996,7 @@ mod tests {
         let writer = SessionCheckpointWriter {
             cache_dir: root.path().to_owned(),
             name: Mutex::new(None),
+            progress: Mutex::default(),
             #[cfg(test)]
             before_write: None,
         };

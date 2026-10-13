@@ -2956,8 +2956,9 @@ fn deno_reload_by_url_interrupts_an_infinite_update_and_runs_the_replacement() {
         "js",
         r#"
 export default {
-  load() { yinz.subscribe(["Key"]); },
-  update() {
+  load() { yinz.subscribe(["Key", "BeforeClose"]); },
+  update(event) {
+    if (event === "BeforeClose") { yinz.command("SetSelectable", false); return false; }
     yinz.command("SetSelectable", false);
     for (;;) {}
   },
@@ -3005,10 +3006,17 @@ export default {
     harness.event(Event::Key(KeyWithModifier::new(BareKey::Char('b'))));
     harness.rendered("replacement alive keys=1");
     let log = harness.finish();
-    assert!(
-        log.iter()
-            .any(|i| matches!(i, ScreenInstruction::SetSelectable(_, true))),
-        "the replacement must have a fresh cancellation token and working host commands"
+    let selectable: Vec<_> = log
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::SetSelectable(_, value) => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        selectable,
+        [false, true],
+        "interrupted guests skip cleanup, and the replacement retains host access"
     );
     assert_eq!(
         log.iter()
@@ -3229,6 +3237,90 @@ export default {
             .count(),
         1
     );
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_reload_at_a_host_call_boundary_cleans_up_once_with_queued_work() {
+    for queued in [false, true] {
+        let harness = Harness::new(
+            "js",
+            r#"
+let ready = false;
+export default {
+  async load() {
+    await yinz.waitForPermissions(["ReadApplicationState"]);
+    yinz.subscribe(["BeforeClose", "Key"]);
+    ready = true;
+  },
+  update(event) {
+    if (event === "BeforeClose") { yinz.command("SetSelectable", false); return false; }
+    if (!event.Key) return false;
+    yinz.command("DumpSessionLayout", {});
+    return false;
+  },
+  render() { return ready ? "boundary original ready" : "waiting for permission"; }
+};
+"#,
+            PermissionStatus::Granted,
+        );
+        harness.load();
+        harness.rendered("boundary original ready");
+        harness.event(Event::Key(KeyWithModifier::new(BareKey::Char('a'))));
+        let reply =
+            harness
+                .log
+                .wait_until("guest paused in a host call", default_timeout(), |log| {
+                    log.iter().find_map(|instruction| match instruction {
+                        ScreenInstruction::DumpLayoutToPlugin {
+                            response_channel, ..
+                        } => Some(response_channel.clone()),
+                        _ => None,
+                    })
+                });
+        std::fs::write(
+            &harness.path,
+            r#"export default {
+          load() { yinz.command("SetSelectable", true); },
+          render() { return "boundary replacement ready"; }
+        };"#,
+        )
+        .unwrap();
+        if queued {
+            harness.event(Event::Key(KeyWithModifier::new(BareKey::Char('b'))));
+        }
+        harness
+            .sender
+            .send(PluginInstruction::ReloadPluginByUrl(run_plugin(
+                &harness.path,
+            )))
+            .unwrap();
+        harness.log.wait_until("reload received while guest is in its call", default_timeout(), |log| {
+            log.iter().any(|instruction| matches!(instruction,
+                ScreenInstruction::NotificationPolicyUnavailable { reason, .. } if reason == "policy_reloaded"
+            )).then_some(())
+        });
+        reply
+            .send(yinz_bus::plugins::DumpSessionLayoutResponse {
+                layout_result: Ok("layout {}".into()),
+                metadata: None,
+            })
+            .unwrap();
+        harness.rendered("boundary replacement ready");
+        let log = harness.finish();
+        let selectable: Vec<_> = log
+            .iter()
+            .filter_map(|instruction| match instruction {
+                ScreenInstruction::SetSelectable(_, value) => Some(*value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            selectable,
+            [false, true],
+            "queued={queued}: cleanup precedes replacement exactly once"
+        );
+    }
 }
 
 #[test]
