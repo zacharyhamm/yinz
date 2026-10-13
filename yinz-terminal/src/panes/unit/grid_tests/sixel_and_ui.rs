@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+fn oversized_sixel_dcs_is_discarded_and_terminal_output_recovers() {
+    let mut grid = create_grid_with_content("");
+    *grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 8,
+        height: 6,
+    });
+    feed_bytes(&mut grid, b"\x1bPq\"1;1;1;99999~ignored\x1b\\recovered");
+    assert_eq!(grid.sixel_grid.sixel_image_store.borrow().image_count(), 0);
+    assert_eq!(viewport_texts(&grid)[0].trim_end(), "recovered");
+    feed_bytes(&mut grid, b"\x1bPq~\x1b\\");
+    assert_eq!(grid.sixel_grid.sixel_image_store.borrow().image_count(), 1);
+    let (_, _, chunks, _) = grid.render(0, 0, &Style::default()).unwrap().unwrap();
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].sixel_image_pixel_width, 1);
+    assert_eq!(chunks[0].sixel_image_pixel_height, 6);
+}
+
 fn serialize_sixel_chunk(
     store: &mut SixelImageStore,
     chunk: &crate::output::SixelImageChunk,
