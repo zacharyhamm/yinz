@@ -277,13 +277,6 @@ fn assert_socket(name: &SessionName) -> Result<SessionProbe, io::ErrorKind> {
                 "attach trace: probe {name:?} connect failed after {:?}: {e}",
                 started_at.elapsed(),
             );
-            if kind == io::ErrorKind::ConnectionRefused {
-                // Nobody is listening, so the socket outlived its server: clean it up.
-                // Deliberately not reachable from the timeout above — a wedged server
-                // is still running, and deleting its socket would strand it with no
-                // way for any client to ever find it again.
-                drop(fs::remove_file(path));
-            }
             classify_probe_connect_error(kind)
         },
     }
@@ -475,7 +468,7 @@ pub fn validate_session_name(name: &str) -> Result<(), String> {
             "Session name cannot be empty. Please provide a specific session name.".to_string(),
         );
     }
-    if name == "." || name == ".." {
+    if name == "." || name == ".." || name == yinz_ipc::consts::SESSION_OWNERSHIP_DIR {
         return Err(format!("Invalid session name: \"{}\".", name));
     }
     if name.contains('/') {
@@ -519,7 +512,28 @@ pub fn read_live_session_states(
         });
     }
 
-    for (session_name, creation_time) in other_session_names {
+    // Start every probe before joining so BSD stale-socket retries overlap.
+    let probes: Vec<_> = other_session_names
+        .into_iter()
+        .map(|(session_name, creation_time)| {
+            let socket_path = sock_dir.join(&session_name);
+            std::thread::spawn(move || {
+                if let Err(error) = yinz_ipc::consts::ipc_connect(&socket_path) {
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                    ) {
+                        return None;
+                    }
+                }
+                Some((session_name, creation_time))
+            })
+        })
+        .collect();
+    for (session_name, creation_time) in probes
+        .into_iter()
+        .filter_map(|probe| probe.join().ok().flatten())
+    {
         let raw_session_info = SessionCheckpoint::read(&session_info_cache_dir.join(&session_name))
             .and_then(|checkpoint| {
                 fs::read_to_string(checkpoint.metadata_path())

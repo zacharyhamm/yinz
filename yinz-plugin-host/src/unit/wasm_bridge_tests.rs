@@ -177,6 +177,7 @@ impl TestBridge {
             to_pty_writer: Some(SenderWithContext::new(to_pty_writer)),
             to_background_jobs: Some(SenderWithContext::new(to_background_jobs)),
             session_checkpoint: Default::default(),
+            session_ownership: None,
             should_silently_fail: false,
         };
         let data_dir = tempdir().unwrap();

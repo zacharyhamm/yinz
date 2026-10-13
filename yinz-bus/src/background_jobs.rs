@@ -2234,10 +2234,7 @@ mod tests {
         );
     }
 
-    /// "Live" means a socket file of that name exists: nothing here connects to it, so a socket
-    /// left behind by a crashed server reads as live too. That is production's definition as
-    /// well (`read_live_session_states` only stats the directory entry), not a shortcut of the
-    /// test.
+    /// Stale sockets stay on disk but their checkpoints are offered for resurrection.
     #[test]
     fn scan_session_list_separates_live_from_resurrectable() {
         let sock_dir = tempdir().unwrap();
@@ -2252,6 +2249,7 @@ mod tests {
         for name in ["dead-a", "dead-b"] {
             publish(info_dir.path(), name);
         }
+        drop(make_socket(sock_dir.path(), "dead-b"));
 
         let (live, resurrectable) = scan("me", sock_dir.path(), info_dir.path());
         assert_eq!(
@@ -2265,6 +2263,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["dead-a", "dead-b"]
         );
+        assert!(sock_dir.path().join("dead-b").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scan_session_list_keeps_a_full_backlog_live() {
+        use std::os::fd::AsRawFd;
+        let sock_dir = tempdir().unwrap();
+        let info_dir = tempdir().unwrap();
+        publish(info_dir.path(), "busy");
+        let listener = make_socket(sock_dir.path(), "busy");
+        // Safety: the listener owns this socket; only its backlog limit changes.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+        let path = sock_dir.path().join("busy");
+        let _first = yinz_ipc::consts::ipc_connect(&path).unwrap();
+        let _second = yinz_ipc::consts::ipc_connect(&path).unwrap();
+        let (live, resurrectable) = scan("me", sock_dir.path(), info_dir.path());
+        assert!(live.contains_key(&SessionName::new("busy")));
+        assert!(resurrectable.is_empty());
+        assert!(path.exists());
     }
 }
 

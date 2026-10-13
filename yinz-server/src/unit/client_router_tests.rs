@@ -215,6 +215,7 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
             to_background_jobs: Some(SenderWithContext::new(to_background_jobs)),
             to_server: Some(to_server.clone()),
             session_checkpoint: Default::default(),
+            session_ownership: None,
             should_silently_fail: true,
         },
         data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(

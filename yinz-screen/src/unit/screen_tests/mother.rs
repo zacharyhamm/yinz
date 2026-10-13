@@ -243,7 +243,13 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
     screen.bus.os_input = Some(Box::new(os));
     let socket_dir = &*yinz_runtime::consts::YINZ_SOCK_DIR;
     std::fs::create_dir_all(socket_dir).unwrap();
-    let listener = yinz_ipc::consts::ipc_bind(&socket_dir.join(&old)).unwrap();
+    let ownership = std::sync::Arc::new(
+        yinz_ipc::session_ownership::SessionOwnership::acquire(&socket_dir.join(&old))
+            .unwrap()
+            .unwrap(),
+    );
+    let listener = ownership.bind().unwrap();
+    screen.bus.senders.session_ownership = Some(ownership.clone());
     let (connections, accepted) = mpsc::channel();
     let acceptor = std::thread::spawn(move || {
         for _ in 0..5 {
@@ -355,6 +361,16 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
         generation
     );
     assert!(!socket_dir.join(&old).exists());
+    assert!(
+        yinz_ipc::session_ownership::SessionOwnership::acquire(&socket_dir.join(&new))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        yinz_ipc::session_ownership::SessionOwnership::acquire(&socket_dir.join(&old))
+            .unwrap()
+            .is_some()
+    );
     let mut renamed = connect();
     assert!(renamed.2.cursor.is_none());
     let work = yinz_config::project_config::bubblewrap::mother_directory(
@@ -1833,7 +1849,13 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
     screen.session_name = old.clone();
     std::fs::create_dir_all(&*YINZ_SOCK_DIR).unwrap();
     let old_socket = YINZ_SOCK_DIR.join(&old);
-    let _old = UnixListener::bind(&old_socket).unwrap();
+    let ownership = std::sync::Arc::new(
+        yinz_ipc::session_ownership::SessionOwnership::acquire(&old_socket)
+            .unwrap()
+            .unwrap(),
+    );
+    let _old = ownership.bind().unwrap();
+    screen.bus.senders.session_ownership = Some(ownership);
     let cache = session_info_folder_for_session(&old);
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("sentinel"), "old").unwrap();
@@ -1841,6 +1863,13 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
     let target_socket = YINZ_SOCK_DIR.join(&target);
     let target_cache = session_info_folder_for_session(&target);
     let mother = screen.mother;
+    let destination_claim = yinz_ipc::session_ownership::SessionOwnership::acquire(&target_socket)
+        .unwrap()
+        .unwrap();
+    screen.rename_session(target.clone(), CLIENT).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert!(!target_socket.exists());
+    drop(destination_claim);
     let _target = UnixListener::bind(&target_socket).unwrap();
     screen.rename_session(target.clone(), CLIENT).unwrap();
     assert_eq!(screen.session_name, old);
@@ -1848,8 +1877,10 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
     std::fs::remove_file(&target_socket).unwrap();
     std::fs::create_dir_all(&target_cache).unwrap();
     std::fs::write(target_cache.join("sentinel"), "target").unwrap();
+    drop(UnixListener::bind(&target_socket).unwrap());
     screen.rename_session(target.clone(), CLIENT).unwrap();
     assert_eq!(screen.session_name, old);
+    assert!(yinz_ipc::consts::ipc_connect(&old_socket).is_ok());
     assert_eq!(
         std::fs::read_to_string(target_cache.join("sentinel")).unwrap(),
         "target"
@@ -1861,7 +1892,7 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
     assert_eq!(screen.session_name, old);
     std::fs::remove_file(&target_socket).unwrap();
     std::os::unix::fs::symlink(&target_cache, &target_cache).unwrap();
-    screen.rename_session(target, CLIENT).unwrap();
+    screen.rename_session(target.clone(), CLIENT).unwrap();
     assert_eq!(screen.session_name, old);
     screen.rename_session(old.clone(), CLIENT).unwrap();
     assert_eq!(screen.mother, mother);
@@ -1870,7 +1901,64 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
         "old"
     );
     assert!(old_socket.exists());
-    std::fs::remove_file(target_cache).unwrap();
-    std::fs::remove_file(old_socket).unwrap();
+    std::fs::remove_file(&target_cache).unwrap();
+    std::fs::remove_file(&old_socket).unwrap();
+    // Fail after moving the checkpoint: the missing source socket forces rollback.
+    screen.rename_session(target, CLIENT).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert_eq!(
+        std::fs::read_to_string(cache.join("sentinel")).unwrap(),
+        "old"
+    );
+    assert!(!target_cache.exists());
+    assert!(
+        yinz_ipc::session_ownership::SessionOwnership::acquire(&old_socket)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        yinz_ipc::session_ownership::SessionOwnership::acquire(&target_socket)
+            .unwrap()
+            .is_some()
+    );
     std::fs::remove_dir_all(cache).unwrap();
+}
+
+#[test]
+fn rename_session_reclaims_stale_destination_despite_cached_live_entry() {
+    use yinz_ipc::session_ownership::SessionOwnership;
+    use yinz_runtime::consts::{session_info_folder_for_session, YINZ_SOCK_DIR};
+    use yinz_types::internal_ids::SessionName;
+    let mut screen = screen_with_mother();
+    let old: SessionName = format!("rename-old-{}", uuid::Uuid::new_v4()).into();
+    let target: SessionName = format!("rename-stale-{}", uuid::Uuid::new_v4()).into();
+    screen.session_name = old.clone();
+    std::fs::create_dir_all(&*YINZ_SOCK_DIR).unwrap();
+    let old_socket = YINZ_SOCK_DIR.join(&old);
+    let target_socket = YINZ_SOCK_DIR.join(&target);
+    let ownership = std::sync::Arc::new(SessionOwnership::acquire(&old_socket).unwrap().unwrap());
+    let _listener = ownership.bind().unwrap();
+    let cache = session_info_folder_for_session(&old);
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("sentinel"), "preserved").unwrap();
+    drop(std::os::unix::net::UnixListener::bind(&target_socket).unwrap());
+    // Without a claim, even a stale socket must be left alone.
+    screen.rename_session(target.clone(), CLIENT).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert!(target_socket.exists());
+    screen.bus.senders.session_ownership = Some(ownership);
+    screen.peer_sessions_cache.insert(
+        target.clone(),
+        yinz_types::data::SessionInfo::new(target.clone()),
+    );
+    screen.rename_session(target.clone(), CLIENT).unwrap();
+    assert_eq!(screen.session_name, target);
+    assert!(!old_socket.exists());
+    assert!(yinz_ipc::consts::ipc_connect(&target_socket).is_ok());
+    assert_eq!(
+        std::fs::read_to_string(session_info_folder_for_session(&target).join("sentinel")).unwrap(),
+        "preserved"
+    );
+    assert!(SessionOwnership::acquire(&target_socket).unwrap().is_none());
+    std::fs::remove_dir_all(session_info_folder_for_session(&target)).unwrap();
 }

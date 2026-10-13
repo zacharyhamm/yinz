@@ -923,6 +923,7 @@ impl MockScreen {
                 to_background_jobs: Some(to_background_jobs.clone()),
                 to_server: Some(to_server.clone()),
                 session_checkpoint: Default::default(),
+                session_ownership: None,
                 should_silently_fail: true,
             },
             config_file_path: None,
