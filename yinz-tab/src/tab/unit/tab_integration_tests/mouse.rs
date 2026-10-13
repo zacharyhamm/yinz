@@ -3555,11 +3555,17 @@ fn clipboard_without_terminal_bytes_still_reports_completion() {
         // Empty input avoids depending on when the command closes stdin.
         tab.write_selection_to_clipboard("").unwrap();
         assert!(server_rx.try_recv().is_err());
-        assert!(plugin_rx
-            .try_iter()
-            .any(|(instruction, _)| matches!(instruction,
-            PluginInstruction::Update(events) if events.iter().any(|(_, _, event)|
-                matches!(event, Event::CopyToClipboard(actual) if *actual == destination)))));
+        let deadline = std::time::Instant::now() + yinz_test_support::default_timeout();
+        loop {
+            let (instruction, _) = plugin_rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("clipboard completion");
+            if matches!(instruction, PluginInstruction::Update(events) if events.iter().any(|(_, _, event)|
+                matches!(event, Event::CopyToClipboard(actual) if *actual == destination)))
+            {
+                break;
+            }
+        }
     }
 }
 
@@ -3623,5 +3629,42 @@ fn closing_a_pane_during_mouse_resize_cancels_the_drag_on_every_surface() {
         )
         .unwrap();
         assert!(tab.pane_being_resized_with_mouse.is_none());
+    }
+}
+
+#[test]
+fn clipboard_command_failures_report_failure_without_success() {
+    use crate::tab::clipboard::ClipboardProvider;
+    use crate::tab::copy_command::CopyCommand;
+    use yinz_test_support::{default_timeout, write_warm_script};
+    use yinz_types::data::Event;
+
+    let dir = tempfile::tempdir().unwrap();
+    let closes_stdin = dir.path().join("closes-stdin");
+    write_warm_script(&closes_stdin, "exec 0<&-\nexit 0");
+    for command in [dir.path().join("missing"), closes_stdin] {
+        let (mut tab, plugin_rx) =
+            create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+        tab.clipboard_provider =
+            ClipboardProvider::Command(CopyCommand::new(command.display().to_string()));
+        tab.write_selection_to_clipboard(&"x".repeat(4 * 1024 * 1024))
+            .unwrap();
+        let deadline = std::time::Instant::now() + default_timeout();
+        loop {
+            let (instruction, _) = plugin_rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("clipboard failure notification");
+            if let PluginInstruction::Update(events) = instruction {
+                assert!(!events
+                    .iter()
+                    .any(|(_, _, event)| matches!(event, Event::CopyToClipboard(_))));
+                if events
+                    .iter()
+                    .any(|(_, _, event)| matches!(event, Event::SystemClipboardFailure))
+                {
+                    break;
+                }
+            }
+        }
     }
 }

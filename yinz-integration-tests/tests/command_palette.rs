@@ -1974,7 +1974,7 @@ fn session_palette_confirms_killing_others_and_deleting_their_saved_state() {
     source.send_stdin(b"\x1b[B\r");
     destination.wait_for_exit();
     source.wait_until("kill completed", |s| {
-        !s.contains("Esc Close") && !s.contains("Esc Back")
+        !s.contains("Esc Close") && !s.contains("Esc Back") && !s.contains("Working…")
     });
     assert!(!shell.is_exited(), "bulk kill excludes the current session");
 
@@ -1995,7 +1995,8 @@ fn session_palette_confirms_killing_others_and_deleting_their_saved_state() {
     source.wait_until("delete confirmation reopened", |s| s.contains("Cancel"));
     source.send_stdin(b"\x1b[B\r");
     source.wait_until("deletion acknowledged", |s| {
-        !s.contains("Esc Close") && !s.contains("Esc Back")
+        // The pending view replaces Esc Back with Working… Esc Cancel before deletion runs.
+        !s.contains("Esc Close") && !s.contains("Esc Back") && !s.contains("Working…")
     });
     assert!(!saved.exists());
     source.quit();

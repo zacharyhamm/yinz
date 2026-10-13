@@ -154,6 +154,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-terminal",
             "yinz-bus",
             "yinz-panes",
+            "yinz-test-support",
         ],
     ),
     (
@@ -221,7 +222,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// generated code to build. The screen's tests drive it with parsed CLI actions and the pty's tests
 /// assert on IPC messages and recorded events and wait with test-support's timeouts, but neither
 /// thread names those crates otherwise.
-/// The tab's tests parse KDL layouts and stand up client IPC channels, which the tab never does.
+/// The tab's tests parse KDL layouts, stand up client IPC channels, and warm clipboard helpers.
 /// The TypeScript builtins' tests hold their files to the runtime's name list, but the builtins
 /// name no crate, so the sources the plugin host embeds never wait on or rebuild with the runtime.
 const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
@@ -234,7 +235,10 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
         "yinz-pty",
         &["yinz-ipc", "yinz-storage", "yinz-test-support"],
     ),
-    ("yinz-tab", &["yinz-config", "yinz-ipc"]),
+    (
+        "yinz-tab",
+        &["yinz-config", "yinz-ipc", "yinz-test-support"],
+    ),
     ("yinz-panes", &["yinz-config", "yinz-tile"]),
     ("yinz-deno-builtins", &["yinz-runtime"]),
 ];
