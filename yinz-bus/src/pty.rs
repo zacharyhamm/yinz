@@ -425,6 +425,7 @@ pub enum PtyInstruction {
         session_layout_metadata: SessionLayoutMetadata,
         plugin_id: PluginId,
         response_channel: crossbeam::channel::Sender<DumpSessionLayoutResponse>,
+        trace: crate::plugins::LayoutQueryTrace,
     },
     LogLayoutToHd(SessionLayoutMetadata),
     SaveSessionToDisk {
@@ -452,6 +453,14 @@ pub enum PtyInstruction {
         // the plugin's own `overlay`/`modal` configuration
         Option<OverlayPlacement>,
     ),
+    ReloadPlugin {
+        should_float: Option<bool>,
+        pane_title: Option<String>,
+        run_plugin: RunPluginOrAlias,
+        tab_index: TabId,
+        size: Size,
+        completion_tx: Option<NotificationEnd>,
+    },
     ListClientsMetadata(SessionLayoutMetadata, ClientId, Option<NotificationEnd>),
     Reconfigure {
         client_id: ClientId,

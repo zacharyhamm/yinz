@@ -23,12 +23,20 @@ fn installed_builtin_typescript_integration_suites() {
 fn installed_integration_failure_and_timeout_reap_the_owned_session() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("cleanup.integration.test.ts");
-    for body in ["throw Error('intentional failure')", "while(true){}"] {
+    for (body, failure) in [
+        ("throw Error('intentional failure')", "intentional failure"),
+        ("while(true){}", "deadline"),
+        (
+            "console.log('x'.repeat(65536)); throw Error('large output failure')",
+            "large output failure",
+        ),
+    ] {
         std::fs::write(&path,format!("import {{test,session}} from 'yinz:testing'; test('cleanup',()=>{{session.start(); {body};}});")).unwrap();
         let report = yinz_server::plugin_testing::run(
             &path,
             &PluginTestOptions {
-                timeout_ms: 3000,
+                // Discovery and server startup must finish under parallel suite load.
+                timeout_ms: 30_000,
                 ..Default::default()
             },
             None,
@@ -36,6 +44,26 @@ fn installed_integration_failure_and_timeout_reap_the_owned_session() {
         )
         .unwrap();
         assert!(!report.passed(), "{report:#?}");
+        assert_eq!(report.tests.len(), 1, "{report:#?}");
+        assert_eq!(
+            report.tests[0].name, "cleanup",
+            "case execution must follow discovery: {report:#?}"
+        );
+        assert!(
+            report.tests[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains(failure)),
+            "expected case failure {failure}: {report:#?}"
+        );
+        assert!(
+            report.tests[0].output.contains("owned server pid: "),
+            "{report:#?}"
+        );
+        assert!(
+            report.tests[0].output.len() <= 32 * 1024,
+            "output stays bounded: {report:#?}"
+        );
         assert_server_gone(&report.tests[0].output);
         // The runner's result follows shutdown and waitpid. A teardown failure is reported
         // separately and cannot turn the original failure into a successful cleanup.
@@ -44,6 +72,37 @@ fn installed_integration_failure_and_timeout_reap_the_owned_session() {
             "{report:#?}"
         );
     }
+}
+
+#[test]
+fn installed_integration_discovery_failure_has_no_owned_server() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("discovery.integration.test.ts");
+    std::fs::write(&path, "throw Error('controlled discovery failure');").unwrap();
+    let report = yinz_server::plugin_testing::run(
+        &path,
+        &PluginTestOptions::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(report.tests.len(), 1, "{report:#?}");
+    let test = &report.tests[0];
+    assert_eq!(
+        Path::new(&test.name),
+        path.canonicalize().unwrap(),
+        "{report:#?}"
+    );
+    assert!(
+        test.error
+            .as_deref()
+            .is_some_and(|error| error.contains("controlled discovery failure")),
+        "{report:#?}"
+    );
+    assert!(
+        !test.output.contains("owned server pid:"),
+        "discovery must not claim to own a server: {report:#?}"
+    );
 }
 
 #[test]
@@ -158,7 +217,7 @@ fn assert_server_gone(output: &str) {
     let pid = output
         .split("owned server pid: ")
         .nth(1)
-        .expect("owned server diagnostic")
+        .unwrap_or_else(|| panic!("owned server diagnostic missing from full output:\n{output}"))
         .lines()
         .next()
         .unwrap();
@@ -203,6 +262,15 @@ test('server crash', {grants:['RunCommands']}, async () => {
     )
     .unwrap();
     assert!(!report.passed(), "{report:#?}");
+    assert_eq!(report.tests.len(), 1, "{report:#?}");
+    assert_eq!(report.tests[0].name, "server crash", "{report:#?}");
+    assert!(
+        report.tests[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("cleanup:")),
+        "server death must be reported during cleanup: {report:#?}"
+    );
     assert!(
         report.tests[0].error.as_ref().unwrap().contains("signal"),
         "{report:#?}"

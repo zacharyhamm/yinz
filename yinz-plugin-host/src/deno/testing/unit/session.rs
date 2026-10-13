@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn bounded_post_shutdown_diagnostics_keep_the_owned_pid() {
+    let root = tempfile::tempdir().unwrap();
+    let child = Command::new("/usr/bin/true").spawn().unwrap();
+    let mut session = OwnedSession {
+        root,
+        child,
+        stopped: false,
+    };
+    session.child.wait().unwrap();
+    session.shutdown().unwrap();
+    assert!(session.stopped);
+    assert!(session.child.try_wait().unwrap().is_some());
+    fs::write(session.root().join("server.log"), "λ".repeat(OUTPUT_LIMIT)).unwrap();
+    fs::write(
+        session.root().join("diagnostics"),
+        format!("{}\npost-shutdown evidence\n", "x".repeat(OUTPUT_LIMIT)),
+    )
+    .unwrap();
+    let diagnostics = session.diagnostics();
+    let mut output = "case output".repeat(OUTPUT_LIMIT);
+    append_bounded(&mut output, &diagnostics);
+    assert!(output.len() <= OUTPUT_LIMIT);
+    assert!(output.contains("post-shutdown evidence"));
+    assert!(output.ends_with(&format!("owned server pid: {}\n", session.child.id())));
+}
+
+#[test]
 fn shutdown_reaps_the_child_even_when_ipc_connection_fails() {
     let root = tempfile::tempdir().unwrap();
     let child = Command::new("/bin/sh")
@@ -112,4 +139,24 @@ fn raw_actions_cannot_launch_or_reconfigure() {
             "{error}"
         );
     }
+}
+
+#[test]
+fn disposable_sessions_do_not_schedule_durable_metadata_checkpoints() {
+    let mut session = OwnedSession::new().unwrap();
+    let entry = session.root().join("case.test.ts");
+    fs::write(&entry, "").unwrap();
+    let loader = PluginModuleLoader::for_tests(&entry, session.root()).unwrap();
+    let mut controller = Controller::new(session.root().to_owned(), vec![]);
+    controller.call("start", json!({}), &loader).unwrap();
+    session.shutdown().unwrap();
+    let diagnostics = session.diagnostics();
+    assert!(
+        diagnostics.contains("background jobs received Exit"),
+        "{diagnostics}"
+    );
+    assert!(
+        !diagnostics.contains("aborting checkpoint task"),
+        "disposable servers must not wait for durable checkpoint IO: {diagnostics}"
+    );
 }

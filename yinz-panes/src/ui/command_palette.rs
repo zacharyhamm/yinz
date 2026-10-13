@@ -1324,6 +1324,7 @@ impl CommandPalette {
             .into();
         let border: RcCharacterStyles = RESET_STYLES
             .foreground(Some(style.colors.text_unselected.emphasis_0.into()))
+            .background(Some(style.colors.text_unselected.background.into()))
             .into();
         let selected: RcCharacterStyles = RESET_STYLES
             .foreground(Some(style.colors.text_selected.base.into()))
@@ -1337,6 +1338,7 @@ impl CommandPalette {
         (rect.y..rect.y + rect.rows)
             .map(|y| {
                 let mut shortcut_start = usize::MAX;
+                let mut label_span = 0..usize::MAX;
                 let (text, styles) = if layout.border == 1 && y == rect.y {
                     (
                         format!(
@@ -1471,14 +1473,20 @@ impl CommandPalette {
                             let max_lines = (line + remaining).min(2);
                             let lines = self.entry_lines(*index, width, max_lines);
                             let prefix = if is_selected && *line == 0 { "› " } else { "  " };
-                            let label = format!("{}{}", take_columns(prefix, label_width.saturating_sub(1).min(2)),
+                            let prefix = take_columns(prefix, label_width.saturating_sub(1).min(2));
+                            let label = format!("{prefix}{}",
                                 lines.get(*line).map(String::as_str).unwrap_or(""));
+                            let label = take_columns(&label, label_width);
+                            let indent = if *line == 0 { prefix.chars().count() } else {
+                                label.chars().take_while(|c| c.is_whitespace()).count()
+                            };
+                            label_span = indent..label.chars().count();
                             if *line == 0 && !shortcut.is_empty() {
                                 let label = fit(&label, label_width, ' ');
                                 shortcut_start = label.chars().count() + 1;
                                 format!("{label} {shortcut}")
                             } else {
-                                take_columns(&label, label_width)
+                                label
                             }
                         } else if self.matches.is_empty() && y == layout.options_y {
                             if self.picker == Some(EntryKind::Project)
@@ -1511,6 +1519,8 @@ impl CommandPalette {
                     } else {
                         (String::new(), fill.clone())
                     };
+                    let text_len = text.chars().count();
+                    label_span.end = label_span.end.min(text_len);
                     let text = fit(
                         &text
                             .chars()
@@ -1519,7 +1529,14 @@ impl CommandPalette {
                         width,
                         ' ',
                     );
-                    let subtle: RcCharacterStyles = styles.dim(Some(AnsiCode::On)).into();
+                    // Semantic spaces cover backing glyphs; alignment and fill stay translucent.
+                    let text_styles: RcCharacterStyles = styles
+                        .background(Some(match styles.background {
+                            None | Some(AnsiCode::Reset) => style.colors.text_unselected.background.into(),
+                            Some(background) => background,
+                        }))
+                        .into();
+                    let subtle: RcCharacterStyles = text_styles.dim(Some(AnsiCode::On)).into();
                     let mut characters = Vec::new();
                     if layout.border == 1 {
                         characters.push(TerminalCharacter::new_styled('│', border.clone()));
@@ -1527,8 +1544,10 @@ impl CommandPalette {
                     characters.extend(text.chars().enumerate().map(|(index, c)| {
                         TerminalCharacter::new_styled(
                             c,
-                            if index >= shortcut_start {
+                            if (shortcut_start..text_len).contains(&index) {
                                 subtle.clone()
+                            } else if label_span.contains(&index) {
+                                text_styles.clone()
                             } else {
                                 styles.clone()
                             },

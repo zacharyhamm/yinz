@@ -671,17 +671,6 @@ impl YinzPlugin for State {
             self.reposition();
             return false;
         }
-        if pipe_message.name == wire::AGENT_STRIP_HIDE {
-            if pipe_message
-                .args
-                .get(wire::PANEL_TAB)
-                .and_then(|tab| tab.parse::<TabPosition>().ok())
-                .is_none_or(|tab| self.panel.own_tab == Some(tab))
-            {
-                self.hide_the_panel();
-            }
-            return true;
-        }
         if pipe_message.name == wire::AGENT_STRIP_YIELD {
             return self.take_ring_stop(Some(wire::STOP_TABS));
         }
@@ -712,7 +701,6 @@ impl State {
             wire::AGENT_HELLO
                 | wire::AGENT_SNAPSHOT
                 | wire::AGENT_STRIP_REPOSITION
-                | wire::AGENT_STRIP_HIDE
                 | wire::AGENT_STRIP_YIELD
                 | wire::AGENT_STRIP_TAKE
         ) {
@@ -2091,8 +2079,7 @@ impl State {
     /// The panel stays up under the modal, as it does under the Todos tab's `n`. A modal that
     /// closes hands the keyboard back to the pane it took it from, so one put away with Esc
     /// hands the keys back to this list. One that starts an agent focuses the new pane, and the
-    /// `wire::AGENT_STRIP_HIDE` the modal sends as it hands the focus over (its
-    /// `hand_over_focus`) puts the panel away then. Hiding the panel before opening the modal,
+    /// modal hides the panel directly before handing focus over. Hiding the panel before opening the modal,
     /// as `activate` does before a focus, turned that Esc into a trip to whatever was under
     /// the panel.
     fn act_on_the_agent(&mut self, fork: bool) -> bool {

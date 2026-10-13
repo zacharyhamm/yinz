@@ -554,9 +554,8 @@ impl SessionMetaData {
 }
 
 impl SessionMetaData {
-    /// Tell the screen and plugin threads a client is gone: the last step of every path that
-    /// removes one. Non-fatal, because the only way either send fails is that the thread has
-    /// already exited, and then there is nothing left to tell.
+    /// Queue consumer cleanup before releasing the connection ID for reuse.
+    /// A failed send means that consumer has already exited.
     fn detach_client(&self, client_id: ClientId) {
         self.senders
             .send_to_screen(ScreenInstruction::RemoveClient(client_id))
@@ -657,6 +656,7 @@ fn remove_client_and_flush_forwards(
     let _ = os_input.remove_client(client_id);
     with_session_mut(session_data, |session| {
         session.command_palette_restore_modes.remove(&client_id);
+        session.detach_client(client_id);
     });
     let stuck_tokens = session_state.write().unwrap().remove_client(client_id);
     if stuck_tokens.is_empty() {
@@ -1535,9 +1535,6 @@ pub fn start_server_impl(
                 // Check if this is a watcher
                 let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
                 if is_watcher {
-                    // Remove from SessionState watchers set
-                    session_state.write().unwrap().remove_watcher(client_id);
-
                     // Also notify Screen to remove watcher
                     if let Some(session_data) = session_data.write().unwrap().as_ref() {
                         let _ = session_data
@@ -1549,14 +1546,14 @@ pub fn start_server_impl(
                         .remove_client(client_id)
                         .context("removing a watcher client")
                         .non_fatal();
+                    session_state.write().unwrap().remove_watcher(client_id);
                 } else {
                     if let Some(session_data) = session_data.write().unwrap().as_mut() {
                         session_data.remove_key_passthrough_client(client_id);
                     }
                     // Handle regular client removal
                     remove_client!(client_id, os_input, session_state, session_data);
-                    drop(completion_tx); // prevent deadlock with route thread
-                    with_session(&session_data, |session| session.detach_client(client_id));
+                    drop(completion_tx); // cleanup is queued before the action completes
                     if !session_state.read().unwrap().active_clients_are_connected() {
                         // Refuse new connections now; join workers after leaving the server
                         // loop, once its bounded receiver has been disconnected.
@@ -1595,9 +1592,6 @@ pub fn start_server_impl(
                 // Check if this is a watcher
                 let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
                 if is_watcher {
-                    // Remove from SessionState watchers set
-                    session_state.write().unwrap().remove_watcher(client_id);
-
                     // Also notify Screen to remove watcher
                     if let Some(session_data) = session_data.write().unwrap().as_ref() {
                         let _ = session_data
@@ -1609,13 +1603,13 @@ pub fn start_server_impl(
                         .remove_client(client_id)
                         .context("removing a watcher client")
                         .non_fatal();
+                    session_state.write().unwrap().remove_watcher(client_id);
                 } else {
                     if let Some(session_data) = session_data.write().unwrap().as_mut() {
                         session_data.remove_key_passthrough_client(client_id);
                     }
                     // Handle regular client removal
                     remove_client!(client_id, os_input, session_state, session_data);
-                    with_session(&session_data, |session| session.detach_client(client_id));
                 }
             },
             ServerInstruction::KillSession | ServerInstruction::KillSessionWithCompletion(_) => {
@@ -1623,6 +1617,7 @@ pub fn start_server_impl(
                 if let ServerInstruction::KillSessionWithCompletion(client_id) = instruction {
                     kill_completion_client = Some(client_id);
                 }
+                // Keep IDs reserved until exit; disconnect cleanup would cancel plugin unload.
                 let client_ids = session_state.read().unwrap().client_ids();
                 for client_id in client_ids {
                     if Some(client_id) == kill_completion_client {
@@ -1634,7 +1629,7 @@ pub fn start_server_impl(
                             exit_reason: ExitReason::Normal,
                         },
                     );
-                    remove_client!(client_id, os_input, session_state, session_data);
+                    let _ = os_input.remove_client(client_id);
                 }
                 kill_session = true;
                 exit_reason = "KillSession";
@@ -1671,13 +1666,7 @@ pub fn start_server_impl(
                     );
                     remove_client!(*client_id, os_input, session_state, session_data);
                 }
-                drop(completion_tx); // we do this here explicitly to signal that the clients have
-                                     // already disconnected and to prevent a deadlock below caused
-                                     // by us having to wait for session_data to send cleanup
-                                     // signals to the various threads
-                for client_id in client_ids {
-                    with_session(&session_data, |session| session.detach_client(client_id));
-                }
+                drop(completion_tx); // cleanup is queued before the action completes
             },
             ServerInstruction::Render(serialized_output) => {
                 let client_ids = session_state.read().unwrap().client_ids();
@@ -1713,7 +1702,7 @@ pub fn start_server_impl(
                         }
                     }
                 } else {
-                    // Session is exiting - disconnect all regular clients
+                    // Keep IDs reserved for shutdown so plugin unload can finish.
                     for client_id in client_ids {
                         let _ = os_input.send_to_client(
                             client_id,
@@ -1721,7 +1710,7 @@ pub fn start_server_impl(
                                 exit_reason: ExitReason::Normal,
                             },
                         );
-                        remove_client!(client_id, os_input, session_state, session_data);
+                        let _ = os_input.remove_client(client_id);
                     }
 
                     // Also disconnect all watchers
@@ -1739,13 +1728,14 @@ pub fn start_server_impl(
                                 exit_reason: ExitReason::Normal,
                             },
                         );
-                        remove_client!(watcher_id, os_input, session_state, session_data);
+                        let _ = os_input.remove_client(watcher_id);
                     }
                     exit_reason = "the last pane closed";
                     break;
                 }
             },
             ServerInstruction::Error(backtrace) => {
+                // Session shutdown owns cleanup; these connection IDs cannot be reused.
                 let client_ids = session_state.read().unwrap().client_ids();
                 for client_id in client_ids {
                     let _ = os_input.send_to_client(
@@ -1754,7 +1744,7 @@ pub fn start_server_impl(
                             exit_reason: ExitReason::Error(backtrace.clone()),
                         },
                     );
-                    remove_client!(client_id, os_input, session_state, session_data);
+                    let _ = os_input.remove_client(client_id);
                 }
                 exit_reason = "a fatal error in the server";
                 break;
@@ -1849,9 +1839,7 @@ pub fn start_server_impl(
                         session_data
                     );
                     remove_client!(client_id, os_input, session_state, session_data);
-                    drop(completion_tx); // do not deadlock with route thread
-
-                    with_session(&session_data, |session| session.detach_client(client_id));
+                    drop(completion_tx); // cleanup is queued before the action completes
                 }
             },
             ServerInstruction::AssociatePipeWithClient { pipe_id, client_id } => {

@@ -142,6 +142,10 @@ fn companion_panel_dismisses(create_agent: bool) {
         yinz.wait_until("the dismissed panel can be reopened", |s| {
             s.contains("Agents") && s.contains("Todos")
         });
+        assert!(
+            panel(&yinz).pane_info.is_focused,
+            "reopening returns keyboard focus to the panel"
+        );
         yinz.quit();
     }
 }

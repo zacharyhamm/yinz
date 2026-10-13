@@ -133,3 +133,169 @@ fn a_pane_opened_near_a_plugin_with_no_pane_is_placed_rather_than_closed() {
         "the pane was placed, not forgotten: {closed_by_pty:?}"
     );
 }
+
+fn startup_placement(stage: u8) {
+    use crate::screen::thread_main::{replay_pending_pane_event, PendingEvents};
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    let client = ClientId::new(1);
+    let tab = TabId::new(0);
+    let pane = PaneId::Terminal(TerminalId::new(9));
+    let mut pending = PendingEvents::default();
+    if stage > 0 {
+        screen
+            .new_tab(tab, (vec![], vec![]), None, Some(client))
+            .unwrap();
+    }
+    if stage == 2 {
+        screen
+            .apply_layout(
+                TiledPaneLayout::default(),
+                vec![],
+                vec![(TerminalId::new(1), None)],
+                vec![],
+                HashMap::new(),
+                tab,
+                true,
+                client,
+                None,
+            )
+            .unwrap();
+    }
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    screen
+        .place_new_pane(
+            pane,
+            Some("immediate CLI pane".into()),
+            None,
+            None,
+            NewPanePlacement::default(),
+            false,
+            ClientTabIndexOrPaneId::ClientId(client),
+            Some(crate::route::NotificationEnd::new(tx)),
+            false,
+            &mut pending,
+        )
+        .unwrap();
+    if stage < 2 {
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "placement must wait for a live destination"
+        );
+        if stage == 0 {
+            screen
+                .new_tab(tab, (vec![], vec![]), None, Some(client))
+                .unwrap();
+        }
+        screen
+            .apply_layout(
+                TiledPaneLayout::default(),
+                vec![],
+                vec![(TerminalId::new(1), None)],
+                vec![],
+                HashMap::new(),
+                tab,
+                true,
+                client,
+                None,
+            )
+            .unwrap();
+        for event in std::mem::take(&mut pending.waiting_for_tab) {
+            replay_pending_pane_event(&mut screen, event, &mut pending).unwrap();
+        }
+    }
+    let reply = rx.try_recv().expect("completed placement");
+    assert!(reply.error_message.is_none(), "{reply:?}");
+    assert_eq!(reply.affected_pane_id, Some(pane));
+    assert!(screen.tabs.get(&tab).unwrap().has_pane_with_pid(&pane));
+}
+
+#[test]
+fn new_pane_before_initial_tab_waits_for_its_destination() {
+    startup_placement(0);
+}
+
+#[test]
+fn new_pane_during_initial_layout_survives_landing() {
+    startup_placement(1);
+}
+
+#[test]
+fn new_pane_after_initial_layout_completes_immediately() {
+    startup_placement(2);
+}
+
+#[test]
+fn deferred_startup_pane_is_closed_if_initial_destination_closes_or_fails() {
+    use crate::screen::thread_main::{replay_pending_pane_event, PendingEvents};
+    for failed in [false, true] {
+        let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+        let (tx, instructions) = yinz_runtime::channels::unbounded();
+        screen.bus.senders.to_pty = Some(yinz_runtime::channels::SenderWithContext::new(tx));
+        let client = ClientId::new(1);
+        let tab = TabId::new(0);
+        let pane = PaneId::Terminal(TerminalId::new(9));
+        let mut pending = PendingEvents::default();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        screen
+            .place_new_pane(
+                pane,
+                None,
+                None,
+                None,
+                NewPanePlacement::default(),
+                false,
+                ClientTabIndexOrPaneId::ClientId(client),
+                Some(crate::route::NotificationEnd::new(tx)),
+                false,
+                &mut pending,
+            )
+            .unwrap();
+        screen
+            .new_tab(tab, (vec![], vec![]), None, Some(client))
+            .unwrap();
+        if failed {
+            screen.recover_pending_tab(tab).unwrap();
+        } else {
+            screen.close_tab_by_id(tab).unwrap();
+        }
+        for event in std::mem::take(&mut pending.waiting_for_tab) {
+            replay_pending_pane_event(&mut screen, event, &mut pending).unwrap();
+        }
+        assert!(rx.try_recv().unwrap().error_message.is_some());
+        assert!(
+            pending.waiting_for_tab.is_empty(),
+            "closed destinations are not startup"
+        );
+        assert!(screen.tab_containing_pane(pane).is_none());
+        assert!(instructions.try_iter().any(|(instruction, _)| matches!(instruction, PtyInstruction::ClosePane(id, _) if id == pane)), "rejected startup process must be closed");
+    }
+}
+
+#[test]
+fn cancelling_startup_before_any_layout_cannot_report_successful_placement() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+    let mut pending = crate::screen::thread_main::PendingEvents::default();
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    screen
+        .place_new_pane(
+            PaneId::Terminal(TerminalId::new(9)),
+            None,
+            None,
+            None,
+            NewPanePlacement::default(),
+            false,
+            ClientTabIndexOrPaneId::ClientId(ClientId::new(1)),
+            Some(crate::route::NotificationEnd::new(tx)),
+            false,
+            &mut pending,
+        )
+        .unwrap();
+    drop(pending);
+    assert!(
+        rx.try_recv().unwrap().error_message.is_some(),
+        "no live tab ever accepted the pane"
+    );
+}

@@ -6550,3 +6550,55 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
         release.send(()).unwrap();
     }
 }
+
+#[test]
+fn idle_cli_subscribers_get_snapshots_after_reconnect_and_peer_removal() {
+    let mut test = TestBridge::new();
+    let first = ClientId::new(7);
+    let second = ClientId::new(8);
+    for _ in 0..20 {
+        for client in [first, second] {
+            test.bridge
+                .subscribe_cli_client_to_events(client, vec!["PaneUpdate".into()]);
+            assert!(
+                test.receiver::<ScreenInstruction>()
+                    .try_iter()
+                    .any(|(instruction, _)| matches!(
+                        instruction,
+                        ScreenInstruction::SetCliEventSubscribersPresent(true)
+                    )),
+                "each idle subscription requests its own snapshot"
+            );
+        }
+        test.bridge.remove_client(first);
+        assert!(!test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .any(|(instruction, _)| matches!(
+                instruction,
+                ScreenInstruction::SetCliEventSubscribersPresent(false)
+            )));
+        test.bridge.forward_events_to_cli_subscribers(&[(
+            None,
+            None,
+            Event::PaneUpdate(Default::default()),
+        )]);
+        let recipients: Vec<_> = test
+            .receiver::<ServerInstruction>()
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                ServerInstruction::EventUpdateToClient(client, _, _) => Some(client),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(recipients, [second]);
+        test.bridge.remove_client(second);
+        assert!(test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .any(|(instruction, _)| matches!(
+                instruction,
+                ScreenInstruction::SetCliEventSubscribersPresent(false)
+            )));
+    }
+}

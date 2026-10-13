@@ -51,14 +51,14 @@ impl WasmBridge {
         if map.get_running_plugin(id, None).is_none() {
             return;
         }
-        if let Some(metadata) = map.reload_metadata(id) {
+        if let Some(metadata) = map.cached_metadata(id) {
             if let (RunPluginLocation::File(_), Some(source)) =
-                (&metadata.config.location, metadata.resolved_source_path)
+                (&metadata.config.location, &metadata.resolved_source_path)
             {
                 // Refresh only this declaration, not every alias of its previous source.
                 self.resolved_plugin_locations.insert(
-                    RunPluginLocation::File(metadata.config.path),
-                    RunPluginLocation::File(source),
+                    RunPluginLocation::File(metadata.config.path.clone()),
+                    RunPluginLocation::File(source.clone()),
                 );
             }
         }
@@ -76,8 +76,9 @@ impl WasmBridge {
                 .plugin_map
                 .lock()
                 .unwrap()
-                .reload_metadata(id)
-                .and_then(|metadata| metadata.resolved_source_path)
+                // Identity is fixed at load; the guest may be waiting for this thread's reply.
+                .cached_metadata(id)
+                .and_then(|metadata| metadata.resolved_source_path.clone())
             {
                 // This belongs to this load, even if its declaration's symlink has moved.
                 return RunPlugin {

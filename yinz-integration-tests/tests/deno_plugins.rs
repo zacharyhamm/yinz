@@ -988,12 +988,135 @@ export default {{
     let result = sender.wait_until("Deno completes the host surface round trips", |screen| {
         screen.contains("host surfaces")
     });
-    assert!(result.contains("host surfaces verified"), "{result}");
+    assert!(
+        result.contains("host surfaces verified"),
+        "{result}\n{}",
+        yinz_integration_tests::test_env::log_tail(150)
+    );
     receiver.wait_until(
         "Deno moved the real terminal to the other session",
         |screen| screen.contains("Deno cross-session output"),
     );
     sender.quit();
+}
+
+#[test]
+fn deno_layout_query_reports_a_held_pty_and_recovers_during_plugin_loading() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("layout-query.ts");
+    fs::write(&plugin, r#"
+let state = 'starting', query = 0, compatible = 0;
+export default {
+  async load() {
+    await yinz.waitForPermissions(['ReadApplicationState']);
+    yinz.subscribe(['Key', 'CustomMessage']);
+    state = 'layout query ready';
+  },
+  update(event) {
+    if (event.CustomMessage?.[0] === 'session_layout') { compatible++; return true; }
+    if (!event.Key) return false;
+    query++;
+    yinz.subscribe(['InitialKeybinds', 'HostTerminalThemeChanged']);
+    try {
+      const result = yinz.command('DumpSessionLayout', {});
+      const excluded = result.metadata.tabs.every(tab => tab.panes.every(pane => !pane.is_plugin));
+      state = `query ${query} ${excluded && result.layout.includes('pane') ? 'success' : 'invalid layout'}`;
+    } catch (_) { state = `query ${query} timeout`; }
+    return true;
+  },
+  render() { return `${state} compatible=${compatible}`; }
+};
+"#).unwrap();
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane; pane focus=true {{ plugin location=\"file:{}\"; }}; }}",
+            plugin.display()
+        )))
+        .start();
+    session.wait_until("query permissions", |grid| {
+        grid.contains("Plugin permissions")
+    });
+    session.send_stdin(b"\t\r");
+    session.wait_until("query guest ready", |grid| {
+        grid.contains("layout query ready")
+    });
+    for query in 1..=2 {
+        let (entered, release) = session.hold_next_metadata_collection();
+        session.send_stdin(b"q");
+        entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        if query == 1 {
+            session.wait_until("the unchanged query deadline expires", |grid| {
+                grid.contains("query 1 timeout")
+            });
+            let log = yinz_integration_tests::test_env::log_tail(150);
+            assert!(
+                log.contains("layout query timeout")
+                    && (log.contains("pty queued") || log.contains("pty metadata")),
+                "{log}"
+            );
+            release.send(()).unwrap();
+        } else {
+            let companion = directory.path().join("subscription-companion.ts");
+            fs::write(
+                &companion,
+                r#"export default { load() {
+                yinz.subscribe(['InitialKeybinds', 'HostTerminalThemeChanged']);
+            } };"#,
+            )
+            .unwrap();
+            std::thread::scope(|scope| {
+                let (finished, completion) = std::sync::mpsc::channel();
+                let session_ref = &session;
+                let companion_ref = &companion;
+                scope.spawn(move || {
+                    finished
+                        .send(lifecycle(
+                            session_ref,
+                            yinz_types::cli::PluginOperation::Start,
+                            companion_ref,
+                            None,
+                        ))
+                        .unwrap();
+                });
+                let early = completion.recv_timeout(std::time::Duration::from_millis(100));
+                release.send(()).unwrap();
+                let result =
+                    session.wait_until("query after contention", |grid| grid.contains("query 2"));
+                assert!(
+                    result.contains("query 2 success"),
+                    "{result}\n{}",
+                    yinz_integration_tests::test_env::log_tail(150)
+                );
+                if early.is_err() {
+                    completion
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                }
+            });
+            wait_for_plugin_state(&session, &companion, yinz_types::cli::PluginState::Running);
+        }
+        if query == 1 {
+            session.wait_until(
+                "compatibility response survives the expired synchronous receiver",
+                |grid| grid.contains("compatible=1"),
+            );
+        } else {
+            let result =
+                session.wait_until("query after contention", |grid| grid.contains("query 2"));
+            assert!(
+                result.contains("query 2 success"),
+                "{result}\n{}",
+                yinz_integration_tests::test_env::log_tail(150)
+            );
+            session.wait_until("compatibility response after success", |grid| {
+                grid.contains("compatible=2")
+            });
+        }
+    }
+    session.quit();
 }
 
 #[test]

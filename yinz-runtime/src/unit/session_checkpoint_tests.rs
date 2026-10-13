@@ -31,16 +31,22 @@ fn failed_staging_and_publication_preserve_the_complete_previous_snapshot() {
     write_checkpoint(root.path(), "old", &layout("old")).unwrap();
     let old = fs::read_link(root.path().join(CURRENT)).unwrap();
     for failure in ["initial_contents_1", LAYOUT, METADATA, CURRENT] {
-        let result = write_checkpoint_with(root.path(), "new", &layout("new"), |path| {
-            if path.file_name().unwrap() == failure {
-                if failure != CURRENT {
-                    // Model a write that leaves partial bytes in its staged file.
-                    fs::write(path, "partial")?;
+        let result = write_checkpoint_with(
+            root.path(),
+            "new",
+            &layout("new"),
+            |path| {
+                if path.file_name().unwrap() == failure {
+                    if failure != CURRENT {
+                        // Model a write that leaves partial bytes in its staged file.
+                        fs::write(path, "partial")?;
+                    }
+                    return Err(io::Error::other("injected storage failure"));
                 }
-                return Err(io::Error::other("injected storage failure"));
-            }
-            Ok(())
-        });
+                Ok(())
+            },
+            |_| {},
+        );
         assert!(result.is_err(), "{failure}");
         assert_eq!(fs::read_link(root.path().join(CURRENT)).unwrap(), old);
         assert_snapshot(&SessionCheckpoint::read(root.path()).unwrap(), "old");
@@ -54,18 +60,24 @@ fn a_sync_failure_after_publication_keeps_both_complete_snapshots() {
     let root = tempfile::tempdir().unwrap();
     write_checkpoint(root.path(), "old", &layout("old")).unwrap();
     let previous = current_directory(root.path()).unwrap().unwrap();
-    let result = write_checkpoint_with(root.path(), "new", &layout("new"), |path| {
-        if path.parent() == Some(root.path())
-            && path
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with(PREFIX)
-        {
-            return Err(io::Error::other("injected final sync failure"));
-        }
-        Ok(())
-    });
+    let result = write_checkpoint_with(
+        root.path(),
+        "new",
+        &layout("new"),
+        |path| {
+            if path.parent() == Some(root.path())
+                && path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(PREFIX)
+            {
+                return Err(io::Error::other("injected final sync failure"));
+            }
+            Ok(())
+        },
+        |_| {},
+    );
     assert!(result.is_err());
     assert!(previous.is_dir());
     assert_snapshot(&SessionCheckpoint::read(root.path()).unwrap(), "new");
@@ -185,6 +197,51 @@ fn readers_pin_one_snapshot_and_writers_serialize() {
     let metadata = fs::read_to_string(checkpoint.metadata_path()).unwrap();
     assert!(metadata == "one" || metadata == "two");
     assert_snapshot(&checkpoint, &metadata);
+}
+
+#[test]
+fn checkpoint_progress_identifies_a_blocked_publication_without_publishing_early() {
+    let root = tempfile::tempdir().unwrap();
+    write_checkpoint(root.path(), "old", &layout("old")).unwrap();
+    let old = fs::read_link(root.path().join(CURRENT)).unwrap();
+    let (entered, reached) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let (done, completed) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let root = root.path();
+        scope.spawn(move || {
+            let mut phases = Vec::new();
+            write_checkpoint_with_progress(root, "new", &layout("new"), |phase| {
+                phases.push(phase);
+                if phase == "publication" {
+                    entered.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(10)).unwrap();
+                }
+            })
+            .unwrap();
+            done.send(phases).unwrap();
+        });
+        reached.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(fs::read_link(root.join(CURRENT)).unwrap(), old);
+        assert!(matches!(
+            completed.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        let phases = completed.recv_timeout(Duration::from_secs(10)).unwrap();
+        for expected in [
+            "file lock",
+            "file sync",
+            "staging directory sync",
+            "parent directory sync",
+            "publication",
+            "published directory sync",
+            "cleanup",
+        ] {
+            assert!(phases.contains(&expected), "missing {expected}: {phases:?}");
+        }
+        assert_snapshot(&SessionCheckpoint::read(root).unwrap(), "new");
+    });
 }
 
 #[test]

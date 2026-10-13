@@ -84,7 +84,16 @@ pub fn write_checkpoint(
     metadata: &str,
     layout: &(String, BTreeMap<String, String>),
 ) -> Result<()> {
-    write_checkpoint_with(session_dir, metadata, layout, |_| Ok(())).with_context(|| {
+    write_checkpoint_with_progress(session_dir, metadata, layout, |_| {})
+}
+
+pub fn write_checkpoint_with_progress(
+    session_dir: &Path,
+    metadata: &str,
+    layout: &(String, BTreeMap<String, String>),
+    progress: impl FnMut(&'static str),
+) -> Result<()> {
+    write_checkpoint_with(session_dir, metadata, layout, |_| Ok(()), progress).with_context(|| {
         format!(
             "failed to save session checkpoint in {}",
             session_dir.display()
@@ -99,7 +108,9 @@ fn write_checkpoint_with(
     metadata: &str,
     layout: &(String, BTreeMap<String, String>),
     mut before_write: impl FnMut(&Path) -> io::Result<()>,
+    mut progress: impl FnMut(&'static str),
 ) -> Result<()> {
+    progress("create directory");
     fs::create_dir_all(session_dir).context("failed to create session checkpoint folder")?;
     let lock = OpenOptions::new()
         .read(true)
@@ -108,8 +119,10 @@ fn write_checkpoint_with(
         .truncate(false)
         .open(session_dir.join(LOCK))
         .context("failed to open session checkpoint lock")?;
+    progress("file lock");
     lock.lock()
         .context("failed to lock session checkpoint for writing")?;
+    progress("collect files");
     let previous = current_directory(session_dir)?;
     let source = previous.as_deref().unwrap_or(session_dir);
     let mut files = BTreeMap::new();
@@ -162,7 +175,9 @@ fn write_checkpoint_with(
     {
         // A preceding publication may have succeeded before its directory sync failed.
         // Do not report that retry as successful until its directory entries are durable.
+        progress("unchanged directory sync");
         sync_directory(source)?;
+        progress("unchanged parent sync");
         sync_directory(session_dir)?;
         return Ok(());
     }
@@ -173,6 +188,7 @@ fn write_checkpoint_with(
         .context("failed to stage session checkpoint")?;
     for (name, contents) in &files {
         let path = staging.path().join(name);
+        progress("stage file");
         before_write(&path).context("failed to stage checkpoint file")?;
         if previous.is_some() && unchanged[name] {
             fs::hard_link(source.join(name), &path)
@@ -181,6 +197,7 @@ fn write_checkpoint_with(
             let mut file = File::create(&path).context("failed to create checkpoint file")?;
             file.write_all(contents)
                 .context("failed to write checkpoint file")?;
+            progress("file sync");
             file.sync_all().context("failed to sync checkpoint file")?;
         }
     }
@@ -190,23 +207,30 @@ fn write_checkpoint_with(
         .context("checkpoint has no directory name")?;
     let pointer = staging.path().join(CURRENT);
     std::os::unix::fs::symlink(target, &pointer).context("failed to stage checkpoint pointer")?;
+    progress("staging directory sync");
     sync_directory(staging.path())?;
     let parent = File::open(session_dir).context("failed to open checkpoint folder")?;
+    progress("parent directory sync");
     parent
         .sync_all()
         .context("failed to sync checkpoint folder")?;
     if let Some(enclosing_dir) = session_dir.parent() {
+        progress("enclosing directory sync");
         sync_directory(enclosing_dir)?;
     }
+    progress("publication");
     before_write(&session_dir.join(CURRENT)).context("failed to publish checkpoint")?;
     fs::rename(pointer, session_dir.join(CURRENT)).context("failed to publish checkpoint")?;
     // Publication succeeded: even a following sync failure must not drop the new directory.
     let published = staging.into_path();
+    progress("published directory sync");
     before_write(&published).context("failed to sync published checkpoint")?;
     sync_directory(&published)?;
+    progress("publication parent sync");
     parent
         .sync_all()
         .context("failed to sync published checkpoint")?;
+    progress("cleanup");
     cleanup(session_dir, &published, previous.as_deref())
         .context("failed to clean old session checkpoints")
         .non_fatal();

@@ -312,6 +312,11 @@ impl OverlayPanes {
             .map(|overlay| overlay.pane_ids().collect())
             .unwrap_or_default()
     }
+    pub fn has_focused_member(&self, pane_id: &PaneId) -> bool {
+        self.members(pane_id)
+            .iter()
+            .any(|member| self.active_panes.pane_id_is_focused(member))
+    }
     pub fn add_pane(
         &mut self,
         pane_id: PaneId,

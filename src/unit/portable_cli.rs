@@ -194,8 +194,36 @@ impl Session {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
+        let pane = session.run(
+            &[
+                "action",
+                "new-pane",
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf 'PORTABLE READY\n'; exec /bin/sh",
+            ],
+            None,
+        );
+        assert!(
+            pane.status.success(),
+            "{}",
+            String::from_utf8_lossy(&pane.stderr)
+        );
+        session.1 = String::from_utf8(pane.stdout).unwrap().trim().to_owned();
+        success(session.run(
+            &[
+                "action",
+                "pane-wait",
+                &session.1,
+                "--contains",
+                "PORTABLE READY",
+            ],
+            None,
+        ));
+        // Wait for the background session to serve pane actions before probing attachment.
         if attach {
-            session.2 = Some(AttachedClient::new(dir));
+            session.2 = Some(AttachedClient::new(session.0.path()));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             loop {
                 let response = session.run(&["action", "list-clients"], None);
@@ -228,33 +256,6 @@ impl Session {
                 }
             }
         }
-        let pane = session.run(
-            &[
-                "action",
-                "new-pane",
-                "--",
-                "/bin/sh",
-                "-c",
-                "printf 'PORTABLE READY\n'; exec /bin/sh",
-            ],
-            None,
-        );
-        assert!(
-            pane.status.success(),
-            "{}",
-            String::from_utf8_lossy(&pane.stderr)
-        );
-        session.1 = String::from_utf8(pane.stdout).unwrap().trim().to_owned();
-        success(session.run(
-            &[
-                "action",
-                "pane-wait",
-                &session.1,
-                "--contains",
-                "PORTABLE READY",
-            ],
-            None,
-        ));
         session
     }
     fn cmd(&self, args: &[&str]) -> Command {

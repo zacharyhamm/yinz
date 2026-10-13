@@ -912,6 +912,7 @@ pub fn plugin_thread_main(
                     &wasm_bridge,
                     &plugin_aliases,
                     None,
+                    None,
                 );
                 drop(bus.senders.send_to_pty(PtyInstruction::DumpLayout(
                     session_layout_metadata,
@@ -929,6 +930,7 @@ pub fn plugin_thread_main(
                     &wasm_bridge,
                     &plugin_aliases,
                     None,
+                    None,
                 );
                 drop(bus.senders.send_to_pty(PtyInstruction::ListClientsMetadata(
                     session_layout_metadata,
@@ -940,14 +942,18 @@ pub fn plugin_thread_main(
                 mut session_layout_metadata,
                 plugin_id,
                 response_channel,
+                trace,
             } => {
+                trace.mark("plugin metadata");
                 populate_session_layout_metadata(
                     &mut session_layout_metadata,
                     &wasm_bridge,
                     &plugin_aliases,
                     Some(plugin_id),
+                    Some(&trace),
                 );
 
+                trace.mark("serialization");
                 let layout_metadata = session_layout_metadata.to_layout_metadata();
 
                 match session_serialization::serialize_session_layout(
@@ -959,6 +965,7 @@ pub fn plugin_thread_main(
                             layout_result: Ok(layout.clone()),
                             metadata: Some(layout_metadata),
                         };
+                        trace.mark("response");
                         let _ = response_channel.send(response);
 
                         // send CustomMessage to plugin (backwards compatibility, should get rid of
@@ -976,6 +983,7 @@ pub fn plugin_thread_main(
                             layout_result: Err(error_msg.clone()),
                             metadata: None,
                         };
+                        trace.mark("response");
                         let _ = response_channel.send(response);
 
                         let updates = vec![(
@@ -998,6 +1006,7 @@ pub fn plugin_thread_main(
                     &wasm_bridge,
                     &plugin_aliases,
                     Some(plugin_id),
+                    None,
                 );
                 let mut clients_metadata = session_layout_metadata.all_clients_metadata();
                 let mut client_list_for_plugin = vec![];
@@ -1050,6 +1059,7 @@ pub fn plugin_thread_main(
                     &mut session_layout_metadata,
                     &wasm_bridge,
                     &plugin_aliases,
+                    None,
                     None,
                 );
                 drop(
@@ -1718,6 +1728,7 @@ fn populate_session_layout_metadata(
     wasm_bridge: &WasmBridge,
     plugin_aliases: &PluginAliases,
     exclude_plugin_id: Option<PluginId>,
+    trace: Option<&yinz_bus::plugins::LayoutQueryTrace>,
 ) {
     // Remove the requesting plugin from the layout to prevent deadlock
     if let Some(plugin_id) = exclude_plugin_id {
@@ -1727,7 +1738,15 @@ fn populate_session_layout_metadata(
     let plugin_ids = session_layout_metadata.all_plugin_ids();
     let mut plugin_ids_to_cmds: HashMap<PluginId, RunPlugin> = HashMap::new();
     for plugin_id in plugin_ids {
-        let plugin_cmd = wasm_bridge.run_plugin_of_plugin_id(plugin_id);
+        if let Some(trace) = trace {
+            trace.mark("plugin map lock");
+        }
+        let plugin_map = wasm_bridge.plugin_map.lock().unwrap();
+        if let Some(trace) = trace {
+            trace.mark("plugin map metadata");
+        }
+        let plugin_cmd = plugin_map.run_plugin_of_plugin_id(plugin_id);
+        drop(plugin_map);
         match plugin_cmd {
             Some(plugin_cmd) => {
                 plugin_ids_to_cmds.insert(plugin_id, plugin_cmd.clone());

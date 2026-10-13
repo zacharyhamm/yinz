@@ -63,8 +63,7 @@ fn formats_drafts_without_writing_and_is_idempotent() {
     assert!(checked.formatted_source.is_none());
 }
 
-#[test]
-fn strict_compiler_and_type_aware_rules_reject_unsafe_drafts() {
+fn reject_unsafe_draft(source: &str, expected: &str) {
     let dir = tempfile::tempdir().unwrap();
     // A surrounding project cannot weaken the policy or supply configuration code.
     std::fs::write(
@@ -77,29 +76,42 @@ fn strict_compiler_and_type_aware_rules_reject_unsafe_drafts() {
         "throw new Error('project config executed');",
     )
     .unwrap();
-    for (source, expected) in [
-        ("export const value: any = 1;", "no-explicit-any"),
-        ("export const values: string[] = []; export const value = values[0]!;", "no-non-null-assertion"),
-        ("export const value = JSON.parse('1');", "no-unsafe-assignment"),
-        ("export function value() { return JSON.parse('1'); }", "no-unsafe-return"),
-        ("JSON.parse('1').call();", "no-unsafe-call"),
-        ("export const value = JSON.parse('1').field;", "no-unsafe-member-access"),
-        ("export const values: string[] = []; export const value: string = values[0];", "undefined"),
-        ("export const value: {name?: string} = {name: undefined};", "exactOptionalPropertyTypes"),
-        ("export const values: Record<string,string> = {}; export const value = values.name;", "index signature"),
-        ("const unused = 1; export {};", "never read"),
-        ("export function value(flag: boolean) { if (flag) return 1; }", "return"),
-        ("export const value = (1 as unknown) as string;", "no-unsafe-type-assertion"),
-        ("import z from 'yinz:plugin'; void z.waitForPermissions(['ReadFiles']);", "no-floating-promises"),
-        ("export const value: () => void = async () => { throw new Error('rejected'); };", "no-misused-promises"),
-        ("class Base { value(): void {} } export class Child extends Base { value(): void {} }", "override"),
-        ("export function value(x: number): number { switch(x) { case 0: x += 1; case 1: return x; default: return 2; } }", "Fallthrough"),
-        ("export function value(x: 'a' | 'b'): number { switch (x) { case 'a': return 1; } return 0; }", "switch-exhaustiveness-check"),
-    ] {
-        let result = report(dir.path(), source, Semantic);
-        assert!(result.diagnostics.join("\n").contains(expected), "{source}: {:?}", result.diagnostics);
-        assert!(result.formatted_source.is_none());
-    }
+    let started = std::time::Instant::now();
+    eprintln!("strict-authoring start: {expected}");
+    let result = report(dir.path(), source, Semantic);
+    eprintln!("strict-authoring done: {expected} {:?}", started.elapsed());
+    assert!(
+        result.diagnostics.join("\n").contains(expected),
+        "{source}: {:?}",
+        result.diagnostics
+    );
+    assert!(result.formatted_source.is_none());
+}
+
+macro_rules! unsafe_drafts {
+    ($($name:ident: ($source:expr, $expected:expr),)*) => {
+        $(#[test] fn $name() { reject_unsafe_draft($source, $expected); })*
+    };
+}
+
+unsafe_drafts! {
+    strict_rejects_explicit_any: ("export const value: any = 1;", "no-explicit-any"),
+    strict_rejects_non_null_assertion: ("export const values: string[] = []; export const value = values[0]!;", "no-non-null-assertion"),
+    strict_rejects_unsafe_assignment: ("export const value = JSON.parse('1');", "no-unsafe-assignment"),
+    strict_rejects_unsafe_return: ("export function value() { return JSON.parse('1'); }", "no-unsafe-return"),
+    strict_rejects_unsafe_call: ("JSON.parse('1').call();", "no-unsafe-call"),
+    strict_rejects_unsafe_member_access: ("export const value = JSON.parse('1').field;", "no-unsafe-member-access"),
+    strict_rejects_unchecked_index: ("export const values: string[] = []; export const value: string = values[0];", "undefined"),
+    strict_rejects_exact_optional_properties: ("export const value: {name?: string} = {name: undefined};", "exactOptionalPropertyTypes"),
+    strict_rejects_index_signature: ("export const values: Record<string,string> = {}; export const value = values.name;", "index signature"),
+    strict_rejects_unused_local: ("const unused = 1; export {};", "never read"),
+    strict_rejects_missing_return: ("export function value(flag: boolean) { if (flag) return 1; }", "return"),
+    strict_rejects_unsafe_type_assertion: ("export const value = (1 as unknown) as string;", "no-unsafe-type-assertion"),
+    strict_rejects_floating_promise: ("import z from 'yinz:plugin'; void z.waitForPermissions(['ReadFiles']);", "no-floating-promises"),
+    strict_rejects_misused_promise: ("export const value: () => void = async () => { throw new Error('rejected'); };", "no-misused-promises"),
+    strict_rejects_missing_override: ("class Base { value(): void {} } export class Child extends Base { value(): void {} }", "override"),
+    strict_rejects_switch_fallthrough: ("export function value(x: number): number { switch(x) { case 0: x += 1; case 1: return x; default: return 2; } }", "Fallthrough"),
+    strict_rejects_exhaustive_switch: ("export function value(x: 'a' | 'b'): number { switch (x) { case 'a': return 1; } return 0; }", "switch-exhaustiveness-check"),
 }
 
 #[test]

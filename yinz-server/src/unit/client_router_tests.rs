@@ -9,6 +9,45 @@ use yinz_types::diagnostics::ErrorContext;
 use yinz_types::internal_ids::{ProcessId, TerminalId};
 
 #[test]
+fn subscriptions_received_during_initialization_are_retained_once() {
+    for event_types in [
+        vec!["PaneUpdate".into()],
+        vec!["agent_lifecycle".into(), "PaneUpdate".into()],
+    ] {
+        let instruction = ClientToServerMsg::SubscribeToEvents {
+            event_types,
+            options: Default::default(),
+        };
+        let os = CapturingOs::default();
+        let mut retry = VecDeque::new();
+        subscribe_to_events(None, &os, CLIENT_1, instruction, Some(&mut retry)).unwrap();
+        assert_eq!(
+            retry.len(),
+            1,
+            "the complete subscription must wait for initialization"
+        );
+        let (session, threads) = paused_session();
+        subscribe_to_events(
+            Some(&session.senders),
+            &os,
+            CLIENT_1,
+            retry.pop_front().unwrap(),
+            Some(&mut retry),
+        )
+        .unwrap();
+        assert!(retry.is_empty());
+        assert!(matches!(
+            threads.plugin_receiver.try_recv().unwrap().0,
+            PluginInstruction::SubscribeCliClientToEvents {
+                client_id: CLIENT_1,
+                ..
+            }
+        ));
+        assert!(threads.plugin_receiver.is_empty());
+    }
+}
+
+#[test]
 fn reports_are_accepted_while_consumers_are_paused_and_rejected_for_closed_queues() {
     use {
         yinz_runtime::channels::Shutdown, yinz_types::agent::report::AgentReport,

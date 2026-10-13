@@ -40,6 +40,7 @@ fn checkpoint_task_finishes_before_background_thread_on_exit_and_receive_error()
         bus.senders.session_checkpoint = Arc::new(SessionCheckpointWriter {
             cache_dir: root.path().to_owned(),
             name: Mutex::new(None),
+            progress: Mutex::default(),
             before_write: Some(write_barrier(started, released)),
         });
         let worker = std::thread::spawn(move || background_jobs_main(bus, None, false));

@@ -481,7 +481,8 @@ impl Controller {
                 }
                 self.size = dimensions(&arg, self.size)?;
                 self.grid.change_size(self.size.rows, self.size.cols);
-                let mut config = "mouse_mode true\ndetachable_panes false\nsession_serialization false\ndefault_shell \"/bin/sh\"\n".to_owned();
+                // Disposable sessions never recover metadata; do not schedule durable checkpoints.
+                let mut config = "mouse_mode true\ndetachable_panes false\nsession_serialization false\ndisable_session_metadata true\ndefault_shell \"/bin/sh\"\n".to_owned();
                 let entry = loader.local_path(loader.entrypoint(), false)?;
                 config.push_str(&format!(
                     "user_plugin_dir {}\n",

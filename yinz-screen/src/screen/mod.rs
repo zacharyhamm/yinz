@@ -597,6 +597,8 @@ pub(crate) struct Screen {
     max_panes: Option<usize>,
     /// A map between this [`Screen`]'s tabs and their ID/key.
     tabs: BTreeMap<TabId, Tab>,
+    // A closed last tab must not be mistaken for startup.
+    has_created_tab: bool,
     /// Where each terminal pane's process is, as pty last reported it. Stamped
     /// onto every pane manifest so a plugin that missed the announcement — or
     /// loaded after it — is put right by the next update rather than never.
@@ -1379,6 +1381,7 @@ impl Screen {
             animation_clock: None,
             global_last_active_tab_id: TabId::new(0),
             tabs: BTreeMap::new(),
+            has_created_tab: false,
             terminal_cwds: HashMap::new(),
             terminal_foreground_cmds: HashMap::new(),
             terminal_hosts: HashMap::new(),
@@ -1907,6 +1910,7 @@ impl Screen {
         tab.update_background_opacity(self.background_opacity);
         tab.update_selection_options(self.osc133_command_selection, self.word_separators.clone());
         self.tabs.insert(tab_id, tab);
+        self.has_created_tab = true;
         Ok(())
     }
     /// Whether the name a new tab was asked for is the user's, so it holds off the project.
