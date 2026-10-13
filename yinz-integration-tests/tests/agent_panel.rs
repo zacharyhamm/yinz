@@ -33,7 +33,11 @@ fn panel_tabs_open_and_dismiss_without_chat() {
             "layout { pane command=\"claude\"; }".into(),
         ))
         .start();
-    let _agent = yinz.expect_pty_spawn();
+    let agent = yinz.expect_pty_spawn();
+    agent.output(b"AGENT READY\r\n");
+    yinz.wait_until("the initial terminal is rendered", |s| {
+        s.contains("AGENT READY")
+    });
     yinz.send_stdin(&keys::ctrl('b'));
     let initial = yinz.wait_until("the agents panel receives the service snapshot", |s| {
         s.contains("Agents") && s.contains("Todos") && s.contains("claude")
@@ -92,7 +96,11 @@ fn companion_panel_dismisses(create_agent: bool) {
             "layout { pane command=\"claude\"; }".into(),
         ))
         .start();
-        let _agent = yinz.expect_pty_spawn();
+        let agent = yinz.expect_pty_spawn();
+        agent.output(b"AGENT READY\r\n");
+        yinz.wait_until("the initial terminal is rendered", |s| {
+            s.contains("AGENT READY")
+        });
         yinz.send_stdin(&keys::ctrl('b'));
         yinz.wait_until("the panel tab bar is ready", |s| {
             s.contains("Agents") && s.contains("Todos")
@@ -168,7 +176,11 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
             "layout { pane command=\"claude\"; }".into(),
         ))
         .start();
-    let _agent = yinz.expect_pty_spawn();
+    let agent = yinz.expect_pty_spawn();
+    agent.output(b"AGENT READY\r\n");
+    yinz.wait_until("the initial terminal is rendered", |s| {
+        s.contains("AGENT READY")
+    });
     yinz.send_stdin(&keys::ctrl('b'));
     yinz.wait_until("the project panel is placed", |s| {
         s.contains("Agents") && s.contains("claude")

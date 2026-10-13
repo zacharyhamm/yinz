@@ -97,6 +97,71 @@ fn tab_arrangement_maybe_stacked(
         .collect()
 }
 
+/// Generate a stack directly so stack-specific properties never reject stackless samples.
+#[hegel::composite]
+fn tab_arrangement_with_stack(
+    tc: &hegel::TestCase,
+    viewport: Size,
+    plugin_panes: bool,
+) -> Vec<PaneLayoutManifest> {
+    let columns = tc.draw(generators::integers::<usize>().min_value(1).max_value(3));
+    let required = tc.draw(
+        generators::integers::<usize>()
+            .min_value(0)
+            .max_value(columns - 1),
+    );
+    let layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: (0..columns)
+            .map(|column| {
+                let mut node = TiledPaneLayout::default();
+                if column == required || tc.draw(generators::booleans()) {
+                    let members =
+                        tc.draw(generators::integers::<usize>().min_value(2).max_value(
+                            viewport.rows - yinz_types::pane_size::MIN_TERMINAL_HEIGHT + 1,
+                        ));
+                    let expanded = tc.draw(
+                        generators::integers::<usize>()
+                            .min_value(0)
+                            .max_value(members - 1),
+                    );
+                    node.children_are_stacked = true;
+                    node.children_split_direction = SplitDirection::Horizontal;
+                    node.children = (0..members)
+                        .map(|index| {
+                            let mut child = TiledPaneLayout::default();
+                            // The required stack always exercises ordering between terminals.
+                            split(
+                                tc,
+                                &mut child,
+                                0,
+                                plugin_panes && (column != required || index >= 2),
+                                false,
+                            );
+                            child.is_expanded_in_stack = index == expanded;
+                            child
+                        })
+                        .collect();
+                } else {
+                    split(tc, &mut node, 0, plugin_panes, false);
+                }
+                node
+            })
+            .collect(),
+        ..Default::default()
+    };
+    layout
+        .position_panes_in_space(&space(viewport), None, false, false)
+        .expect("bounded columns and stack members must fit the viewport")
+        .into_iter()
+        .map(|(layout, geom)| PaneLayoutManifest {
+            geom,
+            run: layout.run,
+            ..Default::default()
+        })
+        .collect()
+}
+
 fn split(
     tc: &hegel::TestCase,
     node: &mut TiledPaneLayout,
@@ -652,8 +717,8 @@ fn a_stacks_members_arrive_in_the_order_they_were_stacked(tc: hegel::TestCase) {
         cols: tc.draw(generators::integers::<usize>().min_value(20).max_value(400)),
         rows: tc.draw(generators::integers::<usize>().min_value(10).max_value(200)),
     };
-    let tiled = tc.draw(tab_arrangement_maybe_stacked(viewport, true, true));
-    tc.assume(tiled.iter().any(|pane| pane.geom.stacked.is_some()));
+    let tiled = tc.draw(tab_arrangement_with_stack(viewport, true));
+    assert!(tiled.iter().any(|pane| pane.geom.stacked.is_some()));
 
     let Ok(arrangement) = layout_for_warped_tab(&tiled, &[], viewport) else {
         return;
@@ -709,8 +774,8 @@ fn a_tab_with_stacks_keeps_its_shape_at_a_size_it_was_never_arranged_for(tc: heg
         cols: tc.draw(generators::integers::<usize>().min_value(20).max_value(400)),
         rows: tc.draw(generators::integers::<usize>().min_value(10).max_value(200)),
     };
-    let tiled = tc.draw(tab_arrangement_maybe_stacked(viewport, false, true));
-    tc.assume(tiled.iter().any(|pane| pane.geom.stacked.is_some()));
+    let tiled = tc.draw(tab_arrangement_with_stack(viewport, false));
+    assert!(tiled.iter().any(|pane| pane.geom.stacked.is_some()));
 
     let Ok(arrangement) = layout_for_warped_tab(&tiled, &[], viewport) else {
         return;

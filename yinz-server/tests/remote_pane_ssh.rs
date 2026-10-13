@@ -1681,11 +1681,6 @@ fn a_tabs_panes_can_be_released_together_and_are_all_adoptable() {
         pane.wait_for_output(&format!("{marker}-ready"));
         pane.wait_for_output(&format!("{marker}-3"));
     }
-    let highest_before: Vec<u32> = panes
-        .iter()
-        .zip(&markers)
-        .map(|(pane, marker)| highest_counter(&pane.output(), marker))
-        .collect();
     let pids_before: Vec<Vec<u32>> = markers.iter().map(|m| remote_pids(m)).collect();
 
     // Readers first, all of them, then the releases at the same time — the
@@ -1694,6 +1689,11 @@ fn a_tabs_panes_can_be_released_together_and_are_all_adoptable() {
     for pane in &mut panes {
         pane.stop_pump();
     }
+    let highest_before: Vec<u32> = panes
+        .iter()
+        .zip(&markers)
+        .map(|(pane, marker)| highest_counter(&pane.output(), marker))
+        .collect();
     let started_at = Instant::now();
     let handed_over: Vec<(String, u64)> = std::thread::scope(|scope| {
         let threads: Vec<_> = panes

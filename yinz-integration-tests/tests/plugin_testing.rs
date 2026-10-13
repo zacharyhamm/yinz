@@ -350,6 +350,7 @@ import {test,session,assert,assertEquals,assertThrows} from 'yinz:testing';
 test('headless start and stop',{grants:['ReadApplicationState']},async()=>{
   session.start({autoGrantPermissions:false});
   await session.waitForText('yinz-test>');
+  await session.waitFor('focused terminal metadata',()=>session.panes.some(p=>!p.is_plugin && p.is_focused));
   const terminal=session.panes.find(p=>!p.is_plugin && p.is_focused);
   assert(terminal);
   const first=session.loadPlugin('./background.ts',{headless:true,configuration:{shared:'true'}});
