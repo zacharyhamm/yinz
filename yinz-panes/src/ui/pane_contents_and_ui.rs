@@ -52,6 +52,7 @@ pub struct PaneContentsAndUi<'a> {
     stack_list_entry_is_selected: bool,
     stack_list_entry_stack_is_focused: bool,
     blank_title: bool,
+    same_worktree: bool,
     mouse_scroll_resize: bool,
     dimmed_for_clients: HashSet<ClientId>,
     opening_ripple: Option<OpeningRipple>,
@@ -110,6 +111,7 @@ impl<'a> PaneContentsAndUi<'a> {
             stack_list_entry_is_selected: false,
             stack_list_entry_stack_is_focused: false,
             blank_title: false,
+            same_worktree: false,
             mouse_scroll_resize,
             dimmed_for_clients,
             opening_ripple: None,
@@ -117,6 +119,9 @@ impl<'a> PaneContentsAndUi<'a> {
     }
     fn frame_is_dimmed_for_client(&self, client_id: ClientId) -> bool {
         self.dimmed_for_clients.contains(&client_id) && !self.focused_clients.contains(&client_id)
+    }
+    pub fn set_same_worktree(&mut self, same_worktree: bool) {
+        self.same_worktree = same_worktree;
     }
     pub fn set_opening_ripple(&mut self, ripple: Option<OpeningRipple>) {
         self.opening_ripple = ripple;
@@ -435,7 +440,7 @@ impl<'a> PaneContentsAndUi<'a> {
             .unwrap_or(false);
         let stack_list_entry = self.stack_list_entry_width.map(|width| StackListEntry {
             width,
-            label: self.pane.stack_list_entry_label(),
+            label: self.pane.stack_list_entry_label(self.same_worktree),
             is_selected: self.stack_list_entry_is_selected,
             stack_is_focused: self.stack_list_entry_stack_is_focused,
             border_color: self
@@ -476,6 +481,7 @@ impl<'a> PaneContentsAndUi<'a> {
                 frame_geom_override: self.frame_geom_override,
                 stack_list_entry: stack_list_entry.clone(),
                 blank_title: self.blank_title,
+                same_worktree: self.same_worktree,
                 mouse_scroll_resize: self.mouse_scroll_resize,
                 dimmed: frame_is_dimmed,
                 guest_choice_indicator,
@@ -507,6 +513,7 @@ impl<'a> PaneContentsAndUi<'a> {
                 frame_geom_override: self.frame_geom_override,
                 stack_list_entry,
                 blank_title: self.blank_title,
+                same_worktree: self.same_worktree,
                 mouse_scroll_resize: self.mouse_scroll_resize,
                 dimmed: frame_is_dimmed,
                 guest_choice_indicator,

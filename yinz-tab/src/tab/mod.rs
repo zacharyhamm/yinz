@@ -273,6 +273,7 @@ pub struct Tab {
     /// Keep an empty default layout alive until its reserved agent pane arrives.
     pub agent_tab_waiting_for_pane: bool,
     pending_agent_placements: Vec<(PaneId, NotificationEnd)>,
+    pub agent_worktrees: HashMap<PaneId, PathBuf>,
     pub agent_double_escape: bool,
     pub max_fullscreen_agent_width: usize,
     pub pending_agent_escapes: HashMap<(ClientId, PaneId), Instant>,
@@ -551,6 +552,7 @@ impl Tab {
 
         Tab {
             max_fullscreen_agent_width: 0,
+            agent_worktrees: HashMap::new(),
             agent_double_escape: false,
             pending_agent_escapes: HashMap::new(),
             id,
@@ -1372,6 +1374,7 @@ impl Tab {
                 })
                 .collect()
         };
+        let same_worktree_panes = self.same_worktree_panes(client_id_override);
         let lists: Vec<StackList> = self.stack_lists.values().cloned().collect();
         for list in lists {
             if self.floating_panes.panes_contain(&list.visible) != floating
@@ -1395,19 +1398,32 @@ impl Tab {
                 Some(p) => (p.position_and_size(), p.get_content_offset()),
                 None => continue,
             };
-            let widest_member_title = list
-                .members
+            let widest_member_titles: HashMap<_, _> = connected_clients
                 .iter()
-                .filter_map(|member| {
-                    if *member == list.visible {
-                        self.get_pane_with_id(*member)
-                    } else {
-                        self.suppressed_panes.get(member).map(|s| &*s.pane)
-                    }
+                .map(|client| {
+                    let widest = list
+                        .members
+                        .iter()
+                        .filter_map(|member| {
+                            if *member == list.visible {
+                                self.get_pane_with_id(*member)
+                            } else {
+                                self.suppressed_panes.get(member).map(|s| &*s.pane)
+                            }
+                        })
+                        .map(|pane| {
+                            pane.stack_list_entry_label(
+                                same_worktree_panes
+                                    .get(client)
+                                    .is_some_and(|panes| panes.contains(&pane.pid())),
+                            )
+                            .width()
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    (*client, widest)
                 })
-                .map(|pane| pane.stack_list_entry_label().width())
-                .max()
-                .unwrap_or(0);
+                .collect();
             let stack_is_focused = active_panes.values().any(|p_id| *p_id == list.visible);
             for (rank, member) in list.members.iter().enumerate() {
                 let header_geom = Self::stack_list_header_geom(rect, visible_content_offset, rank);
@@ -1442,12 +1458,17 @@ impl Tab {
                     self.dimmed_clients.clone(),
                 );
                 pane_contents_and_ui.set_frame_geom_override(Some(header_geom));
-                pane_contents_and_ui.set_stack_list_entry(
-                    Some(widest_member_title),
-                    *member == list.visible,
-                    stack_is_focused,
-                );
                 for (client_id, client_mode) in &client_modes {
+                    pane_contents_and_ui.set_same_worktree(
+                        same_worktree_panes
+                            .get(client_id)
+                            .is_some_and(|panes| panes.contains(member)),
+                    );
+                    pane_contents_and_ui.set_stack_list_entry(
+                        widest_member_titles.get(client_id).copied(),
+                        *member == list.visible,
+                        stack_is_focused,
+                    );
                     pane_contents_and_ui.render_pane_frame(
                         *client_id,
                         *client_mode,
@@ -6031,6 +6052,7 @@ impl Tab {
         output: &mut Output,
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
+        let same_worktree_panes = self.same_worktree_panes(client_id_override);
         let err_context = || "failed to render tab".to_string();
 
         let mut connected_clients: HashSet<ClientId> =
@@ -6092,6 +6114,7 @@ impl Tab {
                     client_id_override,
                     &self.mouse_help_text_visible,
                     self.mouse_scroll_resize,
+                    &same_worktree_panes,
                 )
                 .with_context(err_context)?;
             self.render_stack_list_headers(output, client_id_override, false)
@@ -6121,6 +6144,7 @@ impl Tab {
         output: &mut Output,
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
+        let same_worktree_panes = self.same_worktree_panes(client_id_override);
         if self.has_floating_panes_to_render() {
             let resize: Vec<_> = self
                 .stack_lists
@@ -6137,6 +6161,7 @@ impl Tab {
                 client_id_override,
                 &self.mouse_help_text_visible,
                 self.mouse_scroll_resize,
+                &same_worktree_panes,
             )?;
         }
         if self.has_floating_panes_to_render() {
@@ -6152,6 +6177,7 @@ impl Tab {
                 &self.mouse_help_text_visible,
                 self.mouse_scroll_resize,
                 z_index_offset,
+                &same_worktree_panes,
             )?;
         }
         Ok(())
@@ -6196,6 +6222,27 @@ impl Tab {
             output.hide_cursor_for_clients(clients_in_this_frame.iter().copied());
         }
         self.render_cursor(output, client_id_override);
+    }
+
+    fn same_worktree_panes(
+        &self,
+        client_id_override: Option<ClientId>,
+    ) -> HashMap<ClientId, HashSet<PaneId>> {
+        self.clients_in_frame(client_id_override)
+            .into_iter()
+            .filter_map(|client| {
+                let focused = self.get_active_pane_id(client)?;
+                let root = self.agent_worktrees.get(&focused)?;
+                let matching = self
+                    .agent_worktrees
+                    .iter()
+                    .filter_map(|(id, candidate)| {
+                        (*id != focused && candidate == root).then_some(*id)
+                    })
+                    .collect();
+                Some((client, matching))
+            })
+            .collect()
     }
 
     /// Whose cursor this frame is placing.

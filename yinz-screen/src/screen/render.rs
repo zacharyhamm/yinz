@@ -30,6 +30,7 @@ impl Screen {
     }
 
     pub fn render(&mut self) -> Result<()> {
+        self.refresh_agent_worktrees();
         self.assign_permission_modals();
         self.prepare_permission_modal_render();
         self.pane_subscriber_snapshots_dirty = true;
@@ -160,6 +161,7 @@ impl Screen {
     }
 
     pub(crate) fn render_to_clients_traced(&mut self, trace_attach: bool) -> Result<()> {
+        self.refresh_agent_worktrees();
         self.assign_permission_modals();
         self.prepare_permission_modal_render();
         // this method does the actual rendering and is triggered by a debounced BackgroundJob (see

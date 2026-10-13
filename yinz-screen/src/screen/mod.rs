@@ -120,6 +120,7 @@ use {
 };
 
 mod agent_placement;
+mod agent_worktrees;
 mod arrange_projects;
 mod break_panes;
 mod capabilities;
@@ -575,6 +576,7 @@ type LayoutPanes = Vec<(PaneId, PaneLayoutMetadata)>;
 
 pub(crate) struct Screen {
     agent_events: agent_events::AgentEvents,
+    agent_worktrees: agent_worktrees::Worktrees,
     agent_controls: Vec<agent_control::Pending>,
     agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
@@ -1338,6 +1340,7 @@ impl Screen {
         let character_cell_size = Rc::new(RefCell::new(None));
         Screen {
             agent_events: Default::default(),
+            agent_worktrees: Default::default(),
             agent_controls: Vec::new(),
             agent_draft_clears: HashMap::new(),
             agent_submissions: HashMap::new(),

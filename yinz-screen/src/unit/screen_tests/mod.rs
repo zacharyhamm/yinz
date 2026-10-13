@@ -2042,6 +2042,7 @@ mod reconfigure;
 mod related_panes;
 mod render_pacing;
 mod reveal_pane;
+mod same_worktree;
 mod scroll_and_warp;
 mod sizing;
 mod subscribers;

@@ -4,6 +4,46 @@ use yinz_types::style::TerminalTheme;
 
 const CLIENT: ClientId = ClientId::new(1);
 
+#[test]
+fn same_worktree_stack_labels_follow_focus_in_tiled_and_floating_lists() {
+    let size = Size { cols: 80, rows: 24 };
+    for floating in [false, true] {
+        let mut tab = stack_tab(size, floating, PaneFrameStyle::Full);
+        let members = tab.stack_lists.values().next().unwrap().members.clone();
+        for id in &members {
+            tab.agent_worktrees.insert(*id, PathBuf::from("/checkout"));
+        }
+        let mut grid = host_grid(size);
+        for focused in &members {
+            tab.focus_pane_with_id(*focused, false, false, CLIENT)
+                .unwrap();
+            let mut output = Output::default();
+            tab.render(&mut output, None).unwrap();
+            let serialized = output.serialize().unwrap();
+            let mut parser = vte::Parser::new();
+            parser.advance(&mut grid, serialized[&CLIENT].as_bytes());
+            let text = format!("{grid:?}");
+            for id in &members {
+                let PaneId::Terminal(id) = id else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    text.contains(&format!("👯 [{id}]")),
+                    PaneId::Terminal(*id) != *focused,
+                    "{text}"
+                );
+            }
+            assert_eq!(text.matches('👯').count(), members.len() - 1);
+        }
+        tab.agent_worktrees.clear();
+        let mut output = Output::default();
+        tab.render(&mut output, None).unwrap();
+        let serialized = output.serialize().unwrap();
+        vte::Parser::new().advance(&mut grid, serialized[&CLIENT].as_bytes());
+        assert!(!format!("{grid:?}").contains('👯'));
+    }
+}
+
 fn stack_tab(size: Size, floating: bool, frames: PaneFrameStyle) -> Tab {
     let mut tab = create_new_tab_with_stacked_pane_list(size, ModeInfo::default(), true, None);
     tab.set_pane_frames(frames);
@@ -77,7 +117,11 @@ fn assert_header_cells(tab: &Tab, grid: &Grid, shared_divider: bool) {
     let labels: Vec<_> = list
         .members
         .iter()
-        .map(|id| tab.get_pane_with_id(*id).unwrap().stack_list_entry_label())
+        .map(|id| {
+            tab.get_pane_with_id(*id)
+                .unwrap()
+                .stack_list_entry_label(false)
+        })
         .collect();
     let width = labels.iter().map(String::len).max().unwrap();
     let entry_x =

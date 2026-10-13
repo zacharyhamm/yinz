@@ -948,6 +948,11 @@ pub enum ScreenInstruction {
     AgentReport(yinz_types::agent::report::AgentReport, std::time::Instant),
     RestoreWarpedAgentInput(PaneId, yinz_types::data::WarpedAgentInput),
     SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),
+    AgentWorktreeResolved {
+        cwd: PathBuf,
+        generation: u64,
+        root: Option<PathBuf>,
+    },
     /// Set (or clear) the run id on a pane's existing agent record, leaving every field the
     /// agent itself reports alone. See `AgentInfo::run_id`.
     SetPaneAgentRun(PaneId, Option<String>, Option<NotificationEnd>),
@@ -1037,6 +1042,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             | ScreenInstruction::PtyBytes(..)
             | ScreenInstruction::RemotePaneReady(..) => ScreenContext::HandlePtyBytes,
             ScreenInstruction::RenderWriterReady => ScreenContext::RenderToClients,
+            ScreenInstruction::AgentWorktreeResolved { .. } => ScreenContext::RenderToClients,
             ScreenInstruction::ClearAllPluginHighlights(..) => ScreenContext::ClearPluginHighlights,
             other => {
                 let name: &'static str = other.into();

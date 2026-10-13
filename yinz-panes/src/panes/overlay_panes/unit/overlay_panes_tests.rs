@@ -3413,6 +3413,7 @@ fn multipane_renders_each_clients_focused_title_and_keeps_chrome_on_tiny_surface
                     &HashMap::new(),
                     false,
                     0,
+                    &HashMap::new(),
                 )
                 .unwrap();
             output.serialize().unwrap()

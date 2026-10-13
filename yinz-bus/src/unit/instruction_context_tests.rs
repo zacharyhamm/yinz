@@ -225,6 +225,7 @@ pin_context_to_instruction! {
         "ClearAllPluginHighlights",
         "CommandPalette",
         "RenderWriterReady",
+        "AgentWorktreeResolved",
     ];
     only_special: [
         "HandlePtyBytes",
@@ -242,6 +243,7 @@ pin_context_to_instruction! {
     targets: [
         ("PaletteThemeSaved", ScreenInstruction::PaletteThemeSaved { client: ClientId::new(1), request: uuid::Uuid::nil(), result: Ok(()) }, "ToggleCommandPalette"),
         ("RenderWriterReady", ScreenInstruction::RenderWriterReady, "RenderToClients"),
+        ("AgentWorktreeResolved", ScreenInstruction::AgentWorktreeResolved { cwd: "/tmp".into(), generation: 1, root: None }, "RenderToClients"),
         (
             "CommandPalette",
             ScreenInstruction::CommandPalette(crate::command_palette::Instruction::Discover { client: ClientId::new(1), opening: 1, revision: 1 }),

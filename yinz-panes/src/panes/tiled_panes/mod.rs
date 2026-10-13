@@ -1351,6 +1351,7 @@ impl TiledPanes {
         client_id_override: Option<ClientId>,
         help_text_visible: &HashMap<ClientId, bool>,
         mouse_scroll_resize: bool,
+        same_worktree_panes: &HashMap<ClientId, HashSet<PaneId>>,
     ) -> Result<()> {
         let err_context = || "failed to render tiled panes";
 
@@ -1470,6 +1471,11 @@ impl TiledPanes {
                 pane_contents_and_ui.set_frame_geom_override(visible_member_frame_override);
                 pane_contents_and_ui.set_blank_title(reserved_rows_for_pane > 0);
                 for client_id in &connected_clients {
+                    pane_contents_and_ui.set_same_worktree(
+                        same_worktree_panes
+                            .get(client_id)
+                            .is_some_and(|panes| panes.contains(kind)),
+                    );
                     let client_mode = self
                         .mode_info
                         .borrow()
