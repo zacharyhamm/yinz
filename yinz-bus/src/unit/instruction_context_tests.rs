@@ -461,9 +461,14 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError"];
+    special: ["SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "ClientRouterFinished"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
+        (
+            "ClientRouterFinished",
+            ServerInstruction::ClientRouterFinished(ClientId::new(1)),
+            "RemoveClient"
+        ),
         (
             "SavePaletteTheme",
             ServerInstruction::SavePaletteTheme { cancelled: Default::default(), client: ClientId::new(1), request: uuid::Uuid::nil(), name: "default".into() },

@@ -1386,7 +1386,7 @@ impl WasmBridge {
         // uncancelled token, and the old instance the grace an unload gets: a token set at
         // once also stops a call that was about to return, and an instance stopped mid-call
         // is not given `BeforeClose`.
-        if self
+        let reload_pending = if self
             .plugin_config_of_plugin_id(plugin_id)
             .is_some_and(|config| config.runtime() == yinz_config::plugins::PluginRuntime::Deno)
         {
@@ -1402,8 +1402,10 @@ impl WasmBridge {
                 .filter(|(id, ..)| *id == plugin_id)
                 .map(|(_, _, running_plugin, _)| Arc::downgrade(&running_plugin))
                 .collect();
-            arm_reload_watchdog(plugin_id, cancel, instances);
-        }
+            Some(arm_reload_watchdog(plugin_id, cancel, instances))
+        } else {
+            None
+        };
         let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
             log::error!("Failed to find plugin with id: {}", plugin_id);
             return Ok(());
@@ -1494,17 +1496,23 @@ impl WasmBridge {
                   connected_clients,
                   plugin_cache,
                   engine| {
-                let skip_cache = true; // we want to explicitly reload the plugin
-                let mut plugin_map = plugin_map.lock().unwrap();
-                // A failed instance retains its identity; explicit unload removes it.
-                if plugin_map.run_plugin_of_plugin_id(plugin_id).is_none() {
-                    return;
+                if let Some(pending) = reload_pending {
+                    // The old call returned; its watchdog must not interrupt BeforeClose.
+                    *pending.lock().unwrap() = false;
                 }
+                let skip_cache = true; // we want to explicitly reload the plugin
+                let instances = {
+                    let mut map = plugin_map.lock().unwrap();
+                    // A failed instance retains its identity; explicit unload removes it.
+                    if map.run_plugin_of_plugin_id(plugin_id).is_none() {
+                        return;
+                    }
+                    map.running_plugins_and_subscriptions()
+                };
                 // The instance about to be replaced gets the same last word an unloaded one
                 // does, so a plugin that persists in `BeforeClose` survives its own reload.
-                for (id, client_id, running_plugin, subscriptions) in
-                    plugin_map.running_plugins_and_subscriptions()
-                {
+                // Cleanup can synchronously query metadata through the plugin thread.
+                for (id, client_id, running_plugin, subscriptions) in instances {
                     if id != plugin_id {
                         continue;
                     }
@@ -1578,7 +1586,12 @@ impl WasmBridge {
                     }
                     running_plugin.dispose();
                     drop(running_plugin);
-                    plugin_map.remove_instance(plugin_id, client_id);
+                    plugin_map.lock().unwrap().remove_instance(plugin_id, client_id);
+                }
+                let mut plugin_map = plugin_map.lock().unwrap();
+                // An explicit unload may have removed the identity while cleanup ran.
+                if plugin_map.run_plugin_of_plugin_id(plugin_id).is_none() {
+                    return;
                 }
                 // A replacement must opt in again, including when BeforeClose resubscribed.
                 let _ = senders
@@ -4469,18 +4482,23 @@ fn arm_unload_watchdog(
 
 /// `arm_unload_watchdog` for the instances a reload is about to replace, armed when the reload is
 /// requested rather than when its job runs. Weak, so it does not outlive them: an instance the
-/// reload job already dropped is not running.
+/// reload job already dropped is not running. The returned gate retires the old call's
+/// watchdog before cleanup; its lock orders retirement against cancellation.
 fn arm_reload_watchdog(
     plugin_id: PluginId,
     cancel: Arc<AtomicBool>,
     instances: Vec<Weak<Mutex<RunningPlugin>>>,
-) {
+) -> Arc<Mutex<bool>> {
+    let pending = Arc::new(Mutex::new(true));
+    let still_pending = pending.clone();
     yinz_bus::global_async_runtime::get_tokio_runtime().spawn(async move {
         tokio::time::sleep(UNLOAD_GRACE).await;
-        if instances
-            .iter()
-            .filter_map(Weak::upgrade)
-            .any(|instance| is_inside_entrypoint(&instance))
+        let pending = still_pending.lock().unwrap();
+        if *pending
+            && instances
+                .iter()
+                .filter_map(Weak::upgrade)
+                .any(|instance| is_inside_entrypoint(&instance))
         {
             log::warn!(
                 "plugin {plugin_id} has not returned from its entrypoint {UNLOAD_GRACE:?} after \
@@ -4489,6 +4507,7 @@ fn arm_reload_watchdog(
             cancel.store(true, Ordering::Relaxed);
         }
     });
+    pending
 }
 
 /// Whether the guest is running right now: its executor holds the instance's lock for exactly

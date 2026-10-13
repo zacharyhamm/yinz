@@ -121,5 +121,22 @@ fn removal_queues_cleanup_before_reusing_the_connection_id() {
     assert!(matches!(cleanup.unwrap().0, ScreenInstruction::RemoveClient(id) if id == old));
     assert_ne!(replacement, old, "cleanup still owns the old connection ID");
     assert!(matches!(plugin_cleanup.unwrap().0, PluginInstruction::RemoveClient(id) if id == old));
+    state.write().unwrap().release_client_id(old);
+    assert_eq!(state.write().unwrap().new_client(), old);
+}
+
+#[test]
+fn removed_client_id_stays_reserved_until_its_router_finishes() {
+    let state = Arc::new(RwLock::new(SessionState::new()));
+    let session = Arc::new(RwLock::new(None));
+    let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
+    let old = state.write().unwrap().new_client();
+    // A send failure removes the connection before its router queues RemoveClient.
+    remove_client_and_flush_forwards(old, &mut os, &state, &session);
+    let attached = state.write().unwrap().new_client();
+    assert_ne!(attached, old, "the old router still owns a pending removal");
+    remove_client_and_flush_forwards(old, &mut os, &state, &session);
+    assert!(state.read().unwrap().client_ids().contains(&attached));
+    state.write().unwrap().release_client_id(old);
     assert_eq!(state.write().unwrap().new_client(), old);
 }
