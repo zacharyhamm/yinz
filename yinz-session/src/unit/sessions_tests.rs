@@ -23,10 +23,11 @@ fn the_pty_broker_socket_name_is_reserved() {
     assert!(error.contains("pty broker"), "{error}");
     assert!(validate_session_name("pty-broker-v8").is_ok());
     assert!(validate_session_name("my-session").is_ok());
+    assert!(validate_session_name(yinz_ipc::consts::SESSION_OWNERSHIP_DIR).is_err());
 }
 
 #[test]
-fn mother_is_discovered_only_for_sessions_with_local_sockets() {
+fn mother_is_discovered_only_for_sessions_with_live_local_sockets() {
     use yinz_runtime::session_checkpoint::write_checkpoint;
     use yinz_types::internal_ids::TerminalId;
     let sockets = tempfile::tempdir().unwrap();
@@ -49,8 +50,51 @@ fn mother_is_discovered_only_for_sessions_with_local_sockets() {
     let live = read_live_session_states(&"current".into(), sockets.path(), cache.path());
     assert_eq!(live[&session.name].mother, session.mother);
     drop(socket);
-    std::fs::remove_file(socket_path).unwrap();
     assert!(read_live_session_states(&"current".into(), sockets.path(), cache.path()).is_empty());
+    assert!(socket_path.exists());
+}
+
+#[test]
+fn stale_socket_probes_do_not_delay_each_other() {
+    use yinz_runtime::session_checkpoint::write_checkpoint;
+
+    let sockets = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let live_name = SessionName::new("live-session");
+    let mut live_listener = None;
+    for name in (0..10)
+        .map(|index| SessionName::new(format!("stale-{index}")))
+        .chain(std::iter::once(live_name.clone()))
+    {
+        let session = SessionInfo {
+            name: name.clone(),
+            ..Default::default()
+        };
+        write_checkpoint(
+            &cache.path().join(&name),
+            &crate::metadata::session_info::to_string(&session).unwrap(),
+            &("layout { pane; }".into(), Default::default()),
+        )
+        .unwrap();
+        let listener = UnixListener::bind(sockets.path().join(&name)).unwrap();
+        if name == live_name {
+            live_listener = Some(listener);
+        }
+    }
+
+    let started = Instant::now();
+    let sessions = read_live_session_states(&"current".into(), sockets.path(), cache.path());
+    let elapsed = started.elapsed();
+    assert_eq!(sessions.keys().collect::<Vec<_>>(), vec![&live_name]);
+    // BSD retries take 500 ms per stale socket: serial probes would take five seconds.
+    assert!(
+        elapsed < Duration::from_millis(2500),
+        "scan took {elapsed:?}"
+    );
+    for index in 0..10 {
+        assert!(sockets.path().join(format!("stale-{index}")).exists());
+    }
+    drop(live_listener);
 }
 
 #[test]
@@ -136,4 +180,24 @@ fn force_delete_preserves_checkpoint_on_shutdown_failure() {
             .is_err()
     );
     assert_eq!(fs::read_to_string(folder).unwrap(), "not a directory");
+}
+
+#[test]
+fn discovery_leaves_stale_sockets_for_the_owner_to_reclaim() {
+    use yinz_ipc::session_ownership::SessionOwnership;
+    std::fs::create_dir_all(&*YINZ_SOCK_DIR).unwrap();
+    let temporary = tempfile::NamedTempFile::new_in(&*YINZ_SOCK_DIR).unwrap();
+    let socket = temporary.path().to_owned();
+    let name = SessionName::new(socket.file_name().unwrap().to_str().unwrap());
+    drop(temporary);
+    drop(UnixListener::bind(&socket).unwrap());
+    assert_eq!(session_status(&name).unwrap(), SessionProbe::Absent);
+    assert!(socket.exists());
+    let owner = SessionOwnership::acquire(&socket).unwrap().unwrap();
+    let _listener = owner.bind().unwrap();
+    let candidates = session_socket_candidates_in(&YINZ_SOCK_DIR).unwrap();
+    assert!(candidates.iter().any(|(candidate, _)| candidate == &name));
+    assert!(!candidates
+        .iter()
+        .any(|(candidate, _)| candidate.as_str() == ".session-locks"));
 }

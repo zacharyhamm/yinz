@@ -1184,3 +1184,7 @@ mod tests {
         assert_eq!(strip_status_bar_clock(line), line);
     }
 }
+
+#[cfg(test)]
+#[path = "unit/session_ownership_tests.rs"]
+mod session_ownership_tests;

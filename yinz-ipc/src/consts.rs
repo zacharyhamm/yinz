@@ -1,3 +1,6 @@
+/// Persistent claims are kept separate from discoverable session sockets.
+pub const SESSION_OWNERSHIP_DIR: &str = ".session-locks";
+
 #[cfg(unix)]
 pub fn is_ipc_socket(file_type: &std::fs::FileType) -> bool {
     use std::os::unix::fs::FileTypeExt;
@@ -257,7 +260,7 @@ pub fn ipc_connect(path: &std::path::Path) -> std::io::Result<interprocess::loca
             // retried rather than trusted: a server merely behind on `accept`
             // takes the connection within the deadline, and one that is really
             // gone goes on refusing and is reported as refused below — which is
-            // what lets `assert_socket` clean its socket up. Deliberately *not*
+            // what lets the next owner reclaim its stale socket. Deliberately *not*
             // rewritten as `TimedOut` on the way out: that would make a stale
             // socket read as an unresponsive server, and `yinz -s <name>`
             // refuses to build over one of those, so a crashed session's name

@@ -906,6 +906,31 @@ pub fn start_server_impl(
         }
     );
 
+    let ownership =
+        match yinz_ipc::session_ownership::SessionOwnership::acquire_for_startup(&socket_path)
+            .context("acquire server session ownership")
+        {
+            Ok(Some(ownership)) => Arc::new(ownership),
+            Ok(None) => return,
+            Err(error) => {
+                Err::<(), _>(error).non_fatal();
+                return;
+            },
+        };
+    let listener = match ownership.bind() {
+        Ok(listener) => listener,
+        Err(error) => {
+            Err::<(), _>(error)
+                .context("start session listener")
+                .non_fatal();
+            return;
+        },
+    };
+    // Keep the socket from being aged out of XDG_RUNTIME_DIR.
+    yinz_runtime::shared::set_permissions(&socket_path, 0o1700)
+        .context("set session socket permissions")
+        .non_fatal();
+
     let shutdown = Shutdown::default();
     let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::bounded(50);
     let to_server = shutdown.sender(to_server);
@@ -928,24 +953,13 @@ pub fn start_server_impl(
         .name("server_listener".to_string())
         .spawn({
             use interprocess::local_socket::prelude::*;
-            use yinz_ipc::consts::ipc_bind;
-            use yinz_runtime::shared::set_permissions;
 
             let os_input = os_input.clone();
             let session_data = session_data.clone();
             let session_state = session_state.clone();
             let to_server = to_server.clone();
-            let socket_path = socket_path.clone();
             let live_connections = Arc::new(AtomicUsize::new(0));
             move || {
-                drop(std::fs::remove_file(&socket_path));
-                let listener = ipc_bind(&socket_path).unwrap();
-                // set the sticky bit to avoid the socket file being potentially cleaned up
-                // https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html states that for XDG_RUNTIME_DIR:
-                // "To ensure that your files are not removed, they should have their access time timestamp modified at least once every 6 hours of monotonic time or the 'sticky' bit should be set on the file. "
-                // It is not guaranteed that all platforms allow setting the sticky bit on sockets!
-                drop(set_permissions(&socket_path, 0o1700));
-
                 for stream in listener.incoming() {
                     match stream {
                         Ok(stream) => {
@@ -1057,10 +1071,6 @@ pub fn start_server_impl(
     let exit_reason: &str;
     let mut kill_session = false;
     let mut kill_completion_client = None;
-    // Whether the socket file was already unlinked by a `break` path below. It must not be
-    // unlinked twice: between the two would be the thread joins, long enough for a new server
-    // to bind the same path, and the second unlink would then delete *its* socket.
-    let mut socket_removed = false;
     // Until a first client has initialised the session, the wait is bounded by
     // this one deadline. The client that spawned this server gives up on it
     // after `CONNECT_TO_SERVER_TIMEOUT` (30s) and exits with no way to kill
@@ -1085,6 +1095,14 @@ pub fn start_server_impl(
             server_receiver.recv()
         };
         let (instruction, mut err_ctx) = recv.unwrap();
+        let instruction = match instruction {
+            ServerInstruction::FirstClientConnected(assets, client_id)
+                if session_data.read().unwrap().is_some() =>
+            {
+                ServerInstruction::AttachClient(assets, None, None, client_id)
+            },
+            instruction => instruction,
+        };
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::IPCServer((&instruction).into()));
         match &instruction {
             ServerInstruction::AttachClient(_, _, _, client_id) => log::info!(
@@ -1169,6 +1187,7 @@ pub fn start_server_impl(
                     os_input.clone(),
                     to_server.clone(),
                     shutdown.clone(),
+                    ownership.clone(),
                     client_attributes.clone(),
                     runtime_config_options.clone(),
                     layout.clone(),
@@ -1557,8 +1576,7 @@ pub fn start_server_impl(
                     if !session_state.read().unwrap().active_clients_are_connected() {
                         // Refuse new connections now; join workers after leaving the server
                         // loop, once its bounded receiver has been disconnected.
-                        drop(std::fs::remove_file(&socket_path));
-                        socket_removed = true;
+                        ownership.shutdown().non_fatal();
                         let client_ids_to_cleanup: Vec<ClientId> = session_state
                             .read()
                             .unwrap()
@@ -2334,15 +2352,7 @@ pub fn start_server_impl(
     // may still send to the server, so a full queue cannot hold up their shutdown.
     drop(server_receiver);
 
-    // Before the joins below, so that a client connecting from now on — a hook's
-    // `yinz action agent-report`, a session probe — is refused at the socket rather than
-    // accepted by the listener and parked on `session_state` until the joins finish, which
-    // is where a shutdown that waits on a stuck plugin thread spends its time. Once only: a
-    // path that already unlinked it has joined its threads since, and a new server may own
-    // the path by now.
-    if !socket_removed {
-        drop(std::fs::remove_file(&socket_path));
-    }
+    ownership.shutdown().non_fatal();
 
     // Drop cached session data before exit. This joins the pty thread, which
     // drops `Pty` and closes every pane — which is what terminates each pane's
@@ -2433,6 +2443,7 @@ fn init_session(
     os_input: Box<dyn ServerOsApi>,
     to_server: SenderWithContext<ServerInstruction>,
     shutdown: Shutdown,
+    ownership: Arc<yinz_ipc::session_ownership::SessionOwnership>,
     client_attributes: ClientAttributes,
     config_options: Options,
     layout: Layout,
@@ -2563,6 +2574,7 @@ fn init_session(
                 Some(os_input.clone()),
             );
             screen_bus.senders.session_checkpoint = session_checkpoint.clone();
+            screen_bus.senders.session_ownership = Some(ownership.clone());
             let max_panes = cli_assets.max_panes;
 
             let client_attributes_clone = client_attributes.clone();
@@ -2633,6 +2645,8 @@ fn init_session(
                 Some(&to_background_jobs),
                 None,
             );
+            // A plugin worker can outlive its bounded shutdown wait.
+            let ownership = ownership.clone();
             let engine = get_engine();
 
             let layout = Box::new(layout.clone());
@@ -2664,6 +2678,7 @@ fn init_session(
             let session_env_vars = session_env_vars.clone();
             let data_access = data_access.clone();
             move || {
+                let _ownership = ownership;
                 plugin_thread_main(
                     plugin_bus,
                     engine,
@@ -2769,6 +2784,7 @@ fn init_session(
             to_background_jobs: Some(to_background_jobs),
             to_server: Some(to_server),
             session_checkpoint,
+            session_ownership: Some(ownership),
             should_silently_fail: false,
         },
         default_shell,

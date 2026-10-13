@@ -26,88 +26,80 @@ impl Screen {
         if name == self.session_name {
             return Ok(());
         }
-        let validation = (|| -> Result<()> {
-            if self.peer_sessions_cache.contains_key(&name)
-                || YINZ_SOCK_DIR
-                    .join(&name)
-                    .try_exists()
-                    .context("check destination socket")?
-            {
-                return Err(anyhow!("A session by this name already exists."));
-            }
-            if self.resurrectable_sessions_cache.contains_key(&name)
-                || yinz_runtime::consts::session_info_folder_for_session(&name)
-                    .try_exists()
-                    .context("check destination session cache")?
-            {
-                return Err(anyhow!(
-                    "A resurrectable session by this name exists, cannot use this name."
-                ));
-            }
-            Ok(())
-        })();
-        if let Err(error) = validation {
-            log::error!("Failed to rename session: {error:#}");
-            if let Some(os_input) = &self.bus.os_input {
-                os_input
-                    .send_to_client(
-                        client_id,
-                        ServerToClientMsg::LogError {
-                            lines: vec![format!("Failed to rename session: {error:#}")],
-                        },
-                    )
-                    .context("report session rename rejection")
-                    .non_fatal();
-            }
-            return Ok(());
-        }
+        let ownership = self.bus.senders.session_ownership.clone();
+        let has_ownership = ownership.is_some();
         {
             let err_context = || "Failed to rename session".to_string();
             let old_session_name = self.session_name.clone();
-
-            self.mother_supervisor = None;
-            self.mother_status = None;
-            let renamed = super::mother_supervisor::rename_memory(
-                &yinz_runtime::consts::YINZ_CACHE_DIR,
-                old_session_name.as_str(),
-                name.as_str(),
-                || {
-                    if let Some(os_input) = &self.bus.os_input {
-                        os_input.rename_pty_host_session(&old_session_name, &name)?;
-                    }
-                    let result = self
-                        .bus
-                        .senders
-                        .session_checkpoint
-                        .rename(&old_session_name, &name)
-                        .and_then(|()| {
-                            std::fs::rename(
-                                YINZ_SOCK_DIR.join(&old_session_name),
-                                YINZ_SOCK_DIR.join(&name),
-                            )
-                            .context("rename IPC socket")
-                            .inspect_err(|_| {
-                                self.bus
-                                    .senders
-                                    .session_checkpoint
-                                    .rename(&name, &old_session_name)
-                                    .context(
-                                        "restore session checkpoint after socket rename failed",
-                                    )
-                                    .non_fatal();
-                            })
-                        });
-                    if result.is_err() {
+            let mut mother_stopped = false;
+            let mut transaction = || -> Result<()> {
+                if !has_ownership
+                    && (self.peer_sessions_cache.contains_key(&name)
+                        || YINZ_SOCK_DIR
+                            .join(&name)
+                            .try_exists()
+                            .context("check destination socket")?)
+                {
+                    return Err(anyhow!("A session by this name already exists."));
+                }
+                if self.resurrectable_sessions_cache.contains_key(&name)
+                    || yinz_runtime::consts::session_info_folder_for_session(&name)
+                        .try_exists()
+                        .context("check destination session cache")?
+                {
+                    return Err(anyhow!(
+                        "A resurrectable session by this name exists, cannot use this name."
+                    ));
+                }
+                mother_stopped = true;
+                self.mother_supervisor = None;
+                self.mother_status = None;
+                super::mother_supervisor::rename_memory(
+                    &yinz_runtime::consts::YINZ_CACHE_DIR,
+                    old_session_name.as_str(),
+                    name.as_str(),
+                    || {
                         if let Some(os_input) = &self.bus.os_input {
-                            os_input
-                                .rename_pty_host_session(&name, &old_session_name)
-                                .context("restore session ownership after rename failed")
-                                .non_fatal();
+                            os_input.rename_pty_host_session(&old_session_name, &name)?;
                         }
-                    }
-                    result
-                },
-            );
+                        let result = self
+                            .bus
+                            .senders
+                            .session_checkpoint
+                            .rename(&old_session_name, &name)
+                            .and_then(|()| {
+                                std::fs::rename(
+                                    YINZ_SOCK_DIR.join(&old_session_name),
+                                    YINZ_SOCK_DIR.join(&name),
+                                )
+                                .context("rename IPC socket")
+                                .inspect_err(|_| {
+                                    self.bus
+                                        .senders
+                                        .session_checkpoint
+                                        .rename(&name, &old_session_name)
+                                        .context(
+                                            "restore session checkpoint after socket rename failed",
+                                        )
+                                        .non_fatal();
+                                })
+                            });
+                        if result.is_err() {
+                            if let Some(os_input) = &self.bus.os_input {
+                                os_input
+                                    .rename_pty_host_session(&name, &old_session_name)
+                                    .context("restore session ownership after rename failed")
+                                    .non_fatal();
+                            }
+                        }
+                        result
+                    },
+                )
+            };
+            let renamed = match ownership {
+                Some(ownership) => ownership.rename(&YINZ_SOCK_DIR.join(&name), transaction),
+                None => transaction(),
+            };
             if let Err(error) = renamed {
                 if let Some(os_input) = &self.bus.os_input {
                     os_input
@@ -122,7 +114,9 @@ impl Screen {
                 Err::<(), _>(error)
                     .context("Failed to rename session")
                     .non_fatal();
-                self.sync_mother_supervisor();
+                if mother_stopped {
+                    self.sync_mother_supervisor();
+                }
                 return Ok(());
             }
 
