@@ -313,8 +313,8 @@ support_kitty_keyboard_protocol false
  
 // Whether right-clicking a pane opens a context menu. A program that is tracking the
 // mouse itself keeps its own right-click either way.
-// default is false
-// context_menu_on_right_click false
+// default is true
+// context_menu_on_right_click true
  
 // Whether triple-clicking inside command output marked by the shell (OSC 133) selects
 // the command and its output instead of the logical line

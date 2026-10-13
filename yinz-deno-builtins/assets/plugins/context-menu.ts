@@ -39,6 +39,13 @@ yinz.on("RunCommandResult", ([exitCode, _stdout, _stderr, context]) => {
 
 yinz.on("ContextMenuRequested", (event) => {
   const items: ContextMenuItem[] = [];
+  if ("Terminal" in event.pane_id && yinz.command("GetPaneInfo", event.pane_id)?.agent) {
+    items.push(
+      { label: "Duplicate agent", context: { action: "duplicate_agent" } },
+      { label: "Fork agent", context: { action: "fork_agent" } },
+      { separator: true },
+    );
+  }
   if (event.link?.matched) {
     items.push(
       {
@@ -63,8 +70,37 @@ yinz.on("ContextMenuRequested", (event) => {
   yinz.command("SetContextMenu", { request_id: event.request_id, items: tidy });
 });
 
-yinz.on("ContextMenuItemSelected", ({ item_context: context }) => {
+yinz.on("ContextMenuItemSelected", ({ item_context: context, context: source }) => {
   if (context["action"] === "open_link" && context["url"]) openLink(context["url"]);
+  if (context["action"] !== "duplicate_agent" && context["action"] !== "fork_agent") return;
+  if (!("Terminal" in source.pane_id) || !yinz.command("GetPaneInfo", source.pane_id)?.agent)
+    return;
+  yinz.command("RunAction", [
+    {
+      LaunchPlugin: {
+        plugin: {
+          RunPlugin: {
+            location: { Yinz: "new-agent" },
+            configuration: {
+              caller_terminal_pane_id: String(source.pane_id.Terminal),
+              [context["action"] === "fork_agent" ? "fork_focused" : "duplicate_focused"]: "true",
+              overlay: "true",
+              modal: "true",
+            },
+            initial_cwd: null,
+          },
+        },
+        should_float: true,
+        should_open_in_place: false,
+        close_replaced_pane: false,
+        skip_cache: false,
+        cwd: null,
+        no_focus: false,
+        tab_id: null,
+      },
+    },
+    {},
+  ]);
 });
 
 export default definePlugin({

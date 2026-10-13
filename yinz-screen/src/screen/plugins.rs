@@ -87,7 +87,7 @@ impl Screen {
         overlay_placement: Option<OverlayPlacement>,
     ) -> Result<()> {
         yinz_runtime::plugin_location::refresh_file_identity(&mut run_plugin);
-        let (tab_index, client_id) = if pane_id_to_replace.is_some() {
+        let (tab_index, client_id) = if should_open_in_place && pane_id_to_replace.is_some() {
             match self.tab_for_plugin_launch(explicit_tab_id) {
                 Some(tab_index) => (tab_index, client_id),
                 None => return Ok(()),

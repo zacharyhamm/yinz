@@ -1836,7 +1836,7 @@ fn context_menu_on_right_click_to_kdl(value: &Options, add_comments: bool) -> Op
         " ",
         "// Whether right-clicking a pane opens a context menu. A program that is tracking the",
         "// mouse itself keeps its own right-click either way.",
-        "// default is false",
+        "// default is true",
     );
 
     let create_node = |node_value: bool| -> KdlNode {
@@ -1851,7 +1851,7 @@ fn context_menu_on_right_click_to_kdl(value: &Options, add_comments: bool) -> Op
         }
         Some(node)
     } else if add_comments {
-        let mut node = create_node(false);
+        let mut node = create_node(true);
         node.set_leading(format!("{}\n// ", comment_text));
         Some(node)
     } else {

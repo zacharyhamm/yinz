@@ -1189,7 +1189,6 @@ fn embedded_deno_context_menu_hook_filters_and_dispatches_selection() {
         .with_config(
             r#"
 mouse_mode true
-context_menu_on_right_click true
 load_plugins clear-defaults=true { "yinz:context-menu"; }
 hooks { context_menu "yinz:context-menu"; }
 context_menu {

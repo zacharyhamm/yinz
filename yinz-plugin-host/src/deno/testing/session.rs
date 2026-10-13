@@ -476,7 +476,7 @@ impl Controller {
                 }
                 self.size = dimensions(&arg, self.size)?;
                 self.grid.change_size(self.size.rows, self.size.cols);
-                let mut config = "mouse_mode true\ncontext_menu_on_right_click true\ndetachable_panes false\nsession_serialization false\ndefault_shell \"/bin/sh\"\n".to_owned();
+                let mut config = "mouse_mode true\ndetachable_panes false\nsession_serialization false\ndefault_shell \"/bin/sh\"\n".to_owned();
                 let entry = loader.local_path(loader.entrypoint(), false)?;
                 config.push_str(&format!(
                     "user_plugin_dir {}\n",
