@@ -217,11 +217,13 @@ export function search(
     more: result.records.length > 100 || result.raw.truncated,
   };
 }
-export function timestamp(value: unknown): string {
-  const date = typeof value === "number" ? new Date(value) : undefined;
-  return date && Number.isFinite(date.getTime())
-    ? date.toISOString().replace("T", " ").slice(0, 19)
-    : "Time unknown";
+export function timestamp(value: unknown, now = Date.now()): string {
+  if (typeof value !== "number" || !Number.isFinite(new Date(value).getTime())) return "—";
+  const minutes = Math.floor(Math.max(0, now - value) / 60000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h`;
+  return `${Math.floor(minutes / 1440)}d`;
 }
 export function activity(record: RecordValue): Message {
   const text = [record["summary"], record["detail"], record["reason"]]

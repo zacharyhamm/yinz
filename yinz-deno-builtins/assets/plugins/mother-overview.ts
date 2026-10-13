@@ -121,6 +121,8 @@ const journal = new Map<number, RecordValue>();
 let rosterHits = new Map<number, string>();
 let timelineHits = new Map<number, string>();
 let pageSize = 5;
+let rosterPageSize = 5;
+let forwardPageSize = 5;
 const markdown = new Map<string, string[]>();
 const needsAttention = (agent: Readonly<Agent>): boolean =>
   agent.row["needs_input"] === true || agent.row["state"] === "needs_input";
@@ -437,6 +439,10 @@ function body(message: Readonly<Message>, width: number): string[] {
 }
 const plain = (text: string, width: number): string =>
   z.text.truncate(clean(text).replaceAll("\n", " "), Math.max(0, width));
+function border(title: string, columns: number): string {
+  const label = plain(`─ ${plain(title, columns - 4)} `, columns);
+  return label + "─".repeat(Math.max(0, columns - z.text.width(label)));
+}
 function header(): string[] {
   if (!overview) return [];
   const result = [
@@ -509,8 +515,9 @@ function rosterLine(agent: Readonly<Agent>, columns: number): string {
 }
 // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- Append rows to the frame while recording their hit targets.
 function drawRoster(output: string[], height: number, columns: number): void {
+  rosterPageSize = Math.max(1, Math.floor(height / 2));
   output.push(
-    plain(
+    border(
       `${region === "roster" ? "▶" : "─"} Agents${attention ? " · attention only" : ""} · turn ended ≠ verified completion`,
       columns,
     ),
@@ -520,7 +527,7 @@ function drawRoster(output: string[], height: number, columns: number): void {
     0,
     list.findIndex((agent) => agent.id === selected),
   );
-  const start = Math.max(0, index - Math.max(1, Math.floor(height / 2)) + 1);
+  const start = Math.max(0, index - rosterPageSize + 1);
   let project = "";
   const end = output.length + height;
   for (const agent of list.slice(start)) {
@@ -534,27 +541,63 @@ function drawRoster(output: string[], height: number, columns: number): void {
     output.push(rosterLine(agent, columns));
   }
 }
-function excerpt(message: Readonly<Message>, columns: number): string {
+function excerpt(message: Readonly<Message>, columns: number): string[] {
   const text = clean(message.text).replaceAll("\n", " ");
   const lower = text.toLowerCase();
   const term = searchTerms.find((value) => lower.includes(value));
   const start = term ? Math.max(0, lower.indexOf(term) - 20) : 0;
-  return plain(`${start > 0 ? "…" : ""}${text.slice(start)}`, columns);
+  return z.text.wrap(`${start > 0 ? "…" : ""}${text.slice(start)}`, columns).slice(0, 2);
 }
 function preview(message: Readonly<Message>, columns: number): string[] {
-  if (hits) return [excerpt(message, columns)];
-  if (message.kind.startsWith("tool")) return [plain(message.text.replaceAll("\n", " "), columns)];
+  if (message.kind.startsWith("tool")) return [];
+  if (hits) return excerpt(message, columns);
   return body(message, columns).slice(0, 2);
 }
-function messageWho(message: Readonly<Message>): string {
-  return hits
+function timelineLines(
+  message: Readonly<Message>,
+  columns: number,
+  timeWidth: number,
+  active: boolean,
+  now: number,
+): string[] {
+  const who = hits
     ? `${agents.find((agent) => agent.id === message.agent)?.name ?? message.agent} · ${message.run} · `
     : "";
+  const gutterWidth = Math.min(columns - 1, timeWidth + 5);
+  const gutter = z.text.pad(
+    plain(
+      `${active ? ">" : " "} ${z.text.pad(timestamp(message.time, now), timeWidth)} │ `,
+      gutterWidth,
+    ),
+    gutterWidth,
+  );
+  const messageWidth = columns - gutterWidth;
+  return [
+    gutter + plain(`${messageLabel(message)}${who ? ` · ${who}` : ""}`, messageWidth),
+    ...preview(message, messageWidth).map((line) => " ".repeat(gutterWidth) + line),
+  ];
+}
+function forwardPageCount(
+  content: readonly Readonly<Message>[],
+  rows: number,
+  columns: number,
+  timeWidth: number,
+  now: number,
+): number {
+  let count = 0;
+  let remaining = rows;
+  for (const message of content) {
+    const height = timelineLines(message, columns, timeWidth, false, now).length;
+    if (height > remaining) break;
+    remaining -= height;
+    count += 1;
+  }
+  return Math.max(1, count);
 }
 // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- Append rows to the frame while recording their hit targets.
 function drawTimeline(output: string[], rows: number, columns: number): void {
   output.push(
-    plain(
+    border(
       `${region === "timeline" ? "▶" : "─"} ${hits ? "Search results" : view} · ${chosen()?.name ?? "Mother"} · ${runs[runIndex]?.id ?? ""}`,
       columns,
     ),
@@ -567,7 +610,14 @@ function drawTimeline(output: string[], rows: number, columns: number): void {
     0,
     content.findIndex((message) => message.id === current?.id),
   );
-  pageSize = Math.max(1, Math.floor((rows - output.length - 1) / 3));
+  const now = Date.now();
+  const timeWidth = Math.min(
+    Math.max(3, ...content.map((message) => z.text.width(timestamp(message.time, now)))),
+    Math.max(0, columns - 6),
+  );
+  const displayed: { id: string; lines: string[] }[] = [];
+  const height = Math.max(0, rows - output.length - 1);
+  let remaining = height;
   if (content.length === 0)
     output.push(
       plain(
@@ -577,23 +627,21 @@ function drawTimeline(output: string[], rows: number, columns: number): void {
         columns,
       ),
     );
-  for (const message of content.slice(Math.max(0, index - pageSize + 1), index + 1)) {
-    if (output.length >= rows - 1) break;
-    timelineHits.set(output.length, message.id);
-    const who = messageWho(message);
-    output.push(
-      plain(
-        `${message.id === current?.id ? ">" : " "} ${messageLabel(message)} · ${timestamp(message.time)}${who ? ` · ${who}` : ""}`,
-        columns,
-      ),
-    );
-    const lines = preview(message, columns);
-    for (const line of lines)
-      if (output.length < rows - 1) {
-        timelineHits.set(output.length, message.id);
-        output.push(line);
-      }
+  for (let position = index; position >= 0 && remaining > 0; position -= 1) {
+    const message = content[position];
+    if (!message) break;
+    const lines = timelineLines(message, columns, timeWidth, message.id === current?.id, now);
+    if (lines.length > remaining && displayed.length > 0) break;
+    displayed.unshift({ id: message.id, lines: lines.slice(0, remaining) });
+    remaining -= lines.length;
   }
+  pageSize = Math.max(1, displayed.length);
+  forwardPageSize = forwardPageCount(content.slice(index + 1), height, columns, timeWidth, now);
+  for (const message of displayed)
+    for (const line of message.lines) {
+      timelineHits.set(output.length, message.id);
+      output.push(line);
+    }
 }
 function confirmation(rows: number, columns: number): string[] {
   reviewVisible = rows >= 5 && columns >= 40;
@@ -613,6 +661,7 @@ const helpLines = [
   "Mother Overview",
   "Tab: roster / timeline · ↑↓ or j/k: select",
   "PageUp/PageDown or wheel: scroll · Enter: read",
+  "Tool calls and results are collapsed; Enter: expand in reader",
   "Esc: return · v: source · y: copy · w: warnings",
   "c: conversations · d: assignment · h: activity",
   "n: older page / earlier run · End: newest",
@@ -629,7 +678,7 @@ function footer(short: boolean): string {
   if (hits) return "Enter: context and reader · Esc: timeline · /: search · ?: help";
   if (view === "activity") return "Enter: read · n: next page · c: conversation · ?: help";
   if (view === "assignment") return "Enter: read · c: conversation · h: activity · ?: help";
-  return "Tab: roster · Enter: read · n: older · /: search · ?: help";
+  return "Tab: roster · Enter: read/expand · n: older · /: search · ?: help";
 }
 function renderPanel(rows: number, columns: number): string {
   rosterHits = new Map();
@@ -739,10 +788,10 @@ function handleKey(key: ReadonlyWire<KeyWithModifier["bare_key"]>): void {
       move(-1);
       break;
     case "PageDown":
-      move(pageSize);
+      move(reader ? pageSize : region === "roster" ? rosterPageSize : forwardPageSize);
       break;
     case "PageUp":
-      move(-pageSize);
+      move(!reader && region === "roster" ? -rosterPageSize : -pageSize);
       break;
     case "Home":
       move(-100000);
