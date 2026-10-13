@@ -1548,7 +1548,7 @@ pub fn screen_thread_main(
                 },
                 // Writes captured by the palette must not scroll the underlying pane either.
                 ScreenInstruction::ClearScroll(client_id)
-                    if screen.command_palettes.contains_key(&client_id)
+                    if screen.palette_owns_input(client_id)
                         || screen.permission_modal_open(client_id) => {},
                 ScreenInstruction::ClearScroll(client_id) => {
                     let was_scrolled = screen.active_pane_is_scrolled(client_id);
@@ -3348,17 +3348,10 @@ pub fn screen_thread_main(
                     pane_id,
                     tab_id,
                     action,
-                    create_session,
                     client_id,
                 } => {
-                    screen.dispatch_command_palette_action(
-                        pane_id,
-                        tab_id,
-                        action,
-                        create_session,
-                        client_id,
-                        label,
-                    );
+                    screen
+                        .dispatch_command_palette_action(pane_id, tab_id, action, client_id, label);
                     screen.render()?;
                 },
                 ScreenInstruction::MoveCommandPalettePane {

@@ -308,6 +308,13 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 }
             })
         },
+        CommandType::GetDisconnectTargets => decode(bytes).and_then(
+            |r: yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse| match r.error
+            {
+                Some(error) => Err(anyhow!(error)),
+                None => value(r.client_ids),
+            },
+        ),
         CommandType::GetSessionList => {
             decode(bytes).and_then(|r: ProtobufGetSessionListResponse| {
                 match GetSessionListResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {

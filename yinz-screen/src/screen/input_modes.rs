@@ -193,7 +193,7 @@ impl Screen {
         base_mode: Option<InputMode>,
         client_id: ClientId,
     ) -> Result<()> {
-        let new_mode = if self.palette_owns_input(client_id) {
+        let new_mode = if self.command_palette_is_open(client_id) {
             InputMode::Locked
         } else {
             new_mode
@@ -230,7 +230,7 @@ impl Screen {
             active_tab!(self, client_id, |tab: &mut Tab| tab.clear_search(client_id));
         }
 
-        if !self.palette_owns_input(client_id) {
+        if !self.command_palette_is_open(client_id) {
             if new_mode == InputMode::Notifications {
                 if !self.notification_browsers.contains_key(&client_id) {
                     self.open_notification_browser(client_id);

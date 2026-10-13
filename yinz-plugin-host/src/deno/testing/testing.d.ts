@@ -17,18 +17,20 @@ export type PaletteTestMessage =
   | {type: "disconnect"};
 export type PaletteTestAction = Required<Omit<PaletteAction, "run">> & {handle: string};
 export type PaletteTestField =
-  | Required<Extract<PaletteField, {type: "text"}>>
+  | Required<Extract<PaletteField, {type: "text" | "directory"}>>
   | (Omit<Extract<PaletteField, {type: "choice"}>, "initialValue"> & {initialValue: string | null});
 export type PaletteTestView =
-  | {type: "actions"; title: string; actions: PaletteTestAction[]; source: string | null}
-  | {type: "form"; title: string; fields: PaletteTestField[]; submitLabel: string; handle: string}
+  | {type: "actions"; title: string; initialQuery?: string; actions: PaletteTestAction[]; source: string | null}
+  | {type: "form"; title: string; fields: PaletteTestField[]; submitLabel: string; handle: string; actions: PaletteTestAction[]; confirmation: boolean}
   | {type: "text"; title: string; text: string};
 export type PaletteTestReply =
+  | {type: "fields"; values: Record<string, string>}
   | {type: "actions"; actions: PaletteTestAction[]}
   | {type: "view"; view: PaletteTestView}
   | {type: "complete"; notification: string; view: PaletteTestView | null}
   | {type: "close"};
 export type PaletteTestCommand =
+  | {type: "suspend"; scope: PaletteTestScope; suspended: boolean}
   | {type: "register"; id: string; title: string; registration: string; staticActions: boolean}
   | {type: "unregister"; registration: string}
   | {type: "reply"; scope: PaletteTestScope; result: {Ok: PaletteTestReply} | {Err: string}}

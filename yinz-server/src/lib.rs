@@ -783,6 +783,16 @@ impl SessionState {
     pub fn client_ids(&self) -> Vec<ClientId> {
         self.clients.iter().copied().collect()
     }
+    fn disconnect_targets(&self, initiating_client: ClientId) -> Vec<ClientId> {
+        let mut targets: Vec<_> = self
+            .clients
+            .iter()
+            .copied()
+            .filter(|client| *client != initiating_client)
+            .collect();
+        targets.sort_unstable();
+        targets
+    }
     fn input_unblock_clients(&self) -> Vec<ClientId> {
         self.interactive_clients.iter().copied().collect()
     }
@@ -1610,15 +1620,11 @@ pub fn start_server_impl(
                 exit_reason = "KillSession";
                 break;
             },
+            ServerInstruction::GetDisconnectTargets(client_id, response) => {
+                let _ = response.send(session_state.read().unwrap().disconnect_targets(client_id));
+            },
             ServerInstruction::DisconnectAllClientsExcept(client_id) => {
-                let client_ids: Vec<ClientId> = session_state
-                    .read()
-                    .unwrap()
-                    .client_ids()
-                    .iter()
-                    .copied()
-                    .filter(|c| c != &client_id)
-                    .collect();
+                let client_ids = session_state.read().unwrap().disconnect_targets(client_id);
                 for client_id in client_ids {
                     if let Some(session_data) = session_data.write().unwrap().as_mut() {
                         session_data.remove_key_passthrough_client(client_id);
@@ -3136,5 +3142,21 @@ mod session_state_tests {
         s.clear_forward_in_flight(42);
         // After clear, removing the client yields no stuck tokens.
         assert!(s.remove_client(crate::ClientId::new(1)).is_empty());
+    }
+    #[test]
+    fn disconnect_targets_exclude_origin_and_watchers_but_include_pipe_clients() {
+        let mut state = SessionState::new();
+        let origin = state.new_client();
+        state.watchers.insert(ClientId::new(8));
+        assert!(state.disconnect_targets(origin).is_empty());
+        let other = state.new_client();
+        let pipe = state.new_client();
+        state.associate_pipe_with_client("pipe".into(), pipe);
+        assert_eq!(state.disconnect_targets(origin), vec![other, pipe]);
+        for id in state.disconnect_targets(origin) {
+            state.remove_client(id);
+        }
+        assert_eq!(state.client_ids(), vec![origin]);
+        assert_eq!(state.watcher_client_ids(), vec![ClientId::new(8)]);
     }
 }

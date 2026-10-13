@@ -3,7 +3,7 @@ use super::*;
 use prost::Message;
 use std::path::Path;
 use yinz_types::internal_ids::TerminalId;
-use yinz_types::pick::{PickCommand, PickOptions, PickRequest, PickResult};
+use yinz_types::pick::{PickCommand, PickKind, PickOptions, PickRequest, PickResult};
 
 pub(super) struct PendingPick {
     caller: PluginId,
@@ -19,15 +19,26 @@ pub(super) struct PendingPick {
     result: Option<Result<Option<String>, String>>,
 }
 
-pub(crate) fn dispatch(env: &mut PluginEnv, command: PickCommand) -> Result<()> {
+pub(crate) fn dispatch(env: &mut PluginEnv, mut command: PickCommand) -> Result<()> {
     let result = (|| -> Result<Option<PickRequest>> {
         if command == PickCommand::Request {
             return Ok(env.pick_request.clone());
         }
         let mut cwd = env.plugin_cwd.clone();
         let mut focused_plugin = None;
-        if let PickCommand::Start { options, .. } = &command {
+        if let PickCommand::Start { options, .. } = &mut command {
             options.validate().map_err(|error| anyhow!(error))?;
+            if options.kind == PickKind::Directory
+                && matches!(&env.plugin_config.location, RunPluginLocation::Yinz(tag) if tag.to_string() == "session-palette")
+            {
+                if let Some(roots) = &mut options.roots {
+                    for root in roots {
+                        *root = crate::yinz_exports::resolve_host_directory(env, root)?
+                            .to_string_lossy()
+                            .into_owned();
+                    }
+                }
+            }
             let (response_channel, receive) = crossbeam::channel::bounded(1);
             env.senders
                 .send_to_screen(ScreenInstruction::GetFocusedPaneInfo {

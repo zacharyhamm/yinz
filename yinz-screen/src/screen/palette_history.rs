@@ -594,14 +594,7 @@ impl Screen {
         };
         let (pane, tab) = (state.context.pane_id, state.context.tab_id);
         self.close_command_palette(client);
-        self.dispatch_command_palette_action(
-            pane,
-            tab,
-            action,
-            false,
-            client,
-            "Focus agent".into(),
-        );
+        self.dispatch_command_palette_action(pane, tab, action, client, "Focus agent".into());
     }
 
     pub(super) fn open_agent_filters(&mut self, client: ClientId) {

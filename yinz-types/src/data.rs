@@ -3245,6 +3245,7 @@ pub enum PluginCommand {
         context: BTreeMap<String, String>,
     },
     GetSessionList,
+    GetDisconnectTargets,
     KillSessionsAndReply(Vec<SessionName>), // one or more session names; sends a response back
     DeleteDeadSessionAndReply(SessionName), // session name; sends a response back
     DeleteAllDeadSessionsAndReply,          // no payload; sends a response back

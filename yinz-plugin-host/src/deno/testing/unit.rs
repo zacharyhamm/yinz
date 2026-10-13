@@ -636,6 +636,10 @@ fn palette_test_types_accept_serialized_protocol() {
         Command::Unregister {
             registration: "provider".into(),
         },
+        Command::Suspend {
+            scope: scope.clone(),
+            suspended: true,
+        },
         Command::Close {
             scope: scope.clone(),
         },
@@ -648,6 +652,9 @@ fn palette_test_types_accept_serialized_protocol() {
         Reply::Actions {
             actions: actions.clone(),
         },
+        Reply::Fields {
+            values: BTreeMap::from([("directory".into(), "/tmp".into())]),
+        },
         Reply::Close,
         Reply::Complete {
             notification: "Saved".into(),
@@ -655,6 +662,7 @@ fn palette_test_types_accept_serialized_protocol() {
         },
         Reply::View {
             view: View::Actions {
+                initial_query: String::new(),
                 title: "Actions".into(),
                 actions,
                 source: Some("source".into()),
@@ -668,10 +676,23 @@ fn palette_test_types_accept_serialized_protocol() {
         },
         Reply::View {
             view: View::Form {
+                actions: vec![Action {
+                    id: "configure".into(),
+                    label: "Configure".into(),
+                    description: String::new(),
+                    aliases: vec![],
+                    handle: "secondary".into(),
+                }],
+                confirmation: false,
                 title: "Form".into(),
                 submit_label: "Submit".into(),
                 handle: "submit".into(),
                 fields: vec![
+                    Field::Directory {
+                        id: "directory".into(),
+                        label: "Directory".into(),
+                        initial_value: "/tmp".into(),
+                    },
                     Field::Text {
                         id: "text".into(),
                         label: "Text".into(),
@@ -698,7 +719,7 @@ fn palette_test_types_accept_serialized_protocol() {
 import {{test,assertEquals,type PaletteTestMessage,type PaletteTestCommand}} from 'yinz:testing';
 const messages: PaletteTestMessage[] = {};
 const commands: PaletteTestCommand[] = {};
-test('Rust protocol matches test declarations',()=>{{assertEquals(messages.length,6);assertEquals(commands.length,10);}});
+test('Rust protocol matches test declarations',()=>{{assertEquals(messages.length,6);assertEquals(commands.length,12);}});
 "#, serde_json::to_string(&messages).unwrap(), serde_json::to_string(&commands).unwrap())).unwrap();
     let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
     assert!(report.passed(), "{report:#?}");

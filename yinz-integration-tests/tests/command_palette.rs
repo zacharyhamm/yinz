@@ -34,7 +34,7 @@ fn command_palette_refreshes_shortcuts_after_reconfigure_without_input() {
     yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
     yinz.send_stdin(DO);
     yinz.wait_until("palette opened", |snapshot| {
-        snapshot.contains("Switch session")
+        snapshot.contains("Switch current project")
     });
     yinz.send_stdin(b"Fullscreen");
     yinz.wait_until("regular route wins over Tmux route", |snapshot| {
@@ -112,7 +112,7 @@ fn command_palette_receives_original_keys_before_write_bindings() {
     let before = shell.stdin_bytes();
     yinz.send_stdin(DO);
     yinz.wait_until("palette opened", |snapshot| {
-        snapshot.contains("Switch session")
+        snapshot.contains("Switch current project")
     });
     yinz.send_stdin(b"x");
     yinz.wait_until("WriteChars preserves the original key", |snapshot| {
@@ -166,7 +166,7 @@ fn command_palette_default_binding_captures_keys_and_paste_without_running_comma
         for close in [DO, keys::ESC.as_slice()] {
             yinz.send_stdin(DO);
             yinz.wait_until("palette opens with an empty query", |snapshot| {
-                snapshot.contains("Switch session") && snapshot.contains("New tab")
+                snapshot.contains("Switch current project") && snapshot.contains("New tab")
             });
             // The timed unlock prefix must not swallow the following g inside the palette.
             yinz.send_stdin(b"\x07g");
@@ -258,7 +258,7 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
         // Opening and dismissing the palette also drains any ignored Pane-mode paste.
         yinz.send_stdin(DO);
         yinz.wait_until("palette opened", |snapshot| {
-            snapshot.contains("Switch session")
+            snapshot.contains("Switch current project")
         });
         yinz.send_stdin(&keys::ESC);
         let before = yinz.wait_until("baseline after dismissal", |snapshot| {
@@ -267,7 +267,7 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
         let stdin_before = shell.stdin_bytes();
         yinz.send_stdin(DO);
         yinz.wait_until("palette reopened", |snapshot| {
-            snapshot.contains("Switch session")
+            snapshot.contains("Switch current project")
         });
         yinz.send_stdin("\x1b[200~café\n東京\x1b[201~".as_bytes());
         yinz.send_stdin("\x1b[200~Ω\x1b[201~".as_bytes());
@@ -339,11 +339,11 @@ fn command_palette_closed_paste_reaches_normal_locked_and_synchronized_terminals
 fn palette_query(yinz: &yinz_integration_tests::TestSession, query: &str) {
     yinz.send_stdin(DO);
     yinz.wait_until("palette opened", |snapshot| {
-        snapshot.contains("Switch session")
+        snapshot.contains("Switch current project")
     });
     yinz.send_stdin(query.as_bytes());
     yinz.wait_until("palette query rendered", |snapshot| {
-        snapshot.contains(&format!("> {query}"))
+        snapshot.contains(&format!("> {query}")) && snapshot.contains(&format!("› {query}"))
     });
     yinz.send_stdin(&keys::ENTER);
 }
@@ -358,7 +358,7 @@ fn replace_name(yinz: &yinz_integration_tests::TestSession, name: &str) {
 #[test]
 fn command_palette_creates_renames_navigates_and_confirms_closing() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config("load_plugins clear-defaults=true {}\npane_frame_style \"full\"")
+        .with_config("load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\npane_frame_style \"full\"")
         .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
         .start();
     let root = yinz.expect_pty_spawn();
@@ -409,16 +409,31 @@ fn command_palette_creates_renames_navigates_and_confirms_closing() {
     });
 
     // Direct pane destinations switch tabs as well as focus the pane.
-    palette_query(&yinz, "palette-root");
+    palette_query(&yinz, "Find pane…");
+    yinz.wait_until("pane picker ready", |s| {
+        s.contains("Esc Back") && !s.contains("Working")
+    });
+    yinz.send_stdin(b"terminal_0");
+    yinz.wait_until("pane found", |s| {
+        s.contains("› [terminal_0] palette-root") && !s.contains("Loading")
+    });
+    yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("original pane focused", |snapshot| {
         snapshot.contains("CHILD") && !snapshot.contains("TAB CONTENT")
     });
     yinz.send_stdin(b"root input");
     root.wait_for_stdin("destination receives input", |bytes| bytes == b"root input");
-    palette_query(&yinz, "Switch tab…");
+    palette_query(&yinz, "Find tab…");
+    yinz.wait_until("tab picker ready", |s| {
+        s.contains("Esc Back") && !s.contains("Working")
+    });
     yinz.send_stdin(b"palette-renamed-tab");
     yinz.wait_until("tab picker finds renamed tab", |snapshot| {
-        snapshot.contains("> palette-renamed-tab")
+        snapshot
+            .lines()
+            .iter()
+            .any(|line| line.contains('›') && line.contains("palette-renamed-tab"))
+            && !snapshot.contains("Loading")
     });
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("tab destination focused", |snapshot| {
@@ -448,7 +463,15 @@ fn command_palette_creates_renames_navigates_and_confirms_closing() {
     });
     assert!(tab_shell.is_exited());
 
-    palette_query(&yinz, "palette-child");
+    palette_query(&yinz, "Find pane…");
+    yinz.wait_until("pane picker ready", |s| {
+        s.contains("Esc Back") && !s.contains("Working")
+    });
+    yinz.send_stdin(b"palette-child");
+    yinz.wait_until("child found", |s| {
+        s.contains("› [terminal_1] palette-child") && !s.contains("Loading")
+    });
+    yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("child focused", |snapshot| {
         !snapshot.contains("> palette-child")
     });
@@ -470,28 +493,30 @@ fn command_palette_creates_renames_navigates_and_confirms_closing() {
 #[test]
 fn command_palette_new_session_validates_then_hands_off_name_and_directory() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config("load_plugins clear-defaults=true {}")
+        .with_config(
+            "load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }",
+        )
         .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
         .start();
     yinz.expect_pty_spawn().output(PROMPT);
     yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
     palette_query(&yinz, "New session…");
-    yinz.wait_until("session form opened", |snapshot| snapshot.contains("Name:"));
-    yinz.send_stdin(b"\r\r\r");
-    yinz.wait_until("empty name rejected", |snapshot| {
-        snapshot.contains("Session name cannot be empty")
+    yinz.wait_until("session form opened", |snapshot| {
+        snapshot.contains("Name (optional):")
     });
-    yinz.send_stdin(b"\x1b[A\x1b[A");
-    yinz.send_stdin(yinz.session_name().as_bytes());
-    yinz.send_stdin(b"\r\r\r");
-    yinz.wait_until("conflicting name rejected", |snapshot| {
-        snapshot.contains("already exists")
+    yinz.send_stdin(b"bad/name\r\r");
+    yinz.wait_until("invalid name rejected", |snapshot| {
+        snapshot.contains("valid session name")
     });
-    yinz.send_stdin(b"\x1b[A\x1b[A");
+    yinz.send_stdin(b"\x1b[A");
     yinz.send_stdin(&keys::ctrl('u'));
     let name = format!("{}-new", yinz.session_name());
     yinz.send_stdin(name.as_bytes());
-    yinz.send_stdin(b"\r/tmp\r\r");
+    yinz.send_stdin(b"\r\x1b[B\r");
+    yinz.wait_until("configuration preserves name", |s| {
+        s.contains("Layout (type to search)") && s.contains(&name)
+    });
+    yinz.send_stdin(b"\r\r/tmp\r\r");
     let connection = yinz.take_session_switch();
     assert_eq!(
         connection.name.as_ref().map(|name| name.as_str()),
@@ -507,24 +532,33 @@ fn command_palette_new_session_validates_then_hands_off_name_and_directory() {
 
 #[test]
 fn command_palette_switches_to_a_live_session() {
-    let mut destination = TestRunner::new(TERMINAL_SIZE)
-        .skip_concurrency_slot()
-        .with_config("load_plugins clear-defaults=true {}\ndisable_session_metadata false")
-        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
-        .start();
-    destination.expect_pty_spawn().output(PROMPT);
+    // The in-process host's session scanner belongs to the first server.
     let mut source = TestRunner::new(TERMINAL_SIZE)
-        .with_config("load_plugins clear-defaults=true {}\ndisable_session_metadata false")
+        .with_config("load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\ndisable_session_metadata false")
         .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
         .start();
     source.expect_pty_spawn().output(PROMPT);
+    let mut destination = TestRunner::new(TERMINAL_SIZE)
+        .skip_concurrency_slot()
+        .with_config("load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\ndisable_session_metadata false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    destination.expect_pty_spawn().output(PROMPT);
+
     source.wait_until("source ready", |snapshot| snapshot.contains("$"));
+    // Production servers each have their own process environment.
+    yinz_runtime::envs::set_session_name(yinz_types::internal_ids::SessionName::new(
+        source.session_name(),
+    ));
     palette_query(&source, "Switch session…");
+    source.wait_until("session picker ready", |s| {
+        s.contains("Esc Back") && !s.contains("Working")
+    });
     source.send_stdin(destination.session_name().as_bytes());
     source.wait_until("live session is offered", |snapshot| {
-        snapshot.contains(&format!("> {}", destination.session_name()))
-            && snapshot.contains("connected client")
-            && snapshot.contains("up ")
+        snapshot.contains(&format!("› {}", destination.session_name()))
+            && snapshot.contains("Running")
+            && !snapshot.contains("Loading")
     });
     source.send_stdin(&keys::ENTER);
     let connection = source.take_session_switch();
@@ -532,7 +566,7 @@ fn command_palette_switches_to_a_live_session() {
         connection.name.as_ref().map(|name| name.as_str()),
         Some(destination.session_name())
     );
-    assert!(connection.cwd.is_none());
+
     source.quit();
     destination.quit();
 }
@@ -540,24 +574,24 @@ fn command_palette_switches_to_a_live_session() {
 #[test]
 fn command_palette_saves_and_renames_the_session() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config("load_plugins clear-defaults=true {}\nsession_serialization false")
+        .with_config("load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\nsession_serialization false")
         .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
         .start();
     yinz.expect_pty_spawn().output(PROMPT);
     yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
-    palette_query(&yinz, "Save session");
+    palette_query(&yinz, "Save current session");
     yinz.wait_for_serialized_session();
     yinz.wait_until("save dismissed palette", |snapshot| {
         !snapshot.contains("Esc Close")
     });
-    palette_query(&yinz, "Rename session…");
+    palette_query(&yinz, "Rename current session…");
     let name = format!("{}-renamed", yinz.session_name());
     replace_name(&yinz, &name);
     yinz.wait_until("rename dismissed palette", |snapshot| {
         !snapshot.contains("Name:")
     });
     // Screen queue ordering makes a subsequent palette show the new session name.
-    palette_query(&yinz, "Rename session…");
+    palette_query(&yinz, "Rename current session…");
     yinz.wait_until("renamed session prefilled", |snapshot| {
         snapshot.contains(&name)
     });
@@ -609,18 +643,22 @@ fn command_palette_switches_to_an_exited_session() {
     )
     .unwrap();
     let mut source = TestRunner::new(TERMINAL_SIZE)
-        .with_config("load_plugins clear-defaults=true {}")
+        .with_config(
+            "load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }",
+        )
         .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
         .start();
     source.expect_pty_spawn().output(PROMPT);
     source.wait_until("source ready", |snapshot| snapshot.contains("$"));
     palette_query(&source, "Switch session…");
+    source.wait_until("session picker ready", |s| {
+        s.contains("Esc Back") && !s.contains("Working")
+    });
     source.send_stdin(name.as_bytes());
     source.wait_until("exited session is offered", |snapshot| {
-        snapshot.contains("Exited sessions")
-            && snapshot.contains(name)
-            && snapshot.contains("Enter to restore")
-            && !snapshot.contains("Live sessions")
+        snapshot.contains(&format!("› {name}"))
+            && snapshot.contains("Saved")
+            && !snapshot.contains("Loading")
     });
     source.send_stdin(&keys::ENTER);
     let connection = source.take_session_switch();
@@ -628,7 +666,7 @@ fn command_palette_switches_to_an_exited_session() {
         connection.name.as_ref().map(|name| name.as_str()),
         Some(name)
     );
-    assert!(connection.cwd.is_none());
+
     source.quit();
 }
 
@@ -848,7 +886,7 @@ fn command_palette_launches_agent_in_selected_worktree_and_focuses_it() {
     shell.output(PROMPT);
     yinz.wait_until("shell ready", |s| s.contains("$"));
     yinz.send_stdin(DO);
-    yinz.wait_until("palette open", |s| s.contains("Switch session"));
+    yinz.wait_until("palette open", |s| s.contains("Switch current project"));
     yinz.send_stdin(b"claude worktree");
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("caller repository offered", |s| {
@@ -1638,11 +1676,11 @@ fn command_palette_suspends_notifications_mode_and_restores_history() {
     });
     yinz.send_stdin(DO);
     yinz.wait_until("palette suspends history", |snapshot| {
-        snapshot.contains("Switch session") && !snapshot.contains("Retained history")
+        snapshot.contains("Switch current project") && !snapshot.contains("Retained history")
     });
-    yinz.send_stdin(b"Switch tab");
+    yinz.send_stdin(b"Rename tab");
     yinz.wait_until("palette receives keys in notifications mode", |snapshot| {
-        snapshot.contains("> Switch tab")
+        snapshot.contains("> Rename tab")
     });
     assert_eq!(
         yinz.run_cli_action(CliAction::Notify {
@@ -1652,7 +1690,7 @@ fn command_palette_suspends_notifications_mode_and_restores_history() {
     );
     yinz.wait_until("live toast appears above palette", |snapshot| {
         snapshot.contains("Live over palette")
-            && snapshot.contains("> Switch tab")
+            && snapshot.contains("> Rename tab")
             && !snapshot.contains("Retained history")
     });
     yinz.send_stdin(&keys::ESC);
@@ -1661,4 +1699,345 @@ fn command_palette_suspends_notifications_mode_and_restores_history() {
     });
     assert!(root.stdin_bytes().is_empty());
     yinz.quit();
+}
+
+#[test]
+fn session_palette_loads_by_default_and_keeps_clients_independent() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    yinz.expect_pty_spawn().output(PROMPT);
+    yinz.wait_until("shell ready", |s| s.contains("$"));
+    palette_query(&yinz, "New session…");
+    yinz.wait_until("session form loaded by default", |s| {
+        s.contains("Name (optional):")
+    });
+    yinz.send_stdin(b"private-first-client");
+    let other = yinz.attach_client(TERMINAL_SIZE);
+    other.wait_until("other client ready", |s| s.contains("$"));
+    other.send_stdin(DO);
+    other.send_stdin(b"New session");
+    other.wait_until("shared provider serves second client", |s| {
+        s.contains("› New session…")
+    });
+    other.send_stdin(&keys::ENTER);
+    other.wait_until("independent form", |s| {
+        s.contains("Name (optional):") && !s.contains("private-first-client")
+    });
+    other.send_stdin(b"private-second-client");
+    other.wait_until("second input", |s| s.contains("private-second-client"));
+    assert!(yinz.snapshot().contains("private-first-client"));
+    assert!(!yinz.snapshot().contains("private-second-client"));
+    other.quit();
+    yinz.quit();
+}
+
+#[test]
+fn session_palette_notifications_and_cancel_first_disconnect_confirmation() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            "load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }",
+        )
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready", |s| s.contains("$"));
+    assert_eq!(
+        yinz.run_cli_action(CliAction::Notify {
+            text: "palette notification full message".into()
+        }),
+        0
+    );
+    palette_query(&yinz, "Notifications…");
+    yinz.wait_until("notification listed", |s| {
+        s.contains("› palette notification full message")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("notification detail", |s| {
+        s.contains("Home/End") && s.contains("palette notification full message")
+    });
+    yinz.send_stdin(DO);
+    yinz.wait_until("palette closed", |s| !s.contains("Home/End"));
+    let other = yinz.attach_client(TERMINAL_SIZE);
+    other.wait_until("other client ready", |s| s.contains("$"));
+    palette_query(&yinz, "Disconnect other clients");
+    yinz.wait_until("disconnection confirmation", |s| {
+        s.contains("Cancel") && s.contains("processes keep running")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("cancel returned to root", |s| s.contains("Esc Close"));
+    other.send_stdin(b"still connected");
+    shell.wait_for_stdin("Cancel kept other client connected", |bytes| {
+        bytes.ends_with(b"still connected")
+    });
+    other.quit();
+    yinz.quit();
+}
+
+#[test]
+fn session_palette_directory_picker_keeps_notifications_suspended_until_close() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            "load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\npane_animations false\nnotification_timeout 1",
+        )
+        .with_layout(LayoutInfo::Stringified(
+            "layout { pane cwd=\"/tmp\"; }".into(),
+        ))
+        .start();
+    yinz.expect_pty_spawn().output(PROMPT);
+    yinz.wait_until("shell ready", |s| s.contains("$"));
+    assert_eq!(
+        yinz.run_cli_action(CliAction::Notify {
+            text: "Retained picker history".into()
+        }),
+        0
+    );
+    yinz.wait_until("toast appears", |s| s.contains("Retained picker history"));
+    yinz.wait_until("toast expires", |s| !s.contains("Retained picker history"));
+    yinz.send_stdin(&keys::ctrl('o'));
+    yinz.send_stdin(b"n");
+    yinz.wait_until("history opens", |s| s.contains("Retained picker history"));
+    palette_query(&yinz, "New session…");
+    yinz.wait_until("name form", |s| s.contains("Name (optional):"));
+    yinz.send_stdin(b"kept-name\r\x1b[B\r");
+    yinz.wait_until("configuration form", |s| {
+        s.contains("Directory:") && s.contains("kept-name")
+    });
+    yinz.send_stdin(b"\x1b[A\r");
+    let picker = yinz.expect_pty_spawn();
+    picker.output(b"PALETTE DIRECTORY PICKER");
+    yinz.wait_until("picker owns screen", |s| {
+        s.contains("PALETTE DIRECTORY PICKER")
+            && !s.contains("Configure new session")
+            && !s.contains("Retained picker history")
+    });
+    let picker_keys = b"\x1b[A\x1b[B\r x";
+    yinz.send_stdin(picker_keys);
+    picker.wait_for_stdin("picker receives navigation, Enter and Space", |bytes| {
+        bytes.ends_with(picker_keys)
+    });
+    let Some(yinz_types::input::command::TerminalAction::RunCommand(command)) =
+        picker.terminal_action()
+    else {
+        panic!("picker command")
+    };
+    let script = &command.args[1];
+    let output = script
+        .split_once("out='")
+        .unwrap()
+        .1
+        .split_once('\'')
+        .unwrap()
+        .0;
+    std::fs::write(output, "/tmp\0").unwrap();
+    picker.exit(Some(0));
+    yinz.wait_until("chosen directory and name preserved", |s| {
+        s.contains("Directory: /tmp")
+            && s.contains("kept-name")
+            && !s.contains("Retained picker history")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    let cancelled = yinz.expect_pty_spawn();
+    cancelled.exit(Some(130));
+    yinz.wait_until("cancel preserves directory and name", |s| {
+        s.contains("Directory: /tmp")
+            && s.contains("kept-name")
+            && !s.contains("Working")
+            && !s.contains("Retained picker history")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("back preserves initial name", |s| {
+        s.contains("kept-name") && !s.contains("Directory:")
+    });
+    yinz.send_stdin(DO);
+    yinz.wait_until("closing palette restores history", |s| {
+        s.contains("Retained picker history") && !s.contains("Name (optional):")
+    });
+    yinz.quit();
+}
+
+#[test]
+fn session_palette_finds_tabs_in_other_sessions() {
+    session_palette_cross_session_destination("Find tab…");
+}
+
+#[test]
+fn session_palette_finds_panes_in_other_sessions() {
+    session_palette_cross_session_destination("Find pane…");
+}
+
+fn session_palette_cross_session_destination(command: &str) {
+    // The in-process host's session scanner belongs to the first server.
+    let mut source = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\ndisable_session_metadata false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    source.expect_pty_spawn().output(PROMPT);
+    source.wait_until("source ready", |s| s.contains("$"));
+    let mut destination = TestRunner::new(TERMINAL_SIZE)
+        .skip_concurrency_slot()
+        .with_config("load_plugins clear-defaults=true {}\ndisable_session_metadata false")
+        .with_layout(LayoutInfo::Stringified("layout { tab name=\"first\" { pane; }; tab name=\"target-tab\" { pane name=\"cross-pane\"; }; }".into()))
+        .start();
+    destination.expect_pty_spawn().output(PROMPT);
+    let target = destination.expect_pty_spawn();
+    target.output(b"CROSS SESSION TARGET");
+    destination.wait_until("destination ready", |s| s.contains("$"));
+    // Production servers each have their own process environment.
+    yinz_runtime::envs::set_session_name(yinz_types::internal_ids::SessionName::new(
+        source.session_name(),
+    ));
+    palette_query(&source, command);
+    source.wait_until("destination picker ready", |s| {
+        s.contains("Esc Back") && !s.contains("Working")
+    });
+    source.send_stdin(if command == "Find tab…" {
+        b"target-tab"
+    } else {
+        b"cross-pane"
+    });
+    source.wait_until("cross-session result", |s| {
+        s.lines().iter().any(|line| {
+            line.contains('›')
+                && line.contains(if command == "Find tab…" {
+                    "target-tab"
+                } else {
+                    "cross-pane"
+                })
+        }) && s.contains(destination.session_name())
+            && !s.contains("Loading")
+    });
+    source.send_stdin(&keys::ENTER);
+    let connection = source.take_session_switch();
+    assert_eq!(
+        connection.name.as_ref().map(|name| name.as_str()),
+        Some(destination.session_name())
+    );
+    assert_eq!(
+        connection.tab_position,
+        Some(yinz_types::internal_ids::TabNumber::new(2))
+    );
+    if command == "Find pane…" {
+        assert_eq!(
+            connection.pane_id,
+            Some(yinz_types::data::PaneId::Terminal(target.terminal_id()))
+        );
+    }
+    source.quit();
+    destination.quit();
+}
+
+#[test]
+fn session_palette_confirms_killing_others_and_deleting_their_saved_state() {
+    use yinz_types::input::actions::Action;
+
+    // The in-process host's session scanner belongs to the first server.
+    let mut source = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\ndisable_session_metadata false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = source.expect_pty_spawn();
+    shell.output(PROMPT);
+    source.wait_until("source ready", |s| s.contains("$"));
+    let mut destination = TestRunner::new(TERMINAL_SIZE)
+        .skip_concurrency_slot()
+        .with_config("load_plugins clear-defaults=true {}\ndisable_session_metadata false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let other = destination.expect_pty_spawn();
+    other.output(PROMPT);
+    destination.wait_until("destination ready", |s| s.contains("$"));
+    assert_eq!(
+        destination
+            .run_actions_reporting(vec![Action::SaveSession])
+            .0,
+        0
+    );
+    destination.wait_for_serialized_session();
+    yinz_runtime::envs::set_session_name(yinz_types::internal_ids::SessionName::new(
+        source.session_name(),
+    ));
+    palette_query(&source, "Kill all other sessions…");
+    source.wait_until("kill targets and consequences", |s| {
+        s.contains(destination.session_name())
+            && s.contains("Stops their processes")
+            && s.contains("Cancel")
+    });
+    source.send_stdin(&keys::ENTER);
+    source.wait_until("kill cancelled", |s| {
+        s.contains("> Kill all other sessions…")
+    });
+    assert!(!other.is_exited());
+    source.send_stdin(&keys::ENTER);
+    source.wait_until("kill confirmation reopened", |s| s.contains("Cancel"));
+    source.send_stdin(b"\x1b[B\r");
+    destination.wait_for_exit();
+    source.wait_until("kill completed", |s| {
+        !s.contains("Esc Close") && !s.contains("Esc Back")
+    });
+    assert!(!shell.is_exited(), "bulk kill excludes the current session");
+
+    let saved = yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR.join(destination.session_name());
+    assert!(saved.exists());
+    palette_query(&source, "Delete all saved sessions…");
+    source.wait_until("delete targets and consequences", |s| {
+        s.contains(destination.session_name())
+            && s.contains("Permanently removes saved state")
+            && s.contains("Cancel")
+    });
+    source.send_stdin(&keys::ENTER);
+    source.wait_until("deletion cancelled", |s| {
+        s.contains("> Delete all saved sessions…")
+    });
+    assert!(saved.exists());
+    source.send_stdin(&keys::ENTER);
+    source.wait_until("delete confirmation reopened", |s| s.contains("Cancel"));
+    source.send_stdin(b"\x1b[B\r");
+    source.wait_until("deletion acknowledged", |s| {
+        !s.contains("Esc Close") && !s.contains("Esc Back")
+    });
+    assert!(!saved.exists());
+    source.quit();
+}
+
+#[test]
+fn session_palette_disconnect_targets_preserve_watchers() {
+    let mut host = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            "load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }",
+        )
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = host.expect_pty_spawn();
+    shell.output(PROMPT);
+    host.wait_until("host ready", |s| s.contains("$"));
+    let watcher = host.attach_watcher(TERMINAL_SIZE);
+    watcher.wait_until("watcher connected", |s| s.contains("$"));
+    palette_query(&host, "Disconnect other clients");
+    host.wait_until("watchers excluded", |s| {
+        s.contains("No other clients are connected")
+    });
+    host.send_stdin(&keys::ESC);
+    let client = host.attach_client(TERMINAL_SIZE);
+    client.wait_until("ordinary client connected", |s| s.contains("$"));
+    palette_query(&host, "Disconnect other clients");
+    host.wait_until("exact ordinary target", |s| {
+        s.contains("Disconnect clients 3?") && s.contains("Cancel")
+    });
+    host.send_stdin(b"\x1b[B\r");
+    host.wait_until("disconnect completed", |s| {
+        !s.contains("Esc Back") && !s.contains("Esc Close")
+    });
+    client.wait_until_raw_output("ordinary client kicked", |bytes| {
+        String::from_utf8_lossy(bytes).contains("Disconnected by host")
+    });
+    client.quit();
+    assert!(!shell.is_exited());
+    shell.output(b"\r\nwatcher-survived\r\n");
+    watcher.wait_until("watcher remains connected", |s| {
+        s.contains("watcher-survived")
+    });
+    watcher.quit();
+    host.quit();
 }

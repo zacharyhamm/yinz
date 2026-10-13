@@ -75,6 +75,10 @@ pub enum Instruction {
         opening: u64,
         revision: u64,
     },
+    Refresh {
+        client: ClientId,
+        scope: Scope,
+    },
     Timeout {
         owner: Owner,
         client: ClientId,

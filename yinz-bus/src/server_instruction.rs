@@ -47,6 +47,7 @@ pub enum ServerInstruction {
         client_id: ClientId,
     },
     DisconnectAllClientsExcept(ClientId),
+    GetDisconnectTargets(ClientId, crossbeam::channel::Sender<Vec<ClientId>>),
     ChangeMode(ClientId, InputMode, Option<NotificationEnd>),
     SetCommandPaletteOpen(ClientId, bool),
     SavePaletteTheme {

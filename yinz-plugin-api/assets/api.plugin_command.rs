@@ -3029,6 +3029,14 @@ pub struct OpenPluginPaneFloatingResponse {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetDisconnectTargetsResponse {
+    #[prost(uint32, repeated, tag="1")]
+    pub client_ids: ::prost::alloc::vec::Vec<u32>,
+    #[prost(string, optional, tag="2")]
+    pub error: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetSessionListPayload {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -3476,6 +3484,7 @@ pub enum CommandName {
     DataCatalog = 278,
     SetQuitNotice = 279,
     GetLocalUtcOffset = 280,
+    GetDisconnectTargets = 305,
     SpawnAgent = 281,
     ProjectConfigRead = 282,
     ProjectConfigWrite = 283,
@@ -3746,6 +3755,7 @@ impl CommandName {
             CommandName::DataCatalog => "DataCatalog",
             CommandName::SetQuitNotice => "SetQuitNotice",
             CommandName::GetLocalUtcOffset => "GetLocalUtcOffset",
+            CommandName::GetDisconnectTargets => "GetDisconnectTargets",
             CommandName::SpawnAgent => "SpawnAgent",
             CommandName::ProjectConfigRead => "ProjectConfigRead",
             CommandName::ProjectConfigWrite => "ProjectConfigWrite",
@@ -4013,6 +4023,7 @@ impl CommandName {
             "DataCatalog" => Some(Self::DataCatalog),
             "SetQuitNotice" => Some(Self::SetQuitNotice),
             "GetLocalUtcOffset" => Some(Self::GetLocalUtcOffset),
+            "GetDisconnectTargets" => Some(Self::GetDisconnectTargets),
             "SpawnAgent" => Some(Self::SpawnAgent),
             "ProjectConfigRead" => Some(Self::ProjectConfigRead),
             "ProjectConfigWrite" => Some(Self::ProjectConfigWrite),

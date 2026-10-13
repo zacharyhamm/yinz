@@ -173,3 +173,46 @@ invalidate pending feedback. Notification text must be nonblank, contain no
 terminal controls, and fit within the existing 256 KiB display-reply limit.
 The host supplies plugin attribution. Notification policy can suppress or replace
 messages, and the normal history, placement, and lifetime settings apply.
+
+## Session palette and forms
+
+The shared `yinz:session-palette` background plugin supplies session commands by default.
+`load_plugins clear-defaults=true` removes it unless the block explicitly loads it.
+The session manager, its shortcut, and the welcome screen remain available.
+
+Use **Switch session…** for running or saved local sessions. Selecting a saved session resurrects it.
+**Find tab…** and **Find pane…** search all running local sessions.
+**New session…** accepts an optional name. **Configure…** adds layout selection and a directory field.
+Kill, deletion, and disconnection commands require confirmation. Cancel has initial focus.
+Use Page Up and Page Down to read all confirmation details.
+
+SDK forms accept optional `actions`. Each action has `id`, `label`, and `run(values, context)`.
+The callback receives current field values keyed by field ID, like `onSubmit`.
+Return a view to continue, or throw an error to keep the form open with an inline error.
+Set `confirmation: true` to put Cancel before Submit and show scrollable confirmation details.
+
+All choice fields support typing to search their options. Left and Right select adjacent options.
+A `directory` field accepts text and adds a **Browse…** action using the existing directory picker.
+Browsing requires `MessageAndLaunchOtherPlugins`. The palette releases input while the picker is open.
+A selected path updates the field. Cancellation preserves all field values.
+
+Dynamic nested action sources refresh once per second while visible.
+Refresh preserves the query and selected action ID. Navigation and dismissal invalidate pending refreshes.
+Each client and opening has separate state. Sources must search the complete inventory before pagination.
+Use an action view’s `initialQuery` to retain a search when a page link opens the next view.
+Each reply still has a limit of 100 actions and 256 KiB.
+The session provider reserves two action slots for page navigation.
+
+Only report an operation as completed after a host acknowledgment.
+For commands without replies, the session provider reports that it requested the operation.
+
+### Disconnect target query
+
+`yinz.command("GetDisconnectTargets")` (Deno) and `get_disconnect_targets()`
+(Wasm) return the IDs of ordinary clients that `DisconnectOtherClients` will
+remove, excluding the initiating client. Watchers remain connected. Requires
+`ReadApplicationState`. Each synchronous query has a separate response channel
+and a 100 ms timeout; send failures, timeout, and closed channels return errors.
+Recheck the IDs before disconnecting and request confirmation again if they
+changed. Revalidation and disconnection are separate operations, so connections
+can still change between them.

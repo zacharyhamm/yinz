@@ -32,6 +32,7 @@ use crate::ClientId;
 
 pub(super) struct CommandPaletteState {
     widget: CommandPalette,
+    suspended: bool,
     plugins: plugins::State,
     agents: agents::State,
     notes: notes::State,
@@ -133,6 +134,7 @@ impl Screen {
             client_id,
             CommandPaletteState {
                 widget: CommandPalette::default(),
+                suspended: false,
                 plugins: plugins::State::default(),
                 agents: agents::State::new(source),
                 notes: notes::State::default(),
@@ -186,7 +188,7 @@ impl Screen {
         self.take_command_palette(client_id, true).is_some()
     }
 
-    pub(super) fn palette_owns_input(&self, client_id: ClientId) -> bool {
+    pub(super) fn command_palette_is_open(&self, client_id: ClientId) -> bool {
         self.command_palettes.contains_key(&client_id)
             || self
                 .note_edit_palettes
@@ -194,8 +196,18 @@ impl Screen {
                 .any(|(client, _)| *client == client_id)
     }
 
+    pub(super) fn palette_owns_input(&self, client_id: ClientId) -> bool {
+        self.command_palettes
+            .get(&client_id)
+            .is_some_and(|s| !s.suspended)
+            || self
+                .note_edit_palettes
+                .values()
+                .any(|(client, _)| *client == client_id)
+    }
+
     fn release_palette_input(&self, client_id: ClientId) {
-        if !self.palette_owns_input(client_id) {
+        if !self.command_palette_is_open(client_id) {
             self.bus
                 .senders
                 .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, false))
@@ -254,6 +266,13 @@ impl Screen {
     }
 
     pub(super) fn command_palette_surface(&self, client_id: ClientId) -> Option<Viewport> {
+        if self
+            .command_palettes
+            .get(&client_id)
+            .is_some_and(|s| s.suspended)
+        {
+            return None;
+        }
         let tab_id = *self.active_tab_ids.get(&client_id)?;
         let mut surface = self.session_surface_for_tab(tab_id)?;
         if let Some(size) = self.client_sizes.get(&client_id) {
@@ -277,6 +296,9 @@ impl Screen {
         let Some(state) = self.command_palettes.get_mut(&client_id) else {
             return false;
         };
+        if state.suspended {
+            return false;
+        }
         state.agents.save_form(&state.widget);
         let before = (
             state.widget.view,
@@ -328,7 +350,7 @@ impl Screen {
             return true;
         }
         let Some(surface) = self.command_palette_surface(client_id) else {
-            return self.command_palettes.contains_key(&client_id);
+            return self.palette_owns_input(client_id);
         };
         let Some(state) = self.command_palettes.get_mut(&client_id) else {
             return false;
@@ -495,10 +517,8 @@ enum WarpTarget {
 enum FormKind {
     NewPane,
     NewTab,
-    NewSession,
     RenamePane,
     RenameTab,
-    RenameSession,
     ClosePane,
     CloseTab,
 }
@@ -546,28 +566,10 @@ impl Screen {
             Builtin::Action(new_tab(None, None)),
         );
         command(
-            "focus-pane",
-            "Focus pane…",
-            &["find pane"],
-            Builtin::Picker(EntryKind::Pane),
-        );
-        command(
-            "switch-tab",
-            "Switch tab…",
-            &["find tab"],
-            Builtin::Picker(EntryKind::Tab),
-        );
-        command(
             "switch-project",
             "Switch current project…",
             &["project context"],
             Builtin::Picker(EntryKind::Project),
-        );
-        command(
-            "switch-session",
-            "Switch session…",
-            &["find session"],
-            Builtin::Picker(EntryKind::Session),
         );
         command(
             "search-project-notes",
@@ -629,10 +631,8 @@ impl Screen {
         for (id, label, form) in [
             ("new-pane-form", "New pane…", FormKind::NewPane),
             ("new-tab-form", "New tab…", FormKind::NewTab),
-            ("new-session", "New session…", FormKind::NewSession),
             ("rename-pane", "Rename pane…", FormKind::RenamePane),
             ("rename-tab", "Rename tab…", FormKind::RenameTab),
-            ("rename-session", "Rename session…", FormKind::RenameSession),
             ("close-pane", "Close pane…", FormKind::ClosePane),
             ("close-tab", "Close tab…", FormKind::CloseTab),
         ] {
@@ -677,7 +677,6 @@ impl Screen {
                     direction: Direction::Right,
                 },
             ),
-            ("save-session", "Save session", SaveSession),
             ("detach", "Detach", Detach),
         ] {
             command(id, label, &[], Builtin::Action(action));
@@ -779,43 +778,6 @@ impl Screen {
                 Builtin::Project(name.clone()),
             ));
         }
-        let mut tabs: Vec<_> = self.tabs.values().collect();
-        tabs.sort_by_key(|tab| tab.position);
-        for tab in tabs {
-            let panes = tab.pane_infos();
-            let tab_label = format!("{} (tab {})", tab.name, tab.position.get() + 1);
-            entries.push((
-                Entry {
-                    id: format!("tab:{}", tab.id),
-                    label: tab_label.clone(),
-                    shortcut: String::new(),
-                    description: format!("{} panes", panes.len()),
-                    aliases: vec![tab.name.clone()],
-                    kind: EntryKind::Tab,
-                },
-                Builtin::Action(GoToTabById { id: tab.id }),
-            ));
-            for pane in panes
-                .into_iter()
-                .filter(|pane| !pane.is_suppressed && pane.is_selectable)
-            {
-                entries.push((
-                    Entry {
-                        id: format!("pane:{}", pane.id),
-                        label: pane_label(&pane),
-                        shortcut: String::new(),
-                        description: tab_label.clone(),
-                        aliases: vec![
-                            pane.title,
-                            pane.id.to_string(),
-                            pane.id.legacy_parts().0.to_string(),
-                        ],
-                        kind: EntryKind::Pane,
-                    },
-                    Builtin::Action(FocusPaneByPaneId { pane_id: pane.id }),
-                ));
-            }
-        }
         let live = self.live_palette_agents();
         state.widget.agent_metadata = live.iter().map(|a| (a.id(), a.metadata.clone())).collect();
         entries.extend(live.into_iter().map(|agent| {
@@ -841,55 +803,6 @@ impl Screen {
                 Builtin::Inspect(agent),
             )
         }));
-        let mut sessions: Vec<_> = self.peer_sessions_cache.values().collect();
-        sessions.sort_by_key(|session| (session.creation_time, &session.name));
-        for session in sessions {
-            let seconds = session.creation_time.as_secs();
-            let age = std::time::Duration::from_secs(if seconds >= 60 {
-                seconds / 60 * 60
-            } else {
-                seconds
-            });
-            entries.push((
-                Entry {
-                    id: format!("session:{}", session.name),
-                    label: session.name.to_string(),
-                    shortcut: String::new(),
-                    description: format!(
-                        "up {} · {} connected client{}",
-                        humantime::format_duration(age),
-                        session.connected_clients,
-                        if session.connected_clients == 1 {
-                            ""
-                        } else {
-                            "s"
-                        },
-                    ),
-                    aliases: vec![],
-                    kind: EntryKind::Session,
-                },
-                Builtin::Action(switch_session(session.name.clone(), None)),
-            ));
-        }
-        let mut exited: Vec<_> = self
-            .resurrectable_sessions_cache
-            .iter()
-            .filter(|(name, _)| !self.peer_sessions_cache.contains_key(*name))
-            .collect();
-        exited.sort_by_key(|(name, age)| (*age, *name));
-        for (name, _) in exited {
-            entries.push((
-                Entry {
-                    id: format!("session:{name}"),
-                    label: name.to_string(),
-                    shortcut: String::new(),
-                    description: "Exited · Enter to restore".into(),
-                    aliases: vec![],
-                    kind: EntryKind::ExitedSession,
-                },
-                Builtin::Action(switch_session(name.clone(), None)),
-            ));
-        }
         for name in self.themes.keys() {
             entries.push((
                 Entry {
@@ -1236,18 +1149,6 @@ impl Screen {
         match action {
             Action::FocusPaneByPaneId { pane_id } => self.tab_containing_pane(*pane_id).is_some(),
             Action::GoToTabById { id } => self.tabs.contains_key(id),
-            Action::SwitchSession { name, .. } => {
-                if self.peer_sessions_cache.contains_key(name) {
-                    *name == self.session_name
-                        || yinz_runtime::consts::YINZ_SOCK_DIR.join(name).exists()
-                } else {
-                    self.resurrectable_sessions_cache.contains_key(name)
-                        && yinz_runtime::session_checkpoint::SessionCheckpoint::read(
-                            &yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR.join(name),
-                        )
-                        .is_ok_and(|checkpoint| checkpoint.layout_path().is_file())
-                }
-            },
             _ => true,
         }
     }
@@ -1320,7 +1221,6 @@ impl Screen {
             }
             return;
         };
-        let create_session = matches!(builtin, Builtin::Form(FormKind::NewSession));
         let result = match builtin {
             Builtin::Theme(name) => {
                 self.save_palette_theme(client, name);
@@ -1450,7 +1350,6 @@ impl Screen {
                         pane_id: pane,
                         tab_id: tab,
                         action,
-                        create_session,
                         client_id: client,
                     })
                     .non_fatal();
@@ -1500,12 +1399,6 @@ impl Screen {
                 "Create",
                 false,
             ),
-            FormKind::NewSession => (
-                "New session".into(),
-                vec![Field::text("Name", ""), Field::text("Directory", "")],
-                "Create and switch",
-                false,
-            ),
             FormKind::RenamePane => (
                 "Rename pane".into(),
                 vec![Field::text("Name", &pane.title)],
@@ -1515,12 +1408,6 @@ impl Screen {
             FormKind::RenameTab => (
                 "Rename tab".into(),
                 vec![Field::text("Name", &tab.name)],
-                "Rename",
-                false,
-            ),
-            FormKind::RenameSession => (
-                "Rename session".into(),
-                vec![Field::text("Name", self.session_name.as_str())],
                 "Rename",
                 false,
             ),
@@ -1564,28 +1451,6 @@ impl Screen {
         if cwd.as_ref().is_some_and(|directory| !directory.is_dir()) {
             return Err("Directory does not exist or is not accessible".into());
         }
-        if matches!(kind, FormKind::NewSession | FormKind::RenameSession) {
-            yinz_session::sessions::validate_session_name(&name)?;
-            let session_name = SessionName::new(&name);
-            if matches!(kind, FormKind::RenameSession) && session_name == self.session_name {
-                return Ok(Action::NoOp);
-            }
-            if self.peer_sessions_cache.contains_key(&session_name)
-                || self
-                    .resurrectable_sessions_cache
-                    .contains_key(&session_name)
-                || yinz_runtime::consts::YINZ_SOCK_DIR
-                    .join(&session_name)
-                    .try_exists()
-                    .map_err(|error| format!("Could not check session name: {error}"))?
-                || yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR
-                    .join(&session_name)
-                    .try_exists()
-                    .map_err(|error| format!("Could not check saved session name: {error}"))?
-            {
-                return Err("A live or saved session with that name already exists".into());
-            }
-        }
         Ok(match kind {
             FormKind::NewPane => {
                 let command = cwd.map(|cwd| {
@@ -1615,15 +1480,11 @@ impl Screen {
                 )
             },
             FormKind::NewTab => new_tab(optional_name(name), cwd),
-            FormKind::NewSession => switch_session(SessionName::new(name), cwd),
             FormKind::RenamePane => Action::RenamePaneByPaneId {
                 pane_id: Some(pane),
                 name: name.into_bytes(),
             },
             FormKind::RenameTab => Action::RenameTabById { id: tab, name },
-            FormKind::RenameSession => Action::RenameSession {
-                name: SessionName::new(name),
-            },
             FormKind::ClosePane => Action::CloseFocusByPaneId { pane_id: pane },
             FormKind::CloseTab => Action::CloseTabById { id: tab },
         })
@@ -1634,17 +1495,10 @@ impl Screen {
         pane: PaneId,
         tab: TabId,
         action: Action,
-        create_session: bool,
         client: ClientId,
         label: String,
     ) {
-        let target_exists = if create_session {
-            self.tabs.contains_key(&tab)
-                && self.tab_containing_pane(pane).is_some()
-                && matches!(&action, Action::SwitchSession { name, .. } if !self.peer_sessions_cache.contains_key(name) && !self.resurrectable_sessions_cache.contains_key(name))
-        } else {
-            self.palette_target_exists(pane, tab, &action)
-        };
+        let target_exists = self.palette_target_exists(pane, tab, &action);
         if !self.active_tab_ids.contains_key(&client) || !target_exists {
             self.bus
                 .senders
@@ -1673,11 +1527,6 @@ impl Screen {
         }
         let departure = match &action {
             Action::Detach => Some("Detaching…".to_owned()),
-            Action::SwitchSession { name, .. } => Some(if create_session {
-                format!("Creating session ‘{name}’…")
-            } else {
-                format!("Switching to session ‘{name}’…")
-            }),
             _ => None,
         };
         if let Some(message) = departure {
@@ -1814,15 +1663,5 @@ fn new_tab(tab_name: Option<String>, cwd: Option<std::path::PathBuf>) -> Action 
         cwd,
         initial_panes: None,
         first_pane_unblock_condition: None,
-    }
-}
-
-fn switch_session(name: SessionName, cwd: Option<std::path::PathBuf>) -> Action {
-    Action::SwitchSession {
-        name,
-        tab_position: None,
-        pane_id: None,
-        layout: None,
-        cwd,
     }
 }

@@ -1025,6 +1025,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::FsCreateDir { path, all } => fs_create_dir(env, path, all),
             PluginCommand::FsRename { from, to } => fs_rename(env, from, to),
             PluginCommand::WatchFilesystem => env.watch_filesystem(),
+            PluginCommand::GetDisconnectTargets => get_disconnect_targets(env),
             PluginCommand::GetSessionList => get_session_list(env),
             PluginCommand::DumpSessionLayout { tab_index } => dump_session_layout(env, tab_index),
             PluginCommand::CloseSelf => close_self(env),
@@ -1397,6 +1398,13 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     | CommandType::GetPluginIdsForUrlWithConfiguration => {
                         yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse {
                             plugin_ids: vec![],
+                            error: Some("Permission denied: ReadApplicationState".to_owned()),
+                        }
+                        .encode_to_vec()
+                    },
+                    CommandType::GetDisconnectTargets => {
+                        yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse {
+                            client_ids: vec![],
                             error: Some("Permission denied: ReadApplicationState".to_owned()),
                         }
                         .encode_to_vec()
@@ -5429,6 +5437,20 @@ fn detach(env: &PluginEnv) {
     apply_action!(action, error_msg, env);
 }
 
+pub(crate) fn resolve_host_directory(env: &PluginEnv, path: &str) -> Result<PathBuf> {
+    let path = yinz_runtime::shared::expand_path(path).map_err(anyhow::Error::msg)?;
+    let path = if path.is_relative() {
+        env.plugin_cwd.join(path)
+    } else {
+        path
+    };
+    ensure!(
+        path.is_dir(),
+        "Directory does not exist or is not accessible"
+    );
+    Ok(path)
+}
+
 fn switch_session(
     env: &PluginEnv,
     session_name: Option<SessionName>,
@@ -5456,9 +5478,15 @@ fn switch_session(
             .map(TabNumber::try_from)
             .transpose()
             .map_err(anyhow::Error::msg)?;
-        let cwd = cwd
-            .map(|c| translate_plugin_path(env, c))
-            .or_else(|| Some(env.plugin_cwd.clone()));
+        let cwd = if matches!(&env.plugin_config.location, yinz_types::input::layout::RunPluginLocation::Yinz(tag) if tag.to_string() == "session-palette")
+        {
+            // The session palette edits host directories, including the host's /tmp.
+            cwd.map(|path| resolve_host_directory(env, &path.to_string_lossy()))
+                .transpose()?
+        } else {
+            cwd.map(|c| translate_plugin_path(env, c))
+                .or_else(|| Some(env.plugin_cwd.clone()))
+        };
         let connect_to_session = SessionConnection {
             name: session_name,
             tab_position,
@@ -7890,6 +7918,36 @@ fn get_pane_running_command(env: &mut PluginEnv, pane_id: PaneId) {
     write_pane_running_command_response(env, pane_id, response);
 }
 
+fn get_disconnect_targets(env: &mut PluginEnv) {
+    use yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse;
+    let (sender, receiver) = crossbeam::channel::bounded(1);
+    let result = env
+        .senders
+        .send_to_server(ServerInstruction::GetDisconnectTargets(
+            env.client_id,
+            sender,
+        ))
+        .context("send disconnect-target query")
+        .and_then(|()| {
+            receiver
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .context("receive disconnect targets")
+        });
+    let response = match result {
+        Ok(targets) => ProtobufGetDisconnectTargetsResponse {
+            client_ids: targets.into_iter().map(|id| u32::from(id.get())).collect(),
+            error: None,
+        },
+        Err(error) => ProtobufGetDisconnectTargetsResponse {
+            client_ids: vec![],
+            error: Some(format!("{error:#}")),
+        },
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .context("write disconnect-target response")
+        .non_fatal();
+}
+
 fn get_session_list(env: &mut PluginEnv) {
     use yinz_bus::background_jobs::{scan_session_list_default_dirs, session_scan_state};
     use {yinz_types::data::GetSessionListResponse, yinz_types::data::SessionListSnapshot};
@@ -9348,6 +9406,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::GetPluginInfo
         | CommandType::GetPaneInfo
         | CommandType::GetTabInfo
+        | CommandType::GetDisconnectTargets
         | CommandType::GetSessionList
         | CommandType::ListNotifications
         | CommandType::ListOrphanedPanes
@@ -9684,6 +9743,71 @@ mod permission_tests {
             FsPathResolution::FollowSymlink
         )
         .is_ok());
+    }
+
+    #[test]
+    fn disconnect_target_queries_isolate_late_replies_and_report_failures() {
+        use yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse;
+        use yinz_runtime::channels::{unbounded, SenderWithContext};
+        use yinz_types::internal_ids::ClientId;
+        let mut env = crate::test_env::test_env();
+        env.response_sink = ResponseSink::Capture(None);
+        let (sender, server) = unbounded();
+        env.senders.to_server = Some(SenderWithContext::new(sender));
+        let read = |env: &mut PluginEnv| {
+            let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+            ProtobufGetDisconnectTargetsResponse::decode(bytes.as_slice()).unwrap()
+        };
+        assert_eq!(
+            check_command_permission(&env, &PluginCommand::GetDisconnectTargets),
+            (
+                PermissionStatus::Denied,
+                Some(PermissionType::ReadApplicationState)
+            )
+        );
+        run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
+        assert!(read(&mut env).error.unwrap().contains("Permission denied"));
+        assert!(server.try_recv().is_err());
+        *env.permissions.lock().unwrap() =
+            Some(HashSet::from([PermissionType::ReadApplicationState]));
+        run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
+        assert!(read(&mut env)
+            .error
+            .unwrap()
+            .contains("receive disconnect targets"));
+        let ServerInstruction::GetDisconnectTargets(_, stale) = server.recv().unwrap().0 else {
+            panic!()
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let ServerInstruction::GetDisconnectTargets(_, fresh) = server.recv().unwrap().0
+                else {
+                    panic!()
+                };
+                assert!(stale.send(vec![ClientId::new(9)]).is_err());
+                fresh
+                    .send(vec![ClientId::new(2), ClientId::new(3)])
+                    .unwrap();
+            });
+            run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
+        });
+        let response = read(&mut env);
+        assert_eq!(response.client_ids, vec![2, 3]);
+        assert!(response.error.is_none());
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _ = server.recv().unwrap();
+            });
+            run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
+        });
+        assert!(read(&mut env).error.unwrap().contains("disconnected"));
+        drop(server);
+        env.senders.should_silently_fail = false;
+        run_plugin_command(&mut env, PluginCommand::GetDisconnectTargets).unwrap();
+        assert!(read(&mut env)
+            .error
+            .unwrap()
+            .contains("send disconnect-target query"));
     }
 
     #[test]

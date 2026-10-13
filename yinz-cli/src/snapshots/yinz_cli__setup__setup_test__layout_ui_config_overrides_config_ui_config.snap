@@ -8308,6 +8308,22 @@ Config {
                 relative_path: None,
                 declared_path: None,
             },
+            "session-palette": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "session-palette",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
             "status-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
@@ -8421,6 +8437,18 @@ Config {
         Alias(
             PluginAlias {
                 name: "project-store",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "session-palette",
                 configuration: Some(
                     PluginUserConfiguration(
                         {},

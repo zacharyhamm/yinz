@@ -23,29 +23,45 @@ impl Screen {
     /// Renames the session, refusing a name another live or resurrectable session holds, and
     /// tells every client the new name.
     pub(super) fn rename_session(&mut self, name: SessionName, client_id: ClientId) -> Result<()> {
-        if self.peer_sessions_cache.contains_key(&name) {
-            let error_text = "A session by this name already exists.";
-            log::error!("{}", error_text);
-            if let Some(os_input) = &mut self.bus.os_input {
-                let _ = os_input.send_to_client(
-                    client_id,
-                    ServerToClientMsg::LogError {
-                        lines: vec![error_text.to_owned()],
-                    },
-                );
+        if name == self.session_name {
+            return Ok(());
+        }
+        let validation = (|| -> Result<()> {
+            if self.peer_sessions_cache.contains_key(&name)
+                || YINZ_SOCK_DIR
+                    .join(&name)
+                    .try_exists()
+                    .context("check destination socket")?
+            {
+                return Err(anyhow!("A session by this name already exists."));
             }
-        } else if self.resurrectable_sessions_cache.contains_key(&name) {
-            let error_text = "A resurrectable session by this name exists, cannot use this name.";
-            log::error!("{}", error_text);
-            if let Some(os_input) = &mut self.bus.os_input {
-                let _ = os_input.send_to_client(
-                    client_id,
-                    ServerToClientMsg::LogError {
-                        lines: vec![error_text.to_owned()],
-                    },
-                );
+            if self.resurrectable_sessions_cache.contains_key(&name)
+                || yinz_runtime::consts::session_info_folder_for_session(&name)
+                    .try_exists()
+                    .context("check destination session cache")?
+            {
+                return Err(anyhow!(
+                    "A resurrectable session by this name exists, cannot use this name."
+                ));
             }
-        } else {
+            Ok(())
+        })();
+        if let Err(error) = validation {
+            log::error!("Failed to rename session: {error:#}");
+            if let Some(os_input) = &self.bus.os_input {
+                os_input
+                    .send_to_client(
+                        client_id,
+                        ServerToClientMsg::LogError {
+                            lines: vec![format!("Failed to rename session: {error:#}")],
+                        },
+                    )
+                    .context("report session rename rejection")
+                    .non_fatal();
+            }
+            return Ok(());
+        }
+        {
             let err_context = || "Failed to rename session".to_string();
             let old_session_name = self.session_name.clone();
 

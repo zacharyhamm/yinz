@@ -256,6 +256,7 @@ impl Screen {
                 self.command_palettes
                     .keys()
                     .copied()
+                    .filter(|client| self.palette_owns_input(*client))
                     .chain(self.permission_modal_clients()),
             );
 
@@ -354,7 +355,7 @@ impl Screen {
                     &regular_client_ids
                         .iter()
                         .copied()
-                        .filter(|id| !self.command_palettes.contains_key(id))
+                        .filter(|id| !self.palette_owns_input(*id))
                         .collect::<Vec<_>>(),
                     now,
                 )
@@ -387,10 +388,11 @@ impl Screen {
                 .keys()
                 .copied()
                 .filter(|client_id| {
-                    !self
-                        .active_tab_ids
-                        .get(client_id)
-                        .is_some_and(|tab_id| self.deferred_render_tabs.contains(tab_id))
+                    self.palette_owns_input(*client_id)
+                        && !self
+                            .active_tab_ids
+                            .get(client_id)
+                            .is_some_and(|tab_id| self.deferred_render_tabs.contains(tab_id))
                 })
                 .collect();
             self.render_command_palettes(&mut output, palette_clients.iter().copied(), false)
@@ -603,7 +605,12 @@ impl Screen {
                         self.context_menu_cell_rects(&[followed_client_id], watcher_surface),
                     );
                 }
-                watcher_output.set_input_overlay_clients(self.command_palettes.keys().copied());
+                watcher_output.set_input_overlay_clients(
+                    self.command_palettes
+                        .keys()
+                        .copied()
+                        .filter(|client| self.palette_owns_input(*client)),
+                );
                 if let Some(tab) = self
                     .tabs
                     .get_mut(&focused_tab_index_of_followed_client_id)

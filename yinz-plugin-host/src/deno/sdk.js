@@ -1043,7 +1043,7 @@
     sanitizeBytes: (value) => pure('Sanitize', decodeUtf8(bytes(value))),
   });
   // Every PluginCommand, first letter lowercased. The inventory is checked against the Rust enum.
-  const HOST_COMMANDS = "RegisterAgentProvider GetAgentProviders AgentControl PaneTabs CreateMultipane UpdateMultipane ReplaceMultipaneChild SwampRequest TestPlugin CancelPluginTest CheckPlugin Subscribe Unsubscribe SetSelectable ShowCursor GetPluginIds GetPluginInfo Pick GetPluginIdsForUrlWithConfiguration GetPluginIdsForUrl GetYinzVersion OpenFile OpenFileFloating OpenTerminal OpenTerminalFloating OpenCommandPane OpenCommandPaneFloating OpenCommandPaneOverlay SwitchTabTo SetTimeout ExecCmd PostMessageTo PostMessageToPlugin HideSelf ShowSelf SwitchToMode NewTabsWithLayout NewTab NewTabUnfocused NewTiledPaneInTab ToggleFloatingPanes NewPane GoToNextTab GoToPreviousTab Resize ResizeWithDirection FocusNextPane FocusPreviousPane FocusLastPane MoveFocus MoveFocusOrTab Detach EditScrollback Write WriteChars ToggleTab MovePane MovePaneWithDirection ClearScreen ScrollUp ScrollDown ScrollToTop ScrollToBottom PageScrollUp PageScrollDown ToggleFocusFullscreen ToggleFocusNoUiFullscreen TogglePaneFrames SetPaneFrameStyle TogglePaneEmbedOrEject UndoRenamePane CloseFocus ToggleActiveTabSync CloseFocusedTab UndoRenameTab QuitYinz PreviousSwapLayout NextSwapLayout GoToTabName FocusOrCreateTab GoToTab StartOrReloadPlugin CloseTerminalPane ClosePluginPane FocusTerminalPane FocusPluginPane RenameTerminalPane RenamePluginPane RenameTab ReportPanic RequestPluginPermissions SwitchSession DeleteDeadSession DeleteAllDeadSessions OpenTerminalInPlace OpenFileInPlace OpenCommandPaneInPlace SubscribePaneOutput RunCommand WebRequest CancelWebRequest RenameSession Notify UnblockCliPipeInput BlockCliPipeInput CliPipeOutput MessageToPlugin DisconnectOtherClients KillSessions ScanHostFolder WatchFilesystem FsRead FsList FsMetadata FsWrite FsRemove FsCreateDir FsRename GrantPluginPermissions DumpSessionLayout CloseSelf NewTabsWithLayoutInfo Reconfigure HidePaneWithId ShowPaneWithId OpenCommandPaneBackground RerunCommandPane RunCommandInPane ResizePaneIdWithDirection EditScrollbackForPaneWithId GetPaneScrollback WriteToPaneId WriteCharsToPaneId SendSigintToPaneId SendSigkillToPaneId GetPanePid GetPaneRunningCommand GetPaneCwd GetPaneGitProbe MovePaneWithPaneId MovePaneWithPaneIdInDirection ClearScreenForPaneId ScrollUpInPaneId ScrollDownInPaneId ScrollToTopInPaneId ScrollToBottomInPaneId PageScrollUpInPaneId PageScrollDownInPaneId TogglePaneIdFullscreen TogglePaneEmbedOrEjectForPaneId CloseTabWithIndex BreakPanesToNewTab BreakPanesToTabWithIndex SwitchTabToId GoToTabWithId CloseTabWithId RenameTabWithId ArrangeProjectPanes SetProjectContext SetTabProjects BreakPanesToTabWithId ReloadPlugin LoadNewPlugin RebindKeys RegisterDefaultKeybindings ListClients ChangeHostFolder SetFloatingPanePinned StackPanes ChangeFloatingPanesCoordinates ChangeOverlayCoordinates TogglePaneBorderless SetPaneBorderless OpenCommandPaneNearPlugin OpenCommandPaneInGitCheckoutNearPlugin OpenTerminalNearPlugin OpenTerminalFloatingNearPlugin OpenTerminalInPlaceOfPlugin OpenCommandPaneFloatingNearPlugin OpenCommandPaneInPlaceOfPlugin OpenFileNearPlugin OpenFileFloatingNearPlugin OpenFileInPlaceOfPlugin GroupAndUngroupPanes HighlightAndUnhighlightPanes SetRelatedPanes RevealPaneWithId CloseMultiplePanes FloatMultiplePanes EmbedMultiplePanes SetSelfMouseSelectionSupport InterceptKeyPresses ClearKeyPressesIntercepts ReplacePaneWithExistingPane RunAction CopyToClipboard OverrideLayout SaveLayout DeleteLayout RenameLayout EditLayout GenerateRandomName DumpLayout ParseLayout GetLayoutDir GetUserPluginDir GetFocusedPaneInfo SaveSession CurrentSessionLastSavedTime GetPaneInfo GetTabInfo GetSessionEnvironmentVariables GetPluginAliasConfiguration OpenCommandPaneInNewTab OpenPluginPaneInNewTab OpenEditorPaneInNewTab OpenCommandPaneInPlaceOfPaneId OpenTerminalPaneInPlaceOfPaneId OpenEditPaneInPlaceOfPaneId HideFloatingPanes ShowFloatingPanes SetPaneColor SetPaneRegexHighlights SetContextMenu ClearPaneHighlights OpenPluginPaneFloating GetSessionList KillSessionsAndReply DeleteDeadSessionAndReply DeleteAllDeadSessionsAndReply FocusHostSession ListNotifications ResolveNotification WarpPaneToSession WarpPaneFromSession WarpTabToSession WarpTabFromSession ListOrphanedPanes AdoptOrphanedPane DataDefineEntity DataApply DataFetch DataCount DataWatch DataUnwatch DataCatalog SetPaneTitlePrefix SetPaneSubtitle EnqueueQueueJob ConfigureQueue CancelQueueJob QueueStatus FinishQueueJob SetPaneAgent SetPaneAgentRun ProjectConfigRead ProjectConfigWrite SpawnAgent SetQuitNotice ReloadPluginByUrl ReadPluginLog GetLocalUtcOffset".split(" ");
+  const HOST_COMMANDS = "RegisterAgentProvider GetAgentProviders AgentControl PaneTabs CreateMultipane UpdateMultipane ReplaceMultipaneChild SwampRequest TestPlugin CancelPluginTest CheckPlugin Subscribe Unsubscribe SetSelectable ShowCursor GetPluginIds GetPluginInfo Pick GetPluginIdsForUrlWithConfiguration GetPluginIdsForUrl GetYinzVersion OpenFile OpenFileFloating OpenTerminal OpenTerminalFloating OpenCommandPane OpenCommandPaneFloating OpenCommandPaneOverlay SwitchTabTo SetTimeout ExecCmd PostMessageTo PostMessageToPlugin HideSelf ShowSelf SwitchToMode NewTabsWithLayout NewTab NewTabUnfocused NewTiledPaneInTab ToggleFloatingPanes NewPane GoToNextTab GoToPreviousTab Resize ResizeWithDirection FocusNextPane FocusPreviousPane FocusLastPane MoveFocus MoveFocusOrTab Detach EditScrollback Write WriteChars ToggleTab MovePane MovePaneWithDirection ClearScreen ScrollUp ScrollDown ScrollToTop ScrollToBottom PageScrollUp PageScrollDown ToggleFocusFullscreen ToggleFocusNoUiFullscreen TogglePaneFrames SetPaneFrameStyle TogglePaneEmbedOrEject UndoRenamePane CloseFocus ToggleActiveTabSync CloseFocusedTab UndoRenameTab QuitYinz PreviousSwapLayout NextSwapLayout GoToTabName FocusOrCreateTab GoToTab StartOrReloadPlugin CloseTerminalPane ClosePluginPane FocusTerminalPane FocusPluginPane RenameTerminalPane RenamePluginPane RenameTab ReportPanic RequestPluginPermissions SwitchSession DeleteDeadSession DeleteAllDeadSessions OpenTerminalInPlace OpenFileInPlace OpenCommandPaneInPlace SubscribePaneOutput RunCommand WebRequest CancelWebRequest RenameSession Notify UnblockCliPipeInput BlockCliPipeInput CliPipeOutput MessageToPlugin DisconnectOtherClients KillSessions ScanHostFolder WatchFilesystem FsRead FsList FsMetadata FsWrite FsRemove FsCreateDir FsRename GrantPluginPermissions DumpSessionLayout CloseSelf NewTabsWithLayoutInfo Reconfigure HidePaneWithId ShowPaneWithId OpenCommandPaneBackground RerunCommandPane RunCommandInPane ResizePaneIdWithDirection EditScrollbackForPaneWithId GetPaneScrollback WriteToPaneId WriteCharsToPaneId SendSigintToPaneId SendSigkillToPaneId GetPanePid GetPaneRunningCommand GetPaneCwd GetPaneGitProbe MovePaneWithPaneId MovePaneWithPaneIdInDirection ClearScreenForPaneId ScrollUpInPaneId ScrollDownInPaneId ScrollToTopInPaneId ScrollToBottomInPaneId PageScrollUpInPaneId PageScrollDownInPaneId TogglePaneIdFullscreen TogglePaneEmbedOrEjectForPaneId CloseTabWithIndex BreakPanesToNewTab BreakPanesToTabWithIndex SwitchTabToId GoToTabWithId CloseTabWithId RenameTabWithId ArrangeProjectPanes SetProjectContext SetTabProjects BreakPanesToTabWithId ReloadPlugin LoadNewPlugin RebindKeys RegisterDefaultKeybindings ListClients ChangeHostFolder SetFloatingPanePinned StackPanes ChangeFloatingPanesCoordinates ChangeOverlayCoordinates TogglePaneBorderless SetPaneBorderless OpenCommandPaneNearPlugin OpenCommandPaneInGitCheckoutNearPlugin OpenTerminalNearPlugin OpenTerminalFloatingNearPlugin OpenTerminalInPlaceOfPlugin OpenCommandPaneFloatingNearPlugin OpenCommandPaneInPlaceOfPlugin OpenFileNearPlugin OpenFileFloatingNearPlugin OpenFileInPlaceOfPlugin GroupAndUngroupPanes HighlightAndUnhighlightPanes SetRelatedPanes RevealPaneWithId CloseMultiplePanes FloatMultiplePanes EmbedMultiplePanes SetSelfMouseSelectionSupport InterceptKeyPresses ClearKeyPressesIntercepts ReplacePaneWithExistingPane RunAction CopyToClipboard OverrideLayout SaveLayout DeleteLayout RenameLayout EditLayout GenerateRandomName DumpLayout ParseLayout GetLayoutDir GetUserPluginDir GetFocusedPaneInfo SaveSession CurrentSessionLastSavedTime GetPaneInfo GetTabInfo GetSessionEnvironmentVariables GetPluginAliasConfiguration OpenCommandPaneInNewTab OpenPluginPaneInNewTab OpenEditorPaneInNewTab OpenCommandPaneInPlaceOfPaneId OpenTerminalPaneInPlaceOfPaneId OpenEditPaneInPlaceOfPaneId HideFloatingPanes ShowFloatingPanes SetPaneColor SetPaneRegexHighlights SetContextMenu ClearPaneHighlights OpenPluginPaneFloating GetDisconnectTargets GetSessionList KillSessionsAndReply DeleteDeadSessionAndReply DeleteAllDeadSessionsAndReply FocusHostSession ListNotifications ResolveNotification WarpPaneToSession WarpPaneFromSession WarpTabToSession WarpTabFromSession ListOrphanedPanes AdoptOrphanedPane DataDefineEntity DataApply DataFetch DataCount DataWatch DataUnwatch DataCatalog SetPaneTitlePrefix SetPaneSubtitle EnqueueQueueJob ConfigureQueue CancelQueueJob QueueStatus FinishQueueJob SetPaneAgent SetPaneAgentRun ProjectConfigRead ProjectConfigWrite SpawnAgent SetQuitNotice ReloadPluginByUrl ReadPluginLog GetLocalUtcOffset".split(" ");
   // Tuple commands that also accept one object of named arguments. Omitted fields become null,
   // which keeps the arity serde counts and reads as absent for an Option slot.
   const tupleFields = {
@@ -1429,7 +1429,7 @@
   function paletteView(view, task) {
     const title = paletteString(view.title, "View title");
     if (view.type === "actions") {
-      return {type: "actions", title, actions: typeof view.actions === "function" ? [] : paletteActions(view.actions, task),
+      return {type: "actions", title, initialQuery: paletteString(view.initialQuery ?? "", "Initial query", false), actions: typeof view.actions === "function" ? [] : paletteActions(view.actions, task),
         source: typeof view.actions === "function" ? paletteHandle(view.actions, task) : null};
     }
     if (view.type === "text") return {type: "text", title, text: paletteString(view.text, "View text", false, true)};
@@ -1440,7 +1440,7 @@
       const id = paletteString(field.id, "Field ID"), label = paletteString(field.label, "Field label");
       if (ids.has(id)) throw new TypeError("Palette field IDs must be unique");
       ids.add(id);
-      if (field.type === "text") return {type: "text", id, label,
+      if (field.type === "text" || field.type === "directory") return {type: field.type, id, label,
         initialValue: paletteString(field.initialValue ?? "", "Initial value", false, true)};
       if (field.type !== "choice" || !Array.isArray(field.options) || !field.options.length) {
         throw new TypeError("Palette choices require options");
@@ -1450,8 +1450,25 @@
       if (!options.includes(initialValue)) throw new TypeError("Invalid palette choice default");
       return {type: "choice", id, label, options, initialValue};
     });
+    const actions = [...(view.actions ?? [])];
+    for (const field of fields.filter(f => f.type === "directory")) actions.push({
+      id: `browse:${field.id}`, label: `Browse… (${field.label})`, async run(values, context) {
+        context.suspend(true);
+        let off = () => {};
+        try {
+          const request = pick({kind: "directory", ...(values[field.id] ? {roots: [values[field.id]]} : {})});
+          off = context.onCancel(() => request.cancel());
+          const selected = await request;
+          return {type: "fields", values: {...values, [field.id]: selected ?? values[field.id]}};
+        } finally {
+          off();
+          context.suspend(false);
+        }
+      }
+    });
     return {type: "form", title, fields, submitLabel: paletteString(view.submitLabel ?? "Submit", "Submit label"),
-      handle: paletteHandle(view.onSubmit, task)};
+      handle: paletteHandle(view.onSubmit, task), actions: paletteActions(actions, task),
+      confirmation: view.confirmation === true};
   }
   function cancelPaletteTask(task, preserveClosed = false) {
     if (task.cancelled || (preserveClosed && task.closed)) return;
@@ -1513,7 +1530,9 @@
         if (task.cancelled) callback(); else task.cancellations.add(callback);
         return () => task.cancellations.delete(callback);
       },
-      ...(message.type === "discover" ? {query: message.query} : {close() {
+      ...(message.type === "discover" ? {query: message.query} : {suspend(suspended) {
+        if (!task.cancelled) paletteCommand({type: "suspend", scope: task.scope, suspended});
+      }, close() {
         if (task.cancelled || task.closed || !paletteTasks.has(key)) return;
         paletteCommand({type: "close", scope: task.scope});
         task.closed = true;
@@ -1527,7 +1546,7 @@
         if (failed) throw error;
         const isView = value !== null && typeof value === "object" && ["actions", "form", "text"].includes(value.type);
         const complete = message.type !== "discover" && value !== null && typeof value === "object" && value.type === "complete";
-        const reply = complete ? {type: "complete", notification: paletteString(value.notification, "Completion notification"),
+        const reply = message.type === "execute" && value?.type === "fields" ? {type: "fields", values: value.values} : complete ? {type: "complete", notification: paletteString(value.notification, "Completion notification"),
           view: !task.closed && value.view !== undefined ? paletteView(value.view, task) : null}
           : task.closed ? {type: "close"} : message.type === "discover"
           ? {type: "actions", actions: paletteActions(value, task)}

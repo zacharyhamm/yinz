@@ -171,6 +171,7 @@ impl CommandPaletteState {
                 title,
                 actions,
                 source,
+                ..
             } = &nested.display
             {
                 self.widget.set_sections(vec![PluginSection {
@@ -493,11 +494,16 @@ impl Screen {
                     fields,
                     handle,
                     title,
+                    actions,
                     ..
                 } => values.map(|values| {
                     (
                         nested.provider.clone(),
-                        handle.clone(),
+                        actions
+                            .iter()
+                            .find(|a| a.handle == *id)
+                            .map(|a| a.handle.clone())
+                            .unwrap_or_else(|| handle.clone()),
                         Some(
                             fields
                                 .iter()
@@ -553,6 +559,18 @@ impl Screen {
 
     pub(crate) fn plugin_palette_instruction(&mut self, instruction: Instruction) -> bool {
         match instruction {
+            Instruction::Refresh { client, scope } => {
+                if self.command_palettes.get(&client).is_some_and(|state| {
+                    state.plugins.opening == scope.opening
+                        && state.widget.view == scope.view
+                        && state.plugins.revision == scope.revision
+                        && !state.widget.busy
+                }) {
+                    self.refresh_plugin_palette(client, false);
+                    return true;
+                }
+                false
+            },
             Instruction::NoteDiscover {
                 client,
                 token,
@@ -658,6 +676,26 @@ impl Screen {
                     return false;
                 }
                 match command {
+                    Command::Suspend { scope, suspended } => {
+                        let Some(state) = self.command_palettes.get_mut(&client) else {
+                            return false;
+                        };
+                        if !state
+                            .plugins
+                            .pending
+                            .iter()
+                            .any(|p| p.execution && p.provider.0 == owner && p.scope == scope)
+                        {
+                            return false;
+                        }
+                        // Keep the server's saved mode until the palette actually closes.
+                        state.suspended = suspended;
+                        for tab in self.tabs.values_mut() {
+                            tab.set_should_clear_display_before_rendering();
+                            tab.set_force_render();
+                        }
+                        true
+                    },
                     Command::Register {
                         id,
                         title,
@@ -773,6 +811,14 @@ impl Screen {
                 .any(|view| view.provider == *key)
             {
                 state.cancel_requests(&self.bus.senders, *client);
+                state.suspended = false;
+                self.bus
+                    .senders
+                    .send_to_server(yinz_bus::ServerInstruction::SetCommandPaletteOpen(
+                        *client, true,
+                    ))
+                    .context("restoring palette input")
+                    .non_fatal();
                 state.widget.reset_to_root();
                 for (_, nested) in std::mem::take(&mut state.plugins.views) {
                     state.release(
@@ -965,6 +1011,20 @@ impl Screen {
                     .unwrap_or(Reply::Close));
             }
             match result {
+                Ok(Reply::Fields { values }) => {
+                    if let Some(Nested {
+                        display: View::Form { fields, .. },
+                        ..
+                    }) = state.plugins.views.get(&state.widget.view)
+                    {
+                        state.widget.update_form_values(
+                            &fields
+                                .iter()
+                                .map(|f| values.get(f.id()).cloned().unwrap_or_default())
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                },
                 Ok(Reply::Close) => {
                     self.close_command_palette(client);
                     return true;
@@ -983,12 +1043,19 @@ impl Screen {
                             fields,
                             submit_label,
                             handle,
+                            actions,
+                            confirmation,
                             ..
                         } => {
                             let fields = fields
                                 .iter()
                                 .map(|field| match field {
-                                    wire::Field::Text {
+                                    wire::Field::Directory {
+                                        label,
+                                        initial_value,
+                                        ..
+                                    }
+                                    | wire::Field::Text {
                                         label,
                                         initial_value,
                                         ..
@@ -1010,16 +1077,26 @@ impl Screen {
                                     },
                                 })
                                 .collect();
-                            state.widget.open_form(Form::new(
+                            let mut form = Form::new(
                                 handle.clone(),
                                 title,
                                 fields,
                                 submit_label,
-                                false,
-                            ));
+                                *confirmation,
+                            );
+                            form.actions = actions
+                                .iter()
+                                .map(|a| (a.handle.clone(), a.label.clone()))
+                                .collect();
+                            if *confirmation {
+                                state.widget.metadata = Some(form.title.clone());
+                            }
+                            state.widget.open_form(form);
                         },
                         View::Text { text, .. } => state.widget.open_text(text.clone()),
-                        _ => {},
+                        View::Actions { initial_query, .. } => {
+                            state.widget.insert_text(initial_query)
+                        },
                     }
                     state.plugins.views.insert(
                         id,
@@ -1105,6 +1182,28 @@ impl Screen {
                     }
                 },
             }
+        }
+        if matches!(
+            state.plugins.views.get(&scope.view),
+            Some(Nested {
+                display: View::Actions {
+                    source: Some(_),
+                    ..
+                },
+                ..
+            })
+        ) {
+            let senders = self.bus.senders.clone();
+            crate::global_async_runtime::get_tokio_runtime().spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                senders
+                    .send_to_screen(ScreenInstruction::CommandPalette(Instruction::Refresh {
+                        client,
+                        scope,
+                    }))
+                    .context("refreshing visible palette source")
+                    .non_fatal();
+            });
         }
         state.sections(&self.palette_providers);
         true

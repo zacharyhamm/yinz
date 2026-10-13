@@ -260,6 +260,7 @@ SetPaneAgentRun = 277;
 DataCatalog = 278;
 SetQuitNotice = 279;
 GetLocalUtcOffset = 280;
+GetDisconnectTargets = 305;
 SpawnAgent = 281;
 ProjectConfigRead = 282;
 ProjectConfigWrite = 283;
@@ -1679,6 +1680,10 @@ repeated ContextItem context = 4;
 }
 message OpenPluginPaneFloatingResponse {
 optional PaneId pane_id = 1;
+}
+message GetDisconnectTargetsResponse {
+repeated uint32 client_ids = 1;
+optional string error = 2;
 }
 message GetSessionListPayload {}
 message SessionListSnapshot {
