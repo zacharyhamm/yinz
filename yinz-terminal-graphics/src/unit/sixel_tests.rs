@@ -1,5 +1,170 @@
 use super::*;
 
+fn raster(ph: Option<usize>, pv: Option<usize>) -> SixelEvent {
+    SixelEvent::RasterAttribute {
+        pan: 1,
+        pad: 1,
+        ph,
+        pv,
+    }
+}
+
+#[test]
+fn sixel_allocation_bounds_cover_rasters_and_exact_limits_without_allocating() {
+    for event in [
+        raster(Some(MAX_SIXEL_DIMENSION + 1), None),
+        raster(None, Some(MAX_SIXEL_DIMENSION + 1)),
+        raster(Some(1), Some(8193)),
+        raster(None, Some(8193)),
+        raster(Some(usize::MAX), Some(usize::MAX)),
+    ] {
+        assert!(SixelBounds::new(None).advance(event).is_none(), "{event:?}");
+    }
+    let mut bounds = SixelBounds::new(None);
+    assert!(bounds.advance(raster(Some(8192), Some(8192))).is_some());
+    assert_eq!(bounds.width * bounds.height, MAX_SIXEL_PIXELS);
+    assert!(bounds.advance(raster(Some(8193), None)).is_none());
+
+    let mut bounds = SixelBounds::new(None);
+    assert!(bounds
+        .advance(raster(Some(MAX_SIXEL_DIMENSION), Some(4096)))
+        .is_some());
+    assert!(bounds.advance(raster(None, Some(4097))).is_none());
+
+    let mut bounds = SixelBounds::new(None);
+    assert!(bounds
+        .advance(raster(Some(MAX_SIXEL_DIMENSION), None))
+        .is_some());
+    assert!(bounds
+        .advance(SixelEvent::Repeat {
+            repeat_count: MAX_SIXEL_DIMENSION,
+            byte_to_repeat: b'~',
+        })
+        .is_some());
+    assert!(bounds.advance(SixelEvent::Data { byte: b'~' }).is_none());
+}
+
+#[test]
+fn sixel_bounds_cover_accumulated_data_cursor_resets_and_overflow() {
+    let mut bounds = SixelBounds::new(None);
+    let repeat = SixelEvent::Repeat {
+        repeat_count: 8192,
+        byte_to_repeat: b'~',
+    };
+    assert!(bounds.advance(repeat).is_some());
+    assert!(bounds.advance(SixelEvent::GotoBeginningOfLine).is_some());
+    assert!(bounds.advance(repeat).is_some());
+    assert_eq!(bounds.width, 8192);
+    for _ in 0..1364 {
+        assert!(bounds.advance(SixelEvent::GotoNextLine).is_some());
+        assert!(bounds.advance(repeat).is_some());
+    }
+    assert_eq!(bounds.height, 8190);
+    assert!(bounds.advance(SixelEvent::GotoNextLine).is_some());
+    assert!(bounds.advance(repeat).is_none());
+
+    let mut bounds = SixelBounds::new(None);
+    assert!(bounds.advance(SixelEvent::Data { byte: b'~' }).is_some());
+    assert!(bounds
+        .advance(SixelEvent::Repeat {
+            repeat_count: usize::MAX,
+            byte_to_repeat: b'~',
+        })
+        .is_none());
+
+    let mut bounds = SixelBounds::new(None);
+    for _ in 0..2729 {
+        assert!(bounds.advance(SixelEvent::GotoNextLine).is_some());
+    }
+    assert!(bounds.advance(SixelEvent::GotoNextLine).is_none());
+}
+
+#[test]
+fn oversized_sixel_is_dropped_before_decoding_and_next_image_recovers() {
+    for max_height in [None, Some(12)] {
+        for direct in [false, true] {
+            let mut grid = SixelGrid::default();
+            grid.start_image(None, vec![], vec![]);
+            grid.handle_byte(b'~');
+            assert_eq!(grid.end_image(0, 0), Some((6, 1)));
+            grid.start_image(max_height, vec![], vec![]);
+            grid.handle_byte(b'~');
+            if direct {
+                grid.handle_event(raster(Some(1), Some(99999)));
+            } else {
+                for byte in b"\"1;1;1;99999~" {
+                    grid.handle_byte(*byte);
+                }
+            }
+            assert!(grid.currently_parsing.is_none());
+            assert!(grid.is_parsing());
+            for byte in b"#1;2;100;0;0!99999~-~" {
+                grid.handle_byte(*byte);
+            }
+            assert_eq!(grid.end_image(0, 0), None);
+            assert!(!grid.is_parsing());
+            assert_eq!(grid.sixel_image_store.borrow().image_count(), 1);
+            assert_eq!(grid.image_coordinates().count(), 1);
+            grid.start_image(None, vec![], vec![]);
+            grid.handle_byte(b'~');
+            assert_eq!(grid.end_image(8, 0), Some((6, 1)));
+            assert_eq!(grid.sixel_image_store.borrow().image_count(), 2);
+        }
+    }
+}
+
+#[test]
+fn sixel_guard_preserves_transparency_and_viewport_clipping() {
+    let mut grid = SixelGrid::default();
+    grid.start_image(None, vec![], vec![&[0], &[1]]);
+    grid.handle_event(raster(Some(1), Some(9000)));
+    grid.handle_byte(b'~');
+    assert_eq!(grid.end_image(0, 0), Some((6, 1)));
+
+    grid.start_image(Some(6), vec![], vec![]);
+    grid.handle_byte(b'~');
+    grid.handle_byte(b'-');
+    grid.handle_event(raster(Some(usize::MAX), Some(usize::MAX)));
+    grid.handle_event(SixelEvent::Repeat {
+        repeat_count: usize::MAX,
+        byte_to_repeat: b'~',
+    });
+    assert_eq!(grid.end_image(0, 0), Some((6, 1)));
+}
+
+#[test]
+fn sixel_bounds_cover_dependency_allocations_after_mixed_events() {
+    let mut grid = SixelGrid::default();
+    grid.start_image(None, vec![], vec![]);
+    for event in [
+        raster(None, Some(12)),
+        raster(Some(2), Some(6)),
+        SixelEvent::Repeat {
+            repeat_count: 20,
+            byte_to_repeat: b'~',
+        },
+        SixelEvent::GotoBeginningOfLine,
+        SixelEvent::Data { byte: b'~' },
+        SixelEvent::GotoNextLine,
+        SixelEvent::GotoNextLine,
+        SixelEvent::Data { byte: b'~' },
+        raster(Some(24), None),
+        raster(None, Some(30)),
+    ] {
+        grid.handle_event(event);
+        let current = grid.currently_parsing.as_ref().unwrap();
+        let image = current.decoder.clone().create_image().unwrap();
+        assert!(image.pixels.len() <= current.bounds.height, "{event:?}");
+        assert!(
+            image
+                .pixels
+                .iter()
+                .all(|row| row.len() <= current.bounds.width),
+            "{event:?}"
+        );
+    }
+}
+
 #[test]
 fn reaping_an_image_does_not_reuse_another_panes_live_image_id() {
     let image = SixelImage::new(b"\x1bPq\"1;1;16;12#1;2;100;0;0#1!16~-!16~\x1b\\").unwrap();

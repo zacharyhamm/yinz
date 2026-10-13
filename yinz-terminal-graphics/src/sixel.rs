@@ -9,6 +9,108 @@ use std::fmt::Debug;
 
 use yinz_types::pane_size::SizeInPixels;
 
+const MAX_SIXEL_PIXELS: usize = 64 * 1024 * 1024;
+const MAX_SIXEL_DIMENSION: usize = 16_384;
+
+#[derive(Debug)]
+struct SixelBounds {
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    max_height: Option<usize>,
+    transparent: bool,
+    clipped: bool,
+}
+
+impl SixelBounds {
+    fn new(max_height: Option<usize>) -> Self {
+        Self {
+            width: 0,
+            height: 1,
+            x: 0,
+            y: 0,
+            max_height,
+            transparent: false,
+            clipped: false,
+        }
+    }
+
+    // Check before decoding: sixel-image's height limit does not cover raster allocation.
+    fn advance(&mut self, event: SixelEvent) -> Option<()> {
+        if self.clipped {
+            return Some(());
+        }
+        match event {
+            SixelEvent::RasterAttribute { ph, pv, .. } => {
+                if ph.unwrap_or(0) > MAX_SIXEL_DIMENSION || pv.unwrap_or(0) > MAX_SIXEL_DIMENSION {
+                    return None;
+                }
+                if !self.transparent {
+                    if let Some(pv) = pv.filter(|pv| *pv > self.height) {
+                        // sixel-image 0.2.1 pads new rows to pv pixels wide, even without ph.
+                        self.width = self.width.max(pv);
+                        self.height = pv;
+                    }
+                    self.width = self.width.max(ph.unwrap_or(0));
+                }
+            },
+            SixelEvent::Data { .. } | SixelEvent::Repeat { .. } => {
+                let count = match event {
+                    SixelEvent::Repeat { repeat_count, .. } => repeat_count,
+                    _ => 1,
+                };
+                self.x = self.x.checked_add(count)?;
+                self.width = self.width.max(self.x);
+                self.height = self.height.max(self.y.checked_add(6)?);
+            },
+            SixelEvent::GotoBeginningOfLine => self.x = 0,
+            SixelEvent::GotoNextLine => {
+                let bottom = self.y.checked_add(12)?;
+                if self
+                    .max_height
+                    .is_some_and(|max_height| bottom > max_height)
+                {
+                    self.clipped = true;
+                    return Some(());
+                }
+                if bottom > MAX_SIXEL_DIMENSION {
+                    return None;
+                }
+                self.y = self.y.checked_add(6)?;
+                self.x = 0;
+            },
+            SixelEvent::Dcs {
+                transparent_background,
+                ..
+            } => self.transparent |= transparent_background == Some(1),
+            _ => {},
+        }
+        (self.width <= MAX_SIXEL_DIMENSION
+            && self.height <= MAX_SIXEL_DIMENSION
+            && self.width.checked_mul(self.height)? <= MAX_SIXEL_PIXELS)
+            .then_some(())
+    }
+}
+
+#[derive(Debug)]
+struct BoundedSixelDecoder {
+    decoder: SixelDeserializer,
+    bounds: SixelBounds,
+}
+
+impl BoundedSixelDecoder {
+    fn handle_event(current: &mut Option<Self>, event: SixelEvent) {
+        if let Some(currently_parsing) = current.as_mut() {
+            if currently_parsing.bounds.advance(event).is_none() {
+                *current = None;
+            } else {
+                let _ = currently_parsing.decoder.handle_event(event);
+            }
+        }
+    }
+}
+
 /// The pixel rectangle of a stored sixel image to draw at a viewport cell, as
 /// [`SixelGrid::changed_sixel_chunks_in_viewport`] hands it to `yinz-terminal`'s output. Lives
 /// here rather than in the output so this crate needs nothing from the terminal emulator.
@@ -77,7 +179,7 @@ pub struct SixelGrid {
     sixel_image_locations: HashMap<usize, PixelRect>,
     previous_cell_size: Option<SizeInPixels>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
-    currently_parsing: Option<SixelDeserializer>,
+    currently_parsing: Option<BoundedSixelDecoder>,
     image_ids_to_reap: Vec<usize>,
     images_to_check_for_emptiness: HashSet<usize>,
     sixel_parser: Option<sixel_tokenizer::Parser>,
@@ -106,15 +208,11 @@ impl SixelGrid {
             .as_mut()
             .unwrap()
             .advance(&byte, |sixel_event| {
-                if let Some(currently_parsing) = self.currently_parsing.as_mut() {
-                    let _ = currently_parsing.handle_event(sixel_event);
-                }
+                BoundedSixelDecoder::handle_event(&mut self.currently_parsing, sixel_event);
             });
     }
     pub fn handle_event(&mut self, sixel_event: SixelEvent) {
-        if let Some(currently_parsing) = self.currently_parsing.as_mut() {
-            let _ = currently_parsing.handle_event(sixel_event);
-        }
+        BoundedSixelDecoder::handle_event(&mut self.currently_parsing, sixel_event);
     }
     pub fn is_parsing(&self) -> bool {
         self.sixel_parser.is_some()
@@ -126,15 +224,14 @@ impl SixelGrid {
         dcs_params: Vec<&[u16]>,
     ) {
         self.sixel_parser = Some(sixel_tokenizer::Parser::new());
-        match max_height_in_pixels {
-            Some(max_height_in_pixels) => {
-                self.currently_parsing =
-                    Some(SixelDeserializer::new().max_height(max_height_in_pixels));
+        let decoder = SixelDeserializer::new();
+        self.currently_parsing = Some(BoundedSixelDecoder {
+            decoder: match max_height_in_pixels {
+                Some(max_height) => decoder.max_height(max_height),
+                None => decoder,
             },
-            None => {
-                self.currently_parsing = Some(SixelDeserializer::new());
-            },
-        }
+            bounds: SixelBounds::new(max_height_in_pixels),
+        });
 
         self.handle_byte(27);
         self.handle_byte(b'P');
@@ -167,7 +264,7 @@ impl SixelGrid {
         y_pixel_coordinates: usize,
     ) -> Option<(usize, usize)> {
         self.sixel_parser = None;
-        let sixel_image = self.currently_parsing.take()?.create_image().ok()?;
+        let sixel_image = self.currently_parsing.take()?.decoder.create_image().ok()?;
         let image_pixel_size = sixel_image.pixel_size();
         let image_size_and_coordinates = PixelRect::new(
             x_pixel_coordinates,
