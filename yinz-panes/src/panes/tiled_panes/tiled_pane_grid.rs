@@ -955,7 +955,11 @@ impl<'a> TiledPaneGrid<'a> {
         }
         next_pane.map(|p| p.pid())
     }
-    pub fn progress_stack_up_if_in_stack(&mut self, source_pane_id: &PaneId) -> Option<PaneId> {
+    pub fn progress_stack_up_if_in_stack(
+        &mut self,
+        source_pane_id: &PaneId,
+        rendered_spans: bool,
+    ) -> Option<PaneId> {
         let destination_pane_id_in_stack = {
             let panes = self.panes.borrow();
             let source_pane = panes.get(source_pane_id)?;
@@ -968,8 +972,16 @@ impl<'a> TiledPaneGrid<'a> {
                 .iter()
                 .enumerate()
                 .filter(|(_, (_, c))| {
+                    let overlaps = if rendered_spans {
+                        let source = source_pane.render_geom();
+                        let candidate = c.render_geom();
+                        source.x < candidate.x + candidate.cols.as_usize()
+                            && candidate.x < source.x + source.cols.as_usize()
+                    } else {
+                        c.vertically_overlaps_with(Box::as_ref(source_pane))
+                    };
                     c.is_directly_above(Box::as_ref(source_pane))
-                        && c.vertically_overlaps_with(Box::as_ref(source_pane))
+                        && overlaps
                         && c.current_geom().is_stacked()
                 })
                 .max_by_key(|(_, (_, c))| c.active_at())
@@ -988,7 +1000,11 @@ impl<'a> TiledPaneGrid<'a> {
             None => None,
         }
     }
-    pub fn progress_stack_down_if_in_stack(&mut self, source_pane_id: &PaneId) -> Option<PaneId> {
+    pub fn progress_stack_down_if_in_stack(
+        &mut self,
+        source_pane_id: &PaneId,
+        rendered_spans: bool,
+    ) -> Option<PaneId> {
         let destination_pane_id_in_stack = {
             let panes = self.panes.borrow();
             let source_pane = panes.get(source_pane_id)?;
@@ -1001,8 +1017,16 @@ impl<'a> TiledPaneGrid<'a> {
                 .iter()
                 .enumerate()
                 .filter(|(_, (_, c))| {
+                    let overlaps = if rendered_spans {
+                        let source = source_pane.render_geom();
+                        let candidate = c.render_geom();
+                        source.x < candidate.x + candidate.cols.as_usize()
+                            && candidate.x < source.x + source.cols.as_usize()
+                    } else {
+                        c.vertically_overlaps_with(Box::as_ref(source_pane))
+                    };
                     c.is_directly_below(Box::as_ref(source_pane))
-                        && c.vertically_overlaps_with(Box::as_ref(source_pane))
+                        && overlaps
                         && c.current_geom().is_stacked()
                 })
                 .max_by_key(|(_, (_, c))| c.active_at())
@@ -1025,6 +1049,7 @@ impl<'a> TiledPaneGrid<'a> {
         &self,
         current_pane_id: &PaneId,
         include_panes_in_stack: bool,
+        rendered_spans: bool,
     ) -> Option<PaneId> {
         let panes = self.panes.borrow();
         let current_pane = panes.get(current_pane_id)?;
@@ -1037,12 +1062,19 @@ impl<'a> TiledPaneGrid<'a> {
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
+                let overlaps = if rendered_spans {
+                    let current = current_pane.render_geom();
+                    let candidate = c.render_geom();
+                    current.x < candidate.x + candidate.cols.as_usize()
+                        && candidate.x < current.x + current.cols.as_usize()
+                } else {
+                    c.vertically_overlaps_with(Box::as_ref(current_pane))
+                };
                 if include_panes_in_stack {
-                    c.is_directly_below(Box::as_ref(current_pane))
-                        && c.vertically_overlaps_with(Box::as_ref(current_pane))
+                    c.is_directly_below(Box::as_ref(current_pane)) && overlaps
                 } else {
                     c.is_directly_below(Box::as_ref(current_pane))
-                        && c.vertically_overlaps_with(Box::as_ref(current_pane))
+                        && overlaps
                         && !c.current_geom().is_stacked()
                 }
             })
@@ -1099,6 +1131,7 @@ impl<'a> TiledPaneGrid<'a> {
         &self,
         current_pane_id: &PaneId,
         include_panes_in_stack: bool,
+        rendered_spans: bool,
     ) -> Option<PaneId> {
         let panes = self.panes.borrow();
         let current_pane = panes.get(current_pane_id)?;
@@ -1111,12 +1144,19 @@ impl<'a> TiledPaneGrid<'a> {
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
+                let overlaps = if rendered_spans {
+                    let current = current_pane.render_geom();
+                    let candidate = c.render_geom();
+                    current.x < candidate.x + candidate.cols.as_usize()
+                        && candidate.x < current.x + current.cols.as_usize()
+                } else {
+                    c.vertically_overlaps_with(Box::as_ref(current_pane))
+                };
                 if include_panes_in_stack {
-                    c.is_directly_above(Box::as_ref(current_pane))
-                        && c.vertically_overlaps_with(Box::as_ref(current_pane))
+                    c.is_directly_above(Box::as_ref(current_pane)) && overlaps
                 } else {
                     c.is_directly_above(Box::as_ref(current_pane))
-                        && c.vertically_overlaps_with(Box::as_ref(current_pane))
+                        && overlaps
                         && !c.current_geom().is_stacked()
                 }
             })

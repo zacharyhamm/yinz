@@ -7,7 +7,7 @@ use crate::pane::{pane_info_for_pane, Pane};
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::resize_pty;
 use crate::ui::damage::CellRect;
-use floating_pane_grid::FloatingPaneGrid;
+use floating_pane_grid::{geom_moved_within, FloatingPaneGrid};
 
 use crate::{
     os_input_output::ServerOsApi,
@@ -56,6 +56,7 @@ pub struct FloatingPanes {
     style: Style,
     session_is_mirrored: bool,
     desired_pane_positions: HashMap<PaneId, PaneGeom>, // this represents the positions of panes the user moved with intention, rather than by resizing the terminal window
+    width_anchored_panes: HashSet<PaneId>,
     z_indices: Vec<PaneId>,
     active_panes: ActivePanes,
     show_panes: bool,
@@ -101,6 +102,7 @@ impl FloatingPanes {
             default_mode_info,
             style,
             desired_pane_positions: HashMap::new(),
+            width_anchored_panes: HashSet::new(),
             z_indices: vec![],
             show_panes: false,
             active_panes: ActivePanes::new(&os_input),
@@ -113,6 +115,23 @@ impl FloatingPanes {
             floating_fullscreen_covers_ui: false,
             pane_frame_style,
         }
+    }
+    pub fn agent_widths(&self) -> HashMap<PaneId, (usize, usize)> {
+        self.width_anchored_panes
+            .iter()
+            .filter_map(|id| {
+                let pane = self.panes.get(id)?;
+                if pane.geom_override().is_some() {
+                    return None;
+                }
+                let requested = pane.current_geom();
+                let mut displayed = pane.constrain_content_width(requested);
+                // Window resizing may shift the requested rectangle to fit its uncapped width.
+                displayed.x = self.desired_pane_positions.get(id).unwrap_or(&requested).x;
+                let displayed = geom_moved_within(displayed, self.move_surface(), 0, 0);
+                Some((*id, (displayed.x, displayed.cols.as_usize())))
+            })
+            .collect()
     }
     pub fn set_pane_frame_style(&mut self, pane_frame_style: PaneFrameStyle) {
         self.pane_frame_style = pane_frame_style;
@@ -179,7 +198,7 @@ impl FloatingPanes {
                     if fullscreen {
                         p.current_geom()
                     } else {
-                        p.position_and_size()
+                        p.render_geom()
                     }
                 })
             })
@@ -194,25 +213,28 @@ impl FloatingPanes {
     /// tab bar or the status bar, or opened over one. Nothing about such a pane depends on the
     /// tab's layout, so it is taken out of a resize and put back afterwards - see
     /// `restore_geoms_outside_viewport`.
-    pub fn geoms_outside_viewport(&self) -> HashMap<PaneId, PaneGeom> {
+    /// Each entry keeps the requested geometry and the displayed geometry, respectively.
+    pub fn geoms_outside_viewport(&self) -> HashMap<PaneId, (PaneGeom, PaneGeom)> {
         let viewport = *self.viewport.borrow();
         self.panes
             .iter()
             .filter_map(|(pane_id, pane)| {
                 let geom = pane.position_and_size();
-                geom_is_outside_viewport(&geom, &viewport).then_some((*pane_id, geom))
+                let displayed = pane.render_geom();
+                geom_is_outside_viewport(&displayed, &viewport)
+                    .then_some((*pane_id, (geom, displayed)))
             })
             .collect()
     }
 
     /// Put back what `geoms_outside_viewport` took out of a resize, keeping each pane on the
     /// surface as it is now - a surface that shrank out from under a pane still moves it.
-    pub fn restore_geoms_outside_viewport(&mut self, geoms: HashMap<PaneId, PaneGeom>) {
+    pub fn restore_geoms_outside_viewport(&mut self, geoms: HashMap<PaneId, (PaneGeom, PaneGeom)>) {
         if geoms.is_empty() {
             return;
         }
         let surface = self.move_surface();
-        for (pane_id, mut geom) in geoms {
+        for (pane_id, (mut geom, displayed)) in geoms {
             let Some(pane) = self.panes.get_mut(&pane_id) else {
                 continue;
             };
@@ -227,6 +249,12 @@ impl FloatingPanes {
                     .max(surface.y),
             );
             pane.set_geom(geom);
+            if self.width_anchored_panes.contains(&pane_id) && pane.geom_override().is_none() {
+                // The displayed anchor fits by its capped width, not its requested width.
+                let displayed = geom_moved_within(displayed, surface, 0, 0);
+                geom.x = displayed.x;
+                pane.set_render_width(Some((displayed.x, displayed.cols.as_usize())));
+            }
             self.desired_pane_positions.insert(pane_id, geom);
         }
         self.set_pane_frames().non_fatal();
@@ -241,7 +269,7 @@ impl FloatingPanes {
         self.stack_layer_ids().iter().any(|pane_id| {
             self.panes
                 .get(pane_id)
-                .is_some_and(|pane| geom_is_outside_viewport(&pane.position_and_size(), &viewport))
+                .is_some_and(|pane| geom_is_outside_viewport(&pane.render_geom(), &viewport))
         })
     }
     /// The topmost pane actually being painted at `position`, if any. Derived from
@@ -318,6 +346,9 @@ impl FloatingPanes {
         if let Some(position) = self.desired_pane_positions.remove(&pane_id) {
             self.desired_pane_positions.insert(with_pane_id, position);
         }
+        if self.width_anchored_panes.remove(&pane_id) {
+            self.width_anchored_panes.insert(with_pane_id);
+        }
         self.move_clients_between_panes(pane_id, with_pane_id);
         self.active_panes.retarget_last_pane(pane_id, with_pane_id);
         if let Some((id, _, _)) = self.pane_being_moved_with_mouse.as_mut() {
@@ -337,6 +368,7 @@ impl FloatingPanes {
         }
         self.z_indices.retain(|p_id| *p_id != pane_id);
         self.desired_pane_positions.remove(&pane_id);
+        self.width_anchored_panes.remove(&pane_id);
         let removed_pane = self.panes.remove(&pane_id);
         self.move_clients_out_of_pane(pane_id);
         self.active_panes.remove_last_pane(pane_id);
@@ -550,7 +582,7 @@ impl FloatingPanes {
     /// unnarrowed version did - re-serializes grids that never had a toast anywhere near them.
     pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
         for pane in self.panes.values_mut() {
-            let geom = pane.current_geom();
+            let geom = pane.render_geom();
             if !damage.iter().any(|rect| rect.intersects_geom(&geom)) {
                 continue;
             }
@@ -1170,6 +1202,7 @@ impl FloatingPanes {
             viewport,
         );
         floating_pane_grid.move_pane_down(&pane_id).non_fatal();
+        self.width_anchored_panes.insert(pane_id);
         self.set_force_render();
     }
     pub fn move_pane_up(&mut self, pane_id: PaneId) {
@@ -1185,6 +1218,7 @@ impl FloatingPanes {
             viewport,
         );
         floating_pane_grid.move_pane_up(&pane_id).non_fatal();
+        self.width_anchored_panes.insert(pane_id);
         self.set_force_render();
     }
     pub fn move_pane_left(&mut self, pane_id: PaneId) {
@@ -1200,6 +1234,7 @@ impl FloatingPanes {
             viewport,
         );
         floating_pane_grid.move_pane_left(&pane_id).non_fatal();
+        self.width_anchored_panes.insert(pane_id);
         self.set_force_render();
     }
     pub fn move_pane_right(&mut self, pane_id: PaneId) {
@@ -1215,6 +1250,7 @@ impl FloatingPanes {
             viewport,
         );
         floating_pane_grid.move_pane_right(&pane_id).non_fatal();
+        self.width_anchored_panes.insert(pane_id);
         self.set_force_render();
     }
     pub fn move_pane(&mut self, search_backwards: bool, pane_id: PaneId) {
@@ -1263,7 +1299,26 @@ impl FloatingPanes {
                 current_position.set_geom_override(geom);
             }
             current_position.set_should_render(true);
+            self.swap_position_metadata(pane_id, new_position_id);
             let _ = self.set_pane_frames();
+        }
+    }
+    fn swap_position_metadata(&mut self, first: PaneId, second: PaneId) {
+        let first_position = self.desired_pane_positions.remove(&first);
+        let second_position = self.desired_pane_positions.remove(&second);
+        if let Some(position) = first_position {
+            self.desired_pane_positions.insert(second, position);
+        }
+        if let Some(position) = second_position {
+            self.desired_pane_positions.insert(first, position);
+        }
+        let first_anchored = self.width_anchored_panes.remove(&first);
+        let second_anchored = self.width_anchored_panes.remove(&second);
+        if first_anchored {
+            self.width_anchored_panes.insert(second);
+        }
+        if second_anchored {
+            self.width_anchored_panes.insert(first);
         }
     }
     pub fn change_pane_coordinates(
@@ -1667,6 +1722,7 @@ impl FloatingPanes {
         floating_pane_grid
             .move_pane_by(pane_id, move_x_by, move_y_by)
             .non_fatal();
+        self.width_anchored_panes.insert(pane_id);
         self.set_pane_being_moved_with_mouse(pane_id, *click_position);
         self.set_force_render();
         true
@@ -1809,6 +1865,7 @@ impl FloatingPanes {
             )
             .non_fatal();
             current_position.set_should_render(true);
+            self.swap_position_metadata(active_pane_id, pane_id);
             self.focus_pane_for_all_clients(active_pane_id);
         }
     }

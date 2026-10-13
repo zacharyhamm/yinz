@@ -137,7 +137,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let detachable_panes =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "detachable_panes").map(|(v, _)| v);
     let scroll_buffer_size = unsigned_option(kdl_options, "scroll_buffer_size", 0)?;
-    let max_fullscreen_agent_width = unsigned_option(kdl_options, "max_fullscreen_agent_width", 0)?;
+    let max_agent_width = unsigned_option(kdl_options, "max_agent_width", 0)?;
     let locked_escape_timeout_ms = unsigned_option(kdl_options, "locked_escape_timeout_ms", 0)?;
     let copy_command = kdl_property_first_arg_as_string_or_error!(kdl_options, "copy_command")
         .map(|(copy_command, _entry)| copy_command.to_string());
@@ -301,7 +301,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         mirror_session,
         on_force_close,
         scroll_buffer_size,
-        max_fullscreen_agent_width,
+        max_agent_width,
         locked_escape_timeout_ms: locked_escape_timeout_ms
             .map(yinz_types::units::ElapsedMillis::new),
         copy_command,
@@ -1099,21 +1099,19 @@ fn scroll_buffer_size_to_kdl(value: &Options, add_comments: bool) -> Option<KdlN
         None
     }
 }
-fn max_fullscreen_agent_width_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
-    if value.max_fullscreen_agent_width.is_none() && !add_comments {
+fn max_agent_width_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
+    if value.max_agent_width.is_none() && !add_comments {
         return None;
     }
-    let mut node = KdlNode::new("max_fullscreen_agent_width");
-    node.push(KdlValue::Base10(
-        value.max_fullscreen_agent_width.unwrap_or(0) as i64,
-    ));
+    let mut node = KdlNode::new("max_agent_width");
+    node.push(KdlValue::Base10(value.max_agent_width.unwrap_or(0) as i64));
     if add_comments {
-        let prefix = if value.max_fullscreen_agent_width.is_some() {
+        let prefix = if value.max_agent_width.is_some() {
             ""
         } else {
             "// "
         };
-        node.set_leading(format!("\n// Center sole or fullscreen agent panes with at most this many text columns.\n// UI bars do not count as panes. Frames are outside the text width.\n// Default: 0 (unrestricted).\n{prefix}"));
+        node.set_leading(format!("\n// Limit agent panes in all layouts to this many text columns.\n// Center the grid when it cannot fill the screen. Frames are outside the text width.\n// Values below 80 disable the limit. Default: 0 (unrestricted).\n{prefix}"));
     }
     Some(node)
 }
@@ -2171,7 +2169,7 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
     if let Some(on_force_close) = on_force_close_to_kdl(value, add_comments) {
         nodes.push(on_force_close);
     }
-    if let Some(width) = max_fullscreen_agent_width_to_kdl(value, add_comments) {
+    if let Some(width) = max_agent_width_to_kdl(value, add_comments) {
         nodes.push(width);
     }
     if let Some(scroll_buffer_size) = scroll_buffer_size_to_kdl(value, add_comments) {

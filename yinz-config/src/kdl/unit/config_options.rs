@@ -582,7 +582,7 @@ fn removed_recording_options_follow_unknown_key_behavior() {
 fn unsigned_options_reject_negative_numbers_and_validate_zero() {
     for option in [
         "scroll_buffer_size",
-        "max_fullscreen_agent_width",
+        "max_agent_width",
         "scrollback_lines_to_serialize",
         "notification_timeout",
         "serialization_interval",
@@ -636,19 +636,23 @@ fn agent_theme_mapping_is_validated_and_round_trips() {
 }
 
 #[test]
-fn max_fullscreen_agent_width_roundtrips_and_zero_overrides_a_limit() {
-    let document = "max_fullscreen_agent_width 100".parse().unwrap();
-    let options = crate::kdl::options::from_kdl(&document).unwrap();
-    assert_eq!(options.max_fullscreen_agent_width, Some(100));
-    let mut serialized = KdlDocument::new();
-    serialized
-        .nodes_mut()
-        .append(&mut crate::kdl::options::to_kdl(&options, false));
-    let roundtrip = crate::kdl::options::from_kdl(&serialized).unwrap();
-    assert_eq!(roundtrip.max_fullscreen_agent_width, Some(100));
-    let disabled =
-        crate::kdl::options::from_kdl(&"max_fullscreen_agent_width 0".parse().unwrap()).unwrap();
-    assert_eq!(options.merge(disabled).max_fullscreen_agent_width, Some(0));
+fn max_agent_width_roundtrips_and_preserves_disabled_values_for_precedence() {
+    for width in [0, 1, 79, 80, 81] {
+        let document = format!("max_agent_width {width}").parse().unwrap();
+        let options = crate::kdl::options::from_kdl(&document).unwrap();
+        assert_eq!(options.max_agent_width, Some(width));
+        let mut serialized = KdlDocument::new();
+        serialized
+            .nodes_mut()
+            .append(&mut crate::kdl::options::to_kdl(&options, false));
+        let roundtrip = crate::kdl::options::from_kdl(&serialized).unwrap();
+        assert_eq!(roundtrip.max_agent_width, Some(width));
+        let base = Options {
+            max_agent_width: Some(100),
+            ..Options::default()
+        };
+        assert_eq!(base.merge(options).max_agent_width, Some(width));
+    }
 }
 
 #[test]

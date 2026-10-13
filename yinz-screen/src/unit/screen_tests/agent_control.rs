@@ -367,6 +367,51 @@ fn paste_mode_only_gates_prompts_and_sync_exclusion_requires_active_sync() {
 }
 
 #[test]
+fn hand_started_agent_width_tracks_foreground_command_without_lifecycle_changes() {
+    use crate::screen::thread_main::apply_pane_foreground_command;
+    let (mut screen, _, _) = setup_with_size(
+        "",
+        PaneTarget::Local,
+        Size {
+            cols: 201,
+            rows: 24,
+        },
+    );
+    screen.tabs.get_mut(&TabId::new(0)).unwrap().max_agent_width = 80;
+    screen.render_to_clients().unwrap();
+    let original = screen.tabs[&TabId::new(0)]
+        .get_pane_with_id(PANE)
+        .unwrap()
+        .render_geom();
+    assert!(apply_pane_foreground_command(
+        &mut screen,
+        TerminalId::new(7),
+        vec!["/usr/local/bin/codex".into()],
+        Some("codex".into())
+    ));
+    screen.render_to_clients().unwrap();
+    let pane = screen.tabs[&TabId::new(0)].get_pane_with_id(PANE).unwrap();
+    assert_eq!(pane.get_content_columns(), 80);
+    assert!(pane.agent_info().is_none());
+    assert!(!pane.was_an_agent());
+    assert!(!screen.agent_lifecycle.contains_key(&PANE));
+    assert!(apply_pane_foreground_command(
+        &mut screen,
+        TerminalId::new(7),
+        vec!["/bin/bash".into()],
+        Some("bash".into())
+    ));
+    screen.render_to_clients().unwrap();
+    assert_eq!(
+        screen.tabs[&TabId::new(0)]
+            .get_pane_with_id(PANE)
+            .unwrap()
+            .render_geom(),
+        original
+    );
+}
+
+#[test]
 fn list_names_a_hand_started_agent_in_a_shell_as_detected_and_unmanaged() {
     let (mut screen, messages, _writes) = setup("bash");
     let list = |screen: &mut Screen| {

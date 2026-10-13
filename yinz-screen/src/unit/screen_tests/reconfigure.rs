@@ -33,7 +33,7 @@ fn every_field_changed() -> ScreenConfig {
         rounded_corners: true,
         hide_session_name: true,
         pane_frame_style: PaneFrameStyle::Full,
-        max_fullscreen_agent_width: 100,
+        max_agent_width: 100,
         simplified_ui: true,
         pane_animations: false,
         styled_underlines: false,
@@ -133,7 +133,7 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         rounded_corners,
         hide_session_name,
         pane_frame_style,
-        max_fullscreen_agent_width,
+        max_agent_width,
         simplified_ui,
         pane_animations,
         styled_underlines,
@@ -200,16 +200,10 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         hide_session_name
     );
     assert_eq!(screen.pane_frame_style, pane_frame_style);
+    assert_eq!(screen.max_agent_width, max_agent_width);
     assert_eq!(
-        screen.max_fullscreen_agent_width,
-        max_fullscreen_agent_width
-    );
-    assert_eq!(
-        screen
-            .get_active_tab(client_id)
-            .unwrap()
-            .max_fullscreen_agent_width,
-        max_fullscreen_agent_width
+        screen.get_active_tab(client_id).unwrap().max_agent_width,
+        max_agent_width
     );
     assert_eq!(screen.arrow_fonts, !simplified_ui);
     assert_eq!(screen.pane_animations, pane_animations);

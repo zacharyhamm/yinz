@@ -275,7 +275,8 @@ pub struct Tab {
     pending_agent_placements: Vec<(PaneId, NotificationEnd)>,
     pub agent_worktrees: HashMap<PaneId, PathBuf>,
     pub agent_double_escape: bool,
-    pub max_fullscreen_agent_width: usize,
+    pub max_agent_width: usize,
+    pending_render_damage: Vec<CellRect>,
     pub pending_agent_escapes: HashMap<(ClientId, PaneId), Instant>,
     pub id: TabId,
     pub position: TabPosition,
@@ -551,8 +552,9 @@ impl Tab {
         let swap_layouts = SwapLayouts::new(swap_layouts, display_area.clone());
 
         Tab {
-            max_fullscreen_agent_width: 0,
             agent_worktrees: HashMap::new(),
+            max_agent_width: 0,
+            pending_render_damage: Vec::new(),
             agent_double_escape: false,
             pending_agent_escapes: HashMap::new(),
             id,
@@ -1293,7 +1295,7 @@ impl Tab {
                 .get_pane(list.visible)
                 .or_else(|| self.floating_panes.get_pane(list.visible))
             {
-                Some(p) => (p.position_and_size(), p.get_content_offset()),
+                Some(p) => (p.render_geom(), p.get_content_offset()),
                 None => return,
             };
             let hidden: Vec<PaneId> = list
@@ -1395,7 +1397,7 @@ impl Tab {
                 .get_pane(list.visible)
                 .or_else(|| self.floating_panes.get_pane(list.visible))
             {
-                Some(p) => (p.position_and_size(), p.get_content_offset()),
+                Some(p) => (p.render_geom(), p.get_content_offset()),
                 None => continue,
             };
             let widest_member_titles: HashMap<_, _> = connected_clients
@@ -4964,7 +4966,7 @@ impl Tab {
         let active_terminal = self.rendered_pane(active_pane_id)?;
         active_terminal.cursor_coordinates(Some(client_id)).map(
             |(x_in_terminal, y_in_terminal, is_visible)| {
-                let x = active_terminal.x() + x_in_terminal;
+                let x = active_terminal.render_geom().x + x_in_terminal;
                 let y = active_terminal.y() + y_in_terminal;
                 (x, y, is_visible)
             },
@@ -5235,7 +5237,18 @@ impl Tab {
     pub fn invalidate_boundaries(&mut self, client_id: ClientId) {
         self.tiled_panes.invalidate_boundaries(client_id);
     }
+    pub fn prepare_margin_replay(&mut self, damage: &[CellRect]) {
+        self.pending_render_damage.extend_from_slice(damage);
+    }
     pub fn set_force_render(&mut self) {
+        let display_area = *self.display_area.borrow();
+        self.pending_render_damage.clear();
+        self.pending_render_damage.push(CellRect {
+            x: 0,
+            y: 0,
+            cols: display_area.cols,
+            rows: display_area.rows,
+        });
         self.tiled_panes.set_force_render();
         self.floating_panes.set_force_render();
         self.overlay_panes.set_force_render();
@@ -5256,6 +5269,7 @@ impl Tab {
         if damage.is_empty() {
             return;
         }
+        self.pending_render_damage.extend_from_slice(damage);
         self.tiled_panes.force_render_panes_intersecting(damage);
         self.floating_panes.force_render_panes_intersecting(damage);
         self.overlay_panes.force_render_panes_intersecting(damage);
@@ -5611,7 +5625,7 @@ impl Tab {
                     .zip(list.rank_of(&pane_id))
                     .is_some_and(|(visible_pane, rank)| {
                         let header = Self::stack_list_header_geom(
-                            visible_pane.position_and_size(),
+                            visible_pane.render_geom(),
                             visible_pane.get_content_offset(),
                             rank,
                         );
@@ -5624,14 +5638,15 @@ impl Tab {
                 return false;
             }
         }
+        let geom = pane.render_geom();
+        let viewport = self.tiled_panes.boundary_viewport();
         let visible = if self.tiled_panes.panes_contain(&pane_id) {
-            let viewport = self.viewport.borrow();
             !self.tiled_panes.panes_to_hide_contains(pane_id)
                 && !self.tiled_panes.fullscreen_covers_ui()
                 && (pane.get_content_offset() != Offset::default()
-                    || pane.current_geom().is_stacked()
-                    || pane.x() > viewport.x
-                    || pane.y() > viewport.y)
+                    || geom.is_stacked()
+                    || geom.x > viewport.x
+                    || geom.y > viewport.y)
         } else {
             pane.get_content_offset() != Offset::default()
                 && ((self.has_floating_panes_to_render()
@@ -5641,12 +5656,10 @@ impl Tab {
         if !visible {
             return false;
         }
-        let geom = pane.current_geom();
         if !self.tiled_panes.panes_contain(&pane_id) || self.pane_frame_style.draws_full_frames() {
             return self.waiting_border_is_uncovered(pane_id, &[geom]);
         }
 
-        let viewport = *self.viewport.borrow();
         // ponytail: scan stack members per pane; precompute flags if large stacks make this costly.
         let stack_flags = |pane: &dyn Pane| {
             let geom = pane.position_and_size();
@@ -5908,36 +5921,16 @@ impl Tab {
     }
 
     fn update_agent_pane_widths(&mut self) -> Result<()> {
-        let sole_tiled_pane = {
-            let mut panes = self
-                .tiled_panes
-                .get_panes()
-                .filter(|(_, pane)| pane.selectable());
-            let first = panes.next().map(|(id, _)| *id);
-            if panes.next().is_none() {
-                first.filter(|id| !self.pane_is_stack_list_member(id))
-            } else {
-                None
-            }
-        };
-        let mut candidates: HashSet<PaneId> = self
-            .overlay_panes
-            .fullscreen_pane_ids()
-            .into_iter()
-            // A fullscreen linked panel still divides its area between several panes.
-            .filter(|id| {
-                self.overlay_panes.get(id).is_some_and(|pane| {
-                    self.overlay_panes.outer_geom(*id) == Some(pane.current_geom())
-                })
-            })
-            .collect();
-        candidates.extend(self.tiled_panes.fullscreen_pane_id());
-        candidates.extend(self.floating_panes.fullscreen_pane_id());
-        candidates.extend(sole_tiled_pane);
+        let candidates: HashSet<PaneId> = self.get_all_pane_ids().into_iter().collect();
         let mut eligible: HashSet<PaneId> = candidates
             .iter()
             .copied()
-            .filter(|id| self.pane_is_agent(*id))
+            .filter(|id| {
+                self.pane_is_agent(*id)
+                    || self
+                        .get_pane_with_id(*id)
+                        .is_some_and(|pane| pane.is_detected_agent())
+            })
             .collect();
         // A pane tab's plugin view shares the agent terminal's presentation.
         for tabs in self.pane_tabs.values() {
@@ -5947,28 +5940,76 @@ impl Tab {
                     .tabs
                     .iter()
                     .filter_map(|tab| tab.pane_id())
-                    .any(|id| self.pane_is_agent(id))
+                    .any(|id| eligible.contains(&id))
             {
                 eligible.insert(tabs.info.pane_id);
                 eligible.extend(tabs.info.tabs.iter().filter_map(|tab| tab.pane_id()));
             }
         }
-        let mut changed = false;
-        for id in self.get_all_pane_ids() {
-            let width = if eligible.contains(&id) {
-                self.max_fullscreen_agent_width
+        for list in self.stack_lists.values() {
+            if list.members.iter().any(|id| eligible.contains(id)) {
+                eligible.extend(list.members.iter().copied());
+            }
+        }
+        let ids = self.get_all_pane_ids();
+        let before: HashMap<_, _> = ids
+            .iter()
+            .filter_map(|id| {
+                self.get_pane_with_id(*id).map(|pane| {
+                    (
+                        *id,
+                        (
+                            pane.render_geom(),
+                            pane.get_content_columns(),
+                            pane.get_content_rows(),
+                        ),
+                    )
+                })
+            })
+            .collect();
+        for id in &ids {
+            let width = if eligible.contains(id) && self.max_agent_width >= 80 {
+                self.max_agent_width
             } else {
                 0
             };
-            if self
-                .get_pane_with_id_mut(id)
-                .is_some_and(|pane| pane.set_max_content_width(width))
-            {
-                if let Some(pane) = self.get_pane_with_id(id) {
-                    resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
-                        .context("failed to resize centered agent pane")?;
+            if let Some(pane) = self.get_pane_with_id_mut(*id) {
+                pane.set_max_content_width(width);
+            }
+        }
+        let mut widths = self.tiled_panes.agent_widths()?;
+        widths.extend(self.floating_panes.agent_widths());
+        widths.extend(self.overlay_panes.agent_widths());
+        for tabs in self.pane_tabs.values() {
+            if let Some(width) = widths.get(&tabs.info.pane_id).copied() {
+                widths.extend(
+                    tabs.info
+                        .tabs
+                        .iter()
+                        .filter_map(|tab| tab.pane_id())
+                        .map(|id| (id, width)),
+                );
+            }
+        }
+        for list in self.stack_lists.values() {
+            if let Some(width) = widths.get(&list.visible).copied() {
+                widths.extend(list.members.iter().map(|id| (*id, width)));
+            }
+        }
+        let mut changed = false;
+        for id in ids {
+            if let Some(pane) = self.get_pane_with_id_mut(id) {
+                changed |= pane.render_width() != widths.get(&id).copied();
+                pane.set_render_width(widths.get(&id).copied());
+            }
+            if let Some(pane) = self.get_pane_with_id(id) {
+                if let Some((geom, cols, rows)) = before.get(&id) {
+                    changed |= *geom != pane.render_geom();
+                    if (*cols, *rows) != (pane.get_content_columns(), pane.get_content_rows()) {
+                        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                            .context("failed to resize agent pane")?;
+                    }
                 }
-                changed = true;
             }
         }
         if changed {
@@ -6119,6 +6160,100 @@ impl Tab {
                 .with_context(err_context)?;
             self.render_stack_list_headers(output, client_id_override, false)
                 .with_context(err_context)?;
+        }
+        if !self.pending_render_damage.is_empty() {
+            let rect = |geom: PaneGeom| CellRect {
+                x: geom.x,
+                y: geom.y,
+                cols: geom.cols.as_usize(),
+                rows: geom.rows.as_usize(),
+            };
+            let mut margin = EMPTY_TERMINAL_CHARACTER;
+            margin.styles.update(|styles| {
+                styles.background = Some(self.style.pane_surround().into());
+            });
+            let margin_chunks = |damage: &[CellRect], covered: &[CellRect]| {
+                overlay_damage(damage, covered)
+                    .into_iter()
+                    .flat_map(|rect| {
+                        let margin = &margin;
+                        (rect.y..rect.y + rect.rows).map(move |y| {
+                            CharacterChunk::new(vec![margin.clone(); rect.cols], rect.x, y)
+                        })
+                    })
+                    .collect()
+            };
+            let covered: Vec<_> = self
+                .tiled_panes
+                .get_panes()
+                .filter(|(id, _)| !self.tiled_panes.panes_to_hide_contains(**id))
+                .map(|(_, pane)| rect(pane.render_geom()))
+                .collect();
+            output
+                .add_character_chunks_to_multiple_clients(
+                    margin_chunks(&self.pending_render_damage, &covered),
+                    self.clients_in_frame(client_id_override).into_iter(),
+                    None,
+                )
+                .context("failed to repaint tab margins")?;
+
+            // Fullscreen margins occlude tiled output, so clear them at their own layer.
+            let mut fullscreen_layers = Vec::new();
+            if let Some(id) = self.floating_panes.fullscreen_pane_id() {
+                if let Some(index) = self.floating_panes.get_pane_z_index(id) {
+                    if let Some(pane) = self.floating_panes.get_pane(id) {
+                        fullscreen_layers.push((index, pane.render_geom()));
+                    }
+                }
+            }
+            if self.overlays_are_rendered() {
+                for id in self.overlay_panes.fullscreen_pane_ids() {
+                    if let Some(index) = self.overlay_panes.get_pane_z_index(id) {
+                        if let Some(geom) = self.overlay_panes.outer_geom(id) {
+                            fullscreen_layers.push((index + self.floating_layer_count(), geom));
+                        }
+                    }
+                }
+            }
+            fullscreen_layers.sort_by_key(|(index, _)| *index);
+            fullscreen_layers.dedup_by_key(|(index, _)| *index);
+            if let Some(stack) = self.occlusion_stack() {
+                for (index, rendered) in fullscreen_layers {
+                    let bounds = rect(stack.layers[index]);
+                    let damage: Vec<_> = self
+                        .pending_render_damage
+                        .iter()
+                        .filter_map(|damage| {
+                            let x = damage.x.max(bounds.x);
+                            let y = damage.y.max(bounds.y);
+                            let right = (damage.x + damage.cols).min(bounds.x + bounds.cols);
+                            let bottom = (damage.y + damage.rows).min(bounds.y + bounds.rows);
+                            (x < right && y < bottom).then(|| CellRect {
+                                x,
+                                y,
+                                cols: right - x,
+                                rows: bottom - y,
+                            })
+                        })
+                        .collect();
+                    output
+                        .add_character_chunks_to_multiple_clients(
+                            margin_chunks(&damage, &[rect(rendered)]),
+                            self.clients_in_frame(client_id_override).into_iter(),
+                            Some(index + 1),
+                        )
+                        .context("failed to repaint fullscreen margins")?;
+                }
+            }
+            if output
+                .pane_change_client
+                .is_some_and(|client| connected_clients.contains(&client))
+            {
+                output
+                    .rendered_margin_damage
+                    .extend_from_slice(&self.pending_render_damage);
+            }
+            self.pending_render_damage.clear();
         }
         // the floating panes are *not* rendered here - they draw over the tiled ones, see
         // `render_floating_panes_and_overlays`
@@ -8670,7 +8805,7 @@ impl Tab {
                                    stacked_pane_ids_under_flexible_pane: &HashSet<PaneId>|
          -> bool {
             let is_flexible_in_stack =
-                p.current_geom().is_stacked() && !p.current_geom().rows.is_fixed();
+                p.render_geom().is_stacked() && !p.render_geom().rows.is_fixed();
             let is_stacked_under = stacked_pane_ids_under_flexible_pane.contains(&p.pid());
             let geom_to_compare_against =
                 if is_stacked_under && !self.pane_frame_style.draws_full_frames() {
@@ -8678,7 +8813,7 @@ impl Tab {
                     // don't draw pane frames - because the whole stack's content is offset to allow
                     // room for the boundary between panes, they are actually drawn 1 line above where
                     // they are
-                    let mut geom = p.current_geom();
+                    let mut geom = p.render_geom();
                     geom.y = geom.y.saturating_sub(p.get_content_offset().bottom);
                     geom
                 } else if is_flexible_in_stack && !self.pane_frame_style.draws_full_frames() {
@@ -8686,11 +8821,11 @@ impl Tab {
                     // frames - because the whole stack's content is offset to give room for the
                     // boundary between panes, we need to take this offset into account when figuring
                     // out whether the position is inside them
-                    let mut geom = p.current_geom();
+                    let mut geom = p.render_geom();
                     geom.rows.decrease_inner(p.get_content_offset().bottom);
                     geom
                 } else {
-                    p.current_geom()
+                    p.render_geom()
                 };
             geom_to_compare_against.contains(point)
         };

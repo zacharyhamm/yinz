@@ -559,10 +559,10 @@ context_menu {
 // 
 // on_force_close "quit"
 
-// Center sole or fullscreen agent panes with at most this many text columns.
-// UI bars do not count as panes. Frames are outside the text width.
-// Default: 0 (unrestricted).
-// max_fullscreen_agent_width 0
+// Limit agent panes in all layouts to this many text columns.
+// Center the grid when it cannot fill the screen. Frames are outside the text width.
+// Values below 80 disable the limit. Default: 0 (unrestricted).
+// max_agent_width 0
  
 // Configure the scroll back buffer size
 // This is the number of lines yinz stores for each pane in the scroll back

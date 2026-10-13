@@ -113,7 +113,9 @@ pub struct TerminalPane {
     vte_batches: usize,
     selection_scrolled_at: time::Instant,
     content_offset: Offset,
+    detected_agent: bool,
     max_content_width: usize,
+    render_width: Option<(usize, usize)>,
     pane_tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>,
     pane_tabs_views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>,
     pane_tabs_transfer: Option<crate::pane_tabs::PaneTabsTransfer>,
@@ -314,7 +316,6 @@ impl Pane for TerminalPane {
             return None;
         }
         let Offset { top, left, .. } = self.content_offset;
-        let left = left + self.render_geom().x - self.x();
         let top = top + self.content_header_rows();
         self.grid
             .cursor_coordinates()
@@ -675,11 +676,9 @@ impl Pane for TerminalPane {
             pane_title = self.title_with_agent_indicator(pane_title, frame_params.same_worktree);
         }
 
-        let frame_geom = self.constrain_render_geom(
-            frame_params
-                .frame_geom_override
-                .unwrap_or_else(|| self.current_geom()),
-        );
+        let frame_geom = frame_params
+            .frame_geom_override
+            .unwrap_or_else(|| self.render_geom());
         let is_pinned = frame_geom.is_pinned;
         let mut frame = PaneFrame::new(
             frame_geom.into(),
@@ -1094,6 +1093,25 @@ impl Pane for TerminalPane {
         self.frame.clear();
     }
 
+    fn render_width(&self) -> Option<(usize, usize)> {
+        self.render_width
+    }
+    fn set_render_width(&mut self, width: Option<(usize, usize)>) -> bool {
+        let before = self.render_geom();
+        self.render_width = width;
+        if before == self.render_geom() {
+            return false;
+        }
+        self.reflow_lines();
+        self.render_full_viewport();
+        true
+    }
+    fn is_detected_agent(&self) -> bool {
+        self.detected_agent
+    }
+    fn set_detected_agent(&mut self, detected: bool) {
+        self.detected_agent = detected;
+    }
     fn max_content_width(&self) -> usize {
         self.max_content_width
     }
@@ -2066,7 +2084,9 @@ impl TerminalPane {
             pending_agent_escape_clients: HashSet::new(),
             frame: HashMap::new(),
             content_offset: Offset::default(),
+            detected_agent: false,
             max_content_width: 0,
+            render_width: None,
             pane_tabs: None,
             pane_tabs_views: HashMap::new(),
             pane_tabs_transfer: None,

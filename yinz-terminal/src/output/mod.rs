@@ -762,6 +762,7 @@ pub struct Output {
     pub rendered_pane_contents: HashSet<PaneId>,
     pub rendered_pane_frames: HashSet<PaneId>,
     pub rendered_pane_boundaries: bool,
+    pub rendered_margin_damage: Vec<CellRect>,
     // per client: a smaller client (eg. a watcher) must be cropped against its own cursor, not
     // against whichever client happened to render last
     cursor_coordinates: HashMap<ClientId, (usize, usize)>,

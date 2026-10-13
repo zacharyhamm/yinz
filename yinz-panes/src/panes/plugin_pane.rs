@@ -96,6 +96,7 @@ pub struct PluginPane {
     pub geom_override: Option<PaneGeom>,
     pub content_offset: Offset,
     max_content_width: usize,
+    render_width: Option<(usize, usize)>,
     subtitle: Option<String>,
     subtitle_enabled: bool,
     pub send_plugin_instructions: SenderWithContext<PluginInstruction>,
@@ -183,6 +184,7 @@ impl PluginPane {
             frame: HashMap::new(),
             content_offset: Offset::default(),
             max_content_width: 0,
+            render_width: None,
             subtitle: None,
             subtitle_enabled: true,
             pane_title: title,
@@ -334,7 +336,6 @@ impl Pane for PluginPane {
         let own_content_columns = self.get_content_columns();
         let own_content_rows = self.get_content_rows();
         let Offset { top, left, .. } = self.content_offset;
-        let left = left + self.render_geom().x - self.x();
         let top = top + self.content_header_rows();
         if client_id.is_some_and(|client| {
             self.pane_tabs.as_ref().is_some_and(|tabs| {
@@ -603,11 +604,9 @@ impl Pane for PluginPane {
             .then(|| self.subtitle.clone())
             .flatten()
             .map(|text| (text, self.get_content_y() - self.tab_bar_rows() - 1));
-        let frame_geom = self.constrain_render_geom(
-            frame_params
-                .frame_geom_override
-                .unwrap_or_else(|| self.current_geom()),
-        );
+        let frame_geom = frame_params
+            .frame_geom_override
+            .unwrap_or_else(|| self.render_geom());
         let err_context = || format!("failed to render frame for client {client_id}");
         let frame_color_override = self
             .pane_frame_color_override
@@ -909,6 +908,19 @@ impl Pane for PluginPane {
     }
     fn set_frame(&mut self, _frame: bool) {
         self.frame.clear();
+    }
+    fn render_width(&self) -> Option<(usize, usize)> {
+        self.render_width
+    }
+    fn set_render_width(&mut self, width: Option<(usize, usize)>) -> bool {
+        let before = self.render_geom();
+        self.render_width = width;
+        if before == self.render_geom() {
+            return false;
+        }
+        self.resize_grids();
+        self.render_full_viewport();
+        true
     }
     fn max_content_width(&self) -> usize {
         self.max_content_width

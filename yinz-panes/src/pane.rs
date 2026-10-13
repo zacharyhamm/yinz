@@ -159,7 +159,7 @@ pub trait Pane {
     fn handle_pty_bytes(&mut self, _bytes: VteBytes) {}
     fn handle_plugin_bytes(&mut self, _client_id: ClientId, _bytes: VteBytes) {}
     fn show_cursor(&mut self, _client_id: ClientId, _cursor_position: Option<(usize, usize)>) {}
-    /// Returns the cursor position and whether it is visible.
+    /// Returns the cursor position relative to `render_geom` and whether it is visible.
     /// The position is returned unconditionally (as long as the cursor is within
     /// bounds) so that the host terminal can position the cursor for IME even
     /// when the app has hidden it. The bool is true when the cursor is visible.
@@ -182,11 +182,18 @@ pub trait Pane {
         self.geom_override()
             .unwrap_or_else(|| self.position_and_size())
     }
-    /// Presentation stays separate from the rectangle used by the layout solver and occlusion.
+    /// Keep requested layout geometry intact when presentation is capped.
     fn render_geom(&self) -> PaneGeom {
         self.constrain_render_geom(self.current_geom())
     }
     fn constrain_render_geom(&self, mut geom: PaneGeom) -> PaneGeom {
+        if let Some((x, cols)) = self.render_width() {
+            geom.x = x;
+            geom.cols.set_inner(cols);
+        }
+        self.constrain_content_width(geom)
+    }
+    fn constrain_content_width(&self, mut geom: PaneGeom) -> PaneGeom {
         let limit = self.max_content_width();
         if limit > 0 {
             let offset = self.get_content_offset();
@@ -202,6 +209,17 @@ pub trait Pane {
     fn max_content_width(&self) -> usize {
         0
     }
+    /// Horizontal presentation geometry, leaving requested layout sizes intact.
+    fn render_width(&self) -> Option<(usize, usize)> {
+        None
+    }
+    fn set_render_width(&mut self, _width: Option<(usize, usize)>) -> bool {
+        false
+    }
+    fn is_detected_agent(&self) -> bool {
+        false
+    }
+    fn set_detected_agent(&mut self, _detected: bool) {}
     /// Returns whether the displayed rectangle changed.
     fn set_max_content_width(&mut self, _width: usize) -> bool {
         false
@@ -539,13 +557,9 @@ pub trait Pane {
 
         let pos_col = position.column();
         let pos_line = position.line();
-        let pane_x = self.x();
-        let pane_y = self.y();
-        let pane_cols = self.cols();
-        let pane_rows = self.rows();
-
-        let mid_col = pane_x + pane_cols / 2;
-        let mid_line = pane_y + pane_rows / 2;
+        let geom = self.render_geom();
+        let mid_col = geom.x + geom.cols.as_usize() / 2;
+        let mid_line = geom.y + geom.rows.as_usize() / 2;
 
         let is_left = pos_col < mid_col;
         let is_top = (pos_line as usize) < mid_line;
@@ -988,13 +1002,13 @@ pub fn pane_info_for_pane(
     let (default_fg, default_bg) = pane.get_pane_default_colors();
     let mut pane_info = PaneInfo {
         pane_tabs: pane.pane_tabs().cloned(),
-        pane_x: yinz_types::position::Column::new(pane.x()),
+        pane_x: yinz_types::position::Column::new(pane.render_geom().x),
         pane_content_x: yinz_types::position::Column::new(pane.get_content_x()),
         pane_y: yinz_types::position::Row::new(pane.y()),
         pane_content_y: yinz_types::position::Row::new(pane.get_content_y()),
         pane_rows: yinz_types::position::RowCount::new(pane.rows()),
         pane_content_rows: yinz_types::position::RowCount::new(pane.get_content_rows()),
-        pane_columns: yinz_types::position::ColumnCount::new(pane.cols()),
+        pane_columns: yinz_types::position::ColumnCount::new(pane.render_geom().cols.as_usize()),
         pane_content_columns: yinz_types::position::ColumnCount::new(pane.get_content_columns()),
         cursor_coordinates_in_pane: pane
             .cursor_coordinates(None)

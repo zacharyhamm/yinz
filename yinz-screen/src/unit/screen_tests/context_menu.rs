@@ -1145,6 +1145,129 @@ fn a_vanished_pane_drops_its_items_actions() {
 }
 
 #[test]
+fn closing_a_menu_repaints_agent_margins_for_regular_clients_and_watchers() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    let size = Size {
+        cols: 200,
+        rows: 20,
+    };
+    let followed = ClientId::new(1);
+    let watcher = ClientId::new(2);
+    for placement in [
+        NewPanePlacement::NoPreference {
+            borderless: Some(false),
+        },
+        NewPanePlacement::Floating(None),
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+    ] {
+        let mut screen = create_non_mirrored_screen(size);
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.context_menu = configured_menu();
+        let tab = screen.get_active_tab_mut(followed).unwrap();
+        tab.max_agent_width = 80;
+        let agent = if matches!(placement, NewPanePlacement::NoPreference { .. }) {
+            PaneId::Terminal(TerminalId::new(1))
+        } else {
+            let agent = PaneId::Terminal(TerminalId::new(2));
+            tab.new_pane(
+                agent,
+                None,
+                None,
+                false,
+                true,
+                placement,
+                Some(followed),
+                None,
+            )
+            .unwrap();
+            tab.toggle_pane_fullscreen(agent);
+            agent
+        };
+        tab.set_pane_agent(
+            agent,
+            Some(AgentInfo {
+                kind: "codex".into(),
+                state: AgentState::Busy,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: None,
+                run_id: None,
+            }),
+        );
+        screen.add_watcher_client(watcher).unwrap();
+        screen.set_watcher_size(watcher, size);
+        screen.set_followed_client(followed).unwrap();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grids = [
+            grid_for_render_snapshot(size),
+            grid_for_render_snapshot(size),
+        ];
+        let render = |screen: &mut Screen, grids: &mut [Grid; 2]| {
+            screen.render_to_clients().unwrap();
+            for (instruction, _) in receiver.try_iter() {
+                if let ServerInstruction::Render(Some(output)) = instruction {
+                    for (client, grid) in [followed, watcher].into_iter().zip(grids.iter_mut()) {
+                        if let Some(bytes) = output.get(&client) {
+                            take_snapshot_and_cursor_coordinates(bytes, grid);
+                        }
+                    }
+                }
+            }
+            grids.each_ref().map(|grid| format!("{grid:?}"))
+        };
+        let baseline = render(&mut screen, &mut grids);
+        let geom = screen
+            .get_active_tab_mut(followed)
+            .unwrap()
+            .get_pane_with_id(agent)
+            .unwrap()
+            .render_geom();
+        let right = geom.x + geom.cols.as_usize();
+        assert!(right < size.cols - 20, "the agent must have a right margin");
+        let request = screen.open_context_menu(click_context(agent, (right - 2, 5)), followed);
+        screen.set_context_menu_items(request, menu_items(), None, followed);
+        let menu_row = screen
+            .context_menu_layout_for(
+                followed,
+                Viewport {
+                    x: 0,
+                    y: 0,
+                    cols: size.cols,
+                    rows: size.rows,
+                },
+            )
+            .unwrap()
+            .row_of_item(0)
+            .unwrap();
+        for snapshot in render(&mut screen, &mut grids) {
+            assert!(snapshot.contains("Copy"), "{snapshot}");
+        }
+        assert!(!screen.watcher_clients[&watcher].should_force_render());
+        assert!(screen.close_context_menu(followed));
+        let closed = render(&mut screen, &mut grids);
+        for (index, client) in [followed, watcher].into_iter().enumerate() {
+            assert_eq!(
+                closed[index], baseline[index],
+                "menu left cells for {client:?}"
+            );
+        }
+
+        // An idle frame must not replay the previous margin erase a second time.
+        let marker = format!("\u{1b}[{};{}HX", menu_row + 1, right + 1);
+        for grid in &mut grids {
+            take_snapshot_and_cursor_coordinates(&marker, grid);
+        }
+        for snapshot in render(&mut screen, &mut grids) {
+            assert!(snapshot.contains('X'), "idle frame repainted the margin");
+        }
+    }
+}
+
+#[test]
 fn a_watcher_menu_only_repaint_restores_the_cursor_after_the_menu() {
     let (mut screen, followed, _) = screen_with_open_menu((18, 5));
     let watcher = ClientId::new(2);

@@ -360,3 +360,109 @@ fn constrain_spans(space: usize, spans: &[Span]) -> Result<HashSet<kasuari::Cons
 fn stable_round(x: f64) -> f64 {
     ((x * 100.0).round() / 100.0).round()
 }
+
+/// Keep each row contiguous while retaining requested sizes for later layout changes.
+pub(super) fn agent_widths(
+    panes: &[(PaneId, PaneGeom, usize, usize)],
+) -> Result<HashMap<PaneId, (usize, usize)>> {
+    use kasuari::WeightedRelation::{GE, LE};
+
+    if !panes.iter().any(|(_, _, limit, _)| *limit > 0) {
+        return Ok(HashMap::new());
+    }
+    let start = panes
+        .iter()
+        .map(|(_, geom, _, _)| geom.x)
+        .min()
+        .context("missing grid start")?;
+    let end = panes
+        .iter()
+        .map(|(_, geom, _, _)| geom.x + geom.cols.as_usize())
+        .max()
+        .context("missing grid end")?;
+    let available = end - start;
+    if available == 0 {
+        return Ok(HashMap::new());
+    }
+    let mut stacks = HashMap::new();
+    let vars: HashMap<_, _> = panes
+        .iter()
+        .map(|(id, geom, _, _)| {
+            let vars = geom
+                .stacked
+                .map(|stack| {
+                    *stacks
+                        .entry(stack)
+                        .or_insert_with(|| (Variable::new(), Variable::new()))
+                })
+                .unwrap_or_else(|| (Variable::new(), Variable::new()));
+            (*id, vars)
+        })
+        .collect();
+    let total = Variable::new();
+    let mut solver = Solver::new();
+    let mut constraints = vec![
+        total | LE(Strength::REQUIRED) | available as f64,
+        total | EQ(Strength::MEDIUM) | available as f64,
+    ];
+    let mut edges: Vec<_> = panes
+        .iter()
+        .flat_map(|(_, geom, _, _)| [geom.y, geom.y + geom.rows.as_usize()])
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    for band in edges.windows(2) {
+        let mut row: Vec<_> = panes
+            .iter()
+            .filter(|(_, geom, _, _)| geom.y <= band[0] && geom.y + geom.rows.as_usize() > band[0])
+            .collect();
+        row.sort_by_key(|(_, geom, _, _)| geom.x);
+        let mut edge = Expression::from_constant(0.0);
+        for (id, _, _, _) in &row {
+            let (x, width) = vars[id];
+            constraints.push(x | EQ(Strength::REQUIRED) | edge);
+            edge = x + width;
+        }
+        if !row.is_empty() {
+            constraints.push(edge | EQ(Strength::REQUIRED) | total);
+        }
+    }
+    for (id, geom, limit, minimum) in panes {
+        let (_, width) = vars[id];
+        let minimum = geom.cols.as_usize().min(*minimum);
+        let minimum = if *limit > 0 {
+            minimum.min(*limit)
+        } else {
+            minimum
+        };
+        constraints.push(width | GE(Strength::REQUIRED) | minimum as f64);
+        if *limit > 0 {
+            constraints.push(width | LE(Strength::REQUIRED) | *limit as f64);
+        }
+        if geom.cols.is_fixed() && *limit == 0 {
+            constraints.push(width | EQ(Strength::STRONG) | geom.cols.as_usize() as f64);
+        } else {
+            constraints.push(
+                width
+                    | EQ(Strength::WEAK)
+                    | (total * (geom.cols.as_usize() as f64 / available as f64)),
+            );
+        }
+    }
+    match solver.add_constraints(constraints) {
+        Ok(()) => {},
+        Err(kasuari::AddConstraintError::UnsatisfiableConstraint) => return Ok(HashMap::new()),
+        Err(err) => return Err(anyhow!("failed to constrain agent grid: {err:?}")),
+    }
+    let used = stable_round(solver.get_value(total)) as usize;
+    let origin = start + available.saturating_sub(used) / 2;
+    Ok(panes
+        .iter()
+        .map(|(id, _, _, _)| {
+            let (x, width) = vars[id];
+            let start = stable_round(solver.get_value(x)) as usize;
+            let end = stable_round(solver.get_value(x) + solver.get_value(width)) as usize;
+            (*id, (origin + start, end.saturating_sub(start)))
+        })
+        .collect())
+}

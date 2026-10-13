@@ -1113,3 +1113,111 @@ fn class_b_invariants_hold_for_any_layout(tc: hegel::TestCase) {
     }
     assert_class_b_invariants(&fixture, &run);
 }
+
+#[test]
+fn agent_width_rounding_preserves_edges_and_hard_limits() {
+    use super::pane_resizer::agent_widths;
+    use yinz_types::{internal_ids::TerminalId, pane_size::Size};
+    for columns in 3..150 {
+        for limit in 1..30 {
+            let mut panes = Vec::new();
+            for index in 0..3 {
+                let x = columns * index / 3;
+                let end = columns * (index + 1) / 3;
+                let mut geom = PaneGeom::from(&Size {
+                    rows: 10,
+                    cols: end - x,
+                });
+                geom.x = x;
+                panes.push((
+                    PaneId::Terminal(TerminalId::new(index as u32)),
+                    geom,
+                    limit,
+                    5,
+                ));
+            }
+            let widths = agent_widths(&panes).unwrap();
+            let mut end = widths[&panes[0].0].0;
+            for (id, geom, _, minimum) in &panes {
+                let (x, width) = widths[id];
+                assert_eq!(x, end);
+                assert!((geom.cols.as_usize().min(*minimum).min(limit)..=limit).contains(&width));
+                end = x + width;
+            }
+            let left = widths[&panes[0].0].0;
+            assert!((columns - end).abs_diff(left) <= 1);
+            assert_eq!(end - left, columns.min(3 * limit));
+        }
+    }
+}
+
+#[test]
+fn agent_widths_preserve_fixed_neighbors_and_give_flexible_neighbors_spare_width() {
+    use super::pane_resizer::agent_widths;
+    use yinz_types::{internal_ids::TerminalId, pane_size::Size};
+    let ids = [
+        PaneId::Terminal(TerminalId::new(1)),
+        PaneId::Terminal(TerminalId::new(2)),
+    ];
+    let agent = PaneGeom::from(&Size {
+        rows: 20,
+        cols: 100,
+    });
+    let mut ordinary = PaneGeom::from(&Size {
+        rows: 20,
+        cols: 101,
+    });
+    ordinary.x = 100;
+    let widths = agent_widths(&[(ids[0], agent, 42, 5), (ids[1], ordinary, 0, 5)]).unwrap();
+    assert_eq!(widths[&ids[0]], (0, 42));
+    assert_eq!(widths[&ids[1]], (42, 159));
+    ordinary.cols = dim_fixed(101);
+    let widths = agent_widths(&[(ids[0], agent, 42, 5), (ids[1], ordinary, 0, 5)]).unwrap();
+    assert_eq!(widths[&ids[0]], (29, 42));
+    assert_eq!(widths[&ids[1]], (71, 101));
+}
+
+#[test]
+fn agent_widths_allow_independent_rows_to_absorb_spare_width() {
+    use super::pane_resizer::agent_widths;
+    use yinz_types::{internal_ids::TerminalId, pane_size::Size};
+    let panes: Vec<_> = (0..4)
+        .map(|id| {
+            let mut geom = PaneGeom::from(&Size {
+                rows: 10,
+                cols: 100,
+            });
+            geom.x = (id % 2) * 100;
+            geom.y = (id / 2) * 10;
+            (
+                PaneId::Terminal(TerminalId::new(id as u32)),
+                geom,
+                if id == 0 || id == 3 { 42 } else { 0 },
+                5,
+            )
+        })
+        .collect();
+    let widths = agent_widths(&panes).unwrap();
+    for (pane, expected) in panes.iter().zip([(0, 42), (42, 158), (0, 158), (158, 42)]) {
+        assert_eq!(widths[&pane.0], expected);
+    }
+}
+
+#[test]
+fn agent_widths_infeasible_rows_return_no_overrides() {
+    use super::pane_resizer::agent_widths;
+    use yinz_types::{internal_ids::TerminalId, pane_size::Size};
+    let top = PaneGeom::from(&Size { cols: 20, rows: 10 });
+    let mut left = top;
+    left.y = 10;
+    left.cols.set_inner(10);
+    let mut right = left;
+    right.x = 10;
+    let panes = [
+        (PaneId::Terminal(TerminalId::new(0)), top, 1, 5),
+        (PaneId::Terminal(TerminalId::new(1)), left, 0, 5),
+        (PaneId::Terminal(TerminalId::new(2)), right, 0, 5),
+    ];
+    assert!(agent_widths(&panes).unwrap().is_empty());
+    assert!(!agent_widths(&[(panes[0].0, top, 1, 5)]).unwrap().is_empty());
+}

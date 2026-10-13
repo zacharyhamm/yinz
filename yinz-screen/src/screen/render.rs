@@ -232,6 +232,7 @@ impl Screen {
         let mut replay_contents = HashSet::new();
         let mut replay_frames = HashSet::new();
         let mut replay_boundaries = false;
+        let mut replay_margin_damage = Vec::new();
         // A display clear the regular pass emits never reaches watchers through pane replay.
         let mut replay_clear = false;
 
@@ -340,6 +341,7 @@ impl Screen {
             replay_contents = std::mem::take(&mut output.rendered_pane_contents);
             replay_frames = std::mem::take(&mut output.rendered_pane_frames);
             replay_boundaries = output.rendered_pane_boundaries;
+            replay_margin_damage = std::mem::take(&mut output.rendered_margin_damage);
             if trace_attach {
                 log::info!(
                     "attach trace: render regular-client panes complete after {:?}",
@@ -634,6 +636,7 @@ impl Screen {
                         );
                         watcher_output.mark_host_display_cleared_for_client(followed_client_id);
                     } else {
+                        tab.prepare_margin_replay(&replay_margin_damage);
                         if replay_boundaries {
                             tab.invalidate_boundaries(followed_client_id);
                         }
