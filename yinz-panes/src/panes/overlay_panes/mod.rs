@@ -83,6 +83,55 @@ pub struct OverlayPane {
     retains_tab: bool,
 }
 impl OverlayPane {
+    fn constrained_geometry(
+        &self,
+        mut outer: PaneGeom,
+    ) -> (PaneGeom, Option<([PaneGeom; 2], PaneGeom)>) {
+        let Children::Multipane {
+            children,
+            split,
+            min_cells,
+        } = &self.children
+        else {
+            let mut displayed = self.children.as_slice()[0].1.constrain_content_width(outer);
+            if self.carry.width_is_anchored && self.fullscreen.is_none() {
+                displayed.x = outer.x;
+            }
+            return (displayed, None);
+        };
+        let limits = children
+            .each_ref()
+            .map(|(_, pane)| match pane.max_content_width() {
+                0 => usize::MAX,
+                limit => limit,
+            });
+        let horizontal = split.direction == MultipaneDirection::LeftRight;
+        let frame = 2 * usize::from(self.framed());
+        let limit = if horizontal {
+            limits[0].saturating_add(limits[1]).saturating_add(1)
+        } else {
+            limits[0].min(limits[1])
+        }
+        .saturating_add(frame);
+        let spare = outer.cols.as_usize().saturating_sub(limit);
+        if !self.carry.width_is_anchored || self.fullscreen.is_some() {
+            outer.x += spare / 2;
+        }
+        outer.cols.decrease_inner(spare);
+        let (mut geoms, mut divider) = split.geometry(outer, self.framed(), *min_cells);
+        if horizontal {
+            let available = geoms[0].cols.as_usize() + geoms[1].cols.as_usize();
+            let first = geoms[0].cols.as_usize().clamp(
+                available.saturating_sub(limits[1]),
+                limits[0].min(available),
+            );
+            geoms[0].cols.set_inner(first);
+            divider.x = geoms[0].x + first;
+            geoms[1].x = divider.x + divider.cols.as_usize();
+            geoms[1].cols.set_inner(available - first);
+        }
+        (outer, Some((geoms, divider)))
+    }
     fn borderless(&self) -> bool {
         self.coordinates
             .borderless
@@ -113,6 +162,7 @@ impl OverlayPane {
 pub struct OverlayCarry {
     pub hidden: bool,
     pub position_is_user_stated: bool,
+    pub width_is_anchored: bool,
     pub size_is_user_stated: bool,
     pub awaiting_placement: bool,
     pub opening_seen: bool,
@@ -208,9 +258,20 @@ impl OverlayPanes {
         surface: &Viewport,
         current: PaneGeom,
         coordinates: &FloatingPaneCoordinates,
+        width_is_anchored: bool,
     ) -> PaneGeom {
         let mut geom = Self::base_geom(surface, current);
-        geom.adjust_coordinates(coordinates.clone(), *surface);
+        let mut coordinates = coordinates.clone();
+        let anchored_x = if width_is_anchored {
+            coordinates.x.take()
+        } else {
+            None
+        };
+        geom.adjust_coordinates(coordinates, *surface);
+        if let Some(PercentOrFixed::Fixed(x)) = anchored_x {
+            // Fit the requested width before applying the displayed position.
+            geom.x = x.min((surface.x + surface.cols).saturating_sub(geom.cols.as_usize()));
+        }
         geom
     }
 
@@ -260,7 +321,12 @@ impl OverlayPanes {
         mut carry: OverlayCarry,
     ) {
         carry.opening_awaits_placement |= carry.awaiting_placement;
-        let geom = Self::resolved(&self.surface(), pane.position_and_size(), &coordinates);
+        let geom = Self::resolved(
+            &self.surface(),
+            pane.position_and_size(),
+            &coordinates,
+            carry.width_is_anchored,
+        );
         let overlay = OverlayPane {
             id: OverlayId(NEXT_OVERLAY_ID.fetch_add(1, Ordering::Relaxed)),
             children: Children::Single((pane_id, pane)),
@@ -277,7 +343,12 @@ impl OverlayPanes {
         self.insert_container(overlay);
     }
     pub fn insert_container(&mut self, mut overlay: OverlayPane) {
-        overlay.geom = Self::resolved(&self.surface(), overlay.geom, &overlay.coordinates);
+        overlay.geom = Self::resolved(
+            &self.surface(),
+            overlay.geom,
+            &overlay.coordinates,
+            overlay.carry.width_is_anchored,
+        );
         let first = overlay.children.as_slice()[0].0;
         for (_, pane) in overlay.children.as_mut_slice() {
             pane.reset_logical_position();
@@ -668,10 +739,19 @@ impl OverlayPanes {
             .position(|other| *other == id)
     }
     fn current_geom(&self, overlay: &OverlayPane) -> PaneGeom {
-        overlay
+        let requested = overlay
             .fullscreen
             .map(|covers_ui| viewport_geom(self.fullscreen_area(covers_ui)))
-            .unwrap_or(overlay.geom)
+            .unwrap_or(overlay.geom);
+        let mut displayed = overlay.constrained_geometry(requested).0;
+        if overlay.carry.width_is_anchored && overlay.fullscreen.is_none() {
+            if let Some(PercentOrFixed::Fixed(x)) = overlay.coordinates.x {
+                displayed.x = x;
+            }
+            geom_moved_within(displayed, self.surface(), 0, 0)
+        } else {
+            displayed
+        }
     }
     pub fn outer_geom(&self, pane_id: PaneId) -> Option<PaneGeom> {
         self.overlay(&pane_id)
@@ -680,7 +760,31 @@ impl OverlayPanes {
     pub fn layers(&self) -> Vec<PaneGeom> {
         self.visible_containers()
             .iter()
-            .map(|id| self.current_geom(&self.panes[id]))
+            .map(|id| {
+                let overlay = &self.panes[id];
+                overlay
+                    .fullscreen
+                    .map(|ui| viewport_geom(self.fullscreen_area(ui)))
+                    .unwrap_or_else(|| self.current_geom(overlay))
+            })
+            .collect()
+    }
+    pub fn agent_widths(&self) -> HashMap<PaneId, (usize, usize)> {
+        self.panes
+            .values()
+            .flat_map(|overlay| {
+                let outer = self.current_geom(overlay);
+                let (_, split) = overlay.constrained_geometry(outer);
+                overlay
+                    .children
+                    .as_slice()
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, (id, _))| {
+                        let geom = split.map(|(geoms, _)| geoms[index]).unwrap_or(outer);
+                        (*id, (geom.x, geom.cols.as_usize()))
+                    })
+            })
             .collect()
     }
     fn raise_within_class(&mut self, pane_id: PaneId) {
@@ -1044,6 +1148,7 @@ impl OverlayPanes {
             .or(overlay.coordinates.borderless);
         if override_user_placement {
             overlay.carry.position_is_user_stated = false;
+            overlay.carry.width_is_anchored = false;
         }
         if overlay.carry.position_is_user_stated {
             new_coordinates.x = overlay.coordinates.x;
@@ -1053,7 +1158,12 @@ impl OverlayPanes {
             new_coordinates.width = overlay.coordinates.width;
             new_coordinates.height = overlay.coordinates.height;
         }
-        let geom = Self::resolved(&surface, overlay.geom, &new_coordinates);
+        let geom = Self::resolved(
+            &surface,
+            overlay.geom,
+            &new_coordinates,
+            overlay.carry.width_is_anchored,
+        );
         overlay.geom = geom;
         overlay.coordinates = new_coordinates;
         overlay.carry.awaiting_placement = false;
@@ -1081,7 +1191,12 @@ impl OverlayPanes {
     pub fn reapply_coordinates(&mut self) {
         let surface = self.surface();
         for overlay in self.panes.values_mut() {
-            overlay.geom = Self::resolved(&surface, overlay.geom, &overlay.coordinates);
+            overlay.geom = Self::resolved(
+                &surface,
+                overlay.geom,
+                &overlay.coordinates,
+                overlay.carry.width_is_anchored,
+            );
             overlay.carry.awaiting_placement = false;
             overlay.carry.opening_awaits_placement = false;
         }
@@ -1292,15 +1407,23 @@ impl OverlayPanes {
             yinz_types::geometry::Direction::Up => (0, -5),
             yinz_types::geometry::Direction::Down => (0, 5),
         };
-        let surface = self.surface();
+        self.move_pane_by(pane_id, dx, dy);
+    }
+    fn move_pane_by(&mut self, pane_id: PaneId, dx: isize, dy: isize) {
+        let Some(displayed) = self.outer_geom(pane_id) else {
+            return;
+        };
+        let moved = geom_moved_within(displayed, self.surface(), dx, dy);
         let Some(overlay) = self.overlay_mut(&pane_id) else {
             return;
         };
-        let geom = geom_moved_within(overlay.geom, surface, dx, dy);
-        overlay.geom = geom;
-        overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
-        overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
+        // Movement owns the displayed origin; requested dimensions remain available when uncapped.
+        overlay.geom.x = moved.x;
+        overlay.geom.y = moved.y;
+        overlay.coordinates.x = Some(PercentOrFixed::Fixed(moved.x));
+        overlay.coordinates.y = Some(PercentOrFixed::Fixed(moved.y));
         overlay.carry.position_is_user_stated = true;
+        overlay.carry.width_is_anchored = true;
         self.set_pane_frames().non_fatal();
         self.set_force_render();
     }
@@ -1311,23 +1434,12 @@ impl OverlayPanes {
         if self.pane_is_fullscreen(&pane_id) || *position == previous {
             return false;
         }
-        let surface = self.surface();
-        let Some(overlay) = self.overlay_mut(&pane_id) else {
-            return false;
-        };
-        let geom = geom_moved_within(
-            overlay.geom,
-            surface,
+        self.move_pane_by(
+            pane_id,
             position.column() as isize - previous.column() as isize,
             position.line() - previous.line(),
         );
-        overlay.geom = geom;
-        overlay.coordinates.x = Some(PercentOrFixed::Fixed(geom.x));
-        overlay.coordinates.y = Some(PercentOrFixed::Fixed(geom.y));
-        overlay.carry.position_is_user_stated = true;
         self.set_pane_being_moved_with_mouse(pane_id, *position);
-        self.set_pane_frames().non_fatal();
-        self.set_force_render();
         true
     }
     pub fn position_is_on_frame(&self, pane_id: PaneId, position: &Position) -> bool {
@@ -1403,15 +1515,10 @@ impl OverlayPanes {
             if !contains(outer, position) {
                 continue;
             }
-            let Children::Multipane {
-                children,
-                split,
-                min_cells,
-            } = &overlay.children
-            else {
+            let Children::Multipane { children, .. } = &overlay.children else {
                 return None;
             };
-            let (_, divider) = split.geometry(outer, overlay.framed(), *min_cells);
+            let (_, divider) = overlay.constrained_geometry(outer).1?;
             return contains(divider, position).then_some((children[0].0, children[1].0));
         }
         None
@@ -1434,9 +1541,14 @@ impl OverlayPanes {
         let Some(overlay) = self.overlay_mut(&first) else {
             return false;
         };
+        let Some((_, divider)) = overlay.constrained_geometry(outer).1 else {
+            return false;
+        };
         let framed = overlay.framed();
         let Children::Multipane {
-            split, min_cells, ..
+            children,
+            split,
+            min_cells,
         } = &mut overlay.children
         else {
             return false;
@@ -1457,17 +1569,30 @@ impl OverlayPanes {
         } else {
             position.line()
         };
+        let drawn = if horizontal { divider.x } else { divider.y };
+        // Preserve the requested ratio when a cap or minimum size holds the divider in place.
+        if pointer == drawn as isize {
+            return false;
+        }
         // the same floor `MultipaneSplit::geometry` keeps, so a drag past it stops where the
         // divider is drawn rather than storing a ratio the geometry would only clamp back
         let floor = MultipaneSplit::floor(available, *min_cells);
-        let first_size = (pointer - (start + usize::from(framed)) as isize)
-            .clamp(floor as isize, (available - floor) as isize) as usize;
-        // Where the divider is drawn now, by the rule `MultipaneSplit::geometry` draws it with.
-        // A pointer that has not moved it - a click on the divider, or a drag that stops where
-        // it started - leaves the ratio alone: a divider the floor is squeezing is drawn at the
-        // floor, and storing that would lose the share it returns to when the surface grows.
-        let drawn = (available * usize::from(split.ratio) / 10_000).clamp(floor, available - floor);
-        if first_size == drawn {
+        let mut first_size = (pointer - (start + usize::from(framed)) as isize)
+            .clamp(floor as isize, (available - floor) as isize)
+            as usize;
+        if horizontal {
+            let limits = children
+                .each_ref()
+                .map(|(_, pane)| match pane.max_content_width() {
+                    0 => usize::MAX,
+                    limit => limit,
+                });
+            first_size = first_size.clamp(
+                available.saturating_sub(limits[1]),
+                limits[0].min(available),
+            );
+        }
+        if first_size == drawn.saturating_sub(start + usize::from(framed)) {
             return false;
         }
         let ratio = (first_size * 10_000).div_ceil(available).clamp(1, 9999) as u16;
@@ -1577,7 +1702,7 @@ impl OverlayPanes {
     }
     pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
         for (_, pane) in self.get_panes_mut() {
-            let geom = pane.current_geom();
+            let geom = pane.render_geom();
             if !damage.iter().any(|rect| rect.intersects_geom(&geom)) {
                 continue;
             }
@@ -1649,7 +1774,11 @@ impl OverlayPanes {
     pub fn visible_pane_id_at(&self, position: &Position) -> Option<PaneId> {
         for id in self.visible_containers().iter().rev() {
             let overlay = &self.panes[id];
-            if !contains(self.current_geom(overlay), position) {
+            let hit_area = overlay
+                .fullscreen
+                .map(|ui| viewport_geom(self.fullscreen_area(ui)))
+                .unwrap_or_else(|| self.current_geom(overlay));
+            if !contains(hit_area, position) {
                 continue;
             }
             return Some(
@@ -1657,7 +1786,7 @@ impl OverlayPanes {
                     .children
                     .as_slice()
                     .iter()
-                    .find(|(_, pane)| contains(pane.current_geom(), position))
+                    .find(|(_, pane)| pane.contains(position))
                     .map(|(id, _)| *id)
                     .unwrap_or(overlay.children.as_slice()[0].0),
             );
@@ -1779,9 +1908,10 @@ impl OverlayPanes {
             let first_id = overlay.children.as_slice()[0].0;
             let framed = overlay.framed();
             let divider = match overlay.children {
-                Children::Multipane {
-                    split, min_cells, ..
-                } => Some((split.geometry(outer, framed, min_cells).1, split.direction)),
+                Children::Multipane { split, .. } => overlay
+                    .constrained_geometry(outer)
+                    .1
+                    .map(|(_, divider)| (divider, split.direction)),
                 _ => None,
             };
             let overlay_ids: Vec<_> = overlay.pane_ids().collect();

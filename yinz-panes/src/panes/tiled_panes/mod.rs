@@ -134,6 +134,9 @@ pub struct TiledPanes {
     tombstones_before_increase: Option<(PaneId, Vec<HashMap<PaneId, PaneGeom>>)>,
     tombstones_before_decrease: Option<(PaneId, Vec<HashMap<PaneId, PaneGeom>>)>,
     dimmed_clients: HashSet<ClientId>,
+    agent_width_input: Vec<(PaneId, PaneGeom, usize, usize)>,
+    agent_width_ui: Vec<PaneGeom>,
+    agent_widths: HashMap<PaneId, (usize, usize)>,
 }
 
 impl TiledPanes {
@@ -179,6 +182,9 @@ impl TiledPanes {
             tombstones_before_increase: None,
             tombstones_before_decrease: None,
             dimmed_clients: HashSet::new(),
+            agent_width_input: Vec::new(),
+            agent_width_ui: Vec::new(),
+            agent_widths: HashMap::new(),
         }
     }
     pub fn set_client_dimmed(&mut self, client_id: ClientId, dimmed: bool) {
@@ -188,6 +194,64 @@ impl TiledPanes {
             self.dimmed_clients.remove(&client_id);
         }
         self.set_force_render();
+    }
+    pub fn boundary_viewport(&self) -> Viewport {
+        let mut boundary_viewport = *self.viewport.borrow();
+        if let Some(left) = self.agent_widths.values().map(|(x, _)| *x).min() {
+            let right = self
+                .agent_widths
+                .values()
+                .map(|(x, cols)| x + cols)
+                .max()
+                .unwrap_or(left);
+            boundary_viewport.x = left;
+            boundary_viewport.cols = right - left;
+        }
+        boundary_viewport
+    }
+    pub fn agent_widths(&mut self) -> Result<HashMap<PaneId, (usize, usize)>> {
+        let input: Vec<_> = self
+            .panes
+            .iter()
+            .filter(|(id, pane)| !self.panes_to_hide.contains(id) && !is_ui_pane(pane.as_ref()))
+            .map(|(id, pane)| {
+                let offset = pane.get_content_offset();
+                let limit = pane.max_content_width();
+                let outer_limit = if limit == 0 {
+                    0
+                } else {
+                    limit
+                        .saturating_add(offset.left)
+                        .saturating_add(offset.right)
+                };
+                let minimum = pane
+                    .min_width()
+                    .max(offset.left.saturating_add(offset.right).saturating_add(1));
+                (*id, pane.current_geom(), outer_limit, minimum)
+            })
+            .collect();
+        let ui: Vec<_> = self
+            .panes
+            .iter()
+            .filter(|(id, pane)| !self.panes_to_hide.contains(id) && is_ui_pane(pane.as_ref()))
+            .map(|(_, pane)| pane.current_geom())
+            .collect();
+        if input != self.agent_width_input || ui != self.agent_width_ui {
+            // UI sharing a content row prevents packing across the whole row.
+            let shared_row = ui.iter().any(|ui| {
+                input.iter().any(|(_, geom, _, _)| {
+                    ui.y < geom.y + geom.rows.as_usize() && geom.y < ui.y + ui.rows.as_usize()
+                })
+            });
+            self.agent_widths = if shared_row {
+                HashMap::new()
+            } else {
+                pane_resizer::agent_widths(&input)?
+            };
+            self.agent_width_ui = ui;
+            self.agent_width_input = input;
+        }
+        Ok(self.agent_widths.clone())
     }
     pub fn add_pane_with_existing_geom(&mut self, pane_id: PaneId, mut pane: Box<dyn Pane>) {
         if self.pane_frame_style.draws_full_frames() {
@@ -1321,7 +1385,7 @@ impl TiledPanes {
     pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
         let mut hit = false;
         for pane in self.panes.values_mut() {
-            let geom = pane.current_geom();
+            let geom = pane.render_geom();
             if !damage.iter().any(|rect| rect.intersects_geom(&geom)) {
                 continue;
             }
@@ -1365,7 +1429,7 @@ impl TiledPanes {
 
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
         let multiple_users_exist_in_session = { self.connected_clients_in_app.borrow().len() > 1 };
-        let boundary_viewport = *self.viewport.borrow();
+        let boundary_viewport = self.boundary_viewport();
         let mut client_id_to_boundaries: HashMap<ClientId, Boundaries> = HashMap::new();
         let active_panes = if floating_panes_are_visible {
             HashMap::new()
@@ -1441,7 +1505,7 @@ impl TiledPanes {
                     { self.reserved_top_rows.borrow().get(&pane.pid()).copied() }.unwrap_or(0)
                 };
                 let visible_member_frame_override = if reserved_rows_for_pane > 0 {
-                    let mut geom = pane.current_geom();
+                    let mut geom = pane.render_geom();
                     geom.y += reserved_rows_for_pane;
                     geom.rows.decrease_inner(reserved_rows_for_pane);
                     Some(geom)
@@ -2398,8 +2462,8 @@ impl TiledPanes {
         );
         let next_index = match direction {
             Direction::Left => pane_grid.next_selectable_pane_id_to_the_left(&pane_id),
-            Direction::Down => pane_grid.next_selectable_pane_id_below(&pane_id, false),
-            Direction::Up => pane_grid.next_selectable_pane_id_above(&pane_id, false),
+            Direction::Down => pane_grid.next_selectable_pane_id_below(&pane_id, false, true),
+            Direction::Up => pane_grid.next_selectable_pane_id_above(&pane_id, false, true),
             Direction::Right => pane_grid.next_selectable_pane_id_to_the_right(&pane_id),
         }?;
         if let Some(previously_active_pane) = self
@@ -2462,8 +2526,8 @@ impl TiledPanes {
                     *self.viewport.borrow(),
                 );
                 let next_index = pane_grid
-                    .next_selectable_pane_id_below(&active_pane_id, false)
-                    .or_else(|| pane_grid.progress_stack_down_if_in_stack(&active_pane_id));
+                    .next_selectable_pane_id_below(&active_pane_id, false, true)
+                    .or_else(|| pane_grid.progress_stack_down_if_in_stack(&active_pane_id, true));
                 match next_index {
                     Some(p) => {
                         if let Some(previously_active_pane) = self.panes.get_mut(&active_pane_id) {
@@ -2506,8 +2570,8 @@ impl TiledPanes {
                     *self.viewport.borrow(),
                 );
                 let next_index = pane_grid
-                    .next_selectable_pane_id_above(&active_pane_id, false)
-                    .or_else(|| pane_grid.progress_stack_up_if_in_stack(&active_pane_id));
+                    .next_selectable_pane_id_above(&active_pane_id, false, true)
+                    .or_else(|| pane_grid.progress_stack_up_if_in_stack(&active_pane_id, true));
                 match next_index {
                     Some(p) => {
                         if let Some(previously_active_pane) = self.panes.get_mut(&active_pane_id) {
@@ -2656,8 +2720,8 @@ impl TiledPanes {
             *self.viewport.borrow(),
         );
         let next_index = pane_grid
-            .next_selectable_pane_id_below(&pane_id, false)
-            .or_else(|| pane_grid.progress_stack_down_if_in_stack(&pane_id));
+            .next_selectable_pane_id_below(&pane_id, false, false)
+            .or_else(|| pane_grid.progress_stack_down_if_in_stack(&pane_id, false));
         if let Some(p) = next_index {
             self.swap_pane_geoms(pane_id, p).non_fatal();
             self.reapply_pane_focus();
@@ -2700,8 +2764,8 @@ impl TiledPanes {
             *self.viewport.borrow(),
         );
         let next_index = pane_grid
-            .next_selectable_pane_id_above(&pane_id, false)
-            .or_else(|| pane_grid.progress_stack_up_if_in_stack(&pane_id));
+            .next_selectable_pane_id_above(&pane_id, false, false)
+            .or_else(|| pane_grid.progress_stack_up_if_in_stack(&pane_id, false));
         if let Some(p) = next_index {
             self.swap_pane_geoms(pane_id, p).non_fatal();
             self.reapply_pane_focus();
@@ -3196,7 +3260,7 @@ impl TiledPanes {
             *self.viewport.borrow(),
         );
         let include_panes_in_stack = true;
-        pane_grid.next_selectable_pane_id_above(pane_id, include_panes_in_stack)
+        pane_grid.next_selectable_pane_id_above(pane_id, include_panes_in_stack, false)
     }
     pub fn next_selectable_pane_id_below(&mut self, pane_id: &PaneId) -> Option<PaneId> {
         let pane_grid = TiledPaneGrid::new(
@@ -3206,7 +3270,7 @@ impl TiledPanes {
             *self.viewport.borrow(),
         );
         let include_panes_in_stack = true;
-        pane_grid.next_selectable_pane_id_below(pane_id, include_panes_in_stack)
+        pane_grid.next_selectable_pane_id_below(pane_id, include_panes_in_stack, false)
     }
     pub fn next_selectable_pane_id_to_the_left(&mut self, pane_id: &PaneId) -> Option<PaneId> {
         let pane_grid = TiledPaneGrid::new(

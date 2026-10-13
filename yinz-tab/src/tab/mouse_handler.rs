@@ -2487,10 +2487,16 @@ impl MouseHandler {
         let err_context = || format!("failed to get pane at position {point:?}");
 
         if let Some(pane_id) = tab.overlay_panes.visible_pane_id_at(point) {
-            let pane = tab
-                .overlay_panes
-                .get_mut(&pane_id)
-                .filter(|pane| pane.max_content_width() == 0 || pane.contains(point));
+            let on_container_ui = tab.overlay_panes.position_is_on_frame(pane_id, point)
+                || tab
+                    .overlay_panes
+                    .seam_at(point)
+                    .is_some_and(|(first, second)| pane_id == first || pane_id == second);
+            let pane = tab.overlay_panes.get_mut(&pane_id).filter(|pane| {
+                on_container_ui
+                    || (pane.max_content_width() == 0 && pane.render_width().is_none())
+                    || pane.contains(point)
+            });
             if !search_selectable || pane.as_ref().is_some_and(|pane| pane.selectable()) {
                 return Ok(pane);
             }
@@ -2533,9 +2539,12 @@ impl MouseHandler {
             .get_pane_id_at(point, search_selectable)
             .with_context(err_context)?
         {
-            Ok(tab
-                .get_pane_with_id_mut(pane_id)
-                .filter(|pane| pane.max_content_width() == 0 || pane.contains(point)))
+            Ok(tab.get_pane_with_id_mut(pane_id).filter(|pane| {
+                // get_pane_id_at already accounts for vertically shifted stack headers.
+                let geom = pane.render_geom();
+                (pane.max_content_width() == 0 && pane.render_width().is_none())
+                    || (geom.x..geom.x + geom.cols.as_usize()).contains(&point.column())
+            }))
         } else {
             Ok(None)
         }

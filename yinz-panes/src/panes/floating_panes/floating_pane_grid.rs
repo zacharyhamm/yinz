@@ -53,7 +53,12 @@ impl<'a> FloatingPaneGrid<'a> {
                 .with_context(|| no_pane_id(&pane_id))
                 .with_context(err_context)?
                 .1;
-            geom_moved_within(pane.position_and_size(), self.viewport, x, y)
+            let moved = geom_moved_within(pane.render_geom(), self.viewport, x, y);
+            let mut requested = pane.position_and_size();
+            requested.x = moved.x;
+            requested.y = moved.y;
+            pane.set_render_width(Some((moved.x, moved.cols.as_usize())));
+            requested
         };
         self.set_pane_geom(pane_id, new_pane_position)
             .with_context(err_context)
@@ -258,212 +263,19 @@ impl<'a> FloatingPaneGrid<'a> {
     }
 
     pub fn move_pane_left(&mut self, pane_id: &PaneId) -> Result<()> {
-        let err_context = || format!("failed to move pane {pane_id:?} left");
-
-        if let Some(move_by) = self
-            .can_move_pane_left(pane_id, MOVE_INCREMENT_HORIZONTAL)
-            .with_context(err_context)?
-        {
-            self.move_pane_position_left(pane_id, move_by)
-                .with_context(err_context)?;
-        }
-        Ok(())
+        self.move_pane_by(*pane_id, -(MOVE_INCREMENT_HORIZONTAL as isize), 0)
     }
 
     pub fn move_pane_right(&mut self, pane_id: &PaneId) -> Result<()> {
-        let err_context = || format!("failed to move pane {pane_id:?} right");
-
-        if let Some(move_by) = self
-            .can_move_pane_right(pane_id, MOVE_INCREMENT_HORIZONTAL)
-            .with_context(err_context)?
-        {
-            self.move_pane_position_right(pane_id, move_by)
-                .with_context(err_context)?;
-        }
-        Ok(())
+        self.move_pane_by(*pane_id, MOVE_INCREMENT_HORIZONTAL as isize, 0)
     }
 
     pub fn move_pane_down(&mut self, pane_id: &PaneId) -> Result<()> {
-        let err_context = || format!("failed to move pane {pane_id:?} down");
-
-        if let Some(move_by) = self
-            .can_move_pane_down(pane_id, MOVE_INCREMENT_VERTICAL)
-            .with_context(err_context)?
-        {
-            self.move_pane_position_down(pane_id, move_by)
-                .with_context(err_context)?;
-        }
-        Ok(())
+        self.move_pane_by(*pane_id, 0, MOVE_INCREMENT_VERTICAL as isize)
     }
 
     pub fn move_pane_up(&mut self, pane_id: &PaneId) -> Result<()> {
-        let err_context = || format!("failed to move pane {pane_id:?} up");
-
-        if let Some(move_by) = self
-            .can_move_pane_up(pane_id, MOVE_INCREMENT_VERTICAL)
-            .with_context(err_context)?
-        {
-            self.move_pane_position_up(pane_id, move_by)
-                .with_context(err_context)?;
-        }
-        Ok(())
-    }
-
-    fn can_move_pane_left(&self, pane_id: &PaneId, move_by: usize) -> Result<Option<usize>> {
-        let err_context = || {
-            format!(
-                "failed to determine if pane {pane_id:?} can be moved left by {move_by} columns"
-            )
-        };
-
-        let panes = self.panes.borrow();
-        let pane = panes
-            .get(pane_id)
-            .with_context(|| no_pane_id(pane_id))
-            .with_context(err_context)?;
-        let space_until_left_screen_edge = pane.x().saturating_sub(self.viewport.x);
-
-        Ok(if space_until_left_screen_edge >= move_by {
-            Some(move_by)
-        } else if space_until_left_screen_edge > 0 {
-            Some(space_until_left_screen_edge)
-        } else {
-            None
-        })
-    }
-
-    fn can_move_pane_right(&self, pane_id: &PaneId, move_by: usize) -> Result<Option<usize>> {
-        let err_context = || {
-            format!(
-                "failed to determine if pane {pane_id:?} can be moved right by {move_by} columns"
-            )
-        };
-
-        let panes = self.panes.borrow();
-        let pane = panes
-            .get(pane_id)
-            .with_context(|| no_pane_id(pane_id))
-            .with_context(err_context)?;
-        let space_until_right_screen_edge =
-            (self.viewport.x + self.viewport.cols).saturating_sub(pane.x() + pane.cols());
-
-        Ok(if space_until_right_screen_edge >= move_by {
-            Some(move_by)
-        } else if space_until_right_screen_edge > 0 {
-            Some(space_until_right_screen_edge)
-        } else {
-            None
-        })
-    }
-
-    fn can_move_pane_up(&self, pane_id: &PaneId, move_by: usize) -> Result<Option<usize>> {
-        let err_context =
-            || format!("failed to determine if pane {pane_id:?} can be moved up by {move_by} rows");
-
-        let panes = self.panes.borrow();
-        let pane = panes
-            .get(pane_id)
-            .with_context(|| no_pane_id(pane_id))
-            .with_context(err_context)?;
-        let space_until_top_screen_edge = pane.y().saturating_sub(self.viewport.y);
-
-        Ok(if space_until_top_screen_edge >= move_by {
-            Some(move_by)
-        } else if space_until_top_screen_edge > 0 {
-            Some(space_until_top_screen_edge)
-        } else {
-            None
-        })
-    }
-
-    fn can_move_pane_down(&self, pane_id: &PaneId, move_by: usize) -> Result<Option<usize>> {
-        let err_context = || {
-            format!("failed to determine if pane {pane_id:?} can be moved down by {move_by} rows")
-        };
-
-        let panes = self.panes.borrow();
-        let pane = panes
-            .get(pane_id)
-            .with_context(|| no_pane_id(pane_id))
-            .with_context(err_context)?;
-        let space_until_bottom_screen_edge =
-            (self.viewport.y + self.viewport.rows).saturating_sub(pane.y() + pane.rows());
-
-        Ok(if space_until_bottom_screen_edge >= move_by {
-            Some(move_by)
-        } else if space_until_bottom_screen_edge > 0 {
-            Some(space_until_bottom_screen_edge)
-        } else {
-            None
-        })
-    }
-
-    fn move_pane_position_left(&mut self, pane_id: &PaneId, move_by: usize) -> Result<()> {
-        let err_context = || format!("failed to move pane {pane_id:?} left by {move_by}");
-
-        let new_pane_geom = {
-            let mut panes = self.panes.borrow_mut();
-            let pane = panes
-                .get_mut(pane_id)
-                .with_context(|| no_pane_id(pane_id))
-                .with_context(err_context)?;
-            let mut current_geom = pane.position_and_size();
-            current_geom.x -= move_by;
-            current_geom
-        };
-        self.set_pane_geom(*pane_id, new_pane_geom)
-            .with_context(err_context)
-    }
-
-    fn move_pane_position_right(&mut self, pane_id: &PaneId, move_by: usize) -> Result<()> {
-        let err_context = || format!("failed to move pane {pane_id:?} right by {move_by}");
-
-        let new_pane_geom = {
-            let mut panes = self.panes.borrow_mut();
-            let pane = panes
-                .get_mut(pane_id)
-                .with_context(|| no_pane_id(pane_id))
-                .with_context(err_context)?;
-            let mut current_geom = pane.position_and_size();
-            current_geom.x += move_by;
-            current_geom
-        };
-        self.set_pane_geom(*pane_id, new_pane_geom)
-            .with_context(err_context)
-    }
-
-    fn move_pane_position_down(&mut self, pane_id: &PaneId, move_by: usize) -> Result<()> {
-        let err_context = || format!("failed to move pane {pane_id:?} down by {move_by}");
-
-        let new_pane_geom = {
-            let mut panes = self.panes.borrow_mut();
-            let pane = panes
-                .get_mut(pane_id)
-                .with_context(|| no_pane_id(pane_id))
-                .with_context(err_context)?;
-            let mut current_geom = pane.position_and_size();
-            current_geom.y += move_by;
-            current_geom
-        };
-        self.set_pane_geom(*pane_id, new_pane_geom)
-            .with_context(err_context)
-    }
-
-    fn move_pane_position_up(&mut self, pane_id: &PaneId, move_by: usize) -> Result<()> {
-        let err_context = || format!("failed to move pane {pane_id:?} up by {move_by}");
-
-        let new_pane_geom = {
-            let mut panes = self.panes.borrow_mut();
-            let pane = panes
-                .get_mut(pane_id)
-                .with_context(|| no_pane_id(pane_id))
-                .with_context(err_context)?;
-            let mut current_geom = pane.position_and_size();
-            current_geom.y -= move_by;
-            current_geom
-        };
-        self.set_pane_geom(*pane_id, new_pane_geom)
-            .with_context(err_context)
+        self.move_pane_by(*pane_id, 0, -(MOVE_INCREMENT_VERTICAL as isize))
     }
 
     pub fn change_pane_size(
@@ -490,23 +302,24 @@ impl<'a> FloatingPaneGrid<'a> {
 
     pub fn next_selectable_pane_id_to_the_left(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
-        let current_pane = panes.get(current_pane_id)?;
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let current_pane = panes.get(current_pane_id)?.render_geom();
+        let panes: Vec<(PaneId, PaneGeom)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
-            .map(|(p_id, p)| (*p_id, p))
+            .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
         let next_index = panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
-                c.is_left_of(Box::as_ref(current_pane))
-                    && c.horizontally_overlaps_with(Box::as_ref(current_pane))
+                c.x < current_pane.x
+                    && c.y < current_pane.y + current_pane.rows.as_usize()
+                    && current_pane.y < c.y + c.rows.as_usize()
             })
             .max_by(|(_, (_, a)), (_, (_, b))| {
-                let x_comparison = a.x().cmp(&b.x());
+                let x_comparison = a.x.cmp(&b.x);
                 match x_comparison {
-                    Ordering::Equal => a.y().cmp(&b.y()),
+                    Ordering::Equal => a.y.cmp(&b.y),
                     _ => x_comparison,
                 }
             })
@@ -516,40 +329,40 @@ impl<'a> FloatingPaneGrid<'a> {
     }
     pub fn pane_id_on_edge(&self, direction: Direction) -> Option<PaneId> {
         let panes = self.panes.borrow();
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let panes: Vec<(PaneId, PaneGeom)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
-            .map(|(p_id, p)| (*p_id, p))
+            .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
         let next_index = panes
             .iter()
             .enumerate()
             .max_by(|(_, (_, a)), (_, (_, b))| match direction {
                 Direction::Left => {
-                    let x_comparison = a.x().cmp(&b.x());
+                    let x_comparison = a.x.cmp(&b.x);
                     match x_comparison {
-                        Ordering::Equal => a.y().cmp(&b.y()),
+                        Ordering::Equal => a.y.cmp(&b.y),
                         _ => x_comparison,
                     }
                 },
                 Direction::Right => {
-                    let x_comparison = b.x().cmp(&a.x());
+                    let x_comparison = b.x.cmp(&a.x);
                     match x_comparison {
-                        Ordering::Equal => a.y().cmp(&b.y()),
+                        Ordering::Equal => a.y.cmp(&b.y),
                         _ => x_comparison,
                     }
                 },
                 Direction::Up => {
-                    let y_comparison = a.y().cmp(&b.y());
+                    let y_comparison = a.y.cmp(&b.y);
                     match y_comparison {
-                        Ordering::Equal => a.x().cmp(&b.x()),
+                        Ordering::Equal => a.x.cmp(&b.x),
                         _ => y_comparison,
                     }
                 },
                 Direction::Down => {
-                    let y_comparison = b.y().cmp(&a.y());
+                    let y_comparison = b.y.cmp(&a.y);
                     match y_comparison {
-                        Ordering::Equal => b.x().cmp(&a.x()),
+                        Ordering::Equal => b.x.cmp(&a.x),
                         _ => y_comparison,
                     }
                 },
@@ -560,23 +373,24 @@ impl<'a> FloatingPaneGrid<'a> {
     }
     pub fn next_selectable_pane_id_below(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
-        let current_pane = panes.get(current_pane_id)?;
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let current_pane = panes.get(current_pane_id)?.render_geom();
+        let panes: Vec<(PaneId, PaneGeom)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
-            .map(|(p_id, p)| (*p_id, p))
+            .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
         let next_index = panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
-                c.is_below(Box::as_ref(current_pane))
-                    && c.vertically_overlaps_with(Box::as_ref(current_pane))
+                c.y > current_pane.y
+                    && c.x < current_pane.x + current_pane.cols.as_usize()
+                    && current_pane.x < c.x + c.cols.as_usize()
             })
             .min_by(|(_, (_, a)), (_, (_, b))| {
-                let y_comparison = a.y().cmp(&b.y());
+                let y_comparison = a.y.cmp(&b.y);
                 match y_comparison {
-                    Ordering::Equal => b.x().cmp(&a.x()),
+                    Ordering::Equal => b.x.cmp(&a.x),
                     _ => y_comparison,
                 }
             })
@@ -586,23 +400,24 @@ impl<'a> FloatingPaneGrid<'a> {
     }
     pub fn next_selectable_pane_id_above(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
-        let current_pane = panes.get(current_pane_id)?;
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let current_pane = panes.get(current_pane_id)?.render_geom();
+        let panes: Vec<(PaneId, PaneGeom)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
-            .map(|(p_id, p)| (*p_id, p))
+            .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
         let next_index = panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
-                c.is_above(Box::as_ref(current_pane))
-                    && c.vertically_overlaps_with(Box::as_ref(current_pane))
+                c.y < current_pane.y
+                    && c.x < current_pane.x + current_pane.cols.as_usize()
+                    && current_pane.x < c.x + c.cols.as_usize()
             })
             .max_by(|(_, (_, a)), (_, (_, b))| {
-                let y_comparison = a.y().cmp(&b.y());
+                let y_comparison = a.y.cmp(&b.y);
                 match y_comparison {
-                    Ordering::Equal => b.x().cmp(&a.x()),
+                    Ordering::Equal => b.x.cmp(&a.x),
                     _ => y_comparison,
                 }
             })
@@ -612,23 +427,24 @@ impl<'a> FloatingPaneGrid<'a> {
     }
     pub fn next_selectable_pane_id_to_the_right(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
-        let current_pane = panes.get(current_pane_id)?;
-        let panes: Vec<(PaneId, &&mut Box<dyn Pane>)> = panes
+        let current_pane = panes.get(current_pane_id)?.render_geom();
+        let panes: Vec<(PaneId, PaneGeom)> = panes
             .iter()
             .filter(|(_, p)| p.selectable())
-            .map(|(p_id, p)| (*p_id, p))
+            .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
         let next_index = panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
-                c.is_right_of(Box::as_ref(current_pane))
-                    && c.horizontally_overlaps_with(Box::as_ref(current_pane))
+                c.x > current_pane.x
+                    && c.y < current_pane.y + current_pane.rows.as_usize()
+                    && current_pane.y < c.y + c.rows.as_usize()
             })
             .min_by(|(_, (_, a)), (_, (_, b))| {
-                let x_comparison = a.x().cmp(&b.x());
+                let x_comparison = a.x.cmp(&b.x);
                 match x_comparison {
-                    Ordering::Equal => a.y().cmp(&b.y()),
+                    Ordering::Equal => a.y.cmp(&b.y),
                     _ => x_comparison,
                 }
             })

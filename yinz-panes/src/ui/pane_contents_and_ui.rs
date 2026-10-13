@@ -1,6 +1,6 @@
 use crate::output::{CharacterChunk, Output};
 use crate::pane::{Pane, RenderedPane};
-use crate::panes::terminal_character::{AnsiCode, EMPTY_TERMINAL_CHARACTER};
+use crate::panes::terminal_character::AnsiCode;
 use crate::panes::PaneId;
 use crate::ui::boundaries::Boundaries;
 use crate::ui::pane_boundaries_frame::{FrameParams, OpeningRipple, StackListEntry};
@@ -142,29 +142,6 @@ impl<'a> PaneContentsAndUi<'a> {
         self.stack_list_entry_is_selected = stack_list_entry_is_selected;
         self.stack_list_entry_stack_is_focused = stack_list_entry_stack_is_focused;
     }
-    fn add_centering_margins(&self, chunks: &mut Vec<CharacterChunk>) {
-        let outer = self.pane.current_geom();
-        let inner = self.pane.render_geom();
-        if inner == outer {
-            return;
-        }
-        let right = inner.x + inner.cols.as_usize();
-        let mut margin = EMPTY_TERMINAL_CHARACTER;
-        margin.styles.update(|styles| {
-            styles.background = Some(self.style.pane_surround().into());
-        });
-        for (x, width) in [
-            (outer.x, inner.x - outer.x),
-            (right, outer.x + outer.cols.as_usize() - right),
-        ] {
-            if width == 0 {
-                continue;
-            }
-            for y in outer.y..outer.y + outer.rows.as_usize() {
-                chunks.push(CharacterChunk::new(vec![margin.clone(); width], x, y));
-            }
-        }
-    }
     pub fn render_pane_contents_to_multiple_clients(
         &mut self,
         clients: impl Iterator<Item = ClientId>,
@@ -185,9 +162,8 @@ impl<'a> PaneContentsAndUi<'a> {
             {
                 self.output.rendered_pane_contents.insert(self.pane.pid());
             }
-            let (mut character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
+            let (character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
                 rendered;
-            self.add_centering_margins(&mut character_chunks);
             self.output
                 .add_character_chunks_to_multiple_clients(
                     character_chunks,
@@ -213,7 +189,7 @@ impl<'a> PaneContentsAndUi<'a> {
                         &format!(
                             "\u{1b}[{};{}H\u{1b}[m{}",
                             self.pane.y() + 1,
-                            self.pane.x() + 1,
+                            self.pane.render_geom().x + 1,
                             raw_vte_output
                         ),
                     );
@@ -261,9 +237,8 @@ impl<'a> PaneContentsAndUi<'a> {
             if self.output.pane_change_client == Some(client_id) && rendered_anything(&rendered) {
                 self.output.rendered_pane_contents.insert(self.pane.pid());
             }
-            let (mut character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
+            let (character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
                 rendered;
-            self.add_centering_margins(&mut character_chunks);
             self.output
                 .add_character_chunks_to_client(client_id, character_chunks, self.z_index)
                 .with_context(err_context)?;
@@ -285,7 +260,7 @@ impl<'a> PaneContentsAndUi<'a> {
                         &format!(
                             "\u{1b}[{};{}H\u{1b}[m{}",
                             self.pane.y() + 1,
-                            self.pane.x() + 1,
+                            self.pane.render_geom().x + 1,
                             raw_vte_output
                         ),
                     );
@@ -354,7 +329,7 @@ impl<'a> PaneContentsAndUi<'a> {
                     .and_then(|(x, y, is_visible)| {
                         if is_visible {
                             Some(self.output.cursor_is_visible(
-                                self.pane.x() + x,
+                                self.pane.render_geom().x + x,
                                 self.pane.y() + y,
                                 self.z_index,
                                 // the client being drawn for, not the one whose cursor this is:
@@ -373,7 +348,7 @@ impl<'a> PaneContentsAndUi<'a> {
                             &format!(
                                 "\u{1b}[{};{}H\u{1b}[m{}",
                                 self.pane.y() + 1,
-                                self.pane.x() + 1,
+                                self.pane.render_geom().x + 1,
                                 vte_output
                             ),
                         );

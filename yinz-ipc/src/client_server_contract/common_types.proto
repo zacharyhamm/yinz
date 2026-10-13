@@ -1520,7 +1520,7 @@ message Options {
   optional bool pane_animations = 77;
   optional uint32 background_opacity = 78;
   optional string agent_theme_mapping = 79;
-  optional uint64 max_fullscreen_agent_width = 80;
+  optional uint64 max_agent_width = 80;
 }
 
 enum OnForceClose {

@@ -412,3 +412,72 @@ fn a_toast_covering_the_cursor_hides_it_until_it_leaves() {
         "the cursor must come back once the toast uncovers it:\n{snapshot}"
     );
 }
+
+#[test]
+fn notification_movement_and_expiry_repaint_an_agent_margin() {
+    let size = Size {
+        cols: 300,
+        rows: 24,
+    };
+    let start = Instant::now();
+    let mut screen = screen_with_a_settled_toast(size, start);
+    let client = ClientId::new(1);
+    let tab = screen.get_active_tab_mut(client).unwrap();
+    tab.max_agent_width = 80;
+    let id = tab.get_active_pane_id(client).unwrap();
+    tab.get_pane_with_id_mut(id)
+        .unwrap()
+        .set_detected_agent(true);
+    screen.pinned_now = Some(start);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(size);
+    let initial = render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert!(initial.contains(TEXT));
+    let pane = screen
+        .get_active_tab(client)
+        .unwrap()
+        .get_pane_with_id(id)
+        .unwrap()
+        .render_geom();
+    let viewport = Viewport {
+        x: 0,
+        y: 0,
+        cols: size.cols,
+        rows: size.rows,
+    };
+    let old = screen.notification_cell_rects(viewport, start);
+    assert!(old.iter().all(|rect| !rect.intersects_geom(&pane)));
+    screen.notifications[0].y_offset = Tween::settled(5.0);
+    let moved = render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert!(moved.contains(TEXT));
+    assert_eq!(moved.matches(TEXT).count(), 1, "{moved}");
+    // Compare the accumulated terminal to a fresh repaint to catch border trails as well as text.
+    screen
+        .get_active_tab_mut(client)
+        .unwrap()
+        .set_should_clear_display_before_rendering();
+    screen
+        .get_active_tab_mut(client)
+        .unwrap()
+        .set_force_render();
+    let fresh = render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert_eq!(moved, fresh);
+    screen
+        .dismiss_notification(NotificationId::new(0), start)
+        .unwrap();
+    let gone = start + Duration::from_secs(1);
+    screen.pinned_now = Some(gone);
+    screen.reap_settled_notifications(gone);
+    let expired = render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert!(!expired.contains(TEXT));
+    screen
+        .get_active_tab_mut(client)
+        .unwrap()
+        .set_should_clear_display_before_rendering();
+    screen
+        .get_active_tab_mut(client)
+        .unwrap()
+        .set_force_render();
+    let fresh = render_frame_into(&mut screen, &receiver, client, &mut grid);
+    assert_eq!(expired, fresh);
+}

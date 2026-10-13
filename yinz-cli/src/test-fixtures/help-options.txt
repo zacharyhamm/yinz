@@ -89,8 +89,8 @@ Options:
       --scroll-buffer-size <SCROLL_BUFFER_SIZE>
           
 
-      --max-fullscreen-agent-width <MAX_FULLSCREEN_AGENT_WIDTH>
-          Maximum text columns for a sole or fullscreen agent pane (0 disables the limit)
+      --max-agent-width <MAX_AGENT_WIDTH>
+          Maximum text columns for any agent pane (values below 80 disable the limit)
 
       --copy-command <COPY_COMMAND>
           Switch to using a user supplied command for clipboard instead of OSC52

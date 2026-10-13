@@ -243,12 +243,15 @@ pub(super) fn apply_queued_agent_report(
     Ok(true)
 }
 
-fn apply_pane_foreground_command(
+pub(super) fn apply_pane_foreground_command(
     screen: &mut Screen,
     terminal_id: TerminalId,
     command: Vec<String>,
     program: Option<String>,
 ) -> bool {
+    let detected = command.split_first().is_some_and(|(program, args)| {
+        yinz_types::agent::kind_from_program_and_args(std::path::Path::new(program), args).is_some()
+    });
     if command.is_empty() {
         screen.terminal_foreground_cmds.remove(&terminal_id);
     } else {
@@ -256,6 +259,7 @@ fn apply_pane_foreground_command(
     }
     screen
         .with_pane(PaneId::Terminal(terminal_id), |pane| {
+            pane.set_detected_agent(detected);
             pane.set_running_program(program)
         })
         .is_some()

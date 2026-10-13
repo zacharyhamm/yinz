@@ -2482,7 +2482,7 @@ pub struct Options {
     #[prost(string, optional, tag="79")]
     pub agent_theme_mapping: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint64, optional, tag="80")]
-    pub max_fullscreen_agent_width: ::core::option::Option<u64>,
+    pub max_agent_width: ::core::option::Option<u64>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

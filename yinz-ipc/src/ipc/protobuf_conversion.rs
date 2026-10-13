@@ -1019,7 +1019,7 @@ impl From<yinz_types::input::options::Options>
                 yinz_types::input::options::OnForceClose::Detach => ProtoOnForceClose::Detach as i32,
             }),
             scroll_buffer_size: options.scroll_buffer_size.map(|s| s as u32),
-            max_fullscreen_agent_width: options.max_fullscreen_agent_width.map(|width| width as u64),
+            max_agent_width: options.max_agent_width.map(|width| width as u64),
             copy_command: options.copy_command,
             copy_clipboard: options.copy_clipboard.map(|c| match c {
                 yinz_types::input::options::Clipboard::System => ProtoClipboard::System as i32,
@@ -1161,7 +1161,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
                 })
                 .transpose()?,
             scroll_buffer_size: options.scroll_buffer_size.map(|s| s as usize),
-            max_fullscreen_agent_width: options.max_fullscreen_agent_width.map(usize::try_from).transpose().context("agent width exceeds platform size")?,
+            max_agent_width: options.max_agent_width.map(usize::try_from).transpose().context("agent width exceeds platform size")?,
             copy_command: options.copy_command,
             copy_clipboard: options
                 .copy_clipboard

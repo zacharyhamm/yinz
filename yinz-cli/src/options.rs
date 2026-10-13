@@ -106,10 +106,10 @@ pub struct CliOptions {
     pub on_force_close: Option<OnForceClose>,
     #[clap(long, value_parser)]
     pub scroll_buffer_size: Option<usize>,
-    /// Maximum text columns for a sole or fullscreen agent pane (0 disables the limit).
+    /// Maximum text columns for any agent pane (values below 80 disable the limit).
     #[clap(long, value_parser)]
     #[serde(default)]
-    pub max_fullscreen_agent_width: Option<usize>,
+    pub max_agent_width: Option<usize>,
 
     /// Switch to using a user supplied command for clipboard instead of OSC52
     #[clap(long, value_parser)]
@@ -376,7 +376,7 @@ impl From<CliOptions> for Options {
             mirror_session: value.mirror_session,
             on_force_close: value.on_force_close,
             scroll_buffer_size: value.scroll_buffer_size,
-            max_fullscreen_agent_width: value.max_fullscreen_agent_width,
+            max_agent_width: value.max_agent_width,
             copy_command: value.copy_command,
             copy_clipboard: value.copy_clipboard,
             copy_on_select: value.copy_on_select,
@@ -450,7 +450,7 @@ impl From<Options> for CliOptions {
             mirror_session: value.mirror_session,
             on_force_close: value.on_force_close,
             scroll_buffer_size: value.scroll_buffer_size,
-            max_fullscreen_agent_width: value.max_fullscreen_agent_width,
+            max_agent_width: value.max_agent_width,
             copy_command: value.copy_command,
             copy_clipboard: value.copy_clipboard,
             copy_on_select: value.copy_on_select,
@@ -541,9 +541,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
     let explicit_theme_hue = other.explicit_theme_hue.or(base.explicit_theme_hue);
     let on_force_close = other.on_force_close.or(base.on_force_close);
     let scroll_buffer_size = other.scroll_buffer_size.or(base.scroll_buffer_size);
-    let max_fullscreen_agent_width = other
-        .max_fullscreen_agent_width
-        .or(base.max_fullscreen_agent_width);
+    let max_agent_width = other.max_agent_width.or(base.max_agent_width);
     let locked_escape_timeout_ms = other
         .locked_escape_timeout_ms
         .or(base.locked_escape_timeout_ms);
@@ -634,7 +632,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         mirror_session,
         on_force_close,
         scroll_buffer_size,
-        max_fullscreen_agent_width,
+        max_agent_width,
         locked_escape_timeout_ms,
         copy_command,
         copy_clipboard,
@@ -788,19 +786,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn max_fullscreen_agent_width_cli_round_trip_and_precedence() {
+    fn max_agent_width_cli_round_trip_and_precedence() {
         let config = Options {
-            max_fullscreen_agent_width: Some(100),
+            max_agent_width: Some(100),
             ..Options::default()
         };
-        for value in [None, Some(0), Some(80)] {
+        for value in [None, Some(0), Some(1), Some(79), Some(80), Some(81)] {
             let options = Options {
-                max_fullscreen_agent_width: value,
+                max_agent_width: value,
                 ..Options::default()
             };
             assert_eq!(Options::from(CliOptions::from(options.clone())), options);
             assert_eq!(
-                merge_from_cli(&config, options).max_fullscreen_agent_width,
+                merge_from_cli(&config, options).max_agent_width,
                 value.or(Some(100))
             );
         }

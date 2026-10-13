@@ -511,9 +511,9 @@ impl Boundaries {
         if !self.is_fully_inside_screen(rect) {
             return;
         }
-        if rect.x() > self.viewport.x {
+        if rect.render_geom().x > self.viewport.x {
             // left boundary
-            let boundary_x_coords = rect.x() - 1;
+            let boundary_x_coords = rect.render_geom().x - 1;
             let first_row_coordinates =
                 self.rect_right_boundary_row_start(rect, pane_is_stacked_under, content_offset);
             let last_row_coordinates = self.rect_right_boundary_row_end(rect);
@@ -570,7 +570,7 @@ impl Boundaries {
         }
         if self.rect_right_boundary_is_before_screen_edge(rect) {
             // right boundary
-            let boundary_x_coords = rect.right_boundary_x_coords() - 1;
+            let boundary_x_coords = rect.render_geom().x + rect.render_geom().cols.as_usize() - 1;
             let first_row_coordinates =
                 self.rect_right_boundary_row_start(rect, pane_is_stacked_under, content_offset);
             let last_row_coordinates = self.rect_right_boundary_row_end(rect);
@@ -668,7 +668,8 @@ impl Boundaries {
         Ok(character_chunks)
     }
     fn rect_right_boundary_is_before_screen_edge(&self, rect: &dyn Pane) -> bool {
-        rect.x() + rect.cols() < self.viewport.x + self.viewport.cols
+        rect.render_geom().x + rect.render_geom().cols.as_usize()
+            < self.viewport.x + self.viewport.cols
     }
     fn rect_bottom_boundary_is_before_screen_edge(&self, rect: &dyn Pane) -> bool {
         rect.y() + rect.rows() < self.viewport.y + self.viewport.rows
@@ -703,18 +704,19 @@ impl Boundaries {
         rect.y() + rect.rows()
     }
     fn rect_bottom_boundary_col_start(&self, rect: &dyn Pane) -> usize {
-        if rect.x() == self.viewport.x {
+        if rect.render_geom().x == self.viewport.x {
             self.viewport.x
         } else {
-            rect.x() - 1
+            rect.render_geom().x - 1
         }
     }
     fn rect_bottom_boundary_col_end(&self, rect: &dyn Pane) -> usize {
-        rect.x() + rect.cols()
+        rect.render_geom().x + rect.render_geom().cols.as_usize()
     }
     fn is_fully_inside_screen(&self, rect: &dyn Pane) -> bool {
-        rect.x() >= self.viewport.x
-            && rect.x() + rect.cols() <= self.viewport.x + self.viewport.cols
+        rect.render_geom().x >= self.viewport.x
+            && rect.render_geom().x + rect.render_geom().cols.as_usize()
+                <= self.viewport.x + self.viewport.cols
             && rect.y() >= self.viewport.y
             && rect.y() + rect.rows() <= self.viewport.y + self.viewport.rows
     }
