@@ -2,6 +2,7 @@ themes {
     "gruvbox-material-dark" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Gruvbox%20Material%20Dark
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#1c1c1c"
         terminal {
             foreground "#d4be98"
             background "#282828"

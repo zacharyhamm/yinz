@@ -2,6 +2,7 @@ themes {
     "mellow" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Mellow
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#0a0a0b"
         terminal {
             foreground "#c9c7cd"
             background "#161617"

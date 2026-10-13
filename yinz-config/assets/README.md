@@ -3,6 +3,32 @@
 Default configuration, layouts, and themes are loaded by `yinz-config`. The builtin TypeScript
 plugins live in `yinz-deno-builtins/assets/plugins/`.
 
+## Pane surround color
+
+`pane_surround` colors the margins created by `max_fullscreen_agent_width`, including agent plugin views.
+Set one color inside a theme, with either modern style blocks or legacy palette entries:
+
+```kdl
+themes {
+    custom {
+        pane_surround "#1c1e2a"
+    }
+}
+```
+
+The value accepts a hex RGB color, three RGB channels, or a color index from 0 to 255.
+Application background changes do not change these margins.
+
+If omitted, the color comes from `terminal.background`, or `text_unselected.background` when no terminal palette is defined.
+Each RGB channel is reduced by 12, with a minimum of zero.
+Fixed color indices 16–255 are converted to RGB before this subtraction.
+Host-defined ANSI indices 0–15 stay unchanged because their RGB values are unknown.
+An explicit `pane_surround` value overrides this fallback without subtraction.
+
+All bundled themes store explicit colors using this rule.
+The `ansi` theme uses `pane_surround 0`, the host's ANSI black slot.
+Black stays black, and very dark themes can have little or no visible separation.
+
 ## Ghostty theme ports
 
 691 builtin themes are ported from [iTerm2 Color Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes/tree/31756e77934045c66b28f59463ddb2870606d7ca/ghostty),

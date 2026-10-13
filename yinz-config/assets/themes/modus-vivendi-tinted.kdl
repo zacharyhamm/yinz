@@ -2,6 +2,7 @@ themes {
     "modus-vivendi-tinted" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Modus%20Vivendi%20Tinted
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#010210"
         terminal {
             foreground "#ffffff"
             background "#0d0e1c"

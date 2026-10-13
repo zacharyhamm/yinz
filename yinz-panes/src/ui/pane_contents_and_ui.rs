@@ -140,7 +140,14 @@ impl<'a> PaneContentsAndUi<'a> {
     fn add_centering_margins(&self, chunks: &mut Vec<CharacterChunk>) {
         let outer = self.pane.current_geom();
         let inner = self.pane.render_geom();
+        if inner == outer {
+            return;
+        }
         let right = inner.x + inner.cols.as_usize();
+        let mut margin = EMPTY_TERMINAL_CHARACTER;
+        margin.styles.update(|styles| {
+            styles.background = Some(self.style.pane_surround().into());
+        });
         for (x, width) in [
             (outer.x, inner.x - outer.x),
             (right, outer.x + outer.cols.as_usize() - right),
@@ -149,11 +156,7 @@ impl<'a> PaneContentsAndUi<'a> {
                 continue;
             }
             for y in outer.y..outer.y + outer.rows.as_usize() {
-                chunks.push(CharacterChunk::new(
-                    vec![EMPTY_TERMINAL_CHARACTER; width],
-                    x,
-                    y,
-                ));
+                chunks.push(CharacterChunk::new(vec![margin.clone(); width], x, y));
             }
         }
     }

@@ -2,6 +2,7 @@ themes {
     "ghost-circuit" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Ghost%20Circuit
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#000403"
         terminal {
             foreground "#e9f4f0"
             background "#07100f"

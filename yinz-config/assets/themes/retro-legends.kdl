@@ -2,6 +2,7 @@ themes {
     "retro-legends" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Retro%20Legends
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#010101"
         terminal {
             foreground "#45eb45"
             background "#0d0d0d"

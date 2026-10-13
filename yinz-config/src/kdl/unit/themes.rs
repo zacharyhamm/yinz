@@ -246,3 +246,64 @@ fn themes_to_string_with_multiple_theme_definitions() {
     );
     insta::assert_snapshot!(serialized.to_string());
 }
+
+#[test]
+fn pane_surround_parses_and_roundtrips_modern_and_legacy_themes() {
+    let legacy = "fg 1; bg 2; black 3; red 4; green 5; yellow 6; blue 7; magenta 8; cyan 9; white 10; orange 11;";
+    for body in ["", legacy] {
+        for (value, expected) in [
+            ("", None),
+            (
+                "pane_surround \"#1c1e2a\";",
+                Some(PaletteColor::Rgb((28, 30, 42))),
+            ),
+            (
+                "pane_surround \"#abc\";",
+                Some(PaletteColor::Rgb((170, 187, 204))),
+            ),
+            ("pane_surround 1 2 3;", Some(PaletteColor::Rgb((1, 2, 3)))),
+            ("pane_surround 0;", Some(PaletteColor::EightBit(0))),
+            ("pane_surround 255;", Some(PaletteColor::EightBit(255))),
+        ] {
+            let themes =
+                Themes::from_string(&format!("themes {{ custom {{ {body} {value} }}; }}"), false)
+                    .unwrap();
+            assert_eq!(themes.inner()["custom"].palette.pane_surround, expected);
+            let serialized = themes.to_kdl().unwrap().to_string();
+            assert_eq!(Themes::from_string(&serialized, false).unwrap(), themes);
+            if !body.is_empty() {
+                assert_eq!(
+                    themes.inner()["custom"].palette.text_unselected.background,
+                    PaletteColor::EightBit(3)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn pane_surround_rejects_invalid_values() {
+    for value in [
+        "",
+        "-1",
+        "256",
+        "0 0 256",
+        "-1 0 0",
+        "1 2",
+        "1 2 3 4",
+        "true",
+        "\"#ggg\"",
+        "red=1",
+        "0 {}",
+        "0; pane_surround 1",
+    ] {
+        assert!(
+            Themes::from_string(
+                &format!("themes {{ custom {{ pane_surround {value}; }}; }}"),
+                false
+            )
+            .is_err(),
+            "{value}"
+        );
+    }
+}

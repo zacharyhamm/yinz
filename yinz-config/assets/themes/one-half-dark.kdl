@@ -1,6 +1,7 @@
 themes {
     one-half-dark {
         // Terminal palette: https://github.com/sonph/onehalf/blob/master/kitty/onehalf-dark.conf
+        pane_surround "#1c2028"
         terminal {
             foreground "#dcdfe4"
             background "#282c34"

@@ -1775,6 +1775,7 @@ mod config_test {
                 terminal: None,
                 sourced_from_external_file: false,
                 palette: Styling {
+                    pane_surround: None,
                     text_unselected: StyleDeclaration {
                         base: PaletteColor::Rgb((220, 215, 186)),
                         emphasis_0: PaletteColor::Rgb((220, 215, 205)),
@@ -1942,6 +1943,7 @@ mod config_test {
                 terminal: None,
                 sourced_from_external_file: false,
                 palette: Styling {
+                    pane_surround: None,
                     text_unselected: StyleDeclaration {
                         base: PaletteColor::Rgb((220, 215, 186)),
                         emphasis_0: PaletteColor::Rgb((220, 215, 205)),

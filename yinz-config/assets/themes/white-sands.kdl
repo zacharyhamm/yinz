@@ -2,6 +2,7 @@ themes {
     "white-sands" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/White%20Sands
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#e8e3d8"
         terminal {
             foreground "#283b54"
             background "#f4efe4"

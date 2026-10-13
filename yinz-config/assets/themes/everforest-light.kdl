@@ -1,6 +1,7 @@
 themes {
   everforest-light {
         // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Everforest%20Light%20Med
+        pane_surround "#e3dfc8"
         terminal {
             foreground "#5c6a72"
             background "#efebd4"

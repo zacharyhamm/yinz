@@ -2,6 +2,7 @@ themes {
     "datum-dark" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/datum%20%28dark%29
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#03070c"
         terminal {
             foreground "#dbe0e8"
             background "#0f1318"

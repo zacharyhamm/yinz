@@ -1,6 +1,7 @@
 themes {
     lucario {
         // Terminal palette: https://github.com/raphamorim/lucario/blob/main/windows-terminal/lucario.json
+        pane_surround "#1f3244"
         terminal {
             foreground "#F8F8F2"
             background "#2B3E50"

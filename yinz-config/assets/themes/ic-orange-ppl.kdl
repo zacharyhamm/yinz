@@ -2,6 +2,7 @@ themes {
     "ic-orange-ppl" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/IC%20Orange%20PPL
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#1a1a1a"
         terminal {
             foreground "#ffcb83"
             background "#262626"

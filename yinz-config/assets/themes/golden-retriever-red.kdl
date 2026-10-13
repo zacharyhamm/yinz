@@ -2,6 +2,7 @@ themes {
     "golden-retriever-red" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Golden%20Retriever%20Red
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#f3e4d7"
         terminal {
             foreground "#6b3d2a"
             background "#fff0e3"

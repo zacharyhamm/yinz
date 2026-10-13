@@ -2,6 +2,7 @@ themes {
     "moonwalk" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Moonwalk
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#d8d6d4"
         terminal {
             foreground "#061f4a"
             background "#e4e2e0"

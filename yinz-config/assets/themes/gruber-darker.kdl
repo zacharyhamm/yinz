@@ -1,6 +1,7 @@
 themes {
     gruber-darker {
         // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Gruber%20Darker
+        pane_surround "#0c0c0c"
         terminal {
             foreground "#e4e4e4"
             background "#181818"

@@ -2,6 +2,7 @@ themes {
     "ibm-5153-cga" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/IBM%205153%20CGA
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#080808"
         terminal {
             foreground "#cecece"
             background "#141414"

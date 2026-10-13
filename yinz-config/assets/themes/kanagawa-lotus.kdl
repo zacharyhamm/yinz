@@ -2,6 +2,7 @@ themes {
     "kanagawa-lotus" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Kanagawa%20Lotus
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#e6e0b0"
         terminal {
             foreground "#545464"
             background "#f2ecbc"

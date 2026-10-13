@@ -2,6 +2,7 @@ themes {
     "heeler" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Heeler
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#15133a"
         terminal {
             foreground "#fdfdfd"
             background "#211f46"

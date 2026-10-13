@@ -2,6 +2,7 @@ themes {
     "warm-burnout-light" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Warm%20Burnout%20Light
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#e9e1d4"
         terminal {
             foreground "#3a3630"
             background "#f5ede0"

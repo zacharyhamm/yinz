@@ -2,6 +2,7 @@ themes {
     "x-oslo" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/X%20Oslo
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#333845"
         terminal {
             foreground "#abb2bf"
             background "#3f4451"

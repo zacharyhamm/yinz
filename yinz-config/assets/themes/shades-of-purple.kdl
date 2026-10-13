@@ -2,6 +2,7 @@ themes {
     "shades-of-purple" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Shades%20Of%20Purple
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#121134"
         terminal {
             foreground "#ffffff"
             background "#1e1d40"

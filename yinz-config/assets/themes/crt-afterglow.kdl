@@ -2,6 +2,7 @@ themes {
     "crt-afterglow" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/CRT%20Afterglow
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#000300"
         terminal {
             foreground "#d0d8c8"
             background "#0b0f0b"

@@ -2,6 +2,7 @@ themes {
     "material-design-colors" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Material%20Design%20Colors
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#111a1e"
         terminal {
             foreground "#e7ebed"
             background "#1d262a"

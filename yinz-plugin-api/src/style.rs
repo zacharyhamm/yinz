@@ -112,6 +112,10 @@ impl TryFrom<ProtobufStyling> for Styling {
         };
 
         Ok(Styling {
+            pane_surround: proto
+                .pane_surround
+                .map(PaletteColor::try_from)
+                .transpose()?,
             text_unselected: color_definitions!(proto, text_unselected, 6),
             text_selected: color_definitions!(proto, text_selected, 6),
             ribbon_unselected: color_definitions!(proto, ribbon_unselected, 6),
@@ -171,6 +175,10 @@ impl TryFrom<Styling> for ProtobufStyling {
         };
 
         Ok(ProtobufStyling {
+            pane_surround: style
+                .pane_surround
+                .map(ProtobufColor::try_from)
+                .transpose()?,
             text_unselected: style_declaration_to_protobuf(style.text_unselected)?,
             text_selected: style_declaration_to_protobuf(style.text_selected)?,
             ribbon_unselected: style_declaration_to_protobuf(style.ribbon_unselected)?,
@@ -424,3 +432,7 @@ mod color_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "unit/style.rs"]
+mod pane_surround_tests;

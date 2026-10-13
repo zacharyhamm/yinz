@@ -1,6 +1,7 @@
 themes {
     terafox {
         // Terminal palette: https://github.com/EdenEast/nightfox.nvim/blob/main/extra/terafox/kitty.conf
+        pane_surround "#09191c"
         terminal {
             foreground "#e6eaea"
             background "#152528"

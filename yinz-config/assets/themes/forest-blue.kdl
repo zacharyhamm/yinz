@@ -2,6 +2,7 @@ themes {
     "forest-blue" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Forest%20Blue
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#00090d"
         terminal {
             foreground "#e2d8cd"
             background "#051519"

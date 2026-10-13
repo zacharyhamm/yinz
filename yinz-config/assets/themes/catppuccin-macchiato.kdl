@@ -1,6 +1,7 @@
 themes {
     catppuccin-macchiato {
         // Terminal palette: https://github.com/catppuccin/kitty/blob/main/themes/macchiato.conf
+        pane_surround "#181b2e"
         terminal {
             foreground "#cad3f5"
             background "#24273a"

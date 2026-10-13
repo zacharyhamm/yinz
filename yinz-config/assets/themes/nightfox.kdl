@@ -1,6 +1,7 @@
 themes {
     nightfox {
         // Terminal palette: https://github.com/EdenEast/nightfox.nvim/blob/main/extra/nightfox/kitty.conf
+        pane_surround "#0d1724"
         terminal {
             foreground "#cdcecf"
             background "#192330"

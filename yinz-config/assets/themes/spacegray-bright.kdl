@@ -2,6 +2,7 @@ themes {
     "spacegray-bright" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Spacegray%20Bright
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#1e222e"
         terminal {
             foreground "#f3f3f3"
             background "#2a2e3a"

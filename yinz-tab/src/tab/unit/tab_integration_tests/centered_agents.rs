@@ -1,5 +1,50 @@
 use super::*;
+use yinz_terminal::panes::terminal_character::AnsiCode;
 use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+use yinz_types::colors::PaletteColor;
+
+fn host_grid(size: Size) -> Grid {
+    Grid::new(
+        size.rows,
+        size.cols,
+        Rc::new(RefCell::new(Palette::default())),
+        Default::default(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Style::default(),
+        false,
+        true,
+        true,
+        true,
+        false,
+    )
+}
+
+fn render_into(tab: &mut Tab, grid: &mut Grid) {
+    vte::Parser::new().advance(grid, draw(tab).as_bytes());
+}
+
+fn assert_surround(tab: &Tab, id: PaneId, grid: &Grid) {
+    let pane = tab.get_pane_with_id(id).unwrap();
+    let outer = pane.current_geom();
+    let inner = pane.render_geom();
+    assert!(inner.x > outer.x);
+    for y in outer.y..outer.y + outer.rows.as_usize() {
+        for x in (outer.x..inner.x)
+            .chain(inner.x + inner.cols.as_usize()..outer.x + outer.cols.as_usize())
+        {
+            let cell = grid.get_character_at(x, y).unwrap();
+            assert_eq!(cell.character, ' ', "margin at {x},{y}");
+            assert_eq!(
+                cell.styles.background,
+                Some(tab.style.pane_surround().into()),
+                "margin at {x},{y}"
+            );
+        }
+    }
+}
 
 fn mark_agent(tab: &mut Tab, id: PaneId) {
     tab.set_pane_agent(
@@ -166,7 +211,7 @@ fn centered_agent_split_fullscreen_and_close_preserve_layout() {
 }
 
 #[test]
-fn centered_agent_fullscreen_in_each_layer_and_frame_style() {
+fn pane_surround_fullscreen_in_each_layer_and_frame_style() {
     let size = Size {
         cols: 121,
         rows: 20,
@@ -193,7 +238,9 @@ fn centered_agent_fullscreen_in_each_layer_and_frame_style() {
             let original = tab.get_pane_with_id(id).unwrap().current_geom();
             assert_eq!(tab.get_pane_with_id(id).unwrap().render_geom(), original);
             tab.toggle_pane_fullscreen(id);
-            draw(&mut tab);
+            let mut grid = host_grid(size);
+            render_into(&mut tab, &mut grid);
+            assert_surround(&tab, id, &grid);
             let pane = tab.get_pane_with_id(id).unwrap();
             assert_eq!(pane.get_content_columns(), 40);
             let frame = pane.render_geom();
@@ -206,13 +253,32 @@ fn centered_agent_fullscreen_in_each_layer_and_frame_style() {
             .unwrap()
             .is_none());
             tab.toggle_pane_no_ui_fullscreen(id);
-            draw(&mut tab);
+            render_into(&mut tab, &mut grid);
+            assert_surround(&tab, id, &grid);
+            let mut theme = tab.style.colors;
+            theme.pane_surround = Some(PaletteColor::Rgb((1, 2, 3)));
+            tab.update_theme(theme);
+            render_into(&mut tab, &mut grid);
+            assert_surround(&tab, id, &grid);
+            tab.handle_pty_bytes(
+                TerminalId::new(2),
+                b"\x1b]11;#ff0000\x07\x1b[44m\x1b[2J".to_vec(),
+            )
+            .unwrap();
+            render_into(&mut tab, &mut grid);
+            assert_surround(&tab, id, &grid);
             let pane = tab.get_pane_with_id(id).unwrap();
             assert_eq!(pane.get_content_columns(), 40);
             assert_eq!(pane.get_content_rows(), size.rows);
             assert_eq!(pane.render_geom().cols.as_usize(), 40);
             tab.unset_fullscreen();
-            draw(&mut tab);
+            render_into(&mut tab, &mut grid);
+            for y in 0..size.rows {
+                assert_ne!(
+                    grid.get_character_at(0, y).unwrap().styles.background,
+                    Some(AnsiCode::RgbCode((1, 2, 3)))
+                );
+            }
             assert_eq!(tab.get_pane_with_id(id).unwrap().render_geom(), original);
         }
     }
@@ -296,7 +362,7 @@ fn centered_agent_stack_is_not_a_single_pane() {
 }
 
 #[test]
-fn centered_agent_pane_tabs_share_the_limit_and_restore_it() {
+fn pane_surround_plugin_tabs_share_the_limit_and_restore_it() {
     use yinz_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
     let (mut tab, receiver) = create_new_tab_with_plugin_receiver(
         Size {
@@ -341,6 +407,19 @@ fn centered_agent_pane_tabs_share_the_limit_and_restore_it() {
     tab.pane_tab_loaded(info.id, 1, generation, Ok((plugin, run)))
         .unwrap();
     draw(&mut tab);
+    tab.handle_plugin_bytes(plugin, client, b"Plugin view".to_vec())
+        .unwrap();
+    let mut grid = host_grid(Size {
+        cols: 121,
+        rows: 20,
+    });
+    render_into(&mut tab, &mut grid);
+    assert_surround(&tab, PaneId::Plugin(plugin), &grid);
+    let mut theme = tab.style.colors;
+    theme.pane_surround = Some(PaletteColor::Rgb((4, 5, 6)));
+    tab.update_theme(theme);
+    render_into(&mut tab, &mut grid);
+    assert_surround(&tab, PaneId::Plugin(plugin), &grid);
     let panel = tab.get_pane_with_id(PaneId::Plugin(plugin)).unwrap();
     assert_eq!(panel.get_content_columns(), 40);
     assert_eq!(panel.render_geom().x, 39);
@@ -401,5 +480,48 @@ fn centered_agent_does_not_narrow_children_sharing_a_fullscreen_panel() {
         let pane = tab.get_pane_with_id(id).unwrap();
         assert_eq!(pane.render_geom(), pane.current_geom());
         assert_eq!(pane.max_content_width(), 0);
+    }
+}
+
+#[test]
+fn pane_surround_sole_pane_theme_fallback_resize_and_disable() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut tab = create_new_tab(size, ModeInfo::default());
+    let id = PaneId::Terminal(TerminalId::new(1));
+    tab.max_fullscreen_agent_width = 80;
+    mark_agent(&mut tab, id);
+    let mut grid = host_grid(size);
+    render_into(&mut tab, &mut grid);
+    assert_surround(&tab, id, &grid);
+    for background in [(40, 42, 54), (248, 249, 250)] {
+        tab.update_terminal_theme(Some(yinz_types::style::TerminalTheme {
+            foreground: (255, 255, 255),
+            background,
+            ansi: [(0, 0, 0); 16],
+        }));
+        render_into(&mut tab, &mut grid);
+        assert_surround(&tab, id, &grid);
+    }
+    tab.resize_whole_tab(Size { cols: 60, rows: 20 }).unwrap();
+    render_into(&mut tab, &mut grid);
+    assert_ne!(
+        grid.get_character_at(0, 3).unwrap().styles.background,
+        Some(tab.style.pane_surround().into())
+    );
+    tab.resize_whole_tab(size).unwrap();
+    render_into(&mut tab, &mut grid);
+    assert_surround(&tab, id, &grid);
+    tab.max_fullscreen_agent_width = 0;
+    render_into(&mut tab, &mut grid);
+    for y in 0..size.rows {
+        for x in 0..size.cols {
+            assert_ne!(
+                grid.get_character_at(x, y).unwrap().styles.background,
+                Some(tab.style.pane_surround().into())
+            );
+        }
     }
 }

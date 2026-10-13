@@ -1,6 +1,7 @@
 themes {
     solarized-dark {
         // Terminal palette: https://github.com/altercation/solarized/blob/master/xresources/solarized
+        pane_surround "#001f2a"
         terminal {
             foreground "#839496"
             background "#002b36"

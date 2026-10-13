@@ -2,6 +2,7 @@ themes {
     "poimandres-darker" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Poimandres%20Darker
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#0a0a12"
         terminal {
             foreground "#a6accd"
             background "#16161e"

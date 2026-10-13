@@ -1,6 +1,7 @@
 themes {
     dracula {
         // Terminal palette: https://github.com/dracula/kitty/blob/master/dracula.conf
+        pane_surround "#1c1e2a"
         terminal {
             foreground "#f8f8f2"
             background "#282a36"

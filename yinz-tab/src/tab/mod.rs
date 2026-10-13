@@ -10039,6 +10039,7 @@ impl Tab {
     }
     pub fn update_terminal_theme(&mut self, theme: Option<yinz_types::style::TerminalTheme>) {
         self.style.terminal = theme;
+        self.set_force_render();
         self.floating_panes.update_terminal_theme(theme);
         self.overlay_panes.update_terminal_theme(theme);
         self.tiled_panes.update_terminal_theme(theme);
@@ -10048,6 +10049,7 @@ impl Tab {
     }
     pub fn update_theme(&mut self, theme: Styling) {
         self.style.colors = theme;
+        self.set_force_render();
         // The tab's `default_mode_info` is what `update_input_modes`
         // falls back to when no per-client entry exists in
         // `self.mode_info`. Without this update, plugins on a

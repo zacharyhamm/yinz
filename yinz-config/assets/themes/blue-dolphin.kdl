@@ -2,6 +2,7 @@ themes {
     "blue-dolphin" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Blue%20Dolphin
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#005d78"
         terminal {
             foreground "#c5f2ff"
             background "#006984"
