@@ -334,6 +334,7 @@ struct ClickedPaneDetails {
     /// for the active pane, because that is all its two callers need. A background TUI still owns
     /// its own right-click, so this asks the pane directly and asks it for every pane.
     terminal_emulator_wants_mouse: bool,
+    is_agent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,6 +356,7 @@ struct MouseEventContext {
     mouse_click_through: bool,
     mouse_scroll_resize: bool,
     context_menu_enabled: bool,
+    context_menu_override_agent_mouse: bool,
     /// The pane the client is descended into (a nested guest), if any. Alt+mouse over it goes
     /// to the pane when it tracks the mouse, instead of toggling host pane groups.
     passthrough_pane_id: Option<PaneId>,
@@ -633,6 +635,7 @@ impl MouseHandler {
             mouse_click_through: tab.mouse_click_through,
             mouse_scroll_resize: tab.mouse_scroll_resize,
             context_menu_enabled: tab.context_menu_on_right_click,
+            context_menu_override_agent_mouse: tab.context_menu_override_agent_mouse,
             passthrough_pane_id,
         })
     }
@@ -698,6 +701,7 @@ impl MouseHandler {
             on_seam,
             terminal_wants_mouse,
             terminal_emulator_wants_mouse,
+            is_agent: pane.agent_info().is_some(),
         })
     }
 
@@ -2040,8 +2044,8 @@ impl MouseHandler {
             //   menu on top of the first;
             // - **not `frame_intercepted`**, so a pane already claiming its own frame's mouse
             //   events keeps them, matching the ctrl-left and plain-left branches above;
-            // - **not tracking the mouse**, which is the rule the option is documented under - and
-            //   it is deliberately not conditioned on the pane being active, because a TUI in a
+            // - **not tracking the mouse**, unless the agent override applies;
+            //   deliberately not conditioned on the pane being active, because a TUI in a
             //   background pane still owns its own right-click.
             //
             // Not gated on being the active pane either: right-clicking an unfocused pane should
@@ -2050,7 +2054,9 @@ impl MouseHandler {
                 if let Some(details) = ctx.clicked_pane.as_ref().filter(|details| {
                     details.pane_id == pane_id
                         && !details.frame_intercepted
-                        && (!details.terminal_emulator_wants_mouse || details.on_frame)
+                        && (!details.terminal_emulator_wants_mouse
+                            || details.on_frame
+                            || (ctx.context_menu_override_agent_mouse && details.is_agent))
                 }) {
                     return Ok(MouseAction::OpenContextMenu {
                         pane_id,
@@ -2557,6 +2563,7 @@ mod tests {
             mouse_click_through: false,
             mouse_scroll_resize,
             context_menu_enabled: false,
+            context_menu_override_agent_mouse: true,
             passthrough_pane_id: None,
         }
     }
@@ -2575,6 +2582,7 @@ mod tests {
             on_seam: None,
             terminal_wants_mouse: false,
             terminal_emulator_wants_mouse: false,
+            is_agent: false,
         }
     }
 
@@ -2987,6 +2995,7 @@ mod tests {
             on_seam: None,
             terminal_wants_mouse: false,
             terminal_emulator_wants_mouse: false,
+            is_agent: false,
         }
     }
 
@@ -2996,6 +3005,55 @@ mod tests {
         context.pane_id_at_position = Some(pane_id);
         context.clicked_pane = Some(content_click_on(pane_id));
         context
+    }
+
+    #[test]
+    fn agent_override_preserves_other_mouse_actions() {
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
+        let mut context = right_press_context(pane_id, true);
+        context.clicked_pane = Some(ClickedPaneDetails {
+            is_agent: true,
+            terminal_wants_mouse: true,
+            terminal_emulator_wants_mouse: true,
+            ..content_click_on(pane_id)
+        });
+        let p = Position::new(4, 7);
+        for event in [
+            MouseEvent::new_left_press_event(p),
+            MouseEvent::new_left_motion_event(p),
+            MouseEvent::new_left_release_event(p),
+            MouseEvent::new_middle_press_event(p),
+            MouseEvent::new_middle_motion_event(p),
+            MouseEvent::new_middle_release_event(p),
+            MouseEvent::new_scroll_up_event(p),
+            MouseEvent::new_scroll_down_event(p),
+            MouseEvent::new_right_press_with_alt_event(p),
+            MouseEvent {
+                left: false,
+                ..MouseEvent::new_left_motion_event(p)
+            },
+        ] {
+            context.context_menu_override_agent_mouse = false;
+            let expected = MouseHandler::determine_mouse_action(&event, &context).unwrap();
+            context.context_menu_override_agent_mouse = true;
+            assert_eq!(
+                MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+                expected,
+                "{event:?}"
+            );
+        }
+        context.passthrough_pane_id = Some(pane_id);
+        let event = MouseEvent::new_right_press_with_alt_event(p);
+        assert_eq!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::SendToTerminal { pane_id, event },
+        );
+        context.clicked_pane.as_mut().unwrap().frame_intercepted = true;
+        assert!(!matches!(
+            MouseHandler::determine_mouse_action(&MouseEvent::new_right_press_event(p), &context)
+                .unwrap(),
+            MouseAction::OpenContextMenu { .. }
+        ));
     }
 
     #[test]

@@ -730,9 +730,14 @@ background_opacity "85%"
 // mouse_click_through false
  
 // Whether right-clicking a pane opens a context menu. A program that is tracking the
-// mouse itself keeps its own right-click either way.
+// mouse keeps right-click, except agents with context_menu_override_agent_mouse true.
 // default is true
 // context_menu_on_right_click true
+
+// Whether recognized agents open the context menu even while tracking the mouse.
+// Requires context_menu_on_right_click. Set false to let agents handle right-click.
+// default is true
+// context_menu_override_agent_mouse true
  
 // Whether triple-clicking inside command output marked by the shell (OSC 133) selects
 // the command and its output instead of the logical line

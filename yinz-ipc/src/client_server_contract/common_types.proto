@@ -1510,6 +1510,7 @@ message Options {
   optional string word_separators = 62;
   optional bool dangerously_enable_paste_buffer_read = 63;
   optional bool context_menu_on_right_click = 65;
+  optional bool context_menu_override_agent_mouse = 81;
   optional ThemeHue explicit_theme_hue = 69;
   optional string host_notification_protocol = 67;
   optional uint32 agent_pane_min_columns = 72;

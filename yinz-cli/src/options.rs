@@ -283,15 +283,19 @@ pub struct CliOptions {
     #[serde(default)]
     pub mouse_click_through: Option<bool>,
 
-    /// Whether right-clicking a pane opens a context menu (true or false)
-    /// default is false
+    /// Whether right-clicking a pane opens a context menu; default is true.
     ///
-    /// The menu opens only where the pane's program is not itself tracking the mouse: a TUI that
-    /// asked for right-click keeps it, so this can turn off and on again under the same pointer as
-    /// the user starts and quits an editor.
+    /// Mouse-tracking programs keep right-click, except recognized agents when
+    /// context_menu_override_agent_mouse is enabled.
     #[clap(long, value_parser)]
     #[serde(default)]
     pub context_menu_on_right_click: Option<bool>,
+
+    /// Whether recognized agents use the context menu even while tracking the mouse.
+    /// Requires context_menu_on_right_click; default is true.
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub context_menu_override_agent_mouse: Option<bool>,
 
     /// Whether triple-clicking inside shell-marked (OSC 133) command output selects the command
     /// and its output rather than the logical line
@@ -404,6 +408,7 @@ impl From<CliOptions> for Options {
             focus_follows_mouse: value.focus_follows_mouse,
             mouse_click_through: value.mouse_click_through,
             context_menu_on_right_click: value.context_menu_on_right_click,
+            context_menu_override_agent_mouse: value.context_menu_override_agent_mouse,
             osc133_command_selection: value.osc133_command_selection,
             agent_theme_mapping: value.agent_theme_mapping,
             word_separators: value.word_separators,
@@ -477,6 +482,7 @@ impl From<Options> for CliOptions {
             focus_follows_mouse: value.focus_follows_mouse,
             mouse_click_through: value.mouse_click_through,
             context_menu_on_right_click: value.context_menu_on_right_click,
+            context_menu_override_agent_mouse: value.context_menu_override_agent_mouse,
             osc133_command_selection: value.osc133_command_selection,
             agent_theme_mapping: value.agent_theme_mapping,
             word_separators: value.word_separators,
@@ -579,6 +585,9 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         other.context_menu_on_right_click,
         base.context_menu_on_right_click,
     );
+    let context_menu_override_agent_mouse = other
+        .context_menu_override_agent_mouse
+        .or(base.context_menu_override_agent_mouse);
     let osc133_command_selection = other
         .osc133_command_selection
         .or(base.osc133_command_selection);
@@ -656,6 +665,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         focus_follows_mouse,
         mouse_click_through,
         context_menu_on_right_click,
+        context_menu_override_agent_mouse,
         osc133_command_selection,
         agent_theme_mapping: other.agent_theme_mapping.or(base.agent_theme_mapping),
         word_separators,
@@ -792,6 +802,25 @@ mod tests {
             assert_eq!(
                 merge_from_cli(&config, options).max_fullscreen_agent_width,
                 value.or(Some(100))
+            );
+        }
+    }
+
+    #[test]
+    fn agent_mouse_override_cli_round_trip_and_precedence() {
+        let config = Options {
+            context_menu_override_agent_mouse: Some(true),
+            ..Default::default()
+        };
+        for value in [None, Some(false), Some(true)] {
+            let options = Options {
+                context_menu_override_agent_mouse: value,
+                ..Default::default()
+            };
+            assert_eq!(Options::from(CliOptions::from(options.clone())), options);
+            assert_eq!(
+                merge_from_cli(&config, options).context_menu_override_agent_mouse,
+                value.or(Some(true))
             );
         }
     }

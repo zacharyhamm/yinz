@@ -63,6 +63,7 @@ Options {
     focus_follows_mouse: None,
     mouse_click_through: None,
     context_menu_on_right_click: None,
+    context_menu_override_agent_mouse: None,
     osc133_command_selection: None,
     word_separators: None,
     host_notification_protocol: None,

@@ -833,14 +833,18 @@ context_menu {
 //
 // mouse_hover_effects false
 
-// Whether right-clicking a pane opens a context menu. A program that is tracking
-// the mouse itself (vim, htop) keeps its own right-click either way, so this can
-// go quiet and come back as you start and quit an editor.
-// What the menu says is the `context_menu` block below, filtered by the
-// `context_menu` hook plugin.
-// Default: false
+// Whether right-clicking a pane opens a context menu. Mouse-tracking programs
+// keep right-click, except agents with context_menu_override_agent_mouse true.
+// Menu items come from the context_menu block and hook plugin.
+// Default: true
 //
 // context_menu_on_right_click true
+
+// Whether recognized agents open the context menu even while tracking the mouse.
+// Requires context_menu_on_right_click. Set false to let agents handle right-click.
+// Default: true
+//
+// context_menu_override_agent_mouse true
 
 // Whether to output OSC8 hyperlink sequences
 // Default: true

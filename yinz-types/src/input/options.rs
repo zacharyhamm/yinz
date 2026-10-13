@@ -442,14 +442,16 @@ pub struct Options {
     #[serde(default)]
     pub mouse_click_through: Option<bool>,
 
-    /// Whether right-clicking a pane opens a context menu (true or false)
-    /// default is true
-    ///
-    /// The menu opens only where the pane's program is not itself tracking the mouse: a TUI that
-    /// asked for right-click keeps it, so this can turn off and on again under the same pointer as
-    /// the user starts and quits an editor.
+    /// Whether right-clicking a pane opens a context menu; default is true.
+    /// Mouse-tracking programs keep right-click, except recognized agents when
+    /// context_menu_override_agent_mouse is enabled.
     #[serde(default)]
     pub context_menu_on_right_click: Option<bool>,
+
+    /// Whether recognized agents use the context menu even while tracking the mouse.
+    /// Requires context_menu_on_right_click; default is true.
+    #[serde(default)]
+    pub context_menu_override_agent_mouse: Option<bool>,
 
     /// Whether triple-clicking inside shell-marked (OSC 133) command output selects the command
     /// and its output rather than the logical line
@@ -594,6 +596,9 @@ impl Options {
         let context_menu_on_right_click = other
             .context_menu_on_right_click
             .or(self.context_menu_on_right_click);
+        let context_menu_override_agent_mouse = other
+            .context_menu_override_agent_mouse
+            .or(self.context_menu_override_agent_mouse);
         let osc133_command_selection = other
             .osc133_command_selection
             .or(self.osc133_command_selection);
@@ -671,6 +676,7 @@ impl Options {
             focus_follows_mouse,
             mouse_click_through,
             context_menu_on_right_click,
+            context_menu_override_agent_mouse,
             agent_theme_mapping: other.agent_theme_mapping.or(self.agent_theme_mapping),
             osc133_command_selection,
             word_separators,
