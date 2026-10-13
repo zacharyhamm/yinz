@@ -953,6 +953,8 @@ export interface AgentRestart {
   remove_values?: string[]; remove_switches?: string[]; remove_optional_values?: string[]; keep_positionals?: boolean; max_positionals?: number;
 }
 export interface AgentInput {
+  /** Whole-composer clear key used before explicit prompts. Defaults to "Ctrl c". */
+  clear_key?: string;
   submit_key?: string; submit_delay_ms?: number; paste_prefix?: string; command_prefixes?: string[]; newline?: "\n" | "\r" | "\r\n";
 }
 export interface AgentHookArtifact {base?: "config" | "home"; path: string; content: string; marker: string; executable?: boolean;}

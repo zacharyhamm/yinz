@@ -292,7 +292,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             file,
             conversation,
             submission,
-            preserve_draft,
+            preserve_draft: _,
             wait,
             timeout: requested,
             json,
@@ -311,7 +311,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                     timeout_ms: timeout_millis(timeout)?,
                     expected_session_id: conversation,
                     submission_id: submission,
-                    preserve_draft,
+                    preserve_draft: false,
                 },
                 json,
             )

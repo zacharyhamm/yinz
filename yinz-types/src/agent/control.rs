@@ -107,6 +107,7 @@ pub enum AgentRequest {
         /// Caller-chosen retry identity, or a server-generated UUID when omitted.
         #[serde(default)]
         submission_id: Option<String>,
+        /// Ignored compatibility field: explicit prompts always replace drafts.
         #[serde(default)]
         preserve_draft: bool,
         prompt: String,

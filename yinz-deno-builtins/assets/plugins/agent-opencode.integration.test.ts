@@ -1,6 +1,7 @@
 import { test, session, assert, assertEquals } from "yinz:testing";
 
-// The stub captures real PTY input. Lifecycle reports are injected independently so a test
+// The stub captures real PTY input and treats Ctrl-C as whole-composer clearing.
+// Lifecycle reports are injected independently so a test
 // can exercise missing, stale, reordered, and matching hooks while a control request waits.
 const terminalAgent = String.raw`
 stty raw -echo
@@ -8,6 +9,10 @@ printf 'agent-args:'
 printf '<%s>' "$@"
 printf '\r\n\033[?2004hfixture-agent-ready\r\n'
 while IFS= read -r line; do
+  case "$line" in
+    *"$(printf '\003')"*) printf 'composer-cleared\r\n' ;;
+  esac
+  line=$(printf '%s' "$line" | tr '\003' '\n' | tail -n 1)
   printf 'received:'
   printf '%s' "$line" | od -An -tx1 | tr -d ' \n'
   printf '\r\n'
@@ -83,6 +88,7 @@ test(
       });
     // Read: + bracketed paste containing CR + Ctrl-J submission, with the line delimiter
     // consumed by read. The exact bytes come from the terminal process, not a mocked writer.
+    await session.waitForText("composer-cleared");
     await session.waitForText(
       "received:526561643a201b5b3230307e7265766965770d636f64651b5b3230317e",
     );

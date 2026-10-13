@@ -398,3 +398,24 @@ fn bubblewrap_is_an_explicit_spawn_option() {
         );
     }
 }
+
+#[test]
+fn preserve_draft_is_accepted_only_as_a_hidden_compatibility_flag() {
+    use clap::{CommandFactory, Parser};
+    let parsed =
+        AgentCli::try_parse_from(["agent", "prompt", "7", "review", "--preserve-draft"]).unwrap();
+    assert!(matches!(
+        parsed.command,
+        Agent::Prompt {
+            preserve_draft: true,
+            ..
+        }
+    ));
+    let mut command = AgentCli::command();
+    let help = command
+        .find_subcommand_mut("prompt")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+    assert!(!help.contains("--preserve-draft"));
+}

@@ -42,7 +42,9 @@ yinz agent spawn --kind claude --model haiku --cwd . --branch review-auth --base
 Use the actual `spawned.pane_id`, `spawned.tab_id`, `spawned.cwd`, and `spawned.branch` returned by spawn.
 `spawned.created_tab_id` identifies a tab created by this launch, including automatic overflow.
 If spawn fails, inspect `spawned` and `launch_resources`: a pane, tab, branch, or worktree may already exist. Reconcile those resources before retrying.
-The idle wait already returns status in `agents`; use its `agent.session_id` as the conversation guard and check `ready`, `status_available`, and `prompt_supported` before prompting.
+The idle wait returns status in `agents`. Use its `agent.session_id` as the conversation guard and check `status_available` and `prompt_supported`.
+If `ready` is false only because of `unconsumed_input`, send the requested prompt directly. Do not wait for draft removal or request recovery.
+Other readiness failures still require attention. Muse’s first prompt also requires its visible composer after setup.
 Completed prompt responses include the answer in `message` when the provider reports it. Use `status` for a fresh observation and `read` to diagnose missing readiness, dialogs, or missing output; neither is an automatic extra step.
 If startup remains `Spawned` or reports `status_unavailable`, read the pane and check hooks. Answer a visible startup dialog deliberately with `send-keys`, within the user's authorization, then wait again. A Codex worktree trust prompt accepts `y Enter`; do not approve trust without authorization.
 For a multi-line prompt, write it to a file or pass a heredoc with `--file -`:
@@ -53,7 +55,7 @@ Fix the failing test in calc.py, then run the tests.
 EOF
 ```
 
-Muse hook verification alone does not establish readiness. Before the first prompt, Yinz requires an empty Muse 1.4.2 composer with a visible cursor after `❯ `. Dialogs, drafts, scrolling, and unknown layouts remain unready. Yinz never changes workspace trust automatically.
+Muse hook verification alone does not establish readiness. Before the first prompt, Yinz requires a visible Muse 1.4.2 composer to distinguish input from setup dialogs. An explicit prompt replaces its draft. Yinz never changes workspace trust automatically.
 
 A fresh Muse pane reports no conversation until its first turn binds one: submit that first prompt unpinned, then pin `--conversation` afterwards.
 An idle state alone does not establish readiness or prove task success.
@@ -204,10 +206,10 @@ See [the agent CLI guide](../../../docs/AGENT_CLI.md#durable-tool-history) for p
 and adapter refresh commands. No historical import is performed.
 
 An authorized `agent prompt` already authorizes replacing an idle draft. Do not ask for separate discard permission.
-Submit the guarded prompt directly. Claude, Codex, and Pi default composers support automatic clearing.
-The command verifies that the composer is empty before delivery. It does not interrupt active work or answer dialogs.
+Submit the guarded prompt directly. Every prompt provider clears the composer before delivery, including unrecognized layouts.
+The command sends a marker paste and the provider’s clear key before the requested prompt. It does not interrupt active work or answer dialogs.
 One timeout covers clearing and submission. Inspect failures with `wait --submission`; clearing failures have acknowledgement false.
-Unsupported providers or layouts return a clearing limitation. Status and idle waits are read-only.
+Clearing does not depend on rendered composer text. Status and idle waits are read-only.
 
 For standalone draft discard without a prompt, obtain authorization before calling `agent clear-draft`.
 Inspect `agent status TARGET --json` and the composer.
@@ -228,4 +230,4 @@ Ambiguous suggestions, attachments, and paste labels do not prove emptiness.
 Pi needs its existing `PI_HARDWARE_CURSOR=1` setting for cursor verification. Verification can fail after partial clearing.
 Inspect failures instead of retrying. Clearing preserves the conversation but does not verify task completion or remove provider history.
 
-Use `yinz agent prompt --preserve-draft` for supervised worker assignments. This refuses a draft or unknown composer without clearing input. Save a submission ID before delivery and inspect that ID after a lost reply instead of resending the prompt.
+Use `yinz agent prompt` for supervised worker assignments. Explicit prompts always replace drafts. The legacy `--preserve-draft` flag is accepted but ignored. Save a submission ID before delivery and inspect that ID after a lost reply instead of resending the prompt.

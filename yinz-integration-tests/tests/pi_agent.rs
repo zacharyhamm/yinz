@@ -139,11 +139,23 @@ fn pi_launch_resolves_extension_and_correlates_a_prompt_end_to_end() {
             timeout_ms: 30_000,
         }))
         .unwrap();
-    agent.wait_for_stdin("Pi receives bracketed paste and Enter", |bytes| {
-        bytes
-            .windows(b"\x1b[200~review\x1b[201~\r".len())
-            .any(|bytes| bytes == b"\x1b[200~review\x1b[201~\r")
-    });
+    agent.wait_for_stdin(
+        "Pi receives clearing followed by the prompt and Enter",
+        |bytes| {
+            let prompt = b"\x1b[200~review\x1b[201~\r";
+            let Some(at) = bytes
+                .windows(prompt.len())
+                .position(|bytes| bytes == prompt)
+            else {
+                return false;
+            };
+            assert!(bytes[..at]
+                .windows(b"\x1b[200~yz".len())
+                .any(|bytes| bytes == b"\x1b[200~yz"));
+            assert!(bytes[..at].ends_with(b"\x1b[201~\x03"));
+            true
+        },
+    );
     report(&mut yinz, "UserPromptSubmit", "turn-1");
     report(&mut yinz, "Stop", "stale-turn");
     report(&mut yinz, "Stop", "turn-1");
