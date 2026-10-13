@@ -113,6 +113,7 @@ pub struct TerminalPane {
     vte_batches: usize,
     selection_scrolled_at: time::Instant,
     content_offset: Offset,
+    max_content_width: usize,
     pane_tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>,
     pane_tabs_views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>,
     pane_tabs_transfer: Option<crate::pane_tabs::PaneTabsTransfer>,
@@ -313,6 +314,7 @@ impl Pane for TerminalPane {
             return None;
         }
         let Offset { top, left, .. } = self.content_offset;
+        let left = left + self.render_geom().x - self.x();
         let top = top + self.content_header_rows();
         self.grid
             .cursor_coordinates()
@@ -673,9 +675,11 @@ impl Pane for TerminalPane {
             pane_title = self.title_with_agent_indicator(pane_title);
         }
 
-        let frame_geom = frame_params
-            .frame_geom_override
-            .unwrap_or_else(|| self.current_geom());
+        let frame_geom = self.constrain_render_geom(
+            frame_params
+                .frame_geom_override
+                .unwrap_or_else(|| self.current_geom()),
+        );
         let is_pinned = frame_geom.is_pinned;
         let mut frame = PaneFrame::new(
             frame_geom.into(),
@@ -1090,6 +1094,19 @@ impl Pane for TerminalPane {
         self.frame.clear();
     }
 
+    fn max_content_width(&self) -> usize {
+        self.max_content_width
+    }
+    fn set_max_content_width(&mut self, width: usize) -> bool {
+        let before = self.render_geom();
+        self.max_content_width = width;
+        if before == self.render_geom() {
+            return false;
+        }
+        self.reflow_lines();
+        self.render_full_viewport();
+        true
+    }
     fn set_content_offset(&mut self, offset: Offset) {
         self.content_offset = offset;
         self.reflow_lines();
@@ -2041,6 +2058,7 @@ impl TerminalPane {
             pending_agent_escape_clients: HashSet::new(),
             frame: HashMap::new(),
             content_offset: Offset::default(),
+            max_content_width: 0,
             pane_tabs: None,
             pane_tabs_views: HashMap::new(),
             pane_tabs_transfer: None,

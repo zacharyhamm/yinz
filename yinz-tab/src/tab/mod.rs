@@ -274,6 +274,7 @@ pub struct Tab {
     pub agent_tab_waiting_for_pane: bool,
     pending_agent_placements: Vec<(PaneId, NotificationEnd)>,
     pub agent_double_escape: bool,
+    pub max_fullscreen_agent_width: usize,
     pub pending_agent_escapes: HashMap<(ClientId, PaneId), Instant>,
     pub id: TabId,
     pub position: TabPosition,
@@ -547,6 +548,7 @@ impl Tab {
         let swap_layouts = SwapLayouts::new(swap_layouts, display_area.clone());
 
         Tab {
+            max_fullscreen_agent_width: 0,
             agent_double_escape: false,
             pending_agent_escapes: HashMap::new(),
             id,
@@ -5881,6 +5883,77 @@ impl Tab {
         Ok(())
     }
 
+    fn update_agent_pane_widths(&mut self) -> Result<()> {
+        let sole_tiled_pane = {
+            let mut panes = self
+                .tiled_panes
+                .get_panes()
+                .filter(|(_, pane)| pane.selectable());
+            let first = panes.next().map(|(id, _)| *id);
+            if panes.next().is_none() {
+                first.filter(|id| !self.pane_is_stack_list_member(id))
+            } else {
+                None
+            }
+        };
+        let mut candidates: HashSet<PaneId> = self
+            .overlay_panes
+            .fullscreen_pane_ids()
+            .into_iter()
+            // A fullscreen linked panel still divides its area between several panes.
+            .filter(|id| {
+                self.overlay_panes.get(id).is_some_and(|pane| {
+                    self.overlay_panes.outer_geom(*id) == Some(pane.current_geom())
+                })
+            })
+            .collect();
+        candidates.extend(self.tiled_panes.fullscreen_pane_id());
+        candidates.extend(self.floating_panes.fullscreen_pane_id());
+        candidates.extend(sole_tiled_pane);
+        let mut eligible: HashSet<PaneId> = candidates
+            .iter()
+            .copied()
+            .filter(|id| self.pane_is_agent(*id))
+            .collect();
+        // A pane tab's plugin view shares the agent terminal's presentation.
+        for tabs in self.pane_tabs.values() {
+            if candidates.contains(&tabs.info.pane_id)
+                && tabs
+                    .info
+                    .tabs
+                    .iter()
+                    .filter_map(|tab| tab.pane_id())
+                    .any(|id| self.pane_is_agent(id))
+            {
+                eligible.insert(tabs.info.pane_id);
+                eligible.extend(tabs.info.tabs.iter().filter_map(|tab| tab.pane_id()));
+            }
+        }
+        let mut changed = false;
+        for id in self.get_all_pane_ids() {
+            let width = if eligible.contains(&id) {
+                self.max_fullscreen_agent_width
+            } else {
+                0
+            };
+            if self
+                .get_pane_with_id_mut(id)
+                .is_some_and(|pane| pane.set_max_content_width(width))
+            {
+                if let Some(pane) = self.get_pane_with_id(id) {
+                    resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                        .context("failed to resize centered agent pane")?;
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            self.set_should_clear_display_before_rendering();
+            self.set_force_render();
+        }
+        Ok(())
+    }
+
     pub fn expire_pending_agent_escapes(&mut self, now: Instant) {
         self.pending_agent_escapes
             .retain(|_, first| now.duration_since(*first) < Duration::from_secs(1));
@@ -5931,6 +6004,7 @@ impl Tab {
                 pane.set_pending_agent_escape_clients(clients);
             }
         }
+        self.update_agent_pane_widths()?;
         self.sync_pane_tabs()?;
         self.render_tiled_panes_and_chrome(output, client_id_override)?;
         self.render_floating_panes_and_overlays(output, client_id_override)?;

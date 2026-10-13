@@ -300,6 +300,9 @@ pub struct Options {
     /// Set behaviour on force close (quit or detach)
     pub on_force_close: Option<OnForceClose>,
     pub scroll_buffer_size: Option<usize>,
+    /// Maximum text columns for a sole or fullscreen agent pane (0 disables the limit).
+    #[serde(default)]
+    pub max_fullscreen_agent_width: Option<usize>,
 
     /// Switch to using a user supplied command for clipboard instead of OSC52
     #[serde(default)]
@@ -543,6 +546,9 @@ impl Options {
         let explicit_theme_hue = other.explicit_theme_hue.or(self.explicit_theme_hue);
         let on_force_close = other.on_force_close.or(self.on_force_close);
         let scroll_buffer_size = other.scroll_buffer_size.or(self.scroll_buffer_size);
+        let max_fullscreen_agent_width = other
+            .max_fullscreen_agent_width
+            .or(self.max_fullscreen_agent_width);
         let locked_escape_timeout_ms = other
             .locked_escape_timeout_ms
             .or(self.locked_escape_timeout_ms);
@@ -634,6 +640,7 @@ impl Options {
             mirror_session,
             on_force_close,
             scroll_buffer_size,
+            max_fullscreen_agent_width,
             locked_escape_timeout_ms,
             copy_command,
             copy_clipboard,

@@ -53,6 +53,7 @@ fn every_option_set() -> Config {
             agent_double_escape: Some(true),
             pane_animations: Some(false),
             pane_frame_style: Some(PaneFrameStyle::Full),
+            max_fullscreen_agent_width: Some(100),
             notification_position: Some(NotificationPosition::BottomLeft),
             notification_timeout: Some(ElapsedSeconds::new(3)),
             mirror_session: Some(true),
@@ -120,6 +121,7 @@ fn defaults_match_the_documented_fallbacks() {
         rounded_corners,
         hide_session_name,
         pane_frame_style,
+        max_fullscreen_agent_width,
         simplified_ui,
         pane_animations,
         styled_underlines,
@@ -169,6 +171,7 @@ fn defaults_match_the_documented_fallbacks() {
     assert!(!rounded_corners);
     assert!(!hide_session_name);
     assert_eq!(pane_frame_style, PaneFrameStyle::Titles);
+    assert_eq!(max_fullscreen_agent_width, 0);
     assert!(!simplified_ui);
     assert!(pane_animations);
     assert!(styled_underlines);
@@ -241,6 +244,7 @@ fn every_option_reaches_its_field() {
         rounded_corners,
         hide_session_name,
         pane_frame_style,
+        max_fullscreen_agent_width,
         simplified_ui,
         pane_animations,
         styled_underlines,
@@ -290,6 +294,7 @@ fn every_option_reaches_its_field() {
     assert!(rounded_corners);
     assert!(hide_session_name);
     assert_eq!(pane_frame_style, PaneFrameStyle::Full);
+    assert_eq!(max_fullscreen_agent_width, 100);
     assert!(simplified_ui);
     assert!(!pane_animations);
     assert!(!styled_underlines);

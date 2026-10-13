@@ -1337,7 +1337,11 @@ impl OverlayPanes {
         if !overlay.framed() {
             return false;
         }
-        let geom = self.current_geom(overlay);
+        let geom = if overlay.children.as_slice().len() == 1 {
+            overlay.children.as_slice()[0].1.render_geom()
+        } else {
+            self.current_geom(overlay)
+        };
         let x = position.column();
         let y = position.line();
         contains(geom, position)

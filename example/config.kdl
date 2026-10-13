@@ -307,3 +307,7 @@ plugins {
 // (Requires restart)
 //
 // user_plugin_dir "/path/to/my/plugins"
+
+// Center sole or fullscreen agent panes; text columns, excluding frames.
+// 0 (default) leaves the width unrestricted.
+// max_fullscreen_agent_width 100

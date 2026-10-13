@@ -1,6 +1,6 @@
 use crate::output::{CharacterChunk, Output};
 use crate::pane::{Pane, RenderedPane};
-use crate::panes::terminal_character::AnsiCode;
+use crate::panes::terminal_character::{AnsiCode, EMPTY_TERMINAL_CHARACTER};
 use crate::panes::PaneId;
 use crate::ui::boundaries::Boundaries;
 use crate::ui::pane_boundaries_frame::{FrameParams, OpeningRipple, StackListEntry};
@@ -137,6 +137,26 @@ impl<'a> PaneContentsAndUi<'a> {
         self.stack_list_entry_is_selected = stack_list_entry_is_selected;
         self.stack_list_entry_stack_is_focused = stack_list_entry_stack_is_focused;
     }
+    fn add_centering_margins(&self, chunks: &mut Vec<CharacterChunk>) {
+        let outer = self.pane.current_geom();
+        let inner = self.pane.render_geom();
+        let right = inner.x + inner.cols.as_usize();
+        for (x, width) in [
+            (outer.x, inner.x - outer.x),
+            (right, outer.x + outer.cols.as_usize() - right),
+        ] {
+            if width == 0 {
+                continue;
+            }
+            for y in outer.y..outer.y + outer.rows.as_usize() {
+                chunks.push(CharacterChunk::new(
+                    vec![EMPTY_TERMINAL_CHARACTER; width],
+                    x,
+                    y,
+                ));
+            }
+        }
+    }
     pub fn render_pane_contents_to_multiple_clients(
         &mut self,
         clients: impl Iterator<Item = ClientId>,
@@ -157,8 +177,9 @@ impl<'a> PaneContentsAndUi<'a> {
             {
                 self.output.rendered_pane_contents.insert(self.pane.pid());
             }
-            let (character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
+            let (mut character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
                 rendered;
+            self.add_centering_margins(&mut character_chunks);
             self.output
                 .add_character_chunks_to_multiple_clients(
                     character_chunks,
@@ -232,8 +253,9 @@ impl<'a> PaneContentsAndUi<'a> {
             if self.output.pane_change_client == Some(client_id) && rendered_anything(&rendered) {
                 self.output.rendered_pane_contents.insert(self.pane.pid());
             }
-            let (character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
+            let (mut character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
                 rendered;
+            self.add_centering_margins(&mut character_chunks);
             self.output
                 .add_character_chunks_to_client(client_id, character_chunks, self.z_index)
                 .with_context(err_context)?;

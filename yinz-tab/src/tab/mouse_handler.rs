@@ -2481,13 +2481,24 @@ impl MouseHandler {
         let err_context = || format!("failed to get pane at position {point:?}");
 
         if let Some(pane_id) = tab.overlay_panes.visible_pane_id_at(point) {
-            let pane = tab.overlay_panes.get_mut(&pane_id);
+            let pane = tab
+                .overlay_panes
+                .get_mut(&pane_id)
+                .filter(|pane| pane.max_content_width() == 0 || pane.contains(point));
             if !search_selectable || pane.as_ref().is_some_and(|pane| pane.selectable()) {
                 return Ok(pane);
             }
             return Ok(None);
         }
         if tab.floating_panes.panes_are_visible() {
+            // Fullscreen margins occlude the lower layer but do not receive terminal input.
+            if let Some(id) = tab.floating_panes.fullscreen_pane_id() {
+                if tab.floating_panes.get_pane(id).is_some_and(|pane| {
+                    pane.current_geom().contains(point) && !pane.contains(point)
+                }) {
+                    return Ok(None);
+                }
+            }
             if let Some(pane_id) = tab
                 .floating_panes
                 .get_pane_id_at(point, search_selectable)
@@ -2516,7 +2527,9 @@ impl MouseHandler {
             .get_pane_id_at(point, search_selectable)
             .with_context(err_context)?
         {
-            Ok(tab.get_pane_with_id_mut(pane_id))
+            Ok(tab
+                .get_pane_with_id_mut(pane_id)
+                .filter(|pane| pane.max_content_width() == 0 || pane.contains(point)))
         } else {
             Ok(None)
         }

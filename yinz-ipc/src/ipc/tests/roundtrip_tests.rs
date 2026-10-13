@@ -768,6 +768,7 @@ fn test_client_messages() {
                 mirror_session: Some(true),
                 on_force_close: Some(OnForceClose::Quit),
                 scroll_buffer_size: Some(100000),
+                max_fullscreen_agent_width: Some(100),
                 copy_command: Some("copy_command".to_owned()),
                 copy_clipboard: Some(Clipboard::System),
                 copy_on_select: Some(true),
