@@ -561,6 +561,7 @@ pub enum ServerContext {
     EventUpdateToClient,
     AssociatePipeWithClient,
     DisconnectAllClientsExcept,
+    GetDisconnectTargets,
     ChangeMode,
     ChangeModeForAllClients,
     Reconfigure,

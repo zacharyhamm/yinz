@@ -1,7 +1,7 @@
 use super::*;
 use crate::output::Output;
 use std::time::Duration;
-use yinz_types::internal_ids::{PluginId, SessionName, TabNumber};
+use yinz_types::internal_ids::{PluginId, SessionName};
 use yinz_types::keys::{BareKey, KeyWithModifier};
 
 const CLIENT: ClientId = ClientId::new(1);
@@ -40,7 +40,7 @@ fn palette_dismissal_restores_cells_outside_floating_panes() {
     let cells_before = grid.as_character_lines();
     screen.toggle_command_palette(CLIENT);
     let opened = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(opened.contains("Switch session"), "{opened}");
+    assert!(opened.contains("Switch current project"), "{opened}");
     screen.close_command_palette(CLIENT);
     let (cursor_after, after) =
         render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -72,14 +72,14 @@ fn watchers_see_only_the_followed_palette_and_restore_the_floating_background() 
     screen.toggle_command_palette(CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
-    assert!(snapshot.contains("Switch session"), "{snapshot}");
+    assert!(snapshot.contains("Switch current project"), "{snapshot}");
     assert!(!snapshot.contains("private"), "{snapshot}");
     assert_eq!(cursor, Some((11, 4)));
-    screen.command_palette_handles_input(&None, b"Switch tab", false, CLIENT);
+    screen.command_palette_handles_input(&None, b"Rename tab", false, CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
     assert!(
-        snapshot.contains("> Switch tab") && snapshot.contains("Switch tab"),
+        snapshot.contains("> Rename tab") && snapshot.contains("Rename tab"),
         "{snapshot}"
     );
     assert!(!snapshot.contains("New pane"), "{snapshot}");
@@ -144,7 +144,7 @@ fn palette_keeps_focus_owns_input_and_resets_on_reopen() {
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert_eq!(cursor, Some((11, 4)), "{snapshot}");
-    assert!(snapshot.contains("New pane") && snapshot.contains("Switch session"));
+    assert!(snapshot.contains("New pane") && snapshot.contains("Switch current project"));
     assert_eq!(screen.get_active_pane_id(&CLIENT), pane);
     // Even an intercepting plugin must not get the palette's keys.
     assert!(!screen
@@ -177,7 +177,7 @@ fn palette_keeps_focus_owns_input_and_resets_on_reopen() {
         render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert_eq!(cursor, Some(underlying_cursor), "{snapshot}");
     assert!(
-        !snapshot.contains("Selected:") && !snapshot.contains("Switch session"),
+        !snapshot.contains("Selected:") && !snapshot.contains("Switch current project"),
         "{snapshot}"
     );
     screen.toggle_command_palette(CLIENT);
@@ -198,19 +198,19 @@ fn palette_is_private_to_each_client_and_dismisses_on_tab_change_or_disconnect()
     screen.toggle_command_palette(CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, second, &mut grid);
-    assert!(!snapshot.contains("Switch session"), "{snapshot}");
+    assert!(!snapshot.contains("Switch current project"), "{snapshot}");
     assert_eq!(cursor, Some(pane_cursor(&mut screen, second)));
     screen.toggle_command_palette(second);
-    screen.command_palette_handles_input(&None, b"Switch tab", false, CLIENT);
-    screen.command_palette_handles_input(&None, b"Focus pane", false, second);
+    screen.command_palette_handles_input(&None, b"Rename tab", false, CLIENT);
+    screen.command_palette_handles_input(&None, b"Close pane", false, second);
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(
-        snapshot.contains("Switch tab") && !snapshot.contains("Focus pane"),
+        snapshot.contains("Rename tab") && !snapshot.contains("Close pane"),
         "{snapshot}"
     );
     let snapshot = render_frame_into(&mut screen, &receiver, second, &mut grid);
     assert!(
-        snapshot.contains("Focus pane") && !snapshot.contains("Switch tab"),
+        snapshot.contains("Close pane") && !snapshot.contains("Rename tab"),
         "{snapshot}"
     );
     new_tab(&mut screen, 2, TabId::new(1));
@@ -330,7 +330,7 @@ fn palette_repaints_its_background_on_frames_without_new_pane_output() {
     screen.close_command_palette(CLIENT);
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(
-        snapshot.contains("background two") && !snapshot.contains("Switch session"),
+        snapshot.contains("background two") && !snapshot.contains("Switch current project"),
         "{snapshot}"
     );
 }
@@ -649,65 +649,6 @@ fn enqueued_palette_action(receiver: &Receiver<(ScreenInstruction, ErrorContext)
 }
 
 #[test]
-fn palette_searches_pane_ids_and_keeps_them_visible_before_long_titles() {
-    for pane in [
-        PaneId::Terminal(TerminalId::new(42)),
-        PaneId::Plugin(PluginId::new(42)),
-    ] {
-        for query in ["42".to_owned(), pane.to_string()] {
-            for picker in [false, true] {
-                let mut screen = create_non_mirrored_screen(SIZE);
-                let (plugin_sender, _plugin_receiver) = channels::unbounded();
-                screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
-                new_tab(&mut screen, 1, TabId::new(0));
-                let receiver = screen_wired_to_server(&mut screen);
-                let actions = palette_actions_receiver(&mut screen);
-                let mut grid = grid_for_render_snapshot(SIZE);
-                for (id, title) in [
-                    (PaneId::Terminal(TerminalId::new(2)), "build 4--2".into()),
-                    (pane, "界".repeat(80)),
-                ] {
-                    screen
-                        .get_active_tab_mut(CLIENT)
-                        .unwrap()
-                        .new_floating_pane(id, Some(title), None, false, false, None, None)
-                        .unwrap();
-                }
-                if picker {
-                    palette_search(&mut screen, "Focus pane");
-                    palette_key(&mut screen, BareKey::Enter);
-                    screen.command_palette_handles_input(&None, query.as_bytes(), false, CLIENT);
-                } else {
-                    palette_search(&mut screen, &query);
-                }
-                let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-                let label = format!(
-                    "› [{}]",
-                    match pane {
-                        PaneId::Terminal(id) => id.to_string(),
-                        PaneId::Plugin(_) => pane.to_string(),
-                    }
-                );
-                let continuation = frame
-                    .lines()
-                    .skip_while(|line| !line.contains(&label))
-                    .nth(1);
-                assert!(
-                    continuation.is_some_and(|line| line.contains('界') && line.contains('…')),
-                    "{query}: {frame}"
-                );
-                palette_key(&mut screen, BareKey::Enter);
-                assert_eq!(
-                    enqueued_palette_action(&actions),
-                    Action::FocusPaneByPaneId { pane_id: pane },
-                    "{query} (picker: {picker})"
-                );
-            }
-        }
-    }
-}
-
-#[test]
 fn palette_builtin_actions_capture_origin_and_close_before_dispatch() {
     for (query, expected) in [
         (
@@ -743,7 +684,6 @@ fn palette_builtin_actions_capture_origin_and_close_before_dispatch() {
                 direction: Direction::Right,
             },
         ),
-        ("Save session", Action::SaveSession),
         ("Detach", Action::Detach),
     ] {
         let mut screen = screen();
@@ -881,7 +821,6 @@ fn palette_rechecks_directional_splits_before_dispatch() {
                 origin,
                 TabId::new(0),
                 action,
-                false,
                 CLIENT,
                 "Test action".into(),
             );
@@ -942,7 +881,6 @@ fn palette_dispatches_supported_pane_placements() {
                 pane_id,
                 tab_id,
                 action,
-                create_session,
                 client_id,
                 ..
             } = receiver.try_recv().unwrap().0
@@ -956,7 +894,6 @@ fn palette_dispatches_supported_pane_placements() {
                 pane_id,
                 tab_id,
                 action,
-                create_session,
                 client_id,
                 "Test action".into(),
             );
@@ -977,7 +914,7 @@ fn palette_dispatches_supported_pane_placements() {
 }
 
 #[test]
-fn palette_forms_validate_session_names_and_capture_creation_values() {
+fn palette_forms_capture_creation_values() {
     let mut screen = screen();
     let receiver = palette_actions_receiver(&mut screen);
     palette_search(&mut screen, "New pane…");
@@ -1008,28 +945,6 @@ fn palette_forms_validate_session_names_and_capture_creation_values() {
         },
         other => panic!("unexpected creation action: {other:?}"),
     }
-    palette_search(&mut screen, "New session…");
-    palette_key(&mut screen, BareKey::Enter);
-    for _ in 0..3 {
-        palette_key(&mut screen, BareKey::Enter);
-    }
-    assert!(screen.command_palettes.contains_key(&CLIENT));
-    assert!(matches!(
-        receiver.try_recv().unwrap().0,
-        ScreenInstruction::Notify(..)
-    ));
-    palette_key(&mut screen, BareKey::Up);
-    palette_key(&mut screen, BareKey::Up);
-    let existing = screen.session_name.clone();
-    screen.command_palette_handles_input(&None, existing.as_str().as_bytes(), false, CLIENT);
-    for _ in 0..3 {
-        palette_key(&mut screen, BareKey::Enter);
-    }
-    assert!(screen.command_palettes.contains_key(&CLIENT));
-    assert!(matches!(
-        receiver.try_recv().unwrap().0,
-        ScreenInstruction::Notify(..)
-    ));
 }
 
 #[test]
@@ -1080,7 +995,6 @@ fn palette_never_retargets_a_vanished_origin_or_destination() {
         PaneId::Terminal(TerminalId::new(1)),
         TabId::new(0),
         Action::BreakPane,
-        false,
         CLIENT,
         "Test action".into(),
     );
@@ -1101,7 +1015,6 @@ fn palette_dispatch_does_not_wait_for_the_screen_thread() {
             id: TabId::new(0),
             name: "renamed".into(),
         },
-        false,
         CLIENT,
         "Test action".into(),
     );
@@ -1113,45 +1026,6 @@ fn palette_dispatch_does_not_wait_for_the_screen_thread() {
         matches!(instruction, ScreenInstruction::RenameTabWithId(..)),
         "{instruction:?}"
     );
-}
-
-#[test]
-fn palette_destination_selection_survives_tab_reordering_and_rename() {
-    let mut screen = screen();
-    new_tab(&mut screen, 2, TabId::new(1));
-    screen.update_client_tab_focus(CLIENT, TabId::new(0));
-    let receiver = palette_actions_receiver(&mut screen);
-    palette_search(&mut screen, "Switch tab…");
-    palette_key(&mut screen, BareKey::Enter);
-    palette_key(&mut screen, BareKey::Down);
-    screen.tabs.get_mut(&TabId::new(1)).unwrap().position = TabPosition::new(0);
-    screen.tabs.get_mut(&TabId::new(1)).unwrap().name = "renamed destination".into();
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().position = TabPosition::new(1);
-    screen.render().unwrap();
-    palette_key(&mut screen, BareKey::Enter);
-    assert_eq!(
-        enqueued_palette_action(&receiver),
-        Action::GoToTabById { id: TabId::new(1) }
-    );
-}
-
-#[test]
-fn palette_drops_a_destination_removed_after_selection() {
-    let mut screen = screen();
-    new_tab(&mut screen, 2, TabId::new(1));
-    screen.update_client_tab_focus(CLIENT, TabId::new(0));
-    let receiver = palette_actions_receiver(&mut screen);
-    palette_search(&mut screen, "Switch tab…");
-    palette_key(&mut screen, BareKey::Enter);
-    palette_key(&mut screen, BareKey::Down);
-    screen.tabs.remove(&TabId::new(1));
-    // No intervening paint: Enter still refers to the now-stale displayed ID.
-    palette_key(&mut screen, BareKey::Enter);
-    assert!(matches!(
-        receiver.try_recv().unwrap().0,
-        ScreenInstruction::Notify(..)
-    ));
-    assert!(screen.command_palettes.contains_key(&CLIENT));
 }
 
 #[test]
@@ -1181,7 +1055,6 @@ fn palette_float_and_embed_reveal_and_focus_the_captured_pane() {
             origin,
             TabId::new(0),
             action,
-            false,
             CLIENT,
             "Test action".into(),
         );
@@ -1578,92 +1451,6 @@ fn palette_shows_client_shortcuts_and_refreshes_reconfigured_bindings() {
 }
 
 #[test]
-fn palette_shortcut_cache_reuses_hits_and_misses_and_tracks_live_targets() {
-    let mut screen = screen();
-    new_tab(&mut screen, 2, TabId::new(1));
-    screen.update_client_tab_focus(CLIENT, TabId::new(0));
-    screen.default_mode_info.keybinds = vec![(
-        InputMode::Normal,
-        vec![(
-            KeyWithModifier::new(BareKey::Char('x')).with_alt_modifier(),
-            vec![Action::GoToTab {
-                index: TabNumber::new(1),
-            }],
-        )],
-    )];
-    let receiver = screen_wired_to_server(&mut screen);
-    screen.toggle_command_palette(CLIENT);
-    screen.command_palette_handles_input(&None, b"Switch tab", false, CLIENT);
-    palette_key(&mut screen, BareKey::Enter);
-    let mut grid = grid_for_render_snapshot(SIZE);
-    let before = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(
-        before
-            .lines()
-            .any(|line| line.contains("tab 1") && line.contains("Alt x")),
-        "{before}"
-    );
-    assert!(
-        before
-            .lines()
-            .any(|line| line.contains("tab 2") && !line.contains("Alt x")),
-        "{before}"
-    );
-    let lookups = screen.command_palettes[&CLIENT].shortcut_lookups;
-    assert!(lookups > 2, "both bound and unbound entries were searched");
-    assert_eq!(screen.command_palettes[&CLIENT].shortcut_keymap_filters, 1);
-    for _ in 0..3 {
-        assert_eq!(
-            render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
-            before
-        );
-    }
-    assert_eq!(screen.command_palettes[&CLIENT].shortcut_lookups, lookups);
-    assert_eq!(screen.command_palettes[&CLIENT].shortcut_keymap_filters, 1);
-
-    screen.tabs.get_mut(&TabId::new(1)).unwrap().position = TabPosition::new(0);
-    screen.tabs.get_mut(&TabId::new(1)).unwrap().name = "renamed destination".into();
-    screen.tabs.get_mut(&TabId::new(0)).unwrap().position = TabPosition::new(1);
-    let after = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_ne!(before, after);
-    assert!(
-        after
-            .lines()
-            .any(|line| line.contains("renamed destination") && line.contains("Alt x")),
-        "{after}"
-    );
-    assert_eq!(
-        screen.command_palettes[&CLIENT].shortcut_lookups,
-        lookups + 2
-    );
-    assert_eq!(screen.command_palettes[&CLIENT].shortcut_keymap_filters, 2);
-
-    let removed = screen.tabs.remove(&TabId::new(1)).unwrap();
-    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(
-        screen.command_palettes[&CLIENT].shortcut_lookups,
-        lookups + 2
-    );
-    screen.tabs.insert(TabId::new(1), removed);
-    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(
-        screen.command_palettes[&CLIENT].shortcut_lookups,
-        lookups + 4,
-        "removed tab and pane hints must be evicted"
-    );
-
-    screen.default_mode_info.keybinds.clear();
-    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(
-        screen.command_palettes[&CLIENT].shortcut_lookups,
-        2 * lookups + 4
-    );
-    screen.close_command_palette(CLIENT);
-    screen.toggle_command_palette(CLIENT);
-    assert_eq!(screen.command_palettes[&CLIENT].shortcut_lookups, lookups);
-}
-
-#[test]
 fn palette_skips_shortcut_searches_for_entries_without_actions() {
     let mut screen = screen();
     screen.default_mode_info.keybinds = Config::from_default_assets()
@@ -1759,8 +1546,8 @@ fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
     assert!(!rendered.contains("Ctrl g →"), "{rendered}");
     assert_eq!(
         screen.command_palettes[&CLIENT].shortcut_lookups,
-        lookups + 3,
-        "new-pane original, floating target, and new pane entry changed"
+        lookups + 2,
+        "new-pane original and floating target changed"
     );
     screen
         .get_active_tab_mut(CLIENT)
@@ -1771,61 +1558,6 @@ fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
     screen.command_palette_handles_input(&None, b"New floating pane", false, CLIENT);
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!rendered.contains("Alt n"), "{rendered}");
-}
-
-#[test]
-fn palette_sessions_show_ages_and_sort_newest_first_with_exited_separate() {
-    use std::time::Duration;
-    use yinz_types::data::SessionInfo;
-    let mut screen = screen();
-    screen.peer_sessions_cache.clear();
-    for (name, seconds) in [("aa-old", 8060), ("bb-new", 20), ("cc-new", 20)] {
-        let mut info = SessionInfo::new(SessionName::new(name));
-        info.creation_time = Duration::from_secs(seconds);
-        info.connected_clients = 1;
-        screen.peer_sessions_cache.insert(info.name.clone(), info);
-    }
-    for (name, seconds) in [("aa-old", 1), ("dd-exited", 80), ("ee-exited", 10)] {
-        screen
-            .resurrectable_sessions_cache
-            .insert(SessionName::new(name), Duration::from_secs(seconds));
-    }
-    let receiver = screen_wired_to_server(&mut screen);
-    let mut grid = grid_for_render_snapshot(SIZE);
-    palette_search(&mut screen, "Switch session…");
-    palette_key(&mut screen, BareKey::Enter);
-    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(snapshot.contains("Live sessions"), "{snapshot}");
-    assert!(
-        snapshot.find("bb-new").unwrap() < snapshot.find("cc-new").unwrap(),
-        "{snapshot}"
-    );
-    assert!(
-        snapshot.find("cc-new").unwrap() < snapshot.find("aa-old").unwrap(),
-        "{snapshot}"
-    );
-    assert!(
-        snapshot.contains("up 20s · 1 connected client"),
-        "{snapshot}"
-    );
-    assert!(snapshot.contains("up 2h 14m"), "{snapshot}");
-    for _ in 0..3 {
-        palette_key(&mut screen, BareKey::Down);
-    }
-    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(snapshot.contains("Exited sessions"), "{snapshot}");
-    assert!(
-        snapshot.contains("ee-exited — Exited · Enter to restore"),
-        "{snapshot}"
-    );
-    palette_key(&mut screen, BareKey::Down);
-    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(
-        snapshot.find("ee-exited").unwrap() < snapshot.find("dd-exited").unwrap(),
-        "{snapshot}"
-    );
-    // The duplicate live name must not add an exited entry before these two.
-    assert!(snapshot.contains("› dd-exited"), "{snapshot}");
 }
 
 #[test]
@@ -1848,57 +1580,6 @@ fn palette_session_scan_refreshes_current_age_without_replacing_local_metadata()
     let current = &screen.peer_sessions_cache[&name];
     assert_eq!(current.creation_time, Duration::from_secs(70));
     assert_eq!(current.connected_clients, 7);
-}
-
-#[test]
-fn palette_restores_exited_sessions_and_rejects_deleted_checkpoints() {
-    use yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR;
-    use yinz_runtime::session_checkpoint::{write_checkpoint, SessionCheckpoint};
-
-    let mut screen = screen();
-    std::fs::create_dir_all(&*YINZ_SESSION_INFO_CACHE_DIR).unwrap();
-    let saved = tempfile::tempdir_in(&*YINZ_SESSION_INFO_CACHE_DIR).unwrap();
-    let name = SessionName::new(saved.path().file_name().unwrap().to_str().unwrap());
-    write_checkpoint(
-        saved.path(),
-        "",
-        &("layout { pane; }".into(), Default::default()),
-    )
-    .unwrap();
-    screen
-        .resurrectable_sessions_cache
-        .insert(name.clone(), Default::default());
-    let receiver = palette_actions_receiver(&mut screen);
-    palette_search(&mut screen, "Switch session…");
-    palette_key(&mut screen, BareKey::Enter);
-    screen.command_palette_handles_input(&None, name.as_str().as_bytes(), false, CLIENT);
-    palette_key(&mut screen, BareKey::Enter);
-    let action = enqueued_palette_action(&receiver);
-    assert!(matches!(&action, Action::SwitchSession { name: target, .. } if target == &name));
-
-    let layout = SessionCheckpoint::read(saved.path()).unwrap().layout_path();
-    std::fs::remove_file(layout).unwrap();
-    screen.dispatch_command_palette_action(
-        PaneId::Terminal(TerminalId::new(1)),
-        TabId::new(0),
-        action,
-        false,
-        CLIENT,
-        "Test action".into(),
-    );
-    assert!(matches!(
-        receiver.try_recv().unwrap().0,
-        ScreenInstruction::Notify(..)
-    ));
-    palette_search(&mut screen, "Switch session…");
-    palette_key(&mut screen, BareKey::Enter);
-    screen.command_palette_handles_input(&None, name.as_str().as_bytes(), false, CLIENT);
-    palette_key(&mut screen, BareKey::Enter);
-    assert!(matches!(
-        receiver.try_recv().unwrap().0,
-        ScreenInstruction::Notify(..)
-    ));
-    assert!(screen.command_palettes.contains_key(&CLIENT));
 }
 
 #[test]
@@ -2746,6 +2427,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         scope,
         result: Ok(Reply::View {
             view: View::Actions {
+                initial_query: String::new(),
                 title: "Nested".into(),
                 actions: vec![action("nested")],
                 source: Some("source".into()),
@@ -2781,6 +2463,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         scope,
         result: Ok(Reply::View {
             view: View::Actions {
+                initial_query: String::new(),
                 title: "Nested again".into(),
                 actions: vec![action("nested2")],
                 source: Some("source2".into()),
@@ -4399,7 +4082,7 @@ fn note_editor_placement_keeps_its_tab_and_only_focuses_its_requester() {
 }
 
 #[test]
-fn palette_display_title_refreshes_and_rename_keeps_raw_title() {
+fn palette_rename_keeps_raw_title() {
     let mut screen = screen();
     let pane = PaneId::Terminal(TerminalId::new(1));
     screen.with_pane(pane, |pane| {
@@ -4407,25 +4090,8 @@ fn palette_display_title_refreshes_and_rename_keeps_raw_title() {
         pane.update_name("shell");
     });
     let receiver = screen_wired_to_server(&mut screen);
-    let actions = palette_actions_receiver(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
-    palette_search(&mut screen, "Focus pane");
-    palette_key(&mut screen, BareKey::Enter);
-    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(frame.contains("› [1] project:branch: shell"), "{frame}");
-    screen.with_pane(pane, |pane| {
-        pane.set_title_prefix(Some("project:next".into()))
-    });
-    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(frame.contains("› [1] project:next: shell"), "{frame}");
-    assert!(!frame.contains("project:branch"), "{frame}");
-    screen.command_palette_handles_input(&None, b"project:next", false, CLIENT);
-    palette_key(&mut screen, BareKey::Enter);
-    assert_eq!(
-        enqueued_palette_action(&actions),
-        Action::FocusPaneByPaneId { pane_id: pane }
-    );
-
+    let actions = palette_actions_receiver(&mut screen);
     palette_search(&mut screen, "Rename pane");
     palette_key(&mut screen, BareKey::Enter);
     palette_key(&mut screen, BareKey::Enter);
@@ -4441,7 +4107,10 @@ fn palette_display_title_refreshes_and_rename_keeps_raw_title() {
     palette_search(&mut screen, "Close pane");
     palette_key(&mut screen, BareKey::Enter);
     let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(frame.contains("Close [1] project:next: shell?"), "{frame}");
+    assert!(
+        frame.contains("Close [1] project:branch: shell?"),
+        "{frame}"
+    );
 }
 
 #[test]
@@ -4463,39 +4132,6 @@ fn warp_palette_uses_peer_display_titles_and_falls_back_for_old_metadata() {
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         let title = display_title.as_deref().unwrap_or("shell");
         assert!(frame.contains(&format!("› [1] {title}")), "{frame}");
-    }
-}
-
-#[test]
-fn palette_distinguishes_terminal_and_plugin_with_the_same_id() {
-    let terminal = PaneId::Terminal(TerminalId::new(42));
-    let plugin = PaneId::Plugin(PluginId::new(42));
-    for target in [terminal, plugin] {
-        let mut screen = create_non_mirrored_screen(SIZE);
-        let (sender, _plugin_receiver) = channels::unbounded();
-        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
-        new_tab(&mut screen, 1, TabId::new(0));
-        for id in [terminal, plugin] {
-            screen
-                .get_active_tab_mut(CLIENT)
-                .unwrap()
-                .new_floating_pane(id, Some("shell".into()), None, false, false, None, None)
-                .unwrap();
-        }
-        let receiver = screen_wired_to_server(&mut screen);
-        let actions = palette_actions_receiver(&mut screen);
-        let mut grid = grid_for_render_snapshot(SIZE);
-        palette_search(&mut screen, "42");
-        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        assert!(frame.contains("[42] shell"), "{frame}");
-        assert!(frame.contains("[plugin_42] shell"), "{frame}");
-        screen.close_command_palette(CLIENT);
-        palette_search(&mut screen, &target.to_string());
-        palette_key(&mut screen, BareKey::Enter);
-        assert_eq!(
-            enqueued_palette_action(&actions),
-            Action::FocusPaneByPaneId { pane_id: target }
-        );
     }
 }
 
@@ -4964,6 +4600,8 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                     scope,
                     result: Ok(Reply::View {
                         view: View::Form {
+                            actions: vec![],
+                            confirmation: false,
                             title: "Edit report".into(),
                             fields: vec![],
                             submit_label: "Save".into(),
@@ -5196,7 +4834,6 @@ fn palette_moves_without_another_tab_report_a_noop() {
             id: TabId::new(0),
             direction: Direction::Right,
         },
-        false,
         CLIENT,
         "Move tab right".into(),
     );
@@ -5214,7 +4851,6 @@ fn palette_nonzero_completion_without_message_does_not_focus_or_report_success()
         pane,
         TabId::new(0),
         Action::TogglePaneEmbedOrFloatingByPaneId { pane_id: pane },
-        false,
         CLIENT,
         "Float/embed pane".into(),
     );
@@ -5230,4 +4866,287 @@ fn palette_nonzero_completion_without_message_does_not_focus_or_report_success()
         ScreenInstruction::Notify(message, ..) if message.starts_with("Could not float/embed pane:"))
     );
     assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn suspended_palette_keeps_notifications_hidden_and_releases_mode_only_on_close() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    use yinz_bus::command_palette::{Instruction, Owner};
+    use yinz_types::command_palette::{Action as PaletteAction, Command, Message, Reply};
+
+    for resume in [false, true] {
+        let mut screen = screen();
+        let receiver = screen_wired_to_server(&mut screen);
+        let (sender, requests) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        let command = |command| Instruction::Command {
+            owner: Owner {
+                plugin_id: PluginId::new(50),
+                generation: 9,
+                client_id: Some(CLIENT),
+            },
+            client: CLIENT,
+            unavailable: Arc::new(AtomicBool::new(false)),
+            command,
+        };
+        let next = || {
+            requests
+                .try_iter()
+                .find_map(|(instruction, _)| match instruction {
+                    PluginInstruction::DenoPalette(delivery) => match delivery.message {
+                        Message::Discover { scope, .. } | Message::Execute { scope, .. } => {
+                            Some(scope)
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .expect("palette request")
+        };
+        screen
+            .change_mode(InputMode::Notifications, None, CLIENT)
+            .unwrap();
+        screen.plugin_palette_instruction(command(Command::Register {
+            id: "test".into(),
+            title: "Test".into(),
+            registration: "1".into(),
+            static_actions: true,
+        }));
+        screen.toggle_command_palette(CLIENT);
+        screen.plugin_palette_instruction(command(Command::Reply {
+            scope: next(),
+            result: Ok(Reply::Actions {
+                actions: vec![PaletteAction {
+                    id: "browse".into(),
+                    label: "Unique browse action".into(),
+                    handle: "browse".into(),
+                    description: String::new(),
+                    aliases: vec![],
+                }],
+            }),
+        }));
+        screen.command_palette_handles_input(&None, b"Unique browse action", false, CLIENT);
+        palette_key(&mut screen, BareKey::Enter);
+        let scope = next();
+        assert!(screen.plugin_palette_instruction(command(Command::Suspend {
+            scope: scope.clone(),
+            suspended: true,
+        })));
+        assert!(!screen.palette_owns_input(CLIENT));
+        assert!(!screen.notification_browser_is_visible(CLIENT));
+        for mode in [InputMode::Normal, InputMode::Notifications] {
+            screen.change_mode(mode, None, CLIENT).unwrap();
+            screen.change_mode_for_all_clients(mode, None).unwrap();
+            assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Locked);
+            assert!(screen.notification_browsers.contains_key(&CLIENT));
+            assert!(!screen.notification_browser_is_visible(CLIENT));
+        }
+        for key in [
+            BareKey::Up,
+            BareKey::Down,
+            BareKey::Enter,
+            BareKey::Char(' '),
+        ] {
+            assert!(!screen.command_palette_handles_input(
+                &Some(KeyWithModifier::new(key)),
+                b"picker input",
+                false,
+                CLIENT,
+            ));
+        }
+        if resume {
+            assert!(screen.plugin_palette_instruction(command(Command::Suspend {
+                scope: scope.clone(),
+                suspended: false,
+            })));
+            assert!(screen.palette_owns_input(CLIENT));
+            assert!(!screen.notification_browser_is_visible(CLIENT));
+        }
+        assert!(!receiver.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            ServerInstruction::SetCommandPaletteOpen(CLIENT, false)
+        )));
+        screen.close_command_palette(CLIENT);
+        assert_eq!(
+            receiver
+                .try_iter()
+                .filter(|(instruction, _)| matches!(
+                    instruction,
+                    ServerInstruction::SetCommandPaletteOpen(CLIENT, false)
+                ))
+                .count(),
+            1
+        );
+        screen
+            .change_mode(InputMode::Notifications, None, CLIENT)
+            .unwrap();
+        assert!(screen.notification_browser_is_visible(CLIENT));
+        assert!(
+            !screen.plugin_palette_instruction(command(Command::Suspend {
+                scope,
+                suspended: false,
+            }))
+        );
+    }
+}
+
+#[test]
+fn dynamic_palette_refresh_recovers_after_execution_error_and_stops_after_close() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    use yinz_bus::command_palette::{Instruction, Owner};
+    use yinz_types::command_palette::{Action as PaletteAction, Command, Message, Reply, View};
+    let mut screen = screen();
+    let ticks = palette_actions_receiver(&mut screen);
+    let (sender, requests) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let command = |command| Instruction::Command {
+        owner: Owner {
+            plugin_id: PluginId::new(50),
+            generation: 9,
+            client_id: Some(CLIENT),
+        },
+        client: CLIENT,
+        unavailable: Arc::new(AtomicBool::new(false)),
+        command,
+    };
+    let next = || {
+        requests
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::DenoPalette(delivery) => match delivery.message {
+                    message @ (Message::Discover { .. } | Message::Execute { .. }) => Some(message),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("palette request")
+    };
+    let action = |id: &str| PaletteAction {
+        id: id.into(),
+        label: id.into(),
+        handle: id.into(),
+        description: String::new(),
+        aliases: vec![],
+    };
+    screen.plugin_palette_instruction(command(Command::Register {
+        id: "test".into(),
+        title: "Test".into(),
+        registration: "1".into(),
+        static_actions: true,
+    }));
+    screen.toggle_command_palette(CLIENT);
+    let Message::Discover { scope, .. } = next() else {
+        panic!("discover")
+    };
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::Actions {
+            actions: vec![action("unique-provider")],
+        }),
+    }));
+    screen.command_palette_handles_input(&None, b"unique-provider", false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    let Message::Execute { scope, .. } = next() else {
+        panic!("execute")
+    };
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::View {
+            view: View::Actions {
+                initial_query: String::new(),
+                title: "Dynamic".into(),
+                actions: vec![],
+                source: Some("source".into()),
+            },
+        }),
+    }));
+    let Message::Discover { scope, .. } = next() else {
+        panic!("discover")
+    };
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope: scope.clone(),
+        result: Ok(Reply::Actions {
+            actions: vec![action("first"), action("second")],
+        }),
+    }));
+    palette_key(&mut screen, BareKey::Down);
+    assert!(screen.plugin_palette_instruction(Instruction::Refresh {
+        client: CLIENT,
+        scope: scope.clone()
+    }));
+    let Message::Discover {
+        scope: refreshed,
+        query,
+        ..
+    } = next()
+    else {
+        panic!("refresh")
+    };
+    assert_eq!(query, "");
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope: refreshed.clone(),
+        result: Ok(Reply::Actions {
+            actions: vec![action("new"), action("first"), action("second")],
+        }),
+    }));
+    palette_key(&mut screen, BareKey::Enter);
+    let Message::Execute {
+        handle,
+        scope: execution,
+        ..
+    } = next()
+    else {
+        panic!("execute")
+    };
+    assert_eq!(handle, "second");
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope: execution.clone(),
+        result: Err("Destination disappeared".into()),
+    }));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let (instruction, _) = ticks
+            .recv_deadline(deadline)
+            .expect("execution error must re-arm dynamic refresh");
+        if let ScreenInstruction::CommandPalette(instruction @ Instruction::Refresh { .. }) =
+            instruction
+        {
+            if screen.plugin_palette_instruction(instruction) {
+                break;
+            }
+        }
+    }
+    let Message::Discover {
+        scope: recovered,
+        query,
+        source,
+        ..
+    } = next()
+    else {
+        panic!("discovery after execution error")
+    };
+    assert!(recovered.revision > execution.revision);
+    assert_eq!(query, "");
+    assert_eq!(source.as_deref(), Some("source"));
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope: recovered.clone(),
+        result: Ok(Reply::Actions {
+            actions: vec![action("first")],
+        }),
+    }));
+    palette_key(&mut screen, BareKey::Esc);
+    assert!(!screen.plugin_palette_instruction(Instruction::Refresh {
+        client: CLIENT,
+        scope: recovered.clone()
+    }));
+    screen.close_command_palette(CLIENT);
+    assert!(!screen.plugin_palette_instruction(Instruction::Refresh {
+        client: CLIENT,
+        scope: recovered
+    }));
+    screen.toggle_command_palette(CLIENT);
+    assert!(!screen.plugin_palette_instruction(Instruction::Refresh {
+        client: CLIENT,
+        scope
+    }));
 }

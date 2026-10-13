@@ -343,6 +343,11 @@ fn renamed_mother_reconnects_and_reloads_its_checkpoint() {
         .unwrap()
         .generation
         .clone();
+    screen.rename_session(old.clone().into(), CLIENT).unwrap();
+    assert_eq!(
+        screen.mother_supervisor.as_ref().unwrap().generation,
+        generation
+    );
     screen.rename_session(new.clone().into(), CLIENT).unwrap();
     assert_eq!(screen.session_name.as_str(), new);
     assert_ne!(
@@ -1623,48 +1628,10 @@ fn palette_pane_focus_hides_mother_before_switching_tabs() {
     screen.go_to_tab(TabNumber::new(1), CLIENT).unwrap();
     screen.toggle_mother(CLIENT).unwrap();
     let target = PaneId::Terminal(TerminalId::new(3));
-    let (sender, instructions) = channels::unbounded();
-    screen.bus.senders.to_screen = Some(SenderWithContext::new(sender));
     screen.toggle_command_palette(CLIENT);
-    screen.command_palette_handles_input(&None, target.to_string().as_bytes(), false, CLIENT);
-    palette_key(&mut screen, BareKey::Enter);
-    let ScreenInstruction::ActivateCommandPaletteAction {
-        pane_id,
-        tab_id,
-        action,
-        create_session,
-        client_id,
-        label,
-    } = instructions.try_recv().unwrap().0
-    else {
-        panic!("expected palette activation");
-    };
-    assert_eq!(action, Action::FocusPaneByPaneId { pane_id: target });
-    screen.dispatch_command_palette_action(
-        pane_id,
-        tab_id,
-        action,
-        create_session,
-        client_id,
-        label,
-    );
-    let ScreenInstruction::FocusPaneWithId(pane, float, in_place, client, completion) =
-        instructions
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap()
-            .0
-    else {
-        panic!("expected pane focus");
-    };
+    // Session-provider navigation uses the same host focus request as other plugins.
     screen
-        .focus_pane_by_request(
-            pane,
-            float,
-            in_place,
-            client,
-            completion,
-            &mut Default::default(),
-        )
+        .focus_pane_by_request(target, true, false, CLIENT, None, &mut Default::default())
         .unwrap();
     assert!(hidden(&screen));
     assert_eq!(mother_tab(&screen), TabId::new(0));
@@ -1854,4 +1821,56 @@ fn mother_carries_loaded_overview_behind_an_in_place_replacement() {
     tab.close_pane_tabs(id).unwrap();
     assert!(tab.get_pane_with_id(MOTHER).is_none());
     assert!(tab.get_pane_with_id(PaneId::Plugin(plugin)).is_none());
+}
+
+#[test]
+fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutation() {
+    use std::os::unix::net::UnixListener;
+    use yinz_runtime::consts::{session_info_folder_for_session, YINZ_SOCK_DIR};
+    use yinz_types::internal_ids::SessionName;
+    let mut screen = screen_with_mother();
+    let old: SessionName = format!("rename-old-{}", uuid::Uuid::new_v4()).into();
+    screen.session_name = old.clone();
+    std::fs::create_dir_all(&*YINZ_SOCK_DIR).unwrap();
+    let old_socket = YINZ_SOCK_DIR.join(&old);
+    let _old = UnixListener::bind(&old_socket).unwrap();
+    let cache = session_info_folder_for_session(&old);
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("sentinel"), "old").unwrap();
+    let target: SessionName = format!("rename-target-{}", uuid::Uuid::new_v4()).into();
+    let target_socket = YINZ_SOCK_DIR.join(&target);
+    let target_cache = session_info_folder_for_session(&target);
+    let mother = screen.mother;
+    let _target = UnixListener::bind(&target_socket).unwrap();
+    screen.rename_session(target.clone(), CLIENT).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert!(target_socket.exists());
+    std::fs::remove_file(&target_socket).unwrap();
+    std::fs::create_dir_all(&target_cache).unwrap();
+    std::fs::write(target_cache.join("sentinel"), "target").unwrap();
+    screen.rename_session(target.clone(), CLIENT).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert_eq!(
+        std::fs::read_to_string(target_cache.join("sentinel")).unwrap(),
+        "target"
+    );
+    std::fs::remove_dir_all(&target_cache).unwrap();
+    // A self-referential link produces ELOOP instead of an absent path.
+    std::os::unix::fs::symlink(&target_socket, &target_socket).unwrap();
+    screen.rename_session(target.clone(), CLIENT).unwrap();
+    assert_eq!(screen.session_name, old);
+    std::fs::remove_file(&target_socket).unwrap();
+    std::os::unix::fs::symlink(&target_cache, &target_cache).unwrap();
+    screen.rename_session(target, CLIENT).unwrap();
+    assert_eq!(screen.session_name, old);
+    screen.rename_session(old.clone(), CLIENT).unwrap();
+    assert_eq!(screen.mother, mother);
+    assert_eq!(
+        std::fs::read_to_string(cache.join("sentinel")).unwrap(),
+        "old"
+    );
+    assert!(old_socket.exists());
+    std::fs::remove_file(target_cache).unwrap();
+    std::fs::remove_file(old_socket).unwrap();
+    std::fs::remove_dir_all(cache).unwrap();
 }

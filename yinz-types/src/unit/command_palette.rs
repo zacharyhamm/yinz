@@ -31,6 +31,8 @@ fn palette_display_validation_rejects_ambiguous_controls_and_oversize_payloads()
     }
     let form = |fields| Reply::View {
         view: View::Form {
+            actions: vec![],
+            confirmation: false,
             title: "Form".into(),
             fields,
             submit_label: "Submit".into(),
@@ -152,6 +154,8 @@ fn palette_completion_validates_text_views_and_releases_handles() {
     let reply = Reply::Complete {
         notification: "Report saved".into(),
         view: Some(View::Form {
+            actions: vec![],
+            confirmation: false,
             title: "Report".into(),
             fields: vec![],
             submit_label: "Save".into(),
@@ -172,5 +176,29 @@ fn palette_completion_validates_text_views_and_releases_handles() {
         })
     }
     .validate()
+    .is_err());
+}
+
+#[test]
+fn form_secondary_callbacks_are_validated_and_released() {
+    let mut reply: Reply = serde_json::from_value(serde_json::json!({
+        "type": "view", "view": {"type": "form", "title": "Create", "submitLabel": "Create",
+            "handle": "submit", "confirmation": true,
+            "fields": [{"type": "directory", "id": "cwd", "label": "Directory", "initialValue": "/tmp"}],
+            "actions": [{"id": "configure", "label": "Configure", "handle": "secondary"}]}
+    })).unwrap();
+    assert!(reply.validate().is_ok());
+    assert_eq!(reply.handles(), ["submit", "secondary"]);
+    let Reply::View {
+        view: View::Form { actions, .. },
+    } = &mut reply
+    else {
+        unreachable!()
+    };
+    actions.push(actions[0].clone());
+    assert!(reply.validate().is_err());
+    assert!(serde_json::from_value::<Reply>(
+        serde_json::json!({"type":"fields","values":{"cwd":1}})
+    )
     .is_err());
 }

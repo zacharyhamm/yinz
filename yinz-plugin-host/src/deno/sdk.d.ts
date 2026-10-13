@@ -348,7 +348,7 @@ export interface CommandArgs {
   SetPaneColor: [PaneId, string | null, string | null]; SetPaneRegexHighlights: [PaneId, RegexHighlight[]];
   SetContextMenu: {request_id: Integer; items: ContextMenuItem[]}; ClearPaneHighlights: PaneId;
   OpenPluginPaneFloating: {plugin_url: string; configuration: StringMap; floating_pane_coordinates: FloatingPaneCoordinates | null; context: StringMap};
-  GetSessionList: undefined; KillSessionsAndReply: string[]; DeleteDeadSessionAndReply: string; DeleteAllDeadSessionsAndReply: undefined;
+  GetDisconnectTargets: undefined; GetSessionList: undefined; KillSessionsAndReply: string[]; DeleteDeadSessionAndReply: string; DeleteAllDeadSessionsAndReply: undefined;
   FocusHostSession: undefined; ListNotifications: undefined; ResolveNotification: {id: Integer; decision: NotificationDecision};
   WarpPaneToSession: {pane_id: PaneId; to_session: string; placement: WarpPlacement};
   WarpPaneFromSession: {pane_id: PaneId; from_session: string; placement: WarpPlacement};
@@ -393,7 +393,7 @@ export interface CommandReplies {
   GetLocalUtcOffset: number; GetSessionEnvironmentVariables: StringMap; GetPluginAliasConfiguration: StringMap;
   GetFocusedPaneInfo: {tab_id: number; pane_id: PaneId}; GetPaneInfo: PaneInfo | null; GetTabInfo: TabInfo | null;
   GetPaneCwd: string | null; GetPanePid: number | null; GetPaneRunningCommand: string[] | null; GetPaneGitProbe: PaneGitProbe | null;
-  GetPaneScrollback: PaneContents; GetSessionList: SessionListSnapshot; CurrentSessionLastSavedTime: Integer | null;
+  GetPaneScrollback: PaneContents; GetDisconnectTargets: number[]; GetSessionList: SessionListSnapshot; CurrentSessionLastSavedTime: Integer | null;
   SaveSession: boolean; DumpLayout: string; DumpSessionLayout: {layout: string; metadata: LayoutMetadata | null};
   ParseLayout: LayoutMetadata; SaveLayout: boolean; DeleteLayout: boolean; RenameLayout: boolean; EditLayout: boolean;
   ShowFloatingPanes: boolean; HideFloatingPanes: boolean; DeleteDeadSessionAndReply: boolean; DeleteAllDeadSessionsAndReply: boolean; KillSessionsAndReply: boolean;
@@ -1081,7 +1081,7 @@ export interface PaletteAction {
 }
 export type PaletteActionSource = (request: PaletteRequest) => PaletteAction[] | Promise<PaletteAction[]>;
 export type PaletteField =
-  | { type: "text"; id: string; label: string; initialValue?: string }
+  | { type: "text" | "directory"; id: string; label: string; initialValue?: string }
   | { type: "choice"; id: string; label: string; options: string[]; initialValue?: string };
 export interface PaletteCompletion {
   type: "complete";
@@ -1089,8 +1089,9 @@ export interface PaletteCompletion {
   view?: PaletteView;
 }
 export type PaletteView =
-  | { type: "actions"; title: string; actions: PaletteAction[] | PaletteActionSource }
-  | { type: "form"; title: string; fields: PaletteField[]; submitLabel?: string;
+  | { type: "actions"; title: string; initialQuery?: string; actions: PaletteAction[] | PaletteActionSource }
+  | { type: "form"; title: string; fields: PaletteField[]; submitLabel?: string; confirmation?: boolean;
+      actions?: { id: string; label: string; run(values: Record<string, string>, context: PaletteExecution): ReturnType<PaletteAction["run"]> }[];
       /** Same return and error handling as PaletteAction.run. */
       onSubmit(values: Record<string, string>, context: PaletteExecution): PaletteView | PaletteCompletion | void | Promise<PaletteView | PaletteCompletion | void> }
   | { type: "text"; title: string; text: string };
@@ -1103,10 +1104,14 @@ export interface CommandPalette {
    * result order without extra fuzzy filtering. Static actions use native label/alias matching
    * and rank alongside builtin commands on nonempty root queries; empty queries keep declaration
    * order within provider sections. Unregister and re-register to change a static list.
-   * Static nested lists use fuzzy matching; function sources receive their own query.
+   * Static nested lists use fuzzy matching; function sources receive their own query and
+   * refresh every second while visible, preserving query and selected ID.
    * Replies allow 100 actions, 16 fields, and 256 KiB of display data. Labels must be
    * nonempty; text cannot contain terminal controls. Choices default to the first option,
    * text fields to empty, and the submit label to "Submit". Form values use field IDs.
+   * Secondary actions receive current values. confirmation defaults focus to Cancel.
+   * Type in a choice to search options. Directory fields add Browse using pick(), requiring
+   * MessageAndLaunchOtherPlugins; picker cancellation preserves all entered values.
    * Escape dismisses root discovery immediately. During execution or nested discovery it
    * cancels work first, then navigates back; back preserves entered values.
    * Query changes, navigation, dismissal, unregister, reload, and disconnect cancel work.

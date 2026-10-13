@@ -426,6 +426,7 @@ fn palette_host_rejects_invalid_completion_and_releases_its_view() {
     run_plugin_command(&mut env, PluginCommand::CommandPalette(Command::Reply {
         scope: Scope { registration: "1".into(), opening: 1, view: 0, revision: 2 },
         result: Ok(Reply::Complete { notification: "\x1b".into(), view: Some(View::Form {
+            actions: vec![], confirmation: false,
             title: "Report".into(), fields: vec![], submit_label: "Save".into(), handle: "callback".into(),
         }) }),
     })).unwrap();

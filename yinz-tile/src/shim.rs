@@ -13,11 +13,11 @@ use yinz_types::data::*;
 pub use yinz_types::geometry::PercentOrFixed;
 use yinz_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use yinz_types::input::actions::Action;
-use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
 use yinz_types::internal_ids::TabPosition;
+use yinz_types::internal_ids::{ClientId, SessionName};
 use yinz_types::internal_ids::{ContextMenuRequestId, DataWatchId, QueueJobId};
 use yinz_types::internal_ids::{PluginId, ProcessId};
 use yinz_types::units::{FractionalSeconds, SignedUnixMillis};
@@ -2535,6 +2535,26 @@ pub fn get_pane_running_command(pane_id: PaneId) -> Result<Vec<String>, String> 
     }
 }
 
+/// Ordinary clients that disconnect_other_clients will remove; watchers are excluded.
+/// Each query has a 100 ms timeout and its own response channel.
+///
+/// # Permissions Required
+/// * `ReadApplicationState`
+pub fn get_disconnect_targets() -> Result<Vec<ClientId>, String> {
+    let response: yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse =
+        call(PluginCommand::GetDisconnectTargets)?;
+    if let Some(error) = response.error {
+        return Err(error);
+    }
+    response
+        .client_ids
+        .into_iter()
+        .map(|id| {
+            ClientId::try_from(id).map_err(|error| format!("Invalid disconnect client id: {error}"))
+        })
+        .collect()
+}
+
 /// Fetches a fresh snapshot of all live and resurrectable sessions on this machine.
 ///
 /// # Permissions Required
@@ -3631,6 +3651,32 @@ mod tests {
         )
     }
 
+    #[test]
+    fn disconnect_target_query_decodes_success_and_error() {
+        use yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse;
+        respond(ProtobufGetDisconnectTargetsResponse {
+            client_ids: vec![2, 3],
+            error: None,
+        });
+        assert_eq!(
+            get_disconnect_targets().unwrap(),
+            vec![ClientId::new(2), ClientId::new(3)]
+        );
+        respond(ProtobufGetDisconnectTargetsResponse {
+            client_ids: vec![],
+            error: Some("timeout".into()),
+        });
+        assert_eq!(get_disconnect_targets().unwrap_err(), "timeout");
+        respond(ProtobufGetDisconnectTargetsResponse {
+            client_ids: vec![u32::MAX],
+            error: None,
+        });
+        assert!(get_disconnect_targets().is_err());
+        fail_next_read();
+        assert!(get_disconnect_targets()
+            .unwrap_err()
+            .contains("stdin closed"));
+    }
     #[test]
     fn plugin_queries_return_stdin_read_errors() {
         let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1));

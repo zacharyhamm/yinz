@@ -1321,7 +1321,9 @@ fn palette_sessions() -> ((TestSession, FakePtyHandle), (TestSession, FakePtyHan
 
 fn palette_pull(receiver: &TestSession, sender: &TestSession, command: &str, target: &str) {
     receiver.send_stdin(b"\x1b[112;7u");
-    receiver.wait_until("palette opens", |grid| grid.contains("Switch session"));
+    receiver.wait_until("palette opens", |grid| {
+        grid.contains("Switch current project")
+    });
     receiver.send_stdin(command.as_bytes());
     receiver.send_stdin(&keys::ENTER);
     receiver.wait_until("source picker opens", |grid| {

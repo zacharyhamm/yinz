@@ -1781,3 +1781,34 @@ fn wrapped_history_pages_stay_in_the_focused_region() {
         assert_eq!(palette.selected_entry().unwrap().id, "resume");
     }
 }
+
+#[test]
+fn secondary_form_actions_receive_edited_values_and_choices_are_searchable() {
+    let mut palette = CommandPalette::default();
+    let mut form = Form::new(
+        "submit".into(),
+        "Create".into(),
+        vec![
+            Field::text("Name", "initial"),
+            Field::choice("Layout", &["default", "compact", "custom"]),
+        ],
+        "Create",
+        false,
+    );
+    form.actions.push(("configure".into(), "Configure…".into()));
+    palette.open_form(form);
+    palette.insert_text(" edited");
+    palette.handle_key(KeyWithModifier::new(BareKey::Enter));
+    for c in "compact".chars() {
+        palette.handle_key(KeyWithModifier::new(BareKey::Char(c)));
+    }
+    palette.handle_key(KeyWithModifier::new(BareKey::Enter));
+    palette.handle_key(KeyWithModifier::new(BareKey::Down));
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Submit {
+            id: "configure".into(),
+            values: vec!["initial edited".into(), "compact".into()]
+        }
+    );
+}

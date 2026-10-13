@@ -46,6 +46,12 @@ pub enum Field {
         #[serde(default, rename = "initialValue")]
         initial_value: String,
     },
+    Directory {
+        id: String,
+        label: String,
+        #[serde(default, rename = "initialValue")]
+        initial_value: String,
+    },
     Choice {
         id: String,
         label: String,
@@ -58,7 +64,7 @@ pub enum Field {
 impl Field {
     pub fn id(&self) -> &str {
         match self {
-            Self::Text { id, .. } | Self::Choice { id, .. } => id,
+            Self::Text { id, .. } | Self::Directory { id, .. } | Self::Choice { id, .. } => id,
         }
     }
 }
@@ -70,6 +76,8 @@ pub enum View {
         title: String,
         actions: Vec<Action>,
         source: Option<String>,
+        #[serde(default, rename = "initialQuery")]
+        initial_query: String,
     },
     Form {
         title: String,
@@ -77,6 +85,10 @@ pub enum View {
         #[serde(rename = "submitLabel")]
         submit_label: String,
         handle: String,
+        #[serde(default)]
+        actions: Vec<Action>,
+        #[serde(default)]
+        confirmation: bool,
     },
     Text {
         title: String,
@@ -87,6 +99,9 @@ pub enum View {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Reply {
+    Fields {
+        values: BTreeMap<String, String>,
+    },
     Actions {
         actions: Vec<Action>,
     },
@@ -103,6 +118,10 @@ pub enum Reply {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Command {
+    Suspend {
+        scope: Scope,
+        suspended: bool,
+    },
     Register {
         id: String,
         title: String,
@@ -194,6 +213,13 @@ impl Reply {
             return Err("Palette display data exceeds 256 KiB".into());
         }
         match self {
+            Self::Fields { values } => {
+                for (id, value) in values {
+                    label(id)?;
+                    plain_text(value)?;
+                }
+                Ok(())
+            },
             Self::Actions { actions } => validate_actions(actions),
             Self::Close => Ok(()),
             Self::Complete { notification, view } => {
@@ -208,7 +234,9 @@ impl Reply {
                     title,
                     actions,
                     source,
+                    initial_query,
                 } => {
+                    plain_text(initial_query)?;
                     label(title)?;
                     if let Some(source) = source {
                         label(source)?;
@@ -224,10 +252,13 @@ impl Reply {
                     fields,
                     submit_label,
                     handle,
+                    actions,
+                    ..
                 } => {
                     label(title)?;
                     label(submit_label)?;
                     label(handle)?;
+                    validate_actions(actions)?;
                     if fields.len() > 16 {
                         return Err("Palette forms are limited to 16 fields".into());
                     }
@@ -238,7 +269,12 @@ impl Reply {
                             return Err("Palette field IDs must be unique".into());
                         }
                         match field {
-                            Field::Text {
+                            Field::Directory {
+                                label: name,
+                                initial_value,
+                                ..
+                            }
+                            | Field::Text {
                                 label: name,
                                 initial_value,
                                 ..
@@ -289,8 +325,12 @@ impl Reply {
                 .chain(source.iter().cloned())
                 .collect(),
             Self::View {
-                view: View::Form { handle, .. },
-            } => vec![handle.clone()],
+                view: View::Form {
+                    handle, actions, ..
+                },
+            } => std::iter::once(handle.clone())
+                .chain(actions.iter().map(|a| a.handle.clone()))
+                .collect(),
             _ => vec![],
         }
     }

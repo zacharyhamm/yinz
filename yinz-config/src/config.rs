@@ -2279,6 +2279,16 @@ mod config_test {
     }
 
     #[test]
+    fn session_palette_is_a_shared_default_and_clear_defaults_removes_it() {
+        let config = Config::from_default_assets().unwrap();
+        let serialized = config.to_string(false).unwrap();
+        assert!(serialized.contains("session-palette"));
+        let cleared =
+            Config::from_kdl("load_plugins clear-defaults=true {}", Some(config)).unwrap();
+        assert!(cleared.background_plugins.is_empty());
+    }
+
+    #[test]
     fn load_plugins_clear_defaults_survives_serialization() {
         let base = Config::from_kdl("load_plugins {\n \"yinz:link\"\n}", None).unwrap();
         let names = |config: &Config| -> Vec<String> {

@@ -726,7 +726,6 @@ pub enum ScreenInstruction {
         pane_id: PaneId,
         tab_id: TabId,
         action: Action,
-        create_session: bool,
         client_id: ClientId,
     },
     MoveCommandPalettePane {

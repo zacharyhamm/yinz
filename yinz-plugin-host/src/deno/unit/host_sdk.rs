@@ -695,3 +695,15 @@ fn unload_drains_an_undelivered_timer_before_a_new_cleanup_sleep() {
     assert!(reply.claim().is_none());
     assert!(!queued.try_iter().any(|(instruction, _)| matches!(instruction, PluginInstruction::DenoReply(..))));
 }
+
+#[test]
+fn disconnect_target_reply_decodes_ids_and_errors() {
+    use prost::Message;
+    use yinz_plugin_api::plugin_command::ProtobufGetDisconnectTargetsResponse;
+    use yinz_types::data::CommandType;
+    let response = ProtobufGetDisconnectTargetsResponse { client_ids: vec![2, 3], error: None };
+    let crate::response::DecodedResponse::Json(value) = crate::response::decode_response(CommandType::GetDisconnectTargets, &response.encode_to_vec()).unwrap().unwrap() else { panic!() };
+    assert_eq!(value, serde_json::json!([2,3]));
+    let response = ProtobufGetDisconnectTargetsResponse { client_ids: vec![], error: Some("timeout".into()) };
+    assert!(crate::response::decode_response(CommandType::GetDisconnectTargets, &response.encode_to_vec()).unwrap().is_err());
+}

@@ -127,6 +127,7 @@ pub struct Form {
     pub fields: Vec<Field>,
     pub submit: String,
     pub confirmation: bool,
+    pub actions: Vec<(String, String)>,
     selected: usize,
 }
 
@@ -144,12 +145,13 @@ impl Form {
             fields,
             submit: submit.into(),
             confirmation,
+            actions: vec![],
             selected: 0,
         }
     }
 
     fn rows(&self) -> usize {
-        self.fields.len() + 1 + usize::from(self.confirmation)
+        self.fields.len() + 1 + usize::from(self.confirmation) + self.actions.len()
     }
 }
 
@@ -194,6 +196,7 @@ pub struct CommandPalette {
     picker: Option<EntryKind>,
     saved_search: Vec<(Option<EntryKind>, TextInput, Option<String>)>,
     form: Option<Form>,
+    choice_input: TextInput,
     error: Option<String>,
 }
 
@@ -290,6 +293,16 @@ impl CommandPalette {
                     .map(|entry| entry.label.clone())
             })
             .unwrap_or_else(|| "Palette action".into())
+    }
+
+    pub fn update_form_values(&mut self, values: &[String]) {
+        if let Some(form) = &mut self.form {
+            for (field, value) in form.fields.iter_mut().zip(values) {
+                if let FieldValue::Text(input) = &mut field.value {
+                    *input = TextInput::new(value.clone());
+                }
+            }
+        }
     }
 
     pub fn form_values(&self) -> Option<(&str, Vec<String>)> {
@@ -589,6 +602,7 @@ impl CommandPalette {
             return Outcome::None;
         }
         if self.form.take().is_some() {
+            self.metadata = None;
             return Outcome::None;
         }
         if let Some((picker, input, selected)) = self.saved_search.pop() {
@@ -625,7 +639,7 @@ impl CommandPalette {
                 return outcome;
             }
         }
-        if self.metadata.is_some() && key.bare_key == BareKey::Tab {
+        if self.form.is_none() && self.metadata.is_some() && key.bare_key == BareKey::Tab {
             self.metadata_focus = (self.metadata_focus
                 + if key.has_modifiers(&[KeyModifier::Shift]) {
                     2
@@ -636,7 +650,7 @@ impl CommandPalette {
             self.normalize_region_selection();
             return Outcome::None;
         }
-        if self.metadata.is_some() && self.metadata_focus == 0 {
+        if self.form.is_none() && self.metadata.is_some() && self.metadata_focus == 0 {
             let page = self.metadata_rows.get().max(1);
             self.metadata_offset = self
                 .metadata_offset
@@ -654,7 +668,8 @@ impl CommandPalette {
             }
             return Outcome::None;
         }
-        if self.metadata.is_some()
+        if self.form.is_none()
+            && self.metadata.is_some()
             && matches!(
                 key.bare_key,
                 BareKey::Up
@@ -715,6 +730,53 @@ impl CommandPalette {
             return Outcome::None;
         }
         if let Some(form) = &mut self.form {
+            if form.confirmation && matches!(key.bare_key, BareKey::PageUp | BareKey::PageDown) {
+                let page = self.metadata_rows.get().max(1);
+                self.metadata_offset = self
+                    .metadata_offset
+                    .min(self.metadata_total.get().saturating_sub(page));
+                self.metadata_offset = if key.bare_key == BareKey::PageDown {
+                    self.metadata_offset.saturating_add(page)
+                } else {
+                    self.metadata_offset.saturating_sub(page)
+                };
+                return Outcome::None;
+            }
+            if let Some(Field {
+                value: FieldValue::Choice { options, selected },
+                ..
+            }) = form.fields.get_mut(form.selected)
+            {
+                if matches!(key.bare_key, BareKey::Char(_) | BareKey::Backspace) {
+                    self.choice_input.handle_key(key);
+                    let pattern = Pattern::new(
+                        self.choice_input.get_text(),
+                        CaseMatching::Ignore,
+                        Normalization::Smart,
+                        AtomKind::Fuzzy,
+                    );
+                    let mut buffer = Vec::new();
+                    if let Some((index, _)) = options
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, value)| {
+                            pattern
+                                .score(Utf32Str::new(value, &mut buffer), &mut self.matcher)
+                                .map(|score| (i, score))
+                        })
+                        .max_by_key(|(_, score)| *score)
+                    {
+                        *selected = index;
+                    }
+                    return Outcome::None;
+                }
+            }
+            if matches!(
+                key.bare_key,
+                BareKey::Up | BareKey::Down | BareKey::Tab | BareKey::Enter
+            ) {
+                self.choice_input = TextInput::default();
+            }
             match key.bare_key {
                 BareKey::Up => form.selected = (form.selected + form.rows() - 1) % form.rows(),
                 BareKey::Tab if key.has_modifiers(&[KeyModifier::Shift]) => {
@@ -728,7 +790,17 @@ impl CommandPalette {
                         return self.back();
                     } else {
                         return Outcome::Submit {
-                            id: form.id.clone(),
+                            id: form
+                                .actions
+                                .get(form.selected.saturating_sub(
+                                    form.fields.len() + 1 + usize::from(form.confirmation),
+                                ))
+                                .filter(|_| {
+                                    form.selected
+                                        > form.fields.len() + usize::from(form.confirmation)
+                                })
+                                .map(|a| a.0.clone())
+                                .unwrap_or_else(|| form.id.clone()),
                             values: form.fields.iter().map(Field::text_value).collect(),
                         };
                     }
@@ -1270,7 +1342,9 @@ impl CommandPalette {
                         format!(
                             "╭{}╮",
                             fit(
-                                &if self.metadata.is_some() {
+                                &if self.form.as_ref().is_some_and(|f| f.confirmation) {
+                                    " Confirm · PgUp/PgDn scroll details ".into()
+                                } else if self.metadata.is_some() {
                                     format!(" Agent info · {} ", ["Metadata", "Timeline", "Actions"][self.metadata_focus as usize])
                                 } else {
                                     format!(" Do · Project: {} ", self.current_project.as_deref().unwrap_or("None"))
@@ -1311,6 +1385,8 @@ impl CommandPalette {
                             self.error.clone().unwrap_or_else(|| {
                                 if self.busy {
                                     "Working…  Esc Cancel"
+                                } else if self.form.as_ref().is_some_and(|f| f.confirmation) {
+                                    "↑↓ Select  Enter Choose  PgUp/PgDn Details  Esc Back"
                                 } else if self.metadata.is_some() {
                                     "Tab Metadata/Timeline/Actions · ↑↓ PgUp/PgDn · Enter Open · Esc Back"
                                 } else if self.text.is_some() {
@@ -1371,15 +1447,15 @@ impl CommandPalette {
                                         .0
                                     },
                                     FieldValue::Choice { .. } => {
-                                        format!("{}: ‹ {} ›", field.label, field.text_value())
+                                        format!("{}: ‹ {} ›{}", field.label, field.text_value(), if is_selected && !self.choice_input.get_text().is_empty() { format!(" (search: {})", self.choice_input.get_text()) } else { String::new() })
                                     },
                                 }
                             } else if form.confirmation && index == form.fields.len() {
                                 "Cancel".into()
-                            } else if index == form.rows() - 1 {
+                            } else if index == form.fields.len() + usize::from(form.confirmation) {
                                 form.submit.clone()
                             } else {
-                                String::new()
+                                form.actions.get(index - form.fields.len() - 1 - usize::from(form.confirmation)).map(|a| a.1.clone()).unwrap_or_default()
                             }
                         } else if let Some(
                             ResultRow::Heading(label) | ResultRow::Status(_, label),

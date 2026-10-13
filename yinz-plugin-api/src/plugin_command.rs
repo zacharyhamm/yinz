@@ -74,6 +74,7 @@ pub use super::generated_api::api::{
         FsReadResponse as ProtobufFsReadResponse, FsRemovePayload, FsRenamePayload, FsWritePayload,
         GenerateRandomNamePayload,
         GenerateRandomNameResponse as ProtobufGenerateRandomNameResponse,
+        GetDisconnectTargetsResponse as ProtobufGetDisconnectTargetsResponse,
         GetFocusedPaneInfoPayload,
         GetFocusedPaneInfoResponse as ProtobufGetFocusedPaneInfoResponse, GetLayoutDirPayload,
         GetLayoutDirResponse as ProtobufGetLayoutDirResponse, GetLocalUtcOffsetPayload,
@@ -1842,6 +1843,10 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     to: PathBuf::from(payload.to),
                 }),
                 _ => Err("Mismatched payload for FsRename"),
+            },
+            Some(CommandName::GetDisconnectTargets) => match protobuf_plugin_command.payload {
+                None => Ok(PluginCommand::GetDisconnectTargets),
+                Some(_) => Err("GetDisconnectTargets should have no payload"),
             },
             Some(CommandName::GetSessionList) => match protobuf_plugin_command.payload {
                 Some(Payload::GetSessionListPayload(_)) => Ok(PluginCommand::GetSessionList),
@@ -4479,6 +4484,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     from: from.display().to_string(),
                     to: to.display().to_string(),
                 })),
+            }),
+            PluginCommand::GetDisconnectTargets => Ok(ProtobufPluginCommand {
+                name: CommandName::GetDisconnectTargets as i32,
+                payload: None,
             }),
             PluginCommand::GetSessionList => Ok(ProtobufPluginCommand {
                 name: CommandName::GetSessionList as i32,
@@ -8204,6 +8213,7 @@ mod tests {
                 | PluginCommand::ClearPaneHighlights(_)
                 | PluginCommand::OpenPluginPaneFloating { .. }
                 | PluginCommand::GetSessionList
+                | PluginCommand::GetDisconnectTargets
                 | PluginCommand::KillSessionsAndReply(_)
                 | PluginCommand::DeleteDeadSessionAndReply(_)
                 | PluginCommand::DeleteAllDeadSessionsAndReply

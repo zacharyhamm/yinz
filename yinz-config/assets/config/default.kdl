@@ -412,6 +412,9 @@ plugins {
         // height "66%"
         // pad "3"
     }
+    session-palette location="yinz:session-palette" {
+        shared true
+    }
     todos location="yinz:todos"
     new-agent location="yinz:new-agent"
     duplicate-agent location="yinz:new-agent" {
@@ -454,6 +457,7 @@ load_plugins {
     // configuration), and the bare url would load a second, unshared watcher.
     "agent-service"
     "project-store"
+    "session-palette"
     "yinz:link"
     // "file:/path/to/my-plugin.wasm"
     // "file:/path/to/my-plugin.ts"     // a TypeScript plugin; see docs/DENO_PLUGINS.md

@@ -2255,6 +2255,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             floating_pane_coordinates: optional_floating_pane_coordinates(tc),
             context: context(tc),
         },
+        CommandType::GetDisconnectTargets => PluginCommand::GetDisconnectTargets,
         CommandType::GetSessionList => PluginCommand::GetSessionList,
         CommandType::KillSessionsAndReply => PluginCommand::KillSessionsAndReply(
             up_to(tc, 3, strings).into_iter().map(Into::into).collect(),

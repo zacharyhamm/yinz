@@ -360,6 +360,9 @@ plugins {
         shared true
     }
     session-manager location="yinz:session-manager"
+    session-palette location="yinz:session-palette" {
+        shared true
+    }
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"
     tab-bar location="yinz:tab-bar"
@@ -372,6 +375,7 @@ load_plugins {
     yinz:link
     agent-service
     project-store
+    session-palette
 }
 hooks {
     agent_exit "yinz:agent-exit"
