@@ -27,7 +27,6 @@ Some(
                     hold_on_close: false,
                     hold_on_start: false,
                     originating_plugin: None,
-                    workflow_owner: None,
                     use_terminal_title: true,
                     target: Local,
                     remote_default_shell: false,

@@ -140,48 +140,6 @@ fn object_with<'s>(
     object
 }
 
-#[op2]
-#[serde]
-fn op_yinz_workflow_remote_panes(
-    state: &OpState,
-) -> std::result::Result<serde_json::Value, JsErrorBox> {
-    let query = || -> Result<Value> {
-        state.borrow::<Arc<limits::Limits>>().check()?;
-        let env = state
-            .borrow::<HostState>()
-            .env
-            .as_ref()
-            .context("host commands are unavailable during module initialization")?;
-        if env.cancel.load(Ordering::Acquire) {
-            bail!(CANCELLED_BY_HOST);
-        }
-        let rows =
-            super::host_bridge::workflow_remote_panes(&env.plugin_config.location, &env.senders)?;
-        Ok(json!(rows))
-    };
-    query().map_err(|error| JsErrorBox::generic(format!("{error:#}")))
-}
-
-#[op2]
-fn op_yinz_workflow_signal(
-    state: &OpState,
-    #[serde] request: super::host_bridge::WorkflowSignal,
-) -> std::result::Result<(), JsErrorBox> {
-    let signal = || -> Result<()> {
-        state.borrow::<Arc<limits::Limits>>().check()?;
-        let env = state
-            .borrow::<HostState>()
-            .env
-            .as_ref()
-            .context("host commands are unavailable during module initialization")?;
-        if env.cancel.load(Ordering::Acquire) {
-            bail!(CANCELLED_BY_HOST);
-        }
-        super::host_bridge::workflow_signal(&env.plugin_config.location, &env.senders, request)
-    };
-    signal().map_err(|error| JsErrorBox::generic(format!("{error:#}")))
-}
-
 // Validate before the SDK inspects permission/unsubscribe payloads. Otherwise
 // its bookkeeping could invoke an accessor or proxy before the command op.
 #[op2(fast)]
@@ -305,8 +263,6 @@ deno_core::extension!(
     yinz_host,
     ops = [
         op_yinz_command,
-        op_yinz_workflow_remote_panes,
-        op_yinz_workflow_signal,
         op_yinz_monotonic_ms,
         op_yinz_validate,
         op_yinz_encode,
@@ -941,8 +897,6 @@ impl RuntimeInstance {
             json!({
                 "instanceId": uuid::Uuid::new_v4().to_string(),
                 "identity": super::host_bridge::server_identity(&env.server_session)?,
-                "workflowBridge": super::host_bridge::is_workflow_bridge(&env.plugin_config.location),
-                "swampTiming": std::env::var("YINZ_SWAMP_TIMING").as_deref() == Ok("1"),
             }),
             None,
         )?;

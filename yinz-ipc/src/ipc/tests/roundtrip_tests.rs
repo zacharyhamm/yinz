@@ -2788,7 +2788,6 @@ fn test_client_messages() {
                 run: Some(Run::Command(RunCommand {
                     agent_theme: None,
                     claude_settings: None,
-                    workflow_owner: None,
                     command: PathBuf::from("/path/to/command"),
                     args: vec![],
                     cwd: None,
@@ -2821,7 +2820,6 @@ fn test_client_messages() {
                 run: Some(Run::Command(RunCommand {
                     agent_theme: None,
                     claude_settings: None,
-                    workflow_owner: None,
                     command: PathBuf::from("/path/to/command"),
                     args: vec!["arg1".to_owned(), "arg2".to_owned(), "arg3".to_owned()],
                     cwd: Some(PathBuf::from("/path/to/cwd")),

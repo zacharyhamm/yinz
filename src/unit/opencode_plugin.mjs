@@ -234,12 +234,10 @@ for (const [type, expected] of Object.entries({
   "tool.execute.after": "PostToolUse", "permission.replied": "PostToolUse",
   "assistant.message": "MessageDisplay", "future.event": "future.event",
 })) {
-  const hook = toHookEvent({ type, properties: { sessionID: "session", cwd: "/work" },
-    _yinz_workflow_owner: "owner" })
+  const hook = toHookEvent({ type, properties: { sessionID: "session", cwd: "/work" } })
   assert.equal(hook.hook_event_name, expected)
   assert.equal(hook.session_id, "session")
   assert.equal(hook.cwd, "/work")
-  assert.equal(hook._yinz_workflow_owner, "owner")
 }
 for (const [permission, metadata, patterns, expected] of [
   ["bash", { command: "cargo test", extra: true }, ["ignored"], { command: "cargo test", extra: true }],

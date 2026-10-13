@@ -72,17 +72,10 @@ pub fn to_hook_event(event: &Value) -> HookEvent {
                 .map(str::to_owned)
         });
 
-    let workflow_owner = event
-        .get("_yinz_workflow_owner")
-        .and_then(Value::as_str)
-        .filter(|owner| !owner.is_empty())
-        .map(str::to_owned);
-
     let mut hook = HookEvent {
         hook_event_name: event_type.to_owned(),
         session_id,
         cwd,
-        workflow_owner,
         ..Default::default()
     };
 
@@ -515,21 +508,6 @@ mod tests {
         }));
         assert_eq!(unknown.hook_event_name, "session.status");
         assert_eq!(hook_state(&unknown), None);
-    }
-
-    /// The host annotates a workflow-owned pane's native event before translation
-    /// (`yinz action agent-report`); the translation must carry that annotation into
-    /// the serialized `raw`, which is what the screen reads to drop foreign owners.
-    #[test]
-    fn a_workflow_owner_annotation_survives_translation() {
-        let event = event(
-            r#"{"type":"tool.execute.before","properties":{"sessionID":"ses_1",
-                "callID":"call_1","tool":"bash","args":{"command":"cargo build"}},
-                "_yinz_workflow_owner":"workflow-7"}"#,
-        );
-        assert_eq!(event.workflow_owner.as_deref(), Some("workflow-7"));
-        let raw = serde_json::to_value(&event).expect("the hook event serializes");
-        assert_eq!(raw["_yinz_workflow_owner"], "workflow-7");
     }
 
     #[test]

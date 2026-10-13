@@ -49,12 +49,6 @@ pub fn to_hook_event(event: &Value) -> HookEvent {
         .filter(|p| !p.is_empty())
         .map(str::to_owned);
 
-    let workflow_owner = event
-        .get("_yinz_workflow_owner")
-        .and_then(Value::as_str)
-        .filter(|owner| !owner.is_empty())
-        .map(str::to_owned);
-
     let tool_call = event.get("toolCall");
     let tool_name = tool_call
         .and_then(|tc| tc.get("name"))
@@ -81,7 +75,6 @@ pub fn to_hook_event(event: &Value) -> HookEvent {
         session_id: session_id.clone(),
         cwd,
         transcript_path,
-        workflow_owner,
         tool_name: tool_name.clone(),
         tool_input,
         message: error.clone(),

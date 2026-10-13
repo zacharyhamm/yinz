@@ -5260,47 +5260,32 @@ fn deno_full_hd_access_follows_absolute_links_for_io_and_preserves_entries() {
 }
 
 #[test]
-fn deno_redirected_project_configuration_requires_authorization_for_both_checkouts() {
+fn deno_project_configuration_requires_write_authorization() {
     let dirs = FsDirs::new();
-    let control = tempfile::tempdir().unwrap();
-    for directory in [dirs.host.path(), control.path()] {
-        assert!(std::process::Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(directory)
-            .output()
-            .unwrap()
-            .status
-            .success());
-        std::fs::create_dir(directory.join(".yinz")).unwrap();
-    }
-    std::fs::write(
-        dirs.host.path().join(".yinz/swamp-workflows.kdl"),
-        format!("agent_exit {{ control_checkout {:?}; }}", control.path()),
-    )
-    .unwrap();
-    let path = control.path().join(".yinz/swamp-workflows.kdl");
-    let source = "agent_exit { workflow \"review\"; }";
+    assert!(std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(dirs.host.path())
+        .output()
+        .unwrap()
+        .status
+        .success());
+    std::fs::create_dir(dirs.host.path().join(".yinz")).unwrap();
+    let path = dirs.host.path().join(".yinz/agent-exit.kdl");
+    let source = "agent_exit { default_branch \"main\"; }";
     std::fs::write(&path, source).unwrap();
     let read = "return yinz.projectConfig.read('.').source;";
-    let denied = deno_render_with_dirs(read, &dirs, file_permissions());
-    assert!(denied.contains("control checkout"), "{denied}");
-    let read_only: std::collections::HashSet<_> =
-        [PermissionType::ReadFiles, PermissionType::FullHdAccess]
-            .into_iter()
-            .collect();
+    let read_only: std::collections::HashSet<_> = [PermissionType::ReadFiles].into_iter().collect();
     assert_eq!(
         deno_render_with_dirs(read, &dirs, Some(read_only.clone())),
         source
     );
-    let write = format!("return yinz.projectConfig.write('.', 'agent_exit {{ workflow \"other\"; }}', {source:?}).source;");
+    let write = format!("return yinz.projectConfig.write('.', 'agent_exit {{ default_branch \"trunk\"; }}', {source:?}).source;");
     let denied = deno_render_with_dirs(&write, &dirs, Some(read_only));
     assert!(denied.contains("WriteFiles"), "{denied}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
-    let mut allowed = file_permissions().unwrap();
-    allowed.insert(PermissionType::FullHdAccess);
     assert_eq!(
-        deno_render_with_dirs(&write, &dirs, Some(allowed)),
-        "agent_exit { workflow \"other\"; }"
+        deno_render_with_dirs(&write, &dirs, file_permissions()),
+        "agent_exit { default_branch \"trunk\"; }"
     );
 }
 

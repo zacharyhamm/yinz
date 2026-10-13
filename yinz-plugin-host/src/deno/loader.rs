@@ -17,7 +17,6 @@ use std::{
 use yinz_runtime::errors::prelude::*;
 
 pub const SDK_SPECIFIER: &str = "yinz:plugin";
-pub(super) const WORKFLOW_SPECIFIER: &str = "yinz:workflow-view";
 pub(super) const EMBEDDED_ROOT: &str = "/__yinz_builtin__";
 
 fn embedded_url(path: &Path) -> Result<ModuleSpecifier> {
@@ -273,9 +272,6 @@ impl PluginModuleLoader {
         }
         if specifier == "yinz:testing" && self.testing {
             return ModuleSpecifier::parse(specifier).context("resolve testing SDK");
-        }
-        if specifier == WORKFLOW_SPECIFIER {
-            return embedded_url(Path::new("workflow-view.ts"));
         }
         if specifier == SDK_SPECIFIER {
             return ModuleSpecifier::parse(SDK_SPECIFIER).context("resolve embedded plugin SDK");

@@ -265,7 +265,8 @@ enum CommandName {
   SetRelatedPanes = 284;
   ArrangeProjectPanes = 285;
   SubscribePaneOutput = 286;
-  SwampRequest = 287;
+  reserved 287;
+  reserved "SwampRequest";
   AgentControl = 296;
   RegisterAgentProvider = 297;
   GetAgentProviders = 298;
@@ -286,6 +287,8 @@ enum CommandName {
 }
 
 message PluginCommand {
+  reserved 228;
+  reserved "swamp_request_payload";
   reserved 213, 174;
   reserved "search_recordings_payload";
   reserved "check_lua_plugin_payload";
@@ -505,7 +508,6 @@ message PluginCommand {
     SetRelatedPanesPayload set_related_panes_payload = 225;
     ArrangeProjectPanesPayload arrange_project_panes_payload = 226;
     PaneOutputSubscription pane_output_subscription = 227;
-    SwampRequestPayload swamp_request_payload = 228;
     SetPaneSubtitlePayload set_pane_subtitle_payload = 229;
     SetProjectContextPayload set_project_context_payload = 239;
     GetPluginInfoPayload get_plugin_info_payload = 241;
@@ -2065,12 +2067,6 @@ message PaneOutputSubscription {
   repeated ContextItem context = 2;
 }
 message ArrangeProjectPanesPayload { repeated ProjectPaneGroup groups = 1; }
-message SwampRequestPayload {
-  string directory = 1;
-  string id = 2;
-  string operation = 3;
-  string payload = 4;
-}
 
 // The report uses the shared serde wire types, as project configuration does.
 message CheckPluginPayload {

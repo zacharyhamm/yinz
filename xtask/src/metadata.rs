@@ -88,10 +88,6 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "yinz-swamp",
-        &["yinz-runtime", "yinz-project-config", "yinz-test-support"],
-    ),
-    (
         "yinz-codex",
         &[
             "yinz-types",
@@ -175,7 +171,6 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-ipc",
             "yinz-session",
             "yinz-process",
-            "yinz-swamp",
             "yinz-bus",
             "yinz-routing",
             "yinz-tile",

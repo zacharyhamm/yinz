@@ -97,24 +97,6 @@ pub(super) fn apply_queued_agent_report(
     } else {
         report
     };
-    // A late hook from an earlier process must not finish a new operation in a reused pane.
-    if let Some(command) = screen
-        .tab_containing_pane(pane_id)
-        .and_then(|tab| tab.pane_run_command(pane_id))
-    {
-        if let Some(owner) = command.workflow_owner() {
-            let reported = hook
-                .as_ref()
-                .and_then(|hook| hook.workflow_owner.as_deref());
-            if reported != Some(owner) {
-                log::debug!(
-                    "agent report ignored report={:?} reason=workflow_owner",
-                    report.report_id
-                );
-                return Ok(true); // consumed, but deliberately not applied or broadcast
-            }
-        }
-    }
     // Bootstrap must not overwrite newer provider evidence or observe/broadcast stale startup.
     if report.kind == "codex"
         && hook.as_ref().is_some_and(|hook| {

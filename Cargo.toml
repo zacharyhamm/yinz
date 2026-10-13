@@ -31,7 +31,6 @@ yinz-storage = { workspace = true }
 yinz-process = { path = "yinz-process", version = "0.1.0" }
 yinz-codex = { workspace = true }
 yinz-muse = { workspace = true }
-yinz-swamp = { workspace = true }
 tokio = { workspace = true }
 yinz-client = { path = "yinz-client/", version = "0.1.0" }
 yinz-server = { path = "yinz-server/", version = "0.1.0" }
@@ -50,7 +49,7 @@ serde_json = { workspace = true }
 suggest = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
-# Static libcurl and OpenSSL for the isahc clients in yinz-bus and yinz-swamp, enabled by
+# Static libcurl and OpenSSL for the isahc clients in yinz-bus, enabled by
 # `vendored_curl`. Nothing here uses them directly.
 openssl-sys = { workspace = true, optional = true }
 curl-sys = { workspace = true, optional = true }
@@ -108,7 +107,6 @@ members = [
     "yinz-process",
     "yinz-codex",
     "yinz-muse",
-    "yinz-swamp",
     "yinz-terminal",
     "yinz-terminal-graphics",
     "yinz-screen",
@@ -185,7 +183,6 @@ yinz-key-codec = { path = "yinz-key-codec", version = "0.1.0" }
 yinz-host-protocol = { path = "yinz-host-protocol", version = "0.1.0" }
 yinz-codex = { path = "yinz-codex", version = "0.1.0" }
 yinz-muse = { path = "yinz-muse", version = "0.1.0" }
-yinz-swamp = { path = "yinz-swamp", version = "0.1.0" }
 yinz-terminal-graphics = { path = "yinz-terminal-graphics", version = "0.1.0" }
 ansi_term = { version = "0.12.1", default-features = false }
 anyhow = { version = "1.0.70", default-features = false, features = ["backtrace", "std"] }
@@ -243,7 +240,8 @@ uuid = { version = "1.4.1", default-features = false, features = ["serde", "v4",
 vte = { version = "0.15", default-features = false, features = ["std"] }
 names = { version = "0.14.0", default-features = false }
 include_dir = { version = "0.7.3", default-features = false }
-sha2 = { version = "0.11", default-features = false }
+# Match the digest features enabled by the Codex WebSocket client in both build graphs.
+sha2 = "0.11"
 
 [profile.dev]
 debug = "line-tables-only"

@@ -318,10 +318,9 @@ fn run_command_action(
     context: BTreeMap<String, String>,
 ) -> Option<RunCommandAction> {
     let cwd = if env.plugin_config.is_builtin()
-        && (context.contains_key("swamp_owner")
-            || context
-                .get("agent_agent_host_cwd")
-                .is_some_and(|value| value == "true"))
+        && context
+            .get("agent_agent_host_cwd")
+            .is_some_and(|value| value == "true")
     {
         command_to_run.cwd.clone()
     } else {
@@ -577,17 +576,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         .context("deliver agent response")
                         .non_fatal();
                 });
-            },
-            PluginCommand::SwampRequest {
-                directory,
-                id,
-                operation,
-                payload,
-            } => {
-                if !env.plugin_config.is_builtin() {
-                    return Err(anyhow!("managed Swamp requests require a builtin plugin"));
-                }
-                swamp_request(env, directory, id, operation, payload);
             },
             PluginCommand::PaneTabs(mut command) => {
                 if let yinz_types::pane_tabs::PaneTabsCommand::Mount { layout, .. } = &mut command {
@@ -3040,7 +3028,7 @@ fn open_command_pane_in_git_checkout_near_plugin(
 /// `agent_spawn`, the `new-agent` modal and a TypeScript plugin's `yinz.agent.spawn`.
 fn spawn_agent(
     env: &mut PluginEnv,
-    mut spec: AgentSpawnSpec,
+    spec: AgentSpawnSpec,
     source_directory: Option<PathBuf>,
     cwd: Option<PathBuf>,
     name: Option<String>,
@@ -3048,35 +3036,10 @@ fn spawn_agent(
     start_suppressed: bool,
 ) {
     let result: SpawnAgentResponse = (|| {
-        if let Some(owner) = context.get("swamp_owner") {
-            if owner.is_empty() || owner.len() > 4096 {
-                return Err("invalid workflow ownership".into());
-            }
-            spec.env.insert("YINZ_SWAMP_OWNER".into(), owner.clone());
-        }
-        context.remove("agent_workflow_owner");
-        if let Some(role) = context.get("agent_workflow_role") {
-            if !["message", "repair"].contains(&role.as_str())
-                || context
-                    .get("agent_workflow_run")
-                    .is_none_or(|run| run.is_empty())
-            {
-                return Err(
-                    "workflow helpers require a run identifier and message or repair role".into(),
-                );
-            }
-            if spec.branch.is_some() || spec.worktree == Some(true) {
-                return Err("workflow helpers must run in the existing host checkout".into());
-            }
-            context.insert("agent_workflow_owner".into(), env.plugin_id.to_string());
-        }
-        let host_workflow = context.contains_key("agent_workflow_role");
-        let host_paths = host_workflow
-            || (env.plugin_config.is_builtin()
-                && (context.contains_key("swamp_owner")
-                    || context
-                        .get("agent_agent_host_cwd")
-                        .is_some_and(|value| value == "true")));
+        let host_paths = env.plugin_config.is_builtin()
+            && context
+                .get("agent_agent_host_cwd")
+                .is_some_and(|value| value == "true");
         let source = source_directory
             .map(|path| {
                 if host_paths && path.is_absolute() {
@@ -3093,23 +3056,18 @@ fn spawn_agent(
                 translate_plugin_path(env, path)
             }
         });
-        let prepared = prepare_agent(&spec, source, cwd, host_workflow, &env.data_access)
+        let prepared = prepare_agent(&spec, source, cwd, &env.data_access)
             .map_err(|error| error.to_string())?;
         let resources = prepared.resources();
         let kind = yinz_types::agent::agent_kind_of(&prepared.command.path, &prepared.command.args)
             .unwrap_or_else(|| "true".to_owned());
         context.insert(AGENT_PANE_CONTEXT.to_owned(), kind);
         spawn_command_pane_near_plugin(env, prepared.command, context, name, true, start_suppressed)
-            .map(|pane_id| {
-                if let Some(cwd) = &resources.cwd {
-                    prewarm_agent_workflows(cwd.clone());
-                }
-                SpawnedAgent {
-                    pane_id,
-                    branch: resources.branch,
-                    cwd: resources.cwd,
-                    ..Default::default()
-                }
+            .map(|pane_id| SpawnedAgent {
+                pane_id,
+                branch: resources.branch,
+                cwd: resources.cwd,
+                ..Default::default()
             })
     })();
     let response = ProtobufSpawnAgentResponse::from(result);
@@ -3185,7 +3143,6 @@ fn prepare_agent(
     spec: &AgentSpawnSpec,
     source: PathBuf,
     cwd: Option<PathBuf>,
-    host_workflow: bool,
     data_access: &DataAccess,
 ) -> Result<PreparedAgent, AgentSpawnError> {
     let (mut command, mut checkout) = yinz_runtime::agent::launch::plan(spec)?;
@@ -3229,11 +3186,7 @@ fn prepare_agent(
     // repository at all - is a thing to ask for, not a thing to fall into by leaving
     // `branch` out. The resolved folder is what is checked, not the spec: a branch held
     // by another worktree sends the agent there, and that is a worktree.
-    //
-    // Workflow helpers are the exception, and were before this: they are *required* to
-    // run in the existing host checkout (see above), so refusing them for it would leave
-    // them nowhere to run.
-    let guard = if spec.allow_outside_worktree.unwrap_or(false) || host_workflow {
+    let guard = if spec.allow_outside_worktree.unwrap_or(false) {
         WorktreeGuard::Waived
     } else {
         WorktreeGuard::Required
@@ -3302,16 +3255,6 @@ fn prepare_agent(
         requested_branch,
         reused,
     })
-}
-
-fn prewarm_agent_workflows(folder: PathBuf) {
-    get_tokio_runtime().spawn_blocking(move || {
-        if let Ok(config) = yinz_config::project_config::access(&folder, None) {
-            if config.error.is_none() && config.config.workflow.is_some() {
-                yinz_swamp::prewarm(&config.root).non_fatal();
-            }
-        }
-    });
 }
 
 /// A CLI-spawned agent pane's title, such as `claude (haiku)`.
@@ -3540,9 +3483,6 @@ fn spawn_agent_prepared(
             Some(resources.clone()),
         )
     })?;
-    if let Some(cwd) = &resources.cwd {
-        prewarm_agent_workflows(cwd.clone());
-    }
     Ok(SpawnedAgent {
         tab_id: Some(tab_id),
         created_tab_id: resources.created_tab_id,
@@ -4647,63 +4587,6 @@ fn exec_cmd(env: &PluginEnv, mut command_line: Vec<String>) {
         .non_fatal();
 }
 
-fn swamp_request(
-    env: &PluginEnv,
-    directory: PathBuf,
-    id: String,
-    operation: String,
-    payload: String,
-) {
-    let sender = env.senders.to_plugin.clone();
-    let target = env.plugin_id;
-    let client = env.client_id;
-    let generation = env.deno_generation;
-    get_tokio_runtime().spawn(async move {
-        let emit = |frame: serde_json::Value| {
-            if let Some(sender) = &sender {
-                sender.send(PluginInstruction::for_plugin_event(target, client, generation,
-                    Event::CustomMessage("swamp-response".into(), frame.to_string()))).to_anyhow().context("cannot deliver Swamp response").non_fatal();
-            }
-        };
-        let result: Result<()> = async {
-            let config = yinz_config::project_config::access(&directory, None).map_err(|e| anyhow!(e))?;
-            if let Some(error) = config.error { return Err(anyhow!(error)); }
-            let root = config.root;
-            let payload: serde_json::Value = serde_json::from_str(&payload).context("invalid Swamp request payload")?;
-            let progress = |payload| emit(serde_json::json!({"type":"managed.progress","id":id,"payload":payload}));
-            if operation == "managed.endpoint" {
-                let value = yinz_swamp::public_endpoint(&root)?;
-                emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));
-            } else if operation == "workflow.get" {
-                let workflow = payload["workflowIdOrName"].as_str().context("workflow is required")?;
-                let value = yinz_swamp::definitions::get(root, workflow, &progress).await?;
-                emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));
-            } else if matches!(operation.as_str(), "workflow.edit" | "workflow.delete") {
-                let value = yinz_swamp::definitions::change(root, &operation, payload, &progress).await?;
-                emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));
-            } else if operation == "workflow.cancel" {
-                let warm = root.clone();
-                let warm_id = id.clone();
-                tokio::task::spawn_blocking(move || yinz_swamp::prewarm_request(&warm, &warm_id)).await.context("Swamp startup failed")??;
-                let run = payload["runId"].as_str().context("cancellation requires a run ID")?.to_owned();
-                let value = yinz_swamp::cancel(root, run).await?;
-                emit(serde_json::json!({"type":"workflow.cancel", "id":id, "payload":{"data":value}}));
-            } else {
-                let mut events = yinz_swamp::request(root, id.clone(), operation, payload).await?;
-                while let Some(frame) = events.recv().await { emit(frame); }
-            }
-            Ok(())
-        }.await;
-        if let Err(error) = result {
-            let message = error.to_string();
-            let detail = serde_json::from_str::<serde_json::Value>(&message).ok()
-                .filter(|value| value["code"].is_string() && value["message"].is_string())
-                .unwrap_or_else(|| serde_json::json!({"code":"host_error","message":message}));
-            emit(serde_json::json!({"type":"error", "id":id, "error":detail}));
-        }
-    });
-}
-
 fn run_command(
     env: &PluginEnv,
     mut command_line: Vec<String>,
@@ -4717,11 +4600,7 @@ fn run_command(
         log::error!("Command cannot be empty");
     } else {
         let command = command_line.remove(0);
-        let cwd = if env.plugin_config.is_builtin() && context.contains_key("swamp_owner") {
-            cwd
-        } else {
-            translate_plugin_path(env, cwd)
-        };
+        let cwd = translate_plugin_path(env, cwd);
         let _ = env
             .senders
             .send_to_background_jobs(BackgroundJob::RunCommand(
@@ -7379,12 +7258,6 @@ fn project_config(
                 "project configuration outside the plugin directory requires FullHdAccess"
             ));
         }
-        let root = yinz_config::project_config::control_root(&root).map_err(|e| anyhow!(e))?;
-        if !root.starts_with(&own) && !has_permission(env, PermissionType::FullHdAccess) {
-            return Err(anyhow!(
-                "project control checkout outside the plugin directory requires FullHdAccess"
-            ));
-        }
         let snapshot = if let Some((source, expected)) = write {
             yinz_config::project_config::access_root(&root, Some((&source, expected.as_deref())))
                 .map_err(|e| anyhow!(e))?
@@ -9121,11 +8994,6 @@ pub(crate) fn check_command_permission(
     {
         return (PermissionStatus::Granted, None);
     }
-    if matches!(command, PluginCommand::SwampRequest { .. })
-        && !plugin_env.plugin_config.is_builtin()
-    {
-        return (PermissionStatus::Denied, Some(PermissionType::RunCommands));
-    }
     if plugin_env.plugin_config.is_builtin() {
         // built-in plugins can do all the things because they're part of the application and
         // there's no use to deny them anything
@@ -9253,7 +9121,6 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::AgentControl
         | CommandType::RegisterAgentProvider
         | CommandType::GetAgentProviders
-        | CommandType::SwampRequest
         | CommandType::RunCommandInPane
         | CommandType::SpawnAgent
         | CommandType::ExecCmd => PermissionType::RunCommands,

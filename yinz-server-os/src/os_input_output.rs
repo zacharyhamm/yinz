@@ -1210,9 +1210,6 @@ impl ServerOsApi for ServerOsInputOutput {
     fn remote_pane_status(&self, terminal_id: TerminalId) -> Option<RemoteStatus> {
         self.pty_backend.remote_status(terminal_id)
     }
-    fn workflow_remote_panes(&self) -> Vec<serde_json::Value> {
-        self.pty_backend.workflow_remote_panes()
-    }
     fn signal_remote_child(&self, terminal_id: TerminalId, signal: ChildSignal) -> Result<()> {
         self.pty_backend.signal_remote_child(terminal_id, signal)
     }

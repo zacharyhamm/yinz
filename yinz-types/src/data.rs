@@ -2912,13 +2912,6 @@ pub enum PluginCommand {
         id: String,
         request: String,
     },
-    /// Builtin-only managed Swamp request.
-    SwampRequest {
-        directory: PathBuf,
-        id: String,
-        operation: String,
-        payload: String,
-    },
     RunCommand(
         Vec<String>,              // command
         BTreeMap<String, String>, // env_variables
@@ -3413,7 +3406,7 @@ pub enum PluginCommand {
         pane_id: PaneId,
         run_id: Option<String>,
     },
-    /// Read validated workflow configuration at the Git worktree root.
+    /// Read validated agent-exit configuration at the Git worktree root.
     ProjectConfigRead {
         directory: PathBuf,
     },

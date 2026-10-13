@@ -937,7 +937,7 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
         rendered.contains(&codes)
     };
     assert!(
-        contains("No local control checkout is available."),
+        contains("No local checkout is available."),
         "got: {rendered}"
     );
     assert!(

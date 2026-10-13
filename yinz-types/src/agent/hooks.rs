@@ -682,13 +682,6 @@ pub struct HookEvent {
     /// [`crate::agent::control::prompt_sha256`] of the prompt, taken before pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_sha256: Option<String>,
-    /// Host-injected ownership needed to route remote workflow hooks.
-    #[serde(
-        default,
-        rename = "_yinz_workflow_owner",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub workflow_owner: Option<String>,
     /// Bridge selection announcement; only verified idle Codex conversations may bootstrap readiness.
     #[serde(
         default,
@@ -885,7 +878,6 @@ impl HookEvent {
                 .collect(),
             agy_turn_complete: self.agy_turn_complete,
             prompt_sha256: self.prompt_sha256.clone(),
-            workflow_owner: self.workflow_owner.clone(),
             codex_hooks_ready: self.codex_hooks_ready,
             muse_hooks_ready: self.muse_hooks_ready,
             source: self.source.clone(),
@@ -2667,7 +2659,6 @@ mod tests {
                 claude_turn_complete: Some(true),
                 claude_background_tasks: (0..40).map(|task| format!("task-{task}")).collect(),
                 agy_turn_complete: Some(true),
-                workflow_owner: Some("owner".into()),
                 message: Some(prompt.clone()),
                 last_assistant_message: Some(prompt.clone()),
                 tool_input: Some(json!({"plan":prompt, "content":"x".repeat(300000)})),
@@ -2684,17 +2675,16 @@ mod tests {
                 hook.claude_background_tasks[..MAX_BACKGROUND_TASKS]
             );
             assert_eq!(bounded.agy_turn_complete, hook.agy_turn_complete);
-            assert_eq!(bounded.workflow_owner, hook.workflow_owner);
             assert_eq!(
                 bounded.prompt_sha256,
                 Some(crate::agent::control::prompt_sha256(&prompt))
             );
             let arrived: HookEvent = serde_json::from_str(&raw).unwrap();
             assert_eq!(&arrived, bounded.as_ref());
-            // A remote broker prunes before the host adds workflow ownership.
+            // A remote broker can prune before forwarding to the host.
             // A second prune must keep the digest of the original, complete prompt.
             let mut forwarded: Value = serde_json::from_str(&raw).unwrap();
-            forwarded["_yinz_workflow_owner"] = Value::String("owner".repeat(1000));
+            forwarded["message"] = Value::String("message".repeat(1000));
             let forwarded_hook: HookEvent = serde_json::from_value(forwarded.clone()).unwrap();
             let (repruned, forwarded_raw) = forwarded_hook.broadcast(forwarded.to_string());
             assert!(forwarded_raw.len() <= HOOK_BROADCAST_MAX_BYTES);

@@ -388,7 +388,7 @@ pub(super) fn prepare_automation_agent(
     if !source.is_dir() {
         return Err("agent cwd is not a directory".into());
     }
-    prepare_agent(spec, source, None, false, data)
+    prepare_agent(spec, source, None, data)
 }
 
 /// Other live agents whose folder is the one a reused worktree put this agent in.

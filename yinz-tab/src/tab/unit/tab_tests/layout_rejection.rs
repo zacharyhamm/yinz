@@ -78,7 +78,6 @@ fn rejected_landing_retains_adopted_terminals_and_their_buffered_output() {
             cwd: Some(PathBuf::from("/work")),
             hold_on_close: true,
             hold_on_start: held,
-            workflow_owner: Some("adopted-workflow".into()),
             use_terminal_title: true,
             ..Default::default()
         };

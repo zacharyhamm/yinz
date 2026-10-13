@@ -12,7 +12,6 @@ The implementation has five main parts:
 | State and history | Receive agent hooks, track panes, record runs, and produce summaries | `default-plugins/agent-service/src/main.rs`, `default-plugins/agent-proto/src/agents.rs` |
 | Agent panel | Browse live agents and archived runs, read transcripts, and resume conversations | `default-plugins/agents/src/main.rs` |
 | Project memory | Share projects, nested todos, and linked notes across tools and the CLI | `default-plugins/project-store/`, `default-plugins/project-data/src/todos.rs`, `yinz-cli/src/notes_todos.rs` |
-| Development workflows | Run project-owned validation, review, repair, and integration steps | `yinz-deno-builtins/assets/plugins/workflow-view.ts`, `workflows/`, `extensions/models/` |
 
 Use the shipped keybindings to open **New agent** with `Ctrl e`, then `n`.
 Open the agent panel with `Ctrl e`, then `a`.
@@ -173,7 +172,7 @@ The next useful improvements need more than a shortcut:
 - **Summary request results:** report a rejected or failed summary request directly in the panel.
   The current request relies on later run updates. After about 70 seconds without a new summary, the panel says `no new summary · s to try again`, but it cannot tell a rejected request from a slow one.
 
-These follow-ups should extend the existing run, store, and workflow ownership mechanisms.
+These follow-ups should extend the existing run and store ownership mechanisms.
 The first iteration adds no task scheduler, new database schema, or separate build runner.
 
 Tool history includes `tool_call` and `tool_result` entries, with worker attribution and bounded,

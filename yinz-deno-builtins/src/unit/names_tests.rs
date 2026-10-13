@@ -5,7 +5,7 @@ use super::*;
 use yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES;
 
 /// Top-level modules the builtins import that are not plugins themselves.
-const SHARED_MODULES: &[&str] = &["workflow-view"];
+const SHARED_MODULES: &[&str] = &[];
 
 #[test]
 fn every_listed_builtin_has_a_compiled_in_source() {

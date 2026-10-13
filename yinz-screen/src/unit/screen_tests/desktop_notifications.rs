@@ -374,99 +374,92 @@ fn agent_events(receiver: &Receiver<(PluginInstruction, ErrorContext)>) -> Vec<A
 
 #[test]
 fn codex_plan_notifications_preserve_metadata_and_report_once() {
-    for owner in [None, Some("workflow")] {
-        for bytes in [
-            format!("\x1b]9;{PLAN_PROMPT}\x07"),
-            format!("\x1b]777;notify;{PLAN_PROMPT};Codex\x07"),
-            format!("\x1b]99;i=plan:d=0;Codex\x07\x1b]99;i=plan:p=body;{PLAN_PROMPT}\x07"),
-        ] {
-            let (mut screen, server_receiver) = screen_with_a_client_for_notifications(
-                HostNotificationProtocol::Osc9,
-                BTreeMap::new(),
-            );
-            let terminal = TerminalId::new(7);
-            let pane_id = PaneId::Terminal(terminal);
-            screen
-                .tabs
-                .get_mut(&TabId::new(0))
-                .unwrap()
-                .new_pane(
-                    pane_id,
-                    None,
-                    Some(Run::Command(RunCommand {
-                        command: PathBuf::from("codex"),
-                        cwd: Some(PathBuf::from("/pane")),
-                        workflow_owner: owner.map(str::to_owned),
-                        ..Default::default()
-                    })),
-                    false,
-                    true,
-                    NewPanePlacement::default(),
-                    Some(ClientId::new(1)),
-                    None,
-                )
-                .unwrap();
-            let hook = HookEvent {
-                hook_event_name: "Stop".into(),
-                session_id: "conversation".into(),
-                cwd: Some("/conversation/worktree".into()),
-                turn_id: Some("completed-turn".into()),
-                workflow_owner: owner.map(str::to_owned),
-                ..Default::default()
-            };
-            let HookOutcome::Reported(mut agent) = hook_outcome("codex", &hook) else {
-                panic!()
-            };
-            agent.run_id = Some("run".into());
-            crate::screen::thread_main::apply_queued_agent_report(
-                &mut screen,
-                &AgentReport {
-                    report_id: "stop".into(),
-                    pane_id,
-                    state: AgentReportState::Set(agent),
-                    event: Some(AgentEvent::from_hook(
-                        "codex",
-                        terminal,
-                        &hook,
-                        serde_json::to_string(&hook).unwrap(),
-                    )),
-                    trace: false,
-                    process_id: ProcessId::new(42),
-                    kind: "codex".into(),
-                },
-                std::time::Instant::now(),
+    for bytes in [
+        format!("\x1b]9;{PLAN_PROMPT}\x07"),
+        format!("\x1b]777;notify;{PLAN_PROMPT};Codex\x07"),
+        format!("\x1b]99;i=plan:d=0;Codex\x07\x1b]99;i=plan:p=body;{PLAN_PROMPT}\x07"),
+    ] {
+        let (mut screen, server_receiver) =
+            screen_with_a_client_for_notifications(HostNotificationProtocol::Osc9, BTreeMap::new());
+        let terminal = TerminalId::new(7);
+        let pane_id = PaneId::Terminal(terminal);
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .new_pane(
+                pane_id,
+                None,
+                Some(Run::Command(RunCommand {
+                    command: PathBuf::from("codex"),
+                    cwd: Some(PathBuf::from("/pane")),
+                    ..Default::default()
+                })),
+                false,
+                true,
+                NewPanePlacement::default(),
+                Some(ClientId::new(1)),
+                None,
             )
             .unwrap();
-            let (sender, receiver) = channels::unbounded();
-            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
-            let pane = screen
-                .get_active_tab_mut(ClientId::new(1))
-                .unwrap()
-                .get_active_pane_mut(ClientId::new(1))
-                .unwrap();
-            assert_eq!(pane.pid(), pane_id);
-            pane.handle_pty_bytes(bytes.into_bytes());
-            let notifications = pane.drain_desktop_notifications();
-            assert!(!notifications.is_empty());
-            // Repeated prompts still forward, but only the first changes Idle to Waiting.
-            screen.forward_desktop_notifications(notifications.clone(), terminal);
-            screen.forward_desktop_notifications(notifications, terminal);
-            let agent = screen.get_pane_info(pane_id).unwrap().agent.unwrap();
-            assert!(agent.is_waiting_on_a_person());
-            assert_eq!(agent.waiting_on.as_deref(), Some("approve the plan"));
-            assert_eq!(agent.session_id.as_deref(), Some("conversation"));
-            assert_eq!(agent.cwd.as_deref(), Some("/conversation/worktree"));
-            assert_eq!(agent.run_id.as_deref(), Some("run"));
-            let events = agent_events(&receiver);
-            assert_eq!(events.len(), 1);
-            assert_eq!(events[0].hook, "Elicitation");
-            let hook: HookEvent = serde_json::from_str(&events[0].raw).unwrap();
-            assert_eq!(hook.session_id, "conversation");
-            assert_eq!(hook.cwd, agent.cwd);
-            assert_eq!(hook.turn_id, None);
-            assert_eq!(hook.workflow_owner.as_deref(), owner);
-            assert!(collect_forwarded_notifications(&server_receiver).contains(PLAN_PROMPT));
-        }
+        let hook = HookEvent {
+            hook_event_name: "Stop".into(),
+            session_id: "conversation".into(),
+            cwd: Some("/conversation/worktree".into()),
+            turn_id: Some("completed-turn".into()),
+            ..Default::default()
+        };
+        let HookOutcome::Reported(mut agent) = hook_outcome("codex", &hook) else {
+            panic!()
+        };
+        agent.run_id = Some("run".into());
+        crate::screen::thread_main::apply_queued_agent_report(
+            &mut screen,
+            &AgentReport {
+                report_id: "stop".into(),
+                pane_id,
+                state: AgentReportState::Set(agent),
+                event: Some(AgentEvent::from_hook(
+                    "codex",
+                    terminal,
+                    &hook,
+                    serde_json::to_string(&hook).unwrap(),
+                )),
+                trace: false,
+                process_id: ProcessId::new(42),
+                kind: "codex".into(),
+            },
+            std::time::Instant::now(),
+        )
+        .unwrap();
+        let (sender, receiver) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        let pane = screen
+            .get_active_tab_mut(ClientId::new(1))
+            .unwrap()
+            .get_active_pane_mut(ClientId::new(1))
+            .unwrap();
+        assert_eq!(pane.pid(), pane_id);
+        pane.handle_pty_bytes(bytes.into_bytes());
+        let notifications = pane.drain_desktop_notifications();
+        assert!(!notifications.is_empty());
+        // Repeated prompts still forward, but only the first changes Idle to Waiting.
+        screen.forward_desktop_notifications(notifications.clone(), terminal);
+        screen.forward_desktop_notifications(notifications, terminal);
+        let agent = screen.get_pane_info(pane_id).unwrap().agent.unwrap();
+        assert!(agent.is_waiting_on_a_person());
+        assert_eq!(agent.waiting_on.as_deref(), Some("approve the plan"));
+        assert_eq!(agent.session_id.as_deref(), Some("conversation"));
+        assert_eq!(agent.cwd.as_deref(), Some("/conversation/worktree"));
+        assert_eq!(agent.run_id.as_deref(), Some("run"));
+        let events = agent_events(&receiver);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].hook, "Elicitation");
+        let hook: HookEvent = serde_json::from_str(&events[0].raw).unwrap();
+        assert_eq!(hook.session_id, "conversation");
+        assert_eq!(hook.cwd, agent.cwd);
+        assert_eq!(hook.turn_id, None);
+        assert!(collect_forwarded_notifications(&server_receiver).contains(PLAN_PROMPT));
     }
 }
 

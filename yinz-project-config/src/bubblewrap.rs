@@ -694,7 +694,7 @@ impl Declaration {
                         name.as_str(),
                         "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "DISABLE_AUTOUPDATER"
                     )))
-                && !matches!(name.as_str(), "YINZ_AGENT_PANE" | "YINZ_SWAMP_OWNER")
+                && name != "YINZ_AGENT_PANE"
             {
                 bail!("Bubblewrap spawn cannot override {name}");
             }
@@ -1501,7 +1501,6 @@ impl Environment {
                 "YINZ_AGENT_THEME_REF",
                 "YINZ_PANE_ID",
                 "YINZ_SESSION_NAME",
-                "YINZ_SWAMP_OWNER",
                 "YINZ_AGENT_PANE",
             ] {
                 if let Ok(value) = std::env::var(name) {

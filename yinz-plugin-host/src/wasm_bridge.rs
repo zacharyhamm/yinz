@@ -3619,7 +3619,7 @@ impl WasmBridge {
             .location;
         let plugin_location = &normalized;
         let identities = self.plugin_map.lock().unwrap().clone_plugin_assets();
-        let mut destinations: Vec<_> = identities
+        let destinations: Vec<_> = identities
             .iter()
             .filter(|(location, _)| {
                 self.normalize_plugin(RunPlugin {
@@ -3632,12 +3632,6 @@ impl WasmBridge {
             .flat_map(|(_, configurations)| instances_of(configurations, plugin_configuration))
             .map(|(plugin, client)| (*plugin, Some(*client)))
             .collect();
-        // A restored layout can finish loading its bridge after the first CLI
-        // request loaded one. This service has one recipient, unlike view plugins.
-        if crate::host_bridge::is_workflow_bridge(plugin_location) {
-            destinations.sort_unstable();
-            destinations.truncate(1);
-        }
         destinations
     }
     /// The plugins at `plugin_location` with `plugin_configuration` whose load is still in
@@ -3877,11 +3871,6 @@ impl WasmBridge {
                     if !allow_load {
                         return Ok(vec![]);
                     }
-                    let headless = crate::host_bridge::is_workflow_bridge(&run_plugin.location);
-                    let pending_id = PluginId::new(self.next_plugin_id);
-                    if headless {
-                        self.plugin_roles.lock().unwrap().insert(pending_id, true);
-                    }
                     match self.load_plugin(
                         &Some(run_plugin),
                         None,
@@ -3890,20 +3879,6 @@ impl WasmBridge {
                         skip_cache,
                         cli_client_id,
                     ) {
-                        // The bridge is a service with no UI: load it headless, as a suppressed
-                        // pane, which also outlives the tab it was first addressed from.
-                        Ok((plugin_id, client_id)) if headless => {
-                            drop(
-                                self.senders
-                                    .send_to_screen(crate::add_suppressed_plugin_pane(
-                                        run_plugin_or_alias,
-                                        plugin_id,
-                                        cwd,
-                                        client_id,
-                                    )),
-                            );
-                            Ok(vec![(plugin_id, Some(client_id))])
-                        },
                         Ok((plugin_id, client_id)) => {
                             let start_suppressed = false;
                             drop(self.senders.send_to_screen(ScreenInstruction::AddPlugin(
@@ -3925,10 +3900,7 @@ impl WasmBridge {
                             )));
                             Ok(vec![(plugin_id, Some(client_id))])
                         },
-                        Err(error) => {
-                            self.plugin_roles.lock().unwrap().remove(&pending_id);
-                            Err(error).context("Failed to load plugin")
-                        },
+                        Err(error) => Err(error).context("Failed to load plugin"),
                     }
                 } else {
                     Ok(all_plugin_ids)

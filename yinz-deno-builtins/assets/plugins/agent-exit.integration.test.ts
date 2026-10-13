@@ -39,7 +39,7 @@ if [ ! -d "$HOME/repo/.git" ]; then
     "$git" -C "$HOME/repo" branch -m main trunk
     base=trunk
     mkdir -p "$HOME/repo/.yinz"
-    printf 'agent_exit { default_branch "trunk"; }' > "$HOME/repo/.yinz/swamp-workflows.kdl"
+    printf 'agent_exit { default_branch "trunk"; }' > "$HOME/repo/.yinz/agent-exit.kdl"
   fi
   if [ -e "$HOME/remote" ]; then
     "$git" init --bare -q "$HOME/origin.git"
@@ -104,10 +104,7 @@ test(
   "agent-exit shows malformed project configuration while inspecting the checkout",
   { grants: ["ReadFiles", "RunCommands"] },
   async () => {
-    const root = session.fixture(
-      { "repo/.yinz/swamp-workflows.kdl": "broken {}" },
-      { git: gitFixture },
-    );
+    const root = session.fixture({ "repo/.yinz/agent-exit.kdl": "broken {}" }, { git: gitFixture });
     session.start();
     session.loadPlugin("yinz:agent-exit", {
       configuration: { agent_cwd: `${root}/topic`, agent_target: "local" },
@@ -226,82 +223,3 @@ for (const [marker, reason] of [
     },
   );
 }
-
-import { failedWorkflow, deliveryValues } from "./testing-fixtures/workflow.ts";
-test(
-  "agent-exit attaches to the real bridge and renders a persisted launch failure",
-  { grants: ["ReadFiles", "RunCommands"] },
-  async () => {
-    const directory = failedWorkflow();
-    session.start({ backgroundPlugins: ["yinz:swamp-bridge"] });
-    session.loadPlugin("yinz:agent-exit", {
-      configuration: { agent_cwd: directory, agent_exit_token: "fixture-launch" },
-    });
-    await session.waitForText("failed");
-    await session.waitFor("launch error persisted", () =>
-      deliveryValues().some(
-        (value) => value.outcome === "failed" && String(value.error).includes("Swamp"),
-      ),
-    );
-    await session.waitForText("Details");
-    const lines = session.screen.split("\n");
-    const row = lines.findIndex((line) => line.includes("") && line.includes("Details"));
-    const column = lines[row]!.indexOf("Details");
-    for (const event_type of ["Press", "Release"] as const) {
-      session.mouse({
-        event_type,
-        left: true,
-        right: false,
-        middle: false,
-        wheel_up: false,
-        wheel_down: false,
-        shift: false,
-        alt: false,
-        ctrl: false,
-        position: { line: row, column },
-      });
-    }
-    await session.waitForText("Hide details");
-    session.resize(50, 100);
-    await session.waitForText("fixture-launch");
-    session.resize(30, 100);
-    session.key("Home");
-    await session.waitForText("failed");
-  },
-);
-
-test(
-  "agent-exit deletes a secondary worktree after a configured launch fails",
-  { grants: ["ReadFiles", "RunCommands"] },
-  async () => {
-    const root = session.fixture(
-      { "repo/.yinz/swamp-workflows.kdl": 'agent_exit { workflow "fixture-exit"; }' },
-      { git: gitFixture, swamp: "echo fixture-swamp-unavailable >&2; exit 1" },
-    );
-    session.start({ backgroundPlugins: ["yinz:swamp-bridge"] });
-    session.loadPlugin("yinz:agent-exit", {
-      configuration: {
-        agent_cwd: `${root}/topic`,
-        agent_target: "local",
-        agent_exit_token: "cleanup-launch",
-      },
-    });
-    await session.waitForText("failed");
-    await session.waitForText("Delete worktree & branch and close pane");
-    session.key("Delete");
-    await session.waitForText("This cancels the workflow");
-    session.key("Esc");
-    await session.waitForText("Delete worktree & branch and close pane");
-    session.key("Delete");
-    await session.waitForText("Delete again");
-    session.key("Delete");
-    await session.waitFor("cleanup readiness persists", () =>
-      deliveryValues().some((entry) => entry.cleanup && entry.closed && !entry.cancel_pending),
-    );
-    await session.waitFor(
-      "exit pane closes after cleanup",
-      () => !session.panes.some((pane) => pane.plugin_url === "yinz:agent-exit"),
-    );
-    assert(!session.screen.includes("Deletion failed"));
-  },
-);

@@ -100,10 +100,6 @@ struct ForkContext {
 
 struct State {
     duplicate: bool,
-    workflow_reply: Option<(u32, String, String)>,
-    workflow_result_pending: bool,
-    workflow_source: Option<PaneId>,
-    workflow_focus: Option<PaneId>,
     dialog: Dialog,
     /// The caller's cwd: the fallback source directory, and what the default
     /// project is derived from.
@@ -207,10 +203,6 @@ impl Default for State {
         let help = help_for(&form);
         Self {
             duplicate: false,
-            workflow_reply: None,
-            workflow_result_pending: false,
-            workflow_source: None,
-            workflow_focus: None,
             dialog: Dialog::new(Text::new("New agent").color_all(2), form)
                 .help(Text::new(help))
                 .status_row(),
@@ -238,19 +230,12 @@ impl YinzPlugin for State {
             .get("caller_cwd")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
-        self.workflow_reply = configuration
-            .get("swamp_reply_plugin")
-            .and_then(|id| id.parse().ok())
-            .zip(configuration.get("swamp_work").cloned())
-            .zip(configuration.get("swamp_key").cloned())
-            .map(|((id, work), key)| (id, work, key));
         self.plugin_id = get_plugin_ids().plugin_id;
         let asked_for = |key: &str| configuration.get(key).map(String::as_str) == Some("true");
         self.duplicate = asked_for(DUPLICATE_FOCUSED);
         let caller_pane_id = configuration
             .get(CALLER_TERMINAL_PANE_ID)
             .and_then(|pane_id| pane_id.parse().ok());
-        self.workflow_source = caller_pane_id.map(|id| PaneId::Terminal(TerminalId::new(id)));
         let (job, note) = requested_job(
             caller_pane_id,
             asked_for(DUPLICATE_FOCUSED),
@@ -284,7 +269,6 @@ impl YinzPlugin for State {
             EventType::PastedText,
             EventType::RunCommandResult,
             EventType::Visible,
-            EventType::PaneClosed,
             EventType::PaneUpdate,
         ]);
         if matches!(self.job, Job::New) {
@@ -300,29 +284,9 @@ impl YinzPlugin for State {
                 self.refresh_agent_options();
                 true
             },
-            Event::PaneClosed(pane) if self.workflow_reply.is_some() => {
-                if self.workflow_source == Some(pane) {
-                    self.finish_picker(None);
-                }
-                false
-            },
             Event::PaneUpdate(manifest) => {
                 if let Some(tab) = tab_of(&manifest, PaneId::Plugin(self.plugin_id)) {
                     self.panel_pane = panel_in_tab(&manifest, tab);
-                }
-                // A source rerun elsewhere (Restart) leaves nothing to fork. The picker's own
-                // launch reruns it too, but that has already sent its result, which
-                // `finish_picker` guards.
-                if self.workflow_reply.is_none() {
-                    return false;
-                }
-                let rerun = manifest
-                    .panes
-                    .values()
-                    .flatten()
-                    .any(|pane| Some(pane.id) == self.workflow_source && !pane.exited);
-                if rerun {
-                    self.finish_picker(None);
                 }
                 false
             },
@@ -370,25 +334,6 @@ impl YinzPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
-        if pipe_message.name == "swamp-pane-ack" && self.workflow_result_pending {
-            if let Some((plugin, _, _)) = &self.workflow_reply {
-                if pipe_message.source
-                    == PipeSource::Plugin(yinz_tile::prelude::PluginId::new(*plugin))
-                {
-                    self.workflow_reply = None;
-                    self.workflow_result_pending = false;
-                    if let Some(pane) = self.workflow_focus.take() {
-                        hand_over_focus(pane, self.panel_pane);
-                    } else {
-                        close_self();
-                    }
-                }
-            }
-            return false;
-        }
-        if self.workflow_result_pending {
-            return false;
-        }
         if pipe_message.name == wire::AGENT_HELLO {
             if !matches!(self.job, Job::New) {
                 pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
@@ -418,7 +363,7 @@ impl YinzPlugin for State {
                     self.finish_picker(None);
                     return false;
                 };
-                match start(command, None) {
+                match start(command) {
                     Ok(new_pane_id) => {
                         self.finish_launch(new_pane_id);
                         false
@@ -1011,7 +956,6 @@ fn agent_cwd(pane: &AgentPane) -> Option<&str> {
 /// folder, and nothing of the old argv - a duplicate and a fork both start a fresh
 /// conversation, they only differ over which agent has it.
 fn command_in_context(pane: &AgentPane, kind: &str) -> Result<CommandToRun, String> {
-    // Use the source pane even when this picker was opened from a workflow view.
     // An exited process loses its live cwd, but its agent record retains it.
     let target = match pane.bubblewrap.as_deref() {
         // The sandbox is part of where the pane runs, as much as its machine is.
@@ -1021,45 +965,18 @@ fn command_in_context(pane: &AgentPane, kind: &str) -> Result<CommandToRun, Stri
     launch::command_in_context(kind, agent_cwd(pane).map(Into::into), target)
 }
 
-/// Start an agent, reusing the held source pane for a workflow fork.
-fn start(command: CommandToRun, source: Option<PaneId>) -> Result<PaneId, &'static str> {
+fn start(command: CommandToRun) -> Result<PaneId, &'static str> {
     let context = BTreeMap::from([
         (AGENT_PANE_CONTEXT.to_owned(), "true".to_owned()),
         ("agent_agent_host_cwd".to_owned(), "true".to_owned()),
     ]);
-    if let Some(pane_id) = source {
-        // The picker may have been open while the source was closed or restarted.
-        let pane = get_pane_info(pane_id).ok_or("source pane is no longer available")?;
-        if !pane.exited {
-            return Err("source pane is no longer exited");
-        }
-        run_command_in_pane(pane_id, command, context, true);
-        Ok(pane_id)
-    } else {
-        open_command_pane_near_plugin(command, context).ok_or("could not open a pane")
-    }
+    open_command_pane_near_plugin(command, context).ok_or("could not open a pane")
 }
 
 impl State {
     fn finish_picker(&mut self, pane: Option<PaneId>) {
-        if self.workflow_result_pending {
-            return;
-        }
         self.job = Job::New;
-        if let Some((plugin, work, key)) = &self.workflow_reply {
-            // Stay alive until the bridge authenticates and records this result.
-            self.workflow_result_pending = true;
-            self.workflow_focus = pane;
-            pipe_message_to_plugin(
-                MessageToPlugin::new("swamp-pane-result")
-                    .with_destination_plugin_id(yinz_tile::prelude::PluginId::new(*plugin))
-                    .with_payload(
-                        serde_json::json!({"work": work, "key": key,
-                    "choice": if pane.is_some() { "started" } else { "cancelled" }, "pane_id": pane})
-                        .to_string(),
-                    ),
-            );
-        } else if let Some(pane) = pane {
+        if let Some(pane) = pane {
             hand_over_focus(pane, self.panel_pane);
         } else {
             close_self();
@@ -1071,7 +988,7 @@ impl State {
     }
 
     fn handle(&mut self, event: FormEvent) -> bool {
-        if self.workflow_result_pending || self.duplicate {
+        if self.duplicate {
             return false;
         }
         match event {
@@ -1253,7 +1170,7 @@ impl State {
         // Read before the job is borrowed. The select's labels are the shared kinds,
         // capitalised; `binary_for` wants them as they are written in `OFFERED`.
         let kind = self.dialog.form().text(AGENT).to_lowercase();
-        let Job::Fork { pane_id, source } = &self.job else {
+        let Job::Fork { source, .. } = &self.job else {
             return false;
         };
         let context = match source {
@@ -1269,12 +1186,8 @@ impl State {
             },
             ForkSource::Ready(context) => context,
         };
-        let reuse = self
-            .workflow_reply
-            .as_ref()
-            .map(|_| PaneId::Terminal(TerminalId::new(*pane_id)));
         match command_in_context(&context.pane, &kind)
-            .and_then(|command| start(command, reuse).map_err(str::to_owned))
+            .and_then(|command| start(command).map_err(str::to_owned))
         {
             Ok(pane_id) => {
                 self.finish_launch(pane_id);
@@ -2574,17 +2487,14 @@ mod tests {
 
     #[test]
     fn duplicate_stays_hidden_and_finishes_without_a_form_when_the_source_is_not_an_agent() {
-        let source = PaneId::Terminal(TerminalId::new(7));
         let mut state = State {
             duplicate: true,
             job: Job::Duplicate { pane_id: 7 },
-            workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
-            workflow_source: Some(source),
             ..Default::default()
         };
         state.update(Event::Visible(false));
         assert!(
-            !state.workflow_result_pending,
+            matches!(state.job, Job::Duplicate { .. }),
             "hiding must not cancel duplication"
         );
         state.resize(120, 40);
@@ -2606,141 +2516,9 @@ mod tests {
             false,
         ));
         assert!(matches!(state.job, Job::New));
-        assert!(state.workflow_result_pending);
         assert!(state.note.is_none());
-        assert!(state.workflow_focus.is_none());
         assert!(!state.handle(FormEvent::ButtonPressed("create".to_owned())));
         assert!(state.error.is_none());
-    }
-
-    #[test]
-    fn workflow_picker_cancels_when_its_source_is_rerun_elsewhere() {
-        let source = PaneId::Terminal(TerminalId::new(7));
-        let manifest = |exited| {
-            Event::PaneUpdate(PaneManifest {
-                panes: std::collections::HashMap::from([(
-                    Default::default(),
-                    vec![PaneInfo {
-                        id: source,
-                        exited,
-                        ..Default::default()
-                    }],
-                )]),
-            })
-        };
-        let mut state = State {
-            job: Job::Fork {
-                pane_id: 7,
-                source: ForkSource::Waiting,
-            },
-            workflow_reply: Some((42, "work".to_owned(), "fork".to_owned())),
-            workflow_source: Some(source),
-            ..Default::default()
-        };
-        state.update(manifest(true));
-        assert!(
-            !state.workflow_result_pending,
-            "an exited source is still forkable"
-        );
-        state.update(manifest(false));
-        assert!(
-            state.workflow_result_pending,
-            "a rerun source cancels the picker"
-        );
-        assert!(matches!(state.job, Job::New) && state.workflow_focus.is_none());
-
-        // The picker's own launch reruns the source after its result is already on the way.
-        let started = PaneId::Terminal(TerminalId::new(7));
-        let mut state = State {
-            workflow_reply: Some((42, "work".to_owned(), "fork".to_owned())),
-            workflow_source: Some(source),
-            ..Default::default()
-        };
-        state.finish_launch(started);
-        state.update(manifest(false));
-        assert_eq!(
-            state.workflow_focus,
-            Some(started),
-            "a started fork stays started"
-        );
-    }
-
-    #[test]
-    fn cancelled_pickers_ignore_late_snapshots_and_wait_for_their_bridge_ack() {
-        for source_closed in [false, true] {
-            for job in [
-                Job::New,
-                Job::Duplicate { pane_id: 7 },
-                Job::Fork {
-                    pane_id: 7,
-                    source: ForkSource::Waiting,
-                },
-            ] {
-                let mut state = State {
-                    job,
-                    workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
-                    workflow_source: Some(PaneId::Terminal(TerminalId::new(7))),
-                    ..Default::default()
-                };
-                if source_closed {
-                    state.update(Event::PaneClosed(PaneId::Terminal(TerminalId::new(8))));
-                    assert!(
-                        !state.workflow_result_pending,
-                        "unrelated closure leaves the picker open"
-                    );
-                    state.update(Event::PaneClosed(PaneId::Terminal(TerminalId::new(7))));
-                } else {
-                    state.handle(FormEvent::Cancel);
-                }
-                assert!(state.workflow_result_pending);
-                assert!(!state.handle(FormEvent::ButtonPressed("create".to_owned())));
-                assert!(matches!(state.job, Job::New));
-                let snapshot = PipeMessage::new(
-                    PipeSource::Plugin(PluginId::new(1)),
-                    wire::AGENT_SNAPSHOT,
-                    &Some(
-                        serde_json::json!({"panes": [agent_pane("claude")], "activity": {}})
-                            .to_string(),
-                    ),
-                    &None,
-                    false,
-                );
-                // Ensure this is a launch-bearing snapshot, not a malformed payload ignored by parsing.
-                let reply: PollReply =
-                    serde_json::from_str(snapshot.payload.as_ref().unwrap()).unwrap();
-                assert!(duplicate_command(&reply.panes.unwrap()[0], &reply.manual_kinds).is_some());
-                assert!(!state.pipe(snapshot.clone()));
-                assert!(state.workflow_focus.is_none());
-                assert!(state.workflow_result_pending);
-
-                let mut ack = PipeMessage::new(
-                    PipeSource::Plugin(PluginId::new(43)),
-                    "swamp-pane-ack",
-                    &None,
-                    &None,
-                    true,
-                );
-                state.pipe(ack.clone());
-                assert!(state.workflow_result_pending);
-                ack.source = PipeSource::Plugin(PluginId::new(42));
-                state.pipe(ack);
-                assert!(!state.workflow_result_pending);
-                assert!(state.workflow_reply.is_none());
-                assert!(!state.pipe(snapshot));
-                assert!(matches!(state.job, Job::New));
-                let empty = PipeMessage::new(
-                    PipeSource::Plugin(PluginId::new(1)),
-                    wire::AGENT_SNAPSHOT,
-                    &Some(serde_json::json!({"panes": [], "activity": {}}).to_string()),
-                    &None,
-                    false,
-                );
-                assert!(
-                    !state.pipe(empty),
-                    "a late empty snapshot must not look up the hidden source"
-                );
-            }
-        }
     }
 
     #[test]

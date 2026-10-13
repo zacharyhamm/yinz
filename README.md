@@ -2,36 +2,31 @@ yinz is not zellij
 
 [Load TypeScript plugins from Git repositories](docs/GIT_PLUGINS.md)
 
-## Install from a visible pane
+## Install
 
-Run the project-owned Swamp workflow from this repository. Select an existing
-local Yinz session and an absolute checkout path:
+From this checkout, run:
 
 ```sh
-# First run: install to ~/.local/bin/yinz.
-swamp workflow run @hammz/yinz-install \
-  --input session=dev --input checkout=/absolute/path/to/yinz
-
-# Save a different destination for subsequent runs in this Swamp repository.
-swamp workflow run @hammz/yinz-install \
-  --input session=dev --input checkout=/absolute/path/to/yinz \
-  --input 'destination=~/bin/yinz'
-
-# Read the saved destination.
-swamp data query 'modelName == "yinz-install" && name == "config"' --select content
+cargo x install "$HOME/.local/bin/yinz"
 ```
 
-The optional `binary` input selects the Yinz CLI executable. Its default is
-`yinz`. Destinations must be absolute or start with `~/`, which expands to the
-executing user's home directory. The workflow creates the destination's parent
-directory and remembers the resolved path, including when installation fails.
+This builds a release binary and installs the builtin plugins. Choose another destination by changing the path.
 
-The stable `yinz-install` model instance serializes runs. Each run opens a pane
-with `cargo x install <destination>` in the selected checkout, using the normal
-release profile and builtin installation behavior. It waits up to six hours and
-succeeds only when the pane reports exit status zero. The pane stays open for
-inspection. Swamp saves its ID as `pane` and its completion response as `result`.
+## Agent exit
 
-A timeout or disconnection fails the run. The workflow does not retry pane
-creation. Inspect the selected session before starting another run because the
-install command can still be running.
+The default agent-exit hook keeps the pane available. Press Enter to restart the agent or Esc to close the pane.
+For a local or sandboxed secondary worktree, Delete opens a cleanup confirmation.
+Cleanup requires a clean worktree and commits merged into the local base branch or its freshly fetched origin branch.
+The hook checks the checkout identity again before removal and guards branch deletion with its recorded revision.
+
+Set the base branch in the primary checkout's `.yinz/agent-exit.kdl`:
+
+```kdl
+agent_exit {
+    default_branch "main"
+}
+```
+
+The default is `main`. This file supports only `default_branch`.
+Managed Swamp commands, plugins, and bundled assets have been removed without compatibility aliases or migration tooling.
+Existing external runtime data and running Swamp processes are not deleted or stopped automatically.

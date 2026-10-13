@@ -499,7 +499,7 @@ fn explicit_close_of_any_multipane_replacement_destroys_both_chains() {
 }
 
 #[test]
-fn workflow_takeover_keeps_the_original_suppressed_until_explicit_restart() {
+fn pane_replacement_keeps_the_original_suppressed_until_explicit_restart() {
     for restart in [false, true] {
         let mut tab = create_new_tab(
             Size {
@@ -522,7 +522,7 @@ fn workflow_takeover_keeps_the_original_suppressed_until_explicit_restart() {
             view
         );
 
-        // The bridge parks the held source before presenting its first workflow pane.
+        // Park the held source before presenting another pane.
         tab.suppress_pane(source, None);
         tab.vertical_split(worker, None, None, ClientId::new(1), None, None)
             .unwrap();

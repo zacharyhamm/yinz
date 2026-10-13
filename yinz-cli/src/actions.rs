@@ -1547,15 +1547,6 @@ pub fn actions_from_cli(
                 if json.len() > yinz_types::agent::NATIVE_HOOK_MAX_BYTES {
                     return Err("hook input exceeds 2097152 bytes".into());
                 }
-                // Ownership is part of the bounded raw JSON, so annotate before pruning.
-                if let Ok(owner) = std::env::var("YINZ_SWAMP_OWNER") {
-                    let mut raw: serde_json::Value = serde_json::from_str(&json)
-                        .map_err(|e| format!("cannot annotate workflow agent event: {e}"))?;
-                    if let Some(object) = raw.as_object_mut() {
-                        object.insert("_yinz_workflow_owner".into(), owner.into());
-                        json = raw.to_string();
-                    }
-                }
                 let (event, json) = yinz_runtime::agent::hooks::parse_hook_event(&kind, json)
                     .map_err(|e| format!("the hook event is not valid agent hook JSON: {e}"))?;
                 return Ok(hook_report_actions(&kind, pane_id, &event, json));

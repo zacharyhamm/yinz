@@ -93,8 +93,7 @@ pub(super) fn run(
     // with noLib disables intrinsic Promise recognition and silently loses promise rules.
     config["compilerOptions"]["lib"] = serde_json::json!(["es2022"]);
     config["compilerOptions"]["paths"] = serde_json::json!({
-        "yinz:plugin": ["./sdk/sdk.d.ts"],
-        "yinz:workflow-view": ["./sdk/builtins/workflow-view.ts"]
+        "yinz:plugin": ["./sdk/sdk.d.ts"]
     });
     if test_declarations {
         config["compilerOptions"]["paths"]["yinz:testing"] =

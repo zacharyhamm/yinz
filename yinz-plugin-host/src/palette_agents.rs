@@ -282,7 +282,7 @@ fn execute(
                 ..Default::default()
             };
             launch(request, senders, spec, |spec| {
-                prepare_agent(spec, cwd, None, false, data)
+                prepare_agent(spec, cwd, None, data)
             })
         },
         Current { kind } => {

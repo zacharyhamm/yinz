@@ -443,9 +443,6 @@ pub enum Command {
     /// Query and atomically update the selected session's plugin data.
     #[clap(subcommand)]
     Data(Data),
-    /// Run and view project-owned Swamp workflows.
-    #[clap(subcommand)]
-    Workflow(Workflow),
 
     /// Change the behaviour of yinz
     #[clap(name = "options", value_parser)]
@@ -903,56 +900,6 @@ fn parse_configuration_json(value: &str) -> Result<PluginUserConfiguration, serd
 #[cfg(test)]
 #[path = "unit/agent_cli_tests.rs"]
 mod agent_cli_tests;
-
-#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
-pub enum Workflow {
-    #[clap(flatten)]
-    Tools(crate::workflow::WorkflowOperation),
-    /// Inspect or manage the persistent Swamp server for this control checkout.
-    Server {
-        #[clap(subcommand)]
-        command: WorkflowServer,
-    },
-    /// Launch a validated workflow on the managed Swamp server.
-    Run {
-        name: String,
-        /// Reuse this token to reconcile an interrupted launch.
-        #[clap(long)]
-        launch: Option<String>,
-        /// Literal JSON workflow inputs.
-        #[clap(long, default_value = "{}", conflicts_with = "input_file")]
-        input: String,
-        /// Read JSON inputs from a file, or - for stdin.
-        #[clap(long)]
-        input_file: Option<PathBuf>,
-        /// Return one JSON value and leave the view closed.
-        #[clap(long)]
-        json: bool,
-        #[clap(long)]
-        no_view: bool,
-    },
-    /// Attach a view to an existing run without restarting it.
-    Show { run: String },
-    /// Submit one answer to a pending question resource.
-    Answer {
-        run: String,
-        model: String,
-        question: String,
-        #[clap(allow_hyphen_values = true)]
-        answer: String,
-        #[clap(long)]
-        submission: Option<String>,
-    },
-    /// Cancel execution separately from closing its view. Resources are preserved.
-    Cancel { run: String },
-}
-
-#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
-pub enum WorkflowServer {
-    Status,
-    Restart,
-    Stop,
-}
 
 #[derive(Debug, Parser, Clone, Serialize, Deserialize)]
 pub struct SubscribeCli {
@@ -2563,7 +2510,6 @@ mod tests {
             vec!["yinz", "action", "agent-wait", "terminal_7", "idle"],
             vec!["yinz", "action", "agent-runs"],
             vec!["yinz", "agents", "skills", "install"],
-            vec!["yinz", "workflow", "show", "run-id", "--json"],
         ] {
             assert!(try_parse_cli(args).is_err());
         }

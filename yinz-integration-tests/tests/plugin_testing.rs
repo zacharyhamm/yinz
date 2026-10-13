@@ -337,13 +337,12 @@ export default definePlugin({async load(){
     std::fs::write(&path,r#"
 import {test,session,assert,assertEquals,assertRejects} from 'yinz:testing';
 test('headless RPC uses authenticated callers and persists its result',{grants:['ReadCliPipes','MessageAndLaunchOtherPlugins','PluginData']},async()=>{
-  session.start({backgroundPlugins:['./service.ts','yinz:swamp-bridge']});
+  session.start({backgroundPlugins:['./service.ts']});
   await session.waitFor('headless RPC ready',()=>session.logs.includes('RPC_SERVICE_READY'));
   const reply=await session.rpc('./service.ts','echo','hello') as {echo:string;source:number};
   assertEquals(reply.echo,'hello'); assert(typeof reply.source==='number');
   assertEquals(session.data('./service.ts','rpc_rows').rows.length,1);
   await assertRejects(()=>session.rpc('./service.ts','echo','fail'),'fixture RPC failure');
-  await assertRejects(()=>session.rpc('yinz:swamp-bridge','swamp',{method:'lookup',work:'test',key:'test'}),'Only builtin workflow views');
 });
 "#).unwrap();
     let report =

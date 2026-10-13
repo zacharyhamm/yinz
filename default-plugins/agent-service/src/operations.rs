@@ -171,7 +171,7 @@ impl State {
                 let project = tab
                     .and_then(|tab| self.tab_projects.get(&tab))
                     .or_else(|| pane.and_then(|pane| owners.get(&pane.pane_id)));
-                let services: BTreeMap<_, _> = ["agent-service", "project-store", "swamp-bridge"]
+                let services: BTreeMap<_, _> = ["agent-service", "project-store"]
                     .into_iter()
                     .map(|name| {
                         let ids: Vec<_> = session

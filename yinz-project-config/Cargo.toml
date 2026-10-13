@@ -1,6 +1,6 @@
 [package]
 name = "yinz-project-config"
-description = "Project workflow settings read from .yinz/swamp-workflows.kdl"
+description = "Agent-exit settings read from .yinz/agent-exit.kdl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

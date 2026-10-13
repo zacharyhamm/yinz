@@ -741,7 +741,6 @@ fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals()
             cwd: Some(PathBuf::from("/work")),
             hold_on_close: true,
             hold_on_start: held,
-            workflow_owner: Some("adopted-workflow".into()),
             use_terminal_title: true,
             ..Default::default()
         };

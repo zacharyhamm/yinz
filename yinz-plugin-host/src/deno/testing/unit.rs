@@ -18,7 +18,6 @@ macro_rules! builtin_unit_suites {
         fn builtin_unit_suites_cover_the_catalog() {
             let mut covered = vec![$($name),*];
             let mut catalog = yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES.to_vec();
-            catalog.push("workflow-view");
             covered.sort_unstable();
             catalog.sort_unstable();
             assert_eq!(covered, catalog);
@@ -33,12 +32,9 @@ builtin_unit_suites! {
     builtin_unit_context_menu: "context-menu",
     builtin_unit_agent_policy: "agent-policy",
     builtin_unit_agent_opencode: "agent-opencode",
-    builtin_unit_swamp_bridge: "swamp-bridge",
-    builtin_unit_swamp_workflow: "swamp-workflow",
     builtin_unit_agent_exit: "agent-exit",
     builtin_unit_mother_overview: "mother-overview",
     builtin_unit_session_palette: "session-palette",
-    builtin_unit_workflow_view: "workflow-view",
 }
 
 #[test]

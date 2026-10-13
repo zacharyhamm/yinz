@@ -22,7 +22,6 @@ fn sample_run_command() -> RunCommand {
     RunCommand {
         agent_theme: None,
         claude_settings: None,
-        workflow_owner: None,
         command: std::path::PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), "echo hi".to_owned()],
         cwd: Some(std::path::PathBuf::from("/tmp")),
