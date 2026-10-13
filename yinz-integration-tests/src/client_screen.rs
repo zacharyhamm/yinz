@@ -127,12 +127,17 @@ impl ClientScreen {
         what: &str,
         predicate: impl Fn(&GridSnapshot) -> bool,
     ) -> GridSnapshot {
+        let started = Instant::now();
         let deadline = Instant::now() + crate::default_timeout();
         let mut received_bytes = self.inner.received_bytes.lock().unwrap();
         loop {
             let size = *self.size.lock().unwrap();
             let grid_snapshot = render_bytes(&received_bytes.bytes, size);
             if predicate(&grid_snapshot) {
+                log::info!(
+                    "startup: rendered condition {what:?} reached after {:?}",
+                    started.elapsed()
+                );
                 return grid_snapshot;
             }
             let now = Instant::now();

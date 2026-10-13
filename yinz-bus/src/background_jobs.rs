@@ -1252,6 +1252,7 @@ pub fn background_jobs_main(
                 }
             },
             BackgroundJob::Exit => {
+                log::info!("shutdown: background jobs received Exit");
                 if let Some((clock, _)) = animation_clock.take() {
                     clock.store(false, Ordering::SeqCst);
                 }
@@ -1264,10 +1265,16 @@ pub fn background_jobs_main(
         }
     };
     if let Some(task) = checkpoint_task {
+        let started = Instant::now();
+        log::info!("shutdown: aborting checkpoint task");
         task.abort();
         // Cancellation takes effect at an await point. Join so an in-flight synchronous
         // checkpoint cannot publish after the server confirms shutdown.
         let _ = runtime.block_on(task);
+        log::info!(
+            "shutdown: checkpoint task joined after {:?}",
+            started.elapsed()
+        );
     }
     result
 }

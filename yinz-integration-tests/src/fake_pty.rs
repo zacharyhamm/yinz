@@ -21,6 +21,7 @@ pub(crate) struct FakePtyState {
     pub output_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     pub stdin: Vec<u8>,
     pub size: Option<(u16, u16)>,
+    pub pixel_size: Option<(u16, u16)>,
     pub size_history: Vec<(u16, u16)>,
     pub quit_cb: Option<QuitCb>,
     pub exited: bool,
@@ -213,6 +214,7 @@ impl SharedPtys {
                     output_tx: Some(output_tx),
                     stdin: Vec::new(),
                     size: None,
+                    pixel_size: None,
                     size_history: Vec::new(),
                     quit_cb,
                     exited: false,
@@ -489,6 +491,14 @@ impl SharedPtys {
     pub(crate) fn remove(&self, terminal_id: TerminalId) {
         self.mutate(|fake_pty_registry| {
             fake_pty_registry.fake_pty_states.remove(&terminal_id);
+        });
+    }
+
+    pub(crate) fn set_pixel_size(&self, terminal_id: TerminalId, pixels: Option<(u16, u16)>) {
+        self.mutate(|registry| {
+            if let Some(terminal) = registry.fake_pty_states.get_mut(&terminal_id) {
+                terminal.pixel_size = pixels;
+            }
         });
     }
 
@@ -848,6 +858,15 @@ impl FakePtyHandle {
                 .map(|fake_pty_state| fake_pty_state.size_history.clone())
                 .unwrap_or_default()
         })
+    }
+
+    pub fn wait_for_cell_size(&self, width: u16, height: u16) {
+        self.shared_ptys
+            .wait_for("host cell dimensions applied to PTY", |registry| {
+                let terminal = registry.fake_pty_states.get(&self.terminal_id)?;
+                let (cols, rows) = terminal.size?;
+                (terminal.pixel_size == Some((cols * width, rows * height))).then_some(())
+            });
     }
 
     pub fn wait_for_size(&self, what: &str, predicate: impl Fn(u16, u16) -> bool) -> (u16, u16) {

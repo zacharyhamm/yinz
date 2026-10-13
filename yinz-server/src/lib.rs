@@ -580,29 +580,47 @@ impl SessionMetaData {
 
 impl Drop for SessionMetaData {
     fn drop(&mut self) {
+        let started = std::time::Instant::now();
+        log::info!("shutdown: worker joins starting");
         self.shutdown.begin();
         let screen_thread = self.screen_thread.take();
         let plugin_thread = self.plugin_thread.take();
         self.senders.exit_threads(
             || {
                 if let Some(screen_thread) = screen_thread {
+                    log::info!("shutdown: joining screen at {:?}", started.elapsed());
                     let _ = screen_thread.join();
+                    log::info!("shutdown: joined screen at {:?}", started.elapsed());
                 }
             },
             || {
                 if let Some(plugin_thread) = plugin_thread {
+                    log::info!("shutdown: joining plugin at {:?}", started.elapsed());
                     join_with_timeout(plugin_thread, PLUGIN_THREAD_EXIT_TIMEOUT, "plugin");
+                    log::info!("shutdown: plugin join returned at {:?}", started.elapsed());
                 }
             },
         );
         if let Some(pty_thread) = self.pty_thread.take() {
+            log::info!("shutdown: joining pty at {:?}", started.elapsed());
             let _ = pty_thread.join();
+            log::info!("shutdown: joined pty at {:?}", started.elapsed());
         }
         if let Some(pty_writer_thread) = self.pty_writer_thread.take() {
+            log::info!("shutdown: joining pty_writer at {:?}", started.elapsed());
             let _ = pty_writer_thread.join();
+            log::info!("shutdown: joined pty_writer at {:?}", started.elapsed());
         }
         if let Some(background_jobs_thread) = self.background_jobs_thread.take() {
+            log::info!(
+                "shutdown: joining background_jobs at {:?}",
+                started.elapsed()
+            );
             let _ = background_jobs_thread.join();
+            log::info!(
+                "shutdown: joined background_jobs at {:?}",
+                started.elapsed()
+            );
         }
     }
 }
@@ -1145,7 +1163,8 @@ pub fn start_server_impl(
                     },
                 };
 
-                info!("FirstClientConnected: initializing session");
+                let startup_started = std::time::Instant::now();
+                info!("FirstClientConnected: client={client_id} initializing session");
                 let mut session = init_session(
                     os_input.clone(),
                     to_server.clone(),
@@ -1158,7 +1177,7 @@ pub fn start_server_impl(
                     config.plugins.clone(),
                     client_id,
                 );
-                info!("FirstClientConnected: session initialized, spawning tabs");
+                info!("FirstClientConnected: client={client_id} session initialized after {:?}, spawning tabs", startup_started.elapsed());
                 let mut runtime_configuration = config.clone();
                 runtime_configuration.options = runtime_config_options.clone();
                 session
@@ -1600,6 +1619,7 @@ pub fn start_server_impl(
                 }
             },
             ServerInstruction::KillSession | ServerInstruction::KillSessionWithCompletion(_) => {
+                log::info!("shutdown: KillSession received");
                 if let ServerInstruction::KillSessionWithCompletion(client_id) = instruction {
                     kill_completion_client = Some(client_id);
                 }
@@ -2319,6 +2339,7 @@ pub fn start_server_impl(
         }
     }
 
+    let shutdown_started = std::time::Instant::now();
     log::info!("Server exiting: {exit_reason}");
     shutdown.begin();
     // No one drains this bounded channel now. Disconnect it before joining workers that
@@ -2347,16 +2368,36 @@ pub fn start_server_impl(
     } else {
         Ok(())
     };
+    log::info!(
+        "shutdown: acquiring session-data lock at {:?}",
+        shutdown_started.elapsed()
+    );
     let session_metadata = session_data.write().unwrap().take();
+    log::info!(
+        "shutdown: acquired session-data lock at {:?}",
+        shutdown_started.elapsed()
+    );
     drop(session_metadata);
+    log::info!(
+        "shutdown: workers dropped at {:?}",
+        shutdown_started.elapsed()
+    );
 
     // Belt and braces. A supervisor that outlived the sweep above would be a
     // leaked user process holding a live shell, invisible until `pty-host list`.
     os_input.shutdown_pty_hosts();
+    log::info!(
+        "shutdown: PTY hosts stopped at {:?}",
+        shutdown_started.elapsed()
+    );
     // A kill by name also reaches what an earlier incarnation of this session
     // left detached when it died without shutting down. Only on a kill: a detach
     // or a last-client exit is not the user saying those panes are done.
     let owned_teardown = tracking.and_then(|_| os_input.confirm_pty_host_shutdown());
+    log::info!(
+        "shutdown: PTY host shutdown confirmed at {:?}",
+        shutdown_started.elapsed()
+    );
     let cleanup = if kill_session {
         envs::get_session_name()
             .context("missing session name during shutdown")
@@ -2365,6 +2406,10 @@ pub fn start_server_impl(
         Ok(())
     };
 
+    log::info!(
+        "shutdown: orphan cleanup returned at {:?}",
+        shutdown_started.elapsed()
+    );
     if let Some(client_id) = kill_completion_client {
         let error = owned_teardown
             .and(cleanup)
@@ -2382,6 +2427,10 @@ pub fn start_server_impl(
     // process can exit before the bytes are written and a client that was told
     // why the session ended sees a bare hangup instead.
     os_input.flush_client_writers(CLIENT_WRITER_FLUSH_TIMEOUT);
+    log::info!(
+        "shutdown: client writers flushed at {:?}",
+        shutdown_started.elapsed()
+    );
 }
 
 /// The directory a new session's first panes open in, when one was asked for: the client's
@@ -2432,12 +2481,18 @@ fn init_session(
         channels::unbounded();
     let to_background_jobs = shutdown.sender(to_background_jobs);
 
+    let startup_started = std::time::Instant::now();
+    log::info!("startup: host identity initialization starting");
     // Determine and initialize the data directory
     let data_dir = cli_assets.data_dir.unwrap_or_else(get_default_data_dir);
     // Before anything can write to the plugin data store: this is the one place that holds both
     // the data dir and the options the id is resolved from, and every later reader takes what is
     // cached here. See `yinz_runtime::host_identity`.
     yinz_runtime::host_identity::init_host_id(&data_dir, config.options.host_id.as_ref());
+    log::info!(
+        "startup: host identity initialized at {:?}",
+        startup_started.elapsed()
+    );
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
 
     let serialization_interval = config_options.serialization_interval;
@@ -2471,6 +2526,10 @@ fn init_session(
     let default_mode = config_options.default_mode.unwrap_or_default();
     let default_keybinds = config.keybinds.clone();
 
+    log::info!(
+        "startup: spawning pty thread at {:?}",
+        startup_started.elapsed()
+    );
     let pty_thread = thread::Builder::new()
         .name("pty".to_string())
         .spawn({
@@ -2497,6 +2556,10 @@ fn init_session(
         })
         .unwrap();
 
+    log::info!(
+        "startup: spawning screen thread at {:?}",
+        startup_started.elapsed()
+    );
     let screen_thread = thread::Builder::new()
         .name("screen".to_string())
         .spawn({
@@ -2565,6 +2628,10 @@ fn init_session(
         &default_layout_name,
     );
 
+    log::info!(
+        "startup: spawning plugin thread at {:?}",
+        startup_started.elapsed()
+    );
     let plugin_thread = thread::Builder::new()
         .name("wasm".to_string())
         .spawn({
@@ -2640,6 +2707,10 @@ fn init_session(
         })
         .unwrap();
 
+    log::info!(
+        "startup: spawning pty_writer thread at {:?}",
+        startup_started.elapsed()
+    );
     let pty_writer_thread = thread::Builder::new()
         .name("pty_writer".to_string())
         .spawn({
@@ -2657,6 +2728,10 @@ fn init_session(
         })
         .unwrap();
 
+    log::info!(
+        "startup: spawning background_jobs thread at {:?}",
+        startup_started.elapsed()
+    );
     let background_jobs_thread = thread::Builder::new()
         .name("background_jobs".to_string())
         .spawn({
@@ -2691,6 +2766,10 @@ fn init_session(
         );
     }
 
+    log::info!(
+        "startup: worker threads spawned at {:?}",
+        startup_started.elapsed()
+    );
     SessionMetaData {
         shutdown,
         data_access,

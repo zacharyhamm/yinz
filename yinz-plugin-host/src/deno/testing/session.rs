@@ -121,20 +121,21 @@ impl OwnedSession {
             }
             return Ok(());
         }
-        if let Ok(stream) = ipc_connect(&session_socket(self.root.path())) {
-            let mut sender = IpcSenderWithContext::<ClientMsg>::new(stream);
-            sender
-                .send_client_msg(ClientMsg::KillSession)
-                .context("stop owned test session")?;
-        }
+        let delivery = ipc_connect(&session_socket(self.root.path()))
+            .context("connect to owned test session for shutdown")
+            .and_then(|stream| {
+                IpcSenderWithContext::<ClientMsg>::new(stream)
+                    .send_client_msg(ClientMsg::KillSession)
+                    .context("stop owned test session")
+            });
         let end = Instant::now() + Duration::from_secs(5);
         while Instant::now() < end {
             if let Some(status) = self.child.try_wait().context("reap test server")? {
                 self.stopped = true;
                 if !status.success() {
-                    bail!("test server exited with {status}");
+                    bail!("test server exited with {status}; shutdown IPC: {delivery:?}");
                 }
-                return Ok(());
+                return delivery;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -145,7 +146,11 @@ impl OwnedSession {
         self.child.kill().context("kill unresponsive test server")?;
         self.child.wait().context("reap unresponsive test server")?;
         self.stopped = true;
-        bail!("test server did not shut down within five seconds")
+        let delivery = delivery
+            .err()
+            .map(|error| format!("; shutdown IPC: {error:#}"))
+            .unwrap_or_default();
+        bail!("test server did not shut down within five seconds{delivery}")
     }
 }
 impl Drop for OwnedSession {

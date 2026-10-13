@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn shutdown_reaps_the_child_even_when_ipc_connection_fails() {
+    let root = tempfile::tempdir().unwrap();
+    let child = Command::new("/bin/sh")
+        .args(["-c", "read release"])
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut session = OwnedSession {
+        root,
+        child,
+        stopped: false,
+    };
+    let error = session.shutdown().unwrap_err();
+    assert!(format!("{error:#}").contains("shutdown IPC: connect to owned test session"));
+    assert!(session.stopped);
+    assert!(session.child.try_wait().unwrap().is_some());
+    assert!(session.root().exists());
+    assert!(session.diagnostics().contains("owned server pid:"));
+}
+
+#[test]
 fn locations_preserve_paths_and_confine_targets() {
     let root = tempfile::tempdir().unwrap();
     let entry = root.path().join("case.test.ts");

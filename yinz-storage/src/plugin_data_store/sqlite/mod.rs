@@ -137,15 +137,27 @@ impl PluginDataBackend for SqlitePluginDataBackend {
 
 /// Open the store's file, set its pragmas, and make sure the registry table exists.
 fn open_db(db_path: &Path) -> Result<Connection, DataError> {
+    let started = std::time::Instant::now();
+    log::info!("startup: database open begin path={}", db_path.display());
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| storage_err(&format!("failed to create {:?}", parent), e))?;
     }
     let mut conn =
         Connection::open(db_path).with_ctx(|| format!("failed to open {:?}", db_path))?;
+    log::info!(
+        "startup: database connection opened path={} elapsed={:?}; enabling WAL",
+        db_path.display(),
+        started.elapsed()
+    );
     // WAL and a busy timeout let concurrent yinz servers share this file in the data dir.
     conn.pragma_update(None, "journal_mode", "WAL")
         .ctx("failed to enable WAL")?;
+    log::info!(
+        "startup: database WAL enabled path={} elapsed={:?}",
+        db_path.display(),
+        started.elapsed()
+    );
     conn.pragma_update(None, "busy_timeout", 5000)
         .ctx("failed to set busy_timeout")?;
     conn.pragma_update(None, "foreign_keys", "ON")
@@ -164,11 +176,31 @@ fn open_db(db_path: &Path) -> Result<Connection, DataError> {
     // The store's own tables, brought up to date in one write transaction. `BEGIN IMMEDIATE`
     // takes the database's single write lock for its whole length, which is what stops two
     // servers opening this file at once from both deciding a migration has not run.
+    log::info!(
+        "startup: database migration transaction begin path={} elapsed={:?}",
+        db_path.display(),
+        started.elapsed()
+    );
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .ctx("failed to begin the store migration transaction")?;
+    log::info!(
+        "startup: database migration lock acquired path={} elapsed={:?}",
+        db_path.display(),
+        started.elapsed()
+    );
     store_migrations::migrate_store(&mut SqliteExec(&tx))?;
+    log::info!(
+        "startup: database migration commit begin path={} elapsed={:?}",
+        db_path.display(),
+        started.elapsed()
+    );
     tx.commit().ctx("failed to commit the store migration")?;
+    log::info!(
+        "startup: database open complete path={} elapsed={:?}",
+        db_path.display(),
+        started.elapsed()
+    );
     Ok(conn)
 }
 

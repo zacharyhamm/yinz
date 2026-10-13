@@ -156,6 +156,8 @@ fn isolate_process_environment(test_root: &Path) {
     // The tab bar and the terminal title print the machine's hostname. Without this every
     // snapshot of them would only match on the machine that recorded it.
     std::env::set_var("YINZ_HOSTNAME", TEST_HOSTNAME);
+    // Fake hosts need an identity, not a fresh durable file before every startup deadline.
+    std::env::set_var("YINZ_HOST_ID", "yinz-integration-test");
     std::env::remove_var("YINZ");
     std::env::remove_var("YINZ_SESSION_NAME");
     // An outer yinz pane would otherwise make CLI requests claim that pane as their caller
@@ -385,14 +387,66 @@ pub fn log_file_path() -> PathBuf {
 
 pub fn log_tail(max_lines: usize) -> String {
     let contents = std::fs::read_to_string(log_file_path()).unwrap_or_default();
+    startup_and_tail(&contents, max_lines)
+}
+
+fn startup_and_tail(contents: &str, max_lines: usize) -> String {
+    let startup = contents
+        .lines()
+        .filter(|line| {
+            line.contains("startup:")
+                || line.contains("FirstClientConnected")
+                || line.contains("attach trace:")
+        })
+        .take(256)
+        .collect::<Vec<_>>()
+        .join("\n");
     let lines: Vec<&str> = contents.lines().collect();
     let start = lines.len().saturating_sub(max_lines);
-    lines[start..].join("\n")
+    format!(
+        "=== startup trace (first 256 events) ===\n{startup}\n=== recent events ===\n{}",
+        lines[start..].join("\n")
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fake_host_identity_does_not_wait_for_persistent_identity_io() {
+        let data_dir = init().join("data");
+        let lock = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(data_dir.join(".host-id.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        let (completed, completion) = std::sync::mpsc::channel();
+        let identity_dir = data_dir.clone();
+        let worker = std::thread::spawn(move || {
+            completed
+                .send(yinz_runtime::host_identity::init_host_id(
+                    &identity_dir,
+                    None,
+                ))
+                .unwrap();
+        });
+        let identity = completion.recv_timeout(yinz_test_support::default_timeout());
+        drop(lock);
+        worker.join().unwrap();
+        assert_eq!(identity.unwrap().as_str(), "yinz-integration-test");
+        assert!(!data_dir.join("host-id").exists());
+    }
+
+    #[test]
+    fn startup_evidence_survives_the_recent_log_tail() {
+        let evidence = startup_and_tail("startup: opening database\nnoise\nlast", 1);
+        assert!(evidence.contains("startup: opening database"));
+        assert!(evidence.ends_with("last"));
+        assert!(!evidence.contains("noise"));
+    }
 
     #[test]
     fn shutdown_panic_summaries_do_not_grow_recorded_history() {

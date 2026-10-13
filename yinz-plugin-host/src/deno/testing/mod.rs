@@ -169,7 +169,6 @@ pub fn run(
                 Err(error) => failed(case.name, kind, error),
             };
             if let Some(mut owned) = owned {
-                let diagnostics = owned.diagnostics();
                 if let Err(error) = owned.shutdown() {
                     test.status = "failed".into();
                     test.error = Some(format!(
@@ -178,7 +177,7 @@ pub fn run(
                     ));
                 }
                 if test.status != "passed" {
-                    append_bounded(&mut test.output, &diagnostics);
+                    append_bounded(&mut test.output, &owned.diagnostics());
                 }
             }
             test.kind = kind;
