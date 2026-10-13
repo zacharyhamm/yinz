@@ -24,13 +24,21 @@ fn items(labels: &[&str]) -> Vec<ContextMenuItem> {
 }
 
 #[test]
-fn a_menu_hangs_below_and_right_of_the_click() {
+fn a_menu_starts_at_the_clicked_cell() {
     let items = items(&["Copy", "Paste"]);
     let layout = context_menu_layout(&items, Position::new(5, 10), viewport(80, 24), None);
     assert_eq!(layout.x, 10, "left edge meets the clicked column");
-    assert_eq!(layout.y, 6, "first row is below the clicked row");
+    assert_eq!(layout.y, 5, "top border meets the clicked row");
     assert_eq!(layout.rows.len(), 2);
     assert_eq!(layout.height(), 4, "two rows plus two borders");
+}
+
+#[test]
+fn a_menu_that_fits_exactly_below_the_click_does_not_flip() {
+    let items = items(&["Copy", "Paste"]);
+    let layout = context_menu_layout(&items, Position::new(20, 10), viewport(80, 24), None);
+    assert_eq!(layout.y, 20, "top border meets the clicked row");
+    assert_eq!(layout.y + layout.height(), 24);
 }
 
 #[test]

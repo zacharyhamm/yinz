@@ -135,10 +135,9 @@ fn truncate_to_width(text: &str, max: usize) -> String {
 
 /// Lay a menu out at `anchor`, inside `viewport`.
 ///
-/// The anchor is the clicked cell; the menu hangs below and to the right of it, which is what every
-/// context menu does and what makes the pointer land on the first row. It flips to the other side
-/// of the anchor rather than being clipped when that would overflow, and only clamps - as a last
-/// resort - when the menu is larger than the viewport in that axis.
+/// The anchor is the clicked cell; the menu's top-left border starts at that cell. It flips to the
+/// other side of the anchor rather than being clipped when that would overflow, and only clamps
+/// as a last resort when the menu is larger than the viewport in that axis.
 ///
 /// A list too tall for the viewport is *windowed* rather than truncated, with `more_above` /
 /// `more_below` saying so, because silently dropping the tail of a menu is indistinguishable to the
@@ -236,7 +235,7 @@ fn window_for(item_count: usize, max_rows: usize, selected: Option<usize>) -> (u
     (start, max_rows)
 }
 
-/// Where the box's top-left corner goes: below-right of the anchor, flipped at an edge, clamped
+/// Where the box's top-left corner goes: at the anchor, flipped at an edge, clamped
 /// only when it cannot fit either way.
 fn anchor_box(anchor: Position, width: usize, height: usize, viewport: Viewport) -> (usize, usize) {
     let max_x = viewport.x + viewport.cols;
@@ -251,8 +250,7 @@ fn anchor_box(anchor: Position, width: usize, height: usize, viewport: Viewport)
     };
     let x = x.clamp(viewport.x, max_x.saturating_sub(width).max(viewport.x));
 
-    // The anchor row itself stays visible - the menu starts on the row below the pointer.
-    let preferred_y = anchor.line().max(0) as usize + 1;
+    let preferred_y = anchor.line().max(0) as usize;
     let y = if preferred_y + height <= max_y {
         preferred_y
     } else {
