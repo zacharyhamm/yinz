@@ -650,3 +650,34 @@ fn max_fullscreen_agent_width_roundtrips_and_zero_overrides_a_limit() {
         crate::kdl::options::from_kdl(&"max_fullscreen_agent_width 0".parse().unwrap()).unwrap();
     assert_eq!(options.merge(disabled).max_fullscreen_agent_width, Some(0));
 }
+
+#[test]
+fn agent_mouse_override_round_trip_and_merge() {
+    for enabled in [false, true] {
+        let document: KdlDocument = format!("context_menu_override_agent_mouse {enabled}")
+            .parse()
+            .unwrap();
+        let options = crate::kdl::options::from_kdl(&document).unwrap();
+        assert_eq!(options.context_menu_override_agent_mouse, Some(enabled));
+        let mut serialized = KdlDocument::new();
+        serialized
+            .nodes_mut()
+            .append(&mut crate::kdl::options::to_kdl(&options, false));
+        assert_eq!(crate::kdl::options::from_kdl(&serialized).unwrap(), options);
+        let base = Options {
+            context_menu_override_agent_mouse: Some(!enabled),
+            ..Default::default()
+        };
+        assert_eq!(
+            base.merge(options.clone())
+                .context_menu_override_agent_mouse,
+            Some(enabled)
+        );
+        assert_eq!(
+            options
+                .merge(Options::default())
+                .context_menu_override_agent_mouse,
+            Some(enabled)
+        );
+    }
+}

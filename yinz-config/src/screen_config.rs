@@ -79,6 +79,7 @@ pub struct ScreenConfig {
     pub focus_follows_mouse: bool,
     pub mouse_click_through: bool,
     pub context_menu_on_right_click: bool,
+    pub context_menu_override_agent_mouse: bool,
     /// The items a right-click offers. Held by `Screen` rather than re-read per click, so a
     /// reload has to hand the new list over or the session keeps the one it started with.
     pub context_menu: ContextMenu,
@@ -185,6 +186,9 @@ impl ScreenConfig {
             focus_follows_mouse: options.focus_follows_mouse.unwrap_or(false),
             mouse_click_through: options.mouse_click_through.unwrap_or(false),
             context_menu_on_right_click: options.context_menu_on_right_click.unwrap_or(true),
+            context_menu_override_agent_mouse: options
+                .context_menu_override_agent_mouse
+                .unwrap_or(true),
             context_menu: config.context_menu.clone(),
             osc133_command_selection: options.osc133_command_selection.unwrap_or(true),
             word_separators: options

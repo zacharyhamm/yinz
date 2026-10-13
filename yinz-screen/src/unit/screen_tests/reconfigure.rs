@@ -56,6 +56,7 @@ fn every_field_changed() -> ScreenConfig {
         focus_follows_mouse: true,
         mouse_click_through: true,
         context_menu_on_right_click: true,
+        context_menu_override_agent_mouse: false,
         context_menu: ContextMenu::from_items(vec![ContextMenuItem::new(
             "Only this",
             vec![Action::CloseFocus],
@@ -155,6 +156,7 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         focus_follows_mouse,
         mouse_click_through,
         context_menu_on_right_click,
+        context_menu_override_agent_mouse,
         context_menu,
         osc133_command_selection,
         word_separators,
@@ -239,6 +241,16 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         screen.context_menu_on_right_click,
         context_menu_on_right_click
     );
+    assert_eq!(
+        screen.context_menu_override_agent_mouse,
+        context_menu_override_agent_mouse
+    );
+    for tab in screen.tabs.values() {
+        assert_eq!(
+            tab.context_menu_override_agent_mouse,
+            context_menu_override_agent_mouse
+        );
+    }
     assert_eq!(screen.context_menu.items(), context_menu.items());
     assert_eq!(screen.osc133_command_selection, osc133_command_selection);
     assert_eq!(screen.word_separators, word_separators);

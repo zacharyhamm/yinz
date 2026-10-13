@@ -229,6 +229,9 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let context_menu_on_right_click =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "context_menu_on_right_click")
             .map(|(v, _)| v);
+    let context_menu_override_agent_mouse =
+        kdl_property_first_arg_as_bool_or_error!(kdl_options, "context_menu_override_agent_mouse")
+            .map(|(v, _)| v);
     let mouse_click_through =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "mouse_click_through")
             .map(|(v, _)| v);
@@ -331,6 +334,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         focus_follows_mouse,
         mouse_click_through,
         context_menu_on_right_click,
+        context_menu_override_agent_mouse,
         osc133_command_selection,
         agent_theme_mapping,
         word_separators,
@@ -1855,7 +1859,7 @@ fn context_menu_on_right_click_to_kdl(value: &Options, add_comments: bool) -> Op
         "{}\n{}\n{}\n{}",
         " ",
         "// Whether right-clicking a pane opens a context menu. A program that is tracking the",
-        "// mouse itself keeps its own right-click either way.",
+        "// mouse keeps right-click, except agents with context_menu_override_agent_mouse true.",
         "// default is true",
     );
 
@@ -1866,6 +1870,31 @@ fn context_menu_on_right_click_to_kdl(value: &Options, add_comments: bool) -> Op
     };
     if let Some(context_menu_on_right_click) = value.context_menu_on_right_click {
         let mut node = create_node(context_menu_on_right_click);
+        if add_comments {
+            node.set_leading(format!("{}\n", comment_text));
+        }
+        Some(node)
+    } else if add_comments {
+        let mut node = create_node(true);
+        node.set_leading(format!("{}\n// ", comment_text));
+        Some(node)
+    } else {
+        None
+    }
+}
+fn context_menu_override_agent_mouse_to_kdl(
+    value: &Options,
+    add_comments: bool,
+) -> Option<KdlNode> {
+    let comment_text = "\n// Whether recognized agents open the context menu even while tracking the mouse.\n// Requires context_menu_on_right_click. Set false to let agents handle right-click.\n// default is true";
+
+    let create_node = |node_value: bool| -> KdlNode {
+        let mut node = KdlNode::new("context_menu_override_agent_mouse");
+        node.push(KdlValue::Bool(node_value));
+        node
+    };
+    if let Some(context_menu_override_agent_mouse) = value.context_menu_override_agent_mouse {
+        let mut node = create_node(context_menu_override_agent_mouse);
         if add_comments {
             node.set_leading(format!("{}\n", comment_text));
         }
@@ -2250,6 +2279,11 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
         context_menu_on_right_click_to_kdl(value, add_comments)
     {
         nodes.push(context_menu_on_right_click);
+    }
+    if let Some(context_menu_override_agent_mouse) =
+        context_menu_override_agent_mouse_to_kdl(value, add_comments)
+    {
+        nodes.push(context_menu_override_agent_mouse);
     }
     if let Some(mapping) = value.agent_theme_mapping {
         let mut node = KdlNode::new("agent_theme_mapping");

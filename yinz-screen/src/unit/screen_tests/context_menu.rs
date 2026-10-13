@@ -1215,3 +1215,109 @@ fn menu_selection_repaints_only_the_menu_for_a_healthy_watcher() {
     screen.render_to_clients().unwrap();
     assert!(screen.deferred_tabs().is_empty());
 }
+
+#[test]
+fn agent_mouse_override_uses_current_metadata_and_consumes_the_opening_gesture() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    let client = ClientId::new(1);
+    let pane_id = PaneId::Terminal(TerminalId::new(1));
+    for focused in [false, true] {
+        for kind in ["claude", "codex", "another-agent"] {
+            let (mut screen, capture) = create_new_screen_with_forward_capture(Size {
+                cols: 100,
+                rows: 24,
+            });
+            new_tab(&mut screen, 1, TabId::new(0));
+            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            if !focused {
+                tab.new_pane(
+                    PaneId::Terminal(TerminalId::new(2)),
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::default(),
+                    Some(client),
+                    None,
+                )
+                .unwrap();
+            }
+            tab.handle_pty_bytes(TerminalId::new(1), b"\x1b[?1003h\x1b[?1006h".to_vec())
+                .unwrap();
+            let pane = tab.get_pane_with_id_mut(pane_id).unwrap();
+            pane.set_agent_info(Some(AgentInfo {
+                kind: kind.into(),
+                state: AgentState::Busy,
+                source: AgentSource::Reported,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+                session_id: None,
+                run_id: None,
+            }));
+            let position = Position::new(
+                (pane.get_content_y() + 2) as i32,
+                (pane.get_content_x() + 3) as u16,
+            );
+            capture.drain_pty_writes();
+            screen.handle_mouse_event(MouseEvent::new_right_press_event(position), client);
+            assert!(
+                screen.context_menu_is_open(client),
+                "{kind}, focused={focused}"
+            );
+            assert_eq!(
+                screen.tabs[&TabId::new(0)].get_active_pane_id(client),
+                Some(pane_id)
+            );
+            let request_id = screen.context_menus[&client].request_id;
+            screen.set_context_menu_items(request_id, menu_items(), None, client);
+            let menu = screen
+                .context_menu_layout_for(
+                    client,
+                    Size {
+                        cols: 100,
+                        rows: 24,
+                    }
+                    .into(),
+                )
+                .unwrap();
+            assert_eq!(menu.x, position.column());
+            screen.handle_mouse_event(MouseEvent::new_right_motion_event(position), client);
+            screen.handle_mouse_event(MouseEvent::new_right_release_event(position), client);
+            assert!(
+                capture.drain_pty_writes().is_empty(),
+                "opening gesture leaked to {kind}"
+            );
+            screen.close_context_menu(client);
+
+            // Each disabling condition restores the focused terminal's right-click.
+            for (menus, override_mouse, recognized) in [
+                (true, false, true),
+                (false, true, true),
+                (true, true, false),
+            ] {
+                let mut config = test_screen_config();
+                config.context_menu_on_right_click = menus;
+                config.context_menu_override_agent_mouse = override_mouse;
+                screen
+                    .reconfigure(config, Default::default(), client)
+                    .unwrap();
+                if !recognized {
+                    screen
+                        .tabs
+                        .get_mut(&TabId::new(0))
+                        .unwrap()
+                        .get_pane_with_id_mut(pane_id)
+                        .unwrap()
+                        .set_agent_info(None);
+                }
+                capture.drain_pty_writes();
+                screen.handle_mouse_event(MouseEvent::new_right_press_event(position), client);
+                screen.handle_mouse_event(MouseEvent::new_right_release_event(position), client);
+                assert!(!screen.context_menu_is_open(client));
+                assert_eq!(capture.drain_pty_writes().len(), 2);
+            }
+        }
+    }
+}

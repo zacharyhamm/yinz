@@ -282,6 +282,7 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -376,6 +377,7 @@ fn create_new_tab_with_stacked_pane_list(
         false,
         false,
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     let (base_layout, new_terminal_ids) = base_layout_and_ids.unwrap_or_else(|| {
         (
@@ -467,6 +469,7 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -575,6 +578,7 @@ fn create_new_tab_with_swap_layouts(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     let (
         base_layout,
@@ -672,6 +676,7 @@ fn create_new_tab_with_os_api(size: Size, default_mode: ModeInfo, os_api: &FakeI
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -760,6 +765,7 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     let pane_ids = tab_layout
         .extract_run_instructions()
@@ -861,6 +867,7 @@ fn create_new_tab_with_mock_pty_writer(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -953,6 +960,7 @@ fn create_new_tab_with_sixel_support(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -1252,6 +1260,7 @@ fn create_new_tab_with_plugin_receiver_and_os(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -1341,6 +1350,7 @@ fn create_new_tab_with_screen_receiver(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     tab.apply_layout(
         TiledPaneLayout::default(),

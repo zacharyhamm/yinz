@@ -800,6 +800,7 @@ fn test_client_messages() {
                 focus_follows_mouse: Some(false),
                 mouse_click_through: Some(false),
                 context_menu_on_right_click: Some(true),
+                context_menu_override_agent_mouse: Some(true),
                 osc133_command_selection: Some(false),
                 word_separators: Some("[]{}<>():".to_owned()),
                 host_notification_protocol: Some(HostNotificationProtocol::Osc99),
@@ -5630,4 +5631,21 @@ fn cli_pipe_proto_without_focus_field_defaults_to_false() {
             ..
         }
     ));
+}
+
+#[test]
+fn agent_mouse_override_options_round_trip() {
+    use crate::client_server_contract::client_server_contract::Options as WireOptions;
+    use yinz_types::input::options::Options;
+    for value in [None, Some(false), Some(true)] {
+        let options = Options {
+            context_menu_override_agent_mouse: value,
+            ..Default::default()
+        };
+        let wire = WireOptions::from(options.clone()).encode_to_vec();
+        assert_eq!(
+            Options::try_from(WireOptions::decode(wire.as_slice()).unwrap()).unwrap(),
+            options
+        );
+    }
 }

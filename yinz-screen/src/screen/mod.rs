@@ -806,6 +806,7 @@ pub(crate) struct Screen {
     focus_follows_mouse: bool,
     mouse_click_through: bool,
     context_menu_on_right_click: bool,
+    context_menu_override_agent_mouse: bool,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
     render_blocker: RenderBlocker,
     watcher_clients: HashMap<ClientId, WatcherState>,
@@ -1291,6 +1292,7 @@ impl Screen {
             focus_follows_mouse,
             mouse_click_through,
             context_menu_on_right_click,
+            context_menu_override_agent_mouse,
             context_menu,
             osc133_command_selection,
             word_separators,
@@ -1456,6 +1458,7 @@ impl Screen {
             focus_follows_mouse,
             mouse_click_through,
             context_menu_on_right_click,
+            context_menu_override_agent_mouse,
             render_blocker: RenderBlocker::new(100),
             watcher_clients: HashMap::new(),
             followed_client_id: None,
@@ -1883,6 +1886,7 @@ impl Screen {
             self.focus_follows_mouse,
             self.mouse_click_through,
             self.context_menu_on_right_click,
+            self.context_menu_override_agent_mouse,
         );
         for (client_id, mode_info) in &self.mode_info {
             tab.change_mode_info(mode_info.clone(), *client_id);
@@ -4000,6 +4004,7 @@ impl Screen {
             focus_follows_mouse,
             mouse_click_through,
             context_menu_on_right_click,
+            context_menu_override_agent_mouse,
             context_menu,
             osc133_command_selection,
             word_separators,
@@ -4072,6 +4077,7 @@ impl Screen {
         self.focus_follows_mouse = focus_follows_mouse;
         self.mouse_click_through = mouse_click_through;
         self.context_menu_on_right_click = context_menu_on_right_click;
+        self.context_menu_override_agent_mouse = context_menu_override_agent_mouse;
         // Menus already open keep the list they opened with - `set_context_menu_items` says why -
         // so nothing here has to repaint. The next right-click picks these up.
         self.context_menu = context_menu;
@@ -4132,6 +4138,7 @@ impl Screen {
             tab.update_focus_follows_mouse(focus_follows_mouse);
             tab.update_mouse_click_through(mouse_click_through);
             tab.update_context_menu_on_right_click(context_menu_on_right_click);
+            tab.update_context_menu_override_agent_mouse(context_menu_override_agent_mouse);
             tab.update_selection_options(osc133_command_selection, self.word_separators.clone());
             tab.update_session_is_mirrored(session_is_mirrored);
             tab.update_render_options(styled_underlines, osc8_hyperlinks);

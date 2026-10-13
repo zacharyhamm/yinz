@@ -374,6 +374,7 @@ pub struct Tab {
     focus_follows_mouse: bool,
     mouse_click_through: bool,
     pub context_menu_on_right_click: bool,
+    pub context_menu_override_agent_mouse: bool,
     osc133_command_selection: bool,
     word_separators: String,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
@@ -473,6 +474,7 @@ impl Tab {
         focus_follows_mouse: bool,
         mouse_click_through: bool,
         context_menu_on_right_click: bool,
+        context_menu_override_agent_mouse: bool,
     ) -> Self {
         let default_name = format!("Tab #{}", id.get() + 1);
         let name = if name.is_empty() {
@@ -631,6 +633,7 @@ impl Tab {
             focus_follows_mouse,
             mouse_click_through,
             context_menu_on_right_click,
+            context_menu_override_agent_mouse,
             osc133_command_selection: true,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             connected_clients_in_app,
@@ -10177,6 +10180,12 @@ impl Tab {
     }
     pub fn update_context_menu_on_right_click(&mut self, context_menu_on_right_click: bool) {
         self.context_menu_on_right_click = context_menu_on_right_click;
+    }
+    pub fn update_context_menu_override_agent_mouse(
+        &mut self,
+        context_menu_override_agent_mouse: bool,
+    ) {
+        self.context_menu_override_agent_mouse = context_menu_override_agent_mouse;
     }
     pub fn update_mouse_click_through(&mut self, mouse_click_through: bool) {
         self.mouse_click_through = mouse_click_through;

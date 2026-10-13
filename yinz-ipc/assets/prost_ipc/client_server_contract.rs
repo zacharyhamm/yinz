@@ -2461,6 +2461,8 @@ pub struct Options {
     pub dangerously_enable_paste_buffer_read: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="65")]
     pub context_menu_on_right_click: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="81")]
+    pub context_menu_override_agent_mouse: ::core::option::Option<bool>,
     #[prost(enumeration="ThemeHue", optional, tag="69")]
     pub explicit_theme_hue: ::core::option::Option<i32>,
     #[prost(string, optional, tag="67")]

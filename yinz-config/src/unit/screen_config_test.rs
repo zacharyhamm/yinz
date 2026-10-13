@@ -81,6 +81,7 @@ fn every_option_set() -> Config {
             focus_follows_mouse: Some(true),
             mouse_click_through: Some(true),
             context_menu_on_right_click: Some(true),
+            context_menu_override_agent_mouse: Some(true),
             osc133_command_selection: Some(false),
             word_separators: Some(",;".into()),
             host_notification_protocol: Some(HostNotificationProtocol::Osc99),
@@ -144,6 +145,7 @@ fn defaults_match_the_documented_fallbacks() {
         focus_follows_mouse,
         mouse_click_through,
         context_menu_on_right_click,
+        context_menu_override_agent_mouse,
         context_menu,
         osc133_command_selection,
         word_separators,
@@ -200,6 +202,7 @@ fn defaults_match_the_documented_fallbacks() {
     assert!(!focus_follows_mouse);
     assert!(!mouse_click_through);
     assert!(context_menu_on_right_click);
+    assert!(context_menu_override_agent_mouse);
     assert_eq!(context_menu, ContextMenu::default());
     assert!(osc133_command_selection);
     assert_eq!(word_separators, DEFAULT_WORD_SEPARATORS);
@@ -267,6 +270,7 @@ fn every_option_reaches_its_field() {
         focus_follows_mouse,
         mouse_click_through,
         context_menu_on_right_click,
+        context_menu_override_agent_mouse,
         context_menu,
         osc133_command_selection,
         word_separators,
@@ -317,6 +321,7 @@ fn every_option_reaches_its_field() {
     assert!(focus_follows_mouse);
     assert!(mouse_click_through);
     assert!(context_menu_on_right_click);
+    assert!(context_menu_override_agent_mouse);
     assert_eq!(context_menu, config.context_menu);
     assert!(!osc133_command_selection);
     assert_eq!(word_separators, ",;");
@@ -417,6 +422,18 @@ fn right_click_menu_respects_explicit_options() {
         config.options.context_menu_on_right_click = Some(enabled);
         assert_eq!(
             ScreenConfig::from_config(&config).context_menu_on_right_click,
+            enabled
+        );
+    }
+}
+
+#[test]
+fn agent_mouse_override_respects_explicit_options() {
+    for enabled in [false, true] {
+        let mut config = Config::default();
+        config.options.context_menu_override_agent_mouse = Some(enabled);
+        assert_eq!(
+            ScreenConfig::from_config(&config).context_menu_override_agent_mouse,
             enabled
         );
     }

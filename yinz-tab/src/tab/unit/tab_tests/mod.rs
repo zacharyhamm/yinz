@@ -226,6 +226,7 @@ fn create_new_tab_with_senders(size: Size, stacked_resize: bool, senders: Thread
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
@@ -310,6 +311,7 @@ fn create_new_tab_with_layout(size: Size, layout: TiledPaneLayout) -> Tab {
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     let mut new_terminal_ids = vec![];
     for i in 0..layout.extract_run_instructions().len() {
@@ -400,6 +402,7 @@ fn create_new_tab_with_cell_size(
         false, // focus_follows_mouse
         false, // mouse_click_through
         false, // context_menu_on_right_click
+        true,  // context_menu_override_agent_mouse
     );
     tab.apply_layout(
         TiledPaneLayout::default(),
