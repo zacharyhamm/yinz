@@ -189,6 +189,7 @@ pub struct CommandPalette {
     input: TextInput,
     selected: usize,
     selected_status: Option<usize>,
+    selection_explicit: bool,
     entries: Vec<Entry>,
     entry_sections: Vec<Option<usize>>,
     matches: Vec<usize>,
@@ -346,11 +347,11 @@ impl CommandPalette {
     }
 
     fn rebuild_entries(&mut self) {
-        let selected = {
-            self.matches
-                .get(self.selected)
-                .map(|i| self.entries[*i].id.clone())
-        };
+        let selected = self
+            .matches
+            .get(self.selected)
+            .filter(|_| self.selection_explicit)
+            .map(|i| self.entries[*i].id.clone());
         self.entries = self
             .native_entries
             .iter()
@@ -366,15 +367,10 @@ impl CommandPalette {
             )
             .collect();
         self.rematch();
-        if let Some(id) = selected {
-            if let Some(index) = self.matches.iter().position(|i| self.entries[*i].id == id) {
-                self.selected = index;
-            } else {
-                self.selected = 0;
-            }
-        } else {
-            self.selected = 0;
-        }
+        let selected =
+            selected.and_then(|id| self.matches.iter().position(|i| self.entries[*i].id == id));
+        self.selection_explicit = selected.is_some();
+        self.selected = selected.unwrap_or(0);
         self.normalize_region_selection();
     }
 
@@ -408,6 +404,7 @@ impl CommandPalette {
         if let Some(index) = self.matches.iter().position(|i| self.entries[*i].id == id) {
             self.selected = index;
             self.selected_status = None;
+            self.selection_explicit = true;
         }
     }
 
@@ -562,10 +559,14 @@ impl CommandPalette {
     }
 
     pub fn open_picker(&mut self, kind: EntryKind) {
-        let selected = self.selected_entry().map(|entry| entry.id.clone());
+        let selected = self
+            .selected_entry()
+            .filter(|_| self.selection_explicit)
+            .map(|entry| entry.id.clone());
         self.saved_search
             .push((self.picker, std::mem::take(&mut self.input), selected));
         self.picker = Some(kind);
+        self.selection_explicit = false;
         self.selected = 0;
         self.error = None;
         self.rematch();
@@ -609,9 +610,10 @@ impl CommandPalette {
             self.input = input;
             self.picker = picker;
             self.rematch();
-            self.selected = selected
-                .and_then(|id| self.matches.iter().position(|i| self.entries[*i].id == id))
-                .unwrap_or(0);
+            let selected =
+                selected.and_then(|id| self.matches.iter().position(|i| self.entries[*i].id == id));
+            self.selection_explicit = selected.is_some();
+            self.selected = selected.unwrap_or(0);
             Outcome::None
         } else {
             Outcome::Dismiss
@@ -701,6 +703,7 @@ impl CommandPalette {
                     BareKey::End => region.len() - 1,
                     _ => current,
                 };
+                self.selection_explicit = true;
                 self.selected = region[next.min(region.len() - 1)];
                 self.selected_status = None;
             }
@@ -896,16 +899,10 @@ impl CommandPalette {
     }
 
     fn rematch_query(&mut self) {
-        let selected = self.matches.get(self.selected).copied().filter(|index| {
-            self.selected_status.is_none()
-                && self.entry_sections[*index].is_some_and(|i| self.sections[i].semantic)
-        });
+        self.selection_explicit = false;
         self.selected = 0;
         self.error = None;
         self.rematch();
-        if let Some(index) = selected {
-            self.selected = self.matches.iter().position(|i| *i == index).unwrap_or(0);
-        }
         self.normalize_region_selection();
     }
 
@@ -928,6 +925,7 @@ impl CommandPalette {
     fn select_row(&mut self, row: &ResultRow) {
         match row {
             ResultRow::Entry(index, _) => {
+                self.selection_explicit = true;
                 self.selected = *index;
                 self.selected_status = None;
             },
