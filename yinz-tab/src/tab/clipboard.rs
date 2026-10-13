@@ -18,10 +18,11 @@ impl ClipboardProvider {
         content: &str,
         output: &mut Output,
         client_ids: impl Iterator<Item = ClientId>,
+        on_command_complete: impl FnOnce(Result<()>) + Send + 'static,
     ) -> Result<()> {
         match &self {
             ClipboardProvider::Command(command) => {
-                command.set(content.to_string())?;
+                command.set(content.to_string(), on_command_complete)?;
             },
             ClipboardProvider::Osc52(clipboard) => {
                 let dest = match clipboard {

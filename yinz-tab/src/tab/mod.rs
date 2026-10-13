@@ -8940,34 +8940,54 @@ impl Tab {
     }
 
     pub fn write_selection_to_clipboard(&self, selection: &str) -> Result<()> {
-        let err_context = || format!("failed to write selection to clipboard: '{}'", selection);
+        let err_context = || "failed to write selection to clipboard";
 
         let mut output = Output::default();
         let connected_clients: HashSet<ClientId> =
             { self.connected_clients.borrow().iter().copied().collect() };
         output.add_clients(&connected_clients, self.link_handler.clone(), None);
         let client_ids = connected_clients.iter().copied();
-        let clipboard_event =
-            match self
-                .clipboard_provider
-                .set_content(selection, &mut output, client_ids)
-            {
-                Ok(_) => output
-                    .serialize()
-                    .and_then(|serialized_output| {
-                        if serialized_output.is_empty() {
-                            return Ok(());
-                        }
-                        self.senders
-                            .send_to_server(ServerInstruction::Render(Some(serialized_output)))
-                    })
-                    .map(|_| Event::CopyToClipboard(self.clipboard_provider.as_copy_destination()))
-                    .with_context(err_context)?,
-                Err(err) => {
-                    Err::<(), _>(err).with_context(err_context).non_fatal();
+        let senders = self.senders.clone();
+        let on_command_complete = move |result: Result<()>| {
+            let event = match result {
+                Ok(()) => Event::CopyToClipboard(yinz_types::data::CopyDestination::Command),
+                Err(error) => {
+                    Err::<(), _>(error)
+                        .context("failed to write selection to clipboard")
+                        .non_fatal();
                     Event::SystemClipboardFailure
                 },
             };
+            senders
+                .send_to_plugin(PluginInstruction::Update(vec![(None, None, event)]))
+                .context("failed to notify plugins about new clipboard event")
+                .non_fatal();
+        };
+        let clipboard_event = match self.clipboard_provider.set_content(
+            selection,
+            &mut output,
+            client_ids,
+            on_command_complete,
+        ) {
+            Ok(()) if matches!(self.clipboard_provider, ClipboardProvider::Command(_)) => {
+                return Ok(());
+            },
+            Ok(()) => output
+                .serialize()
+                .and_then(|serialized_output| {
+                    if serialized_output.is_empty() {
+                        return Ok(());
+                    }
+                    self.senders
+                        .send_to_server(ServerInstruction::Render(Some(serialized_output)))
+                })
+                .map(|_| Event::CopyToClipboard(self.clipboard_provider.as_copy_destination()))
+                .with_context(err_context)?,
+            Err(err) => {
+                Err::<(), _>(err).with_context(err_context).non_fatal();
+                Event::SystemClipboardFailure
+            },
+        };
         self.senders
             .send_to_plugin(PluginInstruction::Update(vec![(
                 None,

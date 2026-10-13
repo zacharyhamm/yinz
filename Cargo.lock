@@ -6856,6 +6856,7 @@ dependencies = [
  "yinz-panes",
  "yinz-runtime",
  "yinz-terminal",
+ "yinz-test-support",
  "yinz-types",
 ]
 

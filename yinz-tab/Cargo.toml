@@ -25,6 +25,7 @@ uuid = { workspace = true }
 nix = { workspace = true, features = ["process", "signal"] }
 
 [dev-dependencies]
+yinz-test-support = { path = "../yinz-test-support" }
 yinz-config = { workspace = true }
 yinz-ipc = { workspace = true }
 hegeltest = "0.29.3"
