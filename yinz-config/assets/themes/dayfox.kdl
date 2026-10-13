@@ -1,6 +1,7 @@
 themes {
     dayfox {
         // Terminal palette: https://github.com/EdenEast/nightfox.nvim/blob/main/extra/dayfox/kitty.conf
+        pane_surround "#eae6e2"
         terminal {
             foreground "#3d2b5a"
             background "#f6f2ee"

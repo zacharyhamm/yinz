@@ -549,3 +549,26 @@ fn terminal_palette_validation_and_legacy_ui() {
         Some(terminal)
     );
 }
+
+#[test]
+fn every_builtin_has_explicit_pane_surround() {
+    let mut count = 0;
+    for file in YINZ_DEFAULT_THEMES.files() {
+        let themes = Themes::from_string(file.contents_utf8().unwrap(), false).unwrap();
+        for (name, theme) in themes.inner() {
+            count += 1;
+            let expected = if name == "ansi" {
+                PaletteColor::EightBit(0)
+            } else {
+                let (r, g, b) = theme.terminal.unwrap().background;
+                PaletteColor::Rgb((
+                    r.saturating_sub(12),
+                    g.saturating_sub(12),
+                    b.saturating_sub(12),
+                ))
+            };
+            assert_eq!(theme.palette.pane_surround, Some(expected), "{name}");
+        }
+    }
+    assert_eq!(count, 734);
+}

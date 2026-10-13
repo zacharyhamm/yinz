@@ -2,6 +2,7 @@ themes {
     "seafoam-pastel" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Seafoam%20Pastel
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#182829"
         terminal {
             foreground "#d4e7d4"
             background "#243435"

@@ -1,6 +1,7 @@
 themes {
     flexoki-dark {
         // Terminal palette: https://github.com/kepano/flexoki/blob/main/kitty/flexoki_dark.conf
+        pane_surround "#040303"
         terminal {
             foreground "#cecdc3"
             background "#100f0f"

@@ -2,6 +2,7 @@ themes {
     "unikitty" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Unikitty
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#f380cd"
         terminal {
             foreground "#0b0b0b"
             background "#ff8cd9"

@@ -8087,6 +8087,7 @@ Config {
             terminal: None,
             sourced_from_external_file: false,
             palette: Styling {
+                pane_surround: None,
                 text_unselected: StyleDeclaration {
                     base: Rgb(
                         (
@@ -8678,6 +8679,7 @@ Config {
             terminal: None,
             sourced_from_external_file: false,
             palette: Styling {
+                pane_surround: None,
                 text_unselected: StyleDeclaration {
                     base: Rgb(
                         (
@@ -9269,6 +9271,7 @@ Config {
             terminal: None,
             sourced_from_external_file: false,
             palette: Styling {
+                pane_surround: None,
                 text_unselected: StyleDeclaration {
                     base: Rgb(
                         (

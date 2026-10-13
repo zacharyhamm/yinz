@@ -2,6 +2,7 @@ themes {
     "irix-terminal" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/IRIX%20Terminal
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#000037"
         terminal {
             foreground "#f2f2f2"
             background "#000043"

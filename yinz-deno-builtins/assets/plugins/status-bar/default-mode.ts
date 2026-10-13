@@ -26,6 +26,7 @@ export function defaultMode(): ModeInfo {
       rounded_corners: false,
       hide_session_name: false,
       colors: {
+        pane_surround: null,
         text_unselected: declaration(245, 238, 166, 51, 154, 201),
         text_selected: declaration(245, 238, 166, 51, 154, 201),
         ribbon_unselected: declaration(16, 238, 124, 255, 45, 201),

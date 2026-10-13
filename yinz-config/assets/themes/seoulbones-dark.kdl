@@ -2,6 +2,7 @@ themes {
     "seoulbones-dark" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Seoulbones%20Dark
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#3f3f3f"
         terminal {
             foreground "#dddddd"
             background "#4b4b4b"

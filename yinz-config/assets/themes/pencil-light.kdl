@@ -1,6 +1,7 @@
 themes {
     pencil-light {
         // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Pencil%20Light
+        pane_surround "#e5e5e5"
         terminal {
             foreground "#424242"
             background "#f1f1f1"

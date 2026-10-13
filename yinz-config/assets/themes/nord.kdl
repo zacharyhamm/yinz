@@ -1,6 +1,7 @@
 themes {
     nord {
         // Terminal palette: https://github.com/nordtheme/xresources/blob/develop/src/nord
+        pane_surround "#222834"
         terminal {
             foreground "#d8dee9"
             background "#2e3440"

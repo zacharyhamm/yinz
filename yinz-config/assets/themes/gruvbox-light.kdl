@@ -1,6 +1,7 @@
 themes {
     gruvbox-light {
         // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Gruvbox%20Light
+        pane_surround "#efe5bb"
         terminal {
             foreground "#3c3836"
             background "#fbf1c7"

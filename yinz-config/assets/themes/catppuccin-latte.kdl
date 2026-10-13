@@ -1,6 +1,7 @@
 themes {
     catppuccin-latte {
         // Terminal palette: https://github.com/catppuccin/kitty/blob/main/themes/latte.conf
+        pane_surround "#e3e5e9"
         terminal {
             foreground "#4c4f69"
             background "#eff1f5"

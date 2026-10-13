@@ -1593,13 +1593,26 @@ impl Themes {
                 "fg", "bg", "red", "green", "blue", "yellow", "magenta", "orange", "cyan", "black",
                 "white",
             ]);
+            let pane_surround = single_top_level_block(theme_colors, "pane_surround")?
+                .map(|node| {
+                    if node.children().is_some() || node.entries().iter().any(|entry| {
+                        entry.name().is_some() || entry.value().as_i64().is_some_and(|v| !(0..=255).contains(&v))
+                    }) {
+                        return Err(ConfigError::new_kdl_error(
+                            "pane_surround requires a hex color, an index, or three channels from 0 to 255".into(),
+                            node.span().offset(), node.span().len(),
+                        ));
+                    }
+                    palette_color_from_kdl("pane_surround", theme_colors)
+                }).transpose()?;
             let terminal = terminal_theme_from_kdl(theme_colors)?;
             let theme = if theme_colors
                 .nodes()
                 .iter()
                 .any(|n| palette_color_names.contains(n.name().value()))
                 && theme_colors.nodes().iter().all(|n| {
-                    n.name().value() == "terminal" || palette_color_names.contains(n.name().value())
+                    ["terminal", "pane_surround"].contains(&n.name().value())
+                        || palette_color_names.contains(n.name().value())
                 }) {
                 // Older palette based theme definition
                 let palette = Palette {
@@ -1618,12 +1631,16 @@ impl Themes {
                 };
                 Theme {
                     terminal,
-                    palette: palette.into(),
+                    palette: Styling {
+                        pane_surround,
+                        ..palette.into()
+                    },
                     sourced_from_external_file,
                 }
             } else {
                 // Newer theme definition with named styles
                 let s = Styling {
+                    pane_surround,
                     text_unselected: Themes::style_declaration_from_node(
                         theme_config,
                         "text_unselected",
@@ -1860,6 +1877,11 @@ impl Themes {
                 .push(multiplayer_colors_to_kdl(
                     &theme.palette.multiplayer_user_colors,
                 ));
+            if let Some(color) = theme.palette.pane_surround {
+                current_theme_node_children
+                    .nodes_mut()
+                    .push(palette_color_to_kdl(&color, "pane_surround"));
+            }
             if let Some(terminal) = theme.terminal {
                 let mut node = KdlNode::new("terminal");
                 let mut colors = KdlDocument::new();

@@ -2,6 +2,7 @@ themes {
     "hot-dog-stand" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Hot%20Dog%20Stand
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#de2717"
         terminal {
             foreground "#ffffff"
             background "#ea3323"

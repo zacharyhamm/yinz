@@ -3,6 +3,7 @@
 themes {
     atelier-sulphurpool {
         // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Atelier%20Sulphurpool
+        pane_surround "#141b3a"
         terminal {
             foreground "#979db4"
             background "#202746"

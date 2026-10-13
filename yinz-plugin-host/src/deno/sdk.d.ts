@@ -576,6 +576,7 @@ export type PaletteColor = {Rgb: [number, number, number]} | {EightBit: number};
 export interface StyleDeclaration {base: PaletteColor; background: PaletteColor; emphasis_0: PaletteColor; emphasis_1: PaletteColor; emphasis_2: PaletteColor; emphasis_3: PaletteColor;}
 export interface Style {colors: Styling; rounded_corners: boolean; hide_session_name: boolean;}
 export interface Styling {
+  pane_surround: PaletteColor | null;
   text_unselected: StyleDeclaration; text_selected: StyleDeclaration; ribbon_unselected: StyleDeclaration; ribbon_selected: StyleDeclaration;
   table_title: StyleDeclaration; table_cell_unselected: StyleDeclaration; table_cell_selected: StyleDeclaration; list_unselected: StyleDeclaration; list_selected: StyleDeclaration;
   frame_unselected: StyleDeclaration | null; frame_selected: StyleDeclaration; frame_highlight: StyleDeclaration; exit_code_success: StyleDeclaration; exit_code_error: StyleDeclaration;

@@ -1,6 +1,7 @@
 themes {
     onedark {
         // Terminal palette: https://github.com/joshdick/onedark.vim/blob/main/term/One%20Dark.kitty
+        pane_surround "#1c2028"
         terminal {
             foreground "#abb2bf"
             background "#282c34"

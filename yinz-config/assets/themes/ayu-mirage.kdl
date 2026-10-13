@@ -1,6 +1,7 @@
 themes {
     ayu-mirage {
         // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Ayu%20Mirage
+        pane_surround "#131824"
         terminal {
             foreground "#cccac2"
             background "#1f2430"

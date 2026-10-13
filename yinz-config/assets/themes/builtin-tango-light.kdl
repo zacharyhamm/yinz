@@ -2,6 +2,7 @@ themes {
     "builtin-tango-light" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Builtin%20Tango%20Light
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#f3f3f3"
         terminal {
             foreground "#000000"
             background "#ffffff"

@@ -2,6 +2,7 @@ themes {
     "monokai-soda" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Monokai%20Soda
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#0e0e0e"
         terminal {
             foreground "#c4c5b5"
             background "#1a1a1a"

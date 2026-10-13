@@ -2,6 +2,7 @@ themes {
     "monokai-pro-octagon" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Monokai%20Pro%20Octagon
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#1c1e2e"
         terminal {
             foreground "#eaf2f1"
             background "#282a3a"

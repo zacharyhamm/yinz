@@ -2,6 +2,7 @@ themes {
     "ozz-s-blizzard" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Ozz%27s%20Blizzard
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#00030e"
         terminal {
             foreground "#3f6289"
             background "#0a0f1a"

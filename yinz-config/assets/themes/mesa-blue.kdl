@@ -2,6 +2,7 @@ themes {
     "mesa-blue" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Mesa%20Blue
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#0a4066"
         terminal {
             foreground "#fff0d7"
             background "#164c72"

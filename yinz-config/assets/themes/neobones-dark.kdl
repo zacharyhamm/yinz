@@ -2,6 +2,7 @@ themes {
     "neobones-dark" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Neobones%20Dark
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#030d13"
         terminal {
             foreground "#c6d5cf"
             background "#0f191f"

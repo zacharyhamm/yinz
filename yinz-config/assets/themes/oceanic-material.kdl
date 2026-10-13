@@ -2,6 +2,7 @@ themes {
     "oceanic-material" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Oceanic%20Material
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#101a1f"
         terminal {
             foreground "#c2c8d7"
             background "#1c262b"

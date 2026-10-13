@@ -1,6 +1,7 @@
 themes {
     ayu-light {
         // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Ayu%20Light
+        pane_surround "#ecedee"
         terminal {
             foreground "#5c6166"
             background "#f8f9fa"

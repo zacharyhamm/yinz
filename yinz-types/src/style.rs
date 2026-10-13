@@ -131,6 +131,26 @@ pub struct Style {
 }
 
 impl Style {
+    /// Margin color independent of pane-local application background overrides.
+    pub fn pane_surround(&self) -> PaletteColor {
+        self.colors.pane_surround.unwrap_or_else(|| {
+            let background = self
+                .terminal
+                .map(|t| PaletteColor::Rgb(t.background))
+                .unwrap_or(self.colors.text_unselected.background);
+            let (r, g, b) = match background {
+                PaletteColor::Rgb(rgb) => rgb,
+                PaletteColor::EightBit(index @ 0..=15) => return PaletteColor::EightBit(index),
+                PaletteColor::EightBit(index) => crate::colors::eightbit_to_rgb(index),
+            };
+            PaletteColor::Rgb((
+                r.saturating_sub(12),
+                g.saturating_sub(12),
+                b.saturating_sub(12),
+            ))
+        })
+    }
+
     /// Frame and divider defaults, independent of pane-local application colors.
     pub fn chrome_colors(&self) -> Option<(PaletteColor, PaletteColor)> {
         self.terminal.map(|terminal| {
@@ -159,6 +179,8 @@ impl Coloration {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct Styling {
+    #[serde(default)]
+    pub pane_surround: Option<PaletteColor>,
     pub text_unselected: StyleDeclaration,
     pub text_selected: StyleDeclaration,
     pub ribbon_unselected: StyleDeclaration,
@@ -201,6 +223,7 @@ pub struct MultiplayerColors {
 }
 
 pub const DEFAULT_STYLES: Styling = Styling {
+    pane_surround: None,
     text_unselected: StyleDeclaration {
         base: PaletteColor::EightBit(default_colors::BRIGHT_GRAY),
         emphasis_0: PaletteColor::EightBit(default_colors::ORANGE),
@@ -359,6 +382,7 @@ impl From<Palette> for Styling {
             ThemeHue::Dark => (palette.white, palette.black),
         };
         Styling {
+            pane_surround: None,
             text_unselected: StyleDeclaration {
                 base: fg,
                 emphasis_0: palette.orange,
@@ -564,3 +588,7 @@ mod compatibility_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "unit/pane_surround.rs"]
+mod pane_surround_tests;

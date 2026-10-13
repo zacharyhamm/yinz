@@ -1,6 +1,7 @@
 themes {
     night-owl {
         // Terminal palette: https://github.com/sdras/night-owl-vscode-theme/blob/main/themes/Night%20Owl-color-theme.json
+        pane_surround "#000a1b"
         terminal {
             foreground "#d6deeb"
             background "#011627"

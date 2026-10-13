@@ -1,6 +1,7 @@
 themes {
     catppuccin-mocha {
         // Terminal palette: https://github.com/catppuccin/kitty/blob/main/themes/mocha.conf
+        pane_surround "#121222"
         terminal {
             foreground "#cdd6f4"
             background "#1e1e2e"

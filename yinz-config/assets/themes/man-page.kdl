@@ -2,6 +2,7 @@ themes {
     "man-page" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Man%20Page
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#f2e890"
         terminal {
             foreground "#000000"
             background "#fef49c"

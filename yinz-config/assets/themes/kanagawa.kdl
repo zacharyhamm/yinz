@@ -1,6 +1,7 @@
 themes {
     kanagawa {
         // Terminal palette: https://github.com/rebelot/kanagawa.nvim/blob/master/extras/ghostty/kanagawa-wave
+        pane_surround "#13131c"
         terminal {
             foreground "#dcd7ba"
             background "#1f1f28"

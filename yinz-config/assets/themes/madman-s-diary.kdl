@@ -2,6 +2,7 @@ themes {
     "madman-s-diary" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Madman%27s%20Diary
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#0e020b"
         terminal {
             foreground "#f4e7d7"
             background "#1a0e17"

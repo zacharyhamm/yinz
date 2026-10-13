@@ -2,6 +2,7 @@ themes {
     "safety-glass" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Safety%20Glass
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#e6efee"
         terminal {
             foreground "#142322"
             background "#f2fbfa"

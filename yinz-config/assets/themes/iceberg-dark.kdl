@@ -1,6 +1,7 @@
 themes {
     iceberg-dark {
         // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Iceberg%20Dark
+        pane_surround "#0a0c15"
         terminal {
             foreground "#c6c8d1"
             background "#161821"

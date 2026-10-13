@@ -2,6 +2,7 @@ themes {
     "gruvbox-material-light" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Gruvbox%20Material%20Light
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#efe5bb"
         terminal {
             foreground "#654735"
             background "#fbf1c7"

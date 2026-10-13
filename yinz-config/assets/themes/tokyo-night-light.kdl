@@ -1,6 +1,7 @@
 themes {
     tokyo-night-light {
         // Terminal palette: https://github.com/folke/tokyonight.nvim/blob/main/extras/kitty/tokyonight_day.conf
+        pane_surround "#d5d6db"
         terminal {
             foreground "#3760bf"
             background "#e1e2e7"

@@ -5,6 +5,7 @@
 // Note: there is no orange in the ANSI color palette, so we use bright red instead
 themes {
     ansi {
+        pane_surround 0
         text_unselected {
             base 15
             background 0

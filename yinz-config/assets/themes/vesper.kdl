@@ -1,6 +1,7 @@
 themes {
     vesper {
         // Terminal palette: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Vesper
+        pane_surround "#040404"
         terminal {
             foreground "#ffffff"
             background "#101010"

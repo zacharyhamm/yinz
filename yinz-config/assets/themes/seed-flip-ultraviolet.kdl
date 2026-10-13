@@ -2,6 +2,7 @@ themes {
     "seed-flip-ultraviolet" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/SeedFlip%20Ultraviolet
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#000008"
         terminal {
             foreground "#e8e0f5"
             background "#0b0014"

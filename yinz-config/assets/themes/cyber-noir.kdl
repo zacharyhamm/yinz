@@ -1,6 +1,7 @@
 themes {
   cyber-noir {
         // Terminal palette: Yinz-specific palette, matched to the UI colors below.
+        pane_surround "#000000"
         terminal {
             foreground "#91f3e4"
             background "#000000"

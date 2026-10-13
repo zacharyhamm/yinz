@@ -1,6 +1,7 @@
 themes {
     catppuccin-frappe {
         // Terminal palette: https://github.com/catppuccin/kitty/blob/main/themes/frappe.conf
+        pane_surround "#24283a"
         terminal {
             foreground "#c6d0f5"
             background "#303446"

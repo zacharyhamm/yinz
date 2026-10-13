@@ -2,6 +2,7 @@ themes {
     "phala-green-dark" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Phala%20Green%20Dark
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#000000"
         terminal {
             foreground "#c1fc03"
             background "#000000"

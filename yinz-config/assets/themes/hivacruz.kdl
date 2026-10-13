@@ -2,6 +2,7 @@ themes {
     "hivacruz" {
         // Source: https://github.com/mbadolato/iTerm2-Color-Schemes/blob/31756e77934045c66b28f59463ddb2870606d7ca/ghostty/Hivacruz
         // UI colors are derived for readability; terminal colors match the source.
+        pane_surround "#071a2c"
         terminal {
             foreground "#ede4e4"
             background "#132638"
