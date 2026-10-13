@@ -1,5 +1,26 @@
 import { test, loadPlugin, assert, assertEquals } from "yinz:testing";
 import type { PluginHarness } from "yinz:testing";
+import { timestamp } from "./mother-overview/history.ts";
+
+test("Overview timestamps use whole elapsed units and tolerate missing or future times", () => {
+  const now = 2000000000;
+  for (const [age, expected] of [
+    [-60000, "now"],
+    [0, "now"],
+    [59999, "now"],
+    [60000, "1m"],
+    [120000, "2m"],
+    [3599999, "59m"],
+    [3600000, "1h"],
+    [10800000, "3h"],
+    [86399999, "23h"],
+    [86400000, "1d"],
+    [345600000, "4d"],
+  ] as const)
+    assertEquals(timestamp(now - age, now), expected);
+  for (const value of [null, undefined, "123", NaN, Infinity, 1e20])
+    assertEquals(timestamp(value, now), "—");
+});
 
 function requests(plugin: PluginHarness): { id: string; request: string }[] {
   return plugin.commands.flatMap((command) => {
@@ -168,7 +189,7 @@ const key = (plugin: PluginHarness, char: string): Promise<void> =>
   plugin.event({ Key: { bare_key: { Char: char }, key_modifiers: [] } });
 const special = (
   plugin: PluginHarness,
-  bare_key: "Tab" | "Enter" | "Esc" | "Up" | "End",
+  bare_key: "Tab" | "Enter" | "Esc" | "Up" | "End" | "Home" | "PageDown" | "PageUp",
 ): Promise<void> => plugin.event({ Key: { bare_key, key_modifiers: [] } });
 async function fixture() {
   const run = (id: string, pane: number, conversation: string, extra: Stored = {}): Stored => ({
@@ -270,6 +291,186 @@ async function fixture() {
   await answer(plugin, snapshot);
   return { plugin, archives, messages, entry, run, snapshot };
 }
+
+test("Overview region borders fill normal and compact panel widths", async () => {
+  const { plugin } = await fixture();
+  for (const columns of [24, 45, 100]) {
+    const lines = (await plugin.render(30, columns)).split("\n");
+    for (const title of ["Agents", "conversation"]) {
+      const line = lines.find((line) => line.includes(title));
+      assert(line);
+      assert(line.startsWith("─ ") && line.endsWith("─"), lines.join("\n"));
+      assertEquals(z.text.width(line), columns);
+    }
+  }
+  await special(plugin, "Tab");
+  const compact = (await plugin.render(10, 45)).split("\n");
+  const title = compact.find((line) => line.includes("conversation"));
+  assert(title?.startsWith("─ ▶") && title.endsWith("─"));
+});
+
+test("Overview wraps previews in the message column and maps continuation clicks", async () => {
+  const { plugin, messages, entry } = await fixture();
+  const text = "**界面 café** alpha beta gamma delta epsilon zeta eta theta iota kappa lambda";
+  messages.push({ ...entry(3, text), created_at_ms: -120000 });
+  await special(plugin, "Tab");
+  await special(plugin, "End");
+  for (const columns of [24, 45, 100]) {
+    const lines = (await plugin.render(30, columns)).split("\n");
+    const row = lines.findIndex((line) => line.startsWith("> 2m"));
+    assert(row >= 0, lines.join("\n"));
+    const label = lines[row] ?? "";
+    const start = label.indexOf("Reply");
+    assertEquals(start, 8);
+    const preview = lines.slice(row + 1, row + (columns < 100 ? 3 : 2));
+    assert(preview[0]?.trimStart().startsWith("界面 café"));
+    for (const line of preview) {
+      assertEquals(line.slice(0, start), " ".repeat(start));
+      assert(line.slice(start).trim().length > 0);
+    }
+    assert(
+      text.replaceAll("**", "").startsWith(preview.map((line) => line.trim()).join(" ")),
+      preview.join("\n"),
+    );
+    assert(
+      lines.every((line) => z.text.width(line) <= columns),
+      lines.join("\n"),
+    );
+    await plugin.event({ Mouse: { LeftClick: [row + preview.length, start] } });
+    await key(plugin, "y");
+    assertEquals(plugin.commands.at(-1), { CopyToClipboard: text });
+  }
+});
+
+test("Overview collapses tools including search hits and opens their complete reader", async () => {
+  const { plugin, messages, entry } = await fixture();
+  messages.push(
+    { ...entry(3, "needle command contents"), kind: "tool_call" },
+    { ...entry(4, "needle result contents"), kind: "tool_result" },
+  );
+  await special(plugin, "Tab");
+  await special(plugin, "End");
+  let lines = (await plugin.render(30, 100)).split("\n");
+  const callRow = lines.findIndex((line) => line.includes("Tool call"));
+  assert(callRow >= 0 && lines[callRow + 1]?.includes("Tool result"));
+  assert(!lines.join("\n").includes("needle"));
+  await special(plugin, "Enter");
+  assert((await plugin.render(30, 100)).includes("needle result contents"));
+  await special(plugin, "Esc");
+  await key(plugin, "/");
+  for (const char of "needle") await key(plugin, char);
+  await special(plugin, "Enter");
+  lines = (await plugin.render(30, 100)).split("\n");
+  assert(lines.some((line) => line.includes("Tool result")));
+  assert(!lines.join("\n").includes("needle"));
+  await special(plugin, "Enter");
+  assert((await plugin.render(30, 100)).includes("needle result contents"));
+});
+
+test("Overview PageDown shows every reply after collapsed tools", async () => {
+  const { plugin, messages, entry } = await fixture();
+  messages.length = 0;
+  for (let revision = 1; revision <= 17; revision += 1)
+    messages.push({
+      ...entry(revision, `Reply ${revision}: ${"preview words ".repeat(20)}`),
+      kind: revision <= 10 ? "tool_call" : "message",
+    });
+  await special(plugin, "Tab");
+  await special(plugin, "End");
+  for (let step = 0; step < 7; step += 1) await special(plugin, "Up");
+  await plugin.render(10, 100);
+  for (let first = 11; first <= 17; first += 2) {
+    await special(plugin, "PageDown");
+    const frame = await plugin.render(10, 100);
+    assert(frame.includes(`Reply ${first}:`), frame);
+    if (first < 17) assert(frame.includes(`Reply ${first + 1}:`), frame);
+    await key(plugin, "y");
+    assertEquals(plugin.commands.at(-1), {
+      CopyToClipboard: messages[Math.min(first, 16)]?.text,
+    });
+  }
+  await special(plugin, "PageDown");
+  await plugin.render(10, 100);
+  await key(plugin, "y");
+  assertEquals(plugin.commands.at(-1), { CopyToClipboard: messages[16]?.text });
+});
+
+for (const [rows, columns, separateProjects] of [
+  [30, 100, false],
+  [30, 100, true],
+  [10, 100, true],
+  [10, 45, false],
+] as const)
+  test(`Roster paging covers every worker with collapsed tools at ${rows}x${columns}, separate projects: ${separateProjects}`, async () => {
+    const { plugin, snapshot, archives, messages, entry, run } = await fixture();
+    const roster: Record<string, unknown> = {};
+    archives.length = 0;
+    messages.length = 0;
+    for (let pane = 1; pane <= 41; pane += 1) {
+      const conversation = pane === 1 ? "mother" : `worker-${pane}`;
+      const runId = `run-${pane}`;
+      archives.push(run(runId, pane, conversation));
+      for (let revision = 1; revision <= 20; revision += 1)
+        messages.push({ ...entry(revision, "Tool contents", runId), kind: "tool_call" });
+      if (pane > 1)
+        roster[`terminal_${pane}`] = {
+          conversation_id: conversation,
+          kind: "codex",
+          state: "waiting",
+          projects: [separateProjects ? `project-${pane}` : "project"],
+        };
+    }
+    await plugin.advance(1000);
+    await answer(plugin, { ...snapshot, roster });
+    for (const direction of ["PageDown", "PageUp"] as const) {
+      await special(plugin, direction === "PageDown" ? "Home" : "End");
+      const seen = new Set<string>();
+      for (let page = 0; page <= 40; page += 1) {
+        const frame = await plugin.render(rows, columns);
+        for (const match of frame.matchAll(/^[ >] (terminal_\d+)\s/gm)) seen.add(match[1] ?? "");
+        await special(plugin, direction);
+      }
+      assertEquals(seen.size, 40, `${rows}x${columns}, ${separateProjects}, ${direction}`);
+    }
+  });
+
+test("Overview PageDown advances oversized entries and reader rows", async () => {
+  const { plugin, messages, entry } = await fixture();
+  messages.length = 0;
+  messages.push(
+    entry(1, "First"),
+    entry(2, "```\n" + Array.from({ length: 12 }, (_, i) => `row ${i}`).join("\n") + "\n```"),
+  );
+  await special(plugin, "Tab");
+  await special(plugin, "End");
+  await special(plugin, "Home");
+  await plugin.render(3, 45);
+  await special(plugin, "PageDown");
+  await plugin.render(3, 45);
+  await key(plugin, "y");
+  assertEquals(plugin.commands.at(-1), { CopyToClipboard: messages[1]?.text });
+  await special(plugin, "Enter");
+  const initial = await plugin.render(6, 100);
+  assertEquals(initial.split("\n").slice(2, 5), ["row 0", "row 1", "row 2"]);
+  await special(plugin, "PageDown");
+  const paged = await plugin.render(6, 100);
+  assertEquals(paged.split("\n").slice(2, 5), ["row 3", "row 4", "row 5"]);
+  await special(plugin, "PageUp");
+  assertEquals(await plugin.render(6, 100), initial);
+});
+
+test("Overview ages timeline and reader timestamps on its existing refresh cycle", async () => {
+  const { plugin, messages, entry, snapshot } = await fixture();
+  messages.push({ ...entry(3, "Aging reply"), created_at_ms: -59000 });
+  await special(plugin, "Tab");
+  await special(plugin, "End");
+  assert((await plugin.render(30, 100)).includes("> now"));
+  await plugin.advance(1000);
+  await answer(plugin, snapshot);
+  assert((await plugin.render(30, 100)).includes("> 1m"));
+  await special(plugin, "Enter");
+  assert((await plugin.render(30, 100)).includes("Reply · 1m"));
+});
 
 test("Mother roster navigates, focuses and filters; reader renders Markdown and returns", async () => {
   const { plugin } = await fixture();
@@ -753,9 +954,7 @@ test("Journal identities retain departed workers and activity has a source reade
   await answer(plugin, { ...snapshot.recent, records: [record] });
   frame = await plugin.render(30, 100);
   assert(
-    frame.includes("pane closed") &&
-      frame.includes("1970-01-01") &&
-      !frame.includes("journal_cursor"),
+    frame.includes("pane closed") && frame.includes("> now") && !frame.includes("journal_cursor"),
   );
   await special(plugin, "Enter");
   await key(plugin, "v");
