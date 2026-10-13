@@ -1120,6 +1120,82 @@ export default {
 }
 
 #[test]
+fn deno_reload_before_close_can_query_layout_with_another_plugin() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("cleanup-query.ts");
+    let companion = directory.path().join("companion.ts");
+    fs::write(
+        &companion,
+        "export default { render() { return 'companion ready'; } };",
+    )
+    .unwrap();
+    fs::write(&plugin, r#"
+let state = 'starting';
+export default {
+  async load() {
+    await yinz.waitForPermissions(['ReadApplicationState', 'ReadFiles', 'WriteFiles']);
+    yinz.subscribe(['BeforeClose']);
+    state = 'cleanup query ready';
+  },
+  update(event) {
+    if (event !== 'BeforeClose') return false;
+    let result;
+    try {
+      const layout = yinz.command('DumpSessionLayout', {});
+      result = layout.metadata.tabs.some(tab => tab.panes.some(pane => pane.is_plugin)) ? 'success' : 'missing companion';
+    } catch (error) { result = String(error); }
+    yinz.fs.write('/data/cleanup.txt', result);
+    return false;
+  },
+  render() { return state; }
+};
+"#).unwrap();
+    let mut session = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane; pane {{ plugin location=\"file:{}\"; }}; pane focus=true {{ plugin location=\"file:{}\"; }}; }}",
+            companion.display(), plugin.display()
+        )))
+        .start();
+    session.wait_until("cleanup query permissions", |grid| {
+        grid.contains("Plugin permissions")
+    });
+    session.send_stdin(b"\t\r");
+    session.wait_until("cleanup query guest ready", |grid| {
+        grid.contains("cleanup query ready")
+    });
+    fs::write(
+        &plugin,
+        r#"
+let state = 'starting';
+export default {
+  async load() {
+    await yinz.waitForPermissions(['ReadFiles']);
+    state = 'cleanup result: ' + yinz.decodeUtf8(yinz.fs.read('/data/cleanup.txt'));
+  },
+  render() { return state; }
+};
+"#,
+    )
+    .unwrap();
+    lifecycle(
+        &session,
+        yinz_types::cli::PluginOperation::Reload,
+        &plugin,
+        None,
+    );
+    let result = session.wait_until("replacement reads cleanup result", |grid| {
+        grid.contains("cleanup result:")
+    });
+    assert!(
+        result.contains("cleanup result: success"),
+        "{result}\n{}",
+        yinz_integration_tests::test_env::log_tail(150)
+    );
+    session.quit();
+}
+
+#[test]
 fn deno_reload_reuses_stream_id_without_delivering_or_cancelling_the_old_generation() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();

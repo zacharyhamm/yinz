@@ -731,6 +731,8 @@ macro_rules! send_to_client {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SessionState {
     clients: HashSet<ClientId>,
+    // Early disconnects still have a router that can enqueue its final removal.
+    router_clients: HashSet<ClientId>,
     interactive_clients: HashSet<ClientId>,
     pipes: HashMap<String, ClientId>,     // String => pipe_id
     watchers: HashSet<ClientId>,          // watcher clients (read-only observers)
@@ -748,6 +750,7 @@ impl SessionState {
     pub fn new() -> Self {
         SessionState {
             clients: HashSet::new(),
+            router_clients: HashSet::new(),
             interactive_clients: HashSet::new(),
             pipes: HashMap::new(),
             watchers: HashSet::new(),
@@ -761,6 +764,7 @@ impl SessionState {
             .iter()
             .copied()
             .chain(self.watchers.iter().copied())
+            .chain(self.router_clients.iter().copied())
             .collect();
 
         let mut next_client_id = 1;
@@ -772,7 +776,11 @@ impl SessionState {
             }
         }
         self.clients.insert(ClientId::new(next_client_id));
+        self.router_clients.insert(ClientId::new(next_client_id));
         ClientId::new(next_client_id)
+    }
+    fn release_client_id(&mut self, client_id: ClientId) {
+        self.router_clients.remove(&client_id);
     }
     pub fn associate_pipe_with_client(&mut self, pipe_id: String, client_id: ClientId) {
         self.pipes.insert(pipe_id, client_id);
@@ -1013,7 +1021,9 @@ pub fn start_server_impl(
                                     // in-flight forwards to flush, and no sender
                                     // was registered for `os_input.remove_client`
                                     // to remove.
-                                    let _ = session_state.write().unwrap().remove_client(client_id);
+                                    let mut state = session_state.write().unwrap();
+                                    let _ = state.remove_client(client_id);
+                                    state.release_client_id(client_id);
                                     drop(slot);
                                     continue;
                                 },
@@ -1605,7 +1615,10 @@ pub fn start_server_impl(
                     }
                 }
             },
-            ServerInstruction::RemoveClient(client_id) => {
+            ServerInstruction::RemoveClient(client_id)
+            | ServerInstruction::ClientRouterFinished(client_id) => {
+                let router_finished =
+                    matches!(instruction, ServerInstruction::ClientRouterFinished(_));
                 attach_traces_waiting_for_first_render.remove(&client_id);
                 // Check if this is a watcher
                 let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
@@ -1628,6 +1641,9 @@ pub fn start_server_impl(
                     }
                     // Handle regular client removal
                     remove_client!(client_id, os_input, session_state, session_data);
+                }
+                if router_finished {
+                    session_state.write().unwrap().release_client_id(client_id);
                 }
             },
             ServerInstruction::KillSession | ServerInstruction::KillSessionWithCompletion(_) => {
@@ -3170,6 +3186,7 @@ mod session_state_tests {
         session.interactive_clients.insert(interactive);
         assert_eq!(session.input_unblock_clients(), vec![interactive]);
         session.remove_client(interactive);
+        session.release_client_id(interactive);
         assert_eq!(session.new_client(), interactive);
         assert!(session.input_unblock_clients().is_empty());
         assert!(session.client_ids().contains(&cli));

@@ -592,6 +592,8 @@ pub fn background_jobs_main(
                 let info = current_session_info.lock().unwrap().clone();
                 let layout = current_session_layout.lock().unwrap().clone();
                 session_checkpoint.write(name, info, &layout).non_fatal();
+                // An overdue tick can be ready immediately; let abort stop catch-up writes.
+                tokio::task::yield_now().await;
             }
         }))
     } else {
@@ -1271,6 +1273,10 @@ pub fn background_jobs_main(
             bus.senders.session_checkpoint.progress()
         );
         task.abort();
+        #[cfg(test)]
+        if let Some(after_abort) = &bus.senders.session_checkpoint.after_abort {
+            after_abort();
+        }
         // Cancellation takes effect at an await point. Join so an in-flight synchronous
         // checkpoint cannot publish after the server confirms shutdown.
         runtime.block_on(async {
@@ -1733,6 +1739,8 @@ pub struct SessionCheckpointWriter {
     progress: Mutex<CheckpointProgress>,
     #[cfg(test)]
     before_write: Option<Box<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    after_abort: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 #[derive(Default)]
@@ -1749,6 +1757,8 @@ impl Default for SessionCheckpointWriter {
             progress: Mutex::default(),
             #[cfg(test)]
             before_write: None,
+            #[cfg(test)]
+            after_abort: None,
         }
     }
 }
@@ -1943,6 +1953,8 @@ mod tests {
             progress: Mutex::default(),
             #[cfg(test)]
             before_write: None,
+            #[cfg(test)]
+            after_abort: None,
         });
         let old = SessionName::new("old");
         let renamed = SessionName::new("renamed");
@@ -1999,6 +2011,8 @@ mod tests {
             progress: Mutex::default(),
             #[cfg(test)]
             before_write: None,
+            #[cfg(test)]
+            after_abort: None,
         };
         let old = SessionName::new("old");
         let renamed = SessionName::new("renamed");

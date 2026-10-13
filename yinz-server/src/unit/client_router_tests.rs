@@ -425,7 +425,9 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
     let removals = threads
         .server_receiver
         .try_iter()
-        .filter(|(message, _)| matches!(message, ServerInstruction::RemoveClient(CLIENT_99)))
+        .filter(|(message, _)| {
+            matches!(message, ServerInstruction::ClientRouterFinished(CLIENT_99))
+        })
         .count();
     assert_eq!(
         removals, 1,
@@ -558,7 +560,7 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
                 .try_iter()
                 .filter(|(message, _)| matches!(
                     message,
-                    ServerInstruction::RemoveClient(CLIENT_99)
+                    ServerInstruction::ClientRouterFinished(CLIENT_99)
                 ))
                 .count(),
             1
@@ -640,7 +642,7 @@ fn kitty_probe_routing_preserves_client_lifecycle_order() {
                         client_id: CLIENT_1,
                         supported: true
                     },
-                    ServerInstruction::RemoveClient(CLIENT_1),
+                    ServerInstruction::ClientRouterFinished(CLIENT_1),
                 ]
             ),
             "{instructions:?}"
@@ -729,7 +731,10 @@ fn startup_retries_without_client_traffic_and_preserves_fifo_after_timeout() {
             threads
                 .server_receiver
                 .try_iter()
-                .filter(|(message, _)| matches!(message, ServerInstruction::RemoveClient(CLIENT_1)))
+                .filter(|(message, _)| matches!(
+                    message,
+                    ServerInstruction::ClientRouterFinished(CLIENT_1)
+                ))
                 .count(),
             1
         );

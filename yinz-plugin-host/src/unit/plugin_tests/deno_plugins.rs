@@ -3180,6 +3180,69 @@ export default {
 
 #[test]
 #[serial(plugin_tests)]
+// Each synchronous call fits the three-second grace; together they cross the old
+// call's deadline. The watched command establishes entry before requesting reload.
+fn deno_reload_gives_before_close_its_own_grace_after_a_completed_call() {
+    let harness = Harness::new(
+        "js",
+        r#"
+export default {
+  load() { yinz.subscribe(["BeforeClose", "Key"]); },
+  update(event) {
+    if (!event.Key && event !== "BeforeClose") return false;
+    if (event.Key) yinz.command("SetSelectable", true);
+    const end = Date.now() + 2000;
+    while (Date.now() < end) {}
+    if (event === "BeforeClose") yinz.command("SetSelectable", false);
+    return false;
+  },
+  render() { return "original ready for timed cleanup"; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    harness.rendered("original ready for timed cleanup");
+    harness.event(Event::Key(KeyWithModifier::new(BareKey::Char('a'))));
+    harness
+        .log
+        .wait_until("original invocation entered", default_timeout(), |log| {
+            log.iter()
+                .any(|i| matches!(i, ScreenInstruction::SetSelectable(_, true)))
+                .then_some(())
+        });
+    std::fs::write(
+        &harness.path,
+        r#"export default {
+      load() { yinz.command("SetSelectable", true); },
+      render() { return "replacement after timed cleanup"; }
+    };"#,
+    )
+    .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::ReloadPluginByUrl(run_plugin(
+            &harness.path,
+        )))
+        .unwrap();
+    harness.rendered("replacement after timed cleanup");
+    let log = harness.finish();
+    let selectable: Vec<_> = log
+        .iter()
+        .filter_map(|i| match i {
+            ScreenInstruction::SetSelectable(_, value) => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        selectable,
+        [true, false, true],
+        "a completed invocation's watchdog interrupted eligible cleanup"
+    );
+}
+
+#[test]
+#[serial(plugin_tests)]
 fn deno_reload_by_url_delivers_idle_before_close_before_loading_the_replacement() {
     let harness = Harness::new(
         "js",
@@ -3321,6 +3384,93 @@ export default {
             "queued={queued}: cleanup precedes replacement exactly once"
         );
     }
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn deno_unload_during_reload_cleanup_does_not_load_the_replacement() {
+    let harness = Harness::new(
+        "js",
+        r#"
+let ready = false;
+export default {
+  async load() {
+    await yinz.waitForPermissions(['ReadApplicationState']);
+    yinz.subscribe(['BeforeClose']);
+    ready = true;
+  },
+  update(event) {
+    if (event !== 'BeforeClose') return false;
+    yinz.command('SetSelectable', false);
+    yinz.command('DumpSessionLayout', {});
+    return false;
+  },
+  render() { return ready ? 'ready for cleanup unload' : 'starting'; }
+};
+"#,
+        PermissionStatus::Granted,
+    );
+    harness.load();
+    harness.rendered("ready for cleanup unload");
+    std::fs::write(
+        &harness.path,
+        "export default { load() { yinz.command('SetSelectable', true); } };",
+    )
+    .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::ReloadPluginByUrl(run_plugin(
+            &harness.path,
+        )))
+        .unwrap();
+    let reply = harness.log.wait_until(
+        "reload cleanup is in a host call",
+        default_timeout(),
+        |log| {
+            log.iter().find_map(|instruction| match instruction {
+                ScreenInstruction::DumpLayoutToPlugin {
+                    response_channel, ..
+                } => Some(response_channel.clone()),
+                _ => None,
+            })
+        },
+    );
+    harness
+        .sender
+        .send(PluginInstruction::Unload(PLUGIN))
+        .unwrap();
+    harness.log.wait_until(
+        "explicit unload removed the old identity",
+        default_timeout(),
+        |log| {
+            log.iter()
+                .any(|instruction| {
+                    matches!(instruction,
+                        ScreenInstruction::ClearKeyPressesIntercepts(id, _) if *id == PLUGIN
+                    )
+                })
+                .then_some(())
+        },
+    );
+    reply
+        .send(yinz_bus::plugins::DumpSessionLayoutResponse {
+            layout_result: Ok("layout {}".into()),
+            metadata: None,
+        })
+        .unwrap();
+    let log = harness.finish();
+    let selectable: Vec<_> = log
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::SetSelectable(_, value) => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        selectable,
+        [false],
+        "cleanup runs once and explicit unload wins over replacement"
+    );
 }
 
 #[test]

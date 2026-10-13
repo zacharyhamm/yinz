@@ -1178,7 +1178,7 @@ pub(crate) fn route_thread_main(
     {
         session.locked_escapes.remove(&client_id);
     }
-    let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
+    let _ = to_server.send(ServerInstruction::ClientRouterFinished(client_id));
     Ok(())
 }
 

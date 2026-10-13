@@ -22,6 +22,8 @@ pub enum ServerInstruction {
     UnblockInputThread,
     ClientExit(ClientId, Option<NotificationEnd>),
     RemoveClient(ClientId),
+    /// The router has queued its last instruction; its connection ID can be reused.
+    ClientRouterFinished(ClientId),
     Error(String),
     KillSession,
     KillSessionWithCompletion(ClientId),
@@ -114,6 +116,7 @@ impl From<&ServerInstruction> for ServerContext {
         // a variant is added without either a matching `ServerContext` or an arm here.
         match server_instruction {
             ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,
+            ServerInstruction::ClientRouterFinished(..) => ServerContext::RemoveClient,
             ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
             ServerInstruction::ResolveLockedEscape(..) => ServerContext::ChangeMode,
             ServerInstruction::SavePaletteTheme { .. } => ServerContext::Reconfigure,
