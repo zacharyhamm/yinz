@@ -995,7 +995,6 @@ fn attach(
     // `cmd` travels for `hold_on_close`; its `originating_plugin` names a plugin
     // in the session this pane is leaving, so it must not follow it.
     let mut cmd = ctx.cmd.clone();
-    cmd.workflow_owner = cmd.workflow_owner().map(str::to_owned);
     cmd.originating_plugin = None;
 
     let ack = HostToServerMsg::AttachAck {

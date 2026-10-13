@@ -26,7 +26,6 @@ yinz-storage = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }
 yinz-process = { path = "../yinz-process", version = "0.1.0" }
-yinz-swamp = { workspace = true }
 yinz-tile = { path = "../yinz-tile" }
 yinz-tile-markdown = { path = "../yinz-tile-markdown" }
 anyhow = { workspace = true }

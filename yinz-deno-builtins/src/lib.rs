@@ -12,7 +12,7 @@ use include_dir::{include_dir, Dir, File};
 pub static BUILTIN_DENO_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets/plugins");
 
 /// The source of the builtin tagged `tag`: `<tag>.ts` at the top of [`BUILTIN_DENO_FILES`].
-/// This finds a file, not a builtin: a shared module such as `workflow-view` has one too, so
+/// This finds a file, not a builtin: a shared module has one too, so
 /// check a tag against `BUILTIN_DENO_PLUGIN_NAMES` before loading it as a plugin.
 pub fn builtin_deno_plugin(tag: &str) -> Option<&'static str> {
     BUILTIN_DENO_FILES

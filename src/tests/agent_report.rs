@@ -138,7 +138,6 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
             .env("YINZ_SESSION_NAME", "old-session")
             .env("YINZ_PANE_ID", "20")
             .env("YINZ_REMOTE_PANE_TOKEN", "old-remote-pane")
-            .env("YINZ_SWAMP_OWNER", "old-workflow")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -177,10 +176,6 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
         assert_eq!(
             event.last_message.as_deref(),
             Some("HTTP 400: unsupported model")
-        );
-        assert!(
-            serde_json::from_str::<serde_json::Value>(&event.raw).unwrap()["_yinz_workflow_owner"]
-                .is_null()
         );
         receiver
             .get_sender::<ServerToClientMsg>()
@@ -379,7 +374,6 @@ fn standalone_codex_hooks_reject_reference_less_panes() {
                 "YINZ_PANE_REF",
                 "YINZ_SESSION_NAME",
                 "YINZ_REMOTE_PANE_TOKEN",
-                "YINZ_SWAMP_OWNER",
             ] {
                 command.env_remove(key);
             }

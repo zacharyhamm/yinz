@@ -567,7 +567,6 @@ pub struct Pty {
     pub(crate) bus: Bus<PtyInstruction>,
     pub(crate) id_to_child_pid: HashMap<TerminalId, ProcessId>, // terminal_id => child pid
     originating_plugins: HashMap<TerminalId, OriginatingPlugin>,
-    workflow_owners: HashMap<TerminalId, String>,
     /// Panes whose command runs in a Bubblewrap environment. The process holding such a
     /// pane's pty is the sandbox, so its argv is read through to the command inside.
     bubblewrap_terminals: HashSet<TerminalId>,
@@ -1310,36 +1309,6 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 let response = pty.get_pane_git_probe(pane_id, &cwd, refresh_token.as_deref());
                 let _ = response_channel.send(response);
             },
-            PtyInstruction::WorkflowSignal {
-                terminal_id,
-                owner,
-                process,
-                supervisor,
-                kill,
-                reply,
-            } => {
-                let result = pty.workflow_signal(
-                    terminal_id,
-                    &owner,
-                    process,
-                    &supervisor,
-                    if kill {
-                        ChildSignal::Kill
-                    } else {
-                        ChildSignal::Int
-                    },
-                );
-                let _ = reply.send(result.map_err(|error| format!("{error:#}")));
-            },
-            PtyInstruction::WorkflowRemotePanes(reply) => {
-                let rows = pty
-                    .bus
-                    .os_input
-                    .as_ref()
-                    .map(|os| os.workflow_remote_panes())
-                    .unwrap_or_default();
-                let _ = reply.send(rows);
-            },
             PtyInstruction::UpdateAndReportCwds => {
                 pty.update_and_report_cwds();
             },
@@ -1367,7 +1336,6 @@ impl Pty {
             task_handles: HashMap::new(),
             default_editor,
             originating_plugins: HashMap::new(),
-            workflow_owners: HashMap::new(),
             bubblewrap_terminals: HashSet::new(),
             post_command_discovery_hook,
             plugin_cwds: HashMap::new(),
@@ -2950,11 +2918,6 @@ impl Pty {
     }
     /// Record what a pane's command says about the pane itself, each time one starts in it.
     fn track_launch(&mut self, terminal_id: TerminalId, command: &RunCommand) {
-        if let Some(owner) = command.workflow_owner() {
-            self.workflow_owners.insert(terminal_id, owner.to_owned());
-        } else {
-            self.workflow_owners.remove(&terminal_id);
-        }
         if command.target.is_bubblewrap() {
             self.bubblewrap_terminals.insert(terminal_id);
         } else {
@@ -2972,43 +2935,6 @@ impl Pty {
             Some(inner) => inner.to_vec(),
             None => argv,
         }
-    }
-
-    /// Deliver a signal to a pane's child, wherever that child lives.
-    fn workflow_signal(
-        &self,
-        terminal_id: TerminalId,
-        owner: &str,
-        process: Option<ProcessId>,
-        supervisor: &str,
-        signal: ChildSignal,
-    ) -> Result<()> {
-        let current_owner = self
-            .workflow_owners
-            .get(&terminal_id)
-            .context("Workflow pane has no owner")?;
-        anyhow::ensure!(current_owner == owner, "Workflow pane owner changed");
-        let os = self.bus.os_input.as_ref().context("No OS interface")?;
-        if os.is_remote_pane(terminal_id) {
-            anyhow::ensure!(
-                process.is_none()
-                    && os
-                        .workflow_remote_panes()
-                        .iter()
-                        .any(|row| row["terminal_id"] == serde_json::json!(terminal_id)
-                            && row["host_id"] == supervisor
-                            && row["owner"] == owner),
-                "Remote workflow process changed"
-            );
-        } else {
-            anyhow::ensure!(
-                process.is_some() && self.id_to_child_pid.get(&terminal_id).copied() == process,
-                "Workflow process changed"
-            );
-        }
-        // Validation and delivery share the PTY thread with reruns and adoption.
-        self.signal_pane_child(terminal_id, signal);
-        Ok(())
     }
 
     /// The remote check comes first, and deliberately so. For a remote pane
@@ -3072,7 +2998,6 @@ impl Pty {
                 // a remote pane there is no pid to forget in the first place.
                 self.signal_pane_child(id, ChildSignal::Hup);
                 self.id_to_child_pid.remove(&id);
-                self.workflow_owners.remove(&id);
                 self.bubblewrap_terminals.remove(&id);
                 self.pane_activity_flags.remove(&id);
                 self.forget_terminal_cwd(id);
@@ -3253,7 +3178,6 @@ impl Pty {
         // The plugin that spawned this pane lives in *this* session, so it does
         // not follow the pane out.
         self.originating_plugins.remove(&terminal_id);
-        self.workflow_owners.remove(&terminal_id);
         self.bubblewrap_terminals.remove(&terminal_id);
     }
 
@@ -3314,21 +3238,6 @@ impl Pty {
             // originating plugin belongs to the session this pane came from, and
             // its plugin id would name something else entirely here. The
             // supervisor clears it from the command for the same reason.
-            // Portable workflow ownership is independent of those ids. The bridge
-            // verifies it against its durable claim before accepting this event.
-            if let (PaneId::Terminal(terminal_id), Some(owner)) =
-                (pane_id, command.workflow_owner())
-            {
-                let context = std::collections::BTreeMap::from([(
-                    "swamp_owner".to_owned(),
-                    owner.to_owned(),
-                )]);
-                let _ = senders.send_to_plugin(PluginInstruction::Update(vec![(
-                    None,
-                    None,
-                    Event::CommandPaneExited(terminal_id, exit_status, context),
-                )]));
-            }
             let hold_on_close = command.hold_on_close;
             let _ = senders.send_to_screen(terminal_exit_instruction(
                 pane_id,

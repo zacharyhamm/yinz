@@ -11,7 +11,6 @@ controller for live agent operations. Timeouts never trigger automatic retries.
 | Projects, notes, todos | Named project, note, and todo commands under `action` | Preserve domain rules and revisions from the original read. |
 | Plugin data | `data catalog/fetch/count/apply` | Advanced fallback for records without domain commands. |
 | Plugins | `plugins start/reload/stop`, `list --running`, authoring and validation | Direct session lifecycle. Use native file tools to inspect source. |
-| Workflows | `workflow` commands, especially `run-get`, logs, reports, validation, and approvals | Durable execution. `workflow show RUN_ID` opens its view. Workflow runs differ from agent turns and archive runs. |
 | Coding-agent skills | `skills list/show/install` | Six separate topics. Installation is explicit and does not replace customized skills without `--force`. |
 
 The Agents panel’s summaries and inferred attention indicators are UI observations.

@@ -321,14 +321,14 @@ fn embedded_builtins_stay_cached_under_eviction_pressure() {
         1,
         "a compiled-in builtin is pinned through eviction"
     );
-    // The registered workflow module is pinned the same way.
+    // An imported builtin module is pinned the same way.
     let view = PluginModuleLoader::embedded(
         "view-test",
-        "import {view} from 'yinz:workflow-view'; export default view;",
+        "import hook from './agent-exit.ts'; export default hook;",
     )
     .unwrap();
     let url = view
-        .resolve_local(WORKFLOW_SPECIFIER, view.entrypoint().as_str(), false)
+        .resolve_local("./agent-exit.ts", view.entrypoint().as_str(), false)
         .unwrap();
     let before = spawn_count();
     view.load_source(&url).unwrap();
@@ -480,16 +480,16 @@ fn embedded_source_maps_keep_the_private_module_url_and_typescript_source() {
 fn embedded_modules_resolve_relative_imports_without_filesystem_fallback() {
     let loader = PluginModuleLoader::embedded(
         "view-test",
-        "import {view} from 'yinz:workflow-view'; export default view;",
+        "import hook from './agent-exit.ts'; export default hook;",
     )
     .unwrap();
     let url = loader
-        .resolve_local(WORKFLOW_SPECIFIER, loader.entrypoint().as_str(), false)
+        .resolve_local("./agent-exit.ts", loader.entrypoint().as_str(), false)
         .unwrap();
     assert_eq!(
         loader.read_source(&url, false).unwrap(),
         yinz_deno_builtins::BUILTIN_DENO_FILES
-            .get_file("workflow-view.ts")
+            .get_file("agent-exit.ts")
             .unwrap()
             .contents_utf8()
             .unwrap()
@@ -497,26 +497,26 @@ fn embedded_modules_resolve_relative_imports_without_filesystem_fallback() {
     assert!(loader.load_source(&url).is_ok());
     assert_eq!(
         loader
-            .resolve_local("./workflow-view.ts", loader.entrypoint().as_str(), false)
+            .resolve_local("./agent-exit.ts", loader.entrypoint().as_str(), false)
             .unwrap(),
         url
     );
     assert_eq!(
         loader
-            .resolve_local("./workflow-view.ts", url.as_str(), false)
+            .resolve_local("./agent-exit.ts", url.as_str(), false)
             .unwrap(),
         url
     );
     assert_eq!(
         loader
-            .resolve_local("./%77orkflow-view.ts", url.as_str(), false)
+            .resolve_local("./%61gent-exit.ts", url.as_str(), false)
             .unwrap(),
         url
     );
     let nested = PluginModuleLoader::embedded("nested/main", "export default {};").unwrap();
     assert_eq!(
         nested
-            .resolve_local("../workflow-view.ts", nested.entrypoint().as_str(), false)
+            .resolve_local("../agent-exit.ts", nested.entrypoint().as_str(), false)
             .unwrap(),
         url
     );
@@ -525,11 +525,11 @@ fn embedded_modules_resolve_relative_imports_without_filesystem_fallback() {
     std::fs::write(&local_module, "export const present = true;").unwrap();
     for specifier in [
         "./missing.ts",
-        "./workflow-view.ts?x",
+        "./agent-exit.ts?x",
         "../Cargo.toml",
-        "file:///tmp/workflow-view.ts",
-        "yinz-builtin:///workflow-view.ts",
-        "yinz:workflow-view?x",
+        "file:///tmp/agent-exit.ts",
+        "yinz-builtin:///agent-exit.ts",
+        "yinz:agent-exit?x",
         "yinz:missing",
         local_module.to_str().unwrap(),
     ] {
@@ -541,7 +541,7 @@ fn embedded_modules_resolve_relative_imports_without_filesystem_fallback() {
             .is_err());
     }
     let maps = loader.checked_sources().unwrap();
-    assert!(maps.contains_key(&Path::new(EMBEDDED_ROOT).join("workflow-view.ts")));
+    assert!(maps.contains_key(&Path::new(EMBEDDED_ROOT).join("agent-exit.ts")));
 }
 
 async fn import_meta_exports(loader: PluginModuleLoader) -> HashMap<String, String> {
@@ -645,7 +645,7 @@ async fn import_meta_embedded_urls_have_no_filesystem_fallback() {
     let source = format!(
         r#"
 export const url: string = import.meta.url;
-export const sibling: string = import.meta.resolve("./workflow-view.ts");
+export const sibling: string = import.meta.resolve("./agent-exit.ts");
 for (const specifier of ["./missing.ts", {file_url}]) {{
   let rejected = false;
   try {{ import.meta.resolve(specifier); }}
@@ -660,5 +660,5 @@ for (const specifier of ["./missing.ts", {file_url}]) {{
     let exports =
         import_meta_exports(PluginModuleLoader::embedded("meta-test", &source).unwrap()).await;
     assert_eq!(exports["url"], "yinz-builtin:///meta-test.ts");
-    assert_eq!(exports["sibling"], "yinz-builtin:///workflow-view.ts");
+    assert_eq!(exports["sibling"], "yinz-builtin:///agent-exit.ts");
 }

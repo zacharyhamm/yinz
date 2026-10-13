@@ -159,22 +159,6 @@ fn stages_only_confined_dependencies_and_never_formats_them() {
 }
 
 #[test]
-fn authoring_stages_embedded_modules_without_adjacent_files() {
-    let dir = tempfile::tempdir().unwrap();
-    let result = report(
-        dir.path(),
-        "import {view} from 'yinz:workflow-view'; export const render = view.render;",
-        Format,
-    );
-    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert!(result
-        .formatted_source
-        .unwrap()
-        .contains("yinz:workflow-view"));
-    assert!(!dir.path().join("workflow-view.ts").exists());
-}
-
-#[test]
 fn encoded_traversal_aliases_leave_no_entries_outside_owned_scratch() {
     let dir = tempfile::tempdir().unwrap();
     let plugins = dir.path().join("plugins");

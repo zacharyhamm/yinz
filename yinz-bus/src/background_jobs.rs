@@ -2576,7 +2576,7 @@ mod web_request_stream_tests {
         BTreeMap::from([
             ("Authorization".to_owned(), "Bearer secret".to_owned()),
             ("Cookie".to_owned(), "session=secret".to_owned()),
-            ("X-Api-Key".to_owned(), "swamp_secret".to_owned()),
+            ("X-Api-Key".to_owned(), "test_secret".to_owned()),
             ("Accept".to_owned(), "application/json".to_owned()),
         ])
     }
@@ -2650,7 +2650,7 @@ mod web_request_stream_tests {
         );
         assert_eq!(
             header_line(&request, "x-api-key"),
-            Some("x-api-key: swamp_secret"),
+            Some("x-api-key: test_secret"),
             "{request}"
         );
     }

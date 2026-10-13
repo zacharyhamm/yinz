@@ -228,48 +228,6 @@ fn exit_recorder() -> (Arc<Mutex<Vec<Option<i32>>>>, QuitCb) {
     (seen, cb)
 }
 
-#[tokio::test]
-async fn workflow_reader_observes_group_termination_after_wrapper_exit() {
-    let (reader, conn, mut peer) = reader_pair();
-    let (seen, callback) = exit_recorder();
-    let mut reader = reader.on_exit(
-        TerminalId::new(7),
-        RunCommand {
-            workflow_owner: Some("owner".into()),
-            ..Default::default()
-        },
-        callback,
-    );
-    for terminated in [false, true] {
-        let mut framed = vec![];
-        if !terminated {
-            write_control(
-                &mut framed,
-                &BrokerToServerMsg::ChildExited { status: Some(130) },
-            )
-            .unwrap();
-        }
-        write_control(
-            &mut framed,
-            &BrokerToServerMsg::StatusReport {
-                child_group_terminated: terminated,
-                cwd: None,
-                shell_argv: None,
-                foreground_argv: None,
-            },
-        )
-        .unwrap();
-        // A marker bounds this read without a sleep or a timeout assertion.
-        write_output(&mut framed, b"tick").unwrap();
-        send(&mut peer, &framed);
-        assert_eq!(read_to_string(&mut reader, 4).await, "tick");
-        assert_eq!(conn.status().child_group_terminated, terminated);
-        assert_eq!(reader.finished, terminated);
-    }
-    assert_eq!(reader.read(&mut [0; 1]).await.unwrap(), 0);
-    assert_eq!(*seen.lock().unwrap(), vec![Some(130)]);
-}
-
 /// `TerminalBytes::listen` only breaks its loop at `Ok(0)`; the instruction that
 /// actually retires the pane comes from this callback and nowhere else. A remote
 /// pane that never fires it sits on screen, dead, until the user closes it.
@@ -383,10 +341,7 @@ async fn an_agent_report_control_frame_reaches_the_callback() {
     let mut reader = reader
         .on_exit(
             TerminalId::new(7),
-            RunCommand {
-                workflow_owner: Some("verified-remote-owner".into()),
-                ..Default::default()
-            },
+            RunCommand::default(),
             Box::new(|_, _, _| {}),
         )
         .on_agent_report(Arc::new(move |terminal_id, kind, json| {
@@ -422,7 +377,7 @@ async fn an_agent_report_control_frame_reaches_the_callback() {
         vec![(
             TerminalId::new(7),
             "claude".to_owned(),
-            serde_json::json!({"_yinz_workflow_owner": "verified-remote-owner", "hook_event_name": "Stop"})
+            serde_json::json!({"hook_event_name": "Stop"})
         )]
     );
 }

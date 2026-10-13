@@ -271,10 +271,7 @@ fn sdk_raw_commands_reject_unknown_names_and_wrong_payloads() {
       yinz.fs.write('/host/file', file, {append:true, createDirs:true});
       const absent: import('yinz:plugin').FileMetadata | null = yinz.fs.metadata('/host/missing');
       yinz.projectConfig.write('.', 'agent_exit {}', null);
-      const commitAgent: import('yinz:plugin').AgentSpawnSpec | null = yinz.projectConfig.read('.').config.commit_agent;
-      for (const role of ['review_agent','review_fix_agent','rebase_agent','test_fix_agent'] as const) {
-        const spec: import('yinz:plugin').AgentSpawnSpec | null = yinz.projectConfig.read('.').config[role];
-      }
+      const branch: string | null = yinz.projectConfig.read('.').config.default_branch;
       const paneInfo = yinz.command('GetPaneInfo', {Terminal: 1});
       if (paneInfo) { const restartError: string | null = paneInfo.restart_error; }
       const d = yinz.data;
@@ -443,13 +440,26 @@ fn pane_frame_styles_match_the_serde_wire_values() {
 #[test]
 fn embedded_module_graphs_keep_types_and_reject_unregistered_dependencies() {
     for (source, valid) in [
-        ("import {view} from './workflow-view.ts'; import './agent-exit.ts'; view.attach({directory:'/work'});", true),
-        ("import {view} from './workflow-view.ts'; view.attach({directory:42});", false),
+        (
+            "import hook from './agent-exit.ts'; hook.render?.(8,24);",
+            true,
+        ),
+        (
+            "import hook from './agent-exit.ts'; hook.render?.('bad',24);",
+            false,
+        ),
         ("import './not-embedded.ts';", false),
         ("import 'file:///tmp/other.ts';", false),
     ] {
         let loader = PluginModuleLoader::embedded("graph-test", source).unwrap();
-        let result = check_loader(Path::new("graph-test.ts"), loader, Limits::new("embedded checker".into()), false, true, false);
+        let result = check_loader(
+            Path::new("graph-test.ts"),
+            loader,
+            Limits::new("embedded checker".into()),
+            false,
+            true,
+            false,
+        );
         assert_eq!(result.is_ok(), valid, "{source}: {:?}", result.err());
     }
 }
@@ -852,14 +862,6 @@ fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
         "ProjectConfig",
         yinz_config::project_config::parse("agent_exit {}").unwrap()
     );
-    fixture!(
-        "project_commit_agent",
-        "ProjectConfig",
-        yinz_config::project_config::parse(
-            "agent_exit { commit_agent kind=\"codex\" model=\"commit-model\" effort=\"medium\"; review_agent kind=\"claude\"; review_fix_agent kind=\"codex\"; rebase_agent kind=\"claude\" model=\"resolver\"; test_fix_agent kind=\"codex\" effort=\"high\"; }"
-        )
-        .unwrap()
-    );
     fixture!("style", "Style", yinz_types::style::Style::default());
     fixture!("layout", "TiledPaneLayout", TiledPaneLayout::default());
     for (name, revision) in [
@@ -1038,7 +1040,6 @@ fn sdk_rpc_declarations_require_one_destination_and_json() {
       yinz.rpc.handle('echo', async (payload: Json, call: RpcCall) => {const id: number = call.source.Plugin; call.progress({status:'waiting'}); return payload;});
       yinz.rpc.handle('nil', () => {});
       const request: CancellablePromise<Json> = yinz.rpc.call({pluginId:7,name:'echo',payload:null,timeoutMs:10,onProgress: (payload: Json) => {}});
-      yinz.swampRequest({directory:'/work',operation:'model.method.run',onProgress: (payload: Json) => {}});
       request.cancel();
       yinz.rpc.call({pluginUrl:'file:/plugin.ts',pluginConfig:{city:'Oslo'},name:'echo'});
       // @ts-expect-error destination required
@@ -1112,18 +1113,6 @@ fn sdk_agent_and_completion_types_check_rust_completion_fixtures() {
     );
     let dir = tempfile::tempdir().unwrap();
     check_semantic_source(&dir.path().join("agents.ts"), &source).unwrap();
-}
-
-#[test]
-fn embedded_workflow_view_has_semantic_types_without_a_sibling_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("view.ts");
-    check_semantic_source(&path, "import {view} from 'yinz:workflow-view'; view.attach({directory:'/work'}); view.render(8,24);").unwrap();
-    assert!(check_semantic_source(
-        &path,
-        "import {view} from 'yinz:workflow-view'; view.attach({directory:42});"
-    )
-    .is_err());
 }
 
 #[test]

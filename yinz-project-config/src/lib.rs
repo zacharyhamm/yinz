@@ -1,4 +1,4 @@
-//! Workflow configuration is data. Reading it never launches a command or grants permissions.
+//! Agent-exit configuration is data. Reading it never launches a command or grants permissions.
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
@@ -14,104 +14,55 @@ pub fn root_key(root: &std::path::Path) -> String {
         .collect()
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
-    pub server_bind: Option<std::net::IpAddr>,
-    pub workflow: Option<String>,
-    pub control_checkout: Option<String>,
-    pub ci: Option<Vec<String>>,
     pub default_branch: Option<String>,
-    pub rebase_prompt: Option<String>,
-    pub agent: Option<yinz_types::agent::AgentSpawnSpec>,
-    pub commit_agent: Option<yinz_types::agent::AgentSpawnSpec>,
-    pub review_agent: Option<yinz_types::agent::AgentSpawnSpec>,
-    pub review_fix_agent: Option<yinz_types::agent::AgentSpawnSpec>,
-    pub rebase_agent: Option<yinz_types::agent::AgentSpawnSpec>,
-    pub test_fix_agent: Option<yinz_types::agent::AgentSpawnSpec>,
+}
+
+impl Default for ProjectConfig {
+    fn default() -> Self {
+        Self {
+            default_branch: Some("main".into()),
+        }
+    }
 }
 
 pub fn parse(source: &str) -> Result<ProjectConfig, String> {
     let doc: kdl::KdlDocument = source
         .parse()
-        .map_err(|e| format!(".yinz/swamp-workflows.kdl: {e}"))?;
+        .map_err(|e| format!(".yinz/agent-exit.kdl: {e}"))?;
     let mut config = ProjectConfig::default();
     if doc.nodes().is_empty() {
         return Ok(config);
     }
     if doc.nodes().len() != 1 || doc.nodes()[0].name().value() != "agent_exit" {
-        return Err(".yinz/swamp-workflows.kdl must contain only one agent_exit block".into());
+        return Err(".yinz/agent-exit.kdl must contain only one agent_exit block".into());
     }
     let node = &doc.nodes()[0];
     if !node.entries().is_empty() || node.ty().is_some() {
         return Err("agent_exit takes a block, not arguments or a type".into());
     }
     let children = node.children().ok_or("agent_exit requires a block")?;
-    let mut seen = std::collections::BTreeSet::new();
-    for node in children.nodes() {
-        let name = node.name().value();
-        if !seen.insert(name) || node.children().is_some() || node.ty().is_some() {
-            return Err(format!("agent_exit: duplicate or malformed {name}"));
+    if children.nodes().len() > 1 {
+        return Err("agent_exit accepts only one default_branch".into());
+    }
+    if let Some(node) = children.nodes().first() {
+        if node.name().value() != "default_branch"
+            || node.children().is_some()
+            || node.ty().is_some()
+            || node.entries().len() != 1
+        {
+            return Err("agent_exit: expected default_branch \"branch\"".into());
         }
-        let mut args = Vec::new();
-        let mut properties = std::collections::BTreeMap::new();
-        for entry in node.entries() {
-            let value = entry
-                .value()
-                .as_string()
-                .ok_or_else(|| format!("{name}: all values must be strings"))?;
-            if entry.ty().is_some() || value.contains('\0') {
-                return Err(format!("{name}: types and NUL bytes are not allowed"));
-            }
-            if let Some(key) = entry.name() {
-                if properties.insert(key.value(), value).is_some() {
-                    return Err(format!("{name}: duplicate property {}", key.value()));
-                }
-            } else {
-                args.push(value.to_owned());
-            }
+        let entry = &node.entries()[0];
+        let branch = entry
+            .value()
+            .as_string()
+            .ok_or("default_branch must be a string")?;
+        if entry.name().is_some() || entry.ty().is_some() || !valid_branch(branch) {
+            return Err("agent_exit: invalid default_branch".into());
         }
-        match name {
-            "server_bind" if properties.is_empty() && args.len() == 1 => {
-                config.server_bind = Some(args[0].parse().map_err(|_| "server_bind requires an IPv4 or IPv6 literal")?);
-            },
-            "rebase_prompt" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.rebase_prompt = args.pop(),
-            "workflow" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.workflow = args.pop(),
-            "control_checkout" if properties.is_empty() && args.len() == 1 && !args[0].trim().is_empty() => config.control_checkout = args.pop(),
-            "ci" if properties.is_empty() && !args.is_empty() && !args[0].trim().is_empty() => config.ci = Some(args),
-            "default_branch" if properties.is_empty() && args.len() == 1 && valid_branch(&args[0]) => config.default_branch = args.pop(),
-            "agent" | "commit_agent" | "review_agent" | "review_fix_agent" | "rebase_agent" | "test_fix_agent" if args.is_empty() && properties.keys().all(|k| ["kind", "model", "effort"].contains(k)) => {
-                if properties.values().any(|v| v.trim().is_empty()) {
-                    return Err(format!("{name}: settings must not be blank"));
-                }
-                let spec = yinz_types::agent::AgentSpawnSpec {
-                    kind: properties.get("kind").map(|v| v.to_string()),
-                    model: properties.get("model").map(|v| v.to_string()),
-                    effort: properties.get("effort").map(|v| v.to_string()),
-                    ..Default::default()
-                };
-                if let Some(kind) = spec.kind.as_deref() {
-                    if !(1..=32).contains(&kind.len()) || !kind.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')) {
-                        return Err(format!("{name} kind {kind:?}: use a lowercase agent name"));
-                    }
-                    // A standalone CLI can read project settings before its agent plugins load.
-                    // Validate provider-specific choices when that provider is available.
-                    if yinz_runtime::agent::launch::offered().iter().any(|offered| offered == kind) {
-                        yinz_runtime::agent::launch::plan(&spec)?;
-                    }
-                } else if spec.effort.is_some() {
-                    return Err(format!("{name} effort requires kind"));
-                }
-                *match name {
-                    "commit_agent" => &mut config.commit_agent,
-                    "review_agent" => &mut config.review_agent,
-                    "review_fix_agent" => &mut config.review_fix_agent,
-                    "rebase_agent" => &mut config.rebase_agent,
-                    "test_fix_agent" => &mut config.test_fix_agent,
-                    _ => &mut config.agent,
-                } = Some(spec);
-            },
-            _ => return Err(format!("agent_exit: invalid {name}; expected rebase_prompt \"instructions\", ci \"program\" \"arg\", default_branch \"branch\", or an agent role with kind=\"codex\" model=\"...\" effort=\"medium\"")),
-        }
+        config.default_branch = Some(branch.to_owned());
     }
     Ok(config)
 }
@@ -166,23 +117,12 @@ pub fn root(directory: &std::path::Path) -> Result<std::path::PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Resolve the optional control path only after the primary checkout has been authorized.
-/// The caller must authorize the returned path separately before accessing its configuration.
-#[cfg(not(target_family = "wasm"))]
-pub fn control_root(primary: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    let config = access_root(primary, None)?.config;
-    match config.control_checkout {
-        Some(path) => primary.join(path).canonicalize().map_err(|e| e.to_string()),
-        None => Ok(primary.to_path_buf()),
-    }
-}
-
 #[cfg(not(target_family = "wasm"))]
 pub fn access(
     directory: &std::path::Path,
     write: Option<(&str, Option<&str>)>,
 ) -> Result<Snapshot, String> {
-    access_root(&control_root(&root(directory)?)?, write)
+    access_root(&root(directory)?, write)
 }
 
 /// Access the root already resolved and authorized by the host. Do not resolve Git again
@@ -223,7 +163,7 @@ pub fn access_root(
         let fd = unsafe {
             libc::openat(
                 directory.as_raw_fd(),
-                c"swamp-workflows.kdl".as_ptr(),
+                c"agent-exit.kdl".as_ptr(),
                 libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
             )
         };
@@ -232,25 +172,27 @@ pub fn access_root(
             if e.kind() == std::io::ErrorKind::NotFound {
                 return Ok(None);
             }
-            return Err(format!("Cannot read .yinz/swamp-workflows.kdl (must be a regular file, not a symlink): {e}"));
+            return Err(format!(
+                "Cannot read .yinz/agent-exit.kdl (must be a regular file, not a symlink): {e}"
+            ));
         }
         // SAFETY: openat returned a new owned descriptor.
         let file = unsafe { fs::File::from_raw_fd(fd) };
         if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-            return Err(".yinz/swamp-workflows.kdl must be a regular file".into());
+            return Err(".yinz/agent-exit.kdl must be a regular file".into());
         }
         let mut source = String::new();
         file.take(65537)
             .read_to_string(&mut source)
             .map_err(|e| e.to_string())?;
         if source.len() > 65536 {
-            return Err(".yinz/swamp-workflows.kdl exceeds 64 KiB".into());
+            return Err(".yinz/agent-exit.kdl exceeds 64 KiB".into());
         }
         Ok(Some(source))
     };
     if let Some((source, expected)) = write {
         if source.len() > 65536 {
-            return Err(".yinz/swamp-workflows.kdl exceeds 64 KiB".into());
+            return Err(".yinz/agent-exit.kdl exceeds 64 KiB".into());
         }
         parse(source)?;
         use std::io::Write;
@@ -279,14 +221,13 @@ pub fn access_root(
             .create(true)
             .truncate(false)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(gitdir.join("swamp-workflows.kdl.lock"))
-            .map_err(|e| format!("Cannot lock .yinz/swamp-workflows.kdl for writing: {e}"))?;
+            .open(gitdir.join("agent-exit.kdl.lock"))
+            .map_err(|e| format!("Cannot lock .yinz/agent-exit.kdl for writing: {e}"))?;
         lock.try_lock()
-            .map_err(|e| format!("Cannot lock .yinz/swamp-workflows.kdl for writing: {e}"))?;
+            .map_err(|e| format!("Cannot lock .yinz/agent-exit.kdl for writing: {e}"))?;
         if read()?.as_deref() != expected {
             return Err(
-                ".yinz/swamp-workflows.kdl changed; read it again before approving a new write"
-                    .into(),
+                ".yinz/agent-exit.kdl changed; read it again before approving a new write".into(),
             );
         }
         let mut temp = tempfile::NamedTempFile::new_in(gitdir).map_err(|e| e.to_string())?;
@@ -305,12 +246,12 @@ pub fn access_root(
                 libc::AT_FDCWD,
                 from.as_ptr(),
                 directory.as_raw_fd(),
-                c"swamp-workflows.kdl".as_ptr(),
+                c"agent-exit.kdl".as_ptr(),
             )
         } != 0
         {
             return Err(format!(
-                "Cannot atomically replace .yinz/swamp-workflows.kdl: {}",
+                "Cannot atomically replace .yinz/agent-exit.kdl: {}",
                 std::io::Error::last_os_error()
             ));
         }
@@ -330,331 +271,5 @@ pub fn access_root(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn server_bind_accepts_only_one_ip_literal() {
-        assert_eq!(parse("agent_exit {}").unwrap().server_bind, None);
-        for ip in [
-            "127.0.0.1",
-            "192.0.2.1",
-            "0.0.0.0",
-            "::1",
-            "::",
-            "2001:db8::1",
-        ] {
-            let config = parse(&format!("agent_exit {{ server_bind \"{ip}\"; }}")).unwrap();
-            assert_eq!(config.server_bind, Some(ip.parse().unwrap()));
-        }
-        for setting in [
-            "server_bind",
-            "server_bind 1",
-            "server_bind \"localhost\"",
-            "server_bind \"[::1]\"",
-            "server_bind \"127.0.0.1:80\"",
-            "server_bind \"999.0.0.1\"",
-            "server_bind \"::1%lo\"",
-            "server_bind \"\"",
-            "server_bind \"::\" \"::1\"",
-            "server_bind ip=\"::\"",
-            "server_bind \"::\"; server_bind \"::1\"",
-        ] {
-            assert!(
-                parse(&format!("agent_exit {{ {setting}; }}")).is_err(),
-                "{setting}"
-            );
-        }
-    }
-    #[test]
-    fn workflow_roles_use_shared_agent_validation_without_inheriting_fields() {
-        for role in [
-            "commit_agent",
-            "review_agent",
-            "review_fix_agent",
-            "rebase_agent",
-            "test_fix_agent",
-        ] {
-            let config = parse(&format!("agent_exit {{ agent kind=\"claude\" model=\"shared\" effort=\"high\"; {role} kind=\"codex\"; }}")).unwrap();
-            let config = serde_json::to_value(config).unwrap();
-            assert_eq!(config[role]["kind"], "codex");
-            assert!(config[role]["model"].is_null());
-            assert!(config[role]["effort"].is_null());
-            assert_eq!(config["agent"]["model"], "shared");
-            for settings in [
-                "kind=\"invalid/path\"",
-                "effort=\"medium\"",
-                "kind=\"claude\" effort=\"none\"",
-                "model=\" \"",
-                "kind=\"codex\" extra=\"x\"",
-                "\"codex\"",
-            ] {
-                assert!(
-                    parse(&format!("agent_exit {{ {role} {settings}; }}")).is_err(),
-                    "{role} {settings}"
-                );
-            }
-            assert!(parse(&format!(
-                "agent_exit {{ {role} kind=\"codex\"; {role} kind=\"claude\"; }}"
-            ))
-            .is_err());
-        }
-    }
-    #[test]
-    fn rebase_prompt_is_optional_literal_nonblank_text() {
-        assert_eq!(parse("agent_exit {}").unwrap().rebase_prompt, None);
-        let prompt = "  Resolve \"quoted\" conflicts.\nStage, then exit.  ";
-        let source = format!(
-            "agent_exit {{ rebase_prompt {}; }}",
-            serde_json::to_string(prompt).unwrap()
-        );
-        assert_eq!(
-            parse(&source).unwrap().rebase_prompt.as_deref(),
-            Some(prompt)
-        );
-        for setting in [
-            "rebase_prompt",
-            "rebase_prompt 1",
-            "rebase_prompt true",
-            "rebase_prompt \"\"",
-            "rebase_prompt \" \t\"",
-            "rebase_prompt \"one\" \"two\"",
-            "rebase_prompt text=\"x\"",
-            "rebase_prompt \"x\"; rebase_prompt \"y\"",
-            "rebase_prompt (text)\"x\"",
-            "rebase_prompt \"x\" {}",
-            "rebase_prompt \"bad\\u{0}text\"",
-        ] {
-            assert!(
-                parse(&format!("agent_exit {{ {setting}; }}")).is_err(),
-                "{setting}"
-            );
-        }
-    }
-    #[test]
-    fn validates_workflow_settings_without_executing_them() {
-        let config = parse("agent_exit { ci \"cargo\" \"x\" \"ci\" \"check\"; agent kind=\"codex\" effort=\"medium\"; default_branch \"trunk\"; }").unwrap();
-        assert_eq!(config.ci.unwrap(), ["cargo", "x", "ci", "check"]);
-        assert_eq!(config.default_branch.as_deref(), Some("trunk"));
-        for source in [
-            "agent_exit { agent effort=\"none\"; }",
-            "agent_exit { agent effort=\"medium\"; }",
-        ] {
-            assert_eq!(parse(source).unwrap_err(), "agent effort requires kind");
-        }
-        for source in [
-            "agent_exit { agent model=\"example\"; }",
-            "agent_exit { agent kind=\"codex\" effort=\"none\"; }",
-            "agent_exit { agent kind=\"claude\" effort=\"high\"; }",
-            "agent_exit { agent kind=\"cursor\" model=\"example\" effort=\"high\"; }",
-            "agent_exit { agent kind=\"opencode\" model=\"anthropic/claude-sonnet-4\"; }",
-        ] {
-            parse(source).unwrap();
-        }
-        for source in [
-            "hooks {}",
-            "agent_exit { ci; }",
-            "agent_exit { ci 1; }",
-            "agent_exit { agent effort=\"unsupported\"; }",
-            "agent_exit { agent kind=\"claude\" effort=\"none\"; }",
-            "agent_exit { agent kind=\"cursor\" effort=\"high\"; }",
-            "agent_exit { default_branch \"HEAD\"; }",
-            "agent_exit { default_branch \"--bad\"; }",
-            "agent_exit { agent kind=\"invalid/path\"; }",
-            "agent_exit { ci \"x\"; ci \"y\"; }",
-        ] {
-            assert!(parse(source).is_err(), "{source}");
-        }
-    }
-    #[test]
-    fn nested_config_ignores_legacy_and_rejects_unsafe_directories() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".yinz.kdl"), "invalid legacy configuration").unwrap();
-        assert!(access_root(dir.path(), None).unwrap().source.is_none());
-        let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), dir.path().join(".yinz")).unwrap();
-        assert!(access_root(dir.path(), None).is_err());
-        assert!(access_root(dir.path(), Some(("", None))).is_err());
-        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
-        std::fs::remove_file(dir.path().join(".yinz")).unwrap();
-        std::fs::write(dir.path().join(".yinz"), "not a directory").unwrap();
-        assert!(access_root(dir.path(), None).is_err());
-    }
-
-    #[test]
-    fn invalid_configuration_can_be_corrected_without_losing_concurrent_edits() {
-        let dir = tempfile::tempdir().unwrap();
-        std::process::Command::new("git")
-            .arg("init")
-            .arg(dir.path())
-            .output()
-            .unwrap();
-        std::fs::create_dir(dir.path().join(".yinz")).unwrap();
-        let path = dir.path().join(".yinz/swamp-workflows.kdl");
-        std::fs::write(&path, "agent_exit { invalid").unwrap();
-        let snapshot = access(dir.path(), None).unwrap();
-        assert!(snapshot.error.is_some());
-        assert!(snapshot.config.workflow.is_none());
-        assert!(access(dir.path(), Some(("agent_exit {}", Some("stale")))).is_err());
-        let corrected = access(
-            dir.path(),
-            Some((
-                "agent_exit { workflow \"review\"; }",
-                snapshot.source.as_deref(),
-            )),
-        )
-        .unwrap();
-        assert!(corrected.error.is_none());
-        assert_eq!(corrected.config.workflow.as_deref(), Some("review"));
-    }
-
-    #[test]
-    fn stale_writes_and_symlinks_are_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(std::process::Command::new("git")
-            .arg("init")
-            .arg(dir.path())
-            .output()
-            .unwrap()
-            .status
-            .success());
-        let source = "agent_exit { ci \"true\"; }";
-        access(dir.path(), Some((source, None))).unwrap();
-        assert!(access(dir.path(), Some(("", None))).is_err());
-        assert_eq!(
-            access(dir.path(), None).unwrap().source.as_deref(),
-            Some(source)
-        );
-        access(dir.path(), Some(("", Some(source)))).unwrap();
-        std::fs::remove_file(dir.path().join(".yinz/swamp-workflows.kdl")).unwrap();
-        std::os::unix::fs::symlink("missing", dir.path().join(".yinz/swamp-workflows.kdl"))
-            .unwrap();
-        assert!(access(dir.path(), None).is_err());
-        assert!(access(dir.path(), Some((source, None))).is_err());
-    }
-
-    #[test]
-    fn config_writes_recover_after_process_exit_without_worktree_artifacts() {
-        use std::io::{BufRead, Write};
-        use std::process::{Command, Stdio};
-        // Run this test in a child so SIGKILL proves recovery without Rust destructors.
-        if let Some(path) = std::env::var_os("YINZ_TEST_CONFIG_LOCK") {
-            let lock = std::fs::OpenOptions::new().write(true).open(path).unwrap();
-            lock.try_lock().unwrap();
-            println!("config lock acquired");
-            std::io::stdout().flush().unwrap();
-            let mut line = String::new();
-            std::io::stdin().read_line(&mut line).unwrap();
-            panic!("parent must kill the lock holder");
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let git = |cwd: &std::path::Path, args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(cwd)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap()
-        };
-        let primary = dir.path().join("primary");
-        std::fs::create_dir(&primary).unwrap();
-        git(&primary, &["init", "-b", "main"]);
-        git(
-            &primary,
-            &[
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.invalid",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "initial",
-            ],
-        );
-        let linked = dir.path().join("linked checkout");
-        git(
-            &primary,
-            &["worktree", "add", "-b", "topic", linked.to_str().unwrap()],
-        );
-        assert_eq!(root(&linked).unwrap(), primary.canonicalize().unwrap());
-        let binding =
-            "agent_exit { workflow \"review\"; control_checkout \"../linked checkout\"; }";
-        access_root(&primary, Some((binding, None))).unwrap();
-        assert_eq!(
-            control_root(&root(&linked).unwrap()).unwrap(),
-            linked.canonicalize().unwrap()
-        );
-        std::fs::remove_file(primary.join(".yinz/swamp-workflows.kdl")).unwrap();
-        for root in [primary.as_path(), linked.as_path()] {
-            access_root(root, Some(("", None))).unwrap();
-            let gitdir = std::path::PathBuf::from(
-                git(root, &["rev-parse", "--absolute-git-dir"]).trim_end_matches('\n'),
-            );
-            // libtest names a test by its path below the crate root, so derive it rather than
-            // spell it out: a stale name matches nothing and the child never takes the lock.
-            let test = format!(
-                "{}::config_writes_recover_after_process_exit_without_worktree_artifacts",
-                module_path!().split_once("::").unwrap().1
-            );
-            let mut child = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &test, "--nocapture"])
-                .env(
-                    "YINZ_TEST_CONFIG_LOCK",
-                    gitdir.join("swamp-workflows.kdl.lock"),
-                )
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
-            let ready = std::io::BufReader::new(child.stdout.take().unwrap())
-                .lines()
-                .any(|line| line.unwrap().contains("config lock acquired"));
-            assert!(ready, "child did not acquire lock");
-            let refused = access_root(root, Some(("agent_exit {}", Some("")))).unwrap_err();
-            child.kill().unwrap();
-            child.wait().unwrap();
-            assert!(refused.contains("Cannot lock"), "{refused}");
-            // A temporary file abandoned by a dead writer neither blocks nor gets staged.
-            std::fs::write(gitdir.join(".tmp-abandoned"), "partial").unwrap();
-            access_root(root, Some(("agent_exit {}", Some("")))).unwrap();
-            let candidates = git(root, &["ls-files", "--others", "--exclude-standard"]);
-            assert_eq!(candidates, ".yinz/swamp-workflows.kdl\n");
-
-            let barrier = std::sync::Barrier::new(2);
-            std::thread::scope(|scope| {
-                let writers: Vec<_> = ["", "agent_exit { ci \"true\"; }"]
-                    .into_iter()
-                    .map(|source| {
-                        let barrier = &barrier;
-                        scope.spawn(move || {
-                            barrier.wait();
-                            access_root(root, Some((source, Some("agent_exit {}"))))
-                        })
-                    })
-                    .collect();
-                assert_eq!(
-                    writers
-                        .into_iter()
-                        .map(|writer| writer.join().unwrap())
-                        .filter(Result::is_ok)
-                        .count(),
-                    1
-                );
-            });
-            std::fs::write(root.join("swamp-workflows.kdl.lock"), "legacy lock").unwrap();
-            let previous = access_root(root, None).unwrap().source;
-            access_root(root, Some(("", previous.as_deref()))).unwrap();
-            assert_eq!(
-                std::fs::read_to_string(root.join("swamp-workflows.kdl.lock")).unwrap(),
-                "legacy lock"
-            );
-            std::fs::remove_file(root.join("swamp-workflows.kdl.lock")).unwrap();
-        }
-    }
-}
+#[path = "unit/config.rs"]
+mod tests;

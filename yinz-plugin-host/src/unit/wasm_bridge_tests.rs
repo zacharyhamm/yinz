@@ -4332,8 +4332,8 @@ fn queued_deno_reply_survives_map_removal_and_cannot_reach_replacement() {
 }
 
 #[test]
-fn pipe_launch_focus_preserves_ui_ownership_and_headless_services() {
-    for (focus, headless) in [(false, false), (true, false), (true, true)] {
+fn pipe_launch_focus_preserves_ui_ownership() {
+    for focus in [false, true] {
         let mut test = TestBridge::new();
         let ui = ClientId::new(1);
         let cli = ClientId::new(2);
@@ -4341,11 +4341,7 @@ fn pipe_launch_focus_preserves_ui_ownership_and_headless_services() {
         let path = test._dirs[0].path().join("pipe-focus.ts");
         std::fs::write(&path, "export default { render() { return 'ready'; } };").unwrap();
         let run = RunPluginOrAlias::RunPlugin(RunPlugin {
-            location: if headless {
-                RunPluginLocation::Yinz(PluginTag::new("swamp-bridge"))
-            } else {
-                RunPluginLocation::File(path)
-            },
+            location: RunPluginLocation::File(path),
             ..Default::default()
         });
         let recipients = test
@@ -4395,16 +4391,7 @@ fn pipe_launch_focus_preserves_ui_ownership_and_headless_services() {
                 }
             })
             .collect();
-        assert_eq!(
-            added,
-            vec![(
-                if headless { None } else { Some(true) },
-                id,
-                headless,
-                if headless { None } else { Some(focus) },
-                Some(ui)
-            )]
-        );
+        assert_eq!(added, vec![(Some(true), id, false, Some(focus), Some(ui))]);
         // The loading entry is retained until the plugin thread handles completion.
         assert_eq!(
             test.bridge

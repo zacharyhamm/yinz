@@ -168,7 +168,6 @@ For `runs`, continue with `--offset NEXT_OFFSET` while `more` is true. For `run`
 `history-search` returns `truncated` rather than a continuation cursor; narrow the filters or query when it is true.
 Use both `--host-id HOST` and `--run-session SESSION` for one server's records. The root `--session` selects the server handling the query; it does not filter the archive.
 Live `agent list --json` entries include `host_id` and `session`; archive run headers include them too. Use those values rather than substituting a hostname or provider conversation ID.
-Workflow runs are separate from agent turns and agent archive runs.
 
 Keyword search remains the default: full-text search runs first, with substring
 fallback only when it finds no rows. Add `--regex` for Rust regex syntax:

@@ -285,9 +285,6 @@ pub trait ServerOsApi: Send + Sync {
     fn remote_pane_status(&self, _terminal_id: TerminalId) -> Option<RemoteStatus> {
         None
     }
-    fn workflow_remote_panes(&self) -> Vec<serde_json::Value> {
-        vec![]
-    }
     /// Signal a remote pane's child, by name rather than by pid.
     fn signal_remote_child(&self, _terminal_id: TerminalId, _signal: ChildSignal) -> Result<()> {
         Err(anyhow!("this backend does not support remote panes"))

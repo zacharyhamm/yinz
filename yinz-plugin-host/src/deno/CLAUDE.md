@@ -49,8 +49,8 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   plugins use the canonical repository root instead, carried in `PluginConfig.repository_root`
   with the installed commit and resolved entrypoint. Managed roots remain pinned until reload. Builtins resolve
   relative imports within the compiled `yinz-deno-builtins/assets/plugins` tree, including
-  shared and nested modules, with no filesystem fallback. `yinz:workflow-view` remains an alias
-  to the embedded `workflow-view.ts`; the checker and strict authoring use the same module graph.
+  shared and nested modules, with no filesystem fallback. The checker and strict authoring use
+  the same module graph.
   Remote, npm, JSR and `node:` specifiers are refused, and so is any `http(s)://` plugin URL
   (`yinz_runtime::plugin_location`). Sources are bounded before parsing
   (8 MiB a file, 64 MiB a graph). Each instance keeps its source maps, so diagnostics name the

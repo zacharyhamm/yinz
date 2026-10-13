@@ -20,7 +20,7 @@ pub enum Operations {
         #[clap(long)]
         tab_id: u32,
     },
-    /// Read a project's workflow configuration and its exact source.
+    /// Read a project's agent-exit configuration and its exact source.
     ProjectConfigRead { project: String },
     /// Supply {source, expected}; expected is the previously read source or null.
     ProjectConfigWrite {

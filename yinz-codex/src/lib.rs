@@ -18,7 +18,6 @@ const ROUTE_ENV: &[&str] = &[
     "YINZ_PANE_ID",
     "YINZ_SESSION_NAME",
     "YINZ_REMOTE_PANE_TOKEN",
-    "YINZ_SWAMP_OWNER",
     "YINZ_SOCKET_DIR",
 ];
 

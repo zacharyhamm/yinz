@@ -208,7 +208,7 @@ pub fn run_named(
     allowed: Option<&[PermissionType]>,
     cancel: &AtomicBool,
 ) -> Result<PluginTestReport> {
-    // A shipped top-level module: a builtin, or a module they share such as `workflow-view`.
+    // A shipped top-level module: a builtin, or a shared module.
     if yinz_deno_builtins::builtin_deno_plugin(name).is_some() {
         let root = tempfile::tempdir().context("unpack builtin tests")?;
         yinz_deno_builtins::BUILTIN_DENO_FILES

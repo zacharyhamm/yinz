@@ -140,14 +140,3 @@ fn translates_stop_success_and_failure() {
         Some(crate::agent::AgentState::Idle)
     );
 }
-
-#[test]
-fn workflow_owner_preserved() {
-    let payload = json!({
-        "hook_event_name": "PreInvocation",
-        "conversationId": "conv-1234",
-        "_yinz_workflow_owner": "owner-42"
-    });
-    let event = to_hook_event(&payload);
-    assert_eq!(event.workflow_owner.as_deref(), Some("owner-42"));
-}

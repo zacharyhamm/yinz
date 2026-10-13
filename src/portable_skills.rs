@@ -61,10 +61,6 @@ const BUNDLE: &[(&str, &str)] = &[
         "yinz-plugins",
         include_str!("../assets/skills/yinz-plugins/SKILL.md"),
     ),
-    (
-        "yinz-workflows",
-        include_str!("../assets/skills/yinz-workflows/SKILL.md"),
-    ),
 ];
 
 pub(crate) fn run(command: yinz_cli::args::Skills) -> Result<()> {

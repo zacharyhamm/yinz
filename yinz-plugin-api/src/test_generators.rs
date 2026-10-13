@@ -489,7 +489,6 @@ pub(crate) fn run_commands(tc: &hegel::TestCase) -> RunCommand {
     RunCommand {
         agent_theme: None,
         claude_settings: None,
-        workflow_owner: None,
         command: paths(tc),
         args: up_to(tc, 3, strings),
         cwd: optional_paths(tc),
@@ -1647,12 +1646,6 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::AgentControl => PluginCommand::AgentControl {
             id: strings(tc),
             request: strings(tc),
-        },
-        CommandType::SwampRequest => PluginCommand::SwampRequest {
-            directory: strings(tc).into(),
-            id: strings(tc),
-            operation: strings(tc),
-            payload: strings(tc),
         },
         CommandType::ProjectConfigWrite => PluginCommand::ProjectConfigWrite {
             directory: strings(tc).into(),

@@ -986,25 +986,6 @@ impl UnixPtyBackend {
             .map(|conn| conn.status())
     }
 
-    pub fn workflow_remote_panes(&self) -> Vec<serde_json::Value> {
-        let Ok(transports) = self.terminal_id_to_transport.lock() else {
-            return vec![];
-        };
-        transports
-            .iter()
-            .filter_map(|(id, transport)| {
-                let conn = transport.remote()?;
-                Some(serde_json::json!({
-                    "terminal_id": id,
-                    "host_id": format!("remote:{}:{}", conn.host(), conn.pane_token()),
-                    "remote_host": conn.host(), "pane_token": conn.pane_token(),
-                    "owner": conn.cmd().workflow_owner(),
-                    "child_group_terminated": conn.status().child_group_terminated,
-                }))
-            })
-            .collect()
-    }
-
     /// Every pane whose process lives on another machine.
     pub fn remote_pane_ids(&self) -> Vec<TerminalId> {
         self.terminal_id_to_transport

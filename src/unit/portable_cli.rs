@@ -172,7 +172,7 @@ impl Session {
             .status()
             .unwrap()
             .success());
-        std::fs::write(dir.join("config.kdl"), "plugins { project-store location=\"yinz:project-store\"; agent-service location=\"yinz:agent-service\"; swamp-bridge location=\"yinz:swamp-bridge\"; }\nload_plugins clear-defaults=true { \"project-store\"; \"agent-service\"; \"swamp-bridge\"; }\ndetachable_panes false\n").unwrap();
+        std::fs::write(dir.join("config.kdl"), "plugins { project-store location=\"yinz:project-store\"; agent-service location=\"yinz:agent-service\"; }\nload_plugins clear-defaults=true { \"project-store\"; \"agent-service\"; }\ndetachable_panes false\n").unwrap();
         std::fs::write(dir.join("layout.kdl"), "layout { pane command=\"/bin/sh\" { args \"-c\" \"printf 'PORTABLE READY\\n'; exec /bin/sh\"; }; }\n").unwrap();
         setup(dir);
         let out = command(dir)
@@ -490,7 +490,7 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|entity| entity["namespace"] == "plugin:yinz:swamp-bridge"));
+        .any(|entity| entity["namespace"] == "shared:yinz"));
     let runs = success(session.run(&["agent", "runs", "--project", "renamed"], None));
     assert!(runs["runs"].is_array());
     failure(
@@ -992,7 +992,7 @@ fn bundle_installation_preserves_unrelated_files_and_preflights_conflicts() {
             .output()
             .unwrap(),
     );
-    assert_eq!(names.as_array().unwrap().len(), 7);
+    assert_eq!(names.as_array().unwrap().len(), 6);
     for name in names.as_array().unwrap() {
         let path = dest.join(name.as_str().unwrap()).join("SKILL.md");
         let shown = command(dir.path())

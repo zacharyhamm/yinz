@@ -7,7 +7,7 @@ Commands:
                                     disappearance
   context                           Discover host, session, caller, project and background services
   project-assign                    Assign an existing project to an explicit tab
-  project-config-read               Read a project's workflow configuration and its exact source
+  project-config-read               Read a project's agent-exit configuration and its exact source
   project-config-write              Supply {source, expected}; expected is the previously read
                                     source or null
   project-open                      Open an existing project in a new tab

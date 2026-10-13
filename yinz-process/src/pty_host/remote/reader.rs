@@ -335,7 +335,7 @@ impl RemoteReader {
             },
             BrokerToServerMsg::ChildExited { status } => {
                 self.conn.set_child_exit(status);
-                self.cmd.workflow_owner().is_none() || self.conn.status().child_group_terminated
+                true
             },
             BrokerToServerMsg::GitProbe {
                 refresh_token,
@@ -373,15 +373,7 @@ impl RemoteReader {
             },
             // An event, not state: handed on at once rather than cached, or a
             // burst of them would collapse to whichever came last.
-            BrokerToServerMsg::AgentReport { kind, mut json } => {
-                // The authenticated broker channel identifies this exact process.
-                // Guest hooks need no knowledge of host sessions or plugin ids.
-                if let Some(owner) = self.cmd.workflow_owner() {
-                    if let Ok(serde_json::Value::Object(mut raw)) = serde_json::from_str(&json) {
-                        raw.insert("_yinz_workflow_owner".into(), owner.into());
-                        json = serde_json::Value::Object(raw).to_string();
-                    }
-                }
+            BrokerToServerMsg::AgentReport { kind, json } => {
                 match &self.agent_report_cb {
                     Some(cb) => cb(self.terminal_id, kind, json),
                     None => log::warn!(
@@ -479,10 +471,7 @@ impl RemoteReader {
                 // The socket hit EOF. What that means depends entirely on
                 // whether the broker told us why.
                 match self.conn.child_exit() {
-                    Some(_)
-                        if self.cmd.workflow_owner().is_none()
-                            || self.conn.status().child_group_terminated =>
-                    {
+                    Some(_) => {
                         self.finished = true;
                         return Ok(0);
                     },

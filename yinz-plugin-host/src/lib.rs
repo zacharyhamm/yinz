@@ -1146,16 +1146,11 @@ pub fn plugin_thread_main(
                     },
                     None if matches!(
                         name.as_str(),
-                        "store_query"
-                            | "store_mutate"
-                            | "agent_action"
-                            | "workflow_action"
-                            | "swamp"
+                        "store_query" | "store_mutate" | "agent_action"
                     ) =>
                     {
                         match wasm_bridge.builtin_service_instance(match name.as_str() {
                             "agent_action" => "agent-service",
-                            "workflow_action" | "swamp" => "swamp-bridge",
                             _ => "project-store",
                         }) {
                             Ok((plugin_id, client_id)) => pipe_messages.push((
@@ -1192,11 +1187,7 @@ pub fn plugin_thread_main(
                         || (plugin.is_none()
                             && !matches!(
                                 name.as_str(),
-                                "store_query"
-                                    | "store_mutate"
-                                    | "agent_action"
-                                    | "workflow_action"
-                                    | "swamp"
+                                "store_query" | "store_mutate" | "agent_action"
                             ))
                     {
                         Ok(())

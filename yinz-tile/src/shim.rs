@@ -3492,7 +3492,7 @@ pub fn clear_pane_highlights(pane_id: PaneId) {
     send(PluginCommand::ClearPaneHighlights(pane_id));
 }
 
-/// Read project workflow settings; requires ReadFiles.
+/// Read project agent-exit settings; requires ReadFiles.
 pub fn project_config_read(directory: PathBuf) -> Result<yinz_project_config::Snapshot, String> {
     project_config_response(PluginCommand::ProjectConfigRead { directory })
 }

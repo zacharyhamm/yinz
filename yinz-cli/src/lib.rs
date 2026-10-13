@@ -40,8 +40,6 @@ pub mod notes_todos;
 
 pub mod operations;
 
-pub mod workflow;
-
 #[cfg(test)]
 #[path = "unit/plugin_configuration.rs"]
 mod plugin_configuration;

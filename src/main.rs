@@ -7,7 +7,6 @@ mod portable_skills;
 mod session_menu;
 #[cfg(test)]
 mod tests;
-mod workflow;
 
 #[cfg(target_os = "windows")]
 compile_error!("Yinz does not support Windows");
@@ -41,17 +40,6 @@ fn main() {
     }
     if std::env::args().nth(1).as_deref() == Some(yinz_process::claude_turn::OBSERVER_FLAG) {
         if yinz_process::claude_turn::run().is_err() {
-            std::process::exit(1);
-        }
-        return;
-    }
-    if std::env::args().nth(1).as_deref() == Some(yinz_swamp::SUPERVISOR_FLAG) {
-        let result = std::env::args_os()
-            .nth(2)
-            .ok_or_else(|| anyhow::anyhow!("missing Swamp control checkout"))
-            .and_then(|root| yinz_swamp::supervise(root.into()));
-        if let Err(error) = result {
-            eprintln!("{error:#}");
             std::process::exit(1);
         }
         return;
@@ -197,14 +185,6 @@ fn main() {
             }
             std::process::exit(0);
         }
-    }
-
-    if let Some(Command::Workflow(command)) = opts.command.clone() {
-        if let Err(error) = workflow::run(command, &opts) {
-            eprintln!("Error: {error:#}");
-            std::process::exit(1);
-        }
-        std::process::exit(0);
     }
 
     // Local file work only - a hook is installed into Claude Code's settings, not

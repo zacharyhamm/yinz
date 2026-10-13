@@ -8,7 +8,6 @@ Commands:
   agent                Find, launch and control agents in explicit terminal panes
   skills               Inspect and install portable coding-agent skills
   data                 Query and atomically update the selected session's plugin data
-  workflow             Run and view project-owned Swamp workflows
   options              Change the behaviour of yinz
   setup                Setup yinz and check its configuration
   action               Send actions to a specific session [alias: ac]

@@ -1,6 +1,6 @@
 # Upgrade from Hocus
 
-This release removes the built-in Hocus chat agent. External agents, project panels, workflows, plugin authoring, and stateless LLM completions remain available.
+This release removes the built-in Hocus chat agent. External agents, project panels, plugin authoring, and stateless LLM completions remain available.
 
 1. Stop all Yinz servers that share the database.
 2. Upgrade Yinz on every machine before you start any server. Mixed-version operation is unsupported.

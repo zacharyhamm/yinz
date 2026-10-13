@@ -158,7 +158,6 @@ escalation on the first attempt.
 | `yinz-plugin-host/` | Wasm/Deno runtime, host functions, events, pipes, jobs |
 | `yinz-plugin-authoring/` | V8-free plugin checks and writes; compilation-worker protocol and client |
 | `yinz-process/` | Pane supervisors, local/remote protocols, SSH |
-| `yinz-swamp/` | Managed Swamp servers and the workflow client |
 | `yinz-codex/` | Codex conversation-to-pane binding for `yinz agent codex` |
 | `yinz-terminal/` | Terminal emulation (`Grid`) and output serialization; drives the graphics engine and emits host queries |
 | `yinz-terminal-graphics/` | Kitty graphics and Sixel protocol engine; re-exported as `yinz_terminal::panes::{kitty_graphics, sixel}` |
@@ -168,7 +167,7 @@ escalation on the first attempt.
 | `yinz-key-codec/` | Kitty and legacy key encoding and decoding, vendored termwiz input parser |
 | `yinz-host-protocol/` | Host-query and desktop-notification (OSC 9/99/777) types shared by terminal, bus and screen |
 | `yinz-config/`, `yinz-plugin-api/`, `yinz-ipc/` | Config, plugin wire API, transport |
-| `yinz-project-config/` | Project workflow settings in `.yinz/swamp-workflows.kdl` |
+| `yinz-project-config/` | Agent-exit settings in `.yinz/agent-exit.kdl` |
 | `yinz-deno-builtins/` | Embedded TypeScript builtin plugin sources |
 | `yinz-session/`, `yinz-cli/` | Session lifecycle, serialization, CLI |
 | `yinz-tile/`, `yinz-tile-utils/` | Plugin-facing API |
@@ -218,25 +217,6 @@ One SQLite `plugin-data.db` serves all local servers using the same data directo
   tags-only edits. Reuse `store::guarded_rev`. Setting a flag alone does not need a guard.
 - Watches react only to writes from their own server process. Another server's
   database write does not wake them.
-
-## Swamp integration
-
-Yinz manages local Swamp servers and runs project-owned Swamp workflows
-through `yinz workflow`. The supervisor is in `yinz-swamp/src/lib.rs`.
-
-Use the `swamp` skill for Swamp authoring, operations, and diagnostics:
-
-- Confirm CLI arguments with `swamp help <command>`. Search existing extensions
-  and model types before building integrations. Reuse or extend them first.
-- Author workflows as Swamp YAML DAGs and validate before running them.
-  Use report extensions for reusable analyses of model output.
-- Reuse model data with CEL `data.latest(...)` expressions. Prefer one method
-  that handles multiple targets over concurrent calls that contend on a model lock.
-- Use Swamp commands to inspect its data and resources. Check resource IDs with
-  `swamp model get <name> --json` before delete/stop/destroy operations.
-  Inspect generated reports after failures before retrying.
-- Pin versions in extension `npm:` imports. These dependencies are bundled,
-  not tracked by `deno.lock` or `package.json`.
 
 ## Plugins, hooks, and skills
 

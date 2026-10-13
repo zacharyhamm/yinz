@@ -27,11 +27,6 @@ slow-timeout = { period = "15s", terminate-after = 4 }
 filter = 'binary(notes_todos) & test(=notes_todos_commands_return_json_and_failures_with_redirected_stdin)'
 slow-timeout = { period = "60s", terminate-after = 3 }
 
-# Opt-in real service test deliberately queues longer than the 90s dispatch timeout.
-[[profile.unit.overrides]]
-filter = 'package(yinz-swamp) & test(=refresh_tests::refreshes_local_extensions_once_after_active_work_and_preserves_suspension)'
-slow-timeout = { period = "60s", terminate-after = 3 }
-
 # Text/JSON parity checks every target spelling through separate strict compiler workers.
 [[profile.unit.overrides]]
 filter = 'binary(portable_cli) & test(=plugin_check_targets_have_text_json_parity)'

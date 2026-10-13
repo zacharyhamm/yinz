@@ -3480,13 +3480,6 @@ impl Screen {
         pane_is_agent: bool,
     ) {
         let originating_plugin = run_command.originating_plugin.as_ref();
-        // The command-exit event carries ownership to the bridge. Managed helpers never
-        // recursively start an exit workflow or replace their preserved command pane.
-        if run_command.workflow_owner().is_some()
-            || originating_plugin.is_some_and(|p| p.context.contains_key("agent_workflow_owner"))
-        {
-            return;
-        }
         let context_says_agent = originating_plugin
             .is_some_and(|plugin| plugin.context.contains_key(AGENT_PANE_CONTEXT));
         if !(pane_is_agent || context_says_agent) {
@@ -3514,12 +3507,6 @@ impl Screen {
         {
             payload.insert("agent_pane_title".to_owned(), pane.display_title());
         }
-        // Persisted in the hook plugin's configuration: reloads attach, later exits get
-        // a new token even when the supervisor reuses the terminal pane.
-        payload.insert(
-            "agent_exit_token".to_owned(),
-            uuid::Uuid::new_v4().to_string(),
-        );
         if let Some(exit_status) = exit_status {
             payload.insert("agent_exit_code".to_owned(), exit_status.to_string());
         }
@@ -3557,18 +3544,6 @@ impl Screen {
             }
             .to_owned(),
         );
-        if let Some(plugin) = originating_plugin {
-            for key in [
-                "agent_workflow_owner",
-                "agent_workflow_run",
-                "agent_workflow_role",
-            ] {
-                if let Some(value) = plugin.context.get(key) {
-                    payload.insert(key.to_owned(), value.clone());
-                }
-            }
-        }
-
         self.fire_hook(
             HookPoint::AgentExit,
             Some(pane_id),
@@ -5214,10 +5189,6 @@ impl Screen {
             session_id,
             cwd: agent.cwd,
             message: Some("approve the plan".into()),
-            workflow_owner: self
-                .tab_containing_pane(pane_id)
-                .and_then(|tab| tab.pane_run_command(pane_id))
-                .and_then(|command| command.workflow_owner().map(str::to_owned)),
             ..Default::default()
         };
         let HookOutcome::Reported(agent) = hook_outcome("codex", &hook) else {

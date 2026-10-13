@@ -32,7 +32,6 @@ function toHookEvent(event) {
     hook_event_name: event.type ?? "",
     session_id: p.sessionID || p.info?.id || "",
     cwd: p.cwd || p.info?.directory,
-    _yinz_workflow_owner: event._yinz_workflow_owner,
   }
   const tool = name => ({
     bash: "Bash", read: "Read", write: "Write", edit: "Edit", multiedit: "MultiEdit",
