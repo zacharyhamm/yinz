@@ -11,12 +11,19 @@ const SIZE: Size = Size { cols: 80, rows: 10 };
 
 #[test]
 fn git_plugins_pin_imports_workers_and_attached_clients_until_reload() {
-    use std::process::{Command, Stdio};
+    use std::{
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+    };
     use yinz_types::input::git_plugin::GitPlugin;
     struct GitDaemon(std::process::Child);
     impl Drop for GitDaemon {
         fn drop(&mut self) {
-            let _ = self.0.kill();
+            // Git spawns git-daemon, which can spawn connection workers.
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(self.0.id() as i32),
+                nix::sys::signal::Signal::SIGKILL,
+            );
             let _ = self.0.wait();
         }
     }
@@ -84,6 +91,7 @@ export default {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let daemon = Command::new("git")
+        .process_group(0)
         .args([
             "daemon",
             "--export-all",
@@ -96,7 +104,7 @@ export default {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let mut daemon = GitDaemon(daemon);
+    let daemon = GitDaemon(daemon);
     let ready = Watched::new(false);
     let notify = ready.clone();
     let probe = std::thread::spawn(move || {
@@ -151,8 +159,7 @@ export default {
     .unwrap();
     assert_ne!(first.commit, next.commit);
     // Offline delayed imports and new clients must still read the original worktree.
-    daemon.0.kill().unwrap();
-    daemon.0.wait().unwrap();
+    drop(daemon);
     harness.event(Event::CustomMessage("probe".into(), "".into()));
     harness.rendered("one one one");
     let client = ClientId::new(2);

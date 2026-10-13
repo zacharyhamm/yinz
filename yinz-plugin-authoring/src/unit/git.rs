@@ -38,13 +38,14 @@ fn cancelled_git_transfer_does_not_publish_a_selection() {
 }
 use std::{
     net::TcpListener,
+    os::unix::process::CommandExt,
     process::{Child, Stdio},
     sync::Arc,
 };
 
 struct Remote {
     directory: tempfile::TempDir,
-    server: Child,
+    server: Option<Child>,
     url: String,
 }
 
@@ -67,6 +68,7 @@ impl Remote {
         let port = socket.local_addr().unwrap().port();
         drop(socket);
         let server = Command::new("git")
+            .process_group(0)
             .args([
                 "daemon",
                 "--listen=127.0.0.1",
@@ -80,6 +82,11 @@ impl Remote {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
+        let remote = Self {
+            directory,
+            server: Some(server),
+            url: format!("git://127.0.0.1:{port}/"),
+        };
         // Wait on readiness in another thread so Watched wakes on the condition.
         let ready = yinz_test_support::Watched::new(false);
         let probe = ready.clone();
@@ -95,11 +102,7 @@ impl Remote {
             ready.then_some(())
         });
         waiter.join().unwrap();
-        Self {
-            directory,
-            server,
-            url: format!("git://127.0.0.1:{port}/"),
-        }
+        remote
     }
 
     fn plugin(&self, revision: Option<GitRevision>) -> GitPlugin {
@@ -117,14 +120,66 @@ impl Remote {
     }
 
     fn stop(&mut self) {
-        let _ = self.server.kill();
-        let _ = self.server.wait();
+        if let Some(mut server) = self.server.take() {
+            // Git spawns git-daemon, which can spawn connection workers.
+            unsafe { libc::kill(-(server.id() as i32), libc::SIGKILL) };
+            let _ = server.wait();
+        }
     }
 }
 
 impl Drop for Remote {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[test]
+fn git_remote_cleanup_closes_listener_and_connection_workers() {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    for stop_first in [false, true] {
+        let mut remote = Remote::new();
+        let address = remote
+            .url
+            .strip_prefix("git://")
+            .unwrap()
+            .trim_end_matches('/');
+        let mut connection = TcpStream::connect(address).unwrap();
+        let address = connection.peer_addr().unwrap();
+        connection
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let request = format!("git-upload-pack /\0host={address}\0");
+        write!(connection, "{:04x}{request}", request.len() + 4).unwrap();
+        // Receiving an advertisement proves a connection worker has started.
+        connection.read_exact(&mut [0; 4]).unwrap();
+        if stop_first {
+            remote.stop();
+            remote.stop();
+        }
+        drop(remote);
+        let result = connection.read_to_end(&mut Vec::new());
+        assert!(
+            result.is_ok()
+                || matches!(result, Err(ref error) if error.kind() == std::io::ErrorKind::ConnectionReset),
+            "Git connection worker survived cleanup: {result:?}"
+        );
+        let closed = yinz_test_support::Watched::new(false);
+        let notify = closed.clone();
+        let probe = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while TcpStream::connect(address).is_ok() {
+                assert!(Instant::now() < deadline, "Git listener survived cleanup");
+                std::thread::yield_now();
+            }
+            *notify.lock() = true;
+        });
+        closed.wait_until("Git listener cleanup", Duration::from_secs(15), |closed| {
+            closed.then_some(())
+        });
+        probe.join().unwrap();
     }
 }
 

@@ -2,6 +2,7 @@
 use serde_json::{json, Value};
 use std::{
     io::Write,
+    os::unix::process::CommandExt,
     path::Path,
     process::{Command, Output, Stdio},
 };
@@ -633,6 +634,7 @@ impl GitPlugins {
         drop(listener);
         self.server = Some(
             Command::new("git")
+                .process_group(0)
                 .args([
                     "daemon",
                     "--listen=127.0.0.1",
@@ -659,7 +661,11 @@ impl GitPlugins {
     }
     fn stop(&mut self) {
         if let Some(mut server) = self.server.take() {
-            let _ = server.kill();
+            // Git spawns git-daemon, which can spawn connection workers.
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(server.id() as i32),
+                nix::sys::signal::Signal::SIGKILL,
+            );
             let _ = server.wait();
         }
     }
