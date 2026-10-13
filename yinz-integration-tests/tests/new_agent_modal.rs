@@ -424,3 +424,154 @@ load_plugins clear-defaults=true {{ "yinz:agent-service"; }}
     assert!(!original.stdin_bytes().ends_with(b"NEW INPUT"));
     yinz.quit();
 }
+
+#[test]
+fn context_menu_agent_actions_keep_each_clients_source_and_tab() {
+    use yinz_cli::args::CliAction;
+
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            r#"
+mouse_mode true
+mirror_session false
+agent_pane_min_columns 0
+agent_pane_min_rows 0
+keybinds { normal { bind "Ctrl b" { GoToTab 2; }; }; }
+hooks { context_menu "yinz:context-menu"; }
+load_plugins clear-defaults=true { "yinz:context-menu"; "yinz:agent-service"; }
+"#,
+        )
+        .with_layout(LayoutInfo::Stringified(
+            r#"layout {
+  tab name="first" focus=true { pane command="claude" cwd="/host/alpha"; }
+  tab name="second" { pane command="codex" cwd="/host/beta"; }
+}"#
+            .into(),
+        ))
+        .start();
+    let mut sources = Vec::new();
+    for _ in 0..2 {
+        let pane = yinz.expect_pty_spawn();
+        pane.output(format!("SOURCE {}\r\n", pane.run_command().command.display()).as_bytes());
+        sources.push(pane);
+    }
+    yinz.wait_until("client A sees its source", |s| s.contains("SOURCE claude"));
+    let other = yinz.attach_client(TERMINAL_SIZE);
+    other.wait_until("client B attaches", |s| s.contains("SOURCE claude"));
+    other.send_stdin(&keys::ctrl('b'));
+    other.wait_until("client B has a separate tab", |s| {
+        s.contains("SOURCE codex")
+    });
+    for source in &sources {
+        assert_eq!(
+            yinz.run_cli_action(CliAction::AgentReport {
+                pane_id: Some(format!("terminal_{}", source.terminal_id())),
+                kind: Some(source.run_command().command.to_str().unwrap().into()),
+                state: Some("idle".into()),
+                detail: None,
+                cwd: None,
+                hook_json: false,
+                clear: false,
+                run_id: None,
+            }),
+            0
+        );
+    }
+    // Wait for hook loading before starting the context-menu fallback deadline.
+    assert_eq!(
+        yinz.run_cli_action(CliAction::Pipe {
+            focus_plugin: false,
+            name: Some("ready".into()),
+            payload: Some(String::new()),
+            args: None,
+            plugin: Some("yinz:context-menu".into()),
+            plugin_configuration: None,
+            configuration_json: None,
+            force_launch_plugin: false,
+            skip_plugin_cache: false,
+            floating_plugin: None,
+            in_place_plugin: None,
+            plugin_cwd: None,
+            plugin_title: None,
+        }),
+        0
+    );
+    let panes = || {
+        let (code, output) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+            tab: true,
+            command: false,
+            state: true,
+            geometry: false,
+            all: true,
+            json: true,
+        });
+        assert_eq!(code, 0, "{output}");
+        serde_json::from_str::<Vec<serde_json::Value>>(&output).unwrap()
+    };
+    yinz.send_stdin(b"\x1b[<2;5;5M\x1b[<2;5;5m");
+    yinz.wait_until("A's agent menu", |s| s.contains("Fork agent"));
+    yinz.send_stdin(b"\x1b[B\x1b[B\r");
+    yinz.wait_until("A's fork picker", |s| s.contains("forking claude in alpha"));
+    let first_picker = panes()
+        .into_iter()
+        .find(|p| p["plugin_url"] == "yinz:new-agent")
+        .unwrap();
+
+    other.send_stdin(b"\x1b[<2;5;5M\x1b[<2;5;5m");
+    let menu = other.wait_until("B's agent menu", |s| {
+        s.contains("Duplicate agent") && s.contains("Fork agent")
+    });
+    let (column, row) = position_of(&menu, "Fork agent");
+    other.send_stdin(&sgr_press(column + 1, row + 1));
+    other.send_stdin(&sgr_release(column + 1, row + 1));
+    other.wait_until("B's distinct fork picker", |s| {
+        s.contains("forking codex in beta")
+    });
+    let listed = panes();
+    let pickers: Vec<_> = listed
+        .iter()
+        .filter(|p| p["plugin_url"] == "yinz:new-agent")
+        .collect();
+    assert_eq!(pickers.len(), 2, "{listed:?}");
+    let second_picker = pickers
+        .iter()
+        .find(|p| p["id"] != first_picker["id"])
+        .unwrap();
+    assert_ne!(second_picker["tab_id"], first_picker["tab_id"]);
+    assert!(listed
+        .iter()
+        .any(|p| p["id"] == first_picker["id"] && p["tab_id"] == first_picker["tab_id"]));
+    yinz.wait_until("A's picker retains its source", |s| {
+        s.contains("forking claude in alpha") && !s.contains("forking codex")
+    });
+
+    other.send_stdin(&keys::ESC);
+    other.wait_until("B closes its picker", |s| {
+        s.contains("SOURCE codex") && !s.contains("Fork agent")
+    });
+    other.send_stdin(b"\x1b[<2;5;5M\x1b[<2;5;5m");
+    other.wait_until("B's duplicate menu", |s| s.contains("Duplicate agent"));
+    other.send_stdin(b"\x1b[B\r");
+    let duplicate = yinz.expect_pty_spawn();
+    assert_eq!(
+        duplicate.run_command().cwd.as_deref(),
+        Some(std::path::Path::new("/host/beta"))
+    );
+    assert_eq!(
+        duplicate.run_command().args,
+        ["agent", "codex", "--command", "codex", "--"]
+    );
+    duplicate.output(b"B DUPLICATE READY\r\n");
+    other.wait_until("duplicate opens for B", |s| s.contains("B DUPLICATE READY"));
+    let listed = panes();
+    let spawned = listed
+        .iter()
+        .find(|p| p["is_plugin"] == false && p["id"] == duplicate.terminal_id().get())
+        .unwrap();
+    assert_eq!(spawned["tab_id"], second_picker["tab_id"]);
+    yinz.wait_until("A's picker remains open after B duplicates", |s| {
+        s.contains("forking claude in alpha") && !s.contains("B DUPLICATE READY")
+    });
+    other.quit();
+    yinz.quit();
+}

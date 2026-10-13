@@ -440,7 +440,7 @@ pub struct Options {
     pub mouse_click_through: Option<bool>,
 
     /// Whether right-clicking a pane opens a context menu (true or false)
-    /// default is false
+    /// default is true
     ///
     /// The menu opens only where the pane's program is not itself tracking the mouse: a TUI that
     /// asked for right-click keeps it, so this can turn off and on again under the same pointer as

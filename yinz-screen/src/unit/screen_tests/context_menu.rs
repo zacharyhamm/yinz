@@ -728,11 +728,6 @@ fn a_right_press_asks_the_plugin_thread_what_the_menu_should_say() {
     let mut screen = create_non_mirrored_screen(size);
     screen.bus.senders.to_plugin = bus.senders.to_plugin.clone();
     new_tab(&mut screen, 1, TabId::new(0));
-    // The option is off by default; the whole feature is opt-in.
-    screen.context_menu_on_right_click = true;
-    for tab in screen.tabs.values_mut() {
-        tab.update_context_menu_on_right_click(true);
-    }
 
     screen.handle_mouse_event(
         MouseEvent::new_right_press_event(Position::new(3, 6)),
@@ -770,6 +765,11 @@ fn a_right_press_with_the_option_off_asks_nobody_anything() {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
     screen.bus.senders.to_plugin = bus.senders.to_plugin.clone();
     new_tab(&mut screen, 1, TabId::new(0));
+
+    screen.context_menu_on_right_click = false;
+    for tab in screen.tabs.values_mut() {
+        tab.update_context_menu_on_right_click(false);
+    }
 
     screen.handle_mouse_event(
         MouseEvent::new_right_press_event(Position::new(3, 6)),

@@ -196,7 +196,7 @@ fn defaults_match_the_documented_fallbacks() {
     assert!(mouse_hover_effects);
     assert!(!focus_follows_mouse);
     assert!(!mouse_click_through);
-    assert!(!context_menu_on_right_click);
+    assert!(context_menu_on_right_click);
     assert_eq!(context_menu, ContextMenu::default());
     assert!(osc133_command_selection);
     assert_eq!(word_separators, DEFAULT_WORD_SEPARATORS);
@@ -403,4 +403,16 @@ fn terminal_theme_resolves_the_selected_name_and_host_switch_palettes() {
     assert_eq!(resolved.terminal_themes["nord"], expected);
     config.options.theme = Some("missing".into());
     assert_eq!(ScreenConfig::from_config(&config).terminal_theme, None);
+}
+
+#[test]
+fn right_click_menu_respects_explicit_options() {
+    for enabled in [false, true] {
+        let mut config = Config::default();
+        config.options.context_menu_on_right_click = Some(enabled);
+        assert_eq!(
+            ScreenConfig::from_config(&config).context_menu_on_right_click,
+            enabled
+        );
+    }
 }
