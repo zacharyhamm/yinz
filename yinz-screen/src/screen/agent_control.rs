@@ -148,7 +148,6 @@ pub(super) struct Pending {
     enter_at: Option<Instant>,
     submit_key: KeyWithModifier,
     submit_delay: Duration,
-    automatic: bool,
 }
 
 impl Pending {
@@ -1042,22 +1041,8 @@ impl Screen {
     }
 
     pub(super) fn agent_control_at(&mut self, request: AgentRequest, client: Reply, now: Instant) {
-        self.agent_control_inner(request, client, now, false);
-    }
-
-    fn agent_control_inner(
-        &mut self,
-        request: AgentRequest,
-        client: Reply,
-        now: Instant,
-        automatic: bool,
-    ) {
         use AgentRequest::*;
         let (pane, expected) = match &request {
-            Mother(request) => {
-                self.mother_command(request.clone(), client);
-                return;
-            },
             SpawnPlacementSupport => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.output = Some("agent-tab-placement-v1".into());
@@ -1188,7 +1173,6 @@ impl Screen {
                         enter_at: None,
                         submit_key: KeyWithModifier::new(BareKey::Enter),
                         submit_delay: Duration::ZERO,
-                        automatic: false,
                     });
                     return;
                 }
@@ -1589,36 +1573,7 @@ impl Screen {
                     );
                     return;
                 }
-                let needs_clear = status.not_ready_reason == Some(NotReadyReason::UnconsumedInput)
-                    || (matches!(status.agent.kind.as_str(), "claude" | "codex" | "pi")
-                        && self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
-                            lifecycle.input_revision != Some(self.agent_input_revision(pane))
-                        }))
-                    || self
-                        .draft_composer(pane, &status.agent.kind)
-                        .is_some_and(|composer| !composer.empty);
-                if automatic
-                    && (needs_clear
-                        || self.mother_focused(pane)
-                        || self.draft_composer(pane, &status.agent.kind).is_none()
-                        || self.claude_background_pending(pane)
-                        || !status.background_tasks.is_empty())
-                {
-                    let reason = if self.mother_focused(pane) {
-                        "Conversation is focused. Switch to Overview or another pane to allow automatic turns."
-                    } else if needs_clear {
-                        "Conversation contains a draft or unconsumed input. Submit or clear it yourself."
-                    } else if self.draft_composer(pane, &status.agent.kind).is_none() {
-                        "Composer unavailable. Open Conversation, finish startup dialogs, and verify lifecycle hooks."
-                    } else {
-                        "Background work is active. Wait for it to finish."
-                    };
-                    reject(self, AgentOutcome::Rejected, reason);
-                    return;
-                }
-                if !automatic
-                    && (!status.background_tasks.is_empty() || self.claude_background_pending(pane))
-                {
+                if !status.background_tasks.is_empty() || self.claude_background_pending(pane) {
                     reject(
                         self,
                         AgentOutcome::Rejected,
@@ -1675,7 +1630,6 @@ impl Screen {
                     enter_at: None,
                     submit_key,
                     submit_delay,
-                    automatic,
                 };
                 // Expose Claude's slash command before its arguments can collapse into a chip,
                 // and type Codex's `/new`: a pasted command is draft text, not a command.
@@ -1704,18 +1658,14 @@ impl Screen {
                 } else {
                     (Vec::new(), prompt.into_bytes())
                 };
-                if !automatic {
-                    self.begin_draft_clear(
-                        pane,
-                        status.agent,
-                        client,
-                        now,
-                        deadline,
-                        Some((pending, prefix, paste, clear_key)),
-                    );
-                } else {
-                    self.deliver_agent_prompt(pending, prefix, paste);
-                }
+                self.begin_draft_clear(
+                    pane,
+                    status.agent,
+                    client,
+                    now,
+                    deadline,
+                    Some((pending, prefix, paste, clear_key)),
+                );
             },
             WaitTurn {
                 submission_id,
@@ -1769,7 +1719,6 @@ impl Screen {
                     enter_at: None,
                     submit_key: KeyWithModifier::new(BareKey::Enter),
                     submit_delay: Duration::ZERO,
-                    automatic: false,
                 });
                 self.refresh_agent_controls();
             },
@@ -1803,15 +1752,10 @@ impl Screen {
                     enter_at: None,
                     submit_key: KeyWithModifier::new(BareKey::Enter),
                     submit_delay: Duration::ZERO,
-                    automatic: false,
                 });
                 self.refresh_agent_controls();
             },
-            Mother(_)
-            | List { .. }
-            | Spawn { .. }
-            | SpawnPlacementSupport
-            | SpawnBubblewrapSupport => {},
+            List { .. } | Spawn { .. } | SpawnPlacementSupport | SpawnBubblewrapSupport => {},
         }
     }
 
@@ -2106,15 +2050,6 @@ impl Screen {
                 .and_then(|id| self.submission(pending.pane, id))
                 .and_then(|submission| submission.result.as_ref());
             let mut outcome = match &status {
-                _ if pending.automatic
-                    && pending.prompt.as_ref().is_some_and(|p| !p.acknowledged())
-                    && (self.mother_focused(pending.pane)
-                        || status.as_ref().is_some_and(|s| {
-                            s.agent.state != AgentState::Idle || !s.background_tasks.is_empty()
-                        })) =>
-                {
-                    Some(AgentOutcome::Interrupted)
-                },
                 _ if submission_result.is_some() => submission_result.map(|result| result.outcome),
                 _ if delivery_error.is_some() => Some(AgentOutcome::Failed),
                 None if self.tab_containing_pane(pending.pane).is_none() => {
@@ -3346,102 +3281,5 @@ impl Screen {
             }
             self.agent_draft_clears.insert(pane, operation);
         }
-    }
-}
-
-impl Screen {
-    pub(super) fn mother_delivery_blocker(&self, pane: PaneId) -> Option<String> {
-        let Some(status) = self.agent_status(pane, None) else {
-            return Some("Mother has not reported lifecycle hooks. Open Conversation, finish startup, and run yinz hooks install.".into());
-        };
-        let reason = if !status.prompt_supported {
-            "Setup is incomplete. Open Conversation, finish dialogs, and verify lifecycle hooks."
-        } else if self.mother_focused(pane) {
-            "Conversation is focused. Switch to Overview or another pane to allow automatic turns."
-        } else if status.agent.state != AgentState::Idle
-            || self.claude_background_pending(pane)
-            || !status.background_tasks.is_empty()
-        {
-            "Mother is working or awaiting input. Inspect Conversation and let the active turn finish."
-        } else if self.draft_composer(pane, &status.agent.kind).is_none() {
-            "Composer unavailable. Inspect Conversation before allowing automatic delivery."
-        } else if self
-            .draft_composer(pane, &status.agent.kind)
-            .is_some_and(|composer| !composer.empty)
-            || self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
-                lifecycle.input_revision != Some(self.agent_input_revision(pane))
-            })
-        {
-            "Conversation contains a draft or unconsumed input. Submit or clear it yourself."
-        } else {
-            return None;
-        };
-        Some(reason.into())
-    }
-
-    pub(super) fn mother_submission_in_flight(&self, submission: &str) -> bool {
-        self.agent_controls.iter().any(|pending| {
-            pending.submission_id.as_deref() == Some(submission)
-                && pending.prompt.is_some()
-                && !pending.resolved
-        })
-    }
-
-    fn mother_focused(&self, pane: PaneId) -> bool {
-        let conversation_selected = self
-            .tab_containing_pane(pane)
-            .and_then(|tab| tab.pane_tabs_of(pane).and_then(|id| tab.pane_tabs_info(id)))
-            .is_none_or(|tabs| {
-                tabs.tabs.get(tabs.active).and_then(|slot| slot.pane_id()) == Some(pane)
-            });
-        conversation_selected
-            && self
-                .connected_clients
-                .borrow()
-                .iter()
-                .any(|client| self.get_active_pane_id(client) == Some(pane))
-    }
-
-    pub(super) fn deliver_mother(
-        &mut self,
-        generation: String,
-        conversation: String,
-        input_revision: u64,
-        submission: String,
-        prompt: String,
-        reply: std::sync::mpsc::Sender<AgentResponse>,
-    ) {
-        let target = Reply::Host(reply);
-        let pane = self.live_mother();
-        if !self
-            .mother_supervisor
-            .as_ref()
-            .is_some_and(|s| s.generation == generation)
-            || pane.is_none()
-        {
-            self.agent_reply(&target, AgentResponse::new(AgentOutcome::TargetChanged));
-            return;
-        }
-        let Some(pane) = pane else {
-            return;
-        };
-        if self.agent_input_revision(pane) != input_revision {
-            self.agent_reply(&target, AgentResponse::new(AgentOutcome::Rejected));
-            return;
-        }
-        self.agent_control_inner(
-            AgentRequest::Prompt {
-                preserve_draft: false,
-                pane_id: pane,
-                expected_session_id: Some(conversation),
-                submission_id: Some(submission),
-                prompt,
-                wait: true,
-                timeout_ms: 30_000,
-            },
-            target,
-            Instant::now(),
-            true,
-        );
     }
 }

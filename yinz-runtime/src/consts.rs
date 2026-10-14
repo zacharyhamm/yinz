@@ -41,7 +41,6 @@ pub const BUILTIN_DENO_PLUGIN_NAMES: &[&str] = &[
     "agent-policy",
     "agent-opencode",
     "agent-exit",
-    "mother-overview",
     "session-palette",
 ];
 

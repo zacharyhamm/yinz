@@ -728,14 +728,6 @@ pub fn route_action(
                 ))
                 .with_context(err_context)?;
         },
-        Action::ToggleMother => {
-            senders
-                .send_to_screen(ScreenInstruction::ToggleMother(
-                    client_id,
-                    Some(NotificationEnd::new(completion_tx)),
-                ))
-                .with_context(err_context)?;
-        },
         Action::TogglePaneFrames => {
             senders
                 .send_to_screen(ScreenInstruction::TogglePaneFrames(Some(

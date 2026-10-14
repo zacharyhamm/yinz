@@ -7,7 +7,7 @@ use yinz_bus::command_palette::{
 };
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{
-    data::{PaneId, PaneInfo},
+    data::PaneInfo,
     input::actions::Action,
     internal_ids::{ClientId, SessionName},
 };
@@ -102,7 +102,7 @@ pub(super) struct Browser {
 impl Screen {
     pub(in crate::screen) fn live_palette_agents(&self) -> Vec<LiveAgent> {
         let mut agents = Vec::new();
-        let mut add = |session: &SessionName, pane: PaneInfo, mother: bool| {
+        let mut add = |session: &SessionName, pane: PaneInfo| {
             let Some(a) = &pane.agent else {
                 return;
             };
@@ -121,7 +121,6 @@ impl Screen {
                     "target".into(),
                     pane.target.display().unwrap_or_else(|| "local".into()),
                 ),
-                ("mother".into(), mother.to_string()),
                 ("pane".into(), pane.id.to_string()),
             ]);
             for (k, v) in [
@@ -147,12 +146,9 @@ impl Screen {
                 metadata,
             });
         };
-        // An exited mother is kept only until its replacement is placed, and is reported nowhere.
-        let live_mother = self.live_mother();
         for tab in self.tabs.values() {
             for pane in tab.pane_infos() {
-                let mother = live_mother == Some(pane.id);
-                add(&self.session_name, pane, mother);
+                add(&self.session_name, pane);
             }
         }
         for session in self
@@ -161,8 +157,7 @@ impl Screen {
             .filter(|s| s.name != self.session_name)
         {
             for pane in session.panes.panes.values().flatten() {
-                let mother = matches!(pane.id, PaneId::Terminal(id) if session.mother == Some(id));
-                add(&session.name, pane.clone(), mother);
+                add(&session.name, pane.clone());
             }
         }
         agents.sort_by_key(LiveAgent::id);

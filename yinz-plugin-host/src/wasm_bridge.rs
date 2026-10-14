@@ -1373,6 +1373,8 @@ impl WasmBridge {
         if picker {
             return Ok(());
         }
+        // Retire queued callbacks before the reload notification can release an active host call.
+        self.plugin_map.lock().unwrap().retire_instances(plugin_id);
         self.cancel_permission_requests(plugin_id, None);
         self.senders
             .send_to_screen(ScreenInstruction::NotificationPolicyUnavailable {
@@ -1418,7 +1420,6 @@ impl WasmBridge {
             .unwrap()
             .invalidate_deno_generations(plugin_id);
 
-        self.plugin_map.lock().unwrap().retire_instances(plugin_id);
         self.plugin_ids_waiting_for_permission_request
             .remove(&plugin_id);
         self.pending_pipes

@@ -225,7 +225,6 @@ mod props {
             ),
             ("TogglePaneFrames;", Action::TogglePaneFrames),
             ("ToggleCommandPalette;", Action::ToggleCommandPalette),
-            ("ToggleMother;", Action::ToggleMother),
             ("ToggleFocusFullscreen;", Action::ToggleFocusFullscreen),
             (
                 "MoveFocusOrTab \"Left\";",
@@ -546,32 +545,6 @@ fn session_pane_selector_checks_kdl_range() {
             .parse()
             .unwrap();
         assert!(crate::kdl::action::from_kdl((&node, &Options::default())).is_err());
-    }
-}
-
-#[test]
-fn shipped_and_example_agent_modes_toggle_mother_then_leave_the_mode() {
-    for (name, config) in [
-        ("shipped", Config::from_default_assets()),
-        (
-            "example",
-            Config::from_kdl(include_str!("../../../example/default.kdl"), None),
-        ),
-    ] {
-        let config = config.unwrap_or_else(|error| panic!("{name} config parses: {error}"));
-        assert_eq!(
-            config.keybinds.get_actions_for_key_in_mode(
-                &InputMode::Agent,
-                &KeyWithModifier::new(BareKey::Char('m'))
-            ),
-            Some(&vec![
-                Action::ToggleMother,
-                Action::SwitchToMode {
-                    input_mode: InputMode::Normal
-                },
-            ]),
-            "{name}"
-        );
     }
 }
 

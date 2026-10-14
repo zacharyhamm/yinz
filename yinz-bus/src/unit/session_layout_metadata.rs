@@ -20,9 +20,9 @@ fn pane_tabs_metadata_roundtrip_omits_terminal_backed_wrappers() {
                         .map(|(index, label)| PaneTabInfo {
                             descriptor: PaneTabDescriptor {
                                 label: label.into(),
-                                location: "yinz:mother-overview".into(),
+                                location: "yinz:session-manager".into(),
                                 configuration: BTreeMap::from([("custom".into(), "value".into())]),
-                                initial_cwd: Some("/project/mother".into()),
+                                initial_cwd: Some("/project/overlay".into()),
                             },
                             plugin_id: (!(terminal_member && index == 0))
                                 .then_some(PluginId::new(index as u32 + 1)),
@@ -38,7 +38,7 @@ fn pane_tabs_metadata_roundtrip_omits_terminal_backed_wrappers() {
                     Run::Command(RunCommand {
                         command: "claude".into(),
                         args: vec!["--resume".into()],
-                        cwd: Some("/project/mother".into()),
+                        cwd: Some("/project/overlay".into()),
                         hold_on_start: true,
                         hold_on_close: true,
                         ..Default::default()
@@ -46,7 +46,7 @@ fn pane_tabs_metadata_roundtrip_omits_terminal_backed_wrappers() {
                 } else {
                     Run::Plugin(
                         yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-                            "yinz:mother-overview",
+                            "yinz:session-manager",
                             &None,
                             None,
                             None,
@@ -77,7 +77,7 @@ fn pane_tabs_metadata_roundtrip_omits_terminal_backed_wrappers() {
                 } else {
                     (vec![pane], vec![])
                 };
-                metadata.add_tab("mother".into(), true, false, false, tiled, floats);
+                metadata.add_tab("overlay".into(), true, false, false, tiled, floats);
                 let (source, _) =
                     yinz_session::session_serialization::serialize_session_layout(metadata.into())
                         .unwrap();

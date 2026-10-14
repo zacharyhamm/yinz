@@ -7145,17 +7145,6 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
-                    'm',
-                ),
-                key_modifiers: {},
-            }: [
-                ToggleMother,
-                SwitchToMode {
-                    input_mode: Normal,
-                },
-            ],
-            KeyWithModifier {
-                bare_key: Char(
                     'n',
                 ),
                 key_modifiers: {},

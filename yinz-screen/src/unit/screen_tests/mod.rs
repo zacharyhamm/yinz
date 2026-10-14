@@ -2027,7 +2027,6 @@ mod host_focus;
 mod host_query;
 mod key_intercepts;
 mod layout_watcher;
-mod mother;
 mod mouse;
 mod nested_sessions;
 mod new_pane_placement;

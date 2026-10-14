@@ -2448,7 +2448,7 @@ pub fn start_server_impl(
 }
 
 /// The directory a new session's first panes open in, when one was asked for: the client's
-/// explicit directory, else the configured `default_cwd`. Mother runs there too.
+/// explicit directory, else the configured `default_cwd`.
 fn session_start_cwd(client_cwd: Option<&Path>, options: &Options) -> Option<PathBuf> {
     client_cwd
         .map(Path::to_path_buf)

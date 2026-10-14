@@ -1586,7 +1586,6 @@ fn run_command_from_protobuf(
 ) -> Option<yinz_types::input::command::RunCommand> {
     Some(yinz_types::input::command::RunCommand {
         agent_theme: None,
-        claude_settings: None,
         command: std::path::PathBuf::from(cmd.command),
         args: cmd.args,
         cwd: cmd.cwd.map(std::path::PathBuf::from),
@@ -1753,7 +1752,6 @@ impl TryFrom<yinz_types::input::actions::Action>
             ToggleFullscreenByPaneIdAction,
             ToggleGroupMarkingAction,
             ToggleHostFullscreenAction,
-            ToggleMotherAction,
             ToggleMouseModeAction,
             ToggleNoUiFullscreenByPaneIdAction,
             ToggleNotificationDetailAction,
@@ -1972,9 +1970,6 @@ impl TryFrom<yinz_types::input::actions::Action>
             },
             yinz_types::input::actions::Action::ToggleCommandPalette => {
                 ActionType::ToggleCommandPalette(ToggleCommandPaletteAction {})
-            },
-            yinz_types::input::actions::Action::ToggleMother => {
-                ActionType::ToggleMother(ToggleMotherAction {})
             },
             yinz_types::input::actions::Action::TogglePaneFrames => {
                 ActionType::TogglePaneFrames(TogglePaneFramesAction {})
@@ -3064,7 +3059,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::ToggleCommandPalette(_) => {
                 Ok(yinz_types::input::actions::Action::ToggleCommandPalette)
             },
-            ActionType::ToggleMother(_) => Ok(yinz_types::input::actions::Action::ToggleMother),
             ActionType::TogglePaneFrames(_) => {
                 Ok(yinz_types::input::actions::Action::TogglePaneFrames)
             },
@@ -5559,7 +5553,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Run>
             RunType::Command(cmd) => Ok(yinz_types::input::layout::Run::Command(
                 yinz_types::input::command::RunCommand {
                     agent_theme: None,
-                    claude_settings: None,
                     command: std::path::PathBuf::from(cmd.command),
                     args: cmd.args,
                     cwd: cmd.cwd.map(std::path::PathBuf::from),

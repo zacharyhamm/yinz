@@ -488,7 +488,6 @@ pub(crate) fn optional_run_command_actions(tc: &hegel::TestCase) -> Option<RunCo
 pub(crate) fn run_commands(tc: &hegel::TestCase) -> RunCommand {
     RunCommand {
         agent_theme: None,
-        claude_settings: None,
         command: paths(tc),
         args: up_to(tc, 3, strings),
         cwd: optional_paths(tc),
@@ -868,7 +867,6 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::ToggleFocusNoUiFullscreen => Action::ToggleFocusNoUiFullscreen,
         ActionKind::TogglePaneFrames => Action::TogglePaneFrames,
         ActionKind::ToggleCommandPalette => Action::ToggleCommandPalette,
-        ActionKind::ToggleMother => Action::ToggleMother,
         ActionKind::SetPaneFrameStyle => Action::SetPaneFrameStyle(pane_frame_styles(tc)),
         ActionKind::ToggleActiveSyncTab => Action::ToggleActiveSyncTab,
         ActionKind::NewPane => Action::NewPane {

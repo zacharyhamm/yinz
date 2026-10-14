@@ -1298,15 +1298,8 @@ fn start_session(
     command.env_remove(crate::pty_host::remote::broker::PANE_TOKEN_ENV);
     // A new pane has no inline hooks unless its own launch explicitly supplies them.
     command.env_remove("YINZ_CLAUDE_INLINE_HOOKS");
-    use yinz_types::input::command::{CLAUDE_SETTINGS_FD, CLAUDE_SETTINGS_SNAPSHOT};
-    let settings = child_env.vars.iter().find_map(|(name, value)| {
-        (name == CLAUDE_SETTINGS_SNAPSHOT && cmd.target.is_bubblewrap()).then_some(value.as_str())
-    });
-    let settings_file = crate::command::stage_claude_settings(&mut command, settings)?;
     for (name, value) in child_env.vars {
-        if name != CLAUDE_SETTINGS_SNAPSHOT && name != CLAUDE_SETTINGS_FD {
-            command.env(name, value);
-        }
+        command.env(name, value);
     }
     match child_env.pane_ref {
         Some(pane_ref) => {
@@ -1383,11 +1376,6 @@ fn start_session(
             // Keep std's exec-error pipe open until exec succeeds, while ensuring
             // the shell inherits no master, control socket, listener or wake fd.
             close_fds::set_fds_cloexec(3, &[]);
-            if let Some(file) = &settings_file {
-                if libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-            }
             Ok(())
         });
     }

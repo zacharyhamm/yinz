@@ -27,7 +27,7 @@ fn frame(tab: &mut Tab, history: &mut String) -> String {
 }
 
 #[test]
-fn mother_overlay_inherits_global_background_opacity() {
+fn terminal_overlay_inherits_global_background_opacity() {
     let mut tab =
         create_new_tab_without_pane_frames(Size { cols: 60, rows: 20 }, ModeInfo::default());
     tab.new_pane(
@@ -36,25 +36,36 @@ fn mother_overlay_inherits_global_background_opacity() {
         None,
         false,
         true,
-        NewPanePlacement::Overlay(OverlayPlacement::mother()),
+        NewPanePlacement::Overlay(OverlayPlacement {
+            coordinates: FloatingPaneCoordinates::new(
+                Some("10%".into()),
+                Some("10%".into()),
+                Some("80%".into()),
+                Some("80%".into()),
+                None,
+                None,
+            ),
+            background_opacity: Some(yinz_types::input::options::DEFAULT_BACKGROUND_OPACITY),
+            ..Default::default()
+        }),
         Some(ClientId::new(1)),
         None,
     )
     .unwrap();
     paint(&mut tab, 1, 'a');
-    tab.handle_pty_bytes(TerminalId::new(2), b"\x1b[?25lMOTHER".to_vec())
+    tab.handle_pty_bytes(TerminalId::new(2), b"\x1b[?25lOVERLAY".to_vec())
         .unwrap();
     let mut history = String::new();
     let default = frame(&mut tab, &mut history);
-    assert!(default.contains("MOTHERaaaaaaaa"), "{default}");
+    assert!(default.contains("OVERLAYaaaaaaa"), "{default}");
 
     tab.update_background_opacity(100);
     let opaque = frame(&mut tab, &mut history);
-    assert!(opaque.contains("MOTHER        "), "{opaque}");
+    assert!(opaque.contains("OVERLAY       "), "{opaque}");
 
     tab.update_background_opacity(50);
     let translucent = frame(&mut tab, &mut history);
-    assert!(translucent.contains("MOTHERaaaaaaaa"), "{translucent}");
+    assert!(translucent.contains("OVERLAYaaaaaaa"), "{translucent}");
 }
 
 #[test]

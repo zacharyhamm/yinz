@@ -7,30 +7,6 @@ use std::{
 use yinz_runtime::errors::prelude::*;
 use yinz_types::input::command::RunCommand;
 
-/// Keep the checked settings out of argv and the launched process's environment.
-/// The caller must retain this file and clear its CLOEXEC flag after closing other descriptors.
-pub fn stage_claude_settings(
-    command: &mut std::process::Command,
-    contents: Option<&str>,
-) -> Result<Option<std::fs::File>> {
-    use std::io::{Seek, Write};
-    use std::os::fd::AsRawFd;
-    use yinz_types::input::command::{CLAUDE_SETTINGS_FD, CLAUDE_SETTINGS_SNAPSHOT};
-    command
-        .env_remove(CLAUDE_SETTINGS_FD)
-        .env_remove(CLAUDE_SETTINGS_SNAPSHOT);
-    contents
-        .map(|contents| {
-            let mut file = tempfile::tempfile().context("stage Claude launch settings")?;
-            file.write_all(contents.as_bytes())
-                .context("write Claude launch settings")?;
-            file.rewind().context("rewind Claude launch settings")?;
-            command.env(CLAUDE_SETTINGS_FD, file.as_raw_fd().to_string());
-            Ok(file)
-        })
-        .transpose()
-}
-
 /// Resolve a portable agent launcher using the Yinz binary on the execution host.
 pub fn resolve_agent_launcher(
     host_bin: &Path,
@@ -46,7 +22,7 @@ pub fn resolve_agent_launcher(
             // Generated env wrappers contain assignments followed by the command.
             args.iter().position(|arg| !arg.contains('='))
         } else {
-            yinz_types::agent::mother_fallback_command_index(program, args)
+            None
         };
         if let Some(index) = index {
             let (assignments, rest) = args.split_at_mut(index + 1);

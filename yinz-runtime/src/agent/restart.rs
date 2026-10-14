@@ -601,26 +601,6 @@ mod tests {
     use crate::agent::launch::{plan, Spec};
 
     #[test]
-    fn mother_fallback_restart_keeps_the_banner_and_clears_conversation_selectors() {
-        let prefix: Vec<String> = [
-            "-c",
-            crate::agent::MOTHER_FALLBACK_SCRIPT,
-            "mother",
-            "setup failed",
-            "claude",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-        let args = [
-            prefix.clone(),
-            vec!["--resume".into(), "conversation".into()],
-        ]
-        .concat();
-        assert_eq!(restart_args(Path::new("/bin/sh"), &args).unwrap(), prefix);
-    }
-
-    #[test]
     fn pi_restart_removes_prompts_and_session_selectors_with_exact_arity() {
         let args = strings(&[
             "--model",

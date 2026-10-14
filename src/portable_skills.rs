@@ -43,7 +43,6 @@ fn install_content(path: &Path, content: &str, dry_run: bool, force: bool) -> Re
 }
 
 const BUNDLE: &[(&str, &str)] = &[
-    ("yinz-mother", yinz_runtime::mother::SKILL),
     (
         "yinz-sessions",
         include_str!("../assets/skills/yinz-sessions/SKILL.md"),

@@ -124,7 +124,6 @@ pub enum ScreenContext {
     ToggleActiveTerminalNoUiFullscreen,
     TogglePaneFrames,
     ToggleCommandPalette,
-    ToggleMother,
     SetPaneFrameStyle,
     SetSelectable,
     ShowPluginCursor,
@@ -337,9 +336,6 @@ pub enum ScreenContext {
     InvalidateAgentEventProjects,
     AgentEventProjects,
     SubscribeAgentEvents,
-    MotherWake,
-    MotherStatus,
-    MotherCommandReply,
     SetCliEventSubscribersPresent,
     // Pane-targeting CLI variants
     ScrollUpWithPaneId,

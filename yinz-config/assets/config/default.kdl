@@ -201,9 +201,6 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // Show or hide mother, the session's one overlay agent. With no mother running
-        // this opens the command palette at the agents to launch it as.
-        bind "m" { ToggleMother; SwitchToMode "Normal"; }
         // Open the four-tab project panel with focus in its current view.
         bind "a" {
             LaunchOrFocusPlugin "agents" {

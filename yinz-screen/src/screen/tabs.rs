@@ -22,8 +22,6 @@ use yinz_types::input::layout::{
 use {yinz_types::data::Event, yinz_types::data::ModeInfo};
 
 pub(super) struct TabTransition {
-    client: ClientId,
-    source: Option<TabId>,
     destination: TabId,
     clients: Option<Vec<(ClientId, ModeInfo)>>,
     pub old_focus: Vec<(ClientId, Option<PaneId>)>,
@@ -586,8 +584,6 @@ impl Screen {
             }
         }
         TabTransition {
-            client,
-            source,
             destination,
             clients,
             old_focus,
@@ -617,17 +613,6 @@ impl Screen {
                     tab.focus_pane_on_edge(direction, *client);
                 }
             }
-        }
-        if let Some(source) = transition
-            .source
-            .filter(|source| *source != transition.destination)
-        {
-            self.mother_follows(
-                transition.client,
-                source,
-                transition.destination,
-                &transition.old_focus,
-            );
         }
         Ok(())
     }

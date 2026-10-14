@@ -1,6 +1,6 @@
 ---
 name: yinz-agents
-description: Launch, inspect, and coordinate Yinz agents with guarded prompts and correlated outcomes, find the session's mother agent, and inspect their durable archives.
+description: Launch, inspect, and coordinate Yinz agents with guarded prompts and correlated outcomes, and inspect their durable archives.
 ---
 
 Inside a Yinz pane, inherited `YINZ_PANE_REF` resolves the current session and caller. Start with `yinz agent list --json`.
@@ -145,17 +145,6 @@ SSH launches cannot use local project, branch, or worktree options. General pane
 Register an existing pane with `agent register PANE_ID KIND --json` for tracking. Registration alone does not enable guarded prompts or turn a shell-launched agent into a managed command pane.
 `agent list` also shows an agent started by hand in a shell as source `detected` with `not_ready_reason: unmanaged`.
 Yinz cannot prompt it; relaunch it with `agent spawn` to control it.
-
-A session has at most one mother: an agent in an overlay pane that the user toggles with `Ctrl e`, then `m`, on any tab.
-Only the user launches it, from that key or the command palette's **Launch mother…** entry. No CLI command creates, registers, or toggles a mother.
-Mother starts in a persistent private folder at `YINZ_CACHE_DIR/mother/<session-key>/work`, with the pane title `mother: <agent>`.
-It attempts Bubblewrap isolation automatically. Unsupported agent state layouts or sandbox setup failures produce a visible explanation and a local, unsandboxed launch.
-Sandboxed mother can write its own folder and shared agent state, and can still request host changes through Yinz.
-Mother is listed by `agent list` like any managed agent and uses the same server-side guards. Its Claude and Codex launches pre-approve specific Yinz coordination commands; worker permission answers still require explicit user delegation.
-It stays mother across `/clear`, `/new`, and conversation changes. After its agent exits, the user's next toggle shows the pane and offers a new mother, and launching one closes the old pane; closing the pane or moving it to another session also ends it. Session resurrection does not restore it.
-Plugins see its terminal pane ID in `SessionInfo.mother`, which is `null` when none is running.
-`SessionInfo.mother_supervision` reports watching, processing, queued, paused, degraded, or needs_attention with pending and blocker counts.
-Mother receives a local yinz-mother skill and a durable inbox. Use `yinz mother status`, `inbox`, `checkpoint`, `ack`, `configure`, `pause`, and `resume` to inspect and control supervision. Automatic deliveries never clear drafts or interrupt active turns.
 
 ```sh
 yinz agent runs --project work --limit 20 --offset 0

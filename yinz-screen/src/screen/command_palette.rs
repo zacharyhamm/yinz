@@ -169,21 +169,6 @@ impl Screen {
         }
     }
 
-    /// Open the palette, if it is not already, at the agent kinds a mother can be launched as.
-    /// A palette that is already somewhere else - this picker included - is left as it is.
-    pub(super) fn open_mother_picker(&mut self, client_id: ClientId) {
-        let opened = !self.command_palettes.contains_key(&client_id);
-        if opened {
-            self.toggle_command_palette(client_id);
-        }
-        if let Some(state) = self.command_palettes.get_mut(&client_id) {
-            if opened || (state.widget.is_root() && !state.widget.busy) {
-                state.widget.open_picker(EntryKind::Mother);
-                self.refresh_plugin_palette(client_id, false);
-            }
-        }
-    }
-
     pub(crate) fn close_command_palette(&mut self, client_id: ClientId) -> bool {
         self.take_command_palette(client_id, true).is_some()
     }
@@ -595,21 +580,6 @@ impl Screen {
             &["filter agents"],
             Builtin::AgentFilters,
         );
-        if self.live_mother().is_some() {
-            command(
-                "mother",
-                "Toggle mother",
-                &["show hide mother agent"],
-                Builtin::Action(ToggleMother),
-            );
-        } else {
-            command(
-                "mother",
-                "Launch mother…",
-                &["start mother agent"],
-                Builtin::Picker(EntryKind::Mother),
-            );
-        }
         command(
             "floating",
             "New floating pane",
@@ -741,24 +711,6 @@ impl Screen {
                 },
                 Builtin::Picker(kind),
             ));
-        }
-        if self.live_mother().is_none() {
-            for kind in offered_agents
-                .into_iter()
-                .filter(|kind| yinz_runtime::agent::launch::supports_mother(kind))
-            {
-                entries.push((
-                    Entry {
-                        id: format!("mother:{kind}"),
-                        label: kind.clone(),
-                        description: if kind == "codex" { "Enables Yinz socket and internet access; keeps approval and sandbox settings".into() } else { String::new() },
-                        shortcut: String::new(),
-                        aliases: vec![],
-                        kind: EntryKind::Mother,
-                    },
-                    Builtin::Agent(yinz_bus::command_palette::AgentAction::Mother { kind }),
-                ));
-            }
         }
         entries.extend(self.warp_palette_entries(state.warp_source.as_ref()));
         for name in &self.projects {
@@ -1244,14 +1196,6 @@ impl Screen {
             },
             Builtin::SearchNotes => {
                 self.open_note_search(client);
-                return;
-            },
-            Builtin::Agent(yinz_bus::command_palette::AgentAction::Mother { .. })
-                if self.live_mother().is_some() =>
-            {
-                if let Some(state) = self.command_palettes.get_mut(&client) {
-                    state.widget.set_error("Mother is already running".into());
-                }
                 return;
             },
             Builtin::Agent(action) => {

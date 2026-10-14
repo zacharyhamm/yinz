@@ -168,7 +168,6 @@ keybinds clear-defaults=true {
             }
             SwitchToMode "normal"
         }
-        bind "m" { ToggleMother; SwitchToMode "normal"; }
         bind "n" {
             LaunchOrFocusPlugin "new-agent" {
                 floating true

@@ -122,8 +122,6 @@ fn serialize_and_deserialize_session_info_with_data() {
     let mut panes = HashMap::new();
     panes.insert(TabPosition::new(0), panes_list);
     let session_info = SessionInfo {
-        mother: None,
-        mother_supervision: None,
         name: "my session name".to_owned().into(),
         tabs: vec![
             TabInfo {
@@ -278,33 +276,6 @@ fn manifest_coordinates_preserve_kdl_and_reject_out_of_range_values() {
 }
 
 #[test]
-fn mother_metadata_is_optional_and_checks_the_terminal_id() {
-    use yinz_types::internal_ids::TerminalId;
-    let mut session = SessionInfo::default();
-    let decode = |text: &str| crate::metadata::session_info::from_string(text, &"".into());
-    for id in [0, u32::MAX] {
-        session.mother = Some(TerminalId::new(id));
-        let encoded = crate::metadata::session_info::to_string(&session).unwrap();
-        assert_eq!(decode(&encoded).unwrap().mother, session.mother);
-    }
-    let encoded = crate::metadata::session_info::to_string(&session).unwrap();
-    let old = encoded
-        .lines()
-        .filter(|line| !line.starts_with("mother"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(decode(&old).unwrap().mother.is_none());
-    // Metadata written before mother replaced control agents still loads.
-    assert!(decode(&format!("{old}\ncontrol_agents 1 2\n"))
-        .unwrap()
-        .mother
-        .is_none());
-    for invalid in ["", "-1", "4294967296", "\"terminal_1\""] {
-        assert!(decode(&format!("{old}\nmother {invalid}\n")).is_err());
-    }
-}
-
-#[test]
 fn pane_display_title_round_trips_and_old_metadata_keeps_raw_title() {
     for display_title in [None, Some("host project:worktree: 界 shell".to_owned())] {
         let pane = PaneInfo {
@@ -327,14 +298,25 @@ fn pane_display_title_round_trips_and_old_metadata_keeps_raw_title() {
 }
 
 #[test]
-fn mother_supervision_metadata_roundtrips() {
-    let mut session = SessionInfo::new("mother-test".into());
-    session.mother_supervision = Some(yinz_types::agent::mother::MotherStatus {
-        state: "needs_attention".into(),
-        pending: 2,
-        blockers: 1,
-    });
-    let encoded = crate::metadata::session_info::to_string(&session).unwrap();
-    let decoded = crate::metadata::session_info::from_string(&encoded, &session.name).unwrap();
-    assert_eq!(decoded.mother_supervision, session.mother_supervision);
+fn removed_supervisor_fields_do_not_prevent_loading_session_metadata() {
+    let session = SessionInfo::new("legacy".into());
+    let encoded = session_info::to_string(&session).unwrap();
+    let legacy = format!(
+        r#"{encoded}
+mother 7
+mother_supervision "{{\"state\":\"watching\",\"pending\":2,\"blockers\":1}}"
+"#
+    );
+    let decoded = session_info::from_string(&legacy, &"current".into()).unwrap();
+    assert_eq!(decoded, session);
+    let mut json = serde_json::to_value(&session).unwrap();
+    json["mother"] = serde_json::json!(7);
+    json["mother_supervision"] =
+        serde_json::json!({"state": "watching", "pending": 2, "blockers": 1});
+    assert_eq!(
+        serde_json::from_value::<SessionInfo>(json).unwrap(),
+        session
+    );
+    let rewritten = session_info::to_string(&decoded).unwrap();
+    assert!(!rewritten.contains("mother"));
 }

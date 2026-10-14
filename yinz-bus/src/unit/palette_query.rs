@@ -8,12 +8,7 @@ fn quoted_filters_roundtrip_and_match_only_available_fields() {
         ("directory".into(), "/a b/c".into())
     ])));
     assert!(!q.matches(&BTreeMap::new()));
-    for input in [
-        "state:done",
-        "mother:yes",
-        "state:idle state:busy",
-        "title:\"oops",
-    ] {
+    for input in ["state:done", "state:idle state:busy", "title:\"oops"] {
         assert!(AgentQuery::parse(input, LIVE_FIELDS).is_err());
     }
 }

@@ -426,9 +426,6 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
-    /// Inspect and control this session's Mother supervisor (JSON responses).
-    #[clap(subcommand)]
-    Mother(Mother),
     /// Prepare a persistent project Bubblewrap environment (Linux).
     #[clap(subcommand)]
     Bubblewrap(Bubblewrap),
@@ -568,44 +565,6 @@ pub struct AgentWatchFilters {
     pub lifecycle_type: Vec<String>,
     #[clap(long)]
     pub cursor: Option<String>,
-}
-
-#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
-pub enum Mother {
-    Status,
-    /// Inspect supervision without acknowledging or freezing batches.
-    Overview,
-    /// Read retained events in stable cursor order (50 records by default, at most 200).
-    Journal {
-        #[clap(long)]
-        after: Option<u64>,
-        #[clap(long)]
-        through: Option<u64>,
-        #[clap(long)]
-        limit: Option<usize>,
-    },
-    /// After reviewing unavailable evidence, continue without replaying the original prompt.
-    Resolve {
-        submission_id: String,
-        #[clap(long)]
-        expect_rev: u64,
-    },
-    Inbox,
-    Ack {
-        batch: String,
-    },
-    Checkpoint {
-        #[clap(long, requires = "file")]
-        expect_rev: Option<u64>,
-        #[clap(long, requires = "expect_rev")]
-        file: Option<PathBuf>,
-    },
-    Configure {
-        #[clap(flatten)]
-        filters: AgentWatchFilters,
-    },
-    Pause,
-    Resume,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Subcommand)]

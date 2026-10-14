@@ -27,14 +27,13 @@ fn the_pty_broker_socket_name_is_reserved() {
 }
 
 #[test]
-fn mother_is_discovered_only_for_sessions_with_live_local_sockets() {
+fn metadata_is_discovered_only_for_sessions_with_live_local_sockets() {
     use yinz_runtime::session_checkpoint::write_checkpoint;
-    use yinz_types::internal_ids::TerminalId;
     let sockets = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     let session = SessionInfo {
         name: "controller".into(),
-        mother: Some(TerminalId::new(7)),
+        connected_clients: 2,
         ..Default::default()
     };
     let metadata = crate::metadata::session_info::to_string(&session).unwrap();
@@ -48,7 +47,8 @@ fn mother_is_discovered_only_for_sessions_with_live_local_sockets() {
     let socket_path = sockets.path().join(&session.name);
     let socket = UnixListener::bind(&socket_path).unwrap();
     let live = read_live_session_states(&"current".into(), sockets.path(), cache.path());
-    assert_eq!(live[&session.name].mother, session.mother);
+    assert_eq!(live[&session.name].name, session.name);
+    assert_eq!(live[&session.name].connected_clients, 2);
     drop(socket);
     assert!(read_live_session_states(&"current".into(), sockets.path(), cache.path()).is_empty());
     assert!(socket_path.exists());

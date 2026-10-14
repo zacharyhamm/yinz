@@ -1,4 +1,3 @@
-import type { SessionInfo } from "yinz:plugin";
 import z, { type Action, type BareKey, type KeyWithModifier, type TabInfo } from "yinz:plugin";
 import { test, loadPlugin, assert, assertEquals } from "yinz:testing";
 import { defaultMode } from "./status-bar/default-mode.ts";
@@ -220,46 +219,3 @@ test("status bar clipboard messages clear on input and live Alt release restores
   await p.event("SystemClipboardFailure");
   assert((await p.render(1, 200)).includes("Error using the system clipboard"));
 });
-
-const session: SessionInfo = {
-  name: "test",
-  mother: 1,
-  mother_supervision: { state: "queued", pending: 2, blockers: 1 },
-  tabs: [],
-  panes: { panes: {} },
-  connected_clients: 1,
-  is_current_session: true,
-  available_layouts: [],
-  plugins: {},
-  tab_history: {},
-  pane_history: {},
-  creation_time: { secs: 0, nanos: 0 },
-};
-
-for (const bar of ["status-bar", "tab-bar", "compact-bar"]) {
-  test(`${bar} ignores Mother status without changing layout or adding a click target`, async () => {
-    const plugin = await loadPlugin(`./${bar}.ts`, {
-      replies: {
-        ...replies,
-        GetPluginIds: { hostname: "host", plugin_id: 1, client_id: 1 },
-        RunAction: null,
-      },
-    });
-    assert(!JSON.stringify(named(plugin.commands, "Subscribe")).includes("SessionUpdate"));
-    await plugin.event({ TabUpdate: [activeTab] });
-    for (const cols of [1, 12, 100]) {
-      for (const rows of [1, 2]) {
-        await plugin.event({ SessionUpdate: [[{ ...session, mother_supervision: null }], []] });
-        const before = await plugin.render(rows, cols);
-        const renders = plugin.renders;
-        await plugin.event({ SessionUpdate: [[session], []] });
-        assertEquals(plugin.renders, renders);
-        const after = await plugin.render(rows, cols);
-        assertEquals(after, before);
-        assert(!after.includes("Mother:"));
-        await plugin.event({ Mouse: { LeftClick: [0, Math.max(0, cols - 2)] } });
-      }
-    }
-    assertEquals(named(plugin.commands, "RunAction"), []);
-  });
-}

@@ -413,8 +413,6 @@ impl Screen {
                 .unwrap_or_default()
         };
         let session_info = SessionInfo {
-            mother: None,
-            mother_supervision: None,
             name: self.session_name.clone(),
             tabs: tab_infos,
             panes: pane_manifest,
@@ -437,9 +435,7 @@ impl Screen {
         self.report_session_info(session_info)
     }
 
-    fn report_session_info(&mut self, mut session_info: SessionInfo) -> Result<()> {
-        session_info.mother = self.reported_mother(&session_info.panes);
-        session_info.mother_supervision = session_info.mother.and(self.mother_status.clone());
+    fn report_session_info(&mut self, session_info: SessionInfo) -> Result<()> {
         let err_context = || "Failed to report session info".to_string();
 
         self.bus

@@ -260,8 +260,6 @@ pub enum Action {
     TogglePaneFrames,
     /// Toggle the client-local command palette prototype.
     ToggleCommandPalette,
-    /// Show or hide the session's mother agent, or offer to launch one when there is none.
-    ToggleMother,
     SetPaneFrameStyle(PaneFrameStyle),
     /// Toggle between sending text commands to all panes on the current tab and normal mode.
     ToggleActiveSyncTab,

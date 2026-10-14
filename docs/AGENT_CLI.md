@@ -902,7 +902,7 @@ An authorized `agent prompt` also authorizes replacement of an idle draft. Do no
 CLI and plugin prompts use the same behavior. No additional flag or recovery command is required.
 Automatic clearing captures the input revision internally and does not require three seconds of quiet.
 Every provider supporting prompts clears before delivery, even when the composer is hidden or its layout is unrecognized.
-The legacy `--preserve-draft` flag is accepted but ignored. Unsolicited Mother deliveries retain their draft protections.
+The legacy `--preserve-draft` flag is accepted but ignored.
 Active work, dialogs, and pending submissions still prevent prompt delivery.
 
 The prompt validates all arguments and reserves its submission ID before writing.

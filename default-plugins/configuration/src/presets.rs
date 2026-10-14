@@ -57,7 +57,6 @@ fn agent_keybinds(entry_key: &str, exit_mode: &str, plain_entry: bool) -> String
             }};
             SwitchToMode "{exit_mode}"
         }}
-        bind "m" {{ ToggleMother; SwitchToMode "{exit_mode}"; }}
         bind "a" {{
             LaunchOrFocusPlugin "agents" {{
                 floating true
@@ -1677,7 +1676,7 @@ mod tests {
                     Action::KeybindPipe { name: Some(name), plugin: None, launch_new: false, .. }
                         if name == "agent_strip_reposition"
                 ));
-                for key in ["n", "d", "m", "a", "o"] {
+                for key in ["n", "d", "a", "o"] {
                     let key: KeyWithModifier = key.parse().unwrap();
                     let actions = &agent[&key];
                     assert_eq!(actions.len(), 2);

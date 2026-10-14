@@ -1749,14 +1749,6 @@ impl TryFrom<SessionInfo> for ProtobufSessionManifest {
             });
         }
         Ok(ProtobufSessionManifest {
-            mother: session_info.mother.map(|id| id.get()),
-            mother_supervision: session_info.mother_supervision.map(|status| {
-                crate::generated_api::api::event::MotherSupervision {
-                    state: status.state,
-                    pending: status.pending as u64,
-                    blockers: status.blockers as u64,
-                }
-            }),
             name: session_info.name.to_string(),
             panes: protobuf_pane_manifests,
             tabs: session_info
@@ -1891,16 +1883,6 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
             );
         }
         Ok(SessionInfo {
-            mother_supervision: protobuf_session_manifest.mother_supervision.map(|status| {
-                yinz_types::agent::mother::MotherStatus {
-                    state: status.state,
-                    pending: status.pending as usize,
-                    blockers: status.blockers as usize,
-                }
-            }),
-            mother: protobuf_session_manifest
-                .mother
-                .map(yinz_types::internal_ids::TerminalId::new),
             name: protobuf_session_manifest.name.into(),
             tabs: protobuf_session_manifest
                 .tabs
@@ -3598,8 +3580,6 @@ fn serialize_session_update_event_with_non_default_values() {
         [1, 2, 3].into_iter().map(TabId::new).collect(),
     );
     let session_info_1 = SessionInfo {
-        mother: None,
-        mother_supervision: None,
         name: "session 1".to_owned().into(),
         tabs: tab_infos,
         panes: PaneManifest { panes },
@@ -3630,8 +3610,6 @@ fn serialize_session_update_event_with_non_default_values() {
         creation_time: Duration::from_secs(100),
     };
     let session_info_2 = SessionInfo {
-        mother: None,
-        mother_supervision: None,
         name: "session 2".to_owned().into(),
         tabs: vec![],
         panes: PaneManifest {
@@ -4666,10 +4644,6 @@ fn multipane_manifest_metadata_roundtrips_and_rejects_invalid_ratios() {
     wire.multipane.as_mut().unwrap().ratio = 10_000;
     assert!(PaneInfo::try_from(wire).is_err());
 }
-
-#[cfg(test)]
-#[path = "unit/mother.rs"]
-mod mother_tests;
 
 #[cfg(test)]
 #[test]

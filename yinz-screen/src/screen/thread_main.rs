@@ -200,7 +200,6 @@ pub(super) fn apply_queued_agent_report(
             .as_ref()
             .and_then(|hook| screen.event_submission(pane_id, hook));
         screen.observe_agent_event(event, hook.as_ref(), submission);
-        screen.observe_mother_activity(event, hook.as_ref().is_some_and(|h| h.is_worker()));
     }
     let started = std::time::Instant::now();
     trace.record("event_enqueue", Duration::ZERO, "enter");
@@ -486,7 +485,6 @@ pub fn screen_thread_main(
     let mut escape_focus = HashMap::new();
     let mut pending_escape_count = 0;
     'instructions: loop {
-        screen.sync_mother_supervisor();
         screen.refresh_agent_controls();
         if screen.agent_events.dirty {
             screen.refresh_agent_events();
@@ -824,12 +822,6 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::ToggleCommandPalette(client_id, _completion) => {
                     screen.toggle_command_palette(client_id);
-                    screen.render()?;
-                },
-                ScreenInstruction::ToggleMother(client_id, _completion) => {
-                    screen
-                        .toggle_mother(client_id)
-                        .context("failed to toggle mother")?;
                     screen.render()?;
                 },
                 ScreenInstruction::ResetAgentEscape(client_id) => {
@@ -4186,36 +4178,6 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::AgentEventProjects(version, result) => {
                     screen.apply_agent_event_projects(version, result);
-                },
-                ScreenInstruction::MotherWake {
-                    generation,
-                    conversation,
-                    input_revision,
-                    submission,
-                    prompt,
-                    reply,
-                } => {
-                    screen.deliver_mother(
-                        generation,
-                        conversation,
-                        input_revision,
-                        submission,
-                        prompt,
-                        reply,
-                    );
-                },
-                ScreenInstruction::MotherStatus(generation, status) => {
-                    if screen
-                        .mother_supervisor
-                        .as_ref()
-                        .is_some_and(|s| s.generation == generation)
-                    {
-                        screen.mother_status = Some(status);
-                        screen.log_and_report_session_state()?;
-                    }
-                },
-                ScreenInstruction::MotherCommandReply(client, response) => {
-                    screen.agent_reply(&super::agent_control::Reply::Client(client), response);
                 },
                 ScreenInstruction::SubscribeAgentEvents(client, options) => {
                     screen.subscribe_agent_events(client, options);
