@@ -45,14 +45,13 @@ fn panel_tabs_open_and_dismiss_without_chat() {
     assert!(!initial.contains("Hocus"));
     assert_eq!(panel(&yinz).pane_info.pane_tabs.unwrap().tabs.len(), 2);
     // The native tab bar owns navigation; activate each lazily loaded companion.
-    for (name, content) in [("Todos", "no projects")] {
-        yinz.send_stdin(&keys::SHIFT_TAB);
-        yinz.send_stdin(b"\x1b[C");
-        yinz.send_stdin(&keys::ENTER);
-        yinz.wait_until(&format!("{name} view loads"), |s| {
-            s.contains(name) && s.text.to_lowercase().contains(&content.to_lowercase())
-        });
-    }
+    let (name, content) = ("Todos", "no projects");
+    yinz.send_stdin(&keys::SHIFT_TAB);
+    yinz.send_stdin(b"\x1b[C");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until(&format!("{name} view loads"), |s| {
+        s.contains(name) && s.text.to_lowercase().contains(&content.to_lowercase())
+    });
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("the panel is dismissed", |s| {
         !s.contains("Agents") && !s.contains("Todos")
@@ -86,68 +85,67 @@ fn creating_an_agent_dismisses_each_companion_panel() {
 }
 
 fn companion_panel_dismisses(create_agent: bool) {
-    for (index, name, content) in [(1, "Todos", "no projects")] {
-        let mut yinz = TestRunner::new(Size {
-            cols: 120,
-            rows: 40,
-        })
-        .with_config(CONFIG)
-        .with_layout(LayoutInfo::Stringified(
-            "layout { pane command=\"claude\"; }".into(),
-        ))
-        .start();
+    let (index, name, content) = (1, "Todos", "no projects");
+    let mut yinz = TestRunner::new(Size {
+        cols: 120,
+        rows: 40,
+    })
+    .with_config(CONFIG)
+    .with_layout(LayoutInfo::Stringified(
+        "layout { pane command=\"claude\"; }".into(),
+    ))
+    .start();
+    let agent = yinz.expect_pty_spawn();
+    agent.output(b"AGENT READY\r\n");
+    yinz.wait_until("the initial terminal is rendered", |s| {
+        s.contains("AGENT READY")
+    });
+    yinz.send_stdin(&keys::ctrl('b'));
+    yinz.wait_until("the panel tab bar is ready", |s| {
+        s.contains("Agents") && s.contains("Todos")
+    });
+    click_text(&mut yinz, name);
+    yinz.wait_until(&format!("{name} is active"), |s| {
+        s.text.to_lowercase().contains(&content.to_lowercase())
+            && panel(&yinz).pane_info.pane_tabs.unwrap().active == index
+    });
+
+    if create_agent {
+        yinz.send_stdin(&keys::ctrl('g'));
+        yinz.wait_until("the new agent modal is ready", |s| {
+            s.contains("Create agent") && s.contains("Create and switch branch")
+        });
+        click_text(&mut yinz, "Create and switch branch");
+        yinz.wait_until("branch creation is unchecked", |s| {
+            s.text
+                .lines()
+                .any(|line| line.contains("Create and switch branch") && line.contains("[ ]"))
+        });
+        click_text(&mut yinz, "Create agent");
         let agent = yinz.expect_pty_spawn();
-        agent.output(b"AGENT READY\r\n");
-        yinz.wait_until("the initial terminal is rendered", |s| {
-            s.contains("AGENT READY")
-        });
-        yinz.send_stdin(&keys::ctrl('b'));
-        yinz.wait_until("the panel tab bar is ready", |s| {
-            s.contains("Agents") && s.contains("Todos")
-        });
-        click_text(&mut yinz, name);
-        yinz.wait_until(&format!("{name} is active"), |s| {
-            s.text.to_lowercase().contains(&content.to_lowercase())
-                && panel(&yinz).pane_info.pane_tabs.unwrap().active == index
-        });
-
-        if create_agent {
-            yinz.send_stdin(&keys::ctrl('g'));
-            yinz.wait_until("the new agent modal is ready", |s| {
-                s.contains("Create agent") && s.contains("Create and switch branch")
-            });
-            click_text(&mut yinz, "Create and switch branch");
-            yinz.wait_until("branch creation is unchecked", |s| {
-                s.text
-                    .lines()
-                    .any(|line| line.contains("Create and switch branch") && line.contains("[ ]"))
-            });
-            click_text(&mut yinz, "Create agent");
-            let agent = yinz.expect_pty_spawn();
-            agent.output(b"NEW AGENT\r\n");
-            yinz.wait_until(
-                "the new agent receives focus and the panel is dismissed",
-                |s| s.contains("NEW AGENT") && !s.contains("Create agent") && !s.contains("Todos"),
-            );
-        } else {
-            // The terminal's top-left corner is outside the panel's padded rectangle.
-            yinz.send_stdin(b"\x1b[<0;1;1M");
-            yinz.send_stdin(b"\x1b[<0;1;1m");
-            yinz.wait_until("terminal focus dismisses the companion panel", |s| {
-                !s.contains("Agents") && !s.contains("Todos")
-            });
-        }
-
-        yinz.send_stdin(&keys::ctrl('b'));
-        yinz.wait_until("the dismissed panel can be reopened", |s| {
-            s.contains("Agents") && s.contains("Todos")
-        });
-        assert!(
-            panel(&yinz).pane_info.is_focused,
-            "reopening returns keyboard focus to the panel"
+        agent.output(b"NEW AGENT\r\n");
+        yinz.wait_until(
+            "the new agent receives focus and the panel is dismissed",
+            |s| s.contains("NEW AGENT") && !s.contains("Create agent") && !s.contains("Todos"),
         );
-        yinz.quit();
+    } else {
+        // The terminal's top-left corner is outside the panel's padded rectangle.
+        yinz.send_stdin(b"\x1b[<0;1;1M");
+        yinz.send_stdin(b"\x1b[<0;1;1m");
+        yinz.wait_until("terminal focus dismisses the companion panel", |s| {
+            !s.contains("Agents") && !s.contains("Todos")
+        });
     }
+
+    yinz.send_stdin(&keys::ctrl('b'));
+    yinz.wait_until("the dismissed panel can be reopened", |s| {
+        s.contains("Agents") && s.contains("Todos")
+    });
+    assert!(
+        panel(&yinz).pane_info.is_focused,
+        "reopening returns keyboard focus to the panel"
+    );
+    yinz.quit();
 }
 
 fn panel(yinz: &TestSession) -> PaneListEntry {
