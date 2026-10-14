@@ -2,6 +2,23 @@ use super::*;
 use serde_json::{json, Value};
 use syntect::highlighting::{Color, Theme, ThemeSet};
 
+/// The release whose loader, palettes and derivations the descriptor follows.
+macro_rules! verified_version {
+    () => {
+        "0.162.1"
+    };
+}
+
+pub(super) const PROVIDER: Provider = Provider {
+    identifies,
+    verified: verified_version!(),
+    resolve,
+};
+
+fn identifies(line: &str) -> bool {
+    line.starts_with("codex-cli ")
+}
+
 pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot) -> Result<()> {
     let (cwd, overrides, profile) = launch_options(context)?;
     let root = context
@@ -69,9 +86,14 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
             }
         }
     }
-    snapshot
-        .provenance
-        .push("codex-rust-v0.162.1/two-face-0.5.1/syntect-5.3.0".into());
+    snapshot.provenance.push(
+        concat!(
+            "codex-rust-v",
+            verified_version!(),
+            "/two-face-0.5.1/syntect-5.3.0"
+        )
+        .into(),
+    );
     provider_colors(&mut snapshot.definitions);
     terminal_defaults(&mut snapshot.definitions);
     let Some(theme) = theme else {
@@ -101,9 +123,12 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
 // Palette data normalized from rust-v0.162.1/tui/assets/themes. Syntax tokens
 // retain their source definitions; compilation gives shared UI colors priority.
 fn model_theme(name: &str) -> Result<Option<Theme>> {
-    let descriptors: BTreeMap<String, Vec<Value>> =
-        serde_json::from_str(include_str!("descriptors/codex-0.162.1.json"))
-            .context("read verified Codex model palettes")?;
+    let descriptors: BTreeMap<String, Vec<Value>> = serde_json::from_str(include_str!(concat!(
+        "descriptors/codex-",
+        verified_version!(),
+        ".json"
+    )))
+    .context("read verified Codex model palettes")?;
     let Some(items) = descriptors.get(name) else {
         return Ok(None);
     };

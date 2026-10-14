@@ -1,6 +1,23 @@
 use super::*;
 use serde_json::Value;
 
+/// The release whose palettes, loader and renderer the descriptor was extracted from.
+macro_rules! verified_version {
+    () => {
+        "2.1.296"
+    };
+}
+
+pub(super) const PROVIDER: Provider = Provider {
+    identifies,
+    verified: verified_version!(),
+    resolve,
+};
+
+fn identifies(line: &str) -> bool {
+    line.ends_with(" (Claude Code)")
+}
+
 pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot) -> Result<()> {
     if [
         "CLAUDE_CODE_USE_COWORK_PLUGINS",
@@ -124,10 +141,11 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
         apply(&value, &mut theme)?;
     }
     snapshot.theme = theme.clone();
-    snapshot.provenance = vec!["claude-2.1.296/palettes-v2".into()];
-    let mut presets: BTreeMap<String, BTreeMap<String, String>> =
-        serde_json::from_str(include_str!("descriptors/claude-2.1.296.json"))
-            .context("read verified Claude palette descriptor")?;
+    snapshot.provenance = vec![concat!("claude-", verified_version!(), "/palettes-v2").into()];
+    let mut presets: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_str(
+        include_str!(concat!("descriptors/claude-", verified_version!(), ".json")),
+    )
+    .context("read verified Claude palette descriptor")?;
     let (base, overrides) = if let Some(slug) = theme.strip_prefix("custom:") {
         if slug.is_empty()
             || Path::new(slug).components().count() != 1

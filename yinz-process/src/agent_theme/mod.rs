@@ -63,10 +63,20 @@ impl LaunchContext {
     }
 }
 
+/// What a provider module verified: how its `--version` output names it, the release its
+/// descriptor follows, and how it reads the current theme.
+struct Provider {
+    identifies: fn(&str) -> bool,
+    verified: &'static str,
+    resolve: fn(&LaunchContext, &mut AgentThemeSnapshot) -> Result<()>,
+}
+
 pub fn resolve(provider: &str, context: &LaunchContext) -> Option<AgentThemeSnapshot> {
-    if !matches!(provider, "claude" | "codex") {
-        return None;
-    }
+    let descriptor = match provider {
+        "claude" => claude::PROVIDER,
+        "codex" => codex::PROVIDER,
+        _ => return None,
+    };
     let mut snapshot = AgentThemeSnapshot {
         version: SNAPSHOT_VERSION,
         provider: provider.into(),
@@ -77,16 +87,25 @@ pub fn resolve(provider: &str, context: &LaunchContext) -> Option<AgentThemeSnap
         definitions: vec![],
         collisions: vec![],
     };
+    let mut version_note = None;
     let result = (|| {
         let mut command = context.command();
         command.arg("--version");
-        let version = bounded_output(command, Duration::from_secs(3))?;
-        let version = std::str::from_utf8(&version)
-            .context("agent version is not UTF-8")?
-            .trim();
+        let output = bounded_output(command, Duration::from_secs(3))?;
+        // Wrapper notices may precede the version line, and the capture limit can split a
+        // character. Only the identifying line matters, and its version is ASCII-filtered.
+        let output = String::from_utf8_lossy(&output);
+        // Identify the provider, not the release: later releases are assumed to keep the
+        // configuration and theme formats, and resolution fails when they can't be read.
+        let line = output
+            .lines()
+            .map(str::trim)
+            .find(|line| (descriptor.identifies)(line))
+            .with_context(|| format!("agent version output does not identify {provider}"))?;
         // Record a version identifier, never arbitrary output from a custom executable.
-        snapshot.provider_version = version
+        snapshot.provider_version = line
             .split_whitespace()
+            .map(|part| part.strip_prefix('v').unwrap_or(part))
             .find(|part| {
                 part.bytes().next().is_some_and(|b| b.is_ascii_digit())
                     && part
@@ -96,17 +115,26 @@ pub fn resolve(provider: &str, context: &LaunchContext) -> Option<AgentThemeSnap
             .filter(|part| part.len() <= 64)
             .unwrap_or("unknown")
             .to_owned();
-        match provider {
-            "claude" if version == "2.1.296 (Claude Code)" => {
-                claude::resolve(context, &mut snapshot)
-            },
-            "codex" if version == "codex-cli 0.162.1" => codex::resolve(context, &mut snapshot),
-            _ => bail!("no verified palette descriptor for this agent version"),
+        if snapshot.provider_version != descriptor.verified {
+            version_note = Some(format!(
+                "descriptor verified against {}, running {}",
+                descriptor.verified, snapshot.provider_version
+            ));
         }
+        (descriptor.resolve)(context, &mut snapshot)
     })();
     if let Err(error) = result {
         snapshot.definitions.clear();
         snapshot.availability = Availability::Unavailable(format!("{error:#}"));
+    }
+    // An unverified release is never fully available, so the launcher always reports it.
+    if let Some(note) = version_note {
+        match &mut snapshot.availability {
+            Availability::Available => snapshot.availability = Availability::Partial(note),
+            Availability::Partial(detail) | Availability::Unavailable(detail) => {
+                *detail = format!("{detail}; {note}");
+            },
+        }
     }
     snapshot.finish();
     Some(snapshot)
@@ -246,7 +274,7 @@ fn bounded_output(mut command: Command, timeout: Duration) -> Result<Vec<u8>> {
         .context("rewind version capture")?;
     let mut bytes = Vec::new();
     output
-        .take(4096)
+        .take(64 * 1024)
         .read_to_end(&mut bytes)
         .context("read agent version")?;
     Ok(bytes)
