@@ -42,6 +42,7 @@ pub const BUILTIN_DENO_PLUGIN_NAMES: &[&str] = &[
     "agent-opencode",
     "agent-exit",
     "session-palette",
+    "configuration-palette",
 ];
 
 /// The per-file source budget of a script plugin: configuration applies it when it reads one,

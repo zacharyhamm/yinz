@@ -3907,7 +3907,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 20, 21, 22")]
+    #[prost(oneof="server_to_client_msg::Message", tags="23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -3945,6 +3945,8 @@ pub mod server_to_client_msg {
         RenamedSession(super::RenamedSessionMsg),
         #[prost(message, tag="13")]
         ConfigFileUpdated(super::ConfigFileUpdatedMsg),
+        #[prost(bool, tag="26")]
+        SetMouseMode(bool),
         #[prost(message, tag="14")]
         PaneRenderUpdate(super::PaneRenderUpdateMsg),
         #[prost(message, tag="15")]

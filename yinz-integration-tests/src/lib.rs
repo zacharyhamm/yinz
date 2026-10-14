@@ -51,5 +51,6 @@ pub fn default_timeout() -> Duration {
         .ok()
         .and_then(|v| v.parse().ok())
         .map(Duration::from_millis)
-        .unwrap_or(Duration::from_secs(10))
+        // Startup includes database fsyncs that can exceed ten seconds under parallel load.
+        .unwrap_or(Duration::from_secs(60))
 }

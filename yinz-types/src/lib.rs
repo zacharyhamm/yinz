@@ -59,3 +59,5 @@ pub mod authoring;
 pub mod secrets;
 
 pub mod pick;
+
+pub mod configuration;

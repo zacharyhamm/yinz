@@ -30,3 +30,5 @@ pub mod theme;
 mod keybinds;
 
 pub mod project_layout;
+
+pub mod editor;

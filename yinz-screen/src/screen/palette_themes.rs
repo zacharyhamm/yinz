@@ -144,7 +144,7 @@ impl Screen {
         }
     }
 
-    pub(super) fn save_palette_theme(&mut self, client: ClientId, name: String) {
+    pub(super) fn save_palette_theme(&mut self, client: ClientId, name: String, permanent: bool) {
         let Some(preview) = self
             .theme_preview
             .as_mut()
@@ -164,6 +164,7 @@ impl Screen {
                 client,
                 request,
                 name,
+                permanent,
                 cancelled: preview.cancelled.clone(),
             })
         {
@@ -186,7 +187,7 @@ impl Screen {
         }
         match result {
             Ok(()) => {
-                super::notify(&self.bus.senders, "Completed: Save theme".into());
+                super::notify(&self.bus.senders, "Completed: Apply theme".into());
                 self.theme_preview = None;
                 self.close_command_palette(client);
             },

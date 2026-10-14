@@ -4293,6 +4293,9 @@ fn theme_preview_disconnect_reload_and_failed_save() {
     open_themes(&mut screen);
     palette_key(&mut screen, BareKey::Up);
     palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Right);
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Enter);
     let request = receiver
         .try_iter()
         .find_map(|(instruction, _)| match instruction {
@@ -4376,6 +4379,8 @@ fn theme_preview_cancel_invalidates_queued_save() {
     let receiver = screen_wired_to_server(&mut screen);
     open_themes(&mut screen);
     palette_key(&mut screen, BareKey::Up);
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Enter);
     palette_key(&mut screen, BareKey::Enter);
     let cancelled = receiver
         .try_iter()

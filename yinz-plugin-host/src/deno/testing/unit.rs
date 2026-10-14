@@ -33,6 +33,7 @@ builtin_unit_suites! {
     builtin_unit_agent_policy: "agent-policy",
     builtin_unit_agent_opencode: "agent-opencode",
     builtin_unit_agent_exit: "agent-exit",
+    builtin_unit_configuration_palette: "configuration-palette",
     builtin_unit_session_palette: "session-palette",
 }
 

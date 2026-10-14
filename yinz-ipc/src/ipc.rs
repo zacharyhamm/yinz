@@ -297,6 +297,9 @@ pub enum ServerToClientMsg {
         name: SessionName,
     },
     ConfigFileUpdated,
+    SetMouseMode {
+        enabled: bool,
+    },
     PaneRenderUpdate {
         pane_id: PaneId,
         viewport: Vec<String>,

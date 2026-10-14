@@ -1153,11 +1153,21 @@ impl Config {
             let config_env = environment_variables_from_kdl(env_config)?;
             config.env = config.env.merge(config_env);
         }
+        if let Some(edits) = single_top_level_block(&kdl_config, crate::editor::EDITS_BLOCK)? {
+            let patches = crate::editor::patches_from_kdl(edits)?;
+            config = crate::editor::apply(&config, &patches).map_err(|error| {
+                ConfigError::new_kdl_error(error, edits.span().offset(), edits.span().len())
+            })?;
+        }
         Ok(config)
     }
     /// The whole configuration as KDL text. `Err` when a keybinding or context menu item holds
     /// an action with no config spelling: the text is refused rather than written without it.
     pub fn to_string(&self, add_comments: bool) -> Result<String, ConfigError> {
+        Ok(self.to_kdl(add_comments)?.to_string())
+    }
+
+    pub(crate) fn to_kdl(&self, add_comments: bool) -> Result<KdlDocument, ConfigError> {
         let mut document = KdlDocument::new();
 
         let clear_defaults = true;
@@ -1195,7 +1205,7 @@ impl Config {
             .nodes_mut()
             .append(&mut options::to_kdl(&self.options, add_comments));
 
-        Ok(document.to_string())
+        Ok(document)
     }
 }
 

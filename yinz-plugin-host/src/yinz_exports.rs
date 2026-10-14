@@ -975,6 +975,8 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::GetLocalUtcOffset { epoch_ms } => get_local_utc_offset(env, epoch_ms),
             PluginCommand::DataUnwatch { watch_id } => data_unwatch(env, watch_id),
             PluginCommand::ScanHostFolder(folder_to_scan) => scan_host_folder(env, folder_to_scan),
+            PluginCommand::InspectConfiguration(theme) => configuration_editor(env, None, theme),
+            PluginCommand::EditConfiguration(edit) => configuration_editor(env, Some(edit), None),
             PluginCommand::ProjectConfigRead { directory } => project_config(env, directory, None),
             PluginCommand::ProjectConfigWrite {
                 directory,
@@ -7212,6 +7214,33 @@ fn virtual_path(env: &PluginEnv, real: &Path, requested: &Path) -> PathBuf {
     real.to_path_buf()
 }
 
+fn configuration_editor(
+    env: &mut PluginEnv,
+    edit: Option<yinz_types::configuration::Edit>,
+    theme: Option<String>,
+) {
+    let (reply, receiver) = crossbeam::channel::bounded(1);
+    let result = (|| -> Result<Vec<u8>> {
+        env.senders
+            .send_to_server(ServerInstruction::ConfigurationEditor { edit, theme, reply })
+            .context("requesting configuration editor")?;
+        let snapshot = receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .context("configuration editor did not reply")?
+            .map_err(|e| anyhow!("{e}"))?;
+        serde_json::to_vec(&snapshot).context("encoding configuration snapshot")
+    })();
+    let response = ProtobufFsReadResponse {
+        result: Some(match result {
+            Ok(contents) => fs_read_response::Result::Contents(contents),
+            Err(error) => fs_read_response::Result::Error(format!("{error:#}")),
+        }),
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+        .context("replying to configuration editor")
+        .non_fatal();
+}
+
 fn project_config(
     env: &mut PluginEnv,
     directory: PathBuf,
@@ -9274,6 +9303,8 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::DataCatalog => PermissionType::PluginData,
         CommandType::RebindKeys
         | CommandType::RegisterDefaultKeybindings
+        | CommandType::InspectConfiguration
+        | CommandType::EditConfiguration
         | CommandType::Reconfigure => PermissionType::Reconfigure,
         CommandType::ChangeHostFolder => PermissionType::FullHdAccess,
         // Nominal: the handler refuses anything that is not a builtin, and a builtin is never

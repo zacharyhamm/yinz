@@ -234,6 +234,12 @@ impl ClientLoop<'_> {
             },
             // Handled entirely on the server side, or carried only for the
             // error context they add to the trace.
+            ClientInstruction::SetMouseMode(enabled) => {
+                self.send_input_instructions
+                    .send(InputInstruction::SetMouseMode(enabled))
+                    .context("updating mouse mode")
+                    .non_fatal();
+            },
             ClientInstruction::Connected
             | ClientInstruction::UnblockCliPipeInput(..)
             | ClientInstruction::CliPipeOutput(..)

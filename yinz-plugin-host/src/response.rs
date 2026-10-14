@@ -669,7 +669,10 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 None => Err(anyhow!("yinz answered with nothing")),
             })
         },
-        CommandType::ProjectConfigRead | CommandType::ProjectConfigWrite => {
+        CommandType::InspectConfiguration
+        | CommandType::EditConfiguration
+        | CommandType::ProjectConfigRead
+        | CommandType::ProjectConfigWrite => {
             decode(bytes).and_then(|r: ProtobufFsReadResponse| match r.result {
                 Some(fs_read_response::Result::Contents(contents)) => {
                     let snapshot: serde_json::Value = serde_json::from_slice(&contents)

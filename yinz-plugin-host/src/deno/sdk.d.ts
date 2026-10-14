@@ -251,6 +251,9 @@ export type StringMap = Record<string, string>;
 type Tagged<M> = { [K in keyof M]: { [P in K]: M[K] } }[keyof M];
 /** Raw command payloads retain Rust field names and tuple positions. */
 export interface CommandArgs {
+  /** Pass a theme name to load its fields; null returns searchable theme names. */
+  InspectConfiguration: string | null;
+  EditConfiguration: ConfigurationEdit;
   TestPlugin: {name: string; options: PluginTestOptions; request_id: string};
   CancelPluginTest: string;
   CheckPlugin: {name: string; source: string; mode: PluginCheckMode};
@@ -410,6 +413,7 @@ export interface CommandReplies {
   RegisterAgentProvider: AgentProvider[]; GetAgentProviders: AgentProvider[];
   OpenCommandPaneInGitCheckoutNearPlugin: PaneId | null; SpawnAgent: SpawnedAgent;
   OpenCommandPaneInNewTab: PaneInNewTab; OpenPluginPaneInNewTab: PaneInNewTab; OpenEditorPaneInNewTab: PaneInNewTab;
+  InspectConfiguration: ConfigurationSnapshot; EditConfiguration: ConfigurationSnapshot;
   ReadPluginLog: string; ProjectConfigRead: ProjectConfigSnapshot; ProjectConfigWrite: ProjectConfigSnapshot;
   FsRead: Uint8Array; FsList: FsEntry[]; FsMetadata: FileMetadata | null;
   FsWrite: boolean; FsRemove: boolean; FsCreateDir: boolean; FsRename: boolean;
@@ -1046,7 +1050,7 @@ export interface PaletteAction {
 }
 export type PaletteActionSource = (request: PaletteRequest) => PaletteAction[] | Promise<PaletteAction[]>;
 export type PaletteField =
-  | { type: "text" | "directory"; id: string; label: string; initialValue?: string }
+  | { type: "text" | "directory" | "file" | "multiline" | "key" | "number"; id: string; label: string; initialValue?: string; help?: string; error?: string; minimum?: number; maximum?: number }
   | { type: "choice"; id: string; label: string; options: string[]; initialValue?: string };
 export interface PaletteCompletion {
   type: "complete";
@@ -1101,3 +1105,9 @@ export interface PickOptions {
   timeoutMs?: number;
 }
 export type PickCommand = { Start: { request_id: string; options: PickOptions } } | { Cancel: { request_id: string; timeout: boolean } } | "Request" | { Attach: { pane_id: number } } | { Complete: { result: { Ok: string | null } | { Err: string } } };
+
+export interface ConfigurationNode {name: string; arguments: (string | number | boolean)[]; properties: Record<string, string | number | boolean>; children: ConfigurationNode[];}
+export interface ConfigurationPatch {reset?: boolean; path: string[]; node: ConfigurationNode | null;}
+export interface ConfigurationEdit {revision: string; destination: "session" | "permanent"; patches: ConfigurationPatch[]; reset: string[][];}
+export interface ConfigurationSetting {name: string; label: string; kind: string; choices: string[]; minimum: number | null; maximum: number | null; help: string; timing: string;}
+export interface ConfigurationSnapshot {action_children: Record<string, ConfigurationNode[]>; action_properties: Record<string, Record<string, string | number | boolean>>; section_timing: Record<string, string>; sections: string[]; templates: Record<string, ConfigurationNode[]>; actions: ConfigurationNode[]; revision: string; catalog: ConfigurationSetting[]; saved: ConfigurationNode[]; clients: Record<string, ConfigurationNode[]>; overrides: ConfigurationPatch[]; notice: string;}

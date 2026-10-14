@@ -613,6 +613,9 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                     name: name.to_string(),
                 })
             },
+            ServerToClientMsg::SetMouseMode { enabled } => {
+                server_to_client_msg::Message::SetMouseMode(enabled)
+            },
             ServerToClientMsg::ConfigFileUpdated => {
                 server_to_client_msg::Message::ConfigFileUpdated(ConfigFileUpdatedMsg {})
             },
@@ -768,6 +771,9 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                 Ok(ServerToClientMsg::RenamedSession {
                     name: renamed.name.into(),
                 })
+            },
+            Some(server_to_client_msg::Message::SetMouseMode(enabled)) => {
+                Ok(ServerToClientMsg::SetMouseMode { enabled })
             },
             Some(server_to_client_msg::Message::ConfigFileUpdated(_)) => {
                 Ok(ServerToClientMsg::ConfigFileUpdated)

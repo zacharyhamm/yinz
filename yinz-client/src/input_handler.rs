@@ -237,6 +237,20 @@ impl InputHandler {
                     self.os_input
                         .send_to_server(ClientToServerMsg::ModifiersHeld { modifiers });
                 },
+                Ok((InputInstruction::SetMouseMode(enabled), _error_context)) => {
+                    if enabled != self.mouse_mode_active {
+                        let result = if enabled {
+                            self.os_input.enable_mouse()
+                        } else {
+                            self.os_input.disable_mouse()
+                        };
+                        if result.is_ok() {
+                            self.mouse_mode_active = enabled;
+                        }
+                        result.context("updating configured mouse mode").non_fatal();
+                    }
+                    self.options.mouse_mode = Some(enabled);
+                },
                 Ok((InputInstruction::Exit, _error_context)) => {
                     self.should_exit = true;
                 },
