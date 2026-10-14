@@ -391,7 +391,7 @@ impl Tab {
             .get_mut(index)
             .context("invalid pane tab index")?;
         if slot.terminal_id.is_some() {
-            bail!("close the Mother overlay to close Conversation");
+            bail!("close the containing pane to close its terminal tab");
         }
         tabs.generations[index] += 1;
         slot.state = PaneTabLoadState::Unloaded;

@@ -108,6 +108,23 @@ fn a_pane_added_beside_only_chrome_fills_the_viewport() {
     );
 }
 
+#[test]
+fn a_pane_added_to_an_empty_tab_fills_the_viewport() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut tab = create_new_tab_with_layout(size, TiledPaneLayout::default());
+    let content = PaneId::Terminal(crate::TerminalId::new(0));
+    let mut pane = tab.extract_pane(content, true).expect("content pane");
+    // Adopted panes start with default geometry, unlike a pane moved within a session.
+    pane.set_geom(PaneGeom::default());
+
+    assert!(tab.tiled_panes.insert_pane(content, pane, None).is_none());
+    let geom = tab.tiled_panes.get_pane(content).unwrap().current_geom();
+    assert_eq!(
+        (geom.x, geom.y, geom.cols.as_usize(), geom.rows.as_usize()),
+        (0, 0, size.cols, size.rows)
+    );
+}
+
 /// Chrome that overlaps the viewport is not "nothing there": the shortcut must not lay a
 /// pane over it.
 #[test]

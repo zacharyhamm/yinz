@@ -80,7 +80,6 @@ impl Screen {
         state.agents.submitted = matches!(
             &action,
             AgentAction::Current { .. }
-                | AgentAction::Mother { .. }
                 | AgentAction::Duplicate { .. }
                 | AgentAction::Launch { .. }
                 | AgentAction::History(yinz_bus::command_palette::HistoryAction::Resume { .. })

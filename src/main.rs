@@ -150,16 +150,6 @@ fn main() {
     configure_logger();
     create_config_and_cache_folders();
 
-    if let Some(Command::Mother(command)) = opts.command.clone() {
-        match agent::mother(command, &opts) {
-            Ok(code) => std::process::exit(code),
-            Err(error) => {
-                println!("{}", serde_json::json!({"error":format!("{error:#}")}));
-                std::process::exit(1);
-            },
-        }
-    }
-
     if let Some(Command::Agent(command)) = opts.command.clone() {
         match agent::run(command, &opts) {
             Ok(code) => std::process::exit(code),

@@ -150,32 +150,7 @@ pub fn from_string(
         .and_then(|e| e.value().as_i64())
         .map(|c| Duration::from_secs(c as u64))
         .unwrap_or_default();
-    let mother = kdl_document
-        .get("mother")
-        .map(|node| {
-            node.entries()
-                .iter()
-                .next()
-                .and_then(|entry| entry.value().as_i64())
-                .and_then(|id| yinz_types::internal_ids::TerminalId::try_from(id).ok())
-                .ok_or("invalid mother terminal ID".to_owned())
-        })
-        .transpose()?;
-    let mother_supervision = kdl_document
-        .get("mother_supervision")
-        .map(|node| {
-            let raw = node
-                .entries()
-                .first()
-                .and_then(|entry| entry.value().as_string())
-                .ok_or("invalid Mother supervision metadata")?;
-            serde_json::from_str(raw).map_err(|_| "invalid Mother supervision metadata")
-        })
-        .transpose()
-        .map_err(str::to_owned)?;
     Ok(SessionInfo {
-        mother_supervision,
-        mother,
         name: name.into(),
         tabs,
         panes,
@@ -281,16 +256,6 @@ pub fn to_string(value: &SessionInfo) -> anyhow::Result<String> {
     kdl_document.nodes_mut().push(tab_history);
     kdl_document.nodes_mut().push(pane_history);
 
-    if let Some(status) = &value.mother_supervision {
-        let mut node = KdlNode::new("mother_supervision");
-        node.push(serde_json::to_string(status)?);
-        kdl_document.nodes_mut().push(node);
-    }
-    if let Some(id) = value.mother {
-        let mut mother = KdlNode::new("mother");
-        mother.push(i64::from(id.get()));
-        kdl_document.nodes_mut().push(mother);
-    }
     let mut creation_time_node = KdlNode::new("creation_time");
     creation_time_node.push(value.creation_time.as_secs() as i64);
     kdl_document.nodes_mut().push(creation_time_node);

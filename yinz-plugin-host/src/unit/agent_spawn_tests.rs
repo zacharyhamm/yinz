@@ -543,14 +543,12 @@ fn agent_placement_timeout_preserves_known_tab_and_checkout_without_cancelling_t
     let (tx, rx) = oneshot::channel();
     let mut completion = NotificationEnd::new(tx);
     completion.wait_for_agent_start = true;
-    completion.is_mother = true;
     let response = wait_for_agent_placement(rx, &resources, Duration::ZERO)
         .unwrap_err()
         .into_response();
     assert_eq!(response.outcome, AgentOutcome::TimedOut);
     assert_eq!(response.launch_resources, Some(resources));
     assert!(response.message.unwrap().contains("late placement"));
-    assert!(completion.is_mother);
     // The pending startup/layout still owns its notification and can finish after this reply.
     completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
     completion.complete_pane_placement(TabId::new(7));

@@ -18,7 +18,7 @@ pub enum PaneTarget {
     /// (an ssh alias, `user@host`, or an `ssh://` URL).
     Ssh { host: String },
     /// This machine, inside the Bubblewrap environment prepared for `root`: a primary
-    /// checkout or mother's dedicated directory. The command stays the one asked for;
+    /// checkout. The command stays the one asked for;
     /// the sandbox is applied where the process is exec'd.
     Bubblewrap { root: PathBuf },
 }

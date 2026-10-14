@@ -218,7 +218,6 @@ export function hintsForMode(mi: ModeInfo): Hint[] {
         hint("Duplicate agent", "Duplicate", plugin("duplicate-agent")),
         hint("Fork agent", "Fork", plugin("fork-agent")),
         hint("Agents", "Agents", plugin("agents")),
-        hint("Mother", "Mother", doing("ToggleMother")),
         hint("Move panel", "Move", pipeKeys(km, "agent_strip_reposition")),
         select,
       ];

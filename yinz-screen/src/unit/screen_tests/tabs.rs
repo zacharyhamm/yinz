@@ -1381,3 +1381,129 @@ fn a_reconciled_client_lands_in_a_tab_that_knows_it_is_visible() {
         "re-homing is not a re-attach: the client keeps the mode it was in",
     );
 }
+
+#[test]
+fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutation() {
+    use std::os::unix::net::UnixListener;
+    use yinz_runtime::consts::{session_info_folder_for_session, YINZ_SOCK_DIR};
+    use yinz_types::internal_ids::SessionName;
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    let client = ClientId::new(1);
+    let old: SessionName = format!("rename-old-{}", uuid::Uuid::new_v4()).into();
+    screen.session_name = old.clone();
+    std::fs::create_dir_all(&*YINZ_SOCK_DIR).unwrap();
+    let old_socket = YINZ_SOCK_DIR.join(&old);
+    let ownership = std::sync::Arc::new(
+        yinz_ipc::session_ownership::SessionOwnership::acquire(&old_socket)
+            .unwrap()
+            .unwrap(),
+    );
+    let _old = ownership.bind().unwrap();
+    screen.bus.senders.session_ownership = Some(ownership);
+    let cache = session_info_folder_for_session(&old);
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("sentinel"), "old").unwrap();
+    let target: SessionName = format!("rename-target-{}", uuid::Uuid::new_v4()).into();
+    let target_socket = YINZ_SOCK_DIR.join(&target);
+    let target_cache = session_info_folder_for_session(&target);
+    let destination_claim = yinz_ipc::session_ownership::SessionOwnership::acquire(&target_socket)
+        .unwrap()
+        .unwrap();
+    screen.rename_session(target.clone(), client).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert!(!target_socket.exists());
+    drop(destination_claim);
+    let _target = UnixListener::bind(&target_socket).unwrap();
+    screen.rename_session(target.clone(), client).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert!(target_socket.exists());
+    std::fs::remove_file(&target_socket).unwrap();
+    std::fs::create_dir_all(&target_cache).unwrap();
+    std::fs::write(target_cache.join("sentinel"), "target").unwrap();
+    drop(UnixListener::bind(&target_socket).unwrap());
+    screen.rename_session(target.clone(), client).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert!(yinz_ipc::consts::ipc_connect(&old_socket).is_ok());
+    assert_eq!(
+        std::fs::read_to_string(target_cache.join("sentinel")).unwrap(),
+        "target"
+    );
+    std::fs::remove_dir_all(&target_cache).unwrap();
+    // A self-referential link produces ELOOP instead of an absent path.
+    std::os::unix::fs::symlink(&target_socket, &target_socket).unwrap();
+    screen.rename_session(target.clone(), client).unwrap();
+    assert_eq!(screen.session_name, old);
+    std::fs::remove_file(&target_socket).unwrap();
+    std::os::unix::fs::symlink(&target_cache, &target_cache).unwrap();
+    screen.rename_session(target.clone(), client).unwrap();
+    assert_eq!(screen.session_name, old);
+    screen.rename_session(old.clone(), client).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(cache.join("sentinel")).unwrap(),
+        "old"
+    );
+    assert!(old_socket.exists());
+    std::fs::remove_file(&target_cache).unwrap();
+    std::fs::remove_file(&old_socket).unwrap();
+    // Fail after moving the checkpoint: the missing source socket forces rollback.
+    screen.rename_session(target, client).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert_eq!(
+        std::fs::read_to_string(cache.join("sentinel")).unwrap(),
+        "old"
+    );
+    assert!(!target_cache.exists());
+    assert!(
+        yinz_ipc::session_ownership::SessionOwnership::acquire(&old_socket)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        yinz_ipc::session_ownership::SessionOwnership::acquire(&target_socket)
+            .unwrap()
+            .is_some()
+    );
+    std::fs::remove_dir_all(cache).unwrap();
+}
+
+#[test]
+fn rename_session_reclaims_stale_destination_despite_cached_live_entry() {
+    use yinz_ipc::session_ownership::SessionOwnership;
+    use yinz_runtime::consts::{session_info_folder_for_session, YINZ_SOCK_DIR};
+    use yinz_types::internal_ids::SessionName;
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    let client = ClientId::new(1);
+    let old: SessionName = format!("rename-old-{}", uuid::Uuid::new_v4()).into();
+    let target: SessionName = format!("rename-stale-{}", uuid::Uuid::new_v4()).into();
+    screen.session_name = old.clone();
+    std::fs::create_dir_all(&*YINZ_SOCK_DIR).unwrap();
+    let old_socket = YINZ_SOCK_DIR.join(&old);
+    let target_socket = YINZ_SOCK_DIR.join(&target);
+    let ownership = std::sync::Arc::new(SessionOwnership::acquire(&old_socket).unwrap().unwrap());
+    let _listener = ownership.bind().unwrap();
+    let cache = session_info_folder_for_session(&old);
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("sentinel"), "preserved").unwrap();
+    drop(std::os::unix::net::UnixListener::bind(&target_socket).unwrap());
+    // Without a claim, even a stale socket must be left alone.
+    screen.rename_session(target.clone(), client).unwrap();
+    assert_eq!(screen.session_name, old);
+    assert!(target_socket.exists());
+    screen.bus.senders.session_ownership = Some(ownership);
+    screen.peer_sessions_cache.insert(
+        target.clone(),
+        yinz_types::data::SessionInfo::new(target.clone()),
+    );
+    screen.rename_session(target.clone(), client).unwrap();
+    assert_eq!(screen.session_name, target);
+    assert!(!old_socket.exists());
+    assert!(yinz_ipc::consts::ipc_connect(&target_socket).is_ok());
+    assert_eq!(
+        std::fs::read_to_string(session_info_folder_for_session(&target).join("sentinel")).unwrap(),
+        "preserved"
+    );
+    assert!(SessionOwnership::acquire(&target_socket).unwrap().is_none());
+    std::fs::remove_dir_all(session_info_folder_for_session(&target)).unwrap();
+}

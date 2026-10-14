@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn legacy_toggle_mother_binding_round_trips_as_noop() {
+    let config = Config::from_kdl(
+        r#"
+        keybinds clear-defaults=true {
+            agent {
+                bind "m" { ToggleMother; SwitchToMode "Normal"; }
+            }
+        }
+        "#,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        config.keybinds.0[&InputMode::Agent][&KeyWithModifier::new(BareKey::Char('m'))],
+        vec![
+            Action::NoOp,
+            Action::SwitchToMode {
+                input_mode: InputMode::Normal,
+            },
+        ]
+    );
+
+    let serialized = config.to_string(false).unwrap();
+    assert!(serialized.contains("NoOp"));
+    assert!(!serialized.contains("ToggleMother"));
+    let reparsed = Config::from_kdl(&serialized, None).unwrap();
+    assert_eq!(config.keybinds, reparsed.keybinds);
+}
+
+#[test]
+fn legacy_toggle_mother_rejects_positional_arguments() {
+    for argument in [r#""unexpected""#, "1", "true"] {
+        assert!(Config::from_kdl(
+            &format!("keybinds {{ agent {{ bind \"m\" {{ ToggleMother {argument}; }}; }}; }}"),
+            None,
+        )
+        .is_err());
+    }
+}
+
+#[test]
 fn plugin_messages_preserve_optional_in_place_placement() {
     for message in ["MessagePlugin \"test-plugin\"", "MessagePluginId 3"] {
         for in_place in [None, Some(false), Some(true)] {

@@ -1,4 +1,4 @@
-//! Shared agent configuration roots used by hook installation and mother sandboxes.
+//! Shared agent configuration roots used by hook installation.
 use crate::errors::prelude::*;
 use std::{ffi::OsString, path::PathBuf};
 

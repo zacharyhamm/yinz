@@ -29,7 +29,6 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 fn sh(script: &str) -> RunCommand {
     RunCommand {
         agent_theme: None,
-        claude_settings: None,
         command: PathBuf::from("/bin/sh"),
         args: vec!["-c".to_owned(), script.to_owned()],
         cwd: None,

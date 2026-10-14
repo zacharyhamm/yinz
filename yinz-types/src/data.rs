@@ -979,11 +979,6 @@ impl ModeInfo {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SessionInfo {
-    /// The terminal pane running the session's mother agent, when one is live.
-    #[serde(default)]
-    pub mother: Option<crate::internal_ids::TerminalId>,
-    #[serde(default)]
-    pub mother_supervision: Option<crate::agent::mother::MotherStatus>,
     pub name: SessionName,
     pub tabs: Vec<TabInfo>,
     pub panes: PaneManifest,
@@ -2562,20 +2557,6 @@ impl OverlayPlacement {
     }
     pub fn dismissible(coordinates: Option<FloatingPaneCoordinates>) -> Self {
         OverlayPlacement::new(OverlayKind::Dismissible, coordinates)
-    }
-    /// Where a session's mother agent sits, both when it is launched and when a toggle puts it
-    /// back on the surface.
-    pub fn mother() -> Self {
-        let mut placement = OverlayPlacement::dismissible(FloatingPaneCoordinates::new(
-            Some("10%".into()),
-            Some("10%".into()),
-            Some("80%".into()),
-            Some("80%".into()),
-            None,
-            None,
-        ));
-        placement.background_opacity = Some(crate::input::options::DEFAULT_BACKGROUND_OPACITY);
-        placement
     }
     pub fn is_modal(&self) -> bool {
         self.kind.is_modal()

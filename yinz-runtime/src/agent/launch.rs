@@ -43,11 +43,6 @@ pub const WORKTREE_PREFIX: &str = ".worktrees/";
 /// disagree about which agents you may ask for.
 pub const OFFERED: &[&str] = &["codex", "claude", "pi", "cursor", "muse", "agy"];
 
-/// Canonical providers with verified composer guards for Mother's automatic turns.
-pub fn supports_mother(kind: &str) -> bool {
-    matches!(kind, "claude" | "codex" | "pi")
-}
-
 pub fn offered() -> Vec<String> {
     OFFERED
         .iter()
@@ -823,7 +818,7 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
 ///
 /// `session_id` is the agent's own, as `AgentRun` stores it. `host` is the machine the
 /// `cwd` is on, absent for this one, in the spelling `PaneTarget::parse_display` reads.
-/// `bubblewrap` is the recorded environment target (a checkout or a mother profile),
+/// `bubblewrap` is the recorded environment target (a checkout),
 /// so the resume uses that environment's writable state or fails closed.
 ///
 /// Every refusal here is written to be read on a divider one row high, so each says what is

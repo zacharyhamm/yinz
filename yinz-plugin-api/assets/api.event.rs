@@ -655,10 +655,6 @@ pub struct SessionManifest {
     pub pane_history: ::prost::alloc::vec::Vec<ClientPaneHistory>,
     #[prost(uint64, tag="12")]
     pub creation_time: u64,
-    #[prost(uint32, optional, tag="15")]
-    pub mother: ::core::option::Option<u32>,
-    #[prost(message, optional, tag="16")]
-    pub mother_supervision: ::core::option::Option<MotherSupervision>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1195,16 +1191,6 @@ pub struct MultipaneInfo {
     pub top_bottom: bool,
     #[prost(uint32, tag="8")]
     pub ratio: u32,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MotherSupervision {
-    #[prost(string, tag="1")]
-    pub state: ::prost::alloc::string::String,
-    #[prost(uint64, tag="2")]
-    pub pending: u64,
-    #[prost(uint64, tag="3")]
-    pub blockers: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

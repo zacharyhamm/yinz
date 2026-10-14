@@ -1850,12 +1850,6 @@ fn test_client_messages() {
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
-        action: Action::ToggleMother,
-        terminal_id: None,
-        client_id: Some(ClientId::new(100)),
-        is_cli_client: false,
-    });
-    test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::ToggleActiveSyncTab,
         terminal_id: Some(yinz_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -2787,7 +2781,6 @@ fn test_client_messages() {
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Command(RunCommand {
                     agent_theme: None,
-                    claude_settings: None,
                     command: PathBuf::from("/path/to/command"),
                     args: vec![],
                     cwd: None,
@@ -2819,7 +2812,6 @@ fn test_client_messages() {
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Command(RunCommand {
                     agent_theme: None,
-                    claude_settings: None,
                     command: PathBuf::from("/path/to/command"),
                     args: vec!["arg1".to_owned(), "arg2".to_owned(), "arg3".to_owned()],
                     cwd: Some(PathBuf::from("/path/to/cwd")),

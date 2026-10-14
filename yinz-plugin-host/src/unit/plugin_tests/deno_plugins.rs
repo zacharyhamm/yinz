@@ -3371,6 +3371,16 @@ export default {
             .unwrap();
         harness.rendered("boundary replacement ready");
         let log = harness.finish();
+        assert_eq!(
+            log.iter()
+                .filter(|instruction| matches!(
+                    instruction,
+                    ScreenInstruction::DumpLayoutToPlugin { .. }
+                ))
+                .count(),
+            1,
+            "queued={queued}: callbacks retired at the reload boundary must not enter the host"
+        );
         let selectable: Vec<_> = log
             .iter()
             .filter_map(|instruction| match instruction {

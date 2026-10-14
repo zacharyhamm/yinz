@@ -58,27 +58,11 @@ impl OpenFilePayload {
     }
 }
 
-/// Internal launch transport keys, never passed to the agent.
-pub const CLAUDE_SETTINGS_SNAPSHOT: &str = "YINZ_CLAUDE_SETTINGS_SNAPSHOT";
-pub const CLAUDE_SETTINGS_FD: &str = "YINZ_CLAUDE_SETTINGS_FD";
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct ClaudeSettings(pub String);
-
-impl std::fmt::Debug for ClaudeSettings {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ClaudeSettings(<private>)")
-    }
-}
-
 #[derive(Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
 pub struct RunCommand {
     /// Launch-time palette retained by the supervisor across adoption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_theme: Option<crate::agent::theme::AgentThemeLaunch>,
-    /// One launch only; the supervisor receives it through its private spawn channel.
-    #[serde(skip)]
-    pub claude_settings: Option<ClaudeSettings>,
     #[serde(alias = "cmd")]
     pub command: PathBuf,
     #[serde(default)]
@@ -198,7 +182,6 @@ impl From<RunCommandAction> for RunCommand {
     fn from(action: RunCommandAction) -> Self {
         RunCommand {
             agent_theme: None,
-            claude_settings: None,
             command: action.command,
             args: action.args,
             cwd: action.cwd,

@@ -182,9 +182,6 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // Show or hide mother, the session's one overlay agent. With no mother
-        // running this opens the command palette at the agents to launch it as.
-        bind "m" { ToggleMother; SwitchToMode "Normal"; }
         // Bring the panel up with the keyboard on the agent list, rather than
         // in the conversation. The list is its own pane, the left half of the
         // panel: this reveals it if it was hidden and opens one if there is

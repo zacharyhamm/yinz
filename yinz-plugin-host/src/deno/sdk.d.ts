@@ -547,9 +547,6 @@ export interface ModeInfo {
   nested_ascend_keys: KeyWithModifier[]; session_ascended: boolean | null; nested_descend_keys: KeyWithModifier[];
 }
 export interface SessionInfo {
-  /** Terminal pane ID of the session's mother agent, or null when none is running. */
-  mother: number | null;
-  mother_supervision?: { state: string; pending: number; blockers: number } | null;
   name: string; tabs: TabInfo[]; panes: PaneManifest; connected_clients: Integer; is_current_session: boolean;
   available_layouts: LayoutInfo[]; plugins: Record<string, {location: string; configuration: StringMap}>;
   tab_history: Record<string, number[]>; pane_history: Record<string, PaneId[]>; creation_time: Duration;
@@ -714,7 +711,7 @@ export interface ActionPayloads {
 export type UnitAction = 'FocusPaneTabs' | 'PreviousPaneTab' | 'NextPaneTab' | 'Quit' | 'FocusNextPane' | 'FocusPreviousPane' | 'FocusLastPane' | 'SwitchFocus' | 'MovePaneBackwards' | 'ClearScreen'
   | 'DumpLayout' | 'SaveSession' | 'ScrollUp' | 'ScrollDown' | 'ScrollToBottom' | 'ScrollToTop' | 'ScrollToPreviousPrompt' | 'ScrollToNextPrompt'
   | 'SelectCommandAtScrollPosition' | 'CopyLastCommandOutput' | 'SwapTextSelectionEnds' | 'ActivateNotification' | 'ToggleNotificationDetail' | 'PageScrollUp' | 'PageScrollDown' | 'HalfPageScrollUp' | 'HalfPageScrollDown'
-  | 'ToggleFocusFullscreen' | 'ToggleFocusNoUiFullscreen' | 'TogglePaneFrames' | 'ToggleCommandPalette' | 'ToggleMother' | 'ToggleActiveSyncTab' | 'TogglePaneEmbedOrFloating' | 'ToggleFloatingPanes'
+  | 'ToggleFocusFullscreen' | 'ToggleFocusNoUiFullscreen' | 'TogglePaneFrames' | 'ToggleCommandPalette' | 'ToggleActiveSyncTab' | 'TogglePaneEmbedOrFloating' | 'ToggleFloatingPanes'
   | 'CloseFocus' | 'UndoRenamePane' | 'NoOp' | 'GoToNextTab' | 'GoToPreviousTab' | 'CloseTab' | 'ToggleTab' | 'UndoRenameTab' | 'Detach'
   | 'SetDarkTheme' | 'SetLightTheme' | 'ToggleTheme' | 'Copy' | 'Confirm' | 'Deny' | 'ToggleMouseMode' | 'PreviousSwapLayout' | 'NextSwapLayout' | 'QueryTabNames'
   | 'ArrangePanesByProject' | 'BreakPane' | 'BreakPaneRight' | 'BreakPaneLeft' | 'FocusHostSession' | 'FocusGuestSession' | 'ToggleHostFullscreen'
@@ -958,35 +955,7 @@ export interface AgentInput {
   submit_key?: string; submit_delay_ms?: number; paste_prefix?: string; command_prefixes?: string[]; newline?: "\n" | "\r" | "\r\n";
 }
 export interface AgentHookArtifact {base?: "config" | "home"; path: string; content: string; marker: string; executable?: boolean;}
-export type MotherRequest = "Status" | "Overview" | "Inbox" | "Pause" | "Resume"
-  | {Journal: {after?: number | null; through?: number | null; limit?: number | null}}
-  | {Resolve: {submission_id: string; expect_rev: number}}
-  | {Ack: {batch: string}}
-  | {Checkpoint: {expect_rev?: number | null; value?: unknown}}
-  | {Configure: {panes: readonly string[]; projects: readonly string[]; kinds: readonly string[]; lifecycle_types: readonly string[]}};
-/** Version 1 memory; readers must preserve unknown and legacy checkpoint fields. */
-export interface MotherCheckpointV1 {
-  version: 1; goal: unknown; scope: unknown; assignments: unknown; decisions: unknown;
-  blockers: unknown; questions: unknown; journal_cursor: number | null;
-  [key: string]: unknown;
-}
-export interface MotherJournalPage {
-  records: Record<string, unknown>[]; next_cursor: number | null; cursor: number;
-  high_water: number; oldest_cursor: number | null; retention_gap: boolean;
-}
-export interface MotherOverview {
-  mother?: {pane_id: string; conversation_id: string | null; host_id: string; yinz_session_name: string; kind?: string | null; state?: AgentState | null; needs_input?: boolean};
-  status: {state: string; pending: number; blockers: number};
-  filters: {panes: string[]; projects: string[]; kinds: string[]; lifecycle_types: string[]; cursor: string | null};
-  checkpoint: {revision: number; value: Record<string, unknown> | null};
-  roster: Record<string, Record<string, unknown>>;
-  batches: {id: string; summary: string[]; events: number; urgent: boolean; attempted: boolean; frozen: boolean}[];
-  receipts: {batch: string; conversation: string; submission: string; response: AgentResponse | null; settled: boolean}[];
-  delivery_blocked: string | null; operation_in_flight: boolean; gap: boolean;
-  paused: boolean; observation_ready: boolean; journal_high_water: number; recent: MotherJournalPage;
-}
 export type AgentRequest =
-  | {Mother: MotherRequest}
   | {WaitTurn: {pane_id: PaneId; expected_session_id?: string | null; submission_id: string; timeout_ms: number}}
   | {List: {project?: string | null}}
   | {Status: {pane_id: PaneId; expected_session_id?: string | null}}

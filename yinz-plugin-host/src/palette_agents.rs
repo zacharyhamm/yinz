@@ -11,12 +11,7 @@ use yinz_types::data::PaneInfo;
 pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &DataAccess) {
     // A newly opened shell can precede the first cwd broadcast. Query the captured
     // pane, never whichever pane happens to be focused when this worker runs.
-    if request.source.cwd.is_none()
-        && !matches!(
-            request.action,
-            AgentAction::History(_) | AgentAction::Mother { .. }
-        )
-    {
+    if request.source.cwd.is_none() && !matches!(request.action, AgentAction::History(_)) {
         let (tx, rx) = crossbeam::channel::bounded(1);
         if senders
             .send_to_pty(PtyInstruction::GetPaneCwd {
@@ -104,7 +99,6 @@ fn execute(
     use AgentAction::*;
     let source = match &request.action {
         History(action) => return history::execute(request, action, senders, data),
-        Mother { kind } => return mother(request, kind, senders),
         _ => current_source(request, senders)?,
     };
     let choice = |label: String, description: String, action| AgentChoice {
@@ -114,7 +108,7 @@ fn execute(
     };
     let choices = |title: String, choices| Ok(AgentReply::Choices { title, choices });
     match &request.action {
-        History(_) | Mother { .. } => unreachable!("handled above"),
+        History(_) => unreachable!("handled above"),
         Start { kind, project } => {
             let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let action = match project.as_ref().filter(|name| registry.contains_key(*name)) {
@@ -341,7 +335,7 @@ fn existing_command(
     }
     let mut command =
         yinz_runtime::agent::launch::command_in_context(kind, Some(cwd.into()), target)?;
-    prepare_agent_command(&mut command)?;
+    yinz_runtime::agent::pi::prepare_command(&mut command)?;
     Ok(PreparedAgent {
         command,
         cwd: cwd.into(),
@@ -351,83 +345,13 @@ fn existing_command(
     })
 }
 
-/// Launch a fresh conversation on the session surface, in its persistent private folder.
-fn mother(
-    request: &AgentRequest,
-    kind: &str,
-    senders: &ThreadSenders,
-) -> Result<AgentReply, String> {
-    let spec = AgentSpawnSpec {
-        kind: Some(kind.to_owned()),
-        allow_outside_worktree: Some(true),
-        ..Default::default()
-    };
-    let kind = yinz_runtime::agent::launch::kind_for_spec(&spec)
-        .filter(|kind| yinz_runtime::agent::launch::supports_mother(kind))
-        .ok_or("Mother supports only Claude, Codex, and Pi")?;
-    let session = yinz_runtime::envs::get_session_name()
-        .map_err(|error| format!("Mother requires a session: {error}"))?;
-    let cwd = yinz_config::project_config::bubblewrap::mother_directory(
-        &yinz_runtime::consts::YINZ_CACHE_DIR,
-        session.as_str(),
-    )
-    .map_err(|error| format!("Mother cannot create its working directory: {error:#}"))?;
-    yinz_runtime::mother::provision(&cwd, session.as_str())
-        .map_err(|error| format!("Mother cannot provision instructions: {error:#}"))?;
-    launch(request, senders, spec, |_| {
-        let mut prepared = existing_command(&kind, &cwd.to_string_lossy(), PaneTarget::Local)?;
-        prepared.command.args.extend(
-            yinz_runtime::mother::coordination_args(&kind, &cwd, session.as_str())
-                .map_err(|error| format!("Mother cannot prepare permissions: {error:#}"))?,
-        );
-        if kind == "pi" {
-            prepared.command.args.push("--approve".into());
-        }
-        let sandbox = yinz_config::project_config::bubblewrap::Environment::at_root(&cwd)
-            .prepare_mother(&kind);
-        mother_target(
-            &mut prepared,
-            sandbox.map(|profile| profile.root().to_path_buf()),
-        )?;
-        Ok(prepared)
-    })
-}
-
-fn mother_target(
-    prepared: &mut PreparedAgent,
-    sandbox: Result<PathBuf, anyhow::Error>,
-) -> Result<(), AgentSpawnError> {
-    match sandbox {
-        Ok(root) => prepared.command.target = PaneTarget::bubblewrap(&root)?,
-        Err(error) if error.is::<yinz_config::project_config::bubblewrap::MotherSetupError>() => {
-            return Err(format!("{error:#}").into());
-        },
-        Err(error) => {
-            let reason = format!("{error:#}");
-            // Print before exec, once. An agent that has started is never retried locally.
-            let command = &mut prepared.command;
-            yinz_types::agent::mother_fallback(&mut command.path, &mut command.args, &reason);
-            command.target = PaneTarget::Local;
-        },
-    }
-    Ok(())
-}
-
 fn launch(
     request: &AgentRequest,
     senders: &ThreadSenders,
     spec: AgentSpawnSpec,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
 ) -> Result<AgentReply, String> {
-    let is_mother = matches!(request.action, AgentAction::Mother { .. });
-    // Mother belongs to the session, so the pane the palette opened from may come and go.
-    let still_valid = || {
-        if is_mother {
-            still_wanted(request)
-        } else {
-            current_source(request, senders).map(drop)
-        }
-    };
+    let still_valid = || current_source(request, senders).map(drop);
     still_valid()?;
     let prepare = |spec: &mut AgentSpawnSpec| {
         let mut prepared = prepare(spec)?;
@@ -448,7 +372,6 @@ fn launch(
     };
     let response = match spawn_agent_prepared(
         AgentPlacement::Automatic,
-        is_mother,
         spec,
         request.client,
         senders,

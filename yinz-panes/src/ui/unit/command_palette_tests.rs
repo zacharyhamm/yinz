@@ -961,57 +961,6 @@ fn root_discovery_dismisses_but_nested_discovery_and_execution_cancel() {
 }
 
 #[test]
-fn mother_picker_is_scoped_and_preserves_navigation_and_project() {
-    let (kind, empty) = (EntryKind::Mother, "No agents available");
-    let mut palette = palette();
-    palette.current_project = Some("project".into());
-    let mut entries = palette.native_entries.clone();
-    entries.extend([
-        entry("mother:claude", "claude", kind),
-        entry("mother:codex", "codex", kind),
-    ]);
-    palette.set_entries(entries.clone());
-    assert!(!ids(&palette).contains(&"mother:claude"));
-    palette.insert_text("New");
-    palette.open_picker(kind);
-    assert_eq!(ids(&palette), vec!["mother:claude", "mother:codex"]);
-    palette.push_view(42, "Plugin view".into());
-    palette.set_sections(vec![PluginSection {
-        title: "Plugin".into(),
-        entries: vec![entry("plugin-child", "child", EntryKind::Plugin)],
-        semantic: false,
-        status: None,
-    }]);
-    assert_eq!(ids(&palette), vec!["plugin-child"]);
-    assert_eq!(palette.current_project.as_deref(), Some("project"));
-    assert_eq!(palette.back(), Outcome::None);
-    assert_eq!(ids(&palette), vec!["mother:claude", "mother:codex"]);
-    key(&mut palette, BareKey::Down);
-    entries.reverse();
-    palette.set_entries(entries);
-    assert_eq!(palette.selected_entry().unwrap().id, "mother:codex");
-    let surface = Viewport {
-        cols: 80,
-        rows: 24,
-        ..Default::default()
-    };
-    palette.insert_text("absent");
-    assert!(rendered_lines(&palette, &palette.layout(surface))
-        .join("\n")
-        .contains("No matches"));
-    key(&mut palette, BareKey::Esc);
-    assert_eq!(palette.query(), "New");
-    assert_eq!(palette.selected_entry().unwrap().id, ids(&palette)[0]);
-    palette.open_picker(kind);
-    palette.set_entries(vec![entry("pane", "ordinary", EntryKind::Pane)]);
-    let text = rendered_lines(&palette, &palette.layout(surface)).join("\n");
-    assert!(text.contains(empty));
-    assert!(text.contains("Project: project"));
-    assert_eq!(palette.back(), Outcome::None);
-    assert_eq!(palette.query(), "New");
-}
-
-#[test]
 fn nested_warp_pickers_restore_search_selection_and_hide_destinations_at_root() {
     for (sessions, targets) in [
         (EntryKind::WarpTabSession, EntryKind::WarpTab),
@@ -1660,7 +1609,6 @@ fn all_result_kinds_wrap_in_root_and_picker_views() {
         EntryKind::Project,
         EntryKind::Theme,
         EntryKind::Agent,
-        EntryKind::Mother,
         EntryKind::WarpTabSession,
         EntryKind::WarpPaneSession,
         EntryKind::WarpTab,

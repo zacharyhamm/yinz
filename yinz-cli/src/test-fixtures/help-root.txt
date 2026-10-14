@@ -3,7 +3,6 @@ A terminal workspace with batteries included
 Usage: yinz [OPTIONS] [COMMAND]
 
 Commands:
-  mother               Inspect and control this session's Mother supervisor (JSON responses)
   bubblewrap           Prepare a persistent project Bubblewrap environment (Linux)
   agent                Find, launch and control agents in explicit terminal panes
   skills               Inspect and install portable coding-agent skills

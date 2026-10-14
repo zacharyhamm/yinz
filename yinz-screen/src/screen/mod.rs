@@ -128,8 +128,6 @@ mod command_palette;
 mod context_menu;
 mod host_query;
 mod input_modes;
-mod mother;
-mod mother_supervisor;
 mod mouse;
 mod nested;
 mod notification_browser;
@@ -581,10 +579,6 @@ pub(crate) struct Screen {
     agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
-    /// The terminal pane running this session's mother agent. See `mother.rs`.
-    mother: Option<TerminalId>,
-    mother_supervisor: Option<mother_supervisor::Supervisor>,
-    mother_status: Option<yinz_types::agent::mother::MotherStatus>,
     warped_agent_inputs: HashMap<PaneId, (yinz_types::data::WarpedAgentInput, u64)>,
     agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
     agent_dialog_inputs: HashMap<PaneId, agent_control::DialogInput>,
@@ -1347,9 +1341,6 @@ impl Screen {
             agent_draft_clears: HashMap::new(),
             agent_submissions: HashMap::new(),
             agent_launches: HashMap::new(),
-            mother: None,
-            mother_supervisor: None,
-            mother_status: None,
             warped_agent_inputs: HashMap::new(),
             agent_lifecycle: HashMap::new(),
             agent_dialog_inputs: HashMap::new(),
@@ -3178,30 +3169,9 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         let err_context = || format!("failed to focus pane {pane_id:?}");
-        let pane_id = if let Some(mother) = self.live_mother() {
-            let presentation = self.mother_presentation(mother);
-            if pane_id == mother || presentation == Some(pane_id) {
-                match presentation {
-                    Some(presentation) if self.tab_containing_overlay(presentation).is_some() => {
-                        return self
-                            .show_and_focus_mother(presentation, client_id)
-                            .with_context(err_context);
-                    },
-                    Some(presentation) => presentation,
-                    // Parked with nothing standing in for it: the caller's flags decide, as
-                    // they do for any parked pane.
-                    None => pane_id,
-                }
-            } else {
-                pane_id
-            }
-        } else {
-            pane_id
-        };
         let tab_index = self.tab_position_containing_pane(pane_id);
         match tab_index {
             Some(tab_index) => {
-                self.hide_mother_for_pane_focus(pane_id, client_id);
                 self.switch_active_tab(tab_index, None, true, client_id)?;
                 // The tab's own result is what gets logged. Mapping over the lookup used to
                 // produce an `Option<Result>` whose *outer* layer was the only thing
@@ -3314,7 +3284,6 @@ impl Screen {
         }
         self.clear_nested_guest(id);
         self.pane_output_activity.remove(&id);
-        self.forget_mother(id);
     }
 
     pub(crate) fn close_pane_explicitly(

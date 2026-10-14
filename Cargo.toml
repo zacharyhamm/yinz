@@ -196,7 +196,6 @@ crossterm = { version = "0.29", default-features = false }
 daemonize = { package = "daemonix", version = "0.1", default-features = false }
 dialoguer = { version = "0.11", default-features = false, features = ["password", "completion"] }
 futures-lite = { version = "1.13", default-features = false, features = ["std"] }
-fuser = { version = "0.18", default-features = false }
 fuzzy-matcher = { version = "0.3.7", default-features = false }
 humantime = { version = "2.1.0", default-features = false }
 interprocess = { version = "2.2", default-features = false, features = ["tokio"] }

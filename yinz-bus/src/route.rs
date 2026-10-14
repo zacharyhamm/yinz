@@ -34,9 +34,6 @@ pub struct NotificationEnd {
     channel: Option<oneshot::Sender<ActionCompletionResult>>,
     /// Direct agent control waits for remote startup before placing its pane.
     pub wait_for_agent_start: bool,
-    /// Register a mother launch when the screen retains its pane. Placement reads this as the
-    /// pane arrives, before the handle can be handed to a blocking pane.
-    pub is_mother: bool,
     placement_pending: bool,
     pub agent_tab: Option<AgentTabPlacement>,
     pub created_tab_id: Option<TabId>,
@@ -76,7 +73,6 @@ impl Clone for NotificationEnd {
         NotificationEnd {
             channel: None,
             wait_for_agent_start: self.wait_for_agent_start,
-            is_mother: self.is_mother,
             placement_pending: self.placement_pending,
             agent_tab: self.agent_tab.clone(),
             created_tab_id: self.created_tab_id,
@@ -97,7 +93,6 @@ impl NotificationEnd {
         NotificationEnd {
             channel: Some(sender),
             wait_for_agent_start: false,
-            is_mother: false,
             placement_pending: false,
             agent_tab: None,
             created_tab_id: None,
@@ -137,7 +132,6 @@ impl NotificationEnd {
         NotificationEnd {
             channel: Some(sender),
             wait_for_agent_start: false,
-            is_mother: false,
             placement_pending: false,
             agent_tab: None,
             created_tab_id: None,
@@ -311,8 +305,6 @@ mod tests {
         let (tx, _rx) = oneshot::channel();
         let mut notification_end = NotificationEnd::new(tx);
         notification_end.set_affected_tab_id(TabId::new(99));
-        assert!(!notification_end.is_mother);
-        notification_end.is_mother = true;
 
         let cloned = notification_end.clone();
 
@@ -320,6 +312,5 @@ mod tests {
         assert_eq!(cloned.affected_tab_id, Some(TabId::new(99)));
         // But channel should be None (as per the Clone implementation comment)
         assert!(cloned.channel.is_none());
-        assert!(cloned.is_mother);
     }
 }

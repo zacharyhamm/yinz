@@ -405,10 +405,6 @@ impl TryFrom<ProtobufAction> for Action {
                     None => Ok(Action::ToggleCommandPalette),
                 }
             },
-            Some(ProtobufActionName::ToggleMother) => match protobuf_action.optional_payload {
-                Some(_) => Err("ToggleMother should not have a payload"),
-                None => Ok(Action::ToggleMother),
-            },
             Some(ProtobufActionName::TogglePaneFrames) => match protobuf_action.optional_payload {
                 Some(_) => Err("TogglePaneFrames should not have a payload"),
                 None => Ok(Action::TogglePaneFrames),
@@ -1616,10 +1612,6 @@ impl TryFrom<Action> for ProtobufAction {
             }),
             Action::ToggleCommandPalette => Ok(ProtobufAction {
                 name: ProtobufActionName::ToggleCommandPalette as i32,
-                optional_payload: None,
-            }),
-            Action::ToggleMother => Ok(ProtobufAction {
-                name: ProtobufActionName::ToggleMother as i32,
                 optional_payload: None,
             }),
             Action::TogglePaneFrames => Ok(ProtobufAction {
@@ -4116,7 +4108,6 @@ pub(crate) mod tests {
                 | Action::ToggleFocusNoUiFullscreen
                 | Action::TogglePaneFrames
                 | Action::ToggleCommandPalette
-                | Action::ToggleMother
                 | Action::SetPaneFrameStyle(_)
                 | Action::ToggleActiveSyncTab
                 | Action::TogglePaneEmbedOrFloating

@@ -2174,8 +2174,8 @@ repeated PluginInfo plugins = 7;
 repeated ClientTabHistory tab_history = 10;
 repeated ClientPaneHistory pane_history = 11;
 uint64 creation_time = 12;
-optional uint32 mother = 15;
-optional MotherSupervision mother_supervision = 16;
+reserved 15, 16;
+reserved "mother", "mother_supervision";
 }
 message ClientTabHistory {
 uint32 client_id = 1;
@@ -2457,11 +2457,6 @@ uint64 rows = 5;
 uint64 columns = 6;
 bool top_bottom = 7;
 uint32 ratio = 8;
-}
-message MotherSupervision {
-string state = 1;
-uint64 pending = 2;
-uint64 blockers = 3;
 }
 data
 syntax = "proto3";
@@ -3128,7 +3123,8 @@ ActivateNotification = 120;
 ToggleNotificationDetail = 121;
 Copy = 122;
 ToggleCommandPalette = 126;
-ToggleMother = 127;
+reserved 127;
+reserved "ToggleMother";
 reserved 110;
 }
 message Position {

@@ -992,7 +992,7 @@ fn bundle_installation_preserves_unrelated_files_and_preflights_conflicts() {
             .output()
             .unwrap(),
     );
-    assert_eq!(names.as_array().unwrap().len(), 6);
+    assert_eq!(names.as_array().unwrap().len(), 5);
     for name in names.as_array().unwrap() {
         let path = dest.join(name.as_str().unwrap()).join("SKILL.md");
         let shown = command(dir.path())
@@ -1415,9 +1415,6 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
 
 #[path = "agent_theme_launch.rs"]
 mod agent_theme_launch;
-#[cfg(target_os = "linux")]
-#[path = "claude_mother.rs"]
-mod claude_mother;
 
 #[test]
 fn attached_client_capture_keeps_only_the_byte_tail() {

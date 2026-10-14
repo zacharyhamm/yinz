@@ -290,21 +290,6 @@ fn translate_plugin_path(env: &PluginEnv, path: PathBuf) -> PathBuf {
     }
 }
 
-/// Prepare provider hooks and select a mother profile before either palette or plugin launch.
-fn prepare_agent_command(command: &mut CommandToRun) -> Result<(), String> {
-    yinz_runtime::agent::pi::prepare_command(command)?;
-    if let (Some(root), Some(kind)) = (
-        command.target.bubblewrap_root(),
-        yinz_types::agent::kind_from_program_and_args(&command.path, &command.args),
-    ) {
-        let profile = yinz_config::project_config::bubblewrap::Environment::at_root(root)
-            .for_agent(&kind, command.cwd.as_deref())
-            .map_err(|error| format!("cannot prepare agent sandbox: {error:#}"))?;
-        command.target = PaneTarget::bubblewrap(profile.root())?;
-    }
-    Ok(())
-}
-
 /// The `RunCommandAction` behind every plugin call that opens or re-runs a
 /// command pane: the plugin's `CommandToRun` with its cwd resolved through the
 /// plugin mounts (`command_cwd`), tagged as this plugin's so the pane's exit
@@ -335,7 +320,7 @@ fn command_action_with_resolved_cwd(
     mut command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) -> Option<RunCommandAction> {
-    if let Err(error) = prepare_agent_command(&mut command_to_run) {
+    if let Err(error) = yinz_runtime::agent::pi::prepare_command(&mut command_to_run) {
         log::error!("cannot prepare agent command: {error}");
         notify(env, error, None, None);
         return None;
@@ -3315,26 +3300,21 @@ fn spawn_agent_for_control(
     senders: &ThreadSenders,
     data_access: &DataAccess,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
-    spawn_agent_prepared(placement, false, spec, client_id, senders, |spec| {
+    spawn_agent_prepared(placement, spec, client_id, senders, |spec| {
         agent_control::prepare_automation_agent(spec, cwd, project, remote_host, data_access)
     })
 }
 
-/// `placement` picks the tab; mother goes on the overlay surface. Only a tiled pane may
+/// `placement` picks the tab. A tiled pane may
 /// be redirected to a roomier tab (`Screen::agent_pane_target`).
 fn spawn_agent_prepared(
     placement: yinz_types::agent::control::AgentPlacement,
-    is_mother: bool,
     mut spec: AgentSpawnSpec,
     client_id: crate::ClientId,
     senders: &ThreadSenders,
     prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
-    let surface = if is_mother {
-        NewPanePlacement::Overlay(OverlayPlacement::mother())
-    } else {
-        TILED
-    };
+    let surface = TILED;
     let started = Instant::now();
     if spec.prompt.is_some() || spec.reuse_prompt.is_some() {
         return Err(
@@ -3369,11 +3349,7 @@ fn spawn_agent_prepared(
     let mut resources = prepared.resources();
     resources.tab_id = destination.as_ref().map(|target| target.tab_id);
     let command = prepared.command;
-    let title = if is_mother {
-        yinz_runtime::agent::launch::kind_for_spec(&spec).map(|kind| format!("mother: {kind}"))
-    } else {
-        agent_pane_title(&spec)
-    };
+    let title = agent_pane_title(&spec);
     let action = RunCommandAction {
         command: command.path,
         args: command.args,
@@ -3400,7 +3376,6 @@ fn spawn_agent_prepared(
     let (completion_tx, completion_rx) = oneshot::channel();
     let mut completion = NotificationEnd::new(completion_tx);
     completion.wait_for_agent_start = true;
-    completion.is_mother = is_mother;
     completion.agent_tab = destination.clone();
     completion.created_tab_id = resources.created_tab_id;
     let target = destination.as_ref().map_or(

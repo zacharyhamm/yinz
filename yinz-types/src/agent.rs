@@ -274,5 +274,3 @@ pub mod provider;
 pub mod tool_capture;
 pub use opencode::*;
 pub mod report;
-
-pub mod mother;

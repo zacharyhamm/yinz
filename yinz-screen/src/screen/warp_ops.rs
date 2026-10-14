@@ -534,7 +534,6 @@ impl Screen {
 
     fn notify_warp_departure(&mut self, pane_id: PaneId) {
         self.invalidate_agent_lifecycle(pane_id, "warped");
-        self.forget_mother(pane_id);
         self.bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
