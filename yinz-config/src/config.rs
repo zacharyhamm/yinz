@@ -250,6 +250,7 @@ impl ConfigError {
 /// `clear-defaults=true` is complete by its own account and replaces its namesake whole, so
 /// stale blocks from an earlier fragment do not survive under it. See
 /// `Config::write_managed_fragment`.
+/// Shared blocks and global unbinds split by resets retain their source identity for replacements.
 pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDocument) {
     if let Some(block) = managed.get_mut(crate::editor::EDITS_BLOCK) {
         if let Ok(patches) = crate::editor::patches_from_kdl(block) {
@@ -265,18 +266,36 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
             .unwrap_or(false)
     }
     // `KdlEntry`'s own equality includes its whitespace and spelling, so compare the values.
-    fn same_arguments(a: &kdl::KdlNode, b: &kdl::KdlNode) -> bool {
+    fn same_keybind_identity(a: &kdl::KdlNode, b: &kdl::KdlNode) -> bool {
+        let (Ok(a_source), Ok(b_source)) = (
+            crate::editor::keybind_block_source(a),
+            crate::editor::keybind_block_source(b),
+        ) else {
+            // Preserve invalid metadata for the loader to reject before writing.
+            return false;
+        };
+        let a = a_source.as_ref().unwrap_or(a);
+        let b = b_source.as_ref().unwrap_or(b);
         fn arguments(node: &kdl::KdlNode) -> impl Iterator<Item = &kdl::KdlValue> {
             node.entries()
                 .iter()
                 .filter(|entry| entry.name().is_none())
                 .map(kdl::KdlEntry::value)
         }
-        arguments(a).eq(arguments(b))
+        a.name().value() == b.name().value() && arguments(a).eq(arguments(b))
     }
     for node in fragment.nodes() {
         let name = node.name().value();
         if name == crate::editor::EDITS_BLOCK {
+            let normalized = crate::editor::patches_from_kdl(node)
+                .ok()
+                .and_then(|patches| crate::editor::patches_to_kdl(&patches).ok());
+            let Some(node) = normalized.as_ref() else {
+                // Keep invalid edits intact for validation before writing, including resets.
+                managed.nodes_mut().retain(|old| old.name().value() != name);
+                managed.nodes_mut().push(node.clone());
+                continue;
+            };
             for reset in node
                 .children()
                 .into_iter()
@@ -379,8 +398,11 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
                 let target_children = target.ensure_children().nodes_mut();
                 for child in node.children().map(|c| c.nodes()).unwrap_or_default() {
                     target_children.retain(|candidate| {
-                        candidate.name().value() != child.name().value()
-                            || (arguments_are_identity && !same_arguments(candidate, child))
+                        if arguments_are_identity {
+                            !same_keybind_identity(candidate, child)
+                        } else {
+                            candidate.name().value() != child.name().value()
+                        }
                     });
                     target_children.push(child.clone());
                 }

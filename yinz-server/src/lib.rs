@@ -269,16 +269,26 @@ impl SessionConfiguration {
             .unwrap_or(&self.saved_config.keybinds)
     }
     pub fn get_client_default_input_mode(&self, client_id: &ClientId) -> InputMode {
-        self.get_client_configuration(client_id)
-            .options
-            .default_mode
+        self.editor_effective
+            .get(client_id)
+            .map(|config| config.options.default_mode)
+            .unwrap_or_else(|| {
+                self.get_client_configuration(client_id)
+                    .options
+                    .default_mode
+            })
             .unwrap_or_default()
     }
     pub fn get_client_locked_escape_timeout(&self, client_id: &ClientId) -> Duration {
         let millis = self
-            .get_client_configuration(client_id)
-            .options
-            .locked_escape_timeout_ms
+            .editor_effective
+            .get(client_id)
+            .map(|config| config.options.locked_escape_timeout_ms)
+            .unwrap_or_else(|| {
+                self.get_client_configuration(client_id)
+                    .options
+                    .locked_escape_timeout_ms
+            })
             .unwrap_or(yinz_types::units::ElapsedMillis::new(
                 locked_escape::DEFAULT_LOCKED_ESCAPE_TIMEOUT_MS,
             ));

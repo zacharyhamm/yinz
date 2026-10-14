@@ -41,7 +41,30 @@ pub fn from_kdl(
     } else {
         base_keybinds
     };
+    let mut global_unbind_blocks = vec![];
     for block in kdl_children_nodes_or_error!(kdl_keybinds, "keybindings with no children") {
+        let mut block_without_source;
+        let source = crate::editor::keybind_block_source(block).map_err(|message| {
+            ConfigError::new_kdl_error(message, block.span().offset(), block.span().len())
+        })?;
+        if source
+            .as_ref()
+            .is_some_and(|source| source.name().value() == "unbind")
+        {
+            global_unbind_blocks.push(block);
+            continue;
+        }
+        let block = if source.is_some() {
+            block_without_source = block.clone();
+            block_without_source.entries_mut().retain(|entry| {
+                entry
+                    .name()
+                    .is_none_or(|name| name.value() != crate::editor::KEYBIND_BLOCK_SOURCE)
+            });
+            &block_without_source
+        } else {
+            block
+        };
         if kdl_name!(block) == "shared_except" || kdl_name!(block) == "shared" {
             let mut modes_to_exclude = vec![];
             for mode_name in kdl_string_arguments!(block) {
@@ -88,12 +111,18 @@ pub fn from_kdl(
             || kdl_name!(mode) == "shared_except"
             || kdl_name!(mode) == "shared_among"
             || kdl_name!(mode) == "shared"
+            || mode.get(crate::editor::KEYBIND_BLOCK_SOURCE).is_some()
         {
             continue;
         }
         let input_mode_keybinds =
             crate::kdl::keybinds::input_mode_keybindings(mode, &mut keybinds_from_config)?;
         crate::kdl::keybinds::bind_keys_in_block(mode, input_mode_keybinds, config_options)?;
+    }
+    for block in global_unbind_blocks {
+        let input_mode_keybinds =
+            crate::kdl::keybinds::input_mode_keybindings(block, &mut keybinds_from_config)?;
+        crate::kdl::keybinds::bind_keys_in_block(block, input_mode_keybinds, config_options)?;
     }
     if let Some(global_unbind) = kdl_keybinds.children().and_then(|c| c.get("unbind")) {
         crate::kdl::keybinds::unbind_keys_in_all_modes(global_unbind, &mut keybinds_from_config)?;

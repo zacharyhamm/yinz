@@ -274,10 +274,14 @@ function settingForm(draft: Draft, setting: Setting): PaletteView {
     submitLabel: "Choose destination…",
     onSubmit: (values) => {
       draft.value.arguments = [parseScalar(values["value"] ?? "", value)];
+      const effectivePatches = diff(draft.original, draft.value, [draft.root]);
+      const savedPatches = diff(find(draft.snapshot.saved, [draft.root]), draft.value, [
+        draft.root,
+      ]);
       return draft.commit(
-        diff(draft.original, draft.value, [draft.root]),
+        effectivePatches,
         [],
-        diff(find(draft.snapshot.saved, [draft.root]), draft.value, [draft.root]),
+        savedPatches.length > 0 ? savedPatches : effectivePatches,
       );
     },
     actions: [

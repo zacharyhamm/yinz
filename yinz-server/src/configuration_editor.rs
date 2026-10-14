@@ -88,12 +88,15 @@ impl SessionMetaData {
         if edit.patches.len() + edit.reset.len() > 1024 {
             return Err("Too many configuration edits".into());
         }
-        for patch in &mut edit.patches {
-            editor::normalize_patch(patch)?;
-        }
-        for path in &mut edit.reset {
-            editor::normalize_path(path)?;
-        }
+        edit.patches = editor::normalize_patches(&edit.patches)?;
+        edit.reset = edit
+            .reset
+            .iter()
+            .map(|path| editor::expand_binding_paths(path))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         let catalog = editor::catalog();
         if edit.destination == Destination::Session {
             for path in edit.patches.iter().map(|p| &p.path).chain(&edit.reset) {
