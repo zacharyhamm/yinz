@@ -17,7 +17,8 @@ export type PaletteTestMessage =
   | {type: "disconnect"};
 export type PaletteTestAction = Required<Omit<PaletteAction, "run">> & {handle: string};
 export type PaletteTestField =
-  | Required<Extract<PaletteField, {type: "text" | "directory"}>>
+  | {type: "text" | "directory"; id: string; label: string; initialValue: string}
+  | {type: "input"; id: string; label: string; initialValue: string; options: {kind: string; help: string; error: string; minimum: number | null; maximum: number | null}}
   | (Omit<Extract<PaletteField, {type: "choice"}>, "initialValue"> & {initialValue: string | null});
 export type PaletteTestView =
   | {type: "actions"; title: string; initialQuery?: string; actions: PaletteTestAction[]; source: string | null}

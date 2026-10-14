@@ -1175,7 +1175,24 @@ impl Screen {
         };
         let result = match builtin {
             Builtin::Theme(name) => {
-                self.save_palette_theme(client, name);
+                if let Some(values) = values {
+                    self.save_palette_theme(
+                        client,
+                        name,
+                        values.first().is_some_and(|v| v == "Save permanently"),
+                    );
+                } else if let Some(state) = self.command_palettes.get_mut(&client) {
+                    state.widget.open_form(Form::new(
+                        id,
+                        format!("Apply theme {name}"),
+                        vec![Field::choice(
+                            "Destination",
+                            &["Apply to session", "Save permanently"],
+                        )],
+                        "Apply",
+                        false,
+                    ));
+                }
                 return;
             },
             Builtin::Picker(EntryKind::Theme) => {

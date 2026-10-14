@@ -9940,6 +9940,22 @@ Config {
                 relative_path: None,
                 declared_path: None,
             },
+            "configuration-palette": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "configuration-palette",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
             "context-menu": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
@@ -10191,6 +10207,18 @@ Config {
         Alias(
             PluginAlias {
                 name: "agent-service",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "configuration-palette",
                 configuration: Some(
                     PluginUserConfiguration(
                         {},

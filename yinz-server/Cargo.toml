@@ -13,6 +13,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+serde_json = { workspace = true }
 yinz-routing = { path = "../yinz-routing", version = "0.1.0" }
 yinz-config = { workspace = true }
 yinz-ipc = { workspace = true }
@@ -39,7 +40,6 @@ nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "sign
 [dev-dependencies]
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 criterion = { workspace = true }
-serde_json = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }
 tempfile = "3.2.0"
 

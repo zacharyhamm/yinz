@@ -1050,6 +1050,16 @@ impl Screen {
                             let fields = fields
                                 .iter()
                                 .map(|field| match field {
+                                    wire::Field::Input {
+                                        label,
+                                        initial_value,
+                                        options,
+                                        ..
+                                    } => {
+                                        let mut field = Field::text(label, initial_value);
+                                        field.input_options = Some(options.clone());
+                                        field
+                                    },
                                     wire::Field::Directory {
                                         label,
                                         initial_value,
@@ -1066,6 +1076,8 @@ impl Screen {
                                         initial_value,
                                         ..
                                     } => Field {
+                                        input_options: None,
+                                        capturing: false,
                                         label: label.clone(),
                                         value: FieldValue::Choice {
                                             options: options.clone(),

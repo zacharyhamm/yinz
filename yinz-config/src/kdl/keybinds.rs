@@ -265,6 +265,26 @@ fn serialize_mode_keybinds(
     }
     Ok(mode_keybinds)
 }
+/// Editor paths must not move when bindings become shared with another mode.
+pub fn to_editor_kdl(value: &Keybinds) -> Result<KdlNode, NotWritableIn> {
+    let mut root = KdlNode::new("keybinds");
+    root.insert("clear-defaults", true);
+    let modes: BTreeMap<_, _> = value.0.iter().collect();
+    for (mode, bindings) in modes {
+        let mut node = KdlNode::new(format!("{mode:?}").to_lowercase());
+        node.set_children(serialize_mode_keybinds(
+            &BTreeSet::from([*mode]),
+            &bindings
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        )?);
+        root.ensure_children().nodes_mut().push(node);
+    }
+    root.ensure_children();
+    Ok(root)
+}
+
 pub fn to_kdl(value: &Keybinds, should_clear_defaults: bool) -> Result<KdlNode, NotWritableIn> {
     let mut keybinds_node = KdlNode::new("keybinds");
     if should_clear_defaults {

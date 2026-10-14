@@ -345,6 +345,9 @@ plugins {
     }
     compact-bar location="yinz:compact-bar"
     configuration location="yinz:configuration"
+    configuration-palette location="yinz:configuration-palette" {
+        shared true
+    }
     context-menu location="yinz:context-menu"
     duplicate-agent location="yinz:new-agent" {
         duplicate_focused true
@@ -379,6 +382,7 @@ plugins {
 load_plugins {
     yinz:link
     agent-service
+    configuration-palette
     project-store
     session-palette
 }

@@ -409,6 +409,9 @@ plugins {
         // height "66%"
         // pad "3"
     }
+    configuration-palette location="yinz:configuration-palette" {
+        shared true
+    }
     session-palette location="yinz:session-palette" {
         shared true
     }
@@ -455,6 +458,7 @@ load_plugins {
     "agent-service"
     "project-store"
     "session-palette"
+    "configuration-palette"
     "yinz:link"
     // "file:/path/to/my-plugin.wasm"
     // "file:/path/to/my-plugin.ts"     // a TypeScript plugin; see docs/DENO_PLUGINS.md

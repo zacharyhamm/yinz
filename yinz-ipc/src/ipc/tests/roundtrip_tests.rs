@@ -4804,6 +4804,7 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::QueryTerminalSize);
     test_server_roundtrip!(ServerToClientMsg::ConfigFileUpdated);
+    test_server_roundtrip!(ServerToClientMsg::SetMouseMode { enabled: false });
     test_server_roundtrip!(ServerToClientMsg::RenamedSession {
         name: "my-session".to_string().into(),
     });

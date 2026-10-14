@@ -87,6 +87,8 @@ pub enum FieldValue {
 }
 
 pub struct Field {
+    pub input_options: Option<yinz_types::command_palette::InputOptions>,
+    pub capturing: bool,
     pub label: String,
     pub value: FieldValue,
 }
@@ -94,6 +96,8 @@ pub struct Field {
 impl Field {
     pub fn text(label: &str, value: &str) -> Self {
         Self {
+            input_options: None,
+            capturing: false,
             label: label.into(),
             value: FieldValue::Text(TextInput::new(value.into())),
         }
@@ -101,6 +105,8 @@ impl Field {
 
     pub fn choice(label: &str, options: &[&str]) -> Self {
         Self {
+            input_options: None,
+            capturing: false,
             label: label.into(),
             value: FieldValue::Choice {
                 options: options.iter().map(|s| (*s).into()).collect(),
@@ -570,6 +576,19 @@ impl CommandPalette {
     }
 
     pub fn open_form(&mut self, form: Form) {
+        let help = form
+            .fields
+            .iter()
+            .filter_map(|f| {
+                f.input_options
+                    .as_ref()
+                    .map(|o| format!("{}: {} {}", f.label, o.help, o.error))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !help.trim().is_empty() {
+            self.metadata = Some(help);
+        }
         self.form = Some(form);
         self.error = None;
     }
@@ -584,6 +603,9 @@ impl CommandPalette {
 
     pub fn back(&mut self) -> Outcome {
         self.error = None;
+        if self.theme_picker() && self.form.is_some() {
+            return Outcome::Cancel;
+        }
         if self.busy || (self.pending && !self.is_root()) {
             return Outcome::Cancel;
         }
@@ -618,6 +640,42 @@ impl CommandPalette {
     }
 
     pub fn handle_key(&mut self, key: KeyWithModifier) -> Outcome {
+        if !self.busy {
+            if let Some(field) = self
+                .form
+                .as_mut()
+                .and_then(|f| f.fields.get_mut(f.selected))
+            {
+                if field.capturing {
+                    if let FieldValue::Text(input) = &mut field.value {
+                        input.set_text(key.to_string());
+                    }
+                    field.capturing = false;
+                    return Outcome::None;
+                }
+                if field
+                    .input_options
+                    .as_ref()
+                    .is_some_and(|o| o.kind == "key")
+                    && key.bare_key == BareKey::F(2)
+                {
+                    field.capturing = true;
+                    return Outcome::None;
+                }
+                if field
+                    .input_options
+                    .as_ref()
+                    .is_some_and(|o| o.kind == "multiline")
+                    && key.bare_key == BareKey::Enter
+                    && key.has_only_modifiers(&[KeyModifier::Shift])
+                {
+                    if let FieldValue::Text(input) = &mut field.value {
+                        insert_multiline(input, "\n");
+                    }
+                    return Outcome::None;
+                }
+            }
+        }
         let key = match key.bare_key {
             BareKey::Char('n') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                 KeyWithModifier::new(BareKey::Down)
@@ -789,6 +847,23 @@ impl CommandPalette {
                     } else if form.confirmation && form.selected == form.fields.len() {
                         return self.back();
                     } else {
+                        for (index, field) in form.fields.iter().enumerate() {
+                            if let Some(options) = &field.input_options {
+                                if options.kind == "number"
+                                    && field.text_value().parse::<i64>().ok().is_none_or(|v| {
+                                        options.minimum.is_some_and(|min| v < min)
+                                            || options.maximum.is_some_and(|max| v > max)
+                                    })
+                                {
+                                    self.error = Some(format!(
+                                        "{}: enter a whole number within the displayed bounds",
+                                        field.label
+                                    ));
+                                    form.selected = index;
+                                    return Outcome::None;
+                                }
+                            }
+                        }
                         return Outcome::Submit {
                             id: form
                                 .actions
@@ -876,6 +951,22 @@ impl CommandPalette {
             || self.agent.as_ref().is_some_and(|a| a.borrow().is_reader())
         {
             return;
+        }
+        if let Some(field) = self
+            .form
+            .as_mut()
+            .and_then(|f| f.fields.get_mut(f.selected))
+        {
+            if field
+                .input_options
+                .as_ref()
+                .is_some_and(|o| o.kind == "multiline" || o.kind == "text")
+            {
+                if let FieldValue::Text(input) = &mut field.value {
+                    insert_multiline(input, text);
+                }
+                return;
+            }
         }
         let text: String = text
             .chars()
@@ -1271,7 +1362,7 @@ impl CommandPalette {
         if layout.rect.is_empty()
             || self.text.is_some()
             || self.busy
-            || (self.metadata.is_some() && self.metadata_focus == 0)
+            || (self.form.is_none() && self.metadata.is_some() && self.metadata_focus == 0)
         {
             return None;
         }
@@ -1341,7 +1432,7 @@ impl CommandPalette {
                             fit(
                                 &if self.form.as_ref().is_some_and(|f| f.confirmation) {
                                     " Confirm · PgUp/PgDn scroll details ".into()
-                                } else if self.metadata.is_some() {
+                                } else if self.metadata.is_some() && self.form.is_none() {
                                     format!(" Agent info · {} ", ["Metadata", "Timeline", "Actions"][self.metadata_focus as usize])
                                 } else {
                                     format!(" Do · Project: {} ", self.current_project.as_deref().unwrap_or("None"))
@@ -1384,10 +1475,12 @@ impl CommandPalette {
                                     "Working…  Esc Cancel"
                                 } else if self.form.as_ref().is_some_and(|f| f.confirmation) {
                                     "↑↓ Select  Enter Choose  PgUp/PgDn Details  Esc Back"
-                                } else if self.metadata.is_some() {
+                                } else if self.metadata.is_some() && self.form.is_none() {
                                     "Tab Metadata/Timeline/Actions · ↑↓ PgUp/PgDn · Enter Open · Esc Back"
                                 } else if self.text.is_some() {
                                     "↑↓ Scroll  PgUp/PgDn Page  Home/End  Esc Back"
+                                } else if self.form.is_some() && self.metadata.is_some() {
+                                    "Tab/↑↓ Fields  Enter Submit  PgUp/PgDn Details  Esc Back"
                                 } else if self.form.is_some() {
                                     "Tab/↑↓/Ctrl+n/p Fields  Enter Submit  Esc Back"
                                 } else if self.selected_entry().is_some_and(|entry| entry.kind == EntryKind::Agent) {
@@ -1572,3 +1665,19 @@ fn fit(text: &str, cols: usize, pad: char) -> String {
 #[cfg(test)]
 #[path = "unit/command_palette_tests.rs"]
 mod tests;
+
+fn insert_multiline(input: &mut TextInput, text: &str) {
+    let text: String = text
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect();
+    let cursor = input.get_cursor_position();
+    let mut value = input.get_text().to_owned();
+    let byte = value
+        .char_indices()
+        .nth(cursor)
+        .map(|(i, _)| i)
+        .unwrap_or(value.len());
+    value.insert_str(byte, &text);
+    input.replace_text(value, cursor + text.chars().count());
+}

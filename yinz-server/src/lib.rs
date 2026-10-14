@@ -31,6 +31,7 @@ pub use yinz_plugin_host::deno::testing as plugin_testing;
 use yinz_plugin_host::get_engine;
 #[doc(hidden)]
 pub use yinz_plugin_host::run_compilation_worker;
+mod configuration_editor;
 mod locked_escape;
 pub(crate) use yinz_bus::pty;
 pub use yinz_plugin_host::plugin_authoring;
@@ -169,6 +170,19 @@ use {
 
 pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 
+fn validate_background_plugins(config: &Config) -> Result<()> {
+    for declaration in &config.background_plugins {
+        let mut declaration = declaration.clone();
+        declaration.populate_run_plugin_if_needed(&config.plugins);
+        let run = declaration
+            .get_run_plugin()
+            .with_context(|| format!("unknown load_plugins alias: {declaration:?}"))?;
+        yinz_config::plugins::PluginConfig::from_run_plugin(&run)
+            .with_context(|| format!("Failed to resolve plugin: {}", run.location))?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct BackgroundPluginConfiguration {
     declarations: std::collections::BTreeSet<RunPluginOrAlias>,
@@ -200,6 +214,9 @@ impl BackgroundPluginConfiguration {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionConfiguration {
+    pending_editor_reload: Option<Config>,
+    editor_overrides: Vec<yinz_types::configuration::Patch>,
+    editor_effective: HashMap<ClientId, Config>,
     runtime_config: HashMap<ClientId, Config>, // if present, overrides the saved_config
     effective_keybinds: HashMap<ClientId, Keybinds>,
     plugin_default_keybinds: BTreeMap<PluginId, Keybinds>,
@@ -212,6 +229,10 @@ pub(crate) struct SessionConfiguration {
 
 impl SessionConfiguration {
     pub fn change_saved_config(&mut self, new_saved_config: Config) -> Vec<(ClientId, Config)> {
+        if self.pending_editor_reload.as_ref() == Some(&new_saved_config) {
+            return vec![];
+        }
+        self.pending_editor_reload = None;
         self.background_plugins = Some(BackgroundPluginConfiguration::from_config(
             &new_saved_config,
         ));
@@ -223,7 +244,10 @@ impl SessionConfiguration {
             if self.runtime_config.get(&client_id) != Some(&new_saved_config) {
                 self.runtime_config
                     .insert(client_id, new_saved_config.clone());
-                config_changes.push((client_id, new_saved_config.clone()))
+                config_changes.push((
+                    client_id,
+                    self.apply_editor_overrides(new_saved_config.clone()),
+                ))
             }
         }
         self.recompute_effective_keybinds();
@@ -245,24 +269,28 @@ impl SessionConfiguration {
             .unwrap_or(&self.saved_config.keybinds)
     }
     pub fn get_client_default_input_mode(&self, client_id: &ClientId) -> InputMode {
-        self.runtime_config
-            .get(client_id)
-            .or(Some(&self.saved_config))
-            .and_then(|c| c.options.default_mode)
+        self.get_client_configuration(client_id)
+            .options
+            .default_mode
             .unwrap_or_default()
     }
     pub fn get_client_locked_escape_timeout(&self, client_id: &ClientId) -> Duration {
         let millis = self
-            .runtime_config
-            .get(client_id)
-            .or(Some(&self.saved_config))
-            .and_then(|c| c.options.locked_escape_timeout_ms)
+            .get_client_configuration(client_id)
+            .options
+            .locked_escape_timeout_ms
             .unwrap_or(yinz_types::units::ElapsedMillis::new(
                 locked_escape::DEFAULT_LOCKED_ESCAPE_TIMEOUT_MS,
             ));
         Duration::from_millis((millis).get())
     }
     pub fn get_client_configuration(&self, client_id: &ClientId) -> Config {
+        if let Some(config) = self.editor_effective.get(client_id) {
+            return config.clone();
+        }
+        self.apply_editor_overrides(self.base_client_configuration(client_id))
+    }
+    fn base_client_configuration(&self, client_id: &ClientId) -> Config {
         let mut config = self
             .runtime_config
             .get(client_id)
@@ -283,23 +311,17 @@ impl SessionConfiguration {
         config_dir: Option<&Path>,
     ) -> Result<(Option<Config>, bool)> {
         let current = self.get_client_configuration(client_id);
-        let new_config = Config::from_kdl(&stringified_config, Some(current.clone()))
+        let base = self.base_client_configuration(client_id);
+        let new_config = Config::from_kdl(&stringified_config, Some(base))
             .and_then(|config| config.resolve_plugin_repositories(config_file_path, config_dir))
             .map_err(|error| anyhow!("{error}"))?;
-        for declaration in &new_config.background_plugins {
-            let mut declaration = declaration.clone();
-            declaration.populate_run_plugin_if_needed(&new_config.plugins);
-            let run = declaration
-                .get_run_plugin()
-                .with_context(|| format!("unknown load_plugins alias: {declaration:?}"))?;
-            yinz_config::plugins::PluginConfig::from_run_plugin(&run)
-                .with_context(|| format!("Failed to resolve plugin: {}", run.location))?;
-        }
-        let changed = current != new_config;
+        validate_background_plugins(&new_config)?;
         self.background_plugins = Some(BackgroundPluginConfiguration::from_config(&new_config));
         self.runtime_config.insert(*client_id, new_config.clone());
         self.recompute_effective_keybinds();
-        Ok((Some(new_config), changed))
+        let effective = self.get_client_configuration(client_id);
+        let changed = current != effective;
+        Ok((Some(effective), changed))
     }
     pub fn rebind_keys(
         &mut self,
@@ -386,15 +408,16 @@ impl SessionConfiguration {
     }
 
     fn recompute_effective_keybinds(&mut self) {
-        self.effective_keybinds = self
+        self.editor_effective.clear();
+        self.editor_effective = self
             .runtime_config
+            .keys()
+            .map(|id| (*id, self.get_client_configuration(id)))
+            .collect();
+        self.effective_keybinds = self
+            .editor_effective
             .iter()
-            .map(|(client_id, config)| {
-                (
-                    *client_id,
-                    self.with_plugin_defaults(config.clone()).keybinds,
-                )
-            })
+            .map(|(id, config)| (*id, self.with_plugin_defaults(config.clone()).keybinds))
             .collect();
     }
 }
@@ -540,6 +563,13 @@ impl SessionMetaData {
         for (client_id, new_config) in config_changes {
             self.locked_escapes.remove(&client_id);
             let new_config = self.session_configuration.with_plugin_defaults(new_config);
+            self.senders
+                .send_to_server(ServerInstruction::SetClientMouseMode(
+                    client_id,
+                    new_config.options.mouse_mode.unwrap_or(true),
+                ))
+                .context("reconfiguring client mouse mode")
+                .non_fatal();
             effective_changes.push((client_id, new_config));
         }
         if let Some((_, last_config)) = effective_changes.last() {
@@ -1391,10 +1421,13 @@ pub fn start_server_impl(
                     .session_configuration
                     .set_client_runtime_configuration(client_id, runtime_configuration);
 
-                let default_input_mode = config.options.default_mode.unwrap_or_default();
+                let effective = session_data
+                    .session_configuration
+                    .get_client_configuration(&client_id);
+                let default_mode = effective.options.default_mode.unwrap_or_default();
                 session_data
                     .current_input_modes
-                    .insert(client_id, default_input_mode);
+                    .insert(client_id, default_mode);
                 session_state
                     .write()
                     .unwrap()
@@ -1431,7 +1464,8 @@ pub fn start_server_impl(
                     ))
                     .context("adding the attaching client to the screen")
                     .non_fatal();
-                let default_mode = config.options.default_mode.unwrap_or_default();
+                session_data
+                    .propagate_configuration_changes(vec![(client_id, effective.clone())], false);
                 // ModeUpdate broadcast is handled by the screen thread via
                 // change_mode() -> update_input_modes()
                 log::info!("attach trace: server main client_id={client_id} enqueue ChangeMode");
@@ -1918,52 +1952,75 @@ pub fn start_server_impl(
                     session.change_mode_for_all_clients(input_mode)
                 });
             },
+            ServerInstruction::ConfigurationEditor { edit, theme, reply } => {
+                let result = with_session_mut(&session_data, |session| {
+                    if edit.is_none() {
+                        session.inspect_configuration(theme.as_deref())
+                    } else {
+                        session.configuration_editor(edit)
+                    }
+                })
+                .unwrap_or_else(|| Err("Session is unavailable".into()));
+                let _ = reply.send(result);
+            },
             ServerInstruction::SavePaletteTheme {
                 cancelled,
                 client,
                 request,
                 name,
+                permanent,
             } => {
-                let Some((configuration, config_file_path, config_dir)) =
-                    with_session(&session_data, |session| {
-                        (
-                            session.session_configuration.clone(),
-                            session.config_file_path.clone(),
-                            session.config_dir.clone(),
-                        )
-                    })
-                else {
-                    continue;
-                };
-                let result = save_palette_theme(
-                    &configuration,
-                    client,
-                    &name,
-                    config_file_path.as_deref(),
-                    config_dir.as_deref(),
-                    &cancelled,
-                );
                 with_session_mut(&session_data, |session| {
-                    session
-                        .senders
-                        .send_to_screen(ScreenInstruction::PaletteThemeSaved {
-                            client,
-                            request,
-                            result: result
-                                .as_ref()
-                                .map(|_| ())
-                                .map_err(|error| format!("{error:#}")),
-                        })
-                        .context("replying to theme save")
-                        .non_fatal();
-                    if let Ok(config) = result {
-                        let mut changes = session
+                    let result = (|| -> Result<(), String> {
+                        let snapshot = session.configuration_editor(None)?;
+                        let current = session
                             .session_configuration
-                            .change_saved_config(config.clone());
-                        if !changes.iter().any(|(id, _)| *id == client) {
-                            changes.push((client, config));
-                        }
-                        session.propagate_configuration_changes(changes, true);
+                            .get_client_configuration(&client);
+                        let fragment =
+                            theme_fragment(&current, &name).map_err(|e| e.to_string())?;
+                        let options =
+                            Config::from_kdl(&fragment, None).map_err(|e| e.to_string())?;
+                        let patches = yinz_config::editor::document(&options)?
+                            .into_iter()
+                            .filter(|n| {
+                                matches!(n.name.as_str(), "theme" | "theme_dark" | "theme_light")
+                            })
+                            .map(|node| yinz_types::configuration::Patch {
+                                reset: false,
+                                path: vec![node.name.clone()],
+                                node: Some(node),
+                            })
+                            .collect();
+                        let edit = yinz_types::configuration::Edit {
+                            revision: snapshot["revision"]
+                                .as_str()
+                                .ok_or("Missing configuration revision")?
+                                .into(),
+                            destination: if permanent {
+                                yinz_types::configuration::Destination::Permanent
+                            } else {
+                                yinz_types::configuration::Destination::Session
+                            },
+                            patches,
+                            reset: vec![],
+                        };
+                        session.configuration_editor_guarded(
+                            Some(edit),
+                            Some(&cancelled),
+                            Some((client, request)),
+                        )?;
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        session
+                            .senders
+                            .send_to_screen(ScreenInstruction::PaletteThemeSaved {
+                                client,
+                                request,
+                                result: Err(error),
+                            })
+                            .context("replying to theme edit")
+                            .non_fatal();
                     }
                 });
             },
@@ -2109,6 +2166,15 @@ pub fn start_server_impl(
                     }
                     log::error!("reconfigure: {error:#}");
                 }
+            },
+            ServerInstruction::SetClientMouseMode(client, enabled) => {
+                send_to_client!(
+                    client,
+                    os_input,
+                    ServerToClientMsg::SetMouseMode { enabled },
+                    session_state,
+                    session_data
+                );
             },
             ServerInstruction::ConfigWrittenToDisk(new_config) => {
                 with_session_mut(&session_data, |session| {
@@ -2848,6 +2914,7 @@ fn report_changes_in_config_file(
 }
 
 /// Stage the theme change without touching live state; only a successful write may be applied.
+#[cfg(test)]
 fn save_palette_theme(
     configuration: &SessionConfiguration,
     client: ClientId,

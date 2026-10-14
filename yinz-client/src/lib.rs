@@ -95,6 +95,7 @@ pub(crate) enum ClientInstruction {
     #[allow(dead_code)] // we need the session name here even though we're not currently using it
     RenamedSession(SessionName), // String -> new session name
     ConfigFileUpdated,
+    SetMouseMode(bool),
     /// Server asked us to forward `query_bytes` to the host terminal and
     /// collect the reply bytes into the window identified by `token`.
     ForwardQueryToHost {
@@ -123,6 +124,7 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::CliPipeOutput { .. } => ClientInstruction::CliPipeOutput((), ()),
             ServerToClientMsg::QueryTerminalSize => ClientInstruction::QueryTerminalSize,
             ServerToClientMsg::RenamedSession { name } => ClientInstruction::RenamedSession(name),
+            ServerToClientMsg::SetMouseMode { enabled } => ClientInstruction::SetMouseMode(enabled),
             ServerToClientMsg::ConfigFileUpdated => ClientInstruction::ConfigFileUpdated,
             ServerToClientMsg::ForwardQueryToHost {
                 token,
@@ -167,6 +169,7 @@ impl From<&ClientInstruction> for ClientContext {
             ClientInstruction::CliPipeOutput(..) => ClientContext::CliPipeOutput,
             ClientInstruction::QueryTerminalSize => ClientContext::QueryTerminalSize,
             ClientInstruction::RenamedSession(..) => ClientContext::RenamedSession,
+            ClientInstruction::SetMouseMode(_) => ClientContext::ConfigFileUpdated,
             ClientInstruction::ConfigFileUpdated => ClientContext::ConfigFileUpdated,
             ClientInstruction::ForwardQueryToHost { .. } => ClientContext::ForwardQueryToHost,
             ClientInstruction::EmitNestedSessionFrame(..) => ClientContext::EmitNestedSessionFrame,
@@ -385,6 +388,7 @@ impl ClientInfo {
 
 #[derive(Debug, Clone)]
 pub(crate) enum InputInstruction {
+    SetMouseMode(bool),
     KeyEvent(InputEvent, Vec<u8>),
     KeyWithModifierEvent(KeyWithModifier, Vec<u8>, bool), // bool = is_kitty_keyboard_protocol
     AnsiStdinInstructions(Vec<AnsiStdinInstruction>),

@@ -251,6 +251,13 @@ impl ConfigError {
 /// stale blocks from an earlier fragment do not survive under it. See
 /// `Config::write_managed_fragment`.
 pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDocument) {
+    if let Some(block) = managed.get_mut(crate::editor::EDITS_BLOCK) {
+        if let Ok(patches) = crate::editor::patches_from_kdl(block) {
+            if let Ok(normalized) = crate::editor::patches_to_kdl(&patches) {
+                *block = normalized;
+            }
+        }
+    }
     fn clears_defaults(node: &kdl::KdlNode) -> bool {
         // Lenient on purpose: a non-bool value is rejected when the merged file is parsed.
         node.get("clear-defaults")
@@ -269,6 +276,94 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
     }
     for node in fragment.nodes() {
         let name = node.name().value();
+        if name == crate::editor::EDITS_BLOCK {
+            for reset in node
+                .children()
+                .into_iter()
+                .flat_map(|d| d.nodes())
+                .filter(|n| n.name().value() == "reset")
+            {
+                let path: Vec<_> = reset
+                    .entries()
+                    .iter()
+                    .filter_map(|e| e.value().as_string().map(str::to_owned))
+                    .collect();
+                crate::editor::reset_managed_path(managed, &path);
+            }
+            let target = match managed
+                .nodes_mut()
+                .iter()
+                .position(|n| n.name().value() == name)
+            {
+                Some(index) => &mut managed.nodes_mut()[index],
+                None => {
+                    managed.nodes_mut().push(kdl::KdlNode::new(name));
+                    let index = managed.nodes().len() - 1;
+                    &mut managed.nodes_mut()[index]
+                },
+            };
+            for edit in node.children().into_iter().flat_map(|d| d.nodes()) {
+                let path: Vec<_> = edit.entries().iter().map(|e| e.value()).collect();
+                target.ensure_children().nodes_mut().retain(|old| {
+                    let old_path: Vec<_> = old.entries().iter().map(|e| e.value()).collect();
+                    !old_path.starts_with(&path)
+                });
+                let has_parent = target.ensure_children().nodes().iter().any(|old| {
+                    let old_path: Vec<_> = old.entries().iter().map(|e| e.value()).collect();
+                    path.starts_with(&old_path)
+                });
+                if edit.name().value() != "reset" || has_parent {
+                    target.ensure_children().nodes_mut().push(edit.clone());
+                }
+            }
+            continue;
+        }
+        // Legacy writers must supersede edits to the same entries without dropping siblings.
+        if let Some(block) = managed
+            .nodes_mut()
+            .iter_mut()
+            .find(|n| n.name().value() == crate::editor::EDITS_BLOCK)
+        {
+            if name == "keybinds" {
+                // Invalid fragments remain intact for the normal loader to reject before writing.
+                if let Ok(reconciled) = crate::editor::reconcile_legacy_keybinds(block, node) {
+                    *block = reconciled;
+                }
+            } else {
+                let replace_root =
+                    node.children().is_none() || clears_defaults(node) || name == "context_menu";
+                let entries: Vec<_> = node
+                    .children()
+                    .into_iter()
+                    .flat_map(|d| d.nodes())
+                    .map(|n| n.name().value())
+                    .collect();
+                let edits = block.ensure_children().nodes_mut();
+                for old in edits.iter_mut() {
+                    let root = old.get(0).and_then(|entry| entry.value().as_string());
+                    if root == Some(name)
+                        && old.entries().len() == 1
+                        && !replace_root
+                        && old.name().value() == "set"
+                    {
+                        let mut update = kdl::KdlDocument::new();
+                        update.nodes_mut().push(node.clone());
+                        merge_kdl_fragment(old.ensure_children(), &update);
+                    }
+                }
+                edits.retain(|old| {
+                    if old.get(0).and_then(|e| e.value().as_string()) != Some(name) {
+                        return true;
+                    }
+                    if replace_root {
+                        return false;
+                    }
+                    old.get(1)
+                        .and_then(|e| e.value().as_string())
+                        .is_none_or(|child| !entries.contains(&child))
+                });
+            }
+        }
         let arguments_are_identity = name == "keybinds";
         let existing = managed
             .nodes_mut()
@@ -278,7 +373,8 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
             Some(target)
                 if node.children().is_some()
                     && target.children().is_some()
-                    && !clears_defaults(node) =>
+                    && !clears_defaults(node)
+                    && name != "context_menu" =>
             {
                 let target_children = target.ensure_children().nodes_mut();
                 for child in node.children().map(|c| c.nodes()).unwrap_or_default() {
@@ -293,6 +389,8 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
             None => managed.nodes_mut().push(node.clone()),
         }
     }
+    // Parsed final nodes may omit a terminator; appended entries must still be valid KDL.
+    managed.fmt();
 }
 
 impl Config {
@@ -416,7 +514,7 @@ impl Config {
             .filter(|path| path.is_file())
             .collect();
         paths.sort();
-        paths.into_iter().fold(self, |config, path| {
+        paths.into_iter().fold(self, |mut config, path| {
             let text = match std::fs::read_to_string(&path) {
                 Ok(text) => text,
                 Err(e) => {
@@ -424,6 +522,17 @@ impl Config {
                     return config;
                 },
             };
+            // Leaf edits to a directory theme need that definition before overlay parsing.
+            if crate::editor::edits_themes(&text) {
+                if let Err(error) = apply_themes(
+                    &mut config,
+                    None,
+                    overlay_dir.parent().map(Path::to_path_buf),
+                ) {
+                    log::error!("Cannot load themes for {}: {error}", path.display());
+                    return config;
+                }
+            }
             match Config::from_kdl(&text, Some(config.clone())) {
                 Ok(layered) => layered,
                 Err(e) => {
@@ -446,7 +555,7 @@ impl Config {
     /// defaults before anything is written, and the write is atomic, so the file on disk is
     /// always one the loader accepts.
     pub fn write_managed_fragment(overlay_dir: &Path, fragment: &str) -> Result<PathBuf, String> {
-        Self::write_managed_fragment_impl(overlay_dir, fragment, true, || Ok(()))
+        Self::write_managed_fragment_impl(overlay_dir, fragment, true, None, || Ok(()))
     }
 
     /// Try to write a managed fragment without waiting for another writer's file lock.
@@ -456,13 +565,23 @@ impl Config {
         fragment: &str,
         guard: impl FnOnce() -> Result<(), String>,
     ) -> Result<PathBuf, String> {
-        Self::write_managed_fragment_impl(overlay_dir, fragment, false, guard)
+        Self::write_managed_fragment_impl(overlay_dir, fragment, false, None, guard)
+    }
+
+    pub fn try_write_editor_fragment(
+        overlay_dir: &Path,
+        fragment: &str,
+        base: Config,
+        guard: impl FnOnce() -> Result<(), String>,
+    ) -> Result<PathBuf, String> {
+        Self::write_managed_fragment_impl(overlay_dir, fragment, false, Some(base), guard)
     }
 
     fn write_managed_fragment_impl(
         overlay_dir: &Path,
         fragment: &str,
         wait_for_lock: bool,
+        base: Option<Config>,
         guard: impl FnOnce() -> Result<(), String>,
     ) -> Result<PathBuf, String> {
         use kdl::KdlDocument;
@@ -505,7 +624,15 @@ impl Config {
         };
         merge_kdl_fragment(&mut managed, &fragment);
         let text = managed.to_string();
-        let defaults = Config::from_default_assets().map_err(|e| e.to_string())?;
+        let defaults = match base {
+            Some(base) => base,
+            None if managed.get(crate::editor::EDITS_BLOCK).is_some() => {
+                crate::editor::Disk::read(None, overlay_dir.parent())?
+                    .preview(&[], &[])?
+                    .2
+            },
+            None => Config::from_default_assets().map_err(|e| e.to_string())?,
+        };
         Config::from_kdl(&text, Some(defaults))
             .map_err(|e| format!("the merged {} would not load: {e}", path.display()))?;
         let mut tmp = tempfile::NamedTempFile::new_in(overlay_dir)
@@ -1296,7 +1423,7 @@ pub fn apply_themes(
         None => config.options.clone(),
     };
 
-    config.themes = config.themes.merge(crate::assets::get_default_themes());
+    config.themes = crate::assets::get_default_themes().merge(config.themes.clone());
 
     let user_theme_dir = config_options.theme_dir.clone().or_else(|| {
         home::get_theme_dir(config_dir.clone().or_else(home::find_default_config_dir))

@@ -2786,6 +2786,8 @@ pub struct NotifyClick {
 #[strum_discriminants(name(CommandType))]
 #[allow(clippy::large_enum_variant)]
 pub enum PluginCommand {
+    InspectConfiguration(Option<String>),
+    EditConfiguration(crate::configuration::Edit),
     /// Private Deno palette transport; has no Wasm wire representation.
     CommandPalette(crate::command_palette::Command),
     PaneTabs(crate::pane_tabs::PaneTabsCommand),

@@ -37,9 +37,30 @@ pub struct Action {
     pub handle: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputOptions {
+    pub kind: String,
+    #[serde(default)]
+    pub help: String,
+    #[serde(default)]
+    pub error: String,
+    #[serde(default)]
+    pub minimum: Option<i64>,
+    #[serde(default)]
+    pub maximum: Option<i64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Field {
+    Input {
+        id: String,
+        label: String,
+        #[serde(default, rename = "initialValue")]
+        initial_value: String,
+        options: InputOptions,
+    },
     Text {
         id: String,
         label: String,
@@ -64,7 +85,10 @@ pub enum Field {
 impl Field {
     pub fn id(&self) -> &str {
         match self {
-            Self::Text { id, .. } | Self::Directory { id, .. } | Self::Choice { id, .. } => id,
+            Self::Input { id, .. }
+            | Self::Text { id, .. }
+            | Self::Directory { id, .. }
+            | Self::Choice { id, .. } => id,
         }
     }
 }
@@ -269,6 +293,29 @@ impl Reply {
                             return Err("Palette field IDs must be unique".into());
                         }
                         match field {
+                            Field::Input {
+                                label: name,
+                                initial_value,
+                                options,
+                                ..
+                            } => {
+                                label(name)?;
+                                plain_text(initial_value)?;
+                                plain_text(&options.help)?;
+                                plain_text(&options.error)?;
+                                if !["text", "number", "multiline", "file", "directory", "key"]
+                                    .contains(&options.kind.as_str())
+                                {
+                                    return Err("Unknown palette input kind".into());
+                                }
+                                if options
+                                    .minimum
+                                    .zip(options.maximum)
+                                    .is_some_and(|(min, max)| min > max)
+                                {
+                                    return Err("Invalid number bounds".into());
+                                }
+                            },
                             Field::Directory {
                                 label: name,
                                 initial_value,

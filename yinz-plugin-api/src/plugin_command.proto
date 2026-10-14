@@ -259,6 +259,8 @@ enum CommandName {
   SetQuitNotice = 279;
   GetLocalUtcOffset = 280;
   GetDisconnectTargets = 305;
+  InspectConfiguration = 306;
+  EditConfiguration = 307;
   SpawnAgent = 281;
   ProjectConfigRead = 282;
   ProjectConfigWrite = 283;
@@ -512,6 +514,8 @@ message PluginCommand {
     SetProjectContextPayload set_project_context_payload = 239;
     GetPluginInfoPayload get_plugin_info_payload = 241;
     string pick_payload = 245;
+    string edit_configuration_payload = 246;
+    string configuration_inspection_theme = 247;
     string get_plugin_ids_for_url_with_configuration_payload = 244;
   }
 }

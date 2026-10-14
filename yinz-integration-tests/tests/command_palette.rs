@@ -1159,15 +1159,14 @@ fn theme_picker_can_cancel_while_config_file_is_locked() {
         snapshot.contains("> dracula") && snapshot.cell_foreground(0, 0) != frame
     });
     yinz.send_stdin(b"\r");
+    yinz.wait_until("theme destination", |snapshot| {
+        snapshot.contains("Apply to session")
+    });
+    yinz.send_stdin(b"\x1b[C\r\r");
     yinz.wait_until("contended save reports an error", |snapshot| {
-        snapshot.contains("Configuration is busy") && snapshot.contains("> dracula")
+        snapshot.contains("Configuration is busy") && snapshot.contains("Apply theme dracula")
     });
     assert_terminal_background(&shell, (0x19, 0x23, 0x30));
-    yinz.send_stdin(&keys::ESC);
-    yinz.wait_until(
-        "cancel restores the theme while the lock is held",
-        |snapshot| snapshot.contains("Esc Close") && snapshot.cell_foreground(0, 0) == frame,
-    );
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("palette closes while the lock is held", |snapshot| {
         !snapshot.contains("Enter Save")
@@ -1194,14 +1193,18 @@ fn theme_picker_can_cancel_while_config_file_is_locked() {
         snapshot.contains("Enter Save")
     });
     yinz.send_stdin(b"dracula\r");
+    yinz.wait_until("theme destination again", |snapshot| {
+        snapshot.contains("Apply to session")
+    });
+    yinz.send_stdin(b"\x1b[C\r\r");
     yinz.wait_until("second contended save reports an error", |snapshot| {
-        snapshot.contains("Configuration is busy") && snapshot.contains("> dracula")
+        snapshot.contains("Configuration is busy") && snapshot.contains("Apply theme dracula")
     });
     drop(lock);
     yinz.send_stdin(b"\r");
     yinz.wait_until("retry saves the theme and closes the picker", |snapshot| {
         !snapshot.contains("> dracula")
-            && snapshot.contains("Completed: Save theme")
+            && snapshot.contains("Completed: Apply theme")
             && !snapshot.contains("Enter Save")
             && !snapshot.contains("Esc Close")
             && snapshot.contains("RENDER WHILE LOCKED")
@@ -1263,17 +1266,23 @@ fn theme_picker_preview_cancel_save_and_reload() {
             && snapshot.cell_foreground(0, 0) == preview.cell_foreground(0, 0)
     });
     yinz.send_stdin(b"\r");
+    yinz.wait_until("theme destination", |snapshot| {
+        snapshot.contains("Apply to session")
+    });
+    yinz.send_stdin(b"\x1b[C\r\r");
     yinz.wait_until("saved picker closes", |snapshot| {
         !snapshot.contains("Enter Save")
             && !snapshot.contains("Esc Close")
             && snapshot.contains("$")
             && snapshot.cell_foreground(0, 0) == preview.cell_foreground(0, 0)
+            && snapshot.contains("Completed: Apply theme")
     });
     assert_terminal_background(&shell, (0x28, 0x2a, 0x36));
     let saved = std::fs::read_to_string(&managed).unwrap();
     assert!(saved.contains("theme \"dracula\""), "{saved}");
-    assert!(!saved.contains("theme_dark"), "{saved}");
-    assert!(!saved.contains("theme_light"), "{saved}");
+    let loaded = yinz_config::config::Config::load(None, Some(directory.path()), false).unwrap();
+    assert!(loaded.options.theme_dark.is_none(), "{saved}");
+    assert!(loaded.options.theme_light.is_none(), "{saved}");
     yinz.quit();
 
     let mut reloaded = TestRunner::new(TERMINAL_SIZE)
@@ -1319,10 +1328,15 @@ fn theme_picker_saving_active_light_theme_preserves_terminal_theme_queries() {
                 snapshot.contains("> dayfox")
             });
             yinz.send_stdin(b"\r");
+            yinz.wait_until("theme destination", |snapshot| {
+                snapshot.contains("Apply to session")
+            });
+            yinz.send_stdin(b"\x1b[C\r\r");
             yinz.wait_until("saved picker closes", |snapshot| {
                 !snapshot.contains("Enter Save")
                     && !snapshot.contains("Esc Close")
                     && snapshot.contains("$")
+                    && snapshot.contains("Completed: Apply theme")
             });
         }
         shell.output(b"\x1b[?996n");
@@ -1868,4 +1882,141 @@ fn session_palette_disconnect_targets_preserve_watchers() {
     });
     watcher.quit();
     host.quit();
+}
+
+#[test]
+fn configuration_palette_session_draft_can_be_saved_unchanged_permanently() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(config_dir.path().into())
+        .with_config("pane_animations false\npane_frames true\npane_frame_style \"full\"\n")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready without a permission prompt", |screen| {
+        screen.contains("$") && !screen.contains("Deny")
+    });
+    let second = yinz.attach_client(TERMINAL_SIZE);
+    second.wait_until("second client sees the framed pane", |screen| {
+        screen.contains("$") && screen.contains("┌")
+    });
+    yinz.send_stdin(DO);
+    yinz.send_stdin(b"Configure pane frames");
+    yinz.wait_until("configuration provider result", |screen| {
+        screen.contains("Configure pane frames…")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("configuration value editor", |screen| {
+        screen.contains("Choose destination")
+    });
+    yinz.send_stdin(b"\x1b[C");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("explicit session destination", |screen| {
+        screen.contains("Apply to session") && screen.contains("Apply change")
+    });
+    assert!(!config_dir.path().join("config.d/yinz-managed.kdl").exists());
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("server acknowledged configuration edit", |screen| {
+        screen.contains("Applied to this session")
+    });
+    second.wait_until("session edit reaches the second client", |screen| {
+        screen.contains("$") && !screen.contains("┌")
+    });
+    let later = yinz.attach_client(TERMINAL_SIZE);
+    later.wait_until("later client inherits the session edit", |screen| {
+        screen.contains("$") && !screen.contains("┌")
+    });
+    assert!(!config_dir.path().join("config.d/yinz-managed.kdl").exists());
+    yinz.send_stdin(DO);
+    yinz.send_stdin(b"Configure pane frames");
+    yinz.wait_until("reopen configuration result", |screen| {
+        screen.contains("Configure pane frames…")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("effective value is disabled", |screen| {
+        screen.contains("Disabled") && screen.contains("Choose destination")
+    });
+    yinz.send_stdin(b"\x1b[B\x1b[B\r");
+    yinz.wait_until("session override details", |screen| {
+        screen.contains("Session override: Yes")
+    });
+    yinz.send_stdin(DO);
+    yinz.wait_until("details closed", |screen| {
+        !screen.contains("Esc Back") && !screen.contains("Esc Close") && screen.contains("$")
+    });
+    palette_query(&yinz, "Configure pane frames");
+    yinz.wait_until("unchanged session value ready to save", |screen| {
+        screen.contains("Disabled") && screen.contains("Choose destination")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("choose permanent destination", |screen| {
+        screen.contains("Apply change")
+    });
+    yinz.send_stdin(b"\x1b[C");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("unchanged override saved", |screen| {
+        screen.contains("Saved permanently")
+    });
+    let saved = yinz_config::config::Config::load(None, Some(config_dir.path()), false).unwrap();
+    assert_eq!(saved.options.pane_frames, Some(false));
+    assert_eq!(
+        saved.options.pane_animations,
+        yinz_config::config::Config::from_default_assets()
+            .unwrap()
+            .options
+            .pane_animations
+    );
+    let managed =
+        std::fs::read_to_string(config_dir.path().join("config.d/yinz-managed.kdl")).unwrap();
+    assert!(managed.contains("pane_frames"));
+    assert!(!managed.contains("pane_animations"));
+    later.quit();
+    second.quit();
+    yinz.quit();
+}
+
+#[test]
+fn configuration_palette_locked_default_routes_later_client_input_in_locked_mode() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(config_dir.path().into())
+        .with_config("pane_animations false\ndefault_mode \"normal\"\n")
+        .with_layout(LayoutInfo::Stringified(r#"layout { pane; pane size=2 borderless=true { plugin location="yinz:status-bar"; }; }"#.into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready", |screen| screen.contains("$"));
+    palette_query(&yinz, "Configure default mode");
+    yinz.wait_until("default mode editor", |screen| {
+        screen.contains("Choose destination")
+    });
+    yinz.send_stdin(b"\x1b[C");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("session destination", |screen| {
+        screen.contains("Apply change")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("locked default applied", |screen| {
+        screen.contains("Applied to this session")
+    });
+    let later = yinz.attach_client(TERMINAL_SIZE);
+    later.wait_until("later client displays Locked", |screen| {
+        screen.contains("LOCKED")
+    });
+    later.send_stdin(&keys::ctrl('q'));
+    later.send_stdin(b"still-locked");
+    shell.wait_for_stdin("Ctrl q is input rather than Quit", |bytes| {
+        bytes.ends_with(b"\x11still-locked")
+    });
+    assert!(!shell.is_exited());
+    assert!(!config_dir.path().join("config.d/yinz-managed.kdl").exists());
+    later.quit();
+    yinz.quit();
 }

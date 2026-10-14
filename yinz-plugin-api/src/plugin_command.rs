@@ -3021,6 +3021,19 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for AgentControl"),
             },
+            Some(CommandName::InspectConfiguration) => match protobuf_plugin_command.payload {
+                None => Ok(PluginCommand::InspectConfiguration(None)),
+                Some(Payload::ConfigurationInspectionTheme(theme)) => {
+                    Ok(PluginCommand::InspectConfiguration(Some(theme)))
+                },
+                _ => Err("Mismatched payload for InspectConfiguration"),
+            },
+            Some(CommandName::EditConfiguration) => match protobuf_plugin_command.payload {
+                Some(Payload::EditConfigurationPayload(edit)) => serde_json::from_str(&edit)
+                    .map(PluginCommand::EditConfiguration)
+                    .map_err(|_| "Invalid configuration edit"),
+                _ => Err("Mismatched payload for EditConfiguration"),
+            },
             Some(CommandName::ProjectConfigRead) => match protobuf_plugin_command.payload {
                 Some(Payload::ProjectConfigReadPayload(directory)) => {
                     Ok(PluginCommand::ProjectConfigRead {
@@ -5489,6 +5502,16 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::AgentControlPayload(
                     serde_json::to_string(&(id, request))
                         .map_err(|_| "invalid agent control payload")?,
+                )),
+            }),
+            PluginCommand::InspectConfiguration(theme) => Ok(ProtobufPluginCommand {
+                name: CommandName::InspectConfiguration as i32,
+                payload: theme.map(Payload::ConfigurationInspectionTheme),
+            }),
+            PluginCommand::EditConfiguration(edit) => Ok(ProtobufPluginCommand {
+                name: CommandName::EditConfiguration as i32,
+                payload: Some(Payload::EditConfigurationPayload(
+                    serde_json::to_string(&edit).map_err(|_| "Invalid configuration edit")?,
                 )),
             }),
             PluginCommand::ProjectConfigRead { directory } => Ok(ProtobufPluginCommand {
@@ -7970,6 +7993,8 @@ mod tests {
                 | PluginCommand::SetPaneAgentRun { .. }
                 | PluginCommand::SpawnAgent { .. }
                 | PluginCommand::AgentControl { .. }
+                | PluginCommand::InspectConfiguration(..)
+                | PluginCommand::EditConfiguration(..)
                 | PluginCommand::ProjectConfigRead { .. }
                 | PluginCommand::ProjectConfigWrite { .. }
                 | PluginCommand::SetQuitNotice { .. }

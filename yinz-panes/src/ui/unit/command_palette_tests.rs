@@ -1901,3 +1901,98 @@ fn late_results_restore_intent_and_resume_automatic_selection_after_removal() {
         }
     }
 }
+
+#[test]
+fn configuration_fields_preserve_multiline_capture_keys_and_validate_numbers() {
+    let mut palette = palette();
+    let mut field = Field::text("Command", "");
+    field.input_options = Some(yinz_types::command_palette::InputOptions {
+        kind: "multiline".into(),
+        ..Default::default()
+    });
+    palette.open_form(Form::new(
+        "form".into(),
+        "Configuration".into(),
+        vec![field],
+        "Apply",
+        false,
+    ));
+    palette.insert_text("one\ntwo\tthree");
+    assert_eq!(
+        palette.form.as_ref().unwrap().fields[0].text_value(),
+        "one\ntwo\tthree"
+    );
+    palette.handle_key(KeyWithModifier::new(BareKey::Enter).with_shift_modifier());
+    assert!(palette.form.as_ref().unwrap().fields[0]
+        .text_value()
+        .ends_with('\n'));
+    let mut field = Field::text("Key", "");
+    field.input_options = Some(yinz_types::command_palette::InputOptions {
+        kind: "key".into(),
+        ..Default::default()
+    });
+    palette.open_form(Form::new(
+        "form".into(),
+        "Configuration".into(),
+        vec![field],
+        "Apply",
+        false,
+    ));
+    key(&mut palette, BareKey::F(2));
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Esc)),
+        Outcome::None
+    );
+    assert!(!palette.form.as_ref().unwrap().fields[0]
+        .text_value()
+        .is_empty());
+    let mut field = Field::text("Opacity", "101");
+    field.input_options = Some(yinz_types::command_palette::InputOptions {
+        kind: "number".into(),
+        minimum: Some(0),
+        maximum: Some(100),
+        ..Default::default()
+    });
+    palette.open_form(Form::new(
+        "form".into(),
+        "Configuration".into(),
+        vec![field],
+        "Apply",
+        false,
+    ));
+    key(&mut palette, BareKey::Enter);
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::None
+    );
+    assert!(palette.error.as_ref().unwrap().contains("Opacity"));
+}
+
+#[test]
+fn configuration_forms_keep_the_cursor_when_help_is_visible() {
+    for kind in ["number", "key", "multiline"] {
+        let mut palette = palette();
+        let mut field = Field::text("Value", "1");
+        field.input_options = Some(yinz_types::command_palette::InputOptions {
+            kind: kind.into(),
+            help: "Edit this value".into(),
+            ..Default::default()
+        });
+        palette.open_form(Form::new(
+            "form".into(),
+            "Configuration".into(),
+            vec![field],
+            "Apply",
+            false,
+        ));
+        let surface = Viewport {
+            cols: 80,
+            rows: 24,
+            ..Default::default()
+        };
+        assert!(palette.metadata.is_some());
+        assert!(palette.cursor(&palette.layout(surface)).is_some(), "{kind}");
+        palette.form = None;
+        assert!(palette.cursor(&palette.layout(surface)).is_none());
+    }
+}

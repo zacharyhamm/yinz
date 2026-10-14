@@ -1638,6 +1638,17 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             pane_id: pane_id(tc),
             run_id: optional_strings(tc),
         },
+        CommandType::InspectConfiguration => {
+            PluginCommand::InspectConfiguration(Some("theme".into()))
+        },
+        CommandType::EditConfiguration => {
+            PluginCommand::EditConfiguration(yinz_types::configuration::Edit {
+                revision: strings(tc),
+                destination: yinz_types::configuration::Destination::Session,
+                patches: vec![],
+                reset: vec![],
+            })
+        },
         CommandType::ProjectConfigRead => PluginCommand::ProjectConfigRead {
             directory: strings(tc).into(),
         },
