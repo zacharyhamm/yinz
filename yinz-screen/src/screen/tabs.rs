@@ -854,7 +854,7 @@ impl Screen {
     }
 
     /// Settle tab lifetime after each instruction. Pending layouts are never destinations.
-    /// Hidden-only tabs survive beside a usable tab; otherwise their work gets a replacement.
+    /// Hidden-only tabs survive beside a usable tab; only quit guards require a replacement.
     /// Keep replacement identity after loading so natural exits hold instead of respawning.
     pub(crate) fn settle_tabs(&mut self) -> Result<()> {
         let err_context = "failed to settle tabs";
@@ -926,7 +926,7 @@ impl Screen {
             if self.replacement_pending && self.replacement_tab.is_some() {
                 // A layout with no usable pane must not cause an endless spawn loop.
                 self.replacement_pending = false;
-            } else if self.session_must_survive(&doomed) {
+            } else if self.quit_is_guarded() {
                 if let Some(client_id) = self.active_tab_ids.keys().copied().min() {
                     self.open_replacement_tab(client_id).context(err_context)?;
                 }
@@ -947,17 +947,6 @@ impl Screen {
             }
         }
         Ok(())
-    }
-
-    /// Whether the session has a reason to outlive its last usable pane: a plugin asked for a
-    /// quit to be confirmed, or a terminal is still running hidden in one of the tabs about to
-    /// close (a pane a plugin parked, whose process would die with the session).
-    fn session_must_survive(&self, doomed: &[TabId]) -> bool {
-        self.quit_is_guarded()
-            || doomed
-                .iter()
-                .filter_map(|id| self.tabs.get(id))
-                .any(Tab::has_live_terminal)
     }
 
     /// Open the tab that stands in for the session's emptied last tab: the default layout with
@@ -1029,9 +1018,9 @@ impl Screen {
         tab_id: TabId,
         client_id: Option<ClientId>,
     ) -> Result<()> {
-        let Some(tab) = self.tabs.get(&tab_id) else {
+        if !self.tabs.contains_key(&tab_id) {
             return Ok(());
-        };
+        }
         let client_id = client_id.or_else(|| self.get_first_client_id());
         let has_destination = self
             .tabs
@@ -1044,13 +1033,8 @@ impl Screen {
                 }
                 return Ok(());
             }
-            if tab.has_hidden_live_terminal() || self.has_pending_tabs() {
+            if self.has_pending_tabs() {
                 self.deferred_tab_closes.insert(tab_id);
-                if !self.has_pending_tabs() {
-                    if let Some(client_id) = client_id {
-                        self.open_replacement_tab(client_id)?;
-                    }
-                }
                 return Ok(());
             }
         }

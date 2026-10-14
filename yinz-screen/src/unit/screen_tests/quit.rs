@@ -334,68 +334,70 @@ fn the_last_pane_closing_exits_with_only_a_watcher_attached() {
     assert!(session_ended(&server_receiver));
 }
 
-/// A terminal a plugin parked is still running, and the session keeps it: not by holding an
-/// empty tab open - that is a blank screen nobody can type into - but by opening a fresh tab and
-/// moving the hidden pane into it. Once the hidden terminal exits too, nothing is left to keep.
 #[test]
-fn a_hidden_terminal_keeps_the_session_alive_until_it_exits() {
-    let (mut screen, screen_receiver, server_receiver, plugin_receiver) =
-        screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-    let client_id = crate::ClientId::new(1);
-    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
-    screen
-        .tabs
-        .get_mut(&TabId::new(1))
-        .expect("TEST")
-        .suppress_pane(pane_id, None);
-    assert!(!screen.tabs[&TabId::new(1)].has_selectable_panes());
+fn last_pane_close_ends_the_session_with_hidden_terminals() {
+    for explicit in [false, true] {
+        for hidden_in_other_tab in [false, true] {
+            let client = ClientId::new(1);
+            let source = TabId::new(1);
+            let tab_ids = if hidden_in_other_tab {
+                vec![source, TabId::new(2)]
+            } else {
+                vec![source]
+            };
+            let (mut screen, receiver, server, plugins) =
+                screen_with_plugin_senders_and_clients(&tab_ids, &[client]);
+            let hidden = PaneId::Terminal(TerminalId::new(1));
+            let visible = PaneId::Terminal(TerminalId::new(2));
+            let tab = screen.tabs.get_mut(&source).unwrap();
+            if !hidden_in_other_tab {
+                tab.new_pane(
+                    visible,
+                    None,
+                    None,
+                    false,
+                    false,
+                    NewPanePlacement::default(),
+                    Some(client),
+                    None,
+                )
+                .unwrap();
+            }
+            tab.suppress_pane(hidden, None);
+            screen.settle_tabs().unwrap();
+            let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
+            screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+            for tab in screen.tabs.values_mut() {
+                tab.senders.to_pty = screen.bus.senders.to_pty.clone();
+            }
 
-    screen.settle_tabs().expect("TEST");
-    let replacement = match requested_tabs(&plugin_receiver).as_slice() {
-        [id] => *id,
-        other => panic!("one replacement tab is requested, got {other:?}"),
-    };
-    assert_eq!(
-        screen.tabs.len(),
-        2,
-        "the emptied tab waits for its replacement"
-    );
-    assert!(!session_ended(&server_receiver));
+            screen
+                .close_pane_from_instruction(
+                    visible,
+                    explicit.then_some(client),
+                    None,
+                    (!explicit).then_some(0),
+                    &mut Default::default(),
+                )
+                .unwrap();
+            screen.settle_tabs().unwrap();
 
-    load_replacement_tab(&mut screen, replacement, 2);
-    screen.settle_tabs().expect("TEST");
-
-    assert_eq!(
-        screen.tabs.keys().copied().collect::<Vec<_>>(),
-        vec![replacement],
-        "the emptied tab closes into the replacement"
-    );
-    assert_eq!(screen.active_tab_ids.get(&client_id), Some(&replacement));
-    assert!(
-        screen.tabs[&replacement]
-            .get_all_pane_ids()
-            .contains(&pane_id),
-        "the hidden terminal moves with it"
-    );
-    assert_eq!(
-        launches(&screen_receiver),
-        0,
-        "no plugin asked for a confirmation"
-    );
-    assert!(!session_ended(&server_receiver));
-
-    // The hidden terminal exits, and then the shell in front of it does.
-    screen.tabs.get_mut(&replacement).expect("TEST").hold_pane(
-        pane_id,
-        Some(0),
-        false,
-        RunCommand::default(),
-    );
-    close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(2)));
-    screen.settle_tabs().expect("TEST");
-
-    assert!(screen.tabs.is_empty());
-    assert!(session_ended(&server_receiver));
+            assert!(screen.tabs.is_empty());
+            assert!(session_ended(&server));
+            assert!(requested_tabs(&plugins).is_empty());
+            assert_eq!(launches(&receiver), 0);
+            let closed: HashSet<_> = pty_receiver
+                .try_iter()
+                .flat_map(|(instruction, _)| match instruction {
+                    PtyInstruction::ClosePane(id, _) => vec![id],
+                    PtyInstruction::CloseTab(ids) => ids,
+                    _ => vec![],
+                })
+                .collect();
+            assert!(closed.contains(&visible));
+            assert!(closed.contains(&hidden));
+        }
+    }
 }
 
 /// With a guard up the session survives: a fresh tab replaces the emptied one, the client and
@@ -1384,7 +1386,7 @@ fn deferred_focus_uses_stable_ids_after_earlier_tab_removal() {
 }
 
 #[test]
-fn explicit_last_tab_close_checks_guards_and_preserves_hidden_work() {
+fn explicit_last_tab_close_checks_guards_then_exits_with_hidden_work() {
     for focused in [false, true] {
         let (mut screen, receiver, server, plugins) =
             screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
@@ -1408,13 +1410,10 @@ fn explicit_last_tab_close_checks_guards_and_preserves_hidden_work() {
         } else {
             screen.request_close_tab(TabId::new(1), None).unwrap();
         }
-        let replacement = requested_tabs(&plugins)[0];
-        assert!(screen.tabs[&TabId::new(1)].has_pane_with_pid(&id));
-        load_replacement_tab(&mut screen, replacement, 2);
         screen.settle_tabs().unwrap();
-        assert!(screen.tabs[&replacement].has_pane_with_pid(&id));
-        assert!(!screen.tabs.contains_key(&TabId::new(1)));
-        assert!(!session_ended(&server));
+        assert!(screen.tabs.is_empty());
+        assert!(requested_tabs(&plugins).is_empty());
+        assert!(session_ended(&server));
     }
 }
 
