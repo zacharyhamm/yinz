@@ -6860,10 +6860,8 @@ impl Tab {
     pub fn should_retain_tab(&self) -> bool {
         self.has_selectable_panes() || self.has_live_terminal()
     }
-    /// Whether a terminal in this tab - shown or hidden - is still running. A hidden one (parked
-    /// by a plugin, say) does not make the tab usable, but it does mean the session has something
-    /// in it worth keeping: `Screen::settle_tabs` moves it to a fresh tab rather than ending the
-    /// session with it.
+    /// Whether a terminal in this tab - shown or hidden - is still running. Hidden terminals
+    /// retain their tab while another usable tab remains, but do not keep the session alive.
     pub fn has_live_terminal(&self) -> bool {
         self.get_all_pane_ids().iter().any(|id| {
             matches!(id, PaneId::Terminal(_))
@@ -6871,17 +6869,6 @@ impl Tab {
                     .get_pane_with_id(*id)
                     .is_some_and(|pane| !pane.exited())
         })
-    }
-
-    pub fn has_hidden_live_terminal(&self) -> bool {
-        self.get_suppressed_panes()
-            .any(|(id, pane)| matches!(id, PaneId::Terminal(_)) && !pane.pane.exited())
-            || self.get_all_pane_ids().into_iter().any(|id| {
-                matches!(id, PaneId::Terminal(_))
-                    && self
-                        .get_pane_with_id(id)
-                        .is_some_and(|pane| !pane.selectable() && !pane.exited())
-            })
     }
 
     pub fn set_pane_subtitle(&mut self, pane_id: PaneId, subtitle: Option<String>) -> Result<bool> {
