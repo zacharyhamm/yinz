@@ -118,9 +118,8 @@ fn requires_both_observations_and_keeps_first_samples_across_serialization() {
 }
 
 #[test]
-fn unsupported_and_unavailable_palettes_are_unchanged() {
+fn other_providers_and_unavailable_palettes_are_unchanged() {
     for (provider, version, availability) in [
-        ("codex", "0.162.2", Availability::Available),
         ("claude", "0.162.1", Availability::Available),
         (
             "codex",
@@ -220,4 +219,11 @@ fn indexed_channels_and_selection_pairs_keep_semantic_roles_and_collision_preced
         Some(Role::Accent.into())
     );
     assert!(!collisions.is_empty());
+}
+
+#[test]
+fn later_codex_releases_reuse_the_verified_derivations() {
+    let mut s = snapshot();
+    s.provider_version = "0.170.0".into();
+    assert!(observe(&mut s, 10, (220, 220, 220)));
 }

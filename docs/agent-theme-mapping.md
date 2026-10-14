@@ -82,8 +82,15 @@ Local supervisors also retain these enriched snapshots for crash recovery via
 reports cannot overwrite observations. Selected secondary text uses the theme's
 selection foreground and background after resolving Codex's contrast corrections.
 
-Other versions return unavailable, with original colors preserved. A single
-launch diagnostic records partial/unavailable resolution and color
+Each descriptor applies to every release of its provider, identified by the
+product name in `--version` output. Later releases are assumed to keep the
+verified release's configuration loader, theme formats and palettes. Resolution
+fails, preserving original colors, only when the current theme cannot be
+determined or theme files cannot be parsed. When the running release differs
+from the verified one, the partial or unavailable detail names both versions.
+A release that changes a palette without changing its format is not detected:
+colors it emits that coincide with a descriptor color take that color's role.
+A single launch diagnostic records partial/unavailable resolution and color
 collisions. Metadata contains normalized colors, semantic expressions, token
 names and source provenance, never whole configuration or environment values.
 
@@ -134,7 +141,7 @@ particularly `render/highlight.rs`, `render/model_themes.rs`, `style.rs`,
 config loader. Model descriptor JSON contains only scope names and normalized palette values. Dependencies pin the exact syntect
 and two-face versions used by this release.
 
-To support another version, verify its loader, emitted colors and theme formats,
-add a versioned descriptor, and extend resolver/render/launch fixtures before
-allowing that version. Never broaden the version gate based on semver alone.
+When a provider release changes its loader, emitted colors or theme formats,
+add a versioned descriptor, extend resolver/render/launch fixtures and update the
+verified version.
 Theme files are read only at launch, and lookups compile outside rendering.

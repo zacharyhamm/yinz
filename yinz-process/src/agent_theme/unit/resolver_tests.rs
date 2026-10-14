@@ -305,11 +305,122 @@ fn malformed_and_unsupported_themes_fail_without_changing_provider_configuration
     assert!(resolve("other", &context(dir.path())).is_none());
 }
 
+#[test]
+fn claude_resolution_is_gated_on_provider_identity_not_release() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), ".claude.json", r#"{"theme":"light"}"#);
+    let program = dir.path().join("claude");
+    let resolve_version = |output: &str| {
+        yinz_test_support::write_warm_script(
+            &program,
+            &format!("if [ \"$1\" = --version ]; then printf '%s\\n' '{output}'; fi\n"),
+        );
+        resolve(
+            "claude",
+            &LaunchContext {
+                executable: program.clone(),
+                ..context(dir.path())
+            },
+        )
+        .unwrap()
+    };
+    let verified = resolve_version("2.1.296 (Claude Code)");
+    let Availability::Partial(detail) = &verified.availability else {
+        panic!("{:?}", verified.availability);
+    };
+    assert!(!detail.contains("descriptor verified against"), "{detail}");
+    let newer = resolve_version("2.1.299 (Claude Code)");
+    assert_eq!(newer.provider_version, "2.1.299");
+    assert_eq!(newer.definitions, verified.definitions);
+    let Availability::Partial(detail) = &newer.availability else {
+        panic!("{:?}", newer.availability);
+    };
+    assert!(
+        detail.ends_with("descriptor verified against 2.1.296, running 2.1.299"),
+        "{detail}"
+    );
+    // Wrappers may print notices first; the version comes from the identifying line.
+    let noisy = resolve_version("Node 18 is deprecated\nv2.1.296 (Claude Code)");
+    assert_eq!(noisy.provider_version, "2.1.296");
+    assert_eq!(noisy.definitions, verified.definitions);
+    // Notices may be long and not valid UTF-8; neither hides the identifying line.
+    yinz_test_support::write_warm_script(
+        &program,
+        "if [ \"$1\" = --version ]; then printf 'caf\\303\\n'; head -c 8000 /dev/zero | tr '\\0' x; \
+         printf '\\nv2.1.296 (Claude Code)\\n'; fi\n",
+    );
+    let verbose = resolve(
+        "claude",
+        &LaunchContext {
+            executable: program.clone(),
+            ..context(dir.path())
+        },
+    )
+    .unwrap();
+    assert_eq!(verbose.provider_version, "2.1.296");
+    assert_eq!(verbose.definitions, verified.definitions);
+    let other = resolve_version("2.1.299 (Something Else)");
+    assert!(matches!(other.availability, Availability::Unavailable(_)));
+    assert!(other.definitions.is_empty());
+    write(dir.path(), ".claude.json", r#"{"theme":1}"#);
+    let unreadable = resolve_version("2.1.299 (Claude Code)");
+    let Availability::Unavailable(detail) = &unreadable.availability else {
+        panic!("{:?}", unreadable.availability);
+    };
+    assert!(
+        detail.ends_with("descriptor verified against 2.1.296, running 2.1.299"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn codex_resolution_is_gated_on_provider_identity_not_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let automatic = serde_json::json!({"config":{},"layers":[]});
+    let verified = resolve("codex", &fake_codex(dir.path(), automatic.clone())).unwrap();
+    let newer = resolve(
+        "codex",
+        &fake_codex_release(dir.path(), "codex-cli 0.170.0", automatic),
+    )
+    .unwrap();
+    assert_eq!(newer.provider_version, "0.170.0");
+    assert_eq!(newer.definitions, verified.definitions);
+    let Availability::Partial(detail) = &newer.availability else {
+        panic!("{:?}", newer.availability);
+    };
+    assert!(
+        detail.ends_with("descriptor verified against 0.162.1, running 0.170.0"),
+        "{detail}"
+    );
+    write(dir.path(), ".codex/themes/broken.tmTheme", "<plist");
+    let unreadable = resolve(
+        "codex",
+        &fake_codex_release(
+            dir.path(),
+            "codex-cli 0.170.0",
+            serde_json::json!({"config":{"tui":{"theme":"broken"}},"layers":[]}),
+        ),
+    )
+    .unwrap();
+    let Availability::Unavailable(detail) = &unreadable.availability else {
+        panic!("{:?}", unreadable.availability);
+    };
+    assert!(unreadable.definitions.is_empty());
+    assert!(
+        detail.ends_with("descriptor verified against 0.162.1, running 0.170.0"),
+        "{detail}"
+    );
+}
+
 fn fake_codex(root: &Path, response: serde_json::Value) -> LaunchContext {
+    fake_codex_release(root, "codex-cli 0.162.1", response)
+}
+
+fn fake_codex_release(root: &Path, version: &str, response: serde_json::Value) -> LaunchContext {
     let program = root.join("codex");
     let response = serde_json::json!({"id":2,"result":response}).to_string();
     let script = format!(
-        r#"if [ "$1" = --version ]; then printf '%s\n' 'codex-cli 0.162.1'; exit; fi
+        r#"if [ "$1" = --version ]; then printf '%s\n' '{version}'; exit; fi
 while IFS= read -r line; do
   case "$line" in
     *'"id":1'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;

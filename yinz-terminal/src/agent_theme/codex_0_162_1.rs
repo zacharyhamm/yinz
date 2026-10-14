@@ -7,15 +7,21 @@ use yinz_types::agent::theme::{
 };
 
 type Rgb = (u8, u8, u8);
+/// The release whose derivations this module reproduces.
+macro_rules! verified_version {
+    () => {
+        "0.162.1"
+    };
+}
 const FG: &str = "codex.terminal.foreground";
 const BG: &str = "codex.terminal.background";
 const BLUE_100: Rgb = (164, 205, 251);
 const BLUE_200: Rgb = (99, 168, 248);
 
 pub(super) fn observe(snapshot: &mut AgentThemeSnapshot, code: u8, rgb: Rgb) -> bool {
+    // Later releases reuse these derivations; the resolver records the version difference.
     if snapshot.version != SNAPSHOT_VERSION
         || snapshot.provider != "codex"
-        || snapshot.provider_version != "0.162.1"
         || matches!(snapshot.availability, Availability::Unavailable(_))
     {
         return false;
@@ -266,9 +272,14 @@ fn derive(snapshot: &mut AgentThemeSnapshot, fg: Rgb, bg: Rgb) {
             );
         }
     }
-    snapshot
-        .provenance
-        .push("codex-rust-v0.162.1/observed-terminal-colors".into());
+    snapshot.provenance.push(
+        concat!(
+            "codex-rust-v",
+            verified_version!(),
+            "/observed-terminal-colors"
+        )
+        .into(),
+    );
 }
 
 fn color((r, g, b): Rgb) -> SourceColor {
