@@ -2297,21 +2297,27 @@ impl WasmBridge {
                 }
             }
         }
-        let plugins_to_update: Vec<RunningPluginEntry> = self
-            .plugin_map
-            .lock()
-            .unwrap()
-            .running_plugins_and_subscriptions()
-            .iter()
-            .filter(
-                |&(plugin_id, _client_id, _running_plugin, _subscriptions)| {
-                    !&self
-                        .cached_events_for_pending_plugins
-                        .contains_key(plugin_id)
-                },
-            )
-            .cloned()
-            .collect();
+        // Loading holds the map; cached updates must not block the cancellation behind them.
+        let plugins_to_update: Vec<RunningPluginEntry> = if updates.iter().all(|(id, _, _)| {
+            id.is_some_and(|id| self.cached_events_for_pending_plugins.contains_key(&id))
+        }) {
+            vec![]
+        } else {
+            self.plugin_map
+                .lock()
+                .unwrap()
+                .running_plugins_and_subscriptions()
+                .iter()
+                .filter(
+                    |&(plugin_id, _client_id, _running_plugin, _subscriptions)| {
+                        !&self
+                            .cached_events_for_pending_plugins
+                            .contains_key(plugin_id)
+                    },
+                )
+                .cloned()
+                .collect()
+        };
 
         // One job per plugin instance carrying every event of the batch it takes, so a batch of
         // wheel notches costs one render per plugin rather than one per notch.

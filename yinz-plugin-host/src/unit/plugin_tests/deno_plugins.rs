@@ -2357,6 +2357,15 @@ export default {
                 .then_some(())
         },
     );
+    // A late startup update must not block cancellation behind the loader's map lock.
+    harness
+        .sender
+        .send(PluginInstruction::Update(vec![(
+            Some(PLUGIN),
+            None,
+            Event::AvailableLayoutInfo(vec![], vec![]),
+        )]))
+        .unwrap();
     harness
         .sender
         .send(PluginInstruction::RemoveClient(other))

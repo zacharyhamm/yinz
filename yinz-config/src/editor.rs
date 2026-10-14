@@ -6,6 +6,52 @@ use serde_json::Value;
 use yinz_types::configuration::{Node, Patch};
 
 pub const EDITS_BLOCK: &str = "configuration_edits";
+pub(crate) const KEYBIND_BLOCK_SOURCE: &str = "configuration-editor-source";
+
+pub(crate) fn keybind_block_source(node: &KdlNode) -> Result<Option<KdlNode>, String> {
+    use yinz_types::{data::InputMode, keys::KeyWithModifier};
+
+    let Some(entry) = node.get(KEYBIND_BLOCK_SOURCE) else {
+        return Ok(None);
+    };
+    let invalid = || "Invalid configuration-editor-source on keybind block".to_owned();
+    let (name, arguments): (String, Vec<String>) =
+        serde_json::from_str(entry.value().as_string().ok_or_else(invalid)?)
+            .map_err(|_| invalid())?;
+    let valid = if name == "unbind" {
+        node.name().value().parse::<InputMode>().is_ok()
+            && node.entries().iter().all(|entry| {
+                entry
+                    .name()
+                    .is_some_and(|name| name.value() == KEYBIND_BLOCK_SOURCE)
+            })
+            && arguments
+                .iter()
+                .all(|key| key.parse::<KeyWithModifier>().is_ok())
+            && node.children().is_some_and(|children| {
+                children
+                    .nodes()
+                    .iter()
+                    .all(|child| child.name().value() == "unbind")
+            })
+    } else {
+        matches!(
+            node.name().value(),
+            "shared" | "shared_except" | "shared_among"
+        ) && matches!(name.as_str(), "shared" | "shared_except" | "shared_among")
+            && arguments
+                .iter()
+                .all(|mode| mode.parse::<InputMode>().is_ok())
+    };
+    if !valid {
+        return Err(invalid());
+    }
+    let mut source = KdlNode::new(name);
+    for argument in arguments {
+        source.push(argument);
+    }
+    Ok(Some(source))
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Setting {
@@ -501,6 +547,7 @@ fn to_kdl(node: &Node, depth: usize, parent: Option<&str>) -> Result<KdlNode, St
                 | "load_plugins"
                 | "hooks"
                 | "keybinds"
+                | "bind"
                 | "context_menu"
         )
     {
@@ -574,6 +621,56 @@ pub fn normalize_patch(patch: &mut Patch) -> Result<(), String> {
     Ok(())
 }
 
+pub fn expand_binding_paths(path: &[String]) -> Result<Vec<Vec<String>>, String> {
+    let mut path = path.to_vec();
+    normalize_path(&mut path)?;
+    if path.len() >= 3 && path[0] == "keybinds" {
+        if let Some((name @ ("bind" | "unbind"), arguments)) = path[2].split_once(':') {
+            let arguments: Vec<Value> =
+                serde_json::from_str(arguments).map_err(|e| e.to_string())?;
+            if arguments.len() <= 1 {
+                return Ok(vec![path]);
+            }
+            return arguments
+                .into_iter()
+                .map(|argument| {
+                    let mut single = path.clone();
+                    single[2] = format!("{name}:{}", serde_json::json!([argument]));
+                    Ok(single)
+                })
+                .collect();
+        }
+    }
+    Ok(vec![path])
+}
+
+pub fn normalize_patches(patches: &[Patch]) -> Result<Vec<Patch>, String> {
+    let mut expanded = vec![];
+    for patch in patches {
+        let mut patch = patch.clone();
+        normalize_patch(&mut patch)?;
+        if patch.path.len() == 3 && patch.path[0] == "keybinds" {
+            if let Some(node) = &patch.node {
+                if node_key(node) != patch.path[2] {
+                    return Err("Replacement name must match its target".into());
+                }
+            }
+        }
+        for path in expand_binding_paths(&patch.path)? {
+            let mut single = patch.clone();
+            if path.len() == 3 && path != patch.path {
+                if let Some(node) = &mut single.node {
+                    let (_, arguments) = path[2].split_once(':').ok_or("Invalid binding path")?;
+                    node.arguments = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
+                }
+            }
+            single.path = path;
+            expanded.push(single);
+        }
+    }
+    Ok(expanded)
+}
+
 pub fn patch_document(nodes: &mut Vec<Node>, patch: &Patch) -> Result<(), String> {
     if patch.path.is_empty() || patch.path.len() > 32 {
         return Err("An edit must name a configuration entry".into());
@@ -623,10 +720,7 @@ pub fn validation_error(error: ConfigError) -> String {
 }
 
 pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
-    let mut patches = patches.to_vec();
-    for patch in &mut patches {
-        normalize_patch(patch)?;
-    }
+    let patches = normalize_patches(patches)?;
     let catalog = catalog();
     let mut result = config.clone();
     let roots: std::collections::BTreeSet<_> = patches
@@ -768,25 +862,23 @@ pub fn patches_from_kdl(node: &KdlNode) -> Result<Vec<Patch>, ConfigError> {
                         return Err("Expected set with one child, or remove without children".into())
                     },
                 };
-                let mut patch = Patch {
+                Ok(Patch {
                     path,
                     node,
                     reset: edit.name().value() == "reset",
-                };
-                normalize_patch(&mut patch)?;
-                Ok(patch)
+                })
             })
             .collect()
     };
-    parse().map_err(|e| ConfigError::new_kdl_error(e, node.span().offset(), node.span().len()))
+    parse()
+        .and_then(|patches| normalize_patches(&patches))
+        .map_err(|e| ConfigError::new_kdl_error(e, node.span().offset(), node.span().len()))
 }
 
 pub fn patches_to_kdl(patches: &[Patch]) -> Result<KdlNode, String> {
     let mut block = KdlNode::new(EDITS_BLOCK);
     let mut children = KdlDocument::new();
-    for patch in patches {
-        let mut patch = patch.clone();
-        normalize_patch(&mut patch)?;
+    for patch in normalize_patches(patches)? {
         let mut edit = KdlNode::new(if patch.reset {
             "reset"
         } else if patch.node.is_some() {
@@ -813,9 +905,6 @@ pub(crate) fn reconcile_legacy_keybinds(
     edits: &KdlNode,
     incoming: &KdlNode,
 ) -> Result<KdlNode, String> {
-    use strum::IntoEnumIterator;
-    use yinz_types::data::InputMode;
-
     let mut edits = patches_from_kdl(edits).map_err(validation_error)?;
     let root = from_kdl(incoming);
     let mut updates = vec![];
@@ -826,64 +915,24 @@ pub(crate) fn reconcile_legacy_keybinds(
             reset: false,
         });
     } else {
-        // Match the parser's order: shared blocks, explicit modes, then global unbinds.
-        for shared in [true, false] {
-            for block in &root.children {
-                let is_shared = matches!(
-                    block.name.as_str(),
-                    "shared" | "shared_among" | "shared_except"
-                );
-                if is_shared != shared || block.name == "unbind" {
-                    continue;
-                }
-                for mode in InputMode::iter() {
-                    let name = format!("{mode:?}").to_lowercase();
-                    let listed = block.arguments.iter().any(|value| {
-                        value
-                            .as_str()
-                            .and_then(|name| name.parse::<InputMode>().ok())
-                            == Some(mode)
-                    });
-                    let applies = match block.name.as_str() {
-                        "shared_among" => listed,
-                        "shared" | "shared_except" => !listed,
-                        _ => block.name.parse::<InputMode>().ok() == Some(mode),
-                    };
-                    if !applies {
-                        continue;
-                    }
-                    let path = vec!["keybinds".into(), name.clone()];
-                    if !shared && block.properties.get("clear-defaults") == Some(&Value::Bool(true))
-                    {
-                        updates.push(Patch {
-                            path: path.clone(),
-                            node: Some(Node {
-                                name,
-                                arguments: vec![],
-                                properties: Default::default(),
-                                children: vec![],
-                            }),
-                            reset: false,
-                        });
-                    }
-                    for kind in ["bind", "unbind"] {
-                        for binding in block.children.iter().filter(|child| child.name == kind) {
-                            legacy_binding_updates(&mut updates, &path, binding)?;
-                        }
-                    }
-                }
+        for block in expanded_keybind_blocks(&root)? {
+            let path = vec!["keybinds".into(), block.name.clone()];
+            if block.properties.get("clear-defaults") == Some(&Value::Bool(true)) {
+                updates.push(Patch {
+                    path: path.clone(),
+                    node: Some(Node {
+                        children: vec![],
+                        ..block.clone()
+                    }),
+                    reset: false,
+                });
             }
-        }
-        if let Some(unbind) = root.children.iter().find(|child| child.name == "unbind") {
-            for mode in InputMode::iter() {
-                legacy_binding_updates(
-                    &mut updates,
-                    &["keybinds".into(), format!("{mode:?}").to_lowercase()],
-                    unbind,
-                )?;
+            for binding in &block.children {
+                legacy_binding_updates(&mut updates, &path, binding)?;
             }
         }
     }
+
     for update in updates {
         edits.retain(|old| !old.path.starts_with(&update.path));
         // A parent edit would mask the legacy fragment, so override only its touched entry.
@@ -894,17 +943,95 @@ pub(crate) fn reconcile_legacy_keybinds(
     patches_to_kdl(&edits)
 }
 
+fn expanded_keybind_blocks(root: &Node) -> Result<Vec<Node>, String> {
+    use strum::IntoEnumIterator;
+    use yinz_types::data::InputMode;
+
+    let mut blocks = vec![];
+    // Generated global unbinds retain their precedence over ordinary mode blocks.
+    for phase in 0..3 {
+        for block in &root.children {
+            let is_shared = matches!(
+                block.name.as_str(),
+                "shared" | "shared_among" | "shared_except"
+            );
+            let generated_global = keybind_block_source(&to_kdl(block, 0, Some("keybinds"))?)?
+                .is_some_and(|source| source.name().value() == "unbind");
+            let block_phase = if generated_global {
+                2
+            } else if is_shared {
+                0
+            } else {
+                1
+            };
+            if block_phase != phase || block.name == "unbind" {
+                continue;
+            }
+            for mode in InputMode::iter() {
+                let listed = block.arguments.iter().any(|value| {
+                    value
+                        .as_str()
+                        .and_then(|name| name.parse::<InputMode>().ok())
+                        == Some(mode)
+                });
+                let applies = match block.name.as_str() {
+                    "shared_among" => listed,
+                    "shared" | "shared_except" => !listed,
+                    _ => block.name.parse::<InputMode>().ok() == Some(mode),
+                };
+                if !applies {
+                    continue;
+                }
+                let mut expanded = block.clone();
+                expanded.name = format!("{mode:?}").to_lowercase();
+                expanded.arguments.clear();
+                expanded.properties.remove(KEYBIND_BLOCK_SOURCE);
+                if is_shared {
+                    // The parser ignores clear-defaults on shared blocks.
+                    expanded.properties.remove("clear-defaults");
+                }
+                expanded.children.clear();
+                for kind in ["bind", "unbind"] {
+                    for binding in block.children.iter().filter(|child| child.name == kind) {
+                        expanded.children.extend(single_key_bindings(binding)?);
+                    }
+                }
+                blocks.push(expanded);
+            }
+        }
+    }
+    if let Some(unbind) = root.children.iter().find(|child| child.name == "unbind") {
+        for mode in InputMode::iter() {
+            blocks.push(Node {
+                name: format!("{mode:?}").to_lowercase(),
+                arguments: vec![],
+                properties: Default::default(),
+                children: single_key_bindings(unbind)?,
+            });
+        }
+    }
+    Ok(blocks)
+}
+
+fn single_key_bindings(binding: &Node) -> Result<Vec<Node>, String> {
+    let mut arguments = binding.arguments.clone();
+    normalize_chords(&mut arguments)?;
+    Ok(arguments
+        .into_iter()
+        .map(|argument| Node {
+            arguments: vec![argument],
+            ..binding.clone()
+        })
+        .collect())
+}
+
 fn legacy_binding_updates(
     updates: &mut Vec<Patch>,
     parent: &[String],
     binding: &Node,
 ) -> Result<(), String> {
-    let mut arguments = binding.arguments.clone();
-    normalize_chords(&mut arguments)?;
-    for argument in arguments {
-        let mut node = binding.clone();
+    for mut node in single_key_bindings(binding)? {
         node.name = "bind".into();
-        node.arguments = vec![argument];
         let mut path = parent.to_vec();
         path.push(node_key(&node));
         updates.push(Patch {
@@ -1018,13 +1145,13 @@ impl Disk {
             if path.is_empty() {
                 return Err("Reset must name a target".into());
             }
-            let mut path = path.clone();
-            normalize_path(&mut path)?;
-            let mut node = KdlNode::new("reset");
-            for part in &path {
-                node.push(part.clone());
+            for path in expand_binding_paths(path)? {
+                let mut node = KdlNode::new("reset");
+                for part in &path {
+                    node.push(part.clone());
+                }
+                edits.ensure_children().nodes_mut().push(node);
             }
-            edits.ensure_children().nodes_mut().push(node);
         }
         fragment.nodes_mut().push(edits);
         crate::config::merge_kdl_fragment(&mut managed, &fragment);
@@ -1383,7 +1510,253 @@ pub fn find_node<'a>(nodes: &'a [Node], path: &[String]) -> Option<&'a Node> {
     }
 }
 
+// Clone KDL bindings so empty action/configuration blocks survive a reset.
+fn split_reset_binding(binding: &KdlNode, key: &str) -> Result<Vec<KdlNode>, String> {
+    let bindings = single_key_bindings(&from_kdl(binding))?;
+    if !bindings.iter().any(|binding| node_key(binding) == key) {
+        return Ok(vec![binding.clone()]);
+    }
+    Ok(bindings
+        .into_iter()
+        .map(|single| {
+            let mut node = binding.clone();
+            node.entries_mut().retain(|entry| entry.name().is_some());
+            for argument in single.arguments {
+                if let Some(key) = argument.as_str() {
+                    node.push(key);
+                }
+            }
+            node
+        })
+        .collect())
+}
+
+fn reset_keybind_blocks(root: &KdlNode, path: &[String]) -> Result<Vec<KdlNode>, String> {
+    use strum::IntoEnumIterator;
+    use yinz_types::data::InputMode;
+
+    let mode = path[0].parse::<InputMode>().map_err(|e| e.to_string())?;
+    let children = root.children().ok_or("Keybinds have no children")?;
+    let global_unbind = children.get("unbind");
+    let reset_global = match global_unbind {
+        Some(unbind) => {
+            path.len() == 1
+                || single_key_bindings(&from_kdl(unbind))?
+                    .iter()
+                    .any(|binding| node_key(binding) == path[1])
+        },
+        None => false,
+    };
+    let mut blocks = vec![];
+    for block in children.nodes() {
+        let shared = matches!(
+            block.name().value(),
+            "shared" | "shared_among" | "shared_except"
+        );
+        let listed = block
+            .entries()
+            .iter()
+            .filter(|entry| entry.name().is_none())
+            .any(|entry| {
+                entry
+                    .value()
+                    .as_string()
+                    .and_then(|name| name.parse::<InputMode>().ok())
+                    == Some(mode)
+            });
+        let applies = match block.name().value() {
+            "shared_among" => listed,
+            "shared" | "shared_except" => !listed,
+            _ => block.name().value().parse::<InputMode>().ok() == Some(mode),
+        };
+        if block.name().value() == "unbind" {
+            if !reset_global {
+                blocks.push(block.clone());
+            }
+            continue;
+        }
+        if !applies {
+            blocks.push(block.clone());
+            continue;
+        }
+        let mut target = block.clone();
+        if path.len() > 1 {
+            let bindings = target
+                .ensure_children()
+                .nodes()
+                .iter()
+                .map(|binding| split_reset_binding(binding, &path[1]))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect();
+            *target.ensure_children().nodes_mut() = bindings;
+        }
+        let mut rewritten = target.clone();
+        if path.len() > 1 {
+            reset_managed_path(rewritten.ensure_children(), &path[1..]);
+            if rewritten == target {
+                blocks.push(block.clone());
+                continue;
+            }
+        }
+        if shared {
+            // Preserve the original block identity for subsequent legacy writes.
+            if target.get(KEYBIND_BLOCK_SOURCE).is_none() {
+                let arguments: Vec<_> = target
+                    .entries()
+                    .iter()
+                    .filter(|entry| entry.name().is_none())
+                    .filter_map(|entry| entry.value().as_string())
+                    .collect();
+                let source = serde_json::to_string(&(target.name().value(), arguments))
+                    .map_err(|e| e.to_string())?;
+                target.insert(KEYBIND_BLOCK_SOURCE, source.clone());
+                rewritten.insert(KEYBIND_BLOCK_SOURCE, source);
+            }
+            let mut remaining = target.clone();
+            if path.len() > 1 {
+                remaining
+                    .ensure_children()
+                    .nodes_mut()
+                    .retain(|child| node_key(&from_kdl(child)) == path[1]);
+            }
+            if remaining.name().value() == "shared_among" {
+                remaining.entries_mut().retain(|entry| {
+                    entry.name().is_some()
+                        || entry
+                            .value()
+                            .as_string()
+                            .and_then(|name| name.parse::<InputMode>().ok())
+                            != Some(mode)
+                });
+            } else {
+                remaining.push(format!("{mode:?}").to_lowercase());
+            }
+            target = rewritten;
+            if path.len() > 2 {
+                let mut changed = target.clone();
+                changed
+                    .ensure_children()
+                    .nodes_mut()
+                    .retain(|child| node_key(&from_kdl(child)) == path[1]);
+                changed.set_name("shared_among");
+                changed.entries_mut().retain(|entry| entry.name().is_some());
+                changed.push(format!("{mode:?}").to_lowercase());
+                target
+                    .ensure_children()
+                    .nodes_mut()
+                    .retain(|child| node_key(&from_kdl(child)) != path[1]);
+                blocks.push(changed);
+            }
+            // Unbinds must still run after binds from the same original block.
+            if path.get(1).is_some_and(|key| key.starts_with("unbind:")) {
+                blocks.push(target);
+                blocks.push(remaining);
+                continue;
+            }
+            blocks.push(remaining);
+        } else {
+            target = rewritten;
+        }
+        if path.len() > 1 {
+            blocks.push(target);
+        }
+    }
+    // Only the first global unbind is effective, after all shared and explicit blocks.
+    if let Some(unbind) = global_unbind.filter(|_| reset_global) {
+        let arguments: Vec<_> = unbind
+            .entries()
+            .iter()
+            .filter(|entry| entry.name().is_none())
+            .filter_map(|entry| entry.value().as_string())
+            .collect();
+        let source = serde_json::to_string(&("unbind", arguments)).map_err(|e| e.to_string())?;
+        for unbind_mode in InputMode::iter() {
+            if unbind_mode == mode && path.len() == 1 {
+                continue;
+            }
+            let mut block = KdlNode::new(format!("{unbind_mode:?}").to_lowercase());
+            block.insert(KEYBIND_BLOCK_SOURCE, source.clone());
+            let bindings = if unbind_mode == mode && path.len() > 1 {
+                split_reset_binding(unbind, &path[1])?
+            } else {
+                vec![unbind.clone()]
+            };
+            *block.ensure_children().nodes_mut() = bindings;
+            if unbind_mode == mode {
+                reset_managed_path(block.ensure_children(), &path[1..]);
+            }
+            blocks.push(block);
+        }
+    }
+    Ok(blocks)
+}
+
+fn valid_keybind_structure(root: &KdlNode) -> bool {
+    use yinz_types::{data::InputMode, keys::KeyWithModifier};
+
+    fn valid_binding(binding: &KdlNode) -> bool {
+        matches!(binding.name().value(), "bind" | "unbind")
+            && (binding.name().value() != "bind" || binding.children().is_some())
+            && binding.entries().iter().all(|entry| {
+                entry
+                    .value()
+                    .as_string()
+                    .is_some_and(|key| key.parse::<KeyWithModifier>().is_ok())
+            })
+    }
+
+    root.children().is_some_and(|children| {
+        children.nodes().iter().all(|block| {
+            if keybind_block_source(block).is_err() {
+                return false;
+            }
+            if block.name().value() == "unbind" {
+                return valid_binding(block);
+            }
+            let valid_mode = match block.name().value() {
+                "shared" | "shared_among" | "shared_except" => {
+                    block.entries().iter().all(|entry| {
+                        entry
+                            .name()
+                            .is_some_and(|name| name.value() == KEYBIND_BLOCK_SOURCE)
+                            || entry
+                                .value()
+                                .as_string()
+                                .is_some_and(|mode| mode.parse::<InputMode>().is_ok())
+                    })
+                },
+                mode => mode.parse::<InputMode>().is_ok(),
+            };
+            valid_mode
+                && block
+                    .children()
+                    .is_some_and(|children| children.nodes().iter().all(valid_binding))
+        })
+    })
+}
+
 pub fn reset_managed_path(document: &mut KdlDocument, path: &[String]) {
+    if path.len() > 1
+        && path[0] == "keybinds"
+        && path[1].parse::<yinz_types::data::InputMode>().is_ok()
+    {
+        for node in document
+            .nodes_mut()
+            .iter_mut()
+            .filter(|node| node.name().value() == "keybinds")
+        {
+            // Keep invalid fragments intact so the loader rejects them before writing.
+            if !valid_keybind_structure(node) {
+                continue;
+            }
+            if let Ok(blocks) = reset_keybind_blocks(node, &path[1..]) {
+                *node.ensure_children().nodes_mut() = blocks;
+            }
+        }
+        return;
+    }
     let Some((first, rest)) = path.split_first() else {
         return;
     };

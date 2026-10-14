@@ -339,3 +339,38 @@ for (const add of [false, true]) {
     });
   });
 }
+
+for (const [saved, effective, submitted] of [
+  [true, false, "Enabled"],
+  [false, true, "Enabled"],
+] as const) {
+  test(`permanent scalar save reconciles saved=${saved} and effective=${effective}`, async () => {
+    const inspected = {
+      ...snapshot,
+      saved: [{ ...snapshot.saved[0]!, arguments: [saved] }],
+      clients: { "1": [{ ...snapshot.saved[0]!, arguments: [effective] }] },
+    };
+    const { p, execute, action } = await harness("mouse_mode", inspected);
+    const form = await execute(action.handle);
+    assert(form.type === "view" && form.view.type === "form");
+    const destination = await execute(form.view.handle, { value: submitted });
+    assert(destination.type === "view" && destination.view.type === "form");
+    await execute(destination.view.handle, { destination: "Save permanently" });
+    const write = p.commands.find((command) =>
+      JSON.stringify(command).includes("EditConfiguration"),
+    );
+    assertEquals(write, {
+      EditConfiguration: {
+        revision: inspected.revision,
+        destination: "permanent",
+        patches: [
+          {
+            path: ["mouse_mode"],
+            node: { name: "mouse_mode", arguments: [true], properties: {}, children: [] },
+          },
+        ],
+        reset: [],
+      },
+    });
+  });
+}

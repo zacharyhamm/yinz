@@ -738,3 +738,813 @@ fn binding_aliases_are_canonical_in_managed_edits_and_resets() {
     invalid.path[2] = "bind:[\"not-a-key\"]".into();
     assert!(normalize_patch(&mut invalid).is_err());
 }
+
+#[test]
+fn managed_binding_resets_expand_only_explicit_legacy_bindings() {
+    use strum::IntoEnumIterator;
+    use yinz_types::data::InputMode;
+    let base = Config::from_kdl(
+        r#"keybinds clear-defaults=true {
+        shared { bind "Ctrl a" "Ctrl c" "Ctrl d" { Quit; }; }
+    }"#,
+        None,
+    )
+    .unwrap();
+    for (source, clears_normal) in [
+        (
+            r#"keybinds { shared { bind "Ctrl a" "Ctrl b" { Copy; }; }; }"#,
+            false,
+        ),
+        (
+            r#"keybinds { shared_among "Normal" "locked" { bind "Ctrl a" "Ctrl b" { Copy; }; }; }"#,
+            false,
+        ),
+        (
+            r#"keybinds { shared_except "locked" { bind "Ctrl a" "Ctrl b" { Copy; }; }; }"#,
+            false,
+        ),
+        (
+            r#"keybinds { shared "locked" { bind "Ctrl a" "Ctrl b" { Copy; }; }; }"#,
+            false,
+        ),
+        (
+            r#"keybinds {
+            normal { bind "Ctrl a" "Ctrl b" { ToggleFocusFullscreen; }; }
+            shared { unbind "Ctrl c"; bind "Ctrl a" "Ctrl b" "Ctrl c" { Copy; }; }
+            shared_among "normal" { bind "Ctrl c" { Copy; }; }
+            unbind "Ctrl d";
+            unbind "Ctrl c";
+        }"#,
+            false,
+        ),
+        (
+            r#"keybinds { shared { bind "Ctrl a" "Ctrl b" { Copy; }; }; normal clear-defaults=true { bind "Ctrl a" "Ctrl c" { Copy; }; }; }"#,
+            true,
+        ),
+        (
+            r#"keybinds clear-defaults=true { shared { bind "Ctrl a" "Ctrl b" { Copy; }; }; }"#,
+            true,
+        ),
+        (
+            r#"keybinds { normal { bind "Ctrl a" "Ctrl b" { Copy; }; }; }"#,
+            false,
+        ),
+    ] {
+        let mut managed: KdlDocument = source.parse().unwrap();
+        let mut expected = Config::from_kdl(source, Some(base.clone())).unwrap();
+        let key = "Ctrl a".parse().unwrap();
+        let normal = expected.keybinds.0.get_mut(&InputMode::Normal).unwrap();
+        if clears_normal {
+            normal.remove(&key);
+        } else {
+            normal.insert(
+                key.clone(),
+                base.keybinds.0[&InputMode::Normal][&key].clone(),
+            );
+        }
+        crate::config::merge_kdl_fragment(
+            &mut managed,
+            &r#"configuration_edits {
+            reset "keybinds" "normal" "bind:[\"Ctrl a\"]";
+        }"#
+            .parse()
+            .unwrap(),
+        );
+        let actual = Config::from_kdl(&managed.to_string(), Some(base.clone())).unwrap();
+        for mode in InputMode::iter() {
+            assert_eq!(
+                actual.keybinds.0.get(&mode),
+                expected.keybinds.0.get(&mode),
+                "{mode:?}: {source}"
+            );
+        }
+        let alone = Config::from_kdl(&managed.to_string(), None).unwrap();
+        assert!(
+            !alone
+                .keybinds
+                .0
+                .get(&InputMode::Normal)
+                .is_some_and(|keys| keys.contains_key(&key)),
+            "reset copied an inherited binding: {source}"
+        );
+    }
+}
+
+#[test]
+fn shared_binding_saves_keep_their_precedence_after_repeated_resets() {
+    use yinz_types::{data::InputMode, input::actions::Action};
+
+    for shared in [
+        "shared",
+        "shared_among \"Normal\" \"locked\"",
+        "shared_except \"pane\"",
+        "shared \"pane\"",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.kdl"),
+            r#"keybinds clear-defaults=true {
+                shared { bind "Ctrl a" { NoOp; }; }
+            }"#,
+        )
+        .unwrap();
+        let overlay = dir.path().join("config.d");
+        Config::write_managed_fragment(
+            &overlay,
+            &format!(
+                r#"keybinds {{
+                    normal {{ bind "Ctrl a" {{ ToggleFocusFullscreen; }}; }}
+                    {shared} {{ bind "Ctrl a" "Ctrl b" {{ Copy; }}; }}
+                    shared_among "normal" {{ bind "Ctrl c" {{ Quit; }}; }}
+                    shared_among "normal" "pane" {{ bind "Ctrl c" {{ Copy; }}; }}
+                    locked {{ bind "Ctrl b" {{ ToggleFocusFullscreen; }}; }}
+                }}"#
+            ),
+        )
+        .unwrap();
+        for _ in 0..2 {
+            Config::write_managed_fragment(
+                &overlay,
+                r#"configuration_edits { reset "keybinds" "normal" "bind:[\"Ctrl a\"]"; }"#,
+            )
+            .unwrap();
+        }
+        Config::write_managed_fragment(
+            &overlay,
+            &format!(r#"keybinds {{ {shared} {{ bind "Ctrl b" {{ Quit; }}; }}; }}"#),
+        )
+        .unwrap();
+        let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+        let normal = &loaded.keybinds.0[&InputMode::Normal];
+        assert_eq!(
+            normal[&"Ctrl a".parse().unwrap()],
+            vec![Action::NoOp],
+            "{shared}"
+        );
+        assert_eq!(
+            normal[&"Ctrl b".parse().unwrap()],
+            vec![Action::Quit],
+            "{shared}"
+        );
+        assert_eq!(
+            normal[&"Ctrl c".parse().unwrap()],
+            vec![Action::Copy],
+            "{shared}"
+        );
+        assert_eq!(
+            loaded.keybinds.0[&InputMode::Locked][&"Ctrl b".parse().unwrap()],
+            vec![Action::ToggleFocusFullscreen],
+            "{shared}"
+        );
+    }
+}
+
+#[test]
+fn resetting_shared_binding_preserves_identity_on_later_save() {
+    use yinz_types::{data::InputMode, input::actions::Action};
+
+    for shared in [
+        "shared",
+        "shared_among \"Normal\" \"locked\"",
+        "shared_except \"pane\"",
+        "shared \"pane\"",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.kdl"),
+            r#"keybinds clear-defaults=true { shared { bind "Ctrl a" { NoOp; }; }; }"#,
+        )
+        .unwrap();
+        let overlay = dir.path().join("config.d");
+        Config::write_managed_fragment(
+            &overlay,
+            &format!(
+                r#"keybinds {{
+                    {shared} {{ bind "Ctrl a" "Ctrl b" {{ Copy; }}; }}
+                    shared_among "normal" {{ bind "Ctrl c" {{ Quit; }}; }}
+                    locked {{ bind "Ctrl b" {{ ToggleFocusFullscreen; }}; }}
+                }}"#,
+            ),
+        )
+        .unwrap();
+        for _ in 0..2 {
+            let disk = Disk::read(None, Some(dir.path())).unwrap();
+            let (fragment, expected, underlay) = disk
+                .preview(
+                    &[],
+                    &[vec![
+                        "keybinds".into(),
+                        "normal".into(),
+                        "bind:[\"Ctrl a\"]".into(),
+                    ]],
+                )
+                .unwrap();
+            Config::try_write_editor_fragment(&overlay, &fragment, underlay, || Ok(())).unwrap();
+            let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+            assert_eq!(loaded.keybinds, expected.keybinds, "{shared}");
+            assert_eq!(
+                loaded.keybinds.0[&InputMode::Normal][&"Ctrl a".parse().unwrap()],
+                vec![Action::NoOp]
+            );
+        }
+        let mut expected = Config::load(None, Some(dir.path()), false).unwrap();
+        expected
+            .keybinds
+            .0
+            .get_mut(&InputMode::Normal)
+            .unwrap()
+            .insert("Ctrl c".parse().unwrap(), vec![Action::NoOp]);
+        Config::write_managed_fragment(
+            &overlay,
+            r#"keybinds { shared_among "normal" { bind "Ctrl c" { NoOp; }; }; }"#,
+        )
+        .unwrap();
+        let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+        assert_eq!(loaded.keybinds, expected.keybinds, "{shared}");
+        assert_eq!(
+            loaded.keybinds.0[&InputMode::Normal][&"Ctrl b".parse().unwrap()],
+            vec![Action::Copy]
+        );
+        assert_eq!(
+            loaded.keybinds.0[&InputMode::Locked][&"Ctrl a".parse().unwrap()],
+            vec![Action::Copy]
+        );
+    }
+}
+
+#[test]
+fn shared_reset_splits_do_not_collide_with_legacy_save_identities() {
+    use strum::IntoEnumIterator;
+    use yinz_types::{data::InputMode, input::actions::Action};
+
+    for (source, collision, nested) in [
+        ("shared", "shared \"normal\"", false),
+        (
+            "shared_except \"pane\"",
+            "shared_except \"pane\" \"normal\"",
+            false,
+        ),
+        (
+            "shared_among \"Normal\" \"locked\"",
+            "shared_among \"locked\"",
+            false,
+        ),
+        ("shared", "shared_among \"normal\"", true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.kdl"),
+            "keybinds clear-defaults=true { shared { bind \"Ctrl a\" { NoOp; }; }; }",
+        )
+        .unwrap();
+        let overlay = dir.path().join("config.d");
+        Config::write_managed_fragment(
+            &overlay,
+            &format!(
+                r#"keybinds {{
+                    {source} {{ bind "Ctrl a" {{ Copy; Quit; }}; }}
+                    {collision} {{ bind "Ctrl b" {{ Quit; }}; }}
+                }}"#
+            ),
+        )
+        .unwrap();
+        let original = Config::load(None, Some(dir.path()), false).unwrap();
+        let mut expected = original.clone();
+        expected
+            .keybinds
+            .0
+            .get_mut(&InputMode::Normal)
+            .unwrap()
+            .insert(
+                "Ctrl a".parse().unwrap(),
+                if nested {
+                    vec![Action::Quit]
+                } else {
+                    vec![Action::NoOp]
+                },
+            );
+        for _ in 0..2 {
+            let mut path = vec![
+                "keybinds".into(),
+                "normal".into(),
+                "bind:[\"Ctrl a\"]".into(),
+            ];
+            if nested {
+                path.push("Copy".into());
+            }
+            let disk = Disk::read(None, Some(dir.path())).unwrap();
+            let (fragment, preview, underlay) = disk.preview(&[], &[path]).unwrap();
+            Config::try_write_editor_fragment(&overlay, &fragment, underlay, || Ok(())).unwrap();
+            let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+            assert_eq!(loaded.keybinds, preview.keybinds, "{source}");
+            assert_eq!(loaded.keybinds, expected.keybinds, "{source}");
+        }
+        // Splitting an already split block must retain the first source identity.
+        expected
+            .keybinds
+            .0
+            .get_mut(&InputMode::Locked)
+            .unwrap()
+            .insert("Ctrl a".parse().unwrap(), vec![Action::NoOp]);
+        Config::write_managed_fragment(
+            &overlay,
+            r#"configuration_edits { reset "keybinds" "locked" "bind:[\"Ctrl a\"]"; }"#,
+        )
+        .unwrap();
+        let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+        assert_eq!(loaded.keybinds, expected.keybinds, "{source}");
+        for bindings in expected.keybinds.0.values_mut() {
+            if let Some(actions) = bindings.get_mut(&"Ctrl b".parse().unwrap()) {
+                *actions = vec![Action::NoOp];
+            }
+        }
+        Config::write_managed_fragment(
+            &overlay,
+            &format!(r#"keybinds {{ {collision} {{ bind "Ctrl b" {{ NoOp; }}; }}; }}"#),
+        )
+        .unwrap();
+        let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+        assert_eq!(loaded.keybinds, expected.keybinds, "{source}");
+
+        // Replacing the source must replace all its split pieces, too.
+        for mode in InputMode::iter() {
+            if original.keybinds.0[&mode][&"Ctrl a".parse().unwrap()]
+                == vec![Action::Copy, Action::Quit]
+            {
+                expected.keybinds.0.get_mut(&mode).unwrap().insert(
+                    "Ctrl a".parse().unwrap(),
+                    vec![Action::ToggleFocusFullscreen],
+                );
+            }
+        }
+        Config::write_managed_fragment(
+            &overlay,
+            &format!(
+                r#"keybinds {{ {source} {{ bind "Ctrl a" {{ ToggleFocusFullscreen; }}; }}; }}"#
+            ),
+        )
+        .unwrap();
+        let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+        assert_eq!(loaded.keybinds, expected.keybinds, "{source}");
+    }
+}
+
+#[test]
+fn invalid_shared_source_metadata_is_rejected_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = Config::write_managed_fragment(dir.path(), "mouse_mode false").unwrap();
+    let before = std::fs::read(&path).unwrap();
+    for source in [
+        Value::Bool(true),
+        Value::from("invalid json"),
+        Value::from(r#"["normal", []]"#),
+        Value::from(r#"["shared", ["invalid-mode"]]"#),
+        Value::from(r#"["shared", [42]]"#),
+    ] {
+        let node = Node {
+            name: "shared".into(),
+            arguments: vec![],
+            properties: [(KEYBIND_BLOCK_SOURCE.into(), source)].into(),
+            children: vec![],
+        };
+        let block = to_kdl(&node, 0, Some("keybinds")).unwrap();
+        let fragment = format!("keybinds {{\n{block}\n}}\n");
+        let error = Config::from_kdl(&fragment, None).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("Invalid configuration-editor-source"),
+            "{error:?}"
+        );
+        assert!(Config::write_managed_fragment(dir.path(), &fragment).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}
+
+#[test]
+fn shared_resets_preserve_unbind_order_and_nested_actions() {
+    use strum::IntoEnumIterator;
+    use yinz_types::{data::InputMode, input::actions::Action};
+
+    for (suffix, normal_actions) in [
+        (r#""bind:[\"Ctrl b\"]""#, vec![]),
+        (r#""bind:[\"Ctrl b\"]" "Copy""#, vec![Action::Quit]),
+        (r#""unbind:[\"Ctrl a\"]""#, vec![Action::Copy, Action::Quit]),
+        ("", vec![]),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.kdl"),
+            "keybinds clear-defaults=true {}",
+        )
+        .unwrap();
+        let overlay = dir.path().join("config.d");
+        Config::write_managed_fragment(
+            &overlay,
+            r#"keybinds { shared {
+                unbind "Ctrl a";
+                bind "Ctrl a" "Ctrl b" { Copy; Quit; }
+            }; }"#,
+        )
+        .unwrap();
+        let mut expected = Config::load(None, Some(dir.path()), false).unwrap();
+        let normal = expected.keybinds.0.get_mut(&InputMode::Normal).unwrap();
+        if suffix.is_empty() {
+            normal.clear();
+        } else {
+            let key = if suffix.contains("unbind") {
+                "Ctrl a"
+            } else {
+                "Ctrl b"
+            }
+            .parse()
+            .unwrap();
+            if normal_actions.is_empty() {
+                normal.remove(&key);
+            } else {
+                normal.insert(key, normal_actions);
+            }
+        }
+        for _ in 0..2 {
+            Config::write_managed_fragment(
+                &overlay,
+                &format!(r#"configuration_edits {{ reset "keybinds" "normal" {suffix}; }}"#),
+            )
+            .unwrap();
+            let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+            for mode in InputMode::iter() {
+                assert_eq!(
+                    loaded.keybinds.0.get(&mode).cloned().unwrap_or_default(),
+                    expected.keybinds.0.get(&mode).cloned().unwrap_or_default(),
+                    "{suffix}: {mode:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn binding_reset_uses_configured_layout_directory() {
+    use yinz_types::{data::InputMode, input::actions::Action};
+
+    let dir = tempfile::tempdir().unwrap();
+    let layouts = tempfile::tempdir().unwrap();
+    std::fs::write(layouts.path().join("custom.kdl"), "layout { pane; }").unwrap();
+    std::fs::write(
+        dir.path().join("config.kdl"),
+        format!(
+            "layout_dir {:?}\nkeybinds clear-defaults=true {{}}",
+            layouts.path()
+        ),
+    )
+    .unwrap();
+    let overlay = dir.path().join("config.d");
+    std::fs::create_dir(&overlay).unwrap();
+    std::fs::write(
+        overlay.join(crate::config::MANAGED_CONFIG_FILE_NAME),
+        r#"keybinds { normal {
+            bind "Ctrl a" { NewTab { layout "custom"; }; }
+            bind "Ctrl b" { Copy; }
+        }; }"#,
+    )
+    .unwrap();
+    let disk = Disk::read(None, Some(dir.path())).unwrap();
+    let (fragment, expected, underlay) = disk
+        .preview(
+            &[],
+            &[vec![
+                "keybinds".into(),
+                "normal".into(),
+                "bind:[\"Ctrl b\"]".into(),
+            ]],
+        )
+        .unwrap();
+    Config::try_write_editor_fragment(&overlay, &fragment, underlay, || Ok(())).unwrap();
+    let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+    assert_eq!(loaded.keybinds, expected.keybinds);
+    let bindings = &loaded.keybinds.0[&InputMode::Normal];
+    assert!(!bindings.contains_key(&"Ctrl b".parse().unwrap()));
+    assert!(matches!(
+        bindings[&"Ctrl a".parse().unwrap()].as_slice(),
+        [Action::NewTab { .. }]
+    ));
+}
+
+#[test]
+fn binding_reset_preserves_empty_action_blocks() {
+    use yinz_types::data::InputMode;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.kdl"),
+        "keybinds clear-defaults=true {}",
+    )
+    .unwrap();
+    let overlay = dir.path().join("config.d");
+    Config::write_managed_fragment(
+        &overlay,
+        r#"keybinds { normal { bind "Ctrl a" {}; bind "Ctrl b" { Copy; }; }; }"#,
+    )
+    .unwrap();
+    let disk = Disk::read(None, Some(dir.path())).unwrap();
+    let (fragment, expected, underlay) = disk
+        .preview(
+            &[],
+            &[vec![
+                "keybinds".into(),
+                "normal".into(),
+                "bind:[\"Ctrl b\"]".into(),
+            ]],
+        )
+        .unwrap();
+    Config::try_write_editor_fragment(&overlay, &fragment, underlay, || Ok(())).unwrap();
+    let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+    assert_eq!(loaded.keybinds, expected.keybinds);
+    let bindings = &loaded.keybinds.0[&InputMode::Normal];
+    assert!(!bindings.contains_key(&"Ctrl b".parse().unwrap()));
+    assert!(bindings[&"Ctrl a".parse().unwrap()].is_empty());
+}
+
+#[test]
+fn binding_resets_leave_malformed_configuration_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let overlay = dir.path().join("config.d");
+    std::fs::create_dir(&overlay).unwrap();
+    let path = overlay.join(crate::config::MANAGED_CONFIG_FILE_NAME);
+    for source in [
+        "keybinds",
+        "keybinds { normal; }",
+        "keybinds { unknown {}; }",
+        "keybinds { shared_among \"unknown\" {}; }",
+        "keybinds { normal { bind \"Ctrl a\"; }; }",
+        "keybinds { normal { bind \"not-a-key\" {}; }; }",
+        "keybinds { normal { unknown; }; }",
+        "keybinds { normal { bind \"Ctrl b\" { UnknownAction; }; }; }",
+    ] {
+        std::fs::write(&path, source).unwrap();
+        let disk = Disk::read(None, Some(dir.path())).unwrap();
+        assert!(
+            disk.preview(
+                &[],
+                &[vec![
+                    "keybinds".into(),
+                    "normal".into(),
+                    "bind:[\"Ctrl a\"]".into()
+                ]]
+            )
+            .is_err(),
+            "{source}"
+        );
+        assert!(
+            Config::write_managed_fragment(
+                &overlay,
+                r#"configuration_edits { reset "keybinds" "normal" "bind:[\"Ctrl a\"]"; }"#,
+            )
+            .is_err(),
+            "{source}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    }
+}
+
+#[test]
+fn raw_grouped_resets_remove_each_stored_edit_and_restore_inherited_bindings() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.kdl"),
+        r#"keybinds clear-defaults=true {
+            normal { bind "esc" "Ctrl a" { Copy; }; }
+        }"#,
+    )
+    .unwrap();
+    let inherited = Config::load(None, Some(dir.path()), false).unwrap();
+    let overlay = dir.path().join("config.d");
+    let path = Config::write_managed_fragment(
+        &overlay,
+        r#"configuration_edits {
+            set "keybinds" "normal" "bind:[\"ESC\",\"Ctrl a\"]" {
+                bind "ESC" "Ctrl a" { Quit; }
+            }
+            set "mouse_mode" { mouse_mode false; }
+        }"#,
+    )
+    .unwrap();
+    let stored: KdlDocument = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+    assert_eq!(
+        patches_from_kdl(stored.get(EDITS_BLOCK).unwrap())
+            .unwrap()
+            .len(),
+        3
+    );
+    for _ in 0..2 {
+        Config::write_managed_fragment(
+            &overlay,
+            r#"configuration_edits {
+                reset "keybinds" "normal" "bind:[\"esc\",\"Ctrl a\"]";
+            }"#,
+        )
+        .unwrap();
+        let stored: KdlDocument = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let edits = patches_from_kdl(stored.get(EDITS_BLOCK).unwrap()).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].path, vec!["mouse_mode"]);
+        let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+        assert_eq!(loaded.keybinds, inherited.keybinds);
+        assert_eq!(loaded.options.mouse_mode, Some(false));
+    }
+    let before = std::fs::read_to_string(&path).unwrap();
+    assert!(Config::write_managed_fragment(
+        &overlay,
+        r#"configuration_edits { reset "keybinds" "normal" "bind:[\"not-a-key\"]"; }"#,
+    )
+    .is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+}
+
+#[test]
+fn persisted_resets_preserve_unrelated_kdl_subtrees() {
+    use yinz_types::data::InputMode;
+
+    for block in ["normal", "shared", "shared_among \"normal\" \"locked\""] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.kdl"),
+            "keybinds clear-defaults=true {}",
+        )
+        .unwrap();
+        let overlay = dir.path().join("config.d");
+        let path = Config::write_managed_fragment(
+            &overlay,
+            &format!(r#"keybinds {{
+                {block} {{
+                    bind "Ctrl a" "Ctrl b" {{ Copy; }}
+                    bind "Ctrl c" {{ LaunchOrFocusPlugin "foo" {{ custom {{}}; }}; }}
+                    bind "Ctrl d" {{ NewTab {{}}; }}
+                }}
+                pane {{ bind "Ctrl e" {{ LaunchOrFocusPlugin "foo" {{ custom {{}}; }}; NewTab {{}}; }}; }}
+            }}"#),
+        ).unwrap();
+        let before = Config::load(None, Some(dir.path()), false).unwrap();
+        let disk = Disk::read(None, Some(dir.path())).unwrap();
+        let (fragment, preview, underlay) = disk
+            .preview(
+                &[],
+                &[vec![
+                    "keybinds".into(),
+                    "normal".into(),
+                    "bind:[\"Ctrl a\"]".into(),
+                ]],
+            )
+            .unwrap();
+        Config::try_write_editor_fragment(&overlay, &fragment, underlay, || Ok(())).unwrap();
+        let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+        assert_eq!(loaded.keybinds, preview.keybinds);
+        for (mode, keys) in [
+            (InputMode::Normal, vec!["Ctrl b", "Ctrl c", "Ctrl d"]),
+            (InputMode::Pane, vec!["Ctrl e"]),
+        ] {
+            for key in keys {
+                assert_eq!(
+                    loaded.keybinds.0[&mode][&key.parse().unwrap()],
+                    before.keybinds.0[&mode][&key.parse().unwrap()]
+                );
+            }
+        }
+        let persisted: KdlDocument = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        fn check_empty_blocks(node: &KdlNode) -> usize {
+            if matches!(node.name().value(), "custom" | "NewTab") {
+                assert!(node.children().unwrap().nodes().is_empty());
+                return 1;
+            }
+            node.children()
+                .into_iter()
+                .flat_map(|children| children.nodes())
+                .map(check_empty_blocks)
+                .sum()
+        }
+        assert_eq!(check_empty_blocks(persisted.get("keybinds").unwrap()), 4);
+    }
+}
+
+#[test]
+fn global_unbind_resets_keep_identity_and_precedence_across_legacy_saves() {
+    use strum::IntoEnumIterator;
+    use yinz_types::{data::InputMode, input::actions::Action};
+
+    for binding_only in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.kdl"),
+            r#"keybinds clear-defaults=true {
+            shared { bind "Ctrl a" "Ctrl c" { NoOp; }; }
+        }"#,
+        )
+        .unwrap();
+        let overlay = dir.path().join("config.d");
+        let path = Config::write_managed_fragment(
+            &overlay,
+            r#"keybinds {
+            unbind "Ctrl a";
+            unbind "Ctrl c";
+        }"#,
+        )
+        .unwrap();
+        let mut reset = vec!["keybinds".into(), "normal".into()];
+        if binding_only {
+            reset.push("unbind:[\"Ctrl a\"]".into());
+        }
+        for _ in 0..2 {
+            let disk = Disk::read(None, Some(dir.path())).unwrap();
+            let (fragment, preview, underlay) = disk.preview(&[], &[reset.clone()]).unwrap();
+            Config::try_write_editor_fragment(&overlay, &fragment, underlay, || Ok(())).unwrap();
+            assert_eq!(
+                Config::load(None, Some(dir.path()), false)
+                    .unwrap()
+                    .keybinds,
+                preview.keybinds
+            );
+        }
+        for binding in [
+            r#"bind "Ctrl b" { Copy; }"#,
+            r#"bind "Ctrl a" { Quit; }; bind "Ctrl b" { Copy; }"#,
+        ] {
+            Config::write_managed_fragment(
+                &overlay,
+                &format!("keybinds {{ locked {{ {binding}; }}; }}"),
+            )
+            .unwrap();
+            let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+            for mode in InputMode::iter() {
+                let bindings = &loaded.keybinds.0[&mode];
+                assert_eq!(
+                    bindings.contains_key(&"Ctrl a".parse().unwrap()),
+                    mode == InputMode::Normal
+                );
+                assert_eq!(bindings[&"Ctrl c".parse().unwrap()], vec![Action::NoOp]);
+            }
+            assert_eq!(
+                loaded.keybinds.0[&InputMode::Locked][&"Ctrl b".parse().unwrap()],
+                vec![Action::Copy]
+            );
+        }
+        // Reconciliation of an ancestor editor edit must use the same ordering as loading.
+        let persisted: KdlDocument = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let edits: KdlDocument = r#"configuration_edits { set "keybinds" { keybinds {}; }; }"#
+            .parse()
+            .unwrap();
+        let reconciled = reconcile_legacy_keybinds(
+            edits.get(EDITS_BLOCK).unwrap(),
+            persisted.get("keybinds").unwrap(),
+        )
+        .unwrap();
+        let reconciled = Config::from_kdl(&reconciled.to_string(), None).unwrap();
+        assert!(!reconciled.keybinds.0[&InputMode::Locked].contains_key(&"Ctrl a".parse().unwrap()));
+        assert_eq!(
+            reconciled.keybinds.0[&InputMode::Locked][&"Ctrl b".parse().unwrap()],
+            vec![Action::Copy]
+        );
+
+        // Resetting another generated descendant must retain the original source identity.
+        Config::write_managed_fragment(
+            &overlay,
+            r#"configuration_edits { reset "keybinds" "pane" "unbind:[\"Ctrl a\"]"; }"#,
+        )
+        .unwrap();
+        let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+        assert_eq!(
+            loaded.keybinds.0[&InputMode::Pane][&"Ctrl a".parse().unwrap()],
+            vec![Action::NoOp]
+        );
+        Config::write_managed_fragment(&overlay, r#"keybinds { unbind "Ctrl a"; }"#).unwrap();
+        let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+        for bindings in loaded.keybinds.0.values() {
+            assert!(!bindings.contains_key(&"Ctrl a".parse().unwrap()));
+        }
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains(KEYBIND_BLOCK_SOURCE));
+    }
+}
+
+#[test]
+fn invalid_global_unbind_source_metadata_is_rejected_before_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = Config::write_managed_fragment(dir.path(), "mouse_mode false").unwrap();
+    let before = std::fs::read(&path).unwrap();
+    for block in [
+        r##"normal configuration-editor-source=true { unbind "Ctrl a"; }"##,
+        r##"normal configuration-editor-source=r#"["unbind", ["invalid-key"]]"# { unbind "Ctrl a"; }"##,
+        r##"normal configuration-editor-source=r#"["unbind", [42]]"# { unbind "Ctrl a"; }"##,
+        r##"normal configuration-editor-source=r#"["unbind", ["Ctrl a"]]"# { bind "Ctrl a" { Quit; }; }"##,
+        r##"normal clear-defaults=true configuration-editor-source=r#"["unbind", ["Ctrl a"]]"# { unbind "Ctrl a"; }"##,
+        r##"normal configuration-editor-source=r#"["unbind", ["Ctrl a"]]"#"##,
+        r##"shared configuration-editor-source=r#"["unbind", ["Ctrl a"]]"# { unbind "Ctrl a"; }"##,
+    ] {
+        let fragment = format!("keybinds {{ {block}; }}");
+        let error = Config::from_kdl(&fragment, None).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("Invalid configuration-editor-source"),
+            "{error:?}"
+        );
+        assert!(Config::write_managed_fragment(dir.path(), &fragment).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}

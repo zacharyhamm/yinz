@@ -97,9 +97,8 @@ pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Lay
         layout.recursively_add_start_suspended(Some(false));
     }
 
-    config_with_merged_layout_opts.themes = config_with_merged_layout_opts
-        .themes
-        .merge(get_default_themes());
+    config_with_merged_layout_opts.themes =
+        get_default_themes().merge(config_with_merged_layout_opts.themes);
 
     let user_theme_dir = assets
         .configuration_options
