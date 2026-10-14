@@ -39,7 +39,7 @@ const node = (
   properties: {},
   children: children.map((child) => clone(child)),
 });
-const read = (theme: string | null = null): Snapshot => yinz.command("InspectConfiguration", theme);
+const read = (): Snapshot => yinz.command("InspectConfiguration", null);
 function find(nodes: readonly ReadNode[], path: readonly string[]): ReadNode | undefined {
   const [name, ...rest] = path;
   const found = nodes.find((n) => nodeKey(n) === name);
@@ -152,11 +152,16 @@ function diff(
       ),
   );
 }
+type Changes = {
+  readonly patches: readonly ReadonlyWire<Patch>[];
+  readonly reset?: readonly (readonly string[])[];
+  readonly permanentPatches?: readonly ReadonlyWire<Patch>[];
+};
 class Draft {
   public readonly original: Node | undefined;
   public value: Node;
   public constructor(
-    public snapshot: Snapshot,
+    public readonly snapshot: Snapshot,
     public readonly client: number,
     public readonly root: string,
   ) {
@@ -165,10 +170,10 @@ class Draft {
   }
   // oxlint-disable-next-line eslint/max-lines-per-function -- Keep destination and reload callbacks with their captured patches.
   public commit(
-    patches: readonly ReadonlyWire<Patch>[],
-    reset: readonly (readonly string[])[] = [],
-    permanentPatches: readonly ReadonlyWire<Patch>[] = patches,
-  ): PaletteView {
+    changes: Changes | ((values: Readonly<Record<string, string>>) => Changes),
+    // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- Fields retain the SDK shape for the returned form.
+    fields: readonly PaletteField[] = [],
+  ): Extract<PaletteView, { type: "form" }> {
     const setting = this.snapshot.catalog.find((s) => s.name === this.root);
     const timing =
       setting?.timing ?? this.snapshot.section_timing[this.root] ?? "Applies to this session";
@@ -177,6 +182,7 @@ class Draft {
       type: "form",
       title: `${clean(this.root)} — ${timing}`,
       fields: [
+        ...fields,
         {
           type: "choice",
           id: "destination",
@@ -190,17 +196,22 @@ class Draft {
         {
           id: "reload",
           label: "Reload configuration (keep draft)",
-          run: () => {
+          run: (values) => {
+            const pending = typeof changes === "function" ? changes(values) : changes;
             const fresh = read();
             return confirm(
               "Configuration reloaded. Reapply this draft to the current configuration?",
-              () =>
-                new Draft(fresh, this.client, this.root).commit(patches, reset, permanentPatches),
+              () => new Draft(fresh, this.client, this.root).commit(pending),
             );
           },
         },
       ],
       onSubmit: (values) => {
+        const {
+          patches,
+          reset = [],
+          permanentPatches = patches,
+        } = typeof changes === "function" ? changes(values) : changes;
         const result = yinz.command("EditConfiguration", {
           revision: this.snapshot.revision,
           destination: values["destination"] === "Save permanently" ? "permanent" : "session",
@@ -210,27 +221,15 @@ class Draft {
               node: clone(patch.node ?? undefined) ?? null,
             }),
           ),
-          reset: reset.map((path) => [...path]),
+          reset: reset.map((path) => Array.from(path)),
         });
         return { type: "complete", notification: result.notice };
       },
     };
   }
-  public hydrateTheme(name: string): void {
-    const fresh = read(name);
-    if (fresh.revision !== this.snapshot.revision)
-      throw new Error("Configuration changed. Reopen this editor before loading another theme.");
-    const loaded = find(fresh.clients[String(this.client)] ?? fresh.saved, ["themes", name]);
-    if (!loaded) throw new Error("Theme is no longer available");
-    const current = this.value.children.find((child) => child.name === name);
-    const original = this.original?.children.find((child) => child.name === name);
-    if (current) Object.assign(current, clone(loaded));
-    if (original) Object.assign(original, clone(loaded));
-    this.snapshot = fresh;
-  }
   public finish(): PaletteView {
     const patches = diff(this.original, this.value, [this.root]);
-    return this.commit(patches);
+    return this.commit({ patches });
   }
 }
 function stateHelp(draft: ReadonlyWire<Draft>, path: readonly string[]): string {
@@ -251,44 +250,38 @@ function settingForm(draft: Draft, setting: Setting): PaletteView {
     (setting.kind === "boolean" ? false : setting.kind === "number" ? (setting.minimum ?? 0) : "");
   if (setting.kind === "number" && typeof value === "string")
     value = Number(value.replace(/%$/u, ""));
-  const choices =
-    setting.kind === "theme"
-      ? (find(draft.snapshot.saved, ["themes"])?.children.map((n) => n.name) ?? [])
-      : setting.choices;
   const field = scalarField(
     "value",
     setting.label,
     value,
     setting.kind,
-    setting.kind === "boolean" ? undefined : [...choices],
+    setting.kind === "boolean" ? undefined : [...setting.choices],
     `${setting.help}\n${stateHelp(draft, [setting.name])}`,
   );
   if (field.type === "number") {
     if (setting.minimum !== null) field.minimum = setting.minimum;
     if (setting.maximum !== null) field.maximum = setting.maximum;
   }
-  return {
-    type: "form",
-    title: `${setting.label} — ${setting.timing}. ${stateHelp(draft, [setting.name]).replaceAll("\n", "; ")}`,
-    fields: [field],
-    submitLabel: "Choose destination…",
-    onSubmit: (values) => {
+  const form = draft.commit(
+    (values) => {
       draft.value.arguments = [parseScalar(values["value"] ?? "", value)];
-      const effectivePatches = diff(draft.original, draft.value, [draft.root]);
+      const patches = diff(draft.original, draft.value, [draft.root]);
       const savedPatches = diff(find(draft.snapshot.saved, [draft.root]), draft.value, [
         draft.root,
       ]);
-      return draft.commit(
-        effectivePatches,
-        [],
-        savedPatches.length > 0 ? savedPatches : effectivePatches,
-      );
+      return { patches, permanentPatches: savedPatches.length > 0 ? savedPatches : patches };
     },
+    [field],
+  );
+  return {
+    ...form,
+    title: `${setting.label} — ${setting.timing}. ${stateHelp(draft, [setting.name]).replaceAll("\n", "; ")}`,
     actions: [
+      ...(form.actions ?? []),
       {
         id: "state",
         label: "Current values and effect timing…",
-        run: () => ({
+        run: (): PaletteView => ({
           type: "text",
           title: setting.label,
           text: `${setting.help}\n${setting.timing}\n${stateHelp(draft, [setting.name])}`,
@@ -300,10 +293,14 @@ function settingForm(draft: Draft, setting: Setting): PaletteView {
         run: () =>
           confirm(
             "Remove this configured value? The setting's automatic behavior will apply.",
-            () => draft.commit([{ path: [setting.name], node: null }]),
+            () => draft.commit({ patches: [{ path: [setting.name], node: null }] }),
           ),
       },
-      { id: "reset", label: "Reset override…", run: () => draft.commit([], [[setting.name]]) },
+      {
+        id: "reset",
+        label: "Reset override…",
+        run: () => draft.commit({ patches: [], reset: [[setting.name]] }),
+      },
     ],
   };
 }
@@ -358,7 +355,11 @@ function childList(draft: Draft, parent: Node, path: readonly string[]): Palette
           })),
         ),
     },
-    { id: "reset", label: "Reset override…", run: () => draft.commit([], [path]) },
+    {
+      id: "reset",
+      label: "Reset override…",
+      run: () => draft.commit({ patches: [], reset: [path] }),
+    },
     ...parent.children.map((child, index): PaletteAction => ({
       id: `entry:${index}`,
       label: clean(
@@ -372,8 +373,6 @@ function childList(draft: Draft, parent: Node, path: readonly string[]): Palette
 function entry(draft: Draft, parent: Node, index: number, path: readonly string[]): PaletteView {
   const child = parent.children[index];
   if (!child) throw new Error("Entry was removed from the draft");
-  if (path.length === 1 && path[0] === "themes" && child.children.length === 0)
-    draft.hydrateTheme(child.name);
   const childPath = [...path, nodeKey(child)];
   // oxlint-disable-next-line eslint/max-lines-per-function -- Entry actions share one draft node and preserve navigation order.
   return list(clean(childPath.join(" / ")), () => [
@@ -455,23 +454,16 @@ function nodeForm(
   path: readonly string[],
   done: () => PaletteView,
 ): PaletteView {
-  if (path[0] === "themes" && target.children.length === 0 && target.arguments.length > 0)
-    return colorForm(target, done, path[2] !== "terminal");
   const local = clone(target);
   const keys = Object.keys(local.properties);
   const fields: PaletteField[] = [
     { type: "text", id: "name", label: "Name", initialValue: local.name },
   ];
-  const themeColor = path[0] === "themes" && local.children.length === 0;
   for (const [index, value] of local.arguments.entries()) {
     fields.push(
       scalarField(
         `arg:${index}`,
-        themeColor
-          ? `Color ${index + 1} (indexed 0–255, RGB components, or hex)`
-          : local.name === "bind"
-            ? "Key chord"
-            : `Value ${index + 1}`,
+        local.name === "bind" ? "Key chord" : `Value ${index + 1}`,
         value,
         local.name === "bind" ? "key" : local.name === "cwd" ? "directory" : undefined,
       ),
@@ -670,21 +662,33 @@ function discoveryDraft(snapshot: Snapshot, client: number, root: string): Draft
 }
 // oxlint-disable-next-line eslint/max-lines-per-function -- Keep each form definition with the callbacks that own its draft.
 function rootActions(snapshot: Snapshot, client: number): PaletteAction[] {
-  const result: PaletteAction[] = snapshot.catalog.map((setting) => ({
-    id: setting.name,
-    label: `Configure ${setting.label}…`,
-    aliases: [
-      setting.name,
-      "configuration settings",
-      ...(setting.name.startsWith("copy_") ? ["clipboard"] : []),
-    ],
-    description: setting.timing,
-    run: () => settingForm(new Draft(read(), client, setting.name), setting),
-  }));
-  for (const root of snapshot.sections) {
+  const result: PaletteAction[] = snapshot.catalog
+    .filter(
+      (setting) =>
+        ![
+          "theme",
+          "theme_dark",
+          "theme_light",
+          "theme_dir",
+          "explicit_theme_hue",
+          "agent_theme_mapping",
+        ].includes(setting.name),
+    )
+    .map((setting) => ({
+      id: setting.name,
+      label: `${setting.label}…`,
+      aliases: [
+        setting.name,
+        "configuration settings",
+        ...(setting.name.startsWith("copy_") ? ["clipboard"] : []),
+      ],
+      description: setting.timing,
+      run: () => settingForm(new Draft(read(), client, setting.name), setting),
+    }));
+  for (const root of snapshot.sections.filter((section) => section !== "themes")) {
     result.push({
       id: root,
-      label: `Configure ${root.replaceAll("_", " ")}…`,
+      label: `${root.replaceAll("_", " ")}…`,
       aliases: [root, "configuration settings", ...(root === "keybinds" ? ["keybindings"] : [])],
       run: () => {
         const draft = new Draft(read(), client, root);
@@ -696,7 +700,7 @@ function rootActions(snapshot: Snapshot, client: number): PaletteAction[] {
     ).entries())
       result.push({
         id: `${root}:${index}:${child.name}`,
-        label: `Configure ${root}: ${clean(child.name)}…`,
+        label: `${root}: ${clean(child.name)}…`,
         aliases: [`${root} ${clean(child.name)}`],
         run: () => {
           const draft = discoveryDraft(snapshot, client, root);
@@ -712,7 +716,7 @@ function rootActions(snapshot: Snapshot, client: number): PaletteAction[] {
       const identity = nodeKey(binding);
       result.push({
         id: `keybinds:${modeIndex}:${mode.name}:${index}:${identity}`,
-        label: `Configure keybinding ${clean(mode.name)}: ${clean(binding.arguments.join(" "))}…`,
+        label: `keybinding ${clean(mode.name)}: ${clean(binding.arguments.join(" "))}…`,
         aliases: ["keybindings keybinds", ...binding.children.map((n) => n.name)],
         run: () => {
           const draft = discoveryDraft(snapshot, client, "keybinds");
@@ -731,79 +735,15 @@ export default definePlugin({
     yinz.commandPalette.registerProvider({
       id: "configuration",
       title: "Configuration",
-      provideActions: (request) => {
-        const words = request.query.toLowerCase().split(/\s+/u).filter(Boolean);
-        return rootActions(read(), request.clientId)
-          .filter((a) =>
-            words.every((w) =>
-              `${a.label} ${(a.aliases ?? []).join(" ")}`.toLowerCase().includes(w),
-            ),
-          )
-          .slice(0, 100);
-      },
+      actions: [
+        {
+          id: "configuration",
+          label: "Configuration…",
+          aliases: ["settings"],
+          run: (context): PaletteView =>
+            list("Configuration", () => rootActions(read(), context.clientId)),
+        },
+      ],
     });
   },
 });
-
-// oxlint-disable-next-line eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- Keep the form with its callbacks; Color submission updates this draft node.
-function colorForm(target: Node, done: () => PaletteView, indexed: boolean): PaletteView {
-  const format =
-    typeof target.arguments[0] === "string"
-      ? "Hex"
-      : target.arguments.length === 3
-        ? "RGB"
-        : "Indexed";
-  return {
-    type: "form",
-    title: target.name,
-    fields: [
-      {
-        type: "choice",
-        id: "format",
-        label: "Color format",
-        options: indexed ? ["Indexed", "RGB", "Hex"] : ["RGB", "Hex"],
-        initialValue: format,
-      },
-      {
-        type: "number",
-        id: "index",
-        label: "Index (0–255)",
-        minimum: 0,
-        maximum: 255,
-        initialValue: format === "Indexed" ? String(target.arguments[0]) : "0",
-      },
-      ...["red", "green", "blue"].map((id, i): PaletteField => ({
-        type: "number",
-        id,
-        label: id,
-        minimum: 0,
-        maximum: 255,
-        initialValue: format === "RGB" ? String(target.arguments[i]) : "0",
-      })),
-      {
-        type: "text",
-        id: "hex",
-        label: "Hex (#RRGGBB)",
-        initialValue: format === "Hex" ? String(target.arguments[0]) : "#000000",
-      },
-    ],
-    submitLabel: "Keep in draft",
-    onSubmit: (values) => {
-      if (values["format"] === "Hex") {
-        if (!/^#[0-9a-f]{6}$/iu.test(values["hex"] ?? ""))
-          throw new Error("Enter a six-digit color such as #12abef");
-        target.arguments = [values["hex"] ?? ""];
-      } else {
-        target.arguments = (values["format"] === "RGB" ? ["red", "green", "blue"] : ["index"]).map(
-          (id) => {
-            const value = parseScalar(values[id] ?? "", 0);
-            if (typeof value !== "number" || value < 0 || value > 255)
-              throw new Error("Color values must be between 0 and 255");
-            return value;
-          },
-        );
-      }
-      return done();
-    },
-  };
-}

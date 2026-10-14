@@ -1887,6 +1887,18 @@ fn session_palette_disconnect_targets_preserve_watchers() {
     host.quit();
 }
 
+fn configuration_query(yinz: &yinz_integration_tests::TestSession, query: &str) {
+    palette_query(yinz, "Configuration");
+    yinz.wait_until("configuration submenu", |screen| {
+        screen.contains("simplified ui…")
+    });
+    yinz.send_stdin(query.as_bytes());
+    yinz.wait_until("configuration entry", |screen| {
+        screen.contains(&format!("› {query}…"))
+    });
+    yinz.send_stdin(&keys::ENTER);
+}
+
 #[test]
 fn configuration_palette_session_draft_can_be_saved_unchanged_permanently() {
     let config_dir = tempfile::tempdir().unwrap();
@@ -1904,14 +1916,9 @@ fn configuration_palette_session_draft_can_be_saved_unchanged_permanently() {
     second.wait_until("second client sees the framed pane", |screen| {
         screen.contains("$") && screen.contains("┌")
     });
-    yinz.send_stdin(DO);
-    yinz.send_stdin(b"Configure pane frames");
-    yinz.wait_until("configuration provider result", |screen| {
-        screen.contains("Configure pane frames…")
-    });
-    yinz.send_stdin(&keys::ENTER);
+    configuration_query(&yinz, "pane frames");
     yinz.wait_until("configuration value editor", |screen| {
-        screen.contains("Choose destination")
+        screen.contains("Apply change")
     });
     yinz.send_stdin(b"\x1b[C");
     yinz.send_stdin(&keys::ENTER);
@@ -1920,7 +1927,6 @@ fn configuration_palette_session_draft_can_be_saved_unchanged_permanently() {
         screen.contains("Apply to session") && screen.contains("Apply change")
     });
     assert!(!config_dir.path().join("config.d/yinz-managed.kdl").exists());
-    yinz.send_stdin(&keys::ENTER);
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("server acknowledged configuration edit", |screen| {
         screen.contains("Applied to this session")
@@ -1933,28 +1939,22 @@ fn configuration_palette_session_draft_can_be_saved_unchanged_permanently() {
         screen.contains("$") && !screen.contains("┌")
     });
     assert!(!config_dir.path().join("config.d/yinz-managed.kdl").exists());
-    yinz.send_stdin(DO);
-    yinz.send_stdin(b"Configure pane frames");
-    yinz.wait_until("reopen configuration result", |screen| {
-        screen.contains("Configure pane frames…")
-    });
-    yinz.send_stdin(&keys::ENTER);
+    configuration_query(&yinz, "pane frames");
     yinz.wait_until("effective value is disabled", |screen| {
-        screen.contains("Disabled") && screen.contains("Choose destination")
+        screen.contains("Disabled") && screen.contains("Apply change")
     });
-    yinz.send_stdin(b"\x1b[B\x1b[B\r");
+    yinz.send_stdin(b"\x1b[B\x1b[B\x1b[B\x1b[B\r");
     yinz.wait_until("session override details", |screen| {
-        screen.contains("Session override: Yes")
+        screen.contains("Session override: Yes") && !screen.contains("Apply change")
     });
     yinz.send_stdin(DO);
     yinz.wait_until("details closed", |screen| {
         !screen.contains("Esc Back") && !screen.contains("Esc Close") && screen.contains("$")
     });
-    palette_query(&yinz, "Configure pane frames");
+    configuration_query(&yinz, "pane frames");
     yinz.wait_until("unchanged session value ready to save", |screen| {
-        screen.contains("Disabled") && screen.contains("Choose destination")
+        screen.contains("Disabled") && screen.contains("Apply change")
     });
-    yinz.send_stdin(&keys::ENTER);
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("choose permanent destination", |screen| {
         screen.contains("Apply change")
@@ -1994,9 +1994,9 @@ fn configuration_palette_locked_default_routes_later_client_input_in_locked_mode
     let shell = yinz.expect_pty_spawn();
     shell.output(PROMPT);
     yinz.wait_until("shell ready", |screen| screen.contains("$"));
-    palette_query(&yinz, "Configure default mode");
+    configuration_query(&yinz, "default mode");
     yinz.wait_until("default mode editor", |screen| {
-        screen.contains("Choose destination")
+        screen.contains("Apply change")
     });
     yinz.send_stdin(b"\x1b[C");
     yinz.send_stdin(&keys::ENTER);
@@ -2004,7 +2004,6 @@ fn configuration_palette_locked_default_routes_later_client_input_in_locked_mode
     yinz.wait_until("session destination", |screen| {
         screen.contains("Apply change")
     });
-    yinz.send_stdin(&keys::ENTER);
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("locked default applied", |screen| {
         screen.contains("Applied to this session")
