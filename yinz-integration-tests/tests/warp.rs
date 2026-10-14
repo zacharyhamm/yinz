@@ -1758,6 +1758,7 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
         .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
         .create_sync()
         .unwrap();
+    let (disconnect, wait_to_disconnect) = std::sync::mpsc::channel();
     let destination = std::thread::spawn(move || {
         let probe = listener.accept().unwrap();
         let mut reply: IpcSenderWithContext<ServerToClientMsg> = IpcSenderWithContext::new(probe);
@@ -1784,6 +1785,9 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
                 _
             ))
         ));
+        wait_to_disconnect
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
         // Drop the adoption connection after accepting the request, without a reply.
     });
     let sender = start(Some(
@@ -1815,11 +1819,21 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
         held_state()["is_held"] == true
     });
     let before = held_state();
-    let (code, output) = sender.run_cli_action_reporting(CliAction::WarpPane {
-        to_session: name,
-        pane_id: Some(format!("terminal_{}", subject.terminal_id())),
-        floating: false,
-        focused_tab: true,
+    let (code, output) = std::thread::scope(|scope| {
+        let warp = scope.spawn(|| {
+            sender.run_cli_action_reporting(CliAction::WarpPane {
+                to_session: name,
+                pane_id: Some(format!("terminal_{}", subject.terminal_id())),
+                floating: false,
+                focused_tab: true,
+            })
+        });
+        // Force the empty tab to render before rollback so restoration cannot reuse its layout.
+        sender.wait_until("held pane departure", |grid| {
+            !grid.contains("SOLE HELD SCROLLBACK")
+        });
+        disconnect.send(()).unwrap();
+        warp.join().unwrap()
     });
     assert_ne!(code, 0);
     assert!(output.contains("back in this session"), "{output}");

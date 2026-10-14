@@ -537,12 +537,8 @@ impl TiledPanes {
         should_relayout: bool,
         client_id: Option<ClientId>,
     ) -> Option<Box<dyn Pane>> {
-        if self.panes.is_empty() {
-            self.panes.insert(pane_id, pane);
-            return None;
-        }
         if self.has_no_content_in_viewport() {
-            // The last content pane can leave UI panes behind during a warp.
+            // A warp can leave an empty tab or only UI panes outside the viewport.
             let viewport = *self.viewport.borrow();
             let mut geom = PaneGeom::from(&Size {
                 rows: viewport.rows,
