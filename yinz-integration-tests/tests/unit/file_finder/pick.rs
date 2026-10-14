@@ -96,6 +96,7 @@ export default {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(
             r##"
+pane_frame_style "full"
 plugins {{
   picker location="{url}"
   file-finder location="yinz:file-finder" {{
@@ -154,17 +155,9 @@ load_plugins clear-defaults=true {{ "picker"; }}
     });
     std::fs::write(out(&script), "/tmp/Papers.pdf/quote\n雪.PDF\0").unwrap();
     second.exit(Some(0));
-    yinz.wait_until("two awaited picks complete", |_| {
-        let (_, panes) = yinz.run_cli_action_reporting(yinz_cli::args::CliAction::ListPanes {
-            tab: false,
-            command: false,
-            state: true,
-            geometry: false,
-            all: true,
-            json: true,
-        });
-        assert!(!panes.contains("PICK ERROR"), "{panes}");
-        panes.contains("PICK COMPLETE")
+    yinz.wait_until("two awaited picks complete", |grid| {
+        assert!(!grid.contains("PICK ERROR"), "{grid}");
+        grid.contains("PICK COMPLETE")
     });
     assert!(
         !String::from_utf8_lossy(&yinz.raw_bytes()).contains("PICKER BACKGROUND MUST NEVER SHOW")
