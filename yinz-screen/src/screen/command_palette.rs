@@ -90,6 +90,11 @@ impl Screen {
                 .cloned();
             let state = self.client_projects.entry(client).or_default();
             if (state.focused != focused || state.focused_project != project) && project.is_some() {
+                if state.current != project {
+                    if let Some(name) = &project {
+                        self.last_project.remember(name);
+                    }
+                }
                 state.current.clone_from(&project);
             }
             if state
@@ -97,7 +102,13 @@ impl Screen {
                 .as_ref()
                 .is_none_or(|name| !self.projects.contains(name))
             {
-                state.current = project.clone().or_else(|| self.projects.first().cloned());
+                state.current = project.clone().or_else(|| {
+                    self.last_project
+                        .name()
+                        .filter(|name| self.projects.contains(*name))
+                        .cloned()
+                        .or_else(|| self.projects.first().cloned())
+                });
             }
             state.focused = focused;
             state.focused_project = project;
@@ -1248,6 +1259,7 @@ impl Screen {
             Builtin::Project(name) => {
                 if self.projects.contains(&name) {
                     notify(&self.bus.senders, format!("Current project: {name}"));
+                    self.last_project.remember(&name);
                     self.client_projects.entry(client).or_default().current = Some(name);
                     if let Some(state) = self.command_palettes.get_mut(&client) {
                         state.widget.back();

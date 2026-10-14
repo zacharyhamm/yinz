@@ -597,6 +597,7 @@ impl MockScreen {
                     debug,
                     config_file_path,
                     config_dir,
+                    None,
                     default_layout,
                 )
                 .expect("TEST")
@@ -694,6 +695,7 @@ impl MockScreen {
                     debug,
                     config_file_path,
                     config_dir,
+                    None,
                     Box::default(),
                 )
                 .expect("TEST")
