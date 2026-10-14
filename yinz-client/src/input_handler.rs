@@ -238,18 +238,7 @@ impl InputHandler {
                         .send_to_server(ClientToServerMsg::ModifiersHeld { modifiers });
                 },
                 Ok((InputInstruction::SetMouseMode(enabled), _error_context)) => {
-                    if enabled != self.mouse_mode_active {
-                        let result = if enabled {
-                            self.os_input.enable_mouse()
-                        } else {
-                            self.os_input.disable_mouse()
-                        };
-                        if result.is_ok() {
-                            self.mouse_mode_active = enabled;
-                        }
-                        result.context("updating configured mouse mode").non_fatal();
-                    }
-                    self.options.mouse_mode = Some(enabled);
+                    self.set_configured_mouse_mode(enabled);
                 },
                 Ok((InputInstruction::Exit, _error_context)) => {
                     self.should_exit = true;
@@ -258,6 +247,21 @@ impl InputHandler {
             }
         }
     }
+    fn set_configured_mouse_mode(&mut self, enabled: bool) {
+        if enabled != self.options.mouse_mode.unwrap_or(true) {
+            let result = if enabled {
+                self.os_input.enable_mouse()
+            } else {
+                self.os_input.disable_mouse()
+            };
+            if result.is_ok() {
+                self.mouse_mode_active = enabled;
+            }
+            result.context("updating configured mouse mode").non_fatal();
+        }
+        self.options.mouse_mode = Some(enabled);
+    }
+
     fn handle_key(
         &mut self,
         key: &KeyWithModifier,
@@ -480,3 +484,7 @@ pub(crate) fn input_loop(
     )
     .handle_input();
 }
+
+#[cfg(test)]
+#[path = "unit/input_handler_tests.rs"]
+mod tests;

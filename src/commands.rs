@@ -1169,8 +1169,11 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             | PluginsCli::Stop { .. }
             | PluginsCli::Check { .. }
     ) {
-        yinz_config::config::Config::validate_plugin_overlays(opts.config_dir.as_deref())
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        yinz_config::config::Config::validate_plugin_overlays(
+            opts.config.as_deref(),
+            opts.config_dir.as_deref(),
+        )
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         Some(
             yinz_cli::setup::load_config(opts)
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?,

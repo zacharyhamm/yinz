@@ -28,6 +28,7 @@ fn session_with(
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
         command_palette_restore_modes: HashMap::new(),
+        pending_mouse_updates: Vec::new(),
         screen_thread: None,
         pty_thread: None,
         plugin_thread: None,
@@ -70,6 +71,65 @@ fn detaching_a_client_before_the_session_exists_is_a_no_op() {
     });
 
     assert_eq!(ran, None);
+}
+
+#[test]
+fn mouse_updates_reach_every_client_with_a_full_server_queue() {
+    let (screen_tx, _screen_rx) = channels::unbounded();
+    let (plugin_tx, _plugin_rx) = channels::unbounded();
+    let (server_tx, server_rx) = channels::bounded(50);
+    for _ in 0..50 {
+        server_tx
+            .send((
+                ServerInstruction::ConnStatus(ClientId::new(1)),
+                ErrorContext::default(),
+            ))
+            .unwrap();
+    }
+    let mut session = session_with(
+        SenderWithContext::new(screen_tx),
+        SenderWithContext::new(plugin_tx),
+    );
+    session.senders.to_server = Some(SenderWithContext::new(server_tx));
+    session.senders.should_silently_fail = true;
+    let (done_tx, done_rx) = channels::bounded(1);
+    let propagation = std::thread::spawn(move || {
+        session.propagate_configuration_changes(
+            (1..=64)
+                .map(|id| {
+                    let mut config = Config::default();
+                    config.options.mouse_mode = Some(id % 2 == 0);
+                    (ClientId::new(id), config)
+                })
+                .collect(),
+            false,
+        );
+        done_tx.send(()).unwrap();
+        session
+    });
+    if let Err(error) = done_rx.recv_timeout(Duration::from_secs(10)) {
+        // Release a regressed self-send before joining so failure cannot strand a test thread.
+        drop(server_rx);
+        propagation.join().unwrap();
+        panic!("configuration propagation blocked on its own full queue: {error}");
+    }
+    let session = propagation.join().unwrap();
+    let session = Arc::new(RwLock::new(Some(session)));
+    let state = Arc::new(RwLock::new(SessionState::new()));
+    let capture = crate::capturing_os::CapturingOs::default();
+    let mut os: Box<dyn ServerOsApi> = Box::new(capture.clone());
+    flush_pending_mouse_updates(&mut os, &state, &session);
+    flush_pending_mouse_updates(&mut os, &state, &session);
+    let messages = capture.server_to_client_messages.lock();
+    assert_eq!(messages.len(), 64);
+    for id in 1..=64 {
+        assert!(matches!(
+            messages[&ClientId::new(id)].as_slice(),
+            [ServerToClientMsg::SetMouseMode { enabled }] if *enabled == (id % 2 == 0)
+        ));
+    }
+    assert!(with_session(&session, |session| session.pending_mouse_updates.is_empty()).unwrap());
+    assert_eq!(server_rx.len(), 50);
 }
 
 #[test]

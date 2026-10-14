@@ -248,6 +248,7 @@ fn session(
         key_passthrough_clients: Default::default(),
         locked_escapes: Default::default(),
         command_palette_restore_modes: Default::default(),
+        pending_mouse_updates: Vec::new(),
         screen_thread: None,
         pty_thread: None,
         plugin_thread: None,

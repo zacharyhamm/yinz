@@ -474,13 +474,26 @@ impl Config {
     }
 
     /// Management commands must surface malformed drop-ins too.
-    pub fn validate_plugin_overlays(config_dir: Option<&Path>) -> Result<(), ConfigError> {
-        let directory = home::get_config_overlay_dir(
+    pub fn validate_plugin_overlays(
+        config_path: Option<&Path>,
+        config_dir: Option<&Path>,
+    ) -> Result<(), ConfigError> {
+        let config_dir = config_dir
+            .map(Path::to_path_buf)
+            .or_else(home::find_default_config_dir);
+        let base_path = config_path.map(Path::to_path_buf).or_else(|| {
             config_dir
-                .map(Path::to_path_buf)
-                .or_else(home::find_default_config_dir),
-        );
+                .as_ref()
+                .map(|dir| dir.join(DEFAULT_CONFIG_FILE_NAME))
+                .filter(|path| path.exists())
+        });
+        let mut config = Self::from_default_assets()?;
+        if let Some(path) = base_path {
+            config = Self::from_path(&path, Some(config))?;
+        }
+        let directory = home::get_config_overlay_dir(config_dir.clone());
         if let Some(directory) = directory.filter(|path| path.exists()) {
+            let mut paths = Vec::new();
             for entry in std::fs::read_dir(&directory)
                 .map_err(|e| ConfigError::IoPath(e, directory.clone()))?
             {
@@ -490,8 +503,17 @@ impl Config {
                 if path.is_file()
                     && path.extension().and_then(|value| value.to_str()) == Some("kdl")
                 {
-                    Self::from_path(&path, None)?;
+                    paths.push(path);
                 }
+            }
+            paths.sort();
+            for path in paths {
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| ConfigError::IoPath(e, path.clone()))?;
+                if crate::editor::edits_themes(&text) {
+                    apply_themes(&mut config, None, config_dir.clone())?;
+                }
+                config = Self::from_path(&path, Some(config))?;
             }
         }
         Ok(())
