@@ -39,6 +39,7 @@ fn session() -> SessionMetaData {
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
         command_palette_restore_modes: HashMap::new(),
+        pending_mouse_updates: Vec::new(),
         screen_thread: None,
         pty_thread: None,
         plugin_thread: None,

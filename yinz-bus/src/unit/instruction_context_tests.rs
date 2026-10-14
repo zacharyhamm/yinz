@@ -461,14 +461,9 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["SetClientMouseMode", "ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "ClientRouterFinished"];
+    special: ["ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "ClientRouterFinished"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
-        (
-            "SetClientMouseMode",
-            ServerInstruction::SetClientMouseMode(ClientId::new(1), true),
-            "Reconfigure"
-        ),
         (
             "ConfigurationEditor",
             ServerInstruction::ConfigurationEditor { edit: None, theme: None, reply: crossbeam::channel::bounded(1).0 },

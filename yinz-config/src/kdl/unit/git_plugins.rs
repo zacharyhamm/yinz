@@ -108,7 +108,7 @@ fn local_repositories_and_drop_ins_use_the_active_config_directory() {
         "plugins { bad repo=1; }",
     )
     .unwrap();
-    assert!(Config::validate_plugin_overlays(Some(directory.path())).is_err());
+    assert!(Config::validate_plugin_overlays(None, Some(directory.path())).is_err());
 }
 
 #[test]

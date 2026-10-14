@@ -402,6 +402,74 @@ fn directory_theme_edits_reload_and_preview_reports_directory_precedence() {
 }
 
 #[test]
+fn overlay_validation_uses_the_selected_base_and_preceding_theme_definitions() {
+    for source in ["base", "explicit", "overlay", "directory"] {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay = dir.path().join("config.d");
+        std::fs::create_dir(&overlay).unwrap();
+        let explicit = dir.path().join("selected.kdl");
+        let name = "custom";
+        let mut definition = Config::default();
+        definition.themes.insert(
+            name.into(),
+            crate::theme::Theme {
+                palette: Default::default(),
+                terminal: None,
+                sourced_from_external_file: false,
+            },
+        );
+        let fragment = patches_to_kdl(&[patch(
+            &["themes", name, "text_unselected", "base"],
+            json!(7),
+        )])
+        .unwrap()
+        .to_string();
+        // Create the edit first: validation must sort filenames, not use directory order.
+        std::fs::write(overlay.join("20-edit.kdl"), &fragment).unwrap();
+        let path = match source {
+            "base" => Some(dir.path().join("config.kdl")),
+            "explicit" => Some(explicit.clone()),
+            "overlay" => Some(overlay.join("10-theme.kdl")),
+            "directory" => {
+                std::fs::create_dir(dir.path().join("themes")).unwrap();
+                Some(dir.path().join("themes/custom.kdl"))
+            },
+            _ => None,
+        };
+        if let Some(path) = path {
+            std::fs::write(path, definition.to_string(false).unwrap()).unwrap();
+        }
+        let config_path = (source == "explicit").then_some(explicit.as_path());
+        Config::validate_plugin_overlays(config_path, Some(dir.path()))
+            .unwrap_or_else(|error| panic!("{source}: {error}"));
+        let loaded = Config::load(config_path, Some(dir.path()), false).unwrap();
+        assert_eq!(
+            loaded
+                .themes
+                .get_theme(name)
+                .unwrap()
+                .palette
+                .text_unselected
+                .base,
+            yinz_types::data::PaletteColor::EightBit(7)
+        );
+        for malformed in [
+            "mouse_mode 1",
+            "configuration_edits {",
+            "plugins { bad repo=1; }",
+        ] {
+            std::fs::write(overlay.join("30-broken.kdl"), malformed).unwrap();
+            assert!(Config::validate_plugin_overlays(config_path, Some(dir.path())).is_err());
+        }
+        if source == "overlay" {
+            std::fs::remove_file(overlay.join("30-broken.kdl")).unwrap();
+            std::fs::rename(overlay.join("10-theme.kdl"), overlay.join("30-theme.kdl")).unwrap();
+            assert!(Config::validate_plugin_overlays(config_path, Some(dir.path())).is_err());
+        }
+    }
+}
+
+#[test]
 fn legacy_writes_supersede_matching_edits_and_keep_other_managed_entries() {
     let mut managed: KdlDocument = r#"configuration_edits {
         set "mouse_mode" { mouse_mode true; }

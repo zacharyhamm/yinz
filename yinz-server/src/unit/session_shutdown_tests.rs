@@ -94,6 +94,7 @@ fn shutdown_keeps_workers_available_until_the_screen_finishes() {
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
         command_palette_restore_modes: HashMap::new(),
+        pending_mouse_updates: Vec::new(),
         screen_thread: Some(screen_thread),
         pty_thread,
         plugin_thread,

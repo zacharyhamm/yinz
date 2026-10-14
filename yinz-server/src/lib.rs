@@ -433,6 +433,7 @@ pub(crate) struct SessionMetaData {
     pub locked_escapes: HashMap<ClientId, locked_escape::LockedEscape>,
     // Holds Locked through palette note editing; final dismissal resumes notification browsing.
     command_palette_restore_modes: HashMap<ClientId, InputMode>,
+    pending_mouse_updates: Vec<(ClientId, bool)>,
     screen_thread: Option<thread::JoinHandle<()>>,
     pty_thread: Option<thread::JoinHandle<()>>,
     plugin_thread: Option<thread::JoinHandle<()>>,
@@ -563,13 +564,8 @@ impl SessionMetaData {
         for (client_id, new_config) in config_changes {
             self.locked_escapes.remove(&client_id);
             let new_config = self.session_configuration.with_plugin_defaults(new_config);
-            self.senders
-                .send_to_server(ServerInstruction::SetClientMouseMode(
-                    client_id,
-                    new_config.options.mouse_mode.unwrap_or(true),
-                ))
-                .context("reconfiguring client mouse mode")
-                .non_fatal();
+            self.pending_mouse_updates
+                .push((client_id, new_config.options.mouse_mode.unwrap_or(true)));
             effective_changes.push((client_id, new_config));
         }
         if let Some((_, last_config)) = effective_changes.last() {
@@ -756,6 +752,27 @@ macro_rules! send_to_client {
             remove_client!($client_id, $os_input, $session_state, $session_data);
         }
     };
+}
+
+fn flush_pending_mouse_updates(
+    os_input: &mut Box<dyn ServerOsApi>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) {
+    let updates = with_session_mut(session_data, |session| {
+        std::mem::take(&mut session.pending_mouse_updates)
+    })
+    .unwrap_or_default();
+    // Client delivery can remove disconnected clients and must run outside the session lock.
+    for (client, enabled) in updates {
+        send_to_client!(
+            client,
+            *os_input,
+            ServerToClientMsg::SetMouseMode { enabled },
+            session_state,
+            session_data
+        );
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1122,6 +1139,7 @@ pub fn start_server_impl(
     // deadline as before: a detached session is meant to outlive its clients.
     let first_client_deadline = std::time::Instant::now() + FIRST_CLIENT_TIMEOUT;
     loop {
+        flush_pending_mouse_updates(&mut os_input, &session_state, &session_data);
         let recv = if session_data.read().unwrap().is_none() {
             match server_receiver.recv_deadline(first_client_deadline) {
                 Ok(recv) => Ok(recv),
@@ -2167,15 +2185,6 @@ pub fn start_server_impl(
                     log::error!("reconfigure: {error:#}");
                 }
             },
-            ServerInstruction::SetClientMouseMode(client, enabled) => {
-                send_to_client!(
-                    client,
-                    os_input,
-                    ServerToClientMsg::SetMouseMode { enabled },
-                    session_state,
-                    session_data
-                );
-            },
             ServerInstruction::ConfigWrittenToDisk(new_config) => {
                 with_session_mut(&session_data, |session| {
                     let changes = session
@@ -2880,6 +2889,7 @@ fn init_session(
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
         command_palette_restore_modes: HashMap::new(),
+        pending_mouse_updates: Vec::new(),
         config_file_path: cli_assets.config_file_path,
         config_dir: cli_assets.config_dir,
     }

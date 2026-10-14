@@ -79,7 +79,6 @@ pub enum ServerInstruction {
         completion: Option<NotificationEnd>,
     },
     ConfigWrittenToDisk(Config),
-    SetClientMouseMode(ClientId, bool),
     RebindKeys {
         client_id: ClientId,
         keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,
@@ -126,7 +125,6 @@ impl From<&ServerInstruction> for ServerContext {
             ServerInstruction::ClientRouterFinished(..) => ServerContext::RemoveClient,
             ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
             ServerInstruction::ResolveLockedEscape(..) => ServerContext::ChangeMode,
-            ServerInstruction::SetClientMouseMode(..) => ServerContext::Reconfigure,
             ServerInstruction::ConfigurationEditor { .. } => ServerContext::Reconfigure,
             ServerInstruction::SavePaletteTheme { .. } => ServerContext::Reconfigure,
             ServerInstruction::SetCommandPaletteOpen(..) => ServerContext::ChangeMode,
