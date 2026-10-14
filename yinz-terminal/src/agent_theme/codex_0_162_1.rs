@@ -5,14 +5,9 @@
 use yinz_types::agent::theme::{
     AgentThemeSnapshot, Availability, Channel, Definition, Role, SourceColor, SNAPSHOT_VERSION,
 };
+use yinz_types::codex_verified_version as verified_version;
 
 type Rgb = (u8, u8, u8);
-/// The release whose derivations this module reproduces.
-macro_rules! verified_version {
-    () => {
-        "0.162.1"
-    };
-}
 const FG: &str = "codex.terminal.foreground";
 const BG: &str = "codex.terminal.background";
 const BLUE_100: Rgb = (164, 205, 251);
