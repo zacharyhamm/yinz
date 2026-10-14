@@ -2,21 +2,16 @@ use super::*;
 use serde_json::{json, Value};
 use syntect::highlighting::{Color, Theme, ThemeSet};
 
-/// The release whose loader, palettes and derivations the descriptor follows.
-macro_rules! verified_version {
-    () => {
-        "0.162.1"
-    };
-}
+use yinz_types::codex_verified_version as verified_version;
 
 pub(super) const PROVIDER: Provider = Provider {
-    identifies,
+    version,
     verified: verified_version!(),
     resolve,
 };
 
-fn identifies(line: &str) -> bool {
-    line.starts_with("codex-cli ")
+fn version(line: &str) -> Option<&str> {
+    release(line.strip_prefix("codex-cli ")?)
 }
 
 pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot) -> Result<()> {

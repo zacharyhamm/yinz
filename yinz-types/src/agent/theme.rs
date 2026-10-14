@@ -6,6 +6,15 @@ pub const SNAPSHOT_VERSION: u32 = 1;
 pub const MAX_SNAPSHOT_BYTES: usize = 128 * 1024;
 pub const EVENT_VERSION: u32 = 1;
 
+/// The Codex release whose loader, palettes and terminal derivations the descriptors follow.
+/// A macro rather than a constant so descriptor paths and provenance can embed it.
+#[macro_export]
+macro_rules! codex_verified_version {
+    () => {
+        "0.162.1"
+    };
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentThemeLaunch {
     pub launch_id: String,

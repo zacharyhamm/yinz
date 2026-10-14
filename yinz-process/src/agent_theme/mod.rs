@@ -63,10 +63,11 @@ impl LaunchContext {
     }
 }
 
-/// What a provider module verified: how its `--version` output names it, the release its
-/// descriptor follows, and how it reads the current theme.
+/// What a provider module verified: how its `--version` output names a release, the release
+/// its descriptor follows, and how it reads the current theme.
 struct Provider {
-    identifies: fn(&str) -> bool,
+    /// The release a whole `--version` line names, when the line identifies this provider.
+    version: fn(&str) -> Option<&str>,
     verified: &'static str,
     resolve: fn(&LaunchContext, &mut AgentThemeSnapshot) -> Result<()>,
 }
@@ -97,23 +98,13 @@ pub fn resolve(provider: &str, context: &LaunchContext) -> Option<AgentThemeSnap
         let output = String::from_utf8_lossy(&output);
         // Identify the provider, not the release: later releases are assumed to keep the
         // configuration and theme formats, and resolution fails when they can't be read.
-        let line = output
+        // A notice that merely mentions a release, such as an update offer, doesn't match.
+        snapshot.provider_version = output
             .lines()
-            .map(str::trim)
-            .find(|line| (descriptor.identifies)(line))
-            .with_context(|| format!("agent version output does not identify {provider}"))?;
-        // Record a version identifier, never arbitrary output from a custom executable.
-        snapshot.provider_version = line
-            .split_whitespace()
-            .map(|part| part.strip_prefix('v').unwrap_or(part))
-            .find(|part| {
-                part.bytes().next().is_some_and(|b| b.is_ascii_digit())
-                    && part
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
-            })
-            .filter(|part| part.len() <= 64)
-            .unwrap_or("unknown")
+            .find_map(|line| (descriptor.version)(line.trim()))
+            .with_context(|| {
+                format!("agent version output does not identify a {provider} release")
+            })?
             .to_owned();
         if snapshot.provider_version != descriptor.verified {
             version_note = Some(format!(
@@ -127,14 +118,11 @@ pub fn resolve(provider: &str, context: &LaunchContext) -> Option<AgentThemeSnap
         snapshot.definitions.clear();
         snapshot.availability = Availability::Unavailable(format!("{error:#}"));
     }
-    // An unverified release is never fully available, so the launcher always reports it.
-    if let Some(note) = version_note {
-        match &mut snapshot.availability {
-            Availability::Available => snapshot.availability = Availability::Partial(note),
-            Availability::Partial(detail) | Availability::Unavailable(detail) => {
-                *detail = format!("{detail}; {note}");
-            },
-        }
+    // Resolvers never report success as available, so the note always extends a detail.
+    if let (Some(note), Availability::Partial(detail) | Availability::Unavailable(detail)) =
+        (version_note, &mut snapshot.availability)
+    {
+        *detail = format!("{detail}; {note}");
     }
     snapshot.finish();
     Some(snapshot)
@@ -242,6 +230,17 @@ fn retain(event: &AgentThemeEvent) -> Result<()> {
         bail!("supervisor did not retain source palette");
     }
     Ok(())
+}
+
+/// A release identifier, never arbitrary output from a custom executable.
+fn release(token: &str) -> Option<&str> {
+    let token = token.strip_prefix('v').unwrap_or(token);
+    (token.len() <= 64
+        && token.bytes().next().is_some_and(|b| b.is_ascii_digit())
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b)))
+    .then_some(token)
 }
 
 fn bounded_output(mut command: Command, timeout: Duration) -> Result<Vec<u8>> {

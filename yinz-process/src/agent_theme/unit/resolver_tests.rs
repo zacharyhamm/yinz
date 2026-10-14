@@ -346,7 +346,8 @@ fn claude_resolution_is_gated_on_provider_identity_not_release() {
     // Notices may be long and not valid UTF-8; neither hides the identifying line.
     yinz_test_support::write_warm_script(
         &program,
-        "if [ \"$1\" = --version ]; then printf 'caf\\303\\n'; head -c 8000 /dev/zero | tr '\\0' x; \
+        "if [ \"$1\" = --version ]; then printf 'caf\\303\\n'; i=0; \
+         while [ $i -lt 100 ]; do printf '%080d' 0; i=$((i + 1)); done; \
          printf '\\nv2.1.296 (Claude Code)\\n'; fi\n",
     );
     let verbose = resolve(
@@ -359,9 +360,18 @@ fn claude_resolution_is_gated_on_provider_identity_not_release() {
     .unwrap();
     assert_eq!(verbose.provider_version, "2.1.296");
     assert_eq!(verbose.definitions, verified.definitions);
-    let other = resolve_version("2.1.299 (Something Else)");
-    assert!(matches!(other.availability, Availability::Unavailable(_)));
-    assert!(other.definitions.is_empty());
+    for unidentified in [
+        "2.1.299 (Something Else)",
+        "dev (Claude Code)",
+        "Update available (Claude Code)",
+    ] {
+        let other = resolve_version(unidentified);
+        assert!(
+            matches!(other.availability, Availability::Unavailable(_)),
+            "{unidentified}"
+        );
+        assert!(other.definitions.is_empty());
+    }
     write(dir.path(), ".claude.json", r#"{"theme":1}"#);
     let unreadable = resolve_version("2.1.299 (Claude Code)");
     let Availability::Unavailable(detail) = &unreadable.availability else {
@@ -380,7 +390,7 @@ fn codex_resolution_is_gated_on_provider_identity_not_release() {
     let verified = resolve("codex", &fake_codex(dir.path(), automatic.clone())).unwrap();
     let newer = resolve(
         "codex",
-        &fake_codex_release(dir.path(), "codex-cli 0.170.0", automatic),
+        &fake_codex_release(dir.path(), "codex-cli 0.170.0", automatic.clone()),
     )
     .unwrap();
     assert_eq!(newer.provider_version, "0.170.0");
@@ -392,6 +402,27 @@ fn codex_resolution_is_gated_on_provider_identity_not_release() {
         detail.ends_with("descriptor verified against 0.162.1, running 0.170.0"),
         "{detail}"
     );
+    // An update notice names a release too, but it isn't the version line.
+    let notified = resolve(
+        "codex",
+        &fake_codex_release(
+            dir.path(),
+            "codex-cli 0.171.0 is available (you have 0.170.0)\ncodex-cli 0.170.0",
+            automatic.clone(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(notified.provider_version, "0.170.0");
+    let unversioned = resolve(
+        "codex",
+        &fake_codex_release(dir.path(), "codex-cli dev", automatic.clone()),
+    )
+    .unwrap();
+    assert!(matches!(
+        unversioned.availability,
+        Availability::Unavailable(_)
+    ));
+    assert!(unversioned.definitions.is_empty());
     write(dir.path(), ".codex/themes/broken.tmTheme", "<plist");
     let unreadable = resolve(
         "codex",

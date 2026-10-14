@@ -9,13 +9,13 @@ macro_rules! verified_version {
 }
 
 pub(super) const PROVIDER: Provider = Provider {
-    identifies,
+    version,
     verified: verified_version!(),
     resolve,
 };
 
-fn identifies(line: &str) -> bool {
-    line.ends_with(" (Claude Code)")
+fn version(line: &str) -> Option<&str> {
+    release(line.strip_suffix(" (Claude Code)")?)
 }
 
 pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot) -> Result<()> {
