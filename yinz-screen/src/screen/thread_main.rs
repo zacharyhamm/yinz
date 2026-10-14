@@ -435,6 +435,7 @@ pub fn screen_thread_main(
     debug: bool,
     config_file_path: Option<PathBuf>,
     config_dir: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
     default_layout: Box<Layout>,
 ) -> Result<()> {
     let screen_config = ScreenConfig::from_config(&config);
@@ -465,6 +466,9 @@ pub fn screen_thread_main(
     );
     screen.config_file_path = config_file_path;
     screen.config_dir = config_dir;
+    if let Some(data_dir) = data_dir {
+        screen.last_project = yinz_runtime::last_project::LastProject::load(data_dir);
+    }
     if screen.config_file_path.is_some() {
         screen.restart_layout_watcher();
     }

@@ -2684,6 +2684,7 @@ fn init_session(
             let config = config.clone();
             let config_file_path = cli_assets.config_file_path.clone();
             let config_dir = cli_assets.config_dir.clone();
+            let screen_data_dir = data_dir.clone();
             move || {
                 screen_thread_main(
                     screen_bus,
@@ -2693,6 +2694,7 @@ fn init_session(
                     debug,
                     config_file_path,
                     config_dir,
+                    Some(screen_data_dir),
                     layout,
                 )
                 .fatal();

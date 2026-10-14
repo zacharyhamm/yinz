@@ -1727,6 +1727,163 @@ fn vanished_project_selection_stays_open_with_an_error() {
 }
 
 #[test]
+fn remembered_project_survives_empty_startup_and_explicit_switching() {
+    use yinz_runtime::last_project::LastProject;
+    let dir = tempfile::tempdir().unwrap();
+    LastProject::load(dir.path().into()).remember("beta");
+    let mut first = screen();
+    first.last_project = LastProject::load(dir.path().into());
+    first.reconcile_project_contexts();
+    assert_eq!(first.client_projects[&CLIENT].current, None);
+    assert_eq!(LastProject::load(dir.path().into()).name().unwrap(), "beta");
+    first.projects = ["alpha", "beta"].map(String::from).into();
+    first.reconcile_project_contexts();
+    assert_eq!(
+        first.client_projects[&CLIENT].current.as_deref(),
+        Some("beta")
+    );
+    palette_search(&mut first, "Switch current project");
+    palette_key(&mut first, BareKey::Enter);
+    palette_key(&mut first, BareKey::Enter);
+    assert_eq!(
+        LastProject::load(dir.path().into()).name().unwrap(),
+        "alpha"
+    );
+
+    let mut restarted = screen();
+    restarted.last_project = LastProject::load(dir.path().into());
+    restarted.projects = first.projects.clone();
+    restarted.reconcile_project_contexts();
+    assert_eq!(
+        restarted.client_projects[&CLIENT].current.as_deref(),
+        Some("alpha")
+    );
+    LastProject::load(dir.path().into()).remember("beta");
+    palette_search(&mut restarted, "Switch current project");
+    palette_key(&mut restarted, BareKey::Enter);
+    palette_key(&mut restarted, BareKey::Enter);
+    assert_eq!(
+        LastProject::load(dir.path().into()).name().unwrap(),
+        "alpha"
+    );
+
+    let mut known_folder = screen();
+    known_folder.last_project = LastProject::load(dir.path().into());
+    known_folder.projects = restarted.projects.clone();
+    known_folder
+        .pane_projects
+        .insert(PaneId::Terminal(TerminalId::new(1)), "beta".into());
+    known_folder.reconcile_project_contexts();
+    assert_eq!(
+        known_folder.client_projects[&CLIENT].current.as_deref(),
+        Some("beta")
+    );
+    assert_eq!(LastProject::load(dir.path().into()).name().unwrap(), "beta");
+}
+
+#[test]
+fn remembered_project_yields_to_focus_and_late_discovery_without_repeated_writes() {
+    use yinz_runtime::last_project::LastProject;
+    let dir = tempfile::tempdir().unwrap();
+    LastProject::load(dir.path().into()).remember("beta");
+    let mut screen = screen();
+    screen.last_project = LastProject::load(dir.path().into());
+    screen.projects = ["alpha", "beta", "gamma"].map(String::from).into();
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let other = PaneId::Terminal(TerminalId::new(2));
+    screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .horizontal_split(other, None, None, CLIENT, None, None)
+        .unwrap();
+    screen
+        .focus_pane_with_id(pane, false, false, CLIENT)
+        .unwrap();
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("beta")
+    );
+    screen.pane_projects = [(pane, "gamma".into()), (other, "alpha".into())].into();
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("gamma")
+    );
+    assert_eq!(
+        LastProject::load(dir.path().into()).name().unwrap(),
+        "gamma"
+    );
+
+    let second = ClientId::new(2);
+    screen.add_client(second).unwrap();
+    screen.reconcile_project_contexts();
+    screen
+        .focus_pane_with_id(other, false, false, CLIENT)
+        .unwrap();
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("alpha")
+    );
+    assert_eq!(
+        screen.client_projects[&second].current.as_deref(),
+        Some("gamma")
+    );
+    assert_eq!(
+        LastProject::load(dir.path().into()).name().unwrap(),
+        "alpha"
+    );
+
+    // A different session's choice must survive unchanged clients reconciling again.
+    LastProject::load(dir.path().into()).remember("beta");
+    screen.reconcile_project_contexts();
+    assert_eq!(LastProject::load(dir.path().into()).name().unwrap(), "beta");
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("alpha")
+    );
+    assert_eq!(
+        screen.client_projects[&second].current.as_deref(),
+        Some("gamma")
+    );
+}
+
+#[test]
+fn remembered_project_fallbacks_do_not_replace_the_saved_preference() {
+    use yinz_runtime::last_project::LastProject;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("last-project.json");
+    for contents in [None, Some("malformed"), Some("\"deleted\"")] {
+        if let Some(contents) = contents {
+            std::fs::write(&path, contents).unwrap();
+        }
+        let mut screen = screen();
+        screen.last_project = LastProject::load(dir.path().into());
+        screen.projects = ["alpha", "beta"].map(String::from).into();
+        screen.reconcile_project_contexts();
+        assert_eq!(
+            screen.client_projects[&CLIENT].current.as_deref(),
+            Some("alpha")
+        );
+        screen.reconcile_project_contexts();
+        assert_eq!(std::fs::read_to_string(&path).ok().as_deref(), contents);
+    }
+    LastProject::load(dir.path().into()).remember("beta");
+    let mut screen = screen();
+    screen.last_project = LastProject::load(dir.path().into());
+    screen.projects = ["alpha", "beta"].map(String::from).into();
+    screen.reconcile_project_contexts();
+    screen.projects.remove("beta");
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("alpha")
+    );
+    assert_eq!(LastProject::load(dir.path().into()).name().unwrap(), "beta");
+}
+
+#[test]
 fn global_opacity_reloads_open_palettes_and_applies_when_reopened() {
     let mut screen = screen();
     let receiver = screen_wired_to_server(&mut screen);

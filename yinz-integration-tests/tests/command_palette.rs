@@ -5,6 +5,9 @@ use yinz_integration_tests::{keys, LayoutInfo, TestRunner, PROMPT, TERMINAL_SIZE
 
 const DO: &[u8] = b"\x1b[112;7u"; // Ctrl+Alt+p, encoded with CSI u.
 
+#[path = "unit/command_palette/last_project.rs"]
+mod last_project;
+
 #[test]
 fn command_palette_refreshes_shortcuts_after_reconfigure_without_input() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
