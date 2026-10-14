@@ -25,7 +25,7 @@ const snapshot: ConfigurationSnapshot = {
   saved: [{ name: "mouse_mode", arguments: [true], properties: {}, children: [] }],
   clients: { "1": [{ name: "mouse_mode", arguments: [true], properties: {}, children: [] }] },
 };
-async function harness(query = "mouse_mode", inspected = snapshot, id = query) {
+async function harness(query = "mouse_mode", inspected = snapshot, id: string | null = query) {
   const p = await loadPlugin("./configuration-palette.ts", {
     replies: {
       RequestPluginPermissions: null,
@@ -62,30 +62,60 @@ async function harness(query = "mouse_mode", inspected = snapshot, id = query) {
     }
     return result;
   }
-  await p.palette({ type: "discover", scope, context, query, source: null }, 1);
-  const roots = reply();
-  assert(roots.type === "actions");
+  await p.palette({ type: "discover", scope, context, query: "", source: null }, 1);
+  const main = reply();
+  assert(main.type === "actions");
+  assertEquals(
+    main.actions.map((a) => a.label),
+    ["Configuration…"],
+  );
+  const submenu = await execute(main.actions[0]!.handle);
+  assert(submenu.type === "view" && submenu.view.type === "actions");
+  const source = submenu.view.source;
+  async function search(query: string) {
+    scope = { ...scope, revision: scope.revision + 1 };
+    await p.palette({ type: "discover", scope, context, query, source }, 1);
+    const roots = reply();
+    assert(roots.type === "actions");
+    assert(roots.actions.every((a) => !a.label.startsWith("Configure ")));
+    return roots;
+  }
+  const roots = await search(query);
   const action = roots.actions.find((a) => a.id === id);
-  assert(action);
-  return { p, execute, action, roots };
+  assert(action || id === null);
+  return { p, execute, action: action!, roots, search };
 }
-test("scalar drafts require an explicit destination submission", async () => {
-  const { p, execute, action } = await harness();
-  const form = await execute(action.handle);
-  assert(form.type === "view" && form.view.type === "form");
-  assert(form.view.title.includes("Client 1"));
-  const destination = await execute(form.view.handle, { value: "Disabled" });
-  assert(destination.type === "view" && destination.view.type === "form");
-  assertEquals(destination.view.fields[0]?.initialValue, "Apply to session");
-  assert(!p.commands.some((c) => JSON.stringify(c).includes("EditConfiguration")));
-  const completion = await execute(destination.view.handle, { destination: "Apply to session" });
-  assert(completion.type === "complete");
-  const writes = p.commands.filter((c) => JSON.stringify(c).includes("EditConfiguration"));
-  assertEquals(writes.length, 1);
-});
+for (const destination of ["Apply to session", "Save permanently"]) {
+  test(`scalar editor submits value and destination together: ${destination}`, async () => {
+    const { p, execute, action } = await harness();
+    const form = await execute(action.handle);
+    assert(form.type === "view" && form.view.type === "form");
+    assert(form.view.title.includes("Client 1"));
+    assertEquals(form.view.submitLabel, "Apply change");
+    assertEquals(
+      form.view.fields.map((f) => f.initialValue),
+      ["Enabled", "Apply to session"],
+    );
+    assert(!p.commands.some((c) => JSON.stringify(c).includes("EditConfiguration")));
+    const completion = await execute(form.view.handle, { value: "Disabled", destination });
+    assert(completion.type === "complete");
+    const writes = p.commands.filter((c) => JSON.stringify(c).includes("EditConfiguration"));
+    assertEquals(writes, [
+      {
+        EditConfiguration: {
+          revision: snapshot.revision,
+          destination: destination === "Save permanently" ? "permanent" : "session",
+          patches: [{ path: ["mouse_mode"], node: { ...snapshot.saved[0]!, arguments: [false] } }],
+          reset: [],
+        },
+      },
+    ]);
+  });
+}
 test("opening an editor and cancelling does not write configuration", async () => {
   const { p, execute, action } = await harness();
   await execute(action.handle);
+  await p.palette({ type: "dismiss", opening: 1 }, 1);
   assert(!p.commands.some((c) => JSON.stringify(c).includes("EditConfiguration")));
 });
 
@@ -240,15 +270,16 @@ for (const destination of ["Apply to session", "Save permanently"]) {
     const { p, execute, action } = await harness("mouse_mode", inspected);
     let reply = await execute(action.handle);
     assert(reply.type === "view" && reply.view.type === "form");
-    reply = await execute(reply.view.handle, { value: "Disabled" });
-    assert(reply.type === "view" && reply.view.type === "form");
     const reload = reply.view.actions?.find((a) => a.id === "reload");
     assert(reload);
     p.stub("InspectConfiguration", { ...snapshot, revision: "revision-two" });
-    reply = await execute(reload.handle);
+    reply = await execute(reload.handle, { value: "Disabled", destination });
     assert(reply.type === "view" && reply.view.type === "form");
+    assert(reply.view.confirmation);
+    assert(!p.commands.some((c) => JSON.stringify(c).includes("EditConfiguration")));
     reply = await execute(reply.view.handle);
     assert(reply.type === "view" && reply.view.type === "form");
+    assert(!p.commands.some((c) => JSON.stringify(c).includes("EditConfiguration")));
     await execute(reply.view.handle, { destination });
     const write = p.commands.find((c) => JSON.stringify(c).includes("EditConfiguration"));
     assert(write);
@@ -353,9 +384,7 @@ for (const [saved, effective, submitted] of [
     const { p, execute, action } = await harness("mouse_mode", inspected);
     const form = await execute(action.handle);
     assert(form.type === "view" && form.view.type === "form");
-    const destination = await execute(form.view.handle, { value: submitted });
-    assert(destination.type === "view" && destination.view.type === "form");
-    await execute(destination.view.handle, { destination: "Save permanently" });
+    await execute(form.view.handle, { value: submitted, destination: "Save permanently" });
     const write = p.commands.find((command) =>
       JSON.stringify(command).includes("EditConfiguration"),
     );
@@ -374,3 +403,114 @@ for (const [saved, effective, submitted] of [
     });
   });
 }
+
+test("configuration discovery excludes theme settings and descendants", async () => {
+  const themeSettings = [
+    "theme",
+    "theme_dark",
+    "theme_light",
+    "theme_dir",
+    "explicit_theme_hue",
+    "agent_theme_mapping",
+  ];
+  const themes = emptyNode("themes", [emptyNode("custom-palette", [emptyNode("accent")])]);
+  const inspected = {
+    ...snapshot,
+    catalog: [
+      ...snapshot.catalog,
+      ...themeSettings.map((name) => ({ ...snapshot.catalog[0]!, name, label: name })),
+    ],
+    sections: ["themes", "keybinds"],
+    saved: [...snapshot.saved, themes],
+    clients: { "1": [...snapshot.clients["1"]!, themes] },
+  };
+  const { roots, search } = await harness("", inspected, null);
+  assertEquals(
+    roots.actions.map((a) => a.id),
+    ["mouse_mode", "keybinds"],
+  );
+  for (const query of ["theme", ...themeSettings, "themes", "custom-palette", "accent"]) {
+    const roots = await search(query);
+    assertEquals(roots.actions, [], query);
+  }
+});
+
+test("startup-only scalar offers only permanent saving", async () => {
+  const setting = { ...snapshot.catalog[0]!, timing: "On next session start" };
+  const { p, execute, action } = await harness("mouse_mode", { ...snapshot, catalog: [setting] });
+  const reply = await execute(action.handle);
+  assert(reply.type === "view" && reply.view.type === "form");
+  const destination = reply.view.fields.find((field) => field.id === "destination");
+  assert(destination?.type === "choice");
+  assertEquals(destination.options, ["Save permanently"]);
+  assertEquals(destination.initialValue, "Save permanently");
+  await execute(reply.view.handle, { value: "Disabled", destination: destination.initialValue! });
+  assert(
+    p.commands.some((command) => JSON.stringify(command).includes('"destination":"permanent"')),
+  );
+});
+
+test("scalar submission retains the revision from opening the editor", async () => {
+  const { p, execute, action } = await harness();
+  const reply = await execute(action.handle);
+  assert(reply.type === "view" && reply.view.type === "form");
+  p.stub("InspectConfiguration", { ...snapshot, revision: "revision-two" });
+  await execute(reply.view.handle, { value: "Disabled", destination: "Apply to session" });
+  const write = p.commands.find((command) => JSON.stringify(command).includes("EditConfiguration"));
+  assert(write);
+  assert(JSON.stringify(write).includes('"revision":"revision-one"'));
+});
+
+for (const operation of ["unset", "reset"]) {
+  test(`scalar ${operation} keeps its confirmation and destination workflow`, async () => {
+    const { p, execute, action } = await harness();
+    let reply = await execute(action.handle);
+    assert(reply.type === "view" && reply.view.type === "form");
+    const selected = reply.view.actions.find((a) => a.id === operation);
+    assert(selected);
+    reply = await execute(selected.handle);
+    assert(reply.type === "view" && reply.view.type === "form");
+    if (operation === "unset") {
+      assert(reply.view.confirmation);
+      assert(!p.commands.some((c) => JSON.stringify(c).includes("EditConfiguration")));
+      reply = await execute(reply.view.handle);
+      assert(reply.type === "view" && reply.view.type === "form");
+    }
+    assertEquals(
+      reply.view.fields.map((field) => field.id),
+      ["destination"],
+    );
+    assert(!p.commands.some((c) => JSON.stringify(c).includes("EditConfiguration")));
+    await execute(reply.view.handle, { destination: "Apply to session" });
+    assertEquals(
+      p.commands.find((c) => JSON.stringify(c).includes("EditConfiguration")),
+      {
+        EditConfiguration: {
+          revision: snapshot.revision,
+          destination: "session",
+          patches: operation === "unset" ? [{ path: ["mouse_mode"], node: null }] : [],
+          reset: operation === "reset" ? [["mouse_mode"]] : [],
+        },
+      },
+    );
+  });
+}
+
+test("configuration submenu preserves clipboard and keybinding search aliases", async () => {
+  const inspected = {
+    ...snapshot,
+    catalog: [{ ...snapshot.catalog[0]!, name: "copy_command", label: "copy command" }],
+    sections: ["keybinds"],
+  };
+  const { search } = await harness("", inspected, null);
+  for (const [query, id] of [
+    ["clipboard", "copy_command"],
+    ["keybindings", "keybinds"],
+  ]) {
+    const roots = await search(query!);
+    assertEquals(
+      roots.actions.map((a) => a.id),
+      [id],
+    );
+  }
+});
