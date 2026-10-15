@@ -2,6 +2,12 @@
 slow-timeout = { period = "30s", terminate-after = 2 }
 fail-fast = false
 
+# This latency gate offers 100 hooks/s for 30 seconds; competing tests invalidate the measurement.
+[[profile.default.overrides]]
+filter = 'test(=runner::agents_hook_traffic::agents_panel_keeps_p95_below_100ms_at_100_hooks_per_second)'
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 2 }
+
 # This test runs all builtin Scheme integration cases sequentially, including
 # the real Git cleanup fixtures. Each case also retains its own runner timeout.
 [[profile.default.overrides]]

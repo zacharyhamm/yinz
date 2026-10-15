@@ -669,6 +669,66 @@ fn agent_service_actual_runtimes_match_reload_claim_and_released_run_ownership()
 }
 
 #[test]
+fn agent_service_rebuild_preserves_hidden_runs_and_detects_reruns_and_closures() {
+    use super::runtime_parity::SteelReference;
+    use agent_proto::agents::{rows, RunOutcome};
+
+    let clock = Arc::new(AtomicU64::new(1_700_000_000_000));
+    let session = session(true);
+    let mut pane = session.panes.panes[&TabPosition::new(0)][0].clone();
+    let (data, responder) = host(clock.clone(), session, false);
+    let root = tempfile::tempdir().unwrap();
+    let mut service = SteelReference::with_clock(
+        "agent-service",
+        BTreeMap::new(),
+        root.path(),
+        responder,
+        Some(clock),
+    );
+    let stored = || {
+        rows::runs_from_rows(&data.fetch(&FetchRequest {
+            namespace: Some("shared:yinz".into()),
+            ..FetchRequest::entity("agent_run")
+        }))
+    };
+    let manifest = |pane| {
+        Event::PaneUpdate(PaneManifest {
+            panes: [(TabPosition::new(0), vec![pane])].into(),
+        })
+    };
+    service.update(&hook("SessionStart", json!({})));
+    assert_eq!(stored().len(), 1);
+    for stack_member in [false, true] {
+        pane.is_suppressed = true;
+        pane.is_stack_list_member = stack_member;
+        service.update(&manifest(pane.clone()));
+        assert!(stored()[0].ended_at_ms.is_none());
+    }
+    pane.is_suppressed = false;
+    pane.is_stack_list_member = false;
+    pane.is_held = true;
+    service.update(&manifest(pane.clone()));
+    pane.is_held = false;
+    service.update(&manifest(pane.clone()));
+    assert_eq!(stored()[0].outcome, RunOutcome::Replaced);
+
+    service.update(&hook(
+        "SessionStart",
+        json!({"session_id":"conversation-2"}),
+    ));
+    assert_eq!(stored().len(), 2);
+    // A plugin with the same numeric ID must not keep a terminal's run alive.
+    pane.id = PaneId::Plugin(PluginId::new(10));
+    service.update(&manifest(pane));
+    let closed = stored()
+        .into_iter()
+        .find(|run| run.session_id == "conversation-2")
+        .unwrap();
+    assert!(closed.ended_at_ms.is_some());
+    assert_eq!(closed.outcome, RunOutcome::Closed);
+}
+
+#[test]
 fn agent_service_actual_runtimes_match_tool_capture_partial_messages_and_context_clear() {
     let _reference_trace = super::reference_trace::Scenario::new(
         "agent_service_actual_runtimes_match_tool_capture_partial_messages_and_context_clear",

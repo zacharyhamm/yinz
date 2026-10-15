@@ -3987,7 +3987,6 @@ impl Screen {
         self.themes = themes;
         self.terminal_themes = terminal_themes;
         self.style.terminal = terminal_theme;
-        let agent_theme_mapping_changed = self.style.agent_theme_mapping != agent_theme_mapping;
         self.style.agent_theme_mapping = agent_theme_mapping;
         self.theme_name = theme_name;
         self.theme_dark_name = theme_dark_name;
@@ -4133,12 +4132,9 @@ impl Screen {
         }
         self.broadcast_nested_shortcuts();
         self.reapply_theme_after_reconfigure(explicit_theme_hue);
-        // A mapping change recolors retained cells without any pane output to trigger a frame.
-        if agent_theme_mapping_changed || !self.command_palettes.is_empty() {
-            self.render()
-                .context("failed to render after reconfiguration")?;
-        }
-        Ok(())
+        // Retained cells must repaint even when no pane output follows the reload.
+        self.render()
+            .context("failed to render after reconfiguration")
     }
     /// Apply a host-reported color-palette theme mode (CSI 2031 / DSR 997).
     ///

@@ -298,6 +298,7 @@ static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(|| RwLock::new(BTree
 
 thread_local! {
     static MODEL_SNAPSHOT: std::cell::RefCell<Option<Vec<Arc<AgentProvider>>>> = const { std::cell::RefCell::new(None) };
+    static CACHED_MODEL_PROVIDERS: std::cell::RefCell<Vec<Arc<AgentProvider>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Evaluate a pure model against an explicit provider snapshot, without changing the host registry.
@@ -309,8 +310,23 @@ pub fn with_snapshot<T>(providers: &[AgentProvider], evaluate: impl FnOnce() -> 
             MODEL_SNAPSHOT.with(|snapshot| *snapshot.borrow_mut() = self.0.take());
         }
     }
-    let previous = MODEL_SNAPSHOT
-        .with(|snapshot| snapshot.replace(Some(providers.iter().cloned().map(Arc::new).collect())));
+    let providers = if providers.is_empty() {
+        Vec::new()
+    } else {
+        CACHED_MODEL_PROVIDERS.with(|cached| {
+            let mut cached = cached.borrow_mut();
+            if cached.len() != providers.len()
+                || !cached
+                    .iter()
+                    .zip(providers)
+                    .all(|(old, new)| old.as_ref() == new)
+            {
+                *cached = providers.iter().cloned().map(Arc::new).collect();
+            }
+            cached.clone()
+        })
+    };
+    let previous = MODEL_SNAPSHOT.with(|snapshot| snapshot.replace(Some(providers)));
     let _restore = Restore(previous);
     evaluate()
 }

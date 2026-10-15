@@ -5,8 +5,19 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 fn arg<T: DeserializeOwned>(args: &Value, index: usize) -> Result<T> {
-    decode(args.get(index).cloned().unwrap_or(Value::Null))
+    T::deserialize(args.get(index).unwrap_or(&Value::Null))
+        .context("invalid model arguments")
         .with_context(|| format!("argument {index}"))
+}
+pub(super) fn pane_views(args: Value) -> Result<[Value; 3]> {
+    ensure!(args.is_array(), "agents arguments must be an array");
+    let manifest = arg(&args, 0)?;
+    let tabs: Vec<_> = arg(&args, 1)?;
+    Ok([
+        encode(panes::terminal_panes(&manifest, &tabs))?,
+        encode(panes::suppressed_terminal_panes(&manifest, &tabs))?,
+        encode(panes::focused_pane(&manifest, &tabs))?,
+    ])
 }
 fn owner(value: Value) -> Result<agent_proto::store::Owner> {
     Ok(agent_proto::store::Owner::new(

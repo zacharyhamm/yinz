@@ -6,6 +6,86 @@ fn runtime() -> Runtime {
 }
 
 #[test]
+fn garbage_collection_releases_discarded_native_values() {
+    use std::sync::Arc;
+    use steel::steel_vm::register_fn::RegisterFn;
+    #[derive(Clone)]
+    struct Probe {
+        _owner: Arc<()>,
+    }
+    impl steel::rvals::Custom for Probe {}
+    let count = Arc::new(());
+    let factory = count.clone();
+    let mut runtime = runtime();
+    runtime.engine.register_fn("probe-value", move || Probe {
+        _owner: factory.clone(),
+    });
+    runtime.eval("(define live (probe-value)) (define (probe) (define value (probe-value)) (define (read) value) (set! value (probe-value)) (vector (read)) (void))").unwrap();
+    for _ in 0..1000 {
+        runtime.invoke("probe", vec![]).unwrap();
+    }
+    // Test-only access to collection; plugins retain the existing sandbox surface.
+    let mut primitives = steel::steel_vm::engine::Engine::new_raw_no_kernel();
+    steel::steel_vm::primitives::register_builtin_modules(&mut primitives, true);
+    let meta = primitives.builtin_modules().get("steel/meta").unwrap();
+    runtime.engine.register_value(
+        "probe-gc",
+        meta.inner_map().get("#%gc-collect").unwrap().clone(),
+    );
+    runtime
+        .eval(
+            r#"
+        (define (probe-cycles)
+          (define rows (map (lambda (i) (hash "i" i "owner" (probe-value))) (range 100)))
+          (define (walk i) (if (< i (length rows)) (walk (+ i 1)) (void)))
+          (walk 0))
+    "#,
+        )
+        .unwrap();
+    for _ in 0..1000 {
+        runtime.invoke("probe-cycles", vec![]).unwrap();
+    }
+    assert!(
+        Arc::strong_count(&count) < 10_000,
+        "unreachable recursive captures must be collected during sustained callbacks"
+    );
+    runtime.eval("(probe-gc)").unwrap();
+    assert_eq!(
+        Arc::strong_count(&count),
+        3,
+        "only the live value and factory may retain the payload"
+    );
+    runtime.eval("(set! live #f) (probe-gc)").unwrap();
+    assert_eq!(
+        Arc::strong_count(&count),
+        2,
+        "discarded payloads must be released before heap slots are reused"
+    );
+}
+
+#[test]
+fn list_equality_checks_shared_prefixes_with_different_tails() {
+    let mut runtime = runtime();
+    runtime.eval("(define prefix (range 50)) (define a (append prefix '(50))) (define b (append prefix '(51)))").unwrap();
+    for expression in [
+        "(equal? prefix a)",
+        "(equal? a b)",
+        "(equal? (list a) (list b))",
+        "(eq? a b)",
+    ] {
+        assert_eq!(
+            runtime.eval(expression).unwrap().values,
+            ["#false"],
+            "{expression}"
+        );
+    }
+    assert_eq!(
+        runtime.eval("(equal? a (range 51))").unwrap().values,
+        ["#true"]
+    );
+}
+
+#[test]
 fn evaluation_persists_and_captures_output() {
     let mut runtime = runtime();
     assert_eq!(
@@ -682,4 +762,136 @@ fn explicit_mock_callbacks_preserve_lexical_state_and_reentrant_controls() {
         .unwrap();
     assert_eq!(runtime.value("count").unwrap(), json!(9));
     assert_eq!(runtime.value("observed").unwrap(), json!({"echo":"two"}));
+}
+
+#[test]
+fn provider_snapshot_cache_tracks_replacements_and_mutable_inputs() {
+    let mut runtime = runtime();
+    runtime
+        .eval(
+            r#"
+        (define providers (list (hash "kind" "testprovider" "executable" "testprovider")))
+        (define (detect snapshot)
+          (yinz-agent-model "providers" "WithSnapshot"
+            (list snapshot "agents" "KindFromCommand" '("testprovider --run"))))
+    "#,
+        )
+        .unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            runtime.eval("(detect providers)").unwrap().values,
+            vec!["\"testprovider\""]
+        );
+    }
+    assert_eq!(
+        runtime.eval("(detect '())").unwrap().values,
+        vec!["json-null"]
+    );
+    assert_eq!(
+        runtime.eval("(detect providers)").unwrap().values,
+        vec!["\"testprovider\""]
+    );
+    assert!(runtime.eval("(detect (list (hash \"kind\" 42)))").is_err());
+    assert!(
+        runtime.eval("(detect car)").is_err(),
+        "unsupported values must be rejected without a panic"
+    );
+    runtime
+        .eval(
+            r#"
+        (define integers (list (hash-insert (car providers) "input" (hash "submit_delay_ms" 100))))
+        (define floats (list (hash-insert (car providers) "input" (hash "submit_delay_ms" 100.0))))
+        (detect integers)
+    "#,
+        )
+        .unwrap();
+    assert!(
+        runtime.eval("(detect floats)").is_err(),
+        "different objects must pass typed validation even when Scheme considers them equal"
+    );
+    runtime
+        .eval(
+            r#"
+        (define aliases (bytes))
+        (define mutable-providers (list (hash-insert (car providers) "aliases" aliases)))
+    "#,
+        )
+        .unwrap();
+    assert_eq!(
+        runtime.eval("(detect mutable-providers)").unwrap().values,
+        vec!["\"testprovider\""]
+    );
+    runtime.eval("(bytes-push! aliases 65)").unwrap();
+    assert!(
+        runtime.eval("(detect mutable-providers)").is_err(),
+        "mutated bytevectors must be validated again"
+    );
+    assert_eq!(
+        runtime.eval("(detect providers)").unwrap().values,
+        vec!["\"testprovider\""]
+    );
+}
+
+#[test]
+fn pane_snapshot_cache_keeps_views_and_revalidates_changed_inputs() {
+    use yinz_types::data::{PaneInfo, PaneManifest};
+    let mut runtime = runtime();
+    let manifest = PaneManifest {
+        panes: [(
+            Default::default(),
+            vec![PaneInfo {
+                title: "original".into(),
+                ..Default::default()
+            }],
+        )]
+        .into(),
+    };
+    runtime.engine.register_value(
+        "manifest",
+        crate::to_scheme(&serde_json::to_value(manifest).unwrap()).unwrap(),
+    );
+    runtime
+        .eval(
+            r#"
+        (define tabs '())
+        (define (view op value) (yinz-agent-model "agents" op (list value tabs)))
+        (define original (view "TerminalPanes" manifest))
+        (view "SuppressedPanes" manifest)
+        (view "FocusedPane" manifest)
+    "#,
+        )
+        .unwrap();
+    assert_eq!(
+        runtime
+            .eval("(equal? original (view \"TerminalPanes\" manifest))")
+            .unwrap()
+            .values,
+        ["#true"]
+    );
+    runtime
+        .eval(
+            r#"
+        (define pane (car (hash-ref (hash-ref manifest "panes") "0")))
+        (define (replace-pane pane) (hash "panes" (hash "0" (list pane))))
+        (define updated (replace-pane (hash-insert pane "title" "updated")))
+    "#,
+        )
+        .unwrap();
+    assert_eq!(
+        runtime
+            .eval("(equal? original (view \"TerminalPanes\" updated))")
+            .unwrap()
+            .values,
+        ["#false"]
+    );
+    assert!(runtime
+        .eval("(view \"TerminalPanes\" (replace-pane (hash-insert pane \"pane_x\" 0.0)))")
+        .is_err());
+    assert_eq!(
+        runtime
+            .eval("(equal? original (view \"TerminalPanes\" manifest))")
+            .unwrap()
+            .values,
+        ["#true"]
+    );
 }

@@ -26,7 +26,7 @@
 (define (a-reset!)
   (set! state (hash
       "mount_pending" #f "configuration" (hash) "providers" '() "service_id" #f "service_seq" 0 "snapshot" #f
-      "archived_runs" '() "archive_offset" 0 "archive_loaded_through" #f "archive_more" #f
+      "archived_runs" '() "archive_sorted" #f "archive_rows" #f "archive_offset" 0 "archive_loaded_through" #f "archive_more" #f
       "pane_tabs" #f "own_plugin_id" 0 "own_client_id" 0 "initial_cwd" ""
       "bar_focused" '() "tabs_focused" #f "age_minute" 0 "rows" '() "summaries" (hash)
       "history_request" 0 "history_pending" #f "history_desired" #f "history_next" #f

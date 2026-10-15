@@ -74,7 +74,6 @@ vte = { workspace = true }
 nix = { workspace = true, features = ["process", "user"] }
 
 [workspace]
-exclude = ["vendor/steel-core"]
 members = [
     "default-plugins/agent-proto",
     "default-plugins/project-data",
@@ -116,9 +115,6 @@ members = [
     "xtask",
     ".",
 ]
-
-[patch.crates-io]
-steel-core = { path = "vendor/steel-core" }
 
 [workspace.package]
 edition = "2021"

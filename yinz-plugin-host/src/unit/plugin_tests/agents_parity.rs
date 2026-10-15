@@ -715,6 +715,38 @@ fn agents_history_navigation_renders_while_pending_and_only_loads_latest_selecti
 }
 
 #[test]
+fn agents_history_snapshot_sorts_newly_loaded_pages() {
+    let runs: Vec<_> = (0..55)
+        .map(|i| run(&format!("old-{i:02}"), i + 100, true))
+        .collect();
+    let mut h = HistoryPanel::new(&runs);
+    h.snapshot(1, &[]);
+    // Another server's inserts can move newer rows into the next offset page.
+    for i in 0..55 {
+        let mut new = run(&format!("new-{i:02}"), i + 200, true);
+        new.started_at_ms = 9_000;
+        h.data
+            .apply(store::SHARED, &agents::rows::run_mutations(&new));
+    }
+    h.panel.runtime.invoke("a-load-more!", vec![]).unwrap();
+    h.panel.runtime.invoke("a-refresh-strip!", vec![]).unwrap();
+    h.snapshot(2, &[]);
+    let headers = h.get("archived_runs");
+    assert_eq!(headers.as_array().unwrap().len(), 55);
+    assert_eq!(headers[0]["id"], "new-50");
+    h.snapshot(3, &[]);
+    assert_eq!(h.get("archived_runs"), headers);
+    let mut updated = runs[0].clone();
+    updated.started_at_ms = 20_000;
+    h.snapshot(4, &[updated.clone()]);
+    assert_eq!(h.get("archived_runs")[0]["id"], updated.id);
+    updated.ended_at_ms = None;
+    h.snapshot(5, &[updated]);
+    assert_eq!(h.get("archived_runs")[0]["id"], "new-50");
+    assert_eq!(h.get("archived_runs").as_array().unwrap().len(), 54);
+}
+
+#[test]
 fn agents_history_snapshot_headers_refresh_errors_timeout_and_hide() {
     let mut runs = [run("archive", 9, true)];
     let mut h = HistoryPanel::new(&runs);
