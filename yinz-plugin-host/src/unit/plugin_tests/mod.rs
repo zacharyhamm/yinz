@@ -1,3 +1,4 @@
+pub(crate) mod reference_trace;
 use super::plugin_thread_main;
 use insta::assert_snapshot;
 use lazy_static::lazy_static;
@@ -6,7 +7,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::tempdir;
-use wasmi::Engine;
 use yinz_bus::screen::ScreenInstruction;
 use yinz_bus::{channels::SenderWithContext, thread_bus::Bus, ServerInstruction};
 use yinz_storage::data_access::DataAccess;
@@ -39,7 +39,7 @@ use yinz_test_support::{default_timeout, Watched};
 
 /// How long a fake screen thread waits for the next event before declaring the test stuck.
 ///
-/// Generous, because these tests compile and instantiate a real wasm plugin — the point is only to
+/// Generous, because these tests start a real plugin runtime — the point is only to
 /// bound the wait, not to police it.
 const FAKE_SCREEN_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -271,6 +271,13 @@ fn log_until_disconnect<T: Send + 'static>(
 /// A rendered frame as text, with the plugin's `\n\r` line endings folded to `\n`.
 fn frame_of(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).replace("\n\r", "\n")
+}
+
+fn fixture_events(bytes: &[u8]) -> Vec<Event> {
+    frame_of(bytes)
+        .split_once(", Received events: ")
+        .map(|(_, json)| serde_json::from_str(json.trim()).expect("fixture event JSON"))
+        .unwrap_or_default()
 }
 
 /// Every non-empty frame rendered so far, as (client, frame) pairs in arrival order.
@@ -581,11 +588,31 @@ fn create_plugin_thread_with_hooks_and_event_sender(
     data_access: Option<DataAccess>,
     repository_data_dir: Option<PathBuf>,
 ) -> PluginThreadHarness {
+    let (sender, _, screen, teardown) = create_plugin_thread_with_services(
+        yinz_cwd,
+        session_env_vars,
+        user_plugin_dir,
+        hooks,
+        event_sender,
+        data_access,
+        repository_data_dir,
+    );
+    (sender, screen, teardown)
+}
+
+fn create_plugin_thread_with_services(
+    yinz_cwd: Option<PathBuf>,
+    session_env_vars: Option<std::collections::BTreeMap<String, String>>,
+    user_plugin_dir: Option<PathBuf>,
+    hooks: yinz_types::input::hooks::Hooks,
+    event_sender: Option<SenderWithContext<PluginInstruction>>,
+    data_access: Option<DataAccess>,
+    repository_data_dir: Option<PathBuf>,
+) -> PluginThreadHarnessWith<ServerInstruction> {
     let yinz_cwd = yinz_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
     let initiating_client_id = ClientId::new(1);
-    let (to_server, _server_receiver): ChannelWithContext<ServerInstruction> =
-        channels::bounded(50);
+    let (to_server, server_receiver): ChannelWithContext<ServerInstruction> = channels::bounded(50);
     let to_server = SenderWithContext::new(to_server);
 
     let (to_screen, screen_receiver): ChannelWithContext<ScreenInstruction> = channels::unbounded();
@@ -615,10 +642,6 @@ fn create_plugin_thread_with_hooks_and_event_sender(
         None,
     )
     .should_silently_fail();
-    let mut config = wasmi::Config::default();
-    config.set_max_stack_height(1024 * 1024);
-    config.set_max_recursion_depth(1000);
-    let engine = Engine::new(&config);
     let data_dir = repository_data_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
     let data_access = Arc::new(data_access.unwrap_or_else(|| DataAccess::sqlite(&data_dir)));
     let layout_dir = PathBuf::from(tempdir().unwrap().path());
@@ -644,7 +667,6 @@ fn create_plugin_thread_with_hooks_and_event_sender(
         .spawn(move || {
             plugin_thread_main(
                 plugin_bus,
-                engine,
                 data_dir,
                 data_access,
                 Box::default(),
@@ -662,7 +684,6 @@ fn create_plugin_thread_with_hooks_and_event_sender(
                 Default::default(),
                 hooks,
                 Default::default(), // context_menu
-                None,
                 initiating_client_id,
                 crate::ServerSession::Fixed("yinz-test".into()),
             )
@@ -680,7 +701,12 @@ fn create_plugin_thread_with_hooks_and_event_sender(
             join_plugin_thread(plugin_thread);
         }
     };
-    (to_plugin, screen_receiver, Box::new(teardown))
+    (
+        to_plugin,
+        server_receiver,
+        screen_receiver,
+        Box::new(teardown),
+    )
 }
 
 fn create_plugin_thread_with_server_receiver(
@@ -719,10 +745,6 @@ fn create_plugin_thread_with_server_receiver(
         None,
     )
     .should_silently_fail();
-    let mut config = wasmi::Config::default();
-    config.set_max_stack_height(1024 * 1024);
-    config.set_max_recursion_depth(1000);
-    let engine = Engine::new(&config);
     let data_dir = PathBuf::from(tempdir().unwrap().path());
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
@@ -733,7 +755,6 @@ fn create_plugin_thread_with_server_receiver(
         .spawn(move || {
             plugin_thread_main(
                 plugin_bus,
-                engine,
                 data_dir,
                 data_access,
                 Box::default(),
@@ -751,7 +772,6 @@ fn create_plugin_thread_with_server_receiver(
                 Default::default(),
                 Default::default(), // hooks
                 Default::default(), // context_menu
-                None,
                 initiating_client_id,
                 crate::ServerSession::Fixed("yinz-test".into()),
             )
@@ -829,10 +849,6 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
         None,
     )
     .should_silently_fail();
-    let mut config = wasmi::Config::default();
-    config.set_max_stack_height(1024 * 1024);
-    config.set_max_recursion_depth(1000);
-    let engine = Engine::new(&config);
     let data_dir = PathBuf::from(tempdir().unwrap().path());
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let layout_dir = layout_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
@@ -845,7 +861,6 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
         .spawn(move || {
             plugin_thread_main(
                 plugin_bus,
-                engine,
                 data_dir,
                 data_access,
                 layout,
@@ -863,7 +878,6 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
                 Default::default(),
                 Default::default(), // hooks
                 Default::default(), // context_menu
-                None,
                 initiating_client_id,
                 crate::ServerSession::Fixed("yinz-test".into()),
             )
@@ -921,10 +935,6 @@ fn create_plugin_thread_with_background_jobs_receiver(
         None,
     )
     .should_silently_fail();
-    let mut config = wasmi::Config::default();
-    config.set_max_stack_height(1024 * 1024);
-    config.set_max_recursion_depth(1000);
-    let engine = Engine::new(&config);
     let data_dir = PathBuf::from(tempdir().unwrap().path());
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
@@ -935,7 +945,6 @@ fn create_plugin_thread_with_background_jobs_receiver(
         .spawn(move || {
             plugin_thread_main(
                 plugin_bus,
-                engine,
                 data_dir,
                 data_access,
                 Box::default(),
@@ -953,7 +962,6 @@ fn create_plugin_thread_with_background_jobs_receiver(
                 Default::default(),
                 Default::default(), // hooks
                 Default::default(), // context_menu
-                None,
                 initiating_client_id,
                 crate::ServerSession::Fixed("yinz-test".into()),
             )
@@ -980,60 +988,32 @@ fn create_plugin_thread_with_background_jobs_receiver(
     )
 }
 
-/// Locates the fixture plugin's wasm blob.
-///
-/// Prefers the debug artifact, which `cargo x test` guarantees is present and fresh because it
-/// builds the plugins before running any tests. Falls back to the release artifact so that a bare
-/// `cargo test -p yinz-server` works after a `cargo x build --release` too, at the cost of the
-/// blob being as old as that build.
+/// The checked-in Scheme fixture stays outside the production builtin source tree.
 fn plugin_fixture_path() -> PathBuf {
-    let repo_root = PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
-    )
-    .join("..");
-
-    let candidates = [
-        repo_root.join("target/wasm32-wasip1/debug/fixture-plugin-for-tests.wasm"),
-        repo_root.join("target/wasm32-wasip1/release/fixture-plugin-for-tests.wasm"),
-    ];
-
-    candidates
-        .iter()
-        .find(|path| path.exists())
-        .cloned()
-        .unwrap_or_else(|| {
-            panic!(
-                "could not find the fixture plugin. Run `cargo x build -p` to build the plugins. \
-                 Looked in:\n  {}",
-                candidates
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n  ")
-            )
-        })
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../yinz-steel-builtins/fixtures/fixture-plugin-for-tests.scm")
 }
 
-/// Locates the TypeScript fixture plugin.
+/// Locates the Scheme fixture plugin.
 ///
-/// Unlike the wasm fixture there is nothing to build - it is a source file checked in next to
+/// There is nothing to build: this source is checked in next to
 /// these tests - so this always resolves and needs no prior `cargo x build`.
 fn script_plugin_fixture_path() -> PathBuf {
     PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
     )
-    .join("src/unit/plugin_tests/fixtures/fixture.ts")
+    .join("src/unit/plugin_tests/fixtures/fixture.scm")
 }
 
 lazy_static! {
     static ref PLUGIN_FIXTURE: String = plugin_fixture_path().display().to_string();
     static ref SCRIPT_PLUGIN_FIXTURE: String = script_plugin_fixture_path().display().to_string();
     static ref SCRIPT_PLUGIN_FIXTURE_WITH_PERMISSIONS: String = script_plugin_fixture_path()
-        .with_file_name("fixture_with_permissions.ts")
+        .with_file_name("fixture_with_permissions.scm")
         .display()
         .to_string();
     static ref SCRIPT_PLUGIN_FIXTURE_SPAWN_AGENT: String = script_plugin_fixture_path()
-        .with_file_name("fixture_spawn_agent.ts")
+        .with_file_name("fixture_spawn_agent.scm")
         .display()
         .to_string();
 }
@@ -1048,7 +1028,6 @@ mod batching;
 mod break_panes_commands;
 mod cli_events;
 mod config_events;
-mod deno_plugins;
 mod focused_pane_commands;
 mod highlights;
 mod host_theme;
@@ -1063,6 +1042,46 @@ mod plugin_lifecycle_commands;
 mod queues;
 mod run_and_pipe_commands;
 mod runaway;
+mod script_harness;
 mod script_plugins;
 mod self_and_pane_commands;
+mod steel_binary;
+mod steel_cleanup;
+mod steel_data;
+mod steel_filesystem;
+mod steel_lifecycle;
+mod steel_plugins;
+mod steel_services;
+mod steel_sources;
 mod tab_commands;
+
+mod agents_parity;
+pub(crate) mod data_parity;
+mod file_finder_parity;
+mod layout_manager_parity;
+mod legacy_parity;
+mod link_parity;
+mod multiple_select_parity;
+mod plugin_manager_parity;
+pub(crate) mod runtime_parity;
+mod runtime_parity_dialogs;
+mod session_manager_parity;
+
+mod project_store_parity;
+mod todos_parity;
+
+mod new_agent_parity;
+
+mod agent_service_parity;
+
+mod steel_workers;
+
+mod bar_parity;
+
+mod status_bar;
+
+mod tab_bar;
+
+mod compact_bar;
+
+mod steel_builtin_parity;

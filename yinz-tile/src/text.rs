@@ -40,9 +40,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 /// Public because the markdown renderer in `yinz-tile-markdown` parses the sanitized string
 /// rather than the raw one - an escape sequence in a reply must not reach the parser either.
 pub fn sanitize(text: &str) -> String {
-    // Pushed into one buffer rather than flat_mapped: a Vec per character is a
-    // heap allocation per character, and the host interprets this wasm rather
-    // than compiling it, so that constant lands on every render.
+    // Append to one buffer to avoid a separate allocation for every character.
     let mut sanitized = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {

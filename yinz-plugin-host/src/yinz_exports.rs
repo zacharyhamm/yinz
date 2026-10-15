@@ -20,11 +20,10 @@ mod layout_cwd_tests;
 mod plugin_ids_tests;
 
 use super::PluginInstruction;
-use crate::plugin_map::{PluginEnv, ResponseSink};
-use crate::wasm_bridge::handle_plugin_crash;
+use crate::plugin_bridge::handle_plugin_crash;
+use crate::plugin_map::PluginEnv;
 use anyhow::ensure;
 use log::warn;
-use serde::Serialize;
 use std::collections::BTreeSet;
 use std::os::unix::fs::OpenOptionsExt;
 use std::{
@@ -38,7 +37,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::oneshot;
-use wasmi::{Caller, Linker};
 use yinz_bus::background_jobs::BackgroundJob;
 use yinz_bus::global_async_runtime::get_tokio_runtime;
 use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction};
@@ -228,7 +226,6 @@ use {
     yinz_plugin_api::plugin_command::ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenTerminalResponse,
     yinz_plugin_api::plugin_command::ProtobufParseLayoutResponse,
-    yinz_plugin_api::plugin_command::ProtobufPluginCommand,
     yinz_plugin_api::plugin_command::ProtobufReadPluginLogResponse,
     yinz_plugin_api::plugin_command::ProtobufRenameLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
@@ -374,32 +371,10 @@ fn command_cwd(
     }
 }
 
-pub fn yinz_exports(linker: &mut Linker<PluginEnv>) {
-    linker
-        .func_wrap("yinz", "host_run_plugin_command", host_run_plugin_command)
-        .unwrap();
-}
-
-fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
-    let env = caller.data_mut();
-    wasi_read_bytes(env)
-        .and_then(|bytes| {
-            let command: ProtobufPluginCommand = ProtobufPluginCommand::decode(bytes.as_slice())?;
-            let command: PluginCommand = command
-                .try_into()
-                .map_err(|e| anyhow!("failed to convert serialized command: {}", e))?;
-            run_plugin_command(env, command)
-        })
-        .with_context(|| format!("failed to run plugin command {}", env.name()))
-        .non_fatal();
-}
-
 /// Run one host command on behalf of a plugin, after checking that the plugin is permitted to.
 ///
-/// This is the whole plugin capability surface, and it is deliberately independent of how the
-/// plugin was written: the wasm host decodes a protobuf command off a WASI pipe and calls this,
-/// and the TypeScript host builds the same `PluginCommand` from a TypeScript call and calls this. Neither the
-/// permission check nor any individual handler knows which runtime it is serving.
+/// This is the complete host capability surface. The runtime decodes a typed command,
+/// then this dispatcher checks permissions before invoking its handler.
 pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result<()> {
     let plugin_command = env.name();
     let err_context = || format!("failed to run plugin command {}", plugin_command);
@@ -407,10 +382,10 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
         (PermissionStatus::Granted, _) => match command {
             PluginCommand::CommandPalette(mut command) => {
                 let generation = env
-                    .deno_generation
-                    .context("Command palettes require a Deno plugin")?;
+                    .generation
+                    .context("Command palettes require a live plugin instance")?;
                 anyhow::ensure!(
-                    env.deno_workers
+                    env.workers
                         .as_ref()
                         .is_none_or(|w| w.parent_generation == generation),
                     "Background workers cannot register palette providers"
@@ -447,7 +422,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         if let Ok(reply) = result {
                             if let Err(error) = reply.validate() {
                                 env.senders
-                                    .send_to_plugin(PluginInstruction::DenoPalette(
+                                    .send_to_plugin(PluginInstruction::PluginPalette(
                                         yinz_bus::command_palette::Delivery {
                                             owner: owner.clone(),
                                             client: env.client_id,
@@ -484,24 +459,19 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     .context("sending palette command")?;
             },
             PluginCommand::RegisterAgentProvider(provider) => {
-                let typescript = env.plugin_config.is_builtin_deno()
-                    || matches!(
+                let supported_source = env.plugin_config.is_builtin()
+                    || yinz_plugin_api::authoring::is_script_plugin(
                         env.resolved_source_path
                             .as_deref()
-                            .unwrap_or(&env.plugin_config.path)
-                            .extension()
-                            .and_then(|extension| extension.to_str()),
-                        Some("ts" | "mts")
+                            .unwrap_or(&env.plugin_config.path),
                     );
-                let result = match env.deno_generation.filter(|_| typescript) {
+                let result = match env.generation.filter(|_| supported_source) {
                     _ if env.unavailable.load(atomic::Ordering::Acquire)
                         || env.cancel.load(atomic::Ordering::Acquire) =>
                     {
                         Err("agent provider plugin is no longer available".to_owned())
                     },
-                    None => {
-                        Err("agent providers require a TypeScript (.ts or .mts) plugin".to_owned())
-                    },
+                    None => Err("agent providers require a Scheme plugin instance".to_owned()),
                     Some(_) if !env.plugin_config.is_shared() => Err(
                         "agent provider plugins require shared true in their configuration"
                             .to_owned(),
@@ -542,7 +512,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 let data = env.data_access.clone();
                 let target = env.plugin_id;
                 let client = env.client_id;
-                let generation = env.deno_generation;
+                let generation = env.generation;
                 get_tokio_runtime().spawn_blocking(move || {
                     let response = control_agent(request, client, &senders, &data);
                     let mut payload = serde_json::json!({"id":id,"response":response});
@@ -582,7 +552,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     json: serde_json::to_string(&result)
                         .context("failed to encode pane tabs response")?,
                 };
-                wasi_write_object(env, &response.encode_to_vec())?;
+                write_response(env, &response.encode_to_vec())?;
             },
             command @ (PluginCommand::CreateMultipane(_)
             | PluginCommand::UpdateMultipane(_)
@@ -598,7 +568,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         env.plugin_id,
                         env.client_id,
                         context,
-                        env.deno_generation,
+                        env.generation,
                     ))?;
             },
             PluginCommand::Subscribe(event_list) => subscribe(env, event_list)?,
@@ -615,9 +585,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 options,
                 request_id,
             } => {
-                crate::deno::testing::start(env, name, options, request_id)?;
+                crate::testing::start(env, name, options, request_id)?;
             },
-            PluginCommand::CancelPluginTest(id) => crate::deno::testing::cancel(env, &id),
+            PluginCommand::CancelPluginTest(id) => crate::testing::cancel(env, &id),
             PluginCommand::CheckPlugin { name, source, mode } => {
                 check_plugin(env, name, source, mode)
             },
@@ -643,7 +613,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 start_suppressed,
             ),
             PluginCommand::SetQuitNotice { notice, guard } => set_quit_notice(env, notice, guard),
-            PluginCommand::Pick(command) => crate::wasm_bridge::picker::dispatch(env, command)?,
+            PluginCommand::Pick(command) => crate::plugin_bridge::picker::dispatch(env, command)?,
             PluginCommand::GetPluginInfo(id) => get_plugin_info(env, id)?,
             PluginCommand::GetPluginIdsForUrl(url) => get_plugin_ids_for_url(env, url, None)?,
             PluginCommand::GetPluginIdsForUrlWithConfiguration { url, configuration } => {
@@ -989,7 +959,10 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 offset,
             } => fs_read(env, path, max_bytes, offset),
             PluginCommand::FsList { path } => fs_list(env, path),
-            PluginCommand::FsMetadata { path } => fs_metadata(env, path),
+            PluginCommand::FsMetadata {
+                path,
+                follow_symlinks,
+            } => fs_metadata(env, path, follow_symlinks),
             PluginCommand::FsWrite {
                 path,
                 contents,
@@ -1340,7 +1313,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     json: serde_json::to_string(&result)
                         .context("failed to encode pane tabs denial")?,
                 };
-                return wasi_write_object(env, &response.encode_to_vec());
+                return write_response(env, &response.encode_to_vec());
             }
             if matches!(
                 command,
@@ -1353,7 +1326,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 let response = yinz_plugin_api::plugin_command::ProtobufMultipaneResponse {
                     json: serde_json::to_string(&result)?,
                 };
-                return wasi_write_object(env, &response.encode_to_vec());
+                return write_response(env, &response.encode_to_vec());
             }
             let kind = CommandType::from(&command);
             log::error!(
@@ -1400,7 +1373,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     },
                     _ => Vec::new(),
                 };
-                wasi_write_object(env, &response).with_context(err_context)?;
+                write_response(env, &response).with_context(err_context)?;
             }
         },
     };
@@ -1414,7 +1387,7 @@ fn write_agent_providers_response(
     let response = yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse {
         json: serde_json::to_string(&result).context("serialize agent provider response")?,
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
 }
 
 pub(crate) fn broadcast_agent_providers(senders: &ThreadSenders) {
@@ -1603,7 +1576,7 @@ fn get_plugin_ids(env: &mut PluginEnv) {
     ProtobufPluginIds::try_from(ids)
         .map_err(|e| anyhow!("Failed to serialized plugin ids: {}", e))
         .and_then(|serialized| {
-            wasi_write_object(env, &serialized.encode_to_vec())?;
+            write_response(env, &serialized.encode_to_vec())?;
             Ok(())
         })
         .with_context(|| {
@@ -1625,7 +1598,7 @@ fn get_yinz_version(env: &mut PluginEnv) {
     let protobuf_yinz_version = ProtobufYinzVersion {
         version: VERSION.to_owned(),
     };
-    wasi_write_object(env, &protobuf_yinz_version.encode_to_vec())
+    write_response(env, &protobuf_yinz_version.encode_to_vec())
         .with_context(|| {
             format!(
                 "failed to request yinz version from host for plugin {}",
@@ -1638,7 +1611,7 @@ fn get_yinz_version(env: &mut PluginEnv) {
 fn generate_random_name(env: &mut PluginEnv) {
     let name = generate_random_name_impl();
     let response = ProtobufGenerateRandomNameResponse { name };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| {
             format!(
                 "failed to send generated random name to plugin {}",
@@ -1667,7 +1640,7 @@ fn dump_layout(env: &mut PluginEnv, layout_name: String) {
         },
     };
 
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| format!("failed to send layout dump to plugin {}", env.name()))
         .non_fatal();
 }
@@ -1685,7 +1658,7 @@ fn get_layout_dir(env: &mut PluginEnv) {
         layout_dir: layout_dir_string,
     };
 
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| format!("failed to send layout dir to plugin {}", env.name()))
         .non_fatal();
 }
@@ -1713,7 +1686,7 @@ fn get_user_plugin_dir(env: &mut PluginEnv) {
         user_plugin_dir: user_plugin_dir_string,
     };
 
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| format!("failed to send user plugin dir to plugin {}", env.name()))
         .non_fatal();
 }
@@ -1732,7 +1705,7 @@ fn get_session_environment_variables(env: &mut PluginEnv) {
 
     let response = ProtobufGetSessionEnvironmentVariablesResponse { env_vars };
 
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| {
             format!(
                 "failed to send session environment variables to plugin {}",
@@ -1761,7 +1734,7 @@ fn get_plugin_alias_configuration(env: &mut PluginEnv, alias: String) {
         configuration: configuration.into_iter().collect(),
     };
 
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| {
             format!(
                 "failed to send the configuration of plugin alias {alias} to plugin {}",
@@ -1799,7 +1772,7 @@ fn open_command_pane_in_new_tab(
     let pane_id = result.as_ref().and_then(|r| r.affected_pane_id);
     let response =
         ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_in_new_tab response".to_string())
         .non_fatal();
 }
@@ -1822,7 +1795,7 @@ fn open_plugin_pane_in_new_tab(
             log::error!("Failed to parse plugin url '{}': {}", plugin_url, e);
             let response =
                 ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse::default());
-            wasi_write_object(env, &response.encode_to_vec())
+            write_response(env, &response.encode_to_vec())
                 .with_context(|| {
                     "failed to write open_plugin_pane_in_new_tab error response".to_string()
                 })
@@ -1851,7 +1824,7 @@ fn open_plugin_pane_in_new_tab(
     let pane_id = result.as_ref().and_then(|r| r.affected_pane_id);
     let response =
         ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_plugin_pane_in_new_tab response".to_string())
         .non_fatal();
 }
@@ -1876,7 +1849,7 @@ fn open_plugin_pane_floating(
             let response = ProtobufOpenPluginPaneFloatingResponse::from(
                 OpenPluginPaneFloatingResponse::default(),
             );
-            wasi_write_object(env, &response.encode_to_vec())
+            write_response(env, &response.encode_to_vec())
                 .with_context(|| {
                     "failed to write open_plugin_pane_floating error response".to_string()
                 })
@@ -1899,7 +1872,7 @@ fn open_plugin_pane_floating(
 
     let pane_id: OpenPluginPaneFloatingResponse = result.and_then(|r| r.affected_pane_id);
     let response = ProtobufOpenPluginPaneFloatingResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_plugin_pane_floating response".to_string())
         .non_fatal();
 }
@@ -1940,7 +1913,7 @@ fn open_editor_pane_in_new_tab(
     let pane_id = result.as_ref().and_then(|r| r.affected_pane_id);
     let response =
         ProtobufOpenPaneInNewTabResponse::from(OpenPaneInNewTabResponse { tab_id, pane_id });
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_editor_pane_in_new_tab response".to_string())
         .non_fatal();
 }
@@ -1950,7 +1923,7 @@ fn get_focused_pane_info(env: &mut PluginEnv) {
     use std::time::Duration;
 
     // Bound up front rather than captured: the closure would otherwise hold an immutable
-    // borrow of `env` across the `wasi_write_object` that replies to the plugin.
+    // borrow of `env` across the `write_response` that replies to the plugin.
     let plugin_name = env.name();
     let client_id = env.client_id;
     let err_context = || {
@@ -1996,7 +1969,7 @@ fn get_focused_pane_info(env: &mut PluginEnv) {
 
     // Convert to protobuf and write response back to plugin
     let protobuf_response = ProtobufGetFocusedPaneInfoResponse::from(response);
-    wasi_write_object(env, &protobuf_response.encode_to_vec())
+    write_response(env, &protobuf_response.encode_to_vec())
         .with_context(err_context)
         .non_fatal();
 }
@@ -2031,16 +2004,15 @@ fn check_plugin(
             Err(error) => check_plugin_response::Result::Error(format!("{error:#}")),
         }),
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .context("send plugin check report")
         .non_fatal();
 }
 
 /// Seconds east of UTC here, at the instant `epoch_ms`.
 ///
-/// The server answers this because it is the only side that can: a plugin is wasm, WASI hands it
-/// none of the session's environment, and nothing that reads a zoneinfo database links into one.
-/// So every absolute date or time a plugin draws is derived from this.
+/// The guest has no ambient environment or timezone database. The host supplies the
+/// session's local offset for formatting absolute timestamps.
 ///
 /// The offset is taken *at that instant* rather than now, so a timestamp from before a
 /// daylight-saving change reads back with the offset that was in force when it was taken. An
@@ -2055,7 +2027,7 @@ fn get_local_utc_offset(env: &mut PluginEnv, epoch_ms: SignedUnixMillis) {
         .map(|at| at.offset().fix().local_minus_utc())
         .unwrap_or_else(|| Local::now().offset().fix().local_minus_utc());
     let response = ProtobufGetLocalUtcOffsetResponse { offset_seconds };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| {
             format!(
                 "failed to send utc offset response to plugin {}",
@@ -2070,7 +2042,6 @@ fn plugin_log_lines(env: &PluginEnv, name: &str, lines: usize, log_file: &Path) 
     crate::plugin_authoring::resolve_log_target(
         name,
         dir.as_deref(),
-        &env.yinz_data_dir,
         &env.plugin_aliases.lock().unwrap(),
         &env.plugin_cwd,
     )
@@ -2086,7 +2057,7 @@ fn read_plugin_log(env: &mut PluginEnv, name: String, lines: usize) {
             Err(e) => read_plugin_log_response::Result::Error(format!("{:#}", e)),
         }),
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| format!("failed to send log lines to plugin {}", env.name()))
         .non_fatal();
 }
@@ -2188,7 +2159,7 @@ fn parse_layout(env: &mut PluginEnv, layout_string: String) {
         },
     };
 
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| {
             format!(
                 "failed to send parse layout response to plugin {}",
@@ -2228,7 +2199,7 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
 
     // Write response to plugin
     let response = ProtobufOpenFileResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_file response".to_string())
         .non_fatal();
 }
@@ -2238,7 +2209,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
     // Clone the necessary data to move into the thread
     action.populate_originating_plugin(env.originating_plugin(context.clone()));
     let action_clone = action.clone();
-    let deno_generation = env.deno_generation;
+    let generation = env.generation;
     let client_id = env.client_id;
     let plugin_id = env.plugin_id;
     let senders = env.senders.clone();
@@ -2277,7 +2248,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
         let instruction = PluginInstruction::for_plugin_event(
             plugin_id,
             client_id,
-            deno_generation,
+            generation,
             Event::ActionComplete(action_clone, pane_id_for_event, context),
         );
 
@@ -2330,7 +2301,7 @@ fn open_file_floating(
 
     // Write response to plugin
     let response = ProtobufOpenFileFloatingResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_file_floating response".to_string())
         .non_fatal();
 }
@@ -2370,7 +2341,7 @@ fn open_file_in_place(
 
     // Write response to plugin
     let response = ProtobufOpenFileInPlaceResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_file_in_place response".to_string())
         .non_fatal();
 }
@@ -2410,7 +2381,7 @@ fn open_file_near_plugin(
 
     // Write response to plugin
     let response = ProtobufOpenFileNearPluginResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_file_near_plugin response".to_string())
         .non_fatal();
 }
@@ -2451,7 +2422,7 @@ fn open_file_floating_near_plugin(
 
     // Write response to plugin
     let response = ProtobufOpenFileFloatingNearPluginResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_file_floating_near_plugin response".to_string())
         .non_fatal();
 }
@@ -2489,7 +2460,7 @@ fn open_file_in_place_of_plugin(
 
     // Write response to plugin
     let response = ProtobufOpenFileInPlaceOfPluginResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_file_in_place_of_plugin response".to_string())
         .non_fatal();
 }
@@ -2525,7 +2496,7 @@ fn open_terminal(env: &mut PluginEnv, cwd: PathBuf) {
 
     // Write response to plugin
     let response = ProtobufOpenTerminalResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_terminal response".to_string())
         .non_fatal();
 }
@@ -2563,7 +2534,7 @@ fn open_terminal_near_plugin(env: &mut PluginEnv, cwd: PathBuf) {
 
     // Write response to plugin
     let response = ProtobufOpenTerminalNearPluginResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_terminal_near_plugin response".to_string())
         .non_fatal();
 }
@@ -2602,7 +2573,7 @@ fn open_terminal_floating(
 
     // Write response to plugin
     let response = ProtobufOpenTerminalFloatingResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_terminal_floating response".to_string())
         .non_fatal();
 }
@@ -2642,7 +2613,7 @@ fn open_terminal_floating_near_plugin(
 
     // Write response to plugin
     let response = ProtobufOpenTerminalFloatingNearPluginResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_terminal_floating_near_plugin response".to_string())
         .non_fatal();
 }
@@ -2678,7 +2649,7 @@ fn open_terminal_in_place(env: &mut PluginEnv, cwd: PathBuf) {
 
     // Write response to plugin
     let response = ProtobufOpenTerminalInPlaceResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_terminal_in_place response".to_string())
         .non_fatal();
 }
@@ -2718,7 +2689,7 @@ fn open_terminal_in_place_of_plugin(
 
     // Write response to plugin
     let response = ProtobufOpenTerminalInPlaceOfPluginResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_terminal_in_place_of_plugin response".to_string())
         .non_fatal();
 }
@@ -2754,7 +2725,7 @@ fn open_command_pane_in_place_of_plugin(
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneInPlaceOfPluginResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| {
             "failed to write open_command_pane_in_place_of_plugin response".to_string()
         })
@@ -2797,7 +2768,7 @@ fn open_terminal_pane_in_place_of_pane_id(
     let pane_id: OpenTerminalPaneInPlaceOfPaneIdResponse = result.affected_pane_id;
 
     let response = ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| {
             "failed to write open_terminal_pane_in_place_of_pane_id response".to_string()
         })
@@ -2836,7 +2807,7 @@ fn open_command_pane_in_place_of_pane_id(
     let pane_id: OpenCommandPaneInPlaceOfPaneIdResponse = result.affected_pane_id;
 
     let response = ProtobufOpenCommandPaneInPlaceOfPaneIdResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| {
             "failed to write open_command_pane_in_place_of_pane_id response".to_string()
         })
@@ -2875,7 +2846,7 @@ fn open_edit_pane_in_place_of_pane_id(
     let pane_id: OpenEditPaneInPlaceOfPaneIdResponse = result.affected_pane_id;
 
     let response = ProtobufOpenEditPaneInPlaceOfPaneIdResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_edit_pane_in_place_of_pane_id response".to_string())
         .non_fatal();
 }
@@ -2907,7 +2878,7 @@ fn open_command_pane(
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane response".to_string())
         .non_fatal();
 }
@@ -2920,7 +2891,7 @@ fn open_command_pane_near_plugin(
     let pane_id =
         spawn_command_pane_near_plugin(env, command_to_run, context, None, false, false).ok();
     let response = ProtobufOpenCommandPaneNearPluginResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_near_plugin response".to_string())
         .non_fatal();
 }
@@ -3005,14 +2976,14 @@ fn open_command_pane_in_git_checkout_near_plugin(
             )
         });
     let response = ProtobufOpenCommandPaneInGitCheckoutResponse::from(result);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_in_git_checkout response".to_string())
         .non_fatal();
 }
 
 /// Start a coding agent near this plugin: the launch planner every agent launcher uses, the
 /// checkout the spec asks for, the pane, and the agent record - one road for agent's
-/// `agent_spawn`, the `new-agent` modal and a TypeScript plugin's `yinz.agent.spawn`.
+/// `agent_spawn`, the `new-agent` modal and a Scheme plugin's agent spawn command.
 fn spawn_agent(
     env: &mut PluginEnv,
     spec: AgentSpawnSpec,
@@ -3058,7 +3029,7 @@ fn spawn_agent(
             })
     })();
     let response = ProtobufSpawnAgentResponse::from(result);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write spawn_agent response".to_string())
         .non_fatal();
 }
@@ -3614,7 +3585,7 @@ fn apply_project_worktree_dir(
 /// Where a spawned agent's pane runs. A branch means git work in `source`, the repository, and
 /// the pane lands in the checkout that makes. Without one there is no git work at all: the
 /// pane runs in `cwd` when the caller named one, and otherwise in `source` as it stands -
-/// agent sends the focused pane's folder, a TypeScript plugin's default is its own - never the
+/// agent sends the focused pane's folder, a Scheme plugin's default is its own - never the
 /// repository root, which `command=zsh` in a subfolder of a checkout does not want and which
 /// costs a `git rev-parse` to find.
 #[cfg(test)]
@@ -4273,7 +4244,7 @@ fn open_command_pane_floating(
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneFloatingResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_floating response".to_string())
         .non_fatal();
 }
@@ -4297,16 +4268,16 @@ fn open_command_pane_overlay(
         .as_ref()
         .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::SeqCst))
     {
-        crate::wasm_bridge::picker::attach_opened_pane(env, None).non_fatal();
+        crate::plugin_bridge::picker::attach_opened_pane(env, None).non_fatal();
         let response = ProtobufOpenCommandPaneOverlayResponse::from(None);
-        wasi_write_object(env, &response.encode_to_vec())
+        write_response(env, &response.encode_to_vec())
             .context("reject cancelled picker overlay")
             .non_fatal();
         return;
     }
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
-        crate::wasm_bridge::picker::attach_opened_pane(env, None).non_fatal();
+        crate::plugin_bridge::picker::attach_opened_pane(env, None).non_fatal();
         return;
     };
     let action = Action::NewFloatingPane {
@@ -4320,9 +4291,9 @@ fn open_command_pane_overlay(
     let result = apply_action!(action, error_msg, env);
 
     let pane_id: OpenCommandPaneOverlayResponse = result.and_then(|r| r.affected_pane_id);
-    crate::wasm_bridge::picker::attach_opened_pane(env, pane_id).non_fatal();
+    crate::plugin_bridge::picker::attach_opened_pane(env, pane_id).non_fatal();
     let response = ProtobufOpenCommandPaneOverlayResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_overlay response".to_string())
         .non_fatal();
 }
@@ -4361,7 +4332,7 @@ fn open_command_pane_floating_near_plugin(
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneFloatingNearPluginResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| {
             "failed to write open_command_pane_floating_near_plugin response".to_string()
         })
@@ -4394,7 +4365,7 @@ fn open_command_pane_in_place(
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneInPlaceResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_in_place response".to_string())
         .non_fatal();
 }
@@ -4431,7 +4402,7 @@ fn open_command_pane_background(
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneBackgroundResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_command_pane_background response".to_string())
         .non_fatal();
 }
@@ -4504,7 +4475,7 @@ fn set_timeout(env: &PluginEnv, secs: FractionalSeconds) {
         ..Default::default()
     };
     let update_target = env.plugin_id;
-    let deno_generation = env.deno_generation;
+    let generation = env.generation;
     let client_id = env.client_id;
     let plugin_name = env.name();
     // Use tokio runtime for async I/O (timer operation)
@@ -4514,7 +4485,7 @@ fn set_timeout(env: &PluginEnv, secs: FractionalSeconds) {
         // This measures the host timer alone. The `Timer` event then waits on the plugin bus, in
         // `cached_events_for_pending_plugins` while any instance of this plugin id is loading,
         // reloading or awaiting permission, and behind earlier work on the plugin's executor or
-        // Deno worker, which can add seconds. A plugin that needs to know how long it really
+        // plugin worker, which can add seconds. A plugin that needs to know how long it really
         // waited reads its own clock.
         let elapsed_time = Instant::now().duration_since(start_time).as_secs_f64();
 
@@ -4522,7 +4493,7 @@ fn set_timeout(env: &PluginEnv, secs: FractionalSeconds) {
             .send_to_plugin(PluginInstruction::for_plugin_event(
                 update_target,
                 client_id,
-                deno_generation,
+                generation,
                 Event::Timer(FractionalSeconds::new(elapsed_time)),
             ))
             .with_context(|| {
@@ -4590,7 +4561,7 @@ fn run_command(
                 context,
                 max_output_bytes,
                 stream_output,
-                env.deno_generation,
+                env.generation,
             ));
     }
 }
@@ -4617,7 +4588,7 @@ fn web_request(
             context,
             stream_id,
             proxy,
-            env.deno_generation,
+            env.generation,
         ));
 }
 
@@ -4635,7 +4606,7 @@ fn post_message_to(env: &PluginEnv, plugin_message: PluginMessage) -> Result<()>
     let worker_name = plugin_message
         .worker_name
         .ok_or(anyhow!("Worker name not specified in message to worker"))?;
-    if let Some(workers) = &env.deno_workers {
+    if let Some(workers) = &env.workers {
         return workers.post(
             &worker_name,
             env.client_id,
@@ -4660,7 +4631,7 @@ fn post_message_to_plugin(env: &PluginEnv, plugin_message: PluginMessage) -> Res
             worker_name
         ));
     }
-    if let Some(workers) = &env.deno_workers {
+    if let Some(workers) = &env.workers {
         return env
             .senders
             .send_to_plugin(PluginInstruction::for_plugin_event(
@@ -4790,7 +4761,7 @@ fn enqueue_queue_job(
                 let job_id = env.queues.lock().unwrap().enqueue(
                     &queue,
                     (env.plugin_id, env.client_id),
-                    env.deno_generation,
+                    env.generation,
                     run_plugin_or_alias,
                     context,
                     Some(env.plugin_cwd.clone()),
@@ -4805,7 +4776,7 @@ fn enqueue_queue_job(
         }
     };
     let response: ProtobufEnqueueQueueJobResponse = response.into();
-    let _ = wasi_write_object(env, &response.encode_to_vec());
+    let _ = write_response(env, &response.encode_to_vec());
 }
 
 fn configure_queue(env: &PluginEnv, queue: String, concurrency: usize) {
@@ -4827,7 +4798,7 @@ fn queue_status(env: &mut PluginEnv, queue: Option<String>) {
 
     let queues = env.queues.lock().unwrap().snapshot(queue.as_deref());
     let response: ProtobufQueueStatusResponse = queues.into();
-    let _ = wasi_write_object(env, &response.encode_to_vec());
+    let _ = write_response(env, &response.encode_to_vec());
 }
 
 /// The job reports and the host unloads it — the host, not the job, because the outcome has
@@ -5138,7 +5109,7 @@ fn apply_layout(env: &mut PluginEnv, layout: Layout) {
 
     // Write response
     let response = ProtobufNewTabsResponse::from(tab_ids);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write layout tabs response".to_string())
         .non_fatal();
 }
@@ -5165,7 +5136,7 @@ fn new_tab(env: &mut PluginEnv, name: Option<String>, cwd: Option<String>) {
 
     // Write response to plugin
     let response = ProtobufNewTabResponse::from(tab_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write new_tab response".to_string())
         .non_fatal();
 }
@@ -5190,7 +5161,7 @@ fn new_tab_unfocused(env: &mut PluginEnv, name: Option<String>, cwd: Option<Stri
     let tab_id: NewTabUnfocusedResponse = result.and_then(|r| r.affected_tab_id);
 
     let response = ProtobufNewTabUnfocusedResponse::from(tab_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write new_tab_unfocused response".to_string())
         .non_fatal();
 }
@@ -5222,7 +5193,7 @@ fn new_tiled_pane_in_tab(env: &mut PluginEnv, tab_id: TabId) {
     let pane_id: NewTiledPaneInTabResponse = result.and_then(|r| r.affected_pane_id);
 
     let response = ProtobufNewTiledPaneInTabResponse::from(pane_id);
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write new_tiled_pane_in_tab response".to_string())
         .non_fatal();
 }
@@ -5644,7 +5615,7 @@ fn focus_or_create_tab(env: &mut PluginEnv, tab_name: String) {
     let tab_id: FocusOrCreateTabResponse = result.and_then(|r| r.affected_tab_id);
 
     let response = ProtobufFocusOrCreateTabResponse::from(tab_id);
-    wasi_write_object(env, &response.encode_to_vec()).non_fatal();
+    write_response(env, &response.encode_to_vec()).non_fatal();
 }
 
 fn go_to_tab(env: &PluginEnv, tab_index: TabNumber) {
@@ -5680,7 +5651,7 @@ fn get_plugin_info(env: &mut PluginEnv, id: Option<PluginId>) -> Result<()> {
     let response = yinz_plugin_api::plugin_command::ProtobufGetPluginInfoResponse {
         json: serde_json::to_string(&info).context("encode plugin info")?,
     };
-    wasi_write_object(env, &response.encode_to_vec()).context("write plugin info")
+    write_response(env, &response.encode_to_vec()).context("write plugin info")
 }
 
 fn get_plugin_ids_for_url(
@@ -5714,7 +5685,7 @@ fn get_plugin_ids_for_url(
             error: Some(error),
         },
     };
-    wasi_write_object(env, &response.encode_to_vec()).context("write plugin identity response")
+    write_response(env, &response.encode_to_vec()).context("write plugin identity response")
 }
 
 fn reload_plugin_by_url(env: &PluginEnv, url: String) -> Result<()> {
@@ -5923,7 +5894,7 @@ fn kill_sessions_and_reply(env: &mut PluginEnv, session_names: Vec<SessionName>)
         Err(e) => KillSessionsResponse::Err(e),
     };
     let protobuf_response = ProtobufKillSessionsResponse::from(response);
-    wasi_write_object(env, &protobuf_response.encode_to_vec())
+    write_response(env, &protobuf_response.encode_to_vec())
         .with_context(|| "failed to write kill_sessions response".to_string())
         .non_fatal();
 }
@@ -6073,7 +6044,7 @@ fn write_warp_response(env: &mut PluginEnv, result: Result<String, String>) {
         Ok(message) => WarpPaneResponse::Ok(message),
         Err(message) => WarpPaneResponse::Err(message),
     };
-    wasi_write_object(
+    write_response(
         env,
         &ProtobufWarpPaneResponse::from(response).encode_to_vec(),
     )
@@ -6082,7 +6053,7 @@ fn write_warp_response(env: &mut PluginEnv, result: Result<String, String>) {
 }
 
 fn write_orphaned_pane_list(env: &mut PluginEnv, response: ListOrphanedPanesResponse) {
-    wasi_write_object(
+    write_response(
         env,
         &ProtobufListOrphanedPanesResponse::from(response).encode_to_vec(),
     )
@@ -6268,7 +6239,7 @@ fn catalog_entities(
 
 fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
     let response = match resolve_fetch_namespace(env, &request).and_then(|namespace| {
-        let mut generations = env.deno_watch_generations.lock().unwrap();
+        let mut generations = env.watch_generations.lock().unwrap();
         let handle = env.data_access.plugin_data().register_watch(
             &namespace,
             env.plugin_id,
@@ -6276,7 +6247,7 @@ fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
             request.clone(),
             mode,
         )?;
-        if let Some(generation) = env.deno_generation {
+        if let Some(generation) = env.generation {
             generations.insert(handle.watch_id, generation);
         }
         Ok(handle)
@@ -6301,7 +6272,7 @@ fn data_watch(env: &mut PluginEnv, request: FetchRequest, mode: WatchMode) {
 }
 
 fn data_unwatch(env: &mut PluginEnv, watch_id: DataWatchId) {
-    let mut generations = env.deno_watch_generations.lock().unwrap();
+    let mut generations = env.watch_generations.lock().unwrap();
     let response = match env
         .data_access
         .plugin_data()
@@ -6331,7 +6302,7 @@ fn data_unwatch(env: &mut PluginEnv, watch_id: DataWatchId) {
 fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet<String>) {
     notify_data_watchers(
         env.data_access.plugin_data(),
-        &env.deno_watch_generations,
+        &env.watch_generations,
         &env.senders,
         namespace,
         touched_entities,
@@ -6340,7 +6311,7 @@ fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet
 
 pub(crate) fn notify_data_watchers(
     store: &yinz_storage::plugin_data_store::PluginDataStore,
-    watch_generations: &super::plugin_map::DenoWatchGenerations,
+    watch_generations: &super::plugin_map::WatchGenerations,
     senders: &yinz_bus::thread_bus::ThreadSenders,
     namespace: &str,
     touched_entities: &BTreeSet<String>,
@@ -6380,7 +6351,7 @@ pub(crate) fn notify_data_watchers(
 }
 
 fn write_data_response(env: &mut PluginEnv, encoded: Vec<u8>, what: &str) {
-    wasi_write_object(env, &encoded)
+    write_response(env, &encoded)
         .with_context(|| format!("failed to write the data store {}", what))
         .non_fatal();
 }
@@ -6391,7 +6362,7 @@ fn delete_dead_session_and_reply(env: &mut PluginEnv, session_name: SessionName)
         Err(e) => DeleteDeadSessionResponse::Err(format!("{e:#}")),
     };
     let protobuf_response = ProtobufDeleteDeadSessionResponse::from(response);
-    wasi_write_object(env, &protobuf_response.encode_to_vec())
+    write_response(env, &protobuf_response.encode_to_vec())
         .with_context(|| "failed to write delete_dead_session response".to_string())
         .non_fatal();
 }
@@ -6459,7 +6430,7 @@ fn delete_all_dead_sessions_and_reply(env: &mut PluginEnv) {
         Err(e) => DeleteAllDeadSessionsResponse::Err(e),
     };
     let protobuf_response = ProtobufDeleteAllDeadSessionsResponse::from(response);
-    wasi_write_object(env, &protobuf_response.encode_to_vec())
+    write_response(env, &protobuf_response.encode_to_vec())
         .with_context(|| "failed to write delete_all_dead_sessions response".to_string())
         .non_fatal();
 }
@@ -6491,7 +6462,7 @@ fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
             ))),
             metadata: None,
         };
-        let _ = wasi_write_object(env, &error_response.encode_to_vec());
+        let _ = write_response(env, &error_response.encode_to_vec());
         return;
     }
 
@@ -6504,7 +6475,7 @@ fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
                     "layout query timeout: pid={} plugin={} generation={:?} {trace:?}",
                     std::process::id(),
                     env.plugin_id,
-                    env.deno_generation
+                    env.generation
                 );
                 let error_response = ProtobufDumpSessionLayoutResponse {
                     result: Some(dump_session_layout_response::Result::Error(format!(
@@ -6513,7 +6484,7 @@ fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
                     ))),
                     metadata: None,
                 };
-                let _ = wasi_write_object(env, &error_response.encode_to_vec());
+                let _ = write_response(env, &error_response.encode_to_vec());
                 return;
             },
         };
@@ -6543,8 +6514,8 @@ fn dump_session_layout(env: &mut PluginEnv, tab_index: Option<TabId>) {
         },
     };
 
-    // Write response back to plugin via WASI pipe
-    let _ = wasi_write_object(env, &protobuf_response.encode_to_vec())
+    // Return the response to the plugin dispatcher
+    let _ = write_response(env, &protobuf_response.encode_to_vec())
         .with_context(|| format!("failed to send session layout to plugin {}", env.name()));
 }
 
@@ -6572,7 +6543,7 @@ fn save_session(env: &mut PluginEnv) {
         }
     };
 
-    let _ = wasi_write_object(env, &response.encode_to_vec());
+    let _ = write_response(env, &response.encode_to_vec());
 }
 
 fn show_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
@@ -6603,7 +6574,7 @@ fn show_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
             },
         }
     };
-    let _ = wasi_write_object(env, &response.encode_to_vec());
+    let _ = write_response(env, &response.encode_to_vec());
 }
 
 fn hide_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
@@ -6634,7 +6605,7 @@ fn hide_floating_panes(env: &mut PluginEnv, tab_id: Option<TabId>) {
             },
         }
     };
-    let _ = wasi_write_object(env, &response.encode_to_vec());
+    let _ = write_response(env, &response.encode_to_vec());
 }
 
 fn set_pane_regex_highlights(
@@ -6694,7 +6665,7 @@ fn current_session_last_saved_time(env: &mut PluginEnv) {
     });
 
     let response = ProtobufCurrentSessionLastSavedTimeResponse { timestamp_millis };
-    let _ = wasi_write_object(env, &response.encode_to_vec());
+    let _ = write_response(env, &response.encode_to_vec());
 }
 
 fn get_pane_info(env: &mut PluginEnv, pane_id: yinz_types::data::PaneId) {
@@ -6759,7 +6730,7 @@ fn get_pane_info(env: &mut PluginEnv, pane_id: yinz_types::data::PaneId) {
     };
 
     let response = ProtobufGetPaneInfoResponse { pane_info };
-    let _ = wasi_write_object(env, &response.encode_to_vec());
+    let _ = write_response(env, &response.encode_to_vec());
 }
 
 fn get_tab_info(env: &mut PluginEnv, tab_id: TabId) {
@@ -6821,7 +6792,7 @@ fn get_tab_info(env: &mut PluginEnv, tab_id: TabId) {
     };
 
     let response = ProtobufGetTabInfoResponse { tab_info };
-    let _ = wasi_write_object(env, &response.encode_to_vec());
+    let _ = write_response(env, &response.encode_to_vec());
 }
 
 fn list_notifications(env: &mut PluginEnv) {
@@ -6856,7 +6827,7 @@ fn list_notifications(env: &mut PluginEnv) {
             error: Some(error),
         },
     };
-    let _ = wasi_write_object(env, &response.encode_to_vec());
+    let _ = write_response(env, &response.encode_to_vec());
 }
 
 fn list_clients(env: &PluginEnv) {
@@ -6864,7 +6835,7 @@ fn list_clients(env: &PluginEnv) {
         sender.send(ScreenInstruction::ListClientsToPlugin(
             env.plugin_id,
             env.client_id,
-            env.deno_generation,
+            env.generation,
         ))
     });
 }
@@ -6875,7 +6846,7 @@ fn change_host_folder(env: &PluginEnv, new_host_folder: PathBuf) {
             new_host_folder,
             env.plugin_id,
             env.client_id,
-            env.deno_generation,
+            env.generation,
         ))
     });
 }
@@ -7105,7 +7076,7 @@ fn resolve_plugin_fs_path(
     };
 
     if !resolved.starts_with(&canonical_root) {
-        // Name the link when there is one: a plugin that wrote `link.ts` and is refused
+        // Name the link when there is one: a plugin that wrote `link.scm` and is refused
         // should hear that it is a link, not merely that it points somewhere.
         let through_a_symlink = joined
             .ancestors()
@@ -7236,7 +7207,7 @@ fn configuration_editor(
             Err(error) => fs_read_response::Result::Error(format!("{error:#}")),
         }),
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .context("replying to configuration editor")
         .non_fatal();
 }
@@ -7276,7 +7247,7 @@ fn project_config(
             Err(e) => fs_read_response::Result::Error(format!("{e:#}")),
         }),
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .context("could not send project configuration")
         .non_fatal();
 }
@@ -7340,7 +7311,7 @@ fn fs_read(env: &mut PluginEnv, path: PathBuf, max_bytes: Option<usize>, offset:
             Err(e) => fs_read_response::Result::Error(format!("{:#}", e)),
         }),
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| format!("failed to send a file to plugin {}", env.name()))
         .non_fatal();
 }
@@ -7377,17 +7348,21 @@ fn fs_list(env: &mut PluginEnv, path: PathBuf) {
             Err(e) => fs_list_response::Result::Error(format!("{:#}", e)),
         }),
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| format!("failed to send a listing to plugin {}", env.name()))
         .non_fatal();
 }
 
-fn fs_metadata(env: &mut PluginEnv, path: PathBuf) {
+fn fs_metadata(env: &mut PluginEnv, path: PathBuf, follow_symlinks: bool) {
     let result = resolve_fs_path_with_permission(
         env,
         &path,
         FsIntent::Read,
-        FsPathResolution::PreserveEntry,
+        if follow_symlinks {
+            FsPathResolution::FollowSymlink
+        } else {
+            FsPathResolution::PreserveEntry
+        },
     )
     .map(|real| fs::symlink_metadata(&real).ok().map(FileMetadata::from));
 
@@ -7398,7 +7373,7 @@ fn fs_metadata(env: &mut PluginEnv, path: PathBuf) {
             Err(e) => fs_metadata_response::Result::Error(format!("{:#}", e)),
         }),
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| format!("failed to send metadata to plugin {}", env.name()))
         .non_fatal();
 }
@@ -7526,7 +7501,7 @@ fn write_fs_mutate_response(env: &mut PluginEnv, result: Result<()>) {
             Err(e) => fs_mutate_response::Result::Error(format!("{:#}", e)),
         }),
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .with_context(|| format!("failed to answer a filesystem command for {}", env.name()))
         .non_fatal();
 }
@@ -7559,7 +7534,7 @@ fn scan_host_folder(env: &PluginEnv, folder_to_scan: PathBuf) {
                 Ok(reading_folder) => {
                     let send_plugin_instructions = env.senders.to_plugin.clone();
                     let update_target = env.plugin_id;
-                    let deno_generation = env.deno_generation;
+                    let generation = env.generation;
                     let client_id = env.client_id;
                     thread::spawn({
                         move || {
@@ -7579,7 +7554,7 @@ fn scan_host_folder(env: &PluginEnv, folder_to_scan: PathBuf) {
                                     let _ = sender.send(PluginInstruction::for_plugin_event(
                                         update_target,
                                         client_id,
-                                        deno_generation,
+                                        generation,
                                         Event::FileSystemUpdate(paths_in_folder),
                                     ));
                                 })
@@ -7674,7 +7649,7 @@ fn get_pane_scrollback(env: &mut PluginEnv, pane_id: PaneId, get_full_scrollback
     ProtobufPaneScrollbackResponse::try_from(response)
         .map_err(|e| anyhow!("Failed to serialize pane scrollback response: {}", e))
         .and_then(|serialized| {
-            wasi_write_object(env, &serialized.encode_to_vec())?;
+            write_response(env, &serialized.encode_to_vec())?;
             Ok(())
         })
         .with_context(err_context)
@@ -7788,10 +7763,10 @@ fn get_pane_pid(env: &mut PluginEnv, pane_id: PaneId) {
         },
     };
 
-    // Encode response and write to plugin's stdin
+    // Encode the synchronous command response.
     let protobuf_response = ProtobufGetPanePidResponse::from(response);
     let serialized = protobuf_response.encode_to_vec();
-    wasi_write_object(env, &serialized)
+    write_response(env, &serialized)
         .with_context(err_context)
         .non_fatal();
 }
@@ -7829,7 +7804,7 @@ fn get_disconnect_targets(env: &mut PluginEnv) {
             error: Some(format!("{error:#}")),
         },
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
         .context("write disconnect-target response")
         .non_fatal();
 }
@@ -7881,7 +7856,7 @@ fn get_session_list(env: &mut PluginEnv) {
     };
 
     let protobuf_response = ProtobufGetSessionListResponse::from(response);
-    wasi_write_object(env, &protobuf_response.encode_to_vec())
+    write_response(env, &protobuf_response.encode_to_vec())
         .with_context(|| "failed to write get_session_list response".to_string())
         .non_fatal();
 }
@@ -7941,7 +7916,7 @@ fn write_pane_running_command_response(
     response: GetPaneRunningCommandResponse,
 ) {
     let protobuf_response = ProtobufGetPaneRunningCommandResponse::from(response);
-    wasi_write_object(env, &protobuf_response.encode_to_vec())
+    write_response(env, &protobuf_response.encode_to_vec())
         .with_context(|| format!("Failed to get running command for pane {:?}", pane_id))
         .non_fatal();
 }
@@ -8002,7 +7977,7 @@ fn await_pane_cwd_response(
 
 fn write_pane_cwd_response(env: &mut PluginEnv, pane_id: PaneId, response: GetPaneCwdResponse) {
     let protobuf_response = ProtobufGetPaneCwdResponse::from(response);
-    wasi_write_object(env, &protobuf_response.encode_to_vec())
+    write_response(env, &protobuf_response.encode_to_vec())
         .with_context(|| format!("Failed to get CWD for pane {:?}", pane_id))
         .non_fatal();
 }
@@ -8035,7 +8010,7 @@ fn get_pane_git_probe(
     let response = await_pane_git_probe_response(env, pane_id, receiver);
 
     let protobuf_response = ProtobufGetPaneGitProbeResponse::from(response);
-    wasi_write_object(env, &protobuf_response.encode_to_vec())
+    write_response(env, &protobuf_response.encode_to_vec())
         .with_context(|| format!("Failed to get the git probe for pane {:?}", pane_id))
         .non_fatal();
 }
@@ -8085,7 +8060,7 @@ fn save_layout(env: &mut PluginEnv, layout_name: String, layout_kdl: String, ove
     // Serialize and send response back to plugin
     let protobuf_response = ProtobufSaveLayoutResponse::from(response);
     let serialized = protobuf_response.encode_to_vec();
-    wasi_write_object(env, &serialized)
+    write_response(env, &serialized)
         .with_context(err_context)
         .non_fatal();
 }
@@ -8158,7 +8133,7 @@ fn delete_layout(env: &mut PluginEnv, layout_name: String) {
 
     let protobuf_response: ProtobufDeleteLayoutResponse = response.into();
     let serialized = protobuf_response.encode_to_vec();
-    wasi_write_object(env, &serialized)
+    write_response(env, &serialized)
         .with_context(err_context)
         .non_fatal();
 }
@@ -8177,7 +8152,7 @@ fn rename_layout(env: &mut PluginEnv, old_layout_name: String, new_layout_name: 
 
     let protobuf_response: ProtobufRenameLayoutResponse = response.into();
     let serialized = protobuf_response.encode_to_vec();
-    wasi_write_object(env, &serialized)
+    write_response(env, &serialized)
         .with_context(err_context)
         .non_fatal();
 }
@@ -8300,7 +8275,7 @@ fn edit_layout(env: &mut PluginEnv, layout_name: String, context: BTreeMap<Strin
 
     let protobuf_response: ProtobufEditLayoutResponse = response.into();
     let serialized = protobuf_response.encode_to_vec();
-    wasi_write_object(env, &serialized)
+    write_response(env, &serialized)
         .with_context(err_context)
         .non_fatal();
 }
@@ -8515,7 +8490,7 @@ fn break_panes_to_new_tab(
     };
 
     let response = ProtobufBreakPanesToNewTabResponse::from(tab_id);
-    wasi_write_object(env, &response.encode_to_vec()).non_fatal();
+    write_response(env, &response.encode_to_vec()).non_fatal();
 }
 
 fn break_panes_to_tab_with_index(
@@ -8545,7 +8520,7 @@ fn break_panes_to_tab_with_index(
     };
 
     let response = ProtobufBreakPanesToTabWithIndexResponse::from(tab_id);
-    wasi_write_object(env, &response.encode_to_vec()).non_fatal();
+    write_response(env, &response.encode_to_vec()).non_fatal();
 }
 
 fn switch_tab_to_id(env: &PluginEnv, tab_id: TabId) {
@@ -8625,7 +8600,7 @@ fn break_panes_to_tab_with_id(
     };
 
     let response = ProtobufBreakPanesToTabWithIdResponse::from(result_tab_id);
-    wasi_write_object(env, &response.encode_to_vec()).non_fatal();
+    write_response(env, &response.encode_to_vec()).non_fatal();
 }
 
 fn reload_plugin(env: &PluginEnv, plugin_id: PluginId) {
@@ -8909,7 +8884,7 @@ fn report_panic(env: &PluginEnv, msg: &str) {
     log::error!("PANIC IN PLUGIN!\n\r{}", msg);
     handle_plugin_crash(
         env.plugin_id,
-        env.deno_generation,
+        env.generation,
         Some(env.instance_id),
         msg.to_owned(),
         env.senders.clone(),
@@ -8918,48 +8893,9 @@ fn report_panic(env: &PluginEnv, msg: &str) {
 
 // Helper Functions ---------------------------------------------------------------------------------------------------
 
-pub fn wasi_read_string(plugin_env: &PluginEnv) -> Result<String> {
-    let err_context = || "failed to read string from WASI env".to_string();
-
-    let mut buf = vec![];
-    plugin_env
-        .stdout_pipe
-        .lock()
-        .unwrap()
-        .read_to_end(&mut buf)
-        .map_err(anyError::new)
-        .with_context(err_context)?;
-    let buf = String::from_utf8_lossy(&buf);
-
-    // https://stackoverflow.com/questions/66450942/in-rust-is-there-a-way-to-make-literal-newlines-in-r-using-windows-c
-    Ok(buf.replace("\n", "\n\r"))
-}
-
-pub fn wasi_write_string(plugin_env: &mut PluginEnv, buf: &str) -> Result<()> {
-    if let ResponseSink::Capture(captured) = &mut plugin_env.response_sink {
-        *captured = Some(buf.to_owned());
-        return Ok(());
-    }
-    let mut stdin = plugin_env.stdin_pipe.lock().unwrap();
-    writeln!(stdin, "{}\r", buf)
-        .map_err(anyError::new)
-        .with_context(|| "failed to write string to WASI env".to_string())
-}
-
-pub fn wasi_write_object(
-    plugin_env: &mut PluginEnv,
-    object: &(impl Serialize + ?Sized),
-) -> Result<()> {
-    serde_json::to_string(&object)
-        .map_err(anyError::new)
-        .and_then(|string| wasi_write_string(plugin_env, &string))
-        .with_context(|| "failed to serialize object for WASI env".to_string())
-}
-
-pub fn wasi_read_bytes(plugin_env: &PluginEnv) -> Result<Vec<u8>> {
-    wasi_read_string(plugin_env)
-        .and_then(|string| serde_json::from_str(&string).map_err(anyError::new))
-        .with_context(|| "failed to deserialize object from WASI env".to_string())
+pub fn write_response(plugin_env: &mut PluginEnv, bytes: &[u8]) -> Result<()> {
+    plugin_env.response_sink = Some(bytes.to_vec());
+    Ok(())
 }
 
 /// Whether this plugin has asked for permissions and is still waiting to hear back.
@@ -8970,8 +8906,6 @@ pub fn wasi_read_bytes(plugin_env: &PluginEnv) -> Result<Vec<u8>> {
 /// permission was granted. A denial made in that window has a different fix from one made after
 /// (wait for the answer, rather than ask), and a different fix again from the one a plugin that
 /// never asked at all needs, which is why the request is tracked separately from its answer.
-/// Only the Deno runtime can pass the difference on: a wasm guest is mid-call
-/// and cannot be handed a refusal at all.
 pub(crate) fn permission_answer_pending(plugin_env: &PluginEnv) -> bool {
     !plugin_env.plugin_config.is_builtin()
         && plugin_env
@@ -8982,10 +8916,7 @@ pub(crate) fn permission_answer_pending(plugin_env: &PluginEnv) -> bool {
 
 /// Whether `plugin_env` may run `command`, and which permission it is short of if not.
 ///
-/// `pub(crate)` for the TypeScript runtime, which asks before dispatching. A wasm plugin cannot be told
-/// no - the denied branch of [`run_plugin_command`] logs and returns, because the guest is
-/// mid-call and has no way to receive a refusal - but a TypeScript plugin's command is an ordinary
-/// function call that can raise.
+/// The runtime checks before dispatching so denied operations raise guest errors.
 pub(crate) fn check_command_permission(
     plugin_env: &PluginEnv,
     command: &PluginCommand,
@@ -9089,8 +9020,8 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         // A message to the plugin's own worker, and the worker's reply to the plugin: both stay
         // inside the plugin (`post_message_to_plugin` always addresses `env.plugin_id`).
         CommandType::PostMessageTo | CommandType::PostMessageToPlugin => return None,
-        // The host folder is preopened to the plugin as `/host` at load, so listing or watching
-        // it grants nothing the WASI mount does not. Moving it is `ChangeHostFolder`, below.
+        // Listing and watching the assigned host root are part of the baseline capability.
+        // Changing that root requires `ChangeHostFolder`, below.
         CommandType::ScanHostFolder | CommandType::WatchFilesystem => return None,
         CommandType::OpenFile
         | CommandType::OpenFileFloating
@@ -9394,14 +9325,14 @@ mod permission_tests {
     #[test]
     fn plugin_url_query_denial_is_an_error_not_an_empty_match() {
         let mut env = crate::test_env::test_env();
-        env.response_sink = ResponseSink::Capture(None);
-        let command = PluginCommand::GetPluginIdsForUrl("file:/plugin.ts".into());
+        env.response_sink = None;
+        let command = PluginCommand::GetPluginIdsForUrl("file:/plugin.scm".into());
         assert_eq!(
             command_permission(CommandType::GetPluginIdsForUrl),
             Some(PermissionType::ReadApplicationState)
         );
         run_plugin_command(&mut env, command).unwrap();
-        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        let bytes: Vec<u8> = env.response_sink.take().unwrap();
         let reply = yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse::decode(
             bytes.as_slice(),
         )
@@ -9429,7 +9360,7 @@ mod permission_tests {
         env.plugin_own_data_dir = temp.path().to_owned();
         env.user_plugin_dir = Some(plugin_dir.clone());
         *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::WriteFiles]));
-        env.response_sink = ResponseSink::Capture(None);
+        env.response_sink = None;
 
         run_plugin_command(
             &mut env,
@@ -9441,7 +9372,7 @@ mod permission_tests {
             },
         )
         .unwrap();
-        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        let bytes: Vec<u8> = env.response_sink.take().unwrap();
         assert_eq!(
             ProtobufFsMutateResponse::decode(bytes.as_slice())
                 .unwrap()
@@ -9474,8 +9405,8 @@ mod permission_tests {
                 env.user_plugin_dir = Some(plugin_dir.clone());
                 *env.permissions.lock().unwrap() =
                     Some(HashSet::from([PermissionType::WriteFiles]));
-                env.response_sink = ResponseSink::Capture(None);
-                let path = PathBuf::from(prefix).join("new/nested/plugin.ts");
+                env.response_sink = None;
+                let path = PathBuf::from(prefix).join("new/nested/plugin.scm");
 
                 for resolution in [
                     FsPathResolution::FollowSymlink,
@@ -9508,8 +9439,7 @@ mod permission_tests {
                         },
                     )
                     .unwrap();
-                    let bytes: Vec<u8> =
-                        serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+                    let bytes: Vec<u8> = env.response_sink.take().unwrap();
                     let result = ProtobufFsMutateResponse::decode(bytes.as_slice())
                         .unwrap()
                         .result;
@@ -9520,7 +9450,7 @@ mod permission_tests {
                             "{path:?}"
                         );
                         assert_eq!(
-                            fs::read(config.join(suffix).join("new/nested/plugin.ts")).unwrap(),
+                            fs::read(config.join(suffix).join("new/nested/plugin.scm")).unwrap(),
                             b"export {};"
                         );
                     } else {
@@ -9548,10 +9478,10 @@ mod permission_tests {
         env.plugin_cwd = temp.path().to_owned();
         env.user_plugin_dir = Some(plugin_dir);
         for path in [
-            "/plugins/new.ts",
-            "/host/plugins/new.ts",
-            "/host/alias/new.ts",
-            "plugins/new.ts",
+            "/plugins/new.scm",
+            "/host/plugins/new.scm",
+            "/host/alias/new.scm",
+            "plugins/new.scm",
             "/host/plugins",
         ] {
             for resolution in [
@@ -9601,7 +9531,7 @@ mod permission_tests {
         // Ensuring an existing ancestor directory is harmless; only removing or renaming
         // that entry changes the plugin folder below it.
         *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::WriteFiles]));
-        env.response_sink = ResponseSink::Capture(None);
+        env.response_sink = None;
         run_plugin_command(
             &mut env,
             PluginCommand::FsCreateDir {
@@ -9610,7 +9540,7 @@ mod permission_tests {
             },
         )
         .unwrap();
-        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        let bytes: Vec<u8> = env.response_sink.take().unwrap();
         assert!(matches!(
             ProtobufFsMutateResponse::decode(bytes.as_slice())
                 .unwrap()
@@ -9620,7 +9550,7 @@ mod permission_tests {
         *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::AuthorPlugins]));
         assert!(resolve_fs_path_with_permission(
             &env,
-            Path::new("/host/plugins/new.ts"),
+            Path::new("/host/plugins/new.scm"),
             FsIntent::Write,
             FsPathResolution::FollowSymlink
         )
@@ -9633,11 +9563,11 @@ mod permission_tests {
         use yinz_runtime::channels::{unbounded, SenderWithContext};
         use yinz_types::internal_ids::ClientId;
         let mut env = crate::test_env::test_env();
-        env.response_sink = ResponseSink::Capture(None);
+        env.response_sink = None;
         let (sender, server) = unbounded();
         env.senders.to_server = Some(SenderWithContext::new(sender));
         let read = |env: &mut PluginEnv| {
-            let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+            let bytes: Vec<u8> = env.response_sink.take().unwrap();
             ProtobufGetDisconnectTargetsResponse::decode(bytes.as_slice()).unwrap()
         };
         assert_eq!(
@@ -9695,7 +9625,7 @@ mod permission_tests {
     #[test]
     fn denied_session_commands_reply_with_permission_errors() {
         let mut env = crate::test_env::test_env();
-        env.response_sink = ResponseSink::Capture(None);
+        env.response_sink = None;
         for command in [
             PluginCommand::KillSessionsAndReply(vec!["test-session".into()]),
             PluginCommand::DeleteDeadSessionAndReply("test-session".into()),
@@ -9710,7 +9640,7 @@ mod permission_tests {
                 )
             );
             run_plugin_command(&mut env, command).unwrap();
-            let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+            let bytes: Vec<u8> = env.response_sink.take().unwrap();
             let error = match kind {
                 CommandType::KillSessionsAndReply => {
                     ProtobufKillSessionsResponse::decode(bytes.as_slice())
@@ -9740,9 +9670,9 @@ mod permission_tests {
     #[test]
     fn other_denied_commands_keep_their_empty_reply() {
         let mut env = crate::test_env::test_env();
-        env.response_sink = ResponseSink::Capture(None);
+        env.response_sink = None;
         run_plugin_command(&mut env, PluginCommand::GetSessionList).unwrap();
-        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        let bytes: Vec<u8> = env.response_sink.take().unwrap();
         assert!(bytes.is_empty());
     }
 
@@ -9913,7 +9843,7 @@ mod permission_tests {
             ..Default::default()
         }));
         let plugin = command(MultipaneChild::Plugin {
-            url: "file:/test.wasm".into(),
+            url: "file:/test.scm".into(),
             configuration: BTreeMap::new(),
         });
         *env.permissions.lock().unwrap() =
@@ -9955,8 +9885,8 @@ mod permission_tests {
         let mut env = crate::test_env::test_env();
         env.permissions = Arc::new(Mutex::new(Some(HashSet::new())));
         let check = |mode| PluginCommand::CheckPlugin {
-            name: "check.ts".into(),
-            source: "export default {};".into(),
+            name: "check.scm".into(),
+            source: "(void)".into(),
             mode,
         };
         assert_eq!(

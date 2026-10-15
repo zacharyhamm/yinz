@@ -766,7 +766,7 @@ fn layout_with_plugin_panes() {
                 plugin location="yinz:tab-bar"
             }
             pane {
-                plugin location="file:/path/to/my/plugin.wasm"
+                plugin location="file:/path/to/my/plugin.scm"
             }
             pane {
                 plugin location="yinz:status-bar" {
@@ -798,7 +798,7 @@ fn layout_with_plugin_panes() {
                     TiledPaneLayout {
                         run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                             location: RunPluginLocation::File(PathBuf::from(
-                                "/path/to/my/plugin.wasm",
+                                "/path/to/my/plugin.scm",
                             )),
                             _allow_exec_host_cmd: false,
                             configuration: Default::default(),
@@ -2915,16 +2915,16 @@ fn run_plugin_location_parsing() {
                 plugin location="yinz:tab-bar"
             }
             pane {
-                plugin location="file:/path/to/my/plugin.wasm"
+                plugin location="file:/path/to/my/plugin.scm"
             }
             pane {
-                plugin location="file:plugin.wasm"
+                plugin location="file:plugin.scm"
             }
             pane {
-                plugin location="file:relative/with space/plugin.wasm"
+                plugin location="file:relative/with space/plugin.scm"
             }
             pane {
-                plugin location="file:///absolute/with space/plugin.wasm"
+                plugin location="file:///absolute/with space/plugin.scm"
             }
             pane {
                 plugin location="filepicker"
@@ -2951,7 +2951,7 @@ fn run_plugin_location_parsing() {
                         run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                             _allow_exec_host_cmd: false,
                             location: RunPluginLocation::File(PathBuf::from(
-                                "/path/to/my/plugin.wasm",
+                                "/path/to/my/plugin.scm",
                             )),
                             configuration: Default::default(),
                             ..Default::default()
@@ -2962,7 +2962,7 @@ fn run_plugin_location_parsing() {
                         run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                             _allow_exec_host_cmd: false,
                             location: RunPluginLocation::File(
-                                std::env::current_dir().unwrap().join("plugin.wasm"),
+                                std::env::current_dir().unwrap().join("plugin.scm"),
                             ),
                             configuration: Default::default(),
                             ..Default::default()
@@ -2975,7 +2975,7 @@ fn run_plugin_location_parsing() {
                             location: RunPluginLocation::File(
                                 std::env::current_dir()
                                     .unwrap()
-                                    .join("relative/with space/plugin.wasm"),
+                                    .join("relative/with space/plugin.scm"),
                             ),
                             configuration: Default::default(),
                             ..Default::default()
@@ -2986,7 +2986,7 @@ fn run_plugin_location_parsing() {
                         run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                             _allow_exec_host_cmd: false,
                             location: RunPluginLocation::File(PathBuf::from(
-                                "/absolute/with space/plugin.wasm",
+                                "/absolute/with space/plugin.scm",
                             )),
                             configuration: Default::default(),
                             ..Default::default()
@@ -3409,18 +3409,18 @@ fn only_a_relative_file_url_reports_the_path_as_written() {
     let cwd = std::path::PathBuf::from("/some/where");
 
     let (location, relative) = yinz_runtime::plugin_location::parse_plugin_location_with_relative(
-        "file:keys.ts",
+        "file:keys.scm",
         Some(cwd.clone()),
     )
     .unwrap();
-    assert_eq!(relative, Some(std::path::PathBuf::from("keys.ts")));
+    assert_eq!(relative, Some(std::path::PathBuf::from("keys.scm")));
     assert_eq!(
         location,
-        RunPluginLocation::File(cwd.join("keys.ts")),
+        RunPluginLocation::File(cwd.join("keys.scm")),
         "the location itself is still the absolute path everything downstream expects"
     );
 
-    for absolute in ["file:/etc/keys.ts", "file:~/keys.ts"] {
+    for absolute in ["file:/etc/keys.scm", "file:~/keys.scm"] {
         let (_, relative) = yinz_runtime::plugin_location::parse_plugin_location_with_relative(
             absolute,
             Some(cwd.clone()),
@@ -3590,13 +3590,13 @@ fn floating_pane_tabs_keep_their_child_cwds() {
 fn lazy_pane_tabs_preserve_plugin_directory_fallback_and_symlink_declarations() {
     let cwd = tempfile::tempdir().unwrap();
     let plugins = tempfile::tempdir().unwrap();
-    let source = "export default {};";
-    let path = plugins.path().join("inactive.ts");
+    let source = "(void)";
+    let path = plugins.path().join("inactive.scm");
     std::fs::write(&path, source).unwrap();
-    let link = cwd.path().join("current # %.ts");
+    let link = cwd.path().join("current # %.scm");
     std::os::unix::fs::symlink(&path, &link).unwrap();
     for location in [
-        "file:inactive.ts".to_owned(),
+        "file:inactive.scm".to_owned(),
         url::Url::from_file_path(&link).unwrap().to_string(),
     ] {
         for floating in [false, true] {

@@ -12,7 +12,7 @@ impl PendingPermission {
     }
 }
 
-impl WasmBridge {
+impl PluginBridge {
     pub(crate) fn request_permissions(
         &mut self,
         plugin_id: PluginId,
@@ -155,7 +155,7 @@ impl WasmBridge {
                     granted = true;
                 }
                 env.set_permissions(permissions);
-                if let Some(workers) = &env.deno_workers {
+                if let Some(workers) = &env.workers {
                     workers.permission_answer(env, &pending.permissions, status);
                 }
             }
@@ -166,7 +166,7 @@ impl WasmBridge {
                 plugin_id,
                 "permissions",
                 false,
-                move |senders, _, clients, _, _| {
+                move |senders, _, clients| {
                     let _shutdown = shutdown;
                     let clients = if shared {
                         clients.lock().unwrap().clone()
@@ -177,7 +177,7 @@ impl WasmBridge {
                     if runtime.is_unavailable() {
                         return;
                     }
-                    let generation = runtime.deno_generation();
+                    let generation = runtime.generation();
                     let subscriptions = runtime.env().subscriptions.lock().unwrap().clone();
                     if generation.is_none()
                         && !subscriptions.contains(&EventType::PermissionRequestResult)

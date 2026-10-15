@@ -6,12 +6,12 @@ fn paths_aliases_and_missing_sources_resolve_without_loading() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().canonicalize().unwrap();
     std::fs::create_dir(cwd.join("nested")).unwrap();
-    let path = cwd.join("nested/main.ts");
+    let path = cwd.join("nested/main.scm");
     std::fs::write(&path, "").unwrap();
     std::os::unix::fs::symlink(cwd.join("nested"), cwd.join("linked")).unwrap();
     let repository = GitPlugin {
         repo: "https://example.com/a.git".into(),
-        entrypoint: "main.ts".into(),
+        entrypoint: "main.scm".into(),
         revision: None,
     };
     let aliases = PluginAliases::from_data(
@@ -42,10 +42,10 @@ fn paths_aliases_and_missing_sources_resolve_without_loading() {
     );
     for name in [
         path.to_str().unwrap(),
-        "./nested/main.ts",
-        "../nested/main.ts",
-        "./linked/main.ts",
-        "file:./nested/main.ts",
+        "./nested/main.scm",
+        "../nested/main.scm",
+        "./linked/main.scm",
+        "file:./nested/main.scm",
         "file",
     ] {
         let base = if name.starts_with("../") {
@@ -54,29 +54,29 @@ fn paths_aliases_and_missing_sources_resolve_without_loading() {
             cwd.clone()
         };
         assert!(
-            matches!(resolve_log_target(name, None, &cwd, &aliases, &base).unwrap(), LogTarget::File(found) if found == path),
+            matches!(resolve_log_target(name, None, &aliases, &base).unwrap(), LogTarget::File(found) if found == path),
             "{name}"
         );
     }
     for name in ["repo", &repository.descriptor()] {
         assert!(
-            matches!(resolve_log_target(name, None, &cwd, &aliases, &cwd).unwrap(), LogTarget::Repository(found) if found == repository.descriptor())
+            matches!(resolve_log_target(name, None, &aliases, &cwd).unwrap(), LogTarget::Repository(found) if found == repository.descriptor())
         );
     }
     for name in ["builtin", "yinz:agent"] {
         assert!(
-            matches!(resolve_log_target(name, None, &cwd, &aliases, &cwd).unwrap(), LogTarget::Builtin(found) if found == "agent")
+            matches!(resolve_log_target(name, None, &aliases, &cwd).unwrap(), LogTarget::Builtin(found) if found == "agent")
         );
     }
     assert!(
-        matches!(resolve_log_target("nested/main", Some(&cwd), &cwd, &aliases, &cwd).unwrap(), LogTarget::Legacy(found) if found == path)
+        matches!(resolve_log_target("nested/main", Some(&cwd), &aliases, &cwd).unwrap(), LogTarget::Legacy(found) if found == path)
     );
     std::fs::remove_file(&path).unwrap();
     assert!(
-        matches!(resolve_log_target("./linked/main.ts", None, &cwd, &aliases, &cwd).unwrap(), LogTarget::File(found) if found == path)
+        matches!(resolve_log_target("./linked/main.scm", None, &aliases, &cwd).unwrap(), LogTarget::File(found) if found == path)
     );
     assert!(
-        matches!(resolve_log_target("./absent/../main.ts", None, &cwd, &aliases, &cwd).unwrap(), LogTarget::File(found) if found == cwd.join("main.ts"))
+        matches!(resolve_log_target("./absent/../main.scm", None, &aliases, &cwd).unwrap(), LogTarget::File(found) if found == cwd.join("main.scm"))
     );
 }
 
@@ -86,26 +86,26 @@ fn exact_identity_isolates_same_names_and_repository_revisions() {
     let cwd = dir.path().canonicalize().unwrap();
     let repository = GitPlugin {
         repo: "https://example.com/a.git".into(),
-        entrypoint: "main.ts".into(),
+        entrypoint: "main.scm".into(),
         revision: None,
     };
     let other = GitPlugin {
         repo: "https://example.com/b.git".into(),
         ..repository.clone()
     };
-    let first = cwd.join("rev1/main.ts");
-    let second = cwd.join("rev2/main.ts");
+    let first = cwd.join("rev1/main.scm");
+    let second = cwd.join("rev2/main.scm");
     let marker = |repo: &GitPlugin, path: &Path| {
         LogIdentity::new(&RunPluginLocation::Git(repo.clone()), path, &cwd).marker()
     };
-    let one = format!("{} [deno:main.ts] console", marker(&repository, &first));
+    let one = format!("{} [steel:main.scm] console", marker(&repository, &first));
     let two = format!(
-        "{} [deno:main.ts] worker",
-        marker(&other, &cwd.join("other/main.ts"))
+        "{} [steel:main.scm] worker",
+        marker(&other, &cwd.join("other/main.scm"))
     );
     let three = format!("{} runtime error", marker(&repository, &second));
     let log = cwd.join("log");
-    std::fs::write(&log, format!("old main.ts\n{one}\n{two}\n{three}\n")).unwrap();
+    std::fs::write(&log, format!("old main.scm\n{one}\n{two}\n{three}\n")).unwrap();
     assert_eq!(
         log_target_tail(&log, &LogTarget::File(first), 10).unwrap(),
         format!("{one}\n")
@@ -128,13 +128,13 @@ fn exact_identity_isolates_same_names_and_repository_revisions() {
 
 #[test]
 fn escaped_identity_survives_log_framing() {
-    let path = Path::new("/external/line\n\"[x]/main.wasm");
+    let path = Path::new("/external/line\n\"[x]/main.scm");
     let identity = LogIdentity::new(&RunPluginLocation::File(path.into()), path, Path::new("/"));
     let marker = identity.marker();
     assert!(!marker.contains('\n'));
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
-    std::fs::write(&log, format!("{marker} stderr\nold main.wasm\n")).unwrap();
+    std::fs::write(&log, format!("{marker} stderr\nold main.scm\n")).unwrap();
     assert_eq!(
         log_target_tail(&log, &LogTarget::File(path.into()), 0).unwrap(),
         format!("{marker} stderr\n")
@@ -152,15 +152,15 @@ fn builtin_aliases_exclude_legacy_and_bare_names_ignore_other_sources_messages()
     )
     .marker();
     let file = LogIdentity::new(
-        &RunPluginLocation::File("/p/other.ts".into()),
-        Path::new("/p/other.ts"),
+        &RunPluginLocation::File("/p/other.scm".into()),
+        Path::new("/p/other.scm"),
         dir.path(),
     )
     .marker();
-    let entry = format!("{builtin} [deno:agent-policy] new");
+    let entry = format!("{builtin} [steel:agent-policy] new");
     std::fs::write(
         &log,
-        format!("[deno:agent-policy] old\n{entry}\n{file} mentions agent-policy.ts\n"),
+        format!("[steel:agent-policy] old\n{entry}\n{file} mentions agent-policy.scm\n"),
     )
     .unwrap();
     assert_eq!(
@@ -168,16 +168,16 @@ fn builtin_aliases_exclude_legacy_and_bare_names_ignore_other_sources_messages()
         format!("{entry}\n")
     );
     assert_eq!(
-        crate::log_tail(&log, Path::new("/p/agent-policy.ts"), 10).unwrap(),
-        format!("[deno:agent-policy] old\n{entry}\n")
+        crate::log_tail(&log, Path::new("/p/agent-policy.scm"), 10).unwrap(),
+        format!("[steel:agent-policy] old\n{entry}\n")
     );
 }
 
 #[test]
 fn non_utf8_source_identity_is_lossless() {
     use std::os::unix::ffi::OsStringExt;
-    let path = PathBuf::from(std::ffi::OsString::from_vec(b"/p/\xff/main.ts".to_vec()));
-    let other = Path::new("/p/\u{fffd}/main.ts");
+    let path = PathBuf::from(std::ffi::OsString::from_vec(b"/p/\xff/main.scm".to_vec()));
+    let other = Path::new("/p/\u{fffd}/main.scm");
     let identity = LogIdentity::new(
         &RunPluginLocation::File(path.clone()),
         &path,
@@ -200,14 +200,11 @@ fn file_aliases_select_the_loaders_fallback_and_preferred_sources() {
     let root = dir.path().canonicalize().unwrap();
     let cwd = root.join("cwd");
     let scripts = root.join("scripts");
-    let data = root.join("data");
-    for directory in [&cwd, &scripts, &data.join("plugins")] {
+    for directory in [&cwd, &scripts] {
         std::fs::create_dir_all(directory).unwrap();
     }
-    for (name, fallback) in [
-        ("keys.ts", scripts.join("keys.ts")),
-        ("keys", data.join("plugins/keys.wasm")),
-    ] {
+    for name in ["keys.scm", "keys.ss", "keys.sld"] {
+        let fallback = scripts.join(name);
         let (location, relative_path) =
             yinz_runtime::plugin_location::parse_plugin_location_with_relative(
                 &format!("file:{name}"),
@@ -222,18 +219,12 @@ fn file_aliases_select_the_loaders_fallback_and_preferred_sources() {
         let config = PluginConfig::from_run_plugin(&plugin).unwrap();
         let aliases = PluginAliases::from_data([("alias".into(), plugin)].into());
         std::fs::write(&fallback, "fallback").unwrap();
-        let preferred =
-            cwd.join(name)
-                .with_extension(if name.ends_with(".ts") { "ts" } else { "wasm" });
+        let preferred = cwd.join(name);
         for expected in [&fallback, &preferred] {
             std::fs::write(expected, "source").unwrap();
-            let loaded = match config.runtime() {
-                PluginRuntime::Deno => config.resolve_source(Some(&scripts)).unwrap().0,
-                PluginRuntime::Wasm => config.resolve_wasm_source(&data, None).unwrap().0,
-            };
+            let loaded = config.resolve_source(Some(&scripts)).unwrap().0;
             assert_eq!(&loaded, expected);
-            let target =
-                resolve_log_target("alias", Some(&scripts), &data, &aliases, &cwd).unwrap();
+            let target = resolve_log_target("alias", Some(&scripts), &aliases, &cwd).unwrap();
             assert!(matches!(&target, LogTarget::File(path) if path == &loaded));
             let selected = LogIdentity::new(&config.location, &loaded, &cwd).marker() + " selected";
             let unrelated = LogIdentity::new(&config.location, &root.join(name), &cwd).marker();
@@ -244,7 +235,7 @@ fn file_aliases_select_the_loaders_fallback_and_preferred_sources() {
         std::fs::remove_file(&fallback).unwrap();
         std::fs::remove_file(&preferred).unwrap();
         assert!(matches!(
-            resolve_log_target("alias", Some(&scripts), &data, &aliases, &cwd).unwrap(),
+            resolve_log_target("alias", Some(&scripts), &aliases, &cwd).unwrap(),
             LogTarget::File(path) if path == cwd.join(name)
         ));
     }
@@ -254,32 +245,32 @@ fn file_aliases_select_the_loaders_fallback_and_preferred_sources() {
 fn plugin_cli_explicit_targets_match_log_resolution() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().canonicalize().unwrap();
-    let path = cwd.join("space name.ts");
+    let path = cwd.join("space name.scm");
     for target in [
         path.display().to_string(),
-        "./space name.ts".into(),
+        "./space name.scm".into(),
         format!(
-            "../{}/space name.ts",
+            "../{}/space name.scm",
             cwd.file_name().unwrap().to_str().unwrap()
         ),
         format!("file:{}", path.display()),
         format!("file://{}", path.display()),
         format!("file://{}", path.display()).replace(' ', "%20"),
-        "file:./space name.ts".into(),
+        "file:./space name.scm".into(),
     ] {
         let resolved = resolve_explicit_plugin_path(&target, &cwd)
             .unwrap()
             .unwrap();
         assert_eq!(source_path(&resolved, &cwd), path, "{target}");
         assert!(
-            matches!(resolve_log_target(&target, None, &cwd, &PluginAliases::default(), &cwd).unwrap(), LogTarget::File(found) if found == path)
+            matches!(resolve_log_target(&target, None, &PluginAliases::default(), &cwd).unwrap(), LogTarget::File(found) if found == path)
         );
     }
-    for name in ["foo", "foo.ts", "folder/foo", " space.ts "] {
+    for name in ["foo", "foo.scm", "folder/foo", " space.scm "] {
         assert_eq!(resolve_explicit_plugin_path(name, &cwd).unwrap(), None);
     }
     assert_eq!(
-        resolve_explicit_plugin_path("./ missing.ts ", &cwd).unwrap(),
-        Some(cwd.join(" missing.ts "))
+        resolve_explicit_plugin_path("./ missing.scm ", &cwd).unwrap(),
+        Some(cwd.join(" missing.scm "))
     );
 }

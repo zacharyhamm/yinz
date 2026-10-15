@@ -3,5 +3,5 @@ source: yinz-plugin-host/src/./unit/plugin_tests/layout_api.rs
 expression: "format!(\"{:#?}\", plugin_bytes_event)"
 ---
 Some(
-    "Parse error: KdlError { kdl_error: LayoutDiagnostic { error_message: \"Failed to deserialize KDL node. \\nPossible reasons:\\n- Missing `;` after a node name, eg. { node; another_node; }\\n- Missing quotations (\\\") around an argument node eg. { first_node \\\"argument_node\\\"; }\\n- Missing an equal sign (=) between node arguments on a title line. eg. argument=\\\"value\\\"\\n- Found an extraneous equal sign (=) between node child arguments and their values. eg. { argument=\\\"value\\\" }\", offset: Some(9), len: Some(5), help_message: None }, file_name: \"parse_layout_api\", source_code: \"layout { this is not valid kdl }\" }\n\r",
+    "Parse error: parse_layout_api: Failed to deserialize KDL node. \n\rPossible reasons:\n\r- Missing `;` after a node name, eg. { node; another_node; }\n\r- Missing quotations (\") around an argument node eg. { first_node \"argument_node\"; }\n\r- Missing an equal sign (=) between node arguments on a title line. eg. argument=\"value\"\n\r- Found an extraneous equal sign (=) between node child arguments and their values. eg. { argument=\"value\" }\n\r",
 )

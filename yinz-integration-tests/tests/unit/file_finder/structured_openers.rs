@@ -29,34 +29,37 @@ fn is_reader(pane: &PaneListEntry, url: &str) -> bool {
 }
 
 fn receiver(root: &Path) -> String {
-    let path = root.join("reader '雪,%2C.ts");
+    let path = root.join("reader '雪,%2C.scm");
     std::fs::write(
         &path,
         r#"
-import z from 'yinz:plugin';
-let ready, payload = '', source = '', count = 0, settings = '';
-let release;
-ready = new Promise(resolve => { release = resolve; });
-export default {
-  async load(config) {
-    settings = config.fit ?? '';
-    z.subscribe(['Key']);
-    try { await z.waitForPermissions(['ChangeApplicationState']); release(true); }
-    catch { release(false); }
-  },
-  async pipe(message) {
-    if (!await ready) { payload = 'DENIED'; return true; }
-    payload = message.payload;
-    source = JSON.stringify(message.source);
-    count++;
-    return true;
-  },
-  update(event) {
-    if (event.Key?.bare_key?.Char === 'h') z.command('HideSelf');
-    return true;
-  },
-  render() { return `RECEIVED ${count} ${settings}\n${payload}\nSOURCE ${source}`; },
-};
+(define ready (yinz-deferred))
+(define payload "")
+(define source "")
+(define count 0)
+(define settings "")
+(define (load config)
+  (set! settings (if (hash-contains? config "fit") (hash-ref config "fit") ""))
+  (yinz-command (hash "Subscribe" '("Key")))
+  (yinz-catch
+    (yinz-then (yinz-wait-for-permissions '("ChangeApplicationState"))
+      (lambda (ignored) (yinz-resolve! ready #t)))
+    (lambda (failure) (yinz-resolve! ready #f))))
+(define (pipe message)
+  (yinz-then ready (lambda (granted)
+    (if granted
+      (begin
+        (set! payload (hash-ref message "payload"))
+        (set! source (yinz-json-string (hash-ref message "source")))
+        (set! count (+ count 1)))
+      (set! payload "DENIED"))
+    #t)))
+(define (update event)
+  (when (and (hash? event) (hash-contains? event "Key")
+             (equal? (hash-ref (hash-ref event "Key") "bare_key") (hash "Char" "h")))
+    (yinz-command "HideSelf")) #t)
+(define (render rows columns)
+  (string-append "RECEIVED " (number->string count) " " settings "\n" payload "\nSOURCE " source))
 "#,
     )
     .unwrap();
@@ -270,7 +273,7 @@ fn reader_permission_denial_and_missing_source_leave_no_finder() {
     yinz.wait_until("receiver handles denial", |g| g.contains("DENIED"));
     yinz.quit();
 
-    let missing = root.path().join("missing.ts");
+    let missing = root.path().join("missing.scm");
     let json = serde_json::json!({"pdf": {"plugin": missing}}).to_string();
     let mut yinz = session(&json, "");
     let (finder, selection) = open_finder(&yinz);
@@ -353,27 +356,32 @@ fn alias_settings_narrow_reuse_and_lowest_matching_id_wins() {
 #[test]
 fn background_handoff_never_renders_the_destination_and_keeps_palette_registration() {
     let root = tempfile::tempdir().unwrap();
-    let source = root.path().join("background.ts");
-    std::fs::write(&source, r#"
-import z from 'yinz:plugin';
-let terminal = 0;
-export default {
-  async load() {
-    if (!z.getPluginInfo().background) throw new Error('background provenance missing during load');
-    await z.waitForPermissions(['ReadApplicationState','ChangeApplicationState']);
-    if (z.getPluginInfo(4294967295) !== null) throw new Error('missing instance must return null');
-    const pane = z.host.getFocusedPaneInfo().pane_id;
-    if ('Terminal' in pane) terminal = pane.Terminal;
-    z.commandPalette.registerProvider({id:'handoff',title:'Handoff',actions:[{id:'alive',label:'Background handoff still registered',run(){}}]});
-    z.host.renameTerminalPane([terminal,'BACKGROUND READY']);
-  },
-  pipe(message) {
-    if (!z.getPluginInfo().background) throw new Error('background provenance changed');
-    z.host.renameTerminalPane([terminal,'BACKGROUND DELIVERED ' + message.payload]);
-  },
-  render() { return 'BACKGROUND DESTINATION MUST NEVER APPEAR'; }
-};
-"#).unwrap();
+    let source = root.path().join("background.scm");
+    std::fs::write(
+        &source,
+        r#"
+(define terminal 0)
+(define (background?) (hash-ref (yinz-command (hash "GetPluginInfo" json-null)) "background"))
+(define (load config)
+  (unless (background?) (error "background provenance missing during load"))
+  (yinz-then (yinz-wait-for-permissions '("ReadApplicationState" "ChangeApplicationState"))
+    (lambda (ignored)
+      (unless (json-null? (yinz-command (hash "GetPluginInfo" 4294967295)))
+        (error "missing instance must return null"))
+      (define pane (hash-ref (yinz-command "GetFocusedPaneInfo") "pane_id"))
+      (when (hash-contains? pane "Terminal") (set! terminal (hash-ref pane "Terminal")))
+      (yinz-palette-register "handoff" "Handoff"
+        (list (hash "id" "alive" "label" "Background handoff still registered"
+          "run" (lambda (values context) (void)))))
+      (yinz-command (hash "RenameTerminalPane" (list terminal "BACKGROUND READY"))))))
+(define (pipe message)
+  (unless (background?) (error "background provenance changed"))
+  (yinz-command (hash "RenameTerminalPane"
+    (list terminal (string-append "BACKGROUND DELIVERED " (hash-ref message "payload"))))))
+(define (render rows columns) "BACKGROUND DESTINATION MUST NEVER APPEAR")
+"#,
+    )
+    .unwrap();
     let url = url::Url::from_file_path(source).unwrap();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config(&format!(

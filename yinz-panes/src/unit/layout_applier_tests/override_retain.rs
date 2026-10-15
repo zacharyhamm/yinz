@@ -953,7 +953,7 @@ fn test_override_tiled_retain_plugin_panes_partial_match() {
                 plugin location="yinz:status-bar"
             }
             pane {
-                plugin location="file:///path/to/custom.wasm"
+                plugin location="file:///path/to/custom.scm"
             }
         }
     "#;
@@ -978,7 +978,7 @@ fn test_override_tiled_retain_plugin_panes_partial_match() {
     )
     .unwrap();
     let custom = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-        "file:///path/to/custom.wasm",
+        "file:///path/to/custom.scm",
         &None,
         None,
         None,
@@ -1224,13 +1224,13 @@ fn test_override_tiled_retain_plugin_panes_no_matches() {
         layout {
             pane
             pane {
-                plugin location="file:///path/to/plugin1.wasm"
+                plugin location="file:///path/to/plugin1.scm"
             }
             pane {
-                plugin location="file:///path/to/plugin2.wasm"
+                plugin location="file:///path/to/plugin2.scm"
             }
             pane {
-                plugin location="file:///path/to/plugin3.wasm"
+                plugin location="file:///path/to/plugin3.scm"
             }
         }
     "#;
@@ -1239,21 +1239,21 @@ fn test_override_tiled_retain_plugin_panes_no_matches() {
 
     let mut override_plugin_ids = HashMap::new();
     let plugin1 = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-        "file:///path/to/plugin1.wasm",
+        "file:///path/to/plugin1.scm",
         &None,
         None,
         None,
     )
     .unwrap();
     let plugin2 = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-        "file:///path/to/plugin2.wasm",
+        "file:///path/to/plugin2.scm",
         &None,
         None,
         None,
     )
     .unwrap();
     let plugin3 = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-        "file:///path/to/plugin3.wasm",
+        "file:///path/to/plugin3.scm",
         &None,
         None,
         None,
@@ -1579,14 +1579,14 @@ fn test_override_floating_retain_plugin_panes_no_matches() {
                     y 15
                     width 45
                     height 22
-                    plugin location="file:///path/to/plugin1.wasm"
+                    plugin location="file:///path/to/plugin1.scm"
                 }
                 pane {
                     x 25
                     y 25
                     width 55
                     height 27
-                    plugin location="file:///path/to/plugin2.wasm"
+                    plugin location="file:///path/to/plugin2.scm"
                 }
             }
         }
@@ -1596,14 +1596,14 @@ fn test_override_floating_retain_plugin_panes_no_matches() {
 
     let mut override_plugin_ids = HashMap::new();
     let plugin1 = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-        "file:///path/to/plugin1.wasm",
+        "file:///path/to/plugin1.scm",
         &None,
         None,
         None,
     )
     .unwrap();
     let plugin2 = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-        "file:///path/to/plugin2.wasm",
+        "file:///path/to/plugin2.scm",
         &None,
         None,
         None,
@@ -1768,7 +1768,7 @@ fn test_override_mixed_retain_plugin_panes_both_tiled_and_floating() {
                     y 20
                     width 50
                     height 25
-                    plugin location="file:///path/to/custom.wasm"
+                    plugin location="file:///path/to/custom.scm"
                 }
             }
         }
@@ -1785,7 +1785,7 @@ fn test_override_mixed_retain_plugin_panes_both_tiled_and_floating() {
     )
     .unwrap();
     let custom = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-        "file:///path/to/custom.wasm",
+        "file:///path/to/custom.scm",
         &None,
         None,
         None,

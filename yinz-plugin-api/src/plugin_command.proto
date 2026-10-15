@@ -535,6 +535,7 @@ message FsListPayload {
 
 message FsMetadataPayload {
   string path = 1;
+  bool follow_symlinks = 2;
 }
 
 message FsWritePayload {

@@ -1404,7 +1404,7 @@ pub mod rows {
     ///
     /// The one bound left on a run's size, and it is at the delivery seam rather than at the
     /// record: an entry costs a row, but the panel is sent its run as a single JSON string
-    /// copied into wasm memory, and that is the only place the length of a long-lived run is
+    /// copied into the interpreter, and that is the only place the length of a long-lived run is
     /// paid for. The newest end is the one that is kept, because that is the end the history
     /// half is anchored to and scrolls back from.
     ///
@@ -1490,7 +1490,7 @@ pub mod rows {
     /// default `id` ordering and [`entries_from_rows`] sorts by revision in the guest, exactly
     /// as agent's transcript loader does with `seq`. Row order agrees with revision order
     /// anyway: a row is written when its entry is made.
-    fn entries_request(run_ids: impl IntoIterator<Item = String>) -> FetchRequest {
+    pub fn entries_request(run_ids: impl IntoIterator<Item = String>) -> FetchRequest {
         FetchRequest::entity(ENTRY_ENTITY)
             .filter(Pred::is_in("run_id", run_ids))
             .limit(MAX_FETCH_ROWS)
@@ -1499,7 +1499,7 @@ pub mod rows {
     /// The newest [`RUN_DETAIL_ENTRIES`] entries of one run, for the panel.
     ///
     /// Sorted, which rules out a cursor — but one bounded fetch has nothing to page.
-    fn newest_entries_request(run_id: &str) -> FetchRequest {
+    pub fn newest_entries_request(run_id: &str) -> FetchRequest {
         FetchRequest::entity(ENTRY_ENTITY)
             .filter(Pred::eq("run_id", run_id))
             .sort_by("revision", SortDir::Desc)

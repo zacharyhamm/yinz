@@ -103,24 +103,19 @@ pub fn a_plugin_subscribing_after_the_broadcast_is_told_the_current_host_theme_m
         None,
     ));
 
-    // The fixture renders every event it received with `{:?}`, so the replayed event shows up in
-    // its output verbatim.
-    let expected_event = format!(
-        "{:?}",
-        Event::HostTerminalThemeChanged(HostTerminalThemeMode::Light)
-    );
+    let expected_event = Event::HostTerminalThemeChanged(HostTerminalThemeMode::Light);
     received_screen_instructions.wait_until_described(
         "the plugin to render the replayed HostTerminalThemeChanged",
         yinz_test_support::default_timeout(),
         |instructions| {
             renders(instructions)
                 .iter()
-                .any(|render| render.contains(&expected_event))
+                .any(|render| fixture_events(render.as_bytes()).contains(&expected_event))
                 .then_some(())
         },
         |instructions| {
             format!(
-                "expected to find: {}\nin one of the renders: {:#?}",
+                "expected to find: {:?}\nin one of the renders: {:#?}",
                 expected_event,
                 renders(instructions),
             )

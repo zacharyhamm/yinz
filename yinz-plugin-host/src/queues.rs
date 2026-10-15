@@ -6,7 +6,7 @@
 //! back. A job ends when its plugin unloads, however that happens: it called `FinishQueueJob`, it
 //! was cancelled, it closed itself, its pane was closed, or it crashed.
 //!
-//! This module is the bookkeeping only. It never launches or unloads anything: `WasmBridge` asks
+//! This module is the bookkeeping only. It never launches or unloads anything: `PluginBridge` asks
 //! it what to launch with [`Queues::pop_launchable`], tells it what happened with
 //! [`Queues::on_job_launched`] / [`Queues::on_launch_failed`] / [`Queues::on_plugin_unloaded`],
 //! and emits the events. Keeping it free of threads and senders is what makes it testable as a
@@ -44,7 +44,7 @@ pub struct QueuedJob {
     pub job_id: JobId,
     pub queue: String,
     pub enqueuer: (PluginId, ClientId),
-    pub deno_generation: Option<u64>,
+    pub generation: Option<u64>,
     /// Carries the enqueuer's configuration for the job; the host adds its own keys at launch.
     pub run_plugin_or_alias: RunPluginOrAlias,
     /// Never given to the job; echoed verbatim in the enqueuer's events.
@@ -120,7 +120,7 @@ pub struct FinishedJob {
     pub job_id: JobId,
     pub queue: String,
     pub enqueuer: (PluginId, ClientId),
-    pub deno_generation: Option<u64>,
+    pub generation: Option<u64>,
     pub context: BTreeMap<String, String>,
     pub outcome: QueueJobOutcome,
     pub payload: Option<String>,
@@ -132,7 +132,7 @@ impl FinishedJob {
             job_id: job.job_id,
             queue: job.queue,
             enqueuer: job.enqueuer,
-            deno_generation: job.deno_generation,
+            generation: job.generation,
             context: job.context,
             outcome,
             payload,
@@ -168,7 +168,7 @@ impl Queues {
         &mut self,
         queue: &str,
         enqueuer: (PluginId, ClientId),
-        deno_generation: Option<u64>,
+        generation: Option<u64>,
         run_plugin_or_alias: RunPluginOrAlias,
         context: BTreeMap<String, String>,
         cwd: Option<PathBuf>,
@@ -179,7 +179,7 @@ impl Queues {
             job_id,
             queue: queue.to_owned(),
             enqueuer,
-            deno_generation,
+            generation,
             run_plugin_or_alias,
             context,
             cwd,

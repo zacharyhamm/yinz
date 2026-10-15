@@ -1447,6 +1447,15 @@ fn palette_all_tabs_failure_retains_completed_and_unattempted_tabs() {
     receiver.wait_until("batch failure reported", |grid| {
         grid.contains("1/3 completed")
     });
+    // Rollback acknowledges ownership before the adopted tab's layout is ready.
+    let restored = sender.expect_adopted_pty();
+    let events = sender.stream_events(&["pane_update"]);
+    events.wait_for_event_matching("PaneUpdate", |json| {
+        let event: yinz_types::data::Event = serde_json::from_str(json).unwrap();
+        matches!(event, yinz_types::data::Event::PaneUpdate(manifest)
+            if manifest.panes.values().flatten().any(|pane|
+                pane.id == yinz_types::pane_id::PaneId::Terminal(restored.terminal_id())))
+    });
     assert_departed(&sender, &[&first]);
     let (code, listed) = sender.run_cli_action_reporting(CliAction::ListPanes {
         tab: false,
@@ -1468,6 +1477,9 @@ fn palette_all_tabs_failure_retains_completed_and_unattempted_tabs() {
     assert!(listed
         .iter()
         .any(|pane| pane["id"] == panes[1].terminal_id().get()));
+    assert!(listed
+        .iter()
+        .any(|pane| pane["id"] == restored.terminal_id().get()));
     receiver.send_stdin(&keys::ESC);
     type_and_confirm(&receiver, &arrived, b"batch-first-after");
     assert!(!panes[1].is_exited());

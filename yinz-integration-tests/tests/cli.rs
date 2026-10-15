@@ -52,36 +52,34 @@ fn pipe_recipient_session() -> (yinz_integration_tests::TestSession, String) {
 
     let root = yinz_integration_tests::test_env::init().join("pipe-recipient");
     std::fs::create_dir_all(&root).unwrap();
-    let path = root.join("recipient.ts");
+    let path = root.join("recipient.scm");
     std::fs::write(
         &path,
         r#"
-import z from 'yinz:plugin';
-let payload = '', keys = 0;
-export default {
-  async load() {
-    z.subscribe(['Key']);
-    await z.waitForPermissions(['ReadCliPipes', 'ChangeApplicationState']);
-  },
-  update(event) { if (event.Key) { keys++; return true; } },
-  render() { return `PIPE PAYLOAD: ${payload} KEYS: ${keys}`; },
-  pipe(message) {
-    const pipe = message.source.Cli;
-    if (message.payload?.trim() === 'close') {
-      // Release the explicit hold before retiring this instance.
-      z.command('BlockCliPipeInput', pipe);
-      z.command('CliPipeOutput', [pipe, 'response\n']);
-      z.command('UnblockCliPipeInput', pipe);
-      z.command('CloseSelf');
-    } else {
-      const output = message.payload === 'identity' ? String(z.getPluginIds().plugin_id)
-        : message.payload == null ? 'eof\n' : 'input\n';
-      z.command('CliPipeOutput', [pipe, output]);
-      if (message.payload != null && message.payload !== 'identity') payload = message.payload;
-    }
-    return true;
-  },
-};
+(define payload "") (define keys 0)
+(define (load configuration)
+  (yinz-command (hash "Subscribe" '("Key")))
+  (yinz-wait-for-permissions '("ReadCliPipes" "ChangeApplicationState")))
+(define (update event)
+  (if (and (hash? event) (hash-contains? event "Key"))
+      (begin (set! keys (+ keys 1)) #t) #f))
+(define (render rows columns)
+  (string-append "PIPE PAYLOAD: " payload " KEYS: " (number->string keys)))
+(define (pipe message)
+  (define id (hash-ref (hash-ref message "source") "Cli"))
+  (define body (hash-ref message "payload"))
+  (if (and (string? body) (equal? (trim body) "close"))
+      (begin
+        (yinz-command (hash "BlockCliPipeInput" id))
+        (yinz-command (hash "CliPipeOutput" (list id "response\n")))
+        (yinz-command (hash "UnblockCliPipeInput" id))
+        (yinz-command "CloseSelf"))
+      (begin
+        (define output (cond [(equal? body "identity") (number->string (hash-ref (yinz-command "GetPluginIds") "plugin_id"))]
+                             [(json-null? body) "eof\n"] [else "input\n"]))
+        (yinz-command (hash "CliPipeOutput" (list id output)))
+        (when (and (not (json-null? body)) (not (equal? body "identity"))) (set! payload body))))
+  #t)
 "#,
     )
     .unwrap();
@@ -211,8 +209,8 @@ fn live_pipe_recipients_receive_eof_and_initial_empty_requests_still_load() {
 fn lazy_plugin_load_failures_reach_cli_with_an_attached_ui() {
     let root = yinz_integration_tests::test_env::init().join("failed-pipe-loads");
     std::fs::create_dir_all(&root).unwrap();
-    let invalid = root.join("invalid.wasm");
-    std::fs::write(&invalid, b"not a wasm module").unwrap();
+    let invalid = root.join("invalid.scm");
+    std::fs::write(&invalid, b"(define broken").unwrap();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config("load_plugins clear-defaults=true {}")
         .with_layout(yinz_types::data::LayoutInfo::Stringified(
@@ -224,7 +222,7 @@ fn lazy_plugin_load_failures_reach_cli_with_an_attached_ui() {
         grid.contains("PIPE SESSION READY")
     });
     for url in [
-        format!("file:{}", root.join("missing.wasm").display()),
+        format!("file:{}", root.join("missing.scm").display()),
         format!("file:{}", invalid.display()),
         "yinz:not-a-builtin".into(),
     ] {

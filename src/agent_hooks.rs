@@ -78,7 +78,7 @@ fn legacy_agent(name: Option<&str>) -> Result<Option<HookAgent>> {
         .transpose()
 }
 
-/// Provider metadata is evaluated from TypeScript in a worker with no host authority.
+/// Provider metadata is evaluated from Scheme in a worker with no host authority.
 /// The CLI, after explicit install/uninstall, performs only the declared file operations.
 fn provider_command(command: &Hooks) -> Result<bool> {
     let (agent, project) = match command {
@@ -103,7 +103,7 @@ fn provider_command(command: &Hooks) -> Result<bool> {
     }
     if project {
         return Err(anyhow!(
-            "TypeScript provider hook files are installed at their declared home or config paths"
+            "Scheme provider hook files are installed at their declared home or config paths"
         ));
     }
     let location = if agent == "opencode" {
@@ -523,14 +523,14 @@ exit 0
     )
 }
 
-// OpenCode is a TypeScript provider; the compatibility CLI spelling resolves its module.
+// OpenCode is a Scheme provider; the compatibility CLI spelling resolves its module.
 fn opencode_provider() -> Result<yinz_types::agent::provider::AgentProvider> {
     yinz_server::inspect_agent_provider("yinz:agent-opencode")
 }
 
 #[cfg(test)]
 fn opencode_plugin(yinz: &Path) -> String {
-    let provider = opencode_provider().expect("builtin TypeScript provider evaluates");
+    let provider = opencode_provider().expect("builtin Scheme provider evaluates");
     yinz_runtime::agent::hook_files::render(
         &provider.hooks[0],
         yinz,

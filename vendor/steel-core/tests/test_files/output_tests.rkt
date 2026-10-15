@@ -1,0 +1,26 @@
+1
+2
+#false
+Error: Parse: Unexpected character: ')'
+#<void>
+120
+#<void>
+55
+#<void>
+#<void>
+1548008755920
+#<void>
+6
+#<void>
+10
+#true
+#false
+#true
+#false
+#true
+#false
+#false
+#false
+#<function:list>
+#<void>
+100

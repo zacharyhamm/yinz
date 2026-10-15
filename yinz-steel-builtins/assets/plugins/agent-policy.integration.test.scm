@@ -1,0 +1,5 @@
+(require "./testing/common.scm")
+(test "agent-policy receives the real session-start hook headlessly" (lambda ()
+    (s-start (hash "hooks" (hash "session_start" "yinz:agent-policy")))
+    (test-wait-for "session hook in plugin log" (lambda () (string-contains? (test-session "logs") "hook session_start")))
+    (assert (string-contains? (test-session "logs") "session_start"))))

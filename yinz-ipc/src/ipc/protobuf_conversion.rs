@@ -1011,9 +1011,6 @@ impl From<yinz_types::input::options::Options>
             user_plugin_dir: options
                 .user_plugin_dir
                 .map(|p| p.to_string_lossy().to_string()),
-            builtin_plugins_dir: options
-                .builtin_plugins_dir
-                .map(|p| p.to_string_lossy().to_string()),
             mouse_mode: options.mouse_mode,
             agent_double_escape: options.agent_double_escape,
             pane_frames: options.pane_frames,
@@ -1128,7 +1125,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             layout_dir: options.layout_dir.map(std::path::PathBuf::from),
             theme_dir: options.theme_dir.map(std::path::PathBuf::from),
             user_plugin_dir: options.user_plugin_dir.map(std::path::PathBuf::from),
-            builtin_plugins_dir: options.builtin_plugins_dir.map(std::path::PathBuf::from),
             mouse_mode: options.mouse_mode,
             agent_double_escape: options.agent_double_escape,
             // Not on the wire: the server reads this straight out of the config
@@ -5077,7 +5073,7 @@ impl From<yinz_types::data::OriginatingPlugin>
         let context: HashMap<String, String> = orig.context.into_iter().collect();
 
         Self {
-            deno_generation: orig.deno_generation,
+            generation: orig.generation,
             plugin_id: orig.plugin_id.get(),
             client_id: u32::from(orig.client_id.get()),
             context,
@@ -5098,7 +5094,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::OriginatingP
         let context: BTreeMap<String, String> = orig.context.into_iter().collect();
 
         Ok(Self {
-            deno_generation: orig.deno_generation,
+            generation: orig.generation,
             plugin_id: yinz_types::internal_ids::PluginId::new(orig.plugin_id),
             client_id: ClientId::try_from(orig.client_id)?,
             context,

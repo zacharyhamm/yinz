@@ -1,0 +1,8 @@
+(require "./testing/common.scm")
+(test "embedded status bar receives real mode updates and remains unselectable" (lambda ()
+    (s-start (hash "columns" 400)) (test-wait-for-text "yinz-test>") (s-load "yinz:status-bar")
+    (test-wait-for-text "LOCK")
+    (test-wait-for "status bar is unselectable" (lambda () (t-any (lambda (pane) (and (equal? (t-get pane "plugin_url" #f) "yinz:status-bar") (not (hash-ref pane "is_selectable")))) (s-panes))))
+    (s-action "SwitchToMode \"Pane\";") (test-wait-for-text "Fullscreen") (s-action "SwitchToMode \"Normal\";")
+    (test-wait-for "normal mode restored" (lambda () (and (string-contains? (s-screen) "LOCK") (not (string-contains? (s-screen) "Fullscreen")))))
+    (assert-equal (length (filter s-terminal? (s-panes))) 1)))

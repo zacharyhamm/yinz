@@ -16,8 +16,8 @@
 //!
 //! ```kdl
 //! hooks {
-//!     agent_exit "file:my-agent-exit.ts"
-//!     agent_start "file:my-policies.ts"
+//!     agent_exit "file:my-agent-exit.scm"
+//!     agent_start "file:my-policies.scm"
 //! }
 //! ```
 //!
@@ -36,7 +36,7 @@ use crate::data::PluginTag;
 ///
 /// The KDL spelling is the snake_case name; `FromStr`/`Display` are the whole of the mapping,
 /// so adding a point is adding a variant, its name and its [shape](HookPoint::shape). The serde
-/// spelling is the same name, so a TypeScript plugin reading `event.point` sees what it wrote in its
+/// spelling is the same name, so a Scheme plugin reading the event point sees what it wrote in its
 /// config.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -299,14 +299,14 @@ mod tests {
         other.set(
             HookPoint::AgentExit,
             RunPluginOrAlias::RunPlugin(RunPlugin {
-                location: RunPluginLocation::File("/tmp/mine.ts".into()),
+                location: RunPluginLocation::File("/tmp/mine.scm".into()),
                 ..Default::default()
             }),
         );
         hooks.merge(other);
         assert_eq!(
             hooks.get(HookPoint::AgentExit).map(|p| p.location_string()),
-            Some("file:/tmp/mine.ts".to_owned())
+            Some("file:/tmp/mine.scm".to_owned())
         );
     }
 

@@ -4,7 +4,6 @@
 use crate::flags;
 use crate::{build, format, test};
 use anyhow::Context;
-use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use xshell::{cmd, Shell};
 
@@ -31,8 +30,6 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
                 flags::Build {
                     release: flags.release,
                     profile: None,
-                    no_plugins: false,
-                    plugins_only: false,
                     args: vec![],
                 },
             )
@@ -41,275 +38,37 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
         .with_context(err_context)
 }
 
-/// Generate a runnable executable and install its builtin plugins.
-///
-/// Runs the following steps in sequence:
-///
-/// - [`build`](build::build) (the chosen profile, plugins only)
-/// - [`build`](build::build) (the chosen profile, without plugins)
-/// - Copy the executable to [target file](flags::Install::destination)
-/// - Copy the builtin plugin wasm to the directory the binary will look in
-///
-/// The profile is `release` unless `--profile` names another one; everything the install
-/// touches - the binary and the builtin wasm - comes from that profile's
-/// target directory.
+/// Install the native executable, including its embedded Scheme plugins.
 pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
-    let err_context = || format!("failed to run pipeline 'install' with args {flags:?}");
-
     let profile = flags.profile.as_deref().unwrap_or("release");
-    let profile_dir = build::profile_dir(profile);
-
-    // Build and optimize plugins
     build::build(
         sh,
         flags::Build {
             release: false,
-            profile: Some(profile.to_string()),
-            no_plugins: false,
-            plugins_only: true,
-            args: vec![],
+            profile: Some(profile.to_owned()),
+            args: flags.args,
         },
-    )
-    .and_then(|_| {
-        // Build the main executable
-        build::build(
-            sh,
-            flags::Build {
-                release: false,
-                profile: Some(profile.to_string()),
-                no_plugins: true,
-                plugins_only: false,
-                args: flags.args.clone(),
-            },
-        )
-    })
-    .with_context(err_context)?;
-    if profile_dir == "debug" {
-        let plugins = if build::plugin_profile_overrides(profile)
-            .iter()
-            .any(|(key, _)| *key == build::DEV_OPT_LEVEL)
-        {
-            " (its wasm plugins are still optimized)"
-        } else {
-            ""
-        };
-        println!(
-            "Note: installing a '{profile}' build: the yinz binary's own code is \
-             unoptimized{plugins}. 'cargo x install' installs a release build."
-        );
-    }
-
-    // Copy binary to destination
+    )?;
     let destination = if flags.destination.is_absolute() {
-        flags.destination.clone()
+        flags.destination
     } else {
         std::env::current_dir()
-            .context("Can't determine current working directory")?
-            .join(&flags.destination)
+            .context("determine install working directory")?
+            .join(flags.destination)
     };
-    // `sh.copy_file` accepts a directory destination, keep supporting that
     let destination = if destination.is_dir() {
         destination.join("yinz")
     } else {
         destination
     };
-    sh.change_dir(crate::project_root());
-    let binary = crate::target_dir().join(profile_dir).join("yinz");
-    // Copy to a temp file and rename, rather than overwriting in place: on macOS an in-place
-    // overwrite keeps the inode, so the kernel serves its cached (now stale) code signature and
-    // SIGKILLs the binary on exec. A rename gives it a fresh inode.
-    let tmp = destination.with_extension("xtask-install-tmp");
-    sh.copy_file(&binary, &tmp).with_context(err_context)?;
-    std::fs::rename(&tmp, &destination).with_context(err_context)?;
-
-    let (user, system) = builtin_dirs_of(sh, &binary)?;
-    crate::authoring::install(
-        sh,
-        &if std::env::var_os("PREFIX").is_some() {
-            system
-        } else {
-            user
-        },
-    )?;
-
-    if !flags.no_builtins {
-        install_builtins(sh, &binary, profile, flags.builtins_dir.as_deref())
-            .with_context(err_context)?;
-    }
-
-    Ok(())
-}
-
-/// Where the binary at `binary` looks for its installed builtins: `(user, system)`.
-///
-/// Asked of the binary rather than recomputed here, because every input is the binary's -
-/// `PREFIX` is baked in at compile time, the XDG answer is platform-specific, and the
-/// `builtins/<version>` shape is yinz-runtime's to define. xtask cannot depend on yinz-runtime
-/// without compiling the whole tree to run anything.
-fn builtin_dirs_of(sh: &Shell, binary: &Path) -> anyhow::Result<(PathBuf, PathBuf)> {
-    let output = cmd!(sh, "{binary} setup --print-builtin-plugin-dir")
-        .read()
-        .context("failed to ask the built yinz where its builtin plugins go")?;
-    let mut user = None;
-    let mut system = None;
-    for line in output.lines() {
-        if let Some(path) = line.strip_prefix("user=") {
-            user = Some(PathBuf::from(path));
-        } else if let Some(path) = line.strip_prefix("system=") {
-            system = Some(PathBuf::from(path));
-        }
-    }
-    match (user, system) {
-        (Some(user), Some(system)) => Ok((user, system)),
-        _ => anyhow::bail!(
-            "unexpected output from `yinz setup --print-builtin-plugin-dir`:\n{output}"
-        ),
-    }
-}
-
-fn install_builtins(
-    sh: &Shell,
-    binary: &Path,
-    profile: &str,
-    explicit_dir: Option<&Path>,
-) -> anyhow::Result<()> {
-    let (dir, prune) = match explicit_dir {
-        Some(dir) => (dir.to_path_buf(), false),
-        None => {
-            let (user, system) = builtin_dirs_of(sh, binary)?;
-            // The same variable `consts::system_default_data_dir` bakes into the binary, so an
-            // install and the binary it produced agree on where "system" is.
-            let system_install = std::env::var_os("PREFIX").is_some();
-            (if system_install { system } else { user }, true)
-        },
-    };
-
-    // The versioned dir is shared by every installed yinz of this version, so wasm built for
-    // another profile replaces what they all load - and an unoptimized plugin is noticeably
-    // slower. Say so before writing, while the user can still stop and use --no-builtins or
-    // --builtins-dir instead.
-    if profile != "release" {
-        eprintln!(
-            ">> Note: installing '{profile}' plugin wasm, which is unoptimized and replaces the \
-             release wasm every installed yinz of this version loads. Re-run \
-             'cargo x install <dest>' with no --profile to put the release wasm back, or pass \
-             --no-builtins / --builtins-dir to leave {} alone.",
-            dir.display()
-        );
-    }
-
-    // Said before anything is written: under `sudo`, HOME is root's, and the user should see
-    // that this is about to land in root's data dir rather than theirs.
-    let msg = format!(">> Installing builtin plugins to {}", dir.display());
-    crate::status(&msg);
-    eprintln!("{}", msg);
-    std::fs::create_dir_all(&dir).with_context(|| {
-        format!(
-            "failed to create {}. For a system-wide install set PREFIX and run as root \
-             (`sudo -E`); to put the plugins elsewhere pass --builtins-dir",
-            dir.display()
-        )
-    })?;
-
-    let names: Vec<&str> = build::PLUGINS
-        .iter()
-        .copied()
-        .filter(|name| !build::TEST_ONLY_PLUGINS.contains(name))
-        .collect();
-    let legacy_dir = prune
-        .then(|| dir.parent().and_then(|builtins| builtins.parent()))
-        .flatten()
-        .map(|data_dir| data_dir.join("plugins"));
-    for name in &names {
-        install_one_builtin(&dir, profile, name)?;
-        if let Some(legacy_dir) = &legacy_dir {
-            refresh_legacy_builtin(&dir, legacy_dir, name)?;
-        }
-    }
-
-    if prune {
-        prune_builtins(&dir, &names)?;
-    }
-    Ok(())
-}
-
-/// Copy one plugin in atomically: write beside the destination and rename over it, so a
-/// server that opens the file mid-copy sees either the old plugin or the new one, never a
-/// half-written file. Identical bytes are left alone.
-fn install_one_builtin(dir: &Path, profile: &str, name: &str) -> anyhow::Result<()> {
-    let from = build::plugin_path(profile, name);
-    let to = dir.join(name).with_extension("wasm");
-    let bytes = std::fs::read(&from).with_context(|| {
-        format!(
-            "no '{profile}' build of plugin '{name}' at {}",
-            from.display()
-        )
-    })?;
-    if std::fs::read(&to).ok().as_deref() == Some(bytes.as_slice()) {
-        return Ok(());
-    }
-    let tmp = dir.join(format!(".{name}.wasm.tmp"));
-    std::fs::write(&tmp, &bytes)
-        .and_then(|_| std::fs::rename(&tmp, &to))
-        .with_context(|| format!("failed to install plugin '{name}' to {}", to.display()))
-}
-
-fn refresh_legacy_builtin(
-    installed_dir: &Path,
-    legacy_dir: &Path,
-    name: &str,
-) -> anyhow::Result<()> {
-    let to = legacy_dir.join(name).with_extension("wasm");
-    if !to.is_file() {
-        return Ok(());
-    }
-    let from = installed_dir.join(name).with_extension("wasm");
-    let bytes = std::fs::read(&from)
-        .with_context(|| format!("failed to read installed plugin '{}'", from.display()))?;
-    let tmp = legacy_dir.join(format!(".{name}.wasm.tmp"));
-    std::fs::write(&tmp, bytes)
-        .and_then(|_| std::fs::rename(&tmp, &to))
-        .with_context(|| format!("failed to refresh legacy plugin '{}'", to.display()))?;
-    eprintln!(">> Refreshed legacy builtin {}", to.display());
-    Ok(())
-}
-
-/// Remove wasm in the versioned dir that no plugin crate produces any more - a plugin deleted
-/// from the workspace must not keep loading - and point out sibling version dirs, which are
-/// left alone because another installed yinz may still be that version.
-fn prune_builtins(dir: &Path, installed: &[&str]) -> anyhow::Result<()> {
-    for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("failed to read {}", dir.display()))?
-        .flatten()
-    {
-        let path = entry.path();
-        let is_wasm = path.extension().is_some_and(|ext| ext == "wasm");
-        let stem = path.file_stem().and_then(|stem| stem.to_str());
-        if is_wasm && stem.is_some_and(|stem| !installed.contains(&stem)) {
-            eprintln!(">> Pruning {}", path.display());
-            std::fs::remove_file(&path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
-        }
-    }
-
-    let Some(versions_dir) = dir.parent() else {
-        return Ok(());
-    };
-    let mut stale: Vec<String> = std::fs::read_dir(versions_dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| entry.path().is_dir() && entry.path() != dir)
-        .map(|entry| entry.path().display().to_string())
-        .collect();
-    if !stale.is_empty() {
-        stale.sort();
-        eprintln!(">> Builtins of other yinz versions are still installed; delete them once no yinz of that version remains:");
-        for path in stale {
-            eprintln!("     {path}");
-        }
-    }
-    Ok(())
+    let binary = crate::target_dir()
+        .join(build::profile_dir(profile))
+        .join("yinz");
+    // Rename a fresh inode so macOS does not reuse an outdated cached code signature.
+    let staged = destination.with_extension("xtask-install-tmp");
+    sh.copy_file(&binary, &staged)
+        .context("stage installed binary")?;
+    std::fs::rename(staged, destination).context("install native binary")
 }
 
 /// Run yinz debug build.
@@ -323,56 +82,18 @@ pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
     }
 
     let data_dir = if flags.quick_run {
-        // Skip the stamp hash and the build: run against whatever debug plugins are already
-        // under target/. Only a tree that has never built them gets a (debug, one-off) plugin
-        // build - never the release build, which is the slowest thing xtask does.
-        let missing: Vec<&str> = build::PLUGINS
-            .iter()
-            .copied()
-            .filter(|name| !build::debug_plugin_path(name).is_file())
-            .collect();
-        if missing.is_empty() {
-            let msg = ">> Quick run: using the debug plugins already under target/";
-            crate::status(msg);
-            eprintln!("{}", msg);
-        } else {
-            eprintln!(">> Quick run: no debug build yet of {}", missing.join(", "));
-            build::build(
-                sh,
-                flags::Build {
-                    release: false,
-                    profile: None,
-                    no_plugins: false,
-                    plugins_only: true,
-                    args: vec![],
-                },
-            )
-            .with_context(|| err_context(&flags))?;
-        }
-        // A scratch data dir under target/, so a debug build of whatever branch this is never
-        // opens the user's real plugin-data.db. Its `plugins/` folder
-        // stays empty, so the builtins resolve from the debug target dir.
+        // Isolate development storage from the user's real plugin-data.db.
         let scratch = crate::target_dir().join("dev-data");
         sh.create_dir(&scratch)
             .with_context(|| err_context(&flags))?;
         Some(scratch)
-    } else if let Some(ref data_dir) = flags.data_dir {
-        // The caller said where the plugins are; nothing to build.
-        Some(sh.current_dir().join(data_dir))
     } else {
-        build::build(
-            sh,
-            flags::Build {
-                release: false,
-                profile: None,
-                no_plugins: false,
-                plugins_only: true,
-                args: vec![],
-            },
-        )
-        .with_context(|| err_context(&flags))?;
-        None
+        flags
+            .data_dir
+            .as_ref()
+            .map(|data_dir| sh.current_dir().join(data_dir))
     };
+    build::run_proto_codegen(sh, false);
 
     let cargo = crate::cargo().with_context(|| err_context(&flags))?;
     let mut cmd = cmd!(sh, "{cargo} run").args(["--package", "yinz", "--"]);
@@ -393,54 +114,3 @@ fn run_interactive(cmd: xshell::Cmd<'_>) -> anyhow::Result<()> {
     anyhow::ensure!(status.success(), "{description} failed with {status}");
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{prune_builtins, refresh_legacy_builtin};
-    use std::fs;
-
-    /// Only wasm nothing produces any more goes; sibling version folders are somebody else's.
-    #[test]
-    fn pruning_removes_only_orphaned_wasm_in_the_version_dir() {
-        let root = tempfile::tempdir().unwrap();
-        let current = root.path().join("0.45.0");
-        let other = root.path().join("0.44.0");
-        fs::create_dir_all(&current).unwrap();
-        fs::create_dir_all(&other).unwrap();
-        fs::write(current.join("tab-bar.wasm"), "keep").unwrap();
-        fs::write(current.join("share.wasm"), "orphan").unwrap();
-        fs::write(current.join("notes.txt"), "not wasm").unwrap();
-        fs::write(other.join("share.wasm"), "other version").unwrap();
-
-        prune_builtins(&current, &["tab-bar"]).unwrap();
-
-        assert!(current.join("tab-bar.wasm").is_file());
-        assert!(!current.join("share.wasm").exists());
-        assert!(current.join("notes.txt").is_file());
-        assert!(other.join("share.wasm").is_file());
-    }
-
-    #[test]
-    fn refreshing_legacy_builtin_only_replaces_an_existing_match() {
-        let root = tempfile::tempdir().unwrap();
-        let installed = root.path().join("builtins/0.45.0");
-        let legacy = root.path().join("plugins");
-        fs::create_dir_all(&installed).unwrap();
-        fs::create_dir_all(&legacy).unwrap();
-        fs::write(installed.join("tab-bar.wasm"), "current").unwrap();
-        fs::write(installed.join("status-bar.wasm"), "current").unwrap();
-        fs::write(legacy.join("tab-bar.wasm"), "stale").unwrap();
-        fs::write(legacy.join("custom.wasm"), "custom").unwrap();
-
-        refresh_legacy_builtin(&installed, &legacy, "tab-bar").unwrap();
-        refresh_legacy_builtin(&installed, &legacy, "status-bar").unwrap();
-
-        assert_eq!(fs::read(legacy.join("tab-bar.wasm")).unwrap(), b"current");
-        assert!(!legacy.join("status-bar.wasm").exists());
-        assert_eq!(fs::read(legacy.join("custom.wasm")).unwrap(), b"custom");
-    }
-}
-
-#[cfg(test)]
-#[path = "unit/interactive.rs"]
-mod interactive_tests;

@@ -1,6 +1,6 @@
 //! Source-aware log selection, shared by the CLI and plugin host.
 use std::path::{Path, PathBuf};
-use yinz_config::plugins::{PluginConfig, PluginRuntime};
+use yinz_config::plugins::PluginConfig;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::input::{layout::RunPluginLocation, plugins::PluginAliases};
 
@@ -83,7 +83,6 @@ pub fn resolve_explicit_plugin_path(target: &str, cwd: &Path) -> Result<Option<P
 pub fn resolve_log_target(
     name: &str,
     dir: Option<&Path>,
-    data_dir: &Path,
     aliases: &PluginAliases,
     cwd: &Path,
 ) -> Result<LogTarget> {
@@ -92,12 +91,7 @@ pub fn resolve_log_target(
             RunPluginLocation::File(path) => {
                 let config = PluginConfig::from_run_plugin(plugin)
                     .context("resolve file alias configuration")?;
-                let resolved = match config.runtime() {
-                    PluginRuntime::Deno => config.resolve_source(dir).map(|(path, _)| path),
-                    PluginRuntime::Wasm => config
-                        .resolve_wasm_source(data_dir, None)
-                        .map(|(path, _)| path),
-                };
+                let resolved = config.resolve_source(dir).map(|(path, _)| path);
                 // Keep diagnostics accessible when the source can no longer be read.
                 LogTarget::File(source_path(resolved.as_deref().unwrap_or(path), cwd))
             },
@@ -148,8 +142,8 @@ pub fn log_target_tail(log_file: &Path, target: &LogTarget, lines: usize) -> Res
                                 .file_stem()
                                 .and_then(|stem| stem.to_str())
                                 .is_some_and(|stem| {
-                                    yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES.contains(&stem)
-                                        && line.contains(&format!("[deno:{stem}]"))
+                                    yinz_runtime::consts::BUILTIN_PLUGIN_NAMES.contains(&stem)
+                                        && line.contains(&format!("[steel:{stem}]"))
                                 })
                     },
                     _ => false,

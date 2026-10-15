@@ -157,7 +157,7 @@ pub fn switch_to_mode_plugin_command_permission_denied() {
 
     // Proves the key was handled. A wrongly routed ChangeMode goes to the server channel, which
     // this frame does not order, so it is caught by the server observer outliving every sender.
-    wait_for_render_containing(&received_screen_instructions, "bare_key: Char('a')");
+    wait_for_render_containing(&received_screen_instructions, r#""bare_key":{"Char":"a"}"#);
 
     // Everything the plugin thread will ever send has been sent once teardown has joined it, and
     // each observer returns when the last sender into its channel is gone.

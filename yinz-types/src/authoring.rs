@@ -20,25 +20,24 @@ pub struct PluginCheckReport {
     pub formatted_source: Option<String>,
 }
 
-/// What one entry of an source analysis is.
+/// What one entry of a source analysis is.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub enum OutlineKind {
-    /// `require "name"`.
+    /// `(require "./module.scm")`.
     Require,
-    /// `request_permission { ... }`, with every name it asks for.
+    /// A literal permission request, with every permission it asks for.
     Permission,
-    /// A named function in either spelling: `function M.load(config)`, `local function tick()`
-    /// or `M.render = function(rows, cols)`.
+    /// A named function, such as `(define (render rows columns) ...)`.
     Function,
-    /// `on "event"`: a handler registered with `yinz.on`.
+    /// An event handler registered with `yinz-on-event`.
     Handler,
-    /// `data.define "entity"`.
+    /// A named value definition.
     Define,
 }
 
-/// One line of an source analysis: what is defined or hooked there, and where.
+/// One line of a source analysis: what is defined or hooked there, and where.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OutlineEntry {
     /// 1-based, as an editor counts them.
@@ -49,7 +48,7 @@ pub struct OutlineEntry {
     pub text: String,
 }
 
-/// Installed TypeScript test runner input. `name` is resolved inside the plugin folder.
+/// Installed Scheme test runner input. `name` is resolved inside the plugin folder.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PluginTestOptions {

@@ -170,29 +170,10 @@ fn isolate_process_environment(test_root: &Path) {
     std::env::set_current_dir(test_root.join("cwd")).unwrap();
 }
 
-/// The wasm fixture plugin, from the checkout's target dir: the debug build that `cargo x
-/// integration-test` makes, else a release build. Panics with the fix if neither exists.
+/// The checked-in Scheme fixture stays outside the production builtin source tree.
 pub fn fixture_plugin_path() -> PathBuf {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let candidates = [
-        repo_root.join("target/wasm32-wasip1/debug/fixture-plugin-for-tests.wasm"),
-        repo_root.join("target/wasm32-wasip1/release/fixture-plugin-for-tests.wasm"),
-    ];
-    candidates
-        .iter()
-        .find(|path| path.exists())
-        .cloned()
-        .unwrap_or_else(|| {
-            panic!(
-                "could not find the fixture plugin. Run `cargo x build -p` to build the plugins. \
-                 Looked in:\n  {}",
-                candidates
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n  ")
-            )
-        })
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../yinz-steel-builtins/fixtures/fixture-plugin-for-tests.scm")
 }
 
 pub fn unique_session_name() -> String {

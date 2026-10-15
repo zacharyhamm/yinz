@@ -1,0 +1,29 @@
+[package]
+name = "yinz-steel"
+description = "Confined Steel Scheme runtime and Yinz plugin bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+agent-proto = { path = "../default-plugins/agent-proto" }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+miette = { workspace = true }
+yinz-config = { workspace = true }
+rand = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+libc = { workspace = true }
+unicode-width = { workspace = true }
+strip-ansi-escapes = { workspace = true }
+yinz-tile = { path = "../yinz-tile" }
+yinz-tile-markdown = { path = "../yinz-tile-markdown" }
+yinz-types = { workspace = true }
+steel = { package = "steel-core", version = "=0.8.3", default-features = false, features = ["std", "sync", "interrupt"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

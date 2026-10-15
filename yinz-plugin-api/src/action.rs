@@ -3844,7 +3844,7 @@ pub(crate) mod tests {
     fn git_plugins_survive_the_plugin_wire() {
         let original = RunPluginLocation::Git(yinz_types::input::git_plugin::GitPlugin {
             repo: "git@example.com:team/plugin.git".into(),
-            entrypoint: "src/panel.ts".into(),
+            entrypoint: "src/panel.scm".into(),
             revision: Some(yinz_types::input::git_plugin::GitRevision::Tag("v1".into())),
         });
         let protobuf: ProtobufRunPluginLocationData = original.clone().try_into().unwrap();
@@ -3854,9 +3854,9 @@ pub(crate) mod tests {
     #[test]
     fn a_relative_plugin_path_survives_the_plugin_api_round_trip() {
         let original = RunPlugin {
-            location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.ts")),
-            relative_path: Some(PathBuf::from("keys.ts")),
-            declared_path: Some(PathBuf::from("/somewhere/current.ts")),
+            location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.scm")),
+            relative_path: Some(PathBuf::from("keys.scm")),
+            declared_path: Some(PathBuf::from("/somewhere/current.scm")),
             ..Default::default()
         };
         let protobuf: ProtobufRunPlugin = original.clone().try_into().expect("encode");
@@ -3867,10 +3867,10 @@ pub(crate) mod tests {
 
     #[test]
     fn plugin_url_actions_preserve_declared_paths_and_reserved_characters() {
-        let path = PathBuf::from("/somewhere/current # %20?.ts");
+        let path = PathBuf::from("/somewhere/current # %20?.scm");
         let action = Action::StartOrReloadPlugin {
             plugin: RunPluginOrAlias::RunPlugin(RunPlugin {
-                location: RunPluginLocation::File(PathBuf::from("/somewhere/v1.ts")),
+                location: RunPluginLocation::File(PathBuf::from("/somewhere/v1.scm")),
                 declared_path: Some(path.clone()),
                 ..Default::default()
             }),

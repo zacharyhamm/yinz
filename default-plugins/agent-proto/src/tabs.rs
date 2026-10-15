@@ -15,31 +15,6 @@ pub const BAR_KEYS: &[(&str, &str)] = &[
     ("click a tab/arrow", "activate a tab/browse hidden tabs"),
 ];
 
-/// Return queued navigation to the native bar, which owns selection and activation.
-pub fn forward_bar_key(key: yinz_types::keys::KeyWithModifier) {
-    use yinz_types::keys::BareKey;
-    if key.has_no_modifiers()
-        && matches!(
-            key.bare_key,
-            BareKey::Left
-                | BareKey::Right
-                | BareKey::Enter
-                | BareKey::Tab
-                | BareKey::Esc
-                | BareKey::Char('r')
-        )
-    {
-        yinz_tile::prelude::run_action(
-            yinz_types::input::actions::Action::Write {
-                key_with_modifier: Some(key),
-                bytes: vec![],
-                is_kitty_keyboard_protocol: false,
-            },
-            Default::default(),
-        );
-    }
-}
-
 pub use yinz_types::tab_bar::TabCell;
 
 /// The cell as it is painted.

@@ -48,32 +48,11 @@ pub fn main(sh: &Shell, flags: flags::Ci) -> anyhow::Result<()> {
 fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
     let err_context = "failed to build E2E binary";
 
-    build::build(
-        sh,
-        flags::Build {
-            release: true,
-            profile: None,
-            no_plugins: false,
-            plugins_only: true,
-            args: vec![],
-        },
-    )
-    .context(err_context)?;
-
-    // Copy plugins to e2e data-dir. The test plugins are included: the e2e fixture configs
-    // load `fixture-plugin-for-tests`.
     let project_root = crate::project_root();
     let data_dir = crate::target_dir().join("e2e-data");
-
     sh.remove_path(&data_dir)
         .and_then(|_| sh.create_dir(&data_dir))
-        .and_then(|_| sh.create_dir(data_dir.join("plugins")))
         .context(err_context)?;
-
-    for name in build::PLUGINS {
-        sh.copy_file(build::release_plugin_path(name), data_dir.join("plugins"))
-            .context(err_context)?;
-    }
 
     let _pd = sh.push_dir(project_root);
     let binary = build_linux_release(sh).context(err_context)?;
@@ -155,23 +134,12 @@ pub fn build_linux_release(sh: &Shell) -> anyhow::Result<PathBuf> {
 #[path = "unit/ci.rs"]
 mod tests;
 
-/// Native release build: builds plugins, generates protobufs, and runs
+/// Native release build: generates protobufs and runs
 /// `cargo build --release` without cross-compilation.
 fn build_release(sh: &Shell) -> anyhow::Result<()> {
     let err_context = "failed to perform native release build";
 
-    // Build plugins and generate protobufs
-    build::build(
-        sh,
-        flags::Build {
-            release: true,
-            profile: None,
-            no_plugins: false,
-            plugins_only: true,
-            args: vec![],
-        },
-    )
-    .context(err_context)?;
+    build::run_proto_codegen(sh, false);
 
     // Build the main binary natively
     let _pd = sh.push_dir(crate::project_root());
@@ -239,17 +207,7 @@ fn cross_compile(sh: &Shell, target: &OsString) -> anyhow::Result<()> {
         })
         .with_context(err_context)?;
 
-    build::build(
-        sh,
-        flags::Build {
-            release: true,
-            profile: None,
-            no_plugins: false,
-            plugins_only: true,
-            args: vec![],
-        },
-    )
-    .with_context(err_context)?;
+    build::run_proto_codegen(sh, false);
 
     cross()
         .and_then(|cross| {

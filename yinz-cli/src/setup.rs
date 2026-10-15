@@ -8,10 +8,10 @@ use yinz_config::assets::*;
 use {
     crate::args::CliArgs, crate::args::Command, crate::args::SessionCommand, crate::args::Sessions,
     yinz_config::config::Config, yinz_config::config::ConfigError, yinz_config::consts::FEATURES,
-    yinz_config::consts::YINZ_DEFAULT_THEMES, yinz_config::plugins::PluginConfig,
-    yinz_runtime::consts::VERSION, yinz_runtime::consts::YINZ_CACHE_DIR,
-    yinz_runtime::errors::prelude::*, yinz_runtime::home::*, yinz_types::data::LayoutInfo,
-    yinz_types::input::layout::Layout, yinz_types::input::options::Options,
+    yinz_config::consts::YINZ_DEFAULT_THEMES, yinz_runtime::consts::VERSION,
+    yinz_runtime::consts::YINZ_CACHE_DIR, yinz_runtime::errors::prelude::*, yinz_runtime::home::*,
+    yinz_types::data::LayoutInfo, yinz_types::input::layout::Layout,
+    yinz_types::input::options::Options,
 };
 
 const CONFIG_NAME: &str = "config.kdl";
@@ -134,12 +134,6 @@ pub struct Setup {
     /// Generates auto-start script for the specified shell
     #[clap(long, value_name = "SHELL", value_parser)]
     pub generate_auto_start: Option<String>,
-
-    /// Print where this binary looks for its installed builtin plugins, as `user=<dir>` and
-    /// `system=<dir>` lines. For `cargo x install`, which asks the binary it just built rather
-    /// than recomputing the XDG and `PREFIX` answers itself.
-    #[clap(long, value_parser, hide = true)]
-    pub print_builtin_plugin_dir: bool,
 }
 pub fn load_config(args: &CliArgs) -> Result<Config, ConfigError> {
     let clean = matches!(&args.command, Some(Command::Setup(setup)) if setup.clean);
@@ -245,12 +239,6 @@ impl Setup {
             std::process::exit(0);
         }
 
-        if self.print_builtin_plugin_dir {
-            println!("user={}", user_builtin_plugin_dir().display());
-            println!("system={}", system_builtin_plugin_dir().display());
-            std::process::exit(0);
-        }
-
         Ok(())
     }
 
@@ -267,7 +255,6 @@ impl Setup {
     pub fn check_defaults_config(opts: &CliArgs, config_options: &Options) -> std::io::Result<()> {
         let data_dir = opts.data_dir.clone().unwrap_or_else(get_default_data_dir);
         let config_dir = opts.config_dir.clone().or_else(find_default_config_dir);
-        let plugin_dir = data_dir.join("plugins");
         let layout_dir = config_options
             .layout_dir
             .clone()
@@ -326,43 +313,7 @@ impl Setup {
         }
         writeln!(&mut message, "[CACHE DIR]: {}", YINZ_CACHE_DIR.display()).unwrap();
         writeln!(&mut message, "[DATA DIR]: \"{}\"", data_dir.display()).unwrap();
-        writeln!(&mut message, "[PLUGIN DIR]: \"{}\"", plugin_dir.display()).unwrap();
-        let builtin_plugin_dir = builtin_plugin_dir(&data_dir);
-        writeln!(
-            &mut message,
-            "[BUILTIN PLUGIN DIR]: \"{}\" ({})",
-            builtin_plugin_dir.display(),
-            if builtin_plugin_dir.is_dir() {
-                "installed"
-            } else {
-                "not installed - `cargo x install` puts the builtins here"
-            }
-        )
-        .unwrap();
-        message.push_str(
-            " Builtin plugins are loaded from disk, from the first of these to hold them:\n",
-        );
-        if config_options.builtin_plugins_dir.is_none() {
-            message.push_str("  the 'builtin_plugins_dir' option (not set)\n");
-        }
-        // The very list the loader walks, so this can never disagree with it. Shown as folders:
-        // the file name is the plugin's, and the same for every builtin.
-        let mut shown = Vec::new();
-        for path in PluginConfig::builtin_lookup_example()
-            .wasm_lookup_paths(&data_dir, config_options.builtin_plugins_dir.as_deref())
-        {
-            let Some(folder) = path
-                .parent()
-                .filter(|folder| !folder.as_os_str().is_empty())
-            else {
-                continue;
-            };
-            let folder = folder.to_path_buf();
-            if !shown.contains(&folder) {
-                writeln!(&mut message, "  \"{}\"", folder.display()).unwrap();
-                shown.push(folder);
-            }
-        }
+        message.push_str("[BUILTIN PLUGINS]: Embedded Scheme sources\n");
         if let Some(layout_dir) = layout_dir {
             writeln!(&mut message, "[LAYOUT DIR]: \"{}\"", layout_dir.display()).unwrap();
         } else {

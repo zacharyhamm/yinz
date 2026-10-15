@@ -4,20 +4,20 @@ Bind one policy plugin in your session configuration:
 
 ```kdl
 hooks {
-    notification "file:/absolute/path/to/notification-policy.ts"
+    notification "file:/absolute/path/to/notification-policy.scm"
 }
 ```
 
 The binding authorizes decisions. Yinz loads one shared headless instance on the
 first client attachment and retains it while all clients are detached. See
-[`notification-policy.ts`](../example-plugins/notification-policy.ts) for a policy
+[`notification-policy.scm`](../example-plugins/notification-policy.scm) for a policy
 that rewrites build messages, sends them to both channels, suppresses debug
 messages, and redirects desktop notifications to toasts.
 
 Subscribe to `NotificationRequested` in the policy. Reply with
-`yinz.host.resolveNotification({id, decision})` in TypeScript or
-`resolve_notification(id, decision)` in Wasm. Decisions are `"Pass"`,
-`"Suppress"`, or `{Replace: {title?, body?, delivery?}}`. Omitted fields retain
+`(yinz-command (hash "ResolveNotification" (hash "id" id "decision" decision)))`.
+Decisions are `"Pass"`, `"Suppress"`, or a `"Replace"` hash with optional
+`"title"`, `"body"`, and `"delivery"` fields. Omitted fields retain
 the original values. Delivery is `"Toast"`, `"Desktop"`, or `"Both"`.
 Only the assigned policy instance may resolve a request. Each request has a
 one-second deadline including loading; failure, reload, removal, timeout, and

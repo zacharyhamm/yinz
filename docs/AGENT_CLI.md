@@ -70,7 +70,7 @@ See [Project Bubblewrap environments](BUBBLEWRAP.md) for configuration, preparat
 `agent spawn --help` describes every launch option. Recognized kinds are
 `muse`, `codex`, `claude`, `cursor`, `qwen`, `gemini`, `aider`, `cline`,
 `opencode`, `pi` and `agy`. Recognition does not imply prompt support.
-Loaded TypeScript agent plugins add their own kinds and executable aliases.
+Loaded Scheme agent plugins add their own kinds and executable aliases.
 Kind names ignore case. Recognized executable aliases, such as `cursor-agent`,
 remain valid.
 
@@ -782,10 +782,10 @@ yinz hooks install --agent pi
 yinz hooks install --agent opencode
 ```
 
-## TypeScript agent plugins
+## Scheme agent plugins
 
-Agent plugins are TypeScript modules in the existing Deno plugin runtime.
-They register data with `yinz.agent.registerProvider()`. The host validates the
+Agent plugins are Scheme modules in the Steel runtime.
+They register a descriptor with `yinz-agent-register-provider`. The host validates the
 data and uses it for detection, launch, restart, and guarded terminal input.
 The agent chooser and plugin APIs receive the same provider definitions.
 
@@ -795,38 +795,32 @@ registrations. Another plugin cannot replace an existing provider's kind or alia
 
 ```kdl
 load_plugins {
-    "file:/absolute/path/my-agent.ts" {
+    "file:/absolute/path/my-agent.scm" {
         shared true
     }
 }
 ```
 
-Export `agentProvider` when the plugin supplies installable hook files.
-The hook installer evaluates this export in a bounded subprocess. It does not
-run `load()` or permit host operations during module initialization.
+Define `agent-provider` when the plugin supplies installable hook files.
+The hook installer reads this descriptor in a bounded subprocess. It does not
+call `load` or permit host commands during module initialization.
 
-```ts
-import yinz, { definePlugin, type AgentProvider } from "yinz:plugin";
+```scheme
+(define agent-provider
+  (hash "kind" "my-agent"
+        "executable" "my-agent"
+        "aliases" '("my-agent-cli")
+        "launch"
+        (hash "model_args" '("--model" "{value}")
+              "prompt_args" '("--prompt" "{value}")
+              "resume_args" '("--session" "{value}")
+              "resume_last_args" '("--continue")
+              "permissions" (hash "manual" '("--approval" "manual")))))
 
-export const agentProvider: AgentProvider = {
-  kind: "my-agent",
-  executable: "my-agent",
-  aliases: ["my-agent-cli"],
-  launch: {
-    model_args: ["--model", "{value}"],
-    prompt_args: ["--prompt", "{value}"],
-    resume_args: ["--session", "{value}"],
-    resume_last_args: ["--continue"],
-    permissions: { manual: ["--approval", "manual"] },
-  },
-};
-
-export default definePlugin({
-  async load() {
-    await yinz.waitForPermissions(["RunCommands"]);
-    yinz.agent.registerProvider(agentProvider);
-  },
-});
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("RunCommands"))
+    (lambda (_)
+      (yinz-agent-register-provider agent-provider))))
 ```
 
 Argument templates contain individual arguments. Substitution of `{value}` never
@@ -840,9 +834,9 @@ submitted turns. Input settings include `clear_key` (default `Ctrl c`), `submit_
 conversation, readiness, input ownership, and bracketed-paste checks.
 Provider prompt acknowledgements and completions must carry a nonempty `turn_id`.
 Completion must match the acknowledged turn. A paste write alone is not acceptance.
-Use `yinz.agent.control()` for guarded requests. Existing `send()` and `prompt()`
-also use guarded delivery for provider agents. Await `send()` to observe submission
-failures from these providers.
+Use `yinz-agent-control` for guarded requests. `yinz-agent-send` and
+`yinz-agent-prompt` also use guarded delivery for provider agents. Handle the
+returned deferred with `yinz-then` and `yinz-catch` to observe submission failures.
 
 Hook adapters emit the existing `HookEvent` format through
 `yinz action agent-report --hook-json --kind KIND`. Events include `SessionStart`,
@@ -859,14 +853,14 @@ for a JSON-quoted binary path, `__YINZ_SHELL__` for a shell-quoted path, and
 `__TOKEN_ENV__` for the JSON-quoted remote token variable name.
 
 ```sh
-yinz hooks install --agent ./my-agent.ts --dry-run
-yinz hooks install --agent ./my-agent.ts
-yinz hooks status --agent ./my-agent.ts
-yinz hooks uninstall --agent ./my-agent.ts
+yinz hooks install --agent ./my-agent.scm --dry-run
+yinz hooks install --agent ./my-agent.scm
+yinz hooks status --agent ./my-agent.scm
+yinz hooks uninstall --agent ./my-agent.scm
 ```
 
-OpenCode uses the bundled [TypeScript provider](../yinz-deno-builtins/assets/plugins/agent-opencode.ts).
-Yinz loads it before other background plugins. Its hook adapter owns event
+OpenCode uses the bundled [Scheme provider](../yinz-steel-builtins/assets/plugins/agent-opencode.scm).
+Yinz loads it before other background plugins. Its hook adapter uses JavaScript inside OpenCode and owns event
 translation, parent-session filtering, and ordered reporting. Existing
 `yinz hooks install --agent opencode` commands still work. Older installed
 hook files remain accepted until reinstallation. OpenCode supports launch,
@@ -875,21 +869,42 @@ submission yet.
 
 ## Test an agent plugin
 
-Use the existing `yinz:testing` API and `yinz plugins test` runner.
-Place unit checks in `.test.ts` files and real-session checks in
-`.integration.test.ts` files beside the plugin.
+Use `yinz plugins test` with the [Scheme test harness](PLUGIN_TESTING.md).
+Place unit checks in `.test.scm` files and real-session checks in
+`.integration.test.scm` files beside the plugin. For example, save this as
+`my-agent.test.scm`:
 
-- Use `loadPlugin()` to inspect registration commands and test plugin callbacks.
-- Use `session.fixture()` to create fake agent executables in an isolated workspace.
-- Start the session with `backgroundPlugins: [{path: "./my-agent.ts", configuration: {shared: "true"}}]`.
-- Use asynchronous `session.agent()` requests to exercise real agent control.
-- Use `session.report()` to deliver canonical hooks through the normal report path.
-- Observe actual terminal output with `session.waitForText()` or `session.waitFor()`.
+```scheme
+(test "registers its provider" (lambda ()
+  (test-load-plugin "./my-agent.scm"
+    (hash "replies"
+      (hash "RequestPluginPermissions" json-null
+            "RegisterAgentProvider" json-null)))
+  (test-event (hash "PermissionRequestResult" "Granted"))
+  (define registrations
+    (filter (lambda (command)
+      (and (hash? command) (hash-contains? command "RegisterAgentProvider")))
+      (test-commands)))
+  (assert-equal (length registrations) 1)
+  (assert-equal
+    (hash-ref (hash-ref (car registrations) "RegisterAgentProvider") "kind")
+    "my-agent")))
+```
+
+Run it with `yinz plugins test --file ./my-agent.scm --kind unit`.
+For real-session checks:
+
+- Declare `(hash "grants" '("RunCommands"))` in the test options.
+- Use `(test-session "fixture" ...)` to create fake agent executables in an isolated workspace.
+- Start with `(test-session "start" (hash "backgroundPlugins" (list (hash "path" "./my-agent.scm" "configuration" (hash "shared" "true")))))`.
+- Use `(test-session "agent" request)` to start a real agent-control request, then poll its returned ID with `(test-session "agent-poll" id)`.
+- Use `(test-session "report" ...)` to deliver canonical hooks through the normal report path.
+- Observe terminal output with `test-wait-for-text` or `test-wait-for`.
 - Inject stale, missing, and mismatched hooks while a prompt request is pending.
 
-Session agent controls require the test's `RunCommands` grant. Fixtures do not need
-an installed agent, credentials, a model service, or network access.
-The [provider integration tests](../yinz-deno-builtins/assets/plugins/agent-opencode.integration.test.ts)
+Agent controls and executable fixtures require the test's `RunCommands` grant.
+Fixtures do not need an installed agent, credentials, a model service, or network access.
+The [provider integration tests](../yinz-steel-builtins/assets/plugins/agent-opencode.integration.test.scm)
 exercise registration, aliases, launch arguments, input bytes, custom Enter timing,
 turn correlation, and status-only capabilities. Host unit tests also cover
 validation, conflicting registrations, unload, restart refusal, input interruption,

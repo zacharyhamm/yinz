@@ -1,4 +1,3 @@
-#[cfg(not(target_family = "wasm"))]
 use yinz_types::data::LayoutInfo;
 use {
     crate::assets::get_default_themes, crate::config::Config, crate::theme::Themes,
@@ -44,7 +43,6 @@ pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Lay
             });
         // Resurrection paths cross IPC before they are opened. Resolve and lock
         // the checkpoint here, where parsing also opens its pane-content files.
-        #[cfg(not(target_family = "wasm"))]
         let checkpoint = match assets.layout.as_ref() {
             Some(LayoutInfo::File(path, _))
                 if std::path::Path::new(path).is_absolute()
@@ -61,7 +59,6 @@ pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Lay
             },
             _ => None,
         };
-        #[cfg(not(target_family = "wasm"))]
         if let Some(checkpoint) = checkpoint.as_ref() {
             Some(
                 crate::layout::from_path_or_default(
@@ -81,15 +78,6 @@ pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Lay
                 .ok()
             })
         }
-        #[cfg(target_family = "wasm")]
-        assets.layout.as_ref().and_then(|layout_info| {
-            crate::layout::from_layout_info_with_config(
-                &layout_dir,
-                layout_info,
-                Some(config.clone()),
-            )
-            .ok()
-        })
     }
     .unwrap_or_else(|| (crate::layout::default_layout_asset(), config));
 

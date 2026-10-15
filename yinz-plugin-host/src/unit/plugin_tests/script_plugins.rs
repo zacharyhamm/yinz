@@ -1,7 +1,7 @@
-//! End-to-end tests for TypeScript plugins: a `.ts` file on disk, through the real plugin thread, to
+//! End-to-end tests for Scheme plugins: a `.scm` file on disk, through the real plugin thread, to
 //! the bytes the screen would draw.
 //!
-//! These use the same harness as the wasm plugin tests, which is the point - a TypeScript plugin is
+//! These use the same harness as the wasm plugin tests, which is the point - a Scheme plugin is
 //! loaded, subscribed, updated and rendered by exactly the same code.
 
 #[cfg(test)]
@@ -20,7 +20,7 @@ use yinz_types::input::command::TerminalAction;
 use yinz_types::input::hooks::HookPoint;
 use yinz_types::internal_ids::TabId;
 
-/// Load the TypeScript fixture and return everything the screen was told to draw for it.
+/// Load the Scheme fixture and return everything the screen was told to draw for it.
 pub(super) fn rendered_output(instructions: &[ScreenInstruction]) -> Vec<String> {
     instructions
         .iter()
@@ -127,7 +127,7 @@ pub fn script_plugin_loads_and_renders() {
 
     let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
-        rendered.iter().any(|r| r.contains("hello from typescript")),
+        rendered.iter().any(|r| r.contains("hello from scheme")),
         "expected the plugin's render output, got: {:?}",
         rendered
     );
@@ -145,7 +145,7 @@ pub fn script_plugin_loads_and_renders() {
 
 /// A plugin named rather than pathed is found in the user's plugin folder.
 ///
-/// This is what makes `plugin location="file:probe.ts"` in a layout - and the same URL from a
+/// This is what makes `plugin location="file:probe.scm"` in a layout - and the same URL from a
 /// plugin asking for a reload - mean the obvious thing without anyone spelling out an absolute
 /// path. The resolution chain itself is unit-tested in `yinz-config`; what this covers is that
 /// the folder actually reaches the loader through the whole plugin thread.
@@ -156,9 +156,9 @@ pub fn a_script_plugin_is_found_in_the_user_plugin_dir_by_name() {
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let user_plugin_dir = tempdir().unwrap();
     std::fs::write(
-        user_plugin_dir.path().join("probe.ts"),
+        user_plugin_dir.path().join("probe.scm"),
         r#"
-        export default {render() {return "found by name";}};
+        (define (render rows cols) "found by name")
         "#,
     )
     .unwrap();
@@ -172,12 +172,7 @@ pub fn a_script_plugin_is_found_in_the_user_plugin_dir_by_name() {
     let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
-        screen_receiver,
-        1
-    );
+    let screen_thread = log_until_disconnect(&received_screen_instructions, screen_receiver);
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     // A bare file name, with nothing to say where it lives.
@@ -186,7 +181,7 @@ pub fn a_script_plugin_is_found_in_the_user_plugin_dir_by_name() {
         false,
         false,
         Some("script_test_plugin".to_owned()),
-        script_run_plugin_at("probe.ts", BTreeMap::new()),
+        script_run_plugin_at("probe.scm", BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -199,8 +194,9 @@ pub fn a_script_plugin_is_found_in_the_user_plugin_dir_by_name() {
         None,
         None,
     ));
-    screen_thread.join().unwrap();
+    wait_for_render_containing(&received_screen_instructions, "found by name");
     teardown();
+    screen_thread.join().unwrap();
 
     let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
@@ -212,7 +208,7 @@ pub fn a_script_plugin_is_found_in_the_user_plugin_dir_by_name() {
 
 /// A reload naming the file in full finds the plugin that was started by bare name.
 ///
-/// The two spellings do not look alike to the plugin map: `file:probe.ts` keeps the cwd-joined
+/// The two spellings do not look alike to the plugin map: `file:probe.scm` keeps the cwd-joined
 /// path as its `location` - that is its identity, and what a dumped layout has to say - while its
 /// source is read from the user's plugin folder. A reload can only name the file it wrote, so
 /// without `resolved_source_path` the lookup misses, the reload is answered with
@@ -224,11 +220,11 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let user_plugin_dir = tempdir().unwrap();
-    let plugin_file = user_plugin_dir.path().join("probe.ts");
+    let plugin_file = user_plugin_dir.path().join("probe.scm");
     let source = |version: &str| {
         format!(
             r#"
-            export default {{render() {{return "{version}";}}}};
+            (define (render rows cols) "{version}")
             "#
         )
     };
@@ -243,13 +239,7 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
     let client_id = ClientId::new(1);
     let size = Size { cols: 80, rows: 10 };
     let received_screen_instructions = Watched::new(vec![]);
-    // Two renders: the load, then the reload.
-    let screen_thread = log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
-        screen_receiver,
-        2
-    );
+    let screen_thread = log_until_disconnect(&received_screen_instructions, screen_receiver);
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     // A bare file name, exactly as a layout or a keybinding would say it.
@@ -258,7 +248,7 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
         false,
         false,
         Some("script_test_plugin".to_owned()),
-        script_run_plugin_at("probe.ts", BTreeMap::new()),
+        script_run_plugin_at("probe.scm", BTreeMap::new()),
         Some(TabId::new(1)),
         None,
         client_id,
@@ -296,8 +286,9 @@ pub fn a_reload_by_absolute_path_reloads_a_plugin_started_by_name() {
         None,
     ));
 
-    screen_thread.join().unwrap();
+    wait_for_render_containing(&received_screen_instructions, "second version");
     teardown();
+    screen_thread.join().unwrap();
 
     let logged = received_screen_instructions.lock();
     let rendered = rendered_output(&logged);
@@ -332,12 +323,7 @@ pub fn script_plugin_receives_its_configuration() {
     configuration.insert("greeting".to_owned(), "configured".to_owned());
 
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
-        screen_receiver,
-        2
-    );
+    let screen_thread = log_until_disconnect(&received_screen_instructions, screen_receiver);
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
@@ -358,20 +344,21 @@ pub fn script_plugin_receives_its_configuration() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(&received_screen_instructions, "presses 0");
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
     )]));
-    screen_thread.join().unwrap();
+    wait_for_render_containing(&received_screen_instructions, "presses 1");
     teardown();
+    screen_thread.join().unwrap();
 
     let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
         rendered
             .iter()
-            .any(|r| r.contains("configured from typescript")),
+            .any(|r| r.contains("configured from scheme")),
         "expected the merged configuration to reach `load`, got: {:?}",
         rendered
     );
@@ -522,7 +509,7 @@ fn spawned_agent_command(key: char) -> yinz_types::input::command::RunCommand {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(&received_screen_instructions, "spawn fixture ready");
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
@@ -631,8 +618,8 @@ pub fn a_spawned_agent_is_handed_its_hooks_inline_unless_told_not_to() {
 #[test]
 #[serial(plugin_tests)]
 pub fn script_plugin_host_command_reaches_the_pty_thread() {
-    // The whole point of the design is that a TypeScript plugin's commands go through the same handlers
-    // wasm plugins use, so this checks one all the way through: `yinz.open_terminal` in TypeScript
+    // The whole point of the design is that a Scheme plugin's commands go through the same handlers
+    // wasm plugins use, so this checks one all the way through: `yinz.open_terminal` in Scheme
     // should arrive at the pty thread as a `SpawnTerminal`, permission-gated like any other.
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -680,7 +667,10 @@ pub fn script_plugin_host_command_reaches_the_pty_thread() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(
+        &received_screen_instructions,
+        "scheme fixture with permissions",
+    );
     // 't' is what the fixture maps to `yinz.open_terminal`.
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
@@ -725,12 +715,7 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
     });
 
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
-        screen_receiver,
-        2
-    );
+    let screen_thread = log_until_disconnect(&received_screen_instructions, screen_receiver);
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
@@ -751,14 +736,15 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(&received_screen_instructions, "payload carried");
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('a'))),
     )]));
-    screen_thread.join().unwrap();
+    wait_for_render_containing(&received_screen_instructions, "presses 1");
     teardown();
+    screen_thread.join().unwrap();
 
     let rendered = rendered_output(&received_screen_instructions.lock());
     assert!(
@@ -771,7 +757,7 @@ pub fn plugin_configuration_reaches_load_without_being_re_normalized() {
 #[test]
 #[serial(plugin_tests)]
 pub fn a_newly_reachable_command_works_end_to_end() {
-    // `open_command_pane` was one of the ~220 commands a TypeScript plugin could not call: its payload is
+    // `open_command_pane` was one of the ~220 commands a Scheme plugin could not call: its payload is
     // a `CommandToRun`, a struct nested inside a tuple variant, and nothing hand-marshalled it.
     // This runs the shipped playground plugin through the real plugin thread and presses the key
     // that calls it, so the whole path is covered - the metatable that manufactures the wrapper,
@@ -804,7 +790,7 @@ pub fn a_newly_reachable_command_works_end_to_end() {
     );
 
     let playground = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../example-plugins/playground.ts")
+        .join("src/unit/plugin_tests/fixtures/fixture_command.scm")
         .display()
         .to_string();
 
@@ -827,7 +813,7 @@ pub fn a_newly_reachable_command_works_end_to_end() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(&received_screen_instructions, "command fixture ready");
     // 'c' is what the playground maps to `yinz.open_command_pane`.
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
@@ -892,17 +878,7 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    // Loading may emit an empty frame before the hook is ready. Wait for content.
-    let screen_thread = std::thread::spawn({
-        let log = received_screen_instructions.clone();
-        move || loop {
-            let (event, _) = recv_from_fake_screen(&screen_receiver, 0, 1);
-            log.lock().push(event);
-            if !rendered_output(&log.lock()).is_empty() {
-                break;
-            }
-        }
-    });
+    let screen_thread = log_until_disconnect(&received_screen_instructions, screen_receiver);
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
@@ -923,8 +899,15 @@ pub fn the_agent_exit_hook_renders_the_screen_it_replaced() {
         None,
         None,
     ));
-    screen_thread.join().unwrap();
+    let ready_text = "Esc: close pane"
+        .as_bytes()
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    wait_for_render_containing(&received_screen_instructions, &ready_text);
     teardown();
+    screen_thread.join().unwrap();
 
     let rendered = rendered_output(&received_screen_instructions.lock()).join("\n");
     let contains = |text: &str| {
@@ -1274,16 +1257,21 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
 /// and delivered the moment it completes, while the grant round-trips through the screen. So the
 /// plugin queues until `permission_request_result` and then speaks; the second firing, after the
 /// grant, speaks at once. Either way the count is exact.
-const HEADLESS_HOOK_TS: &str = r#"
-import yinz from 'yinz:plugin';
-let granted=false, queued=[];
-function say(e) {
-  const identity = e.point === 'session_start' ? '@' + yinz.serverSession : '';
-  yinz.command('RenameTabWithId', [1, e.point + ':' + (e.payload.pane_id ?? e.payload.session_name ?? '') + identity]);
-}
-export default {load() { yinz.subscribe(['Hook', 'PermissionRequestResult']); yinz.requestPermission(['ChangeApplicationState']); }, render() {return '';}};
-yinz.on('PermissionRequestResult', () => {granted=true; for (const e of queued) say(e); queued=[];});
-yinz.on('Hook', e => {if (granted) say(e); else queued.push(e);});
+const HEADLESS_HOOK_SCM: &str = r#"
+(define ready (yinz-deferred))
+(define (say event)
+  (define point (hash-ref event "point"))
+  (define payload (hash-ref event "payload"))
+  (define value
+    (cond ((hash-contains? payload "pane_id") (number->string (hash-ref payload "pane_id")))
+          ((hash-contains? payload "session_name") (hash-ref payload "session_name"))
+          (else "")))
+  (define identity (if (equal? point "session_start") (string-append "@" (yinz-server-session)) ""))
+  (yinz-command (hash "RenameTabWithId" (list 1 (string-append point ":" value identity)))))
+(define (load config)
+  (yinz-on-event "Hook" (lambda (event) (yinz-then ready (lambda (ignored) (say event)))))
+  (yinz-resolve! ready (yinz-wait-for-permissions (list "ChangeApplicationState"))))
+(define (render rows cols) "")
 "#;
 
 /// Every tab rename the hook asked for, as the name it gave.
@@ -1313,11 +1301,11 @@ fn suppressed_plugins_loaded(instructions: &[ScreenInstruction]) -> Vec<PluginId
 }
 
 fn headless_hook_plugin(user_plugin_dir: &std::path::Path) -> RunPluginOrAlias {
-    std::fs::write(user_plugin_dir.join("hook.ts"), HEADLESS_HOOK_TS).unwrap();
+    std::fs::write(user_plugin_dir.join("hook.scm"), HEADLESS_HOOK_SCM).unwrap();
     RunPluginOrAlias::RunPlugin(
         yinz_runtime::plugin_location::run_plugin_from_url(&format!(
             "file:{}",
-            user_plugin_dir.join("hook.ts").display()
+            user_plugin_dir.join("hook.scm").display()
         ))
         .unwrap(),
     )
@@ -1336,7 +1324,6 @@ pub(super) fn bind_hook(
         default_shell: None,
         layout_dir: None,
         user_plugin_dir: None,
-        builtin_plugins_dir: None,
         hooks: yinz_types::input::hooks::Hooks::from_data(BTreeMap::from([(point, plugin)])),
         context_menu: Default::default(),
         was_written_to_disk: false,
@@ -1541,8 +1528,8 @@ pub fn session_start_fires_for_the_initiating_client() {
     teardown();
 
     // The hook reports the payload's session name, which the plugin thread's handle supplies,
-    // and after the `@` the plugin's own `yinz.serverSession`, which reaches the Deno runtime
-    // through `WasmBridge`, `PluginLoader` and `PluginEnv`. Both must carry the harness's name.
+    // and after the `@` the plugin's own `yinz-server-session`, which reaches the Steel runtime
+    // through `PluginBridge`, `PluginLoader` and `PluginEnv`. Both must carry the harness's name.
     let instructions = received_screen_instructions.lock();
     assert_eq!(
         tab_names_set(&instructions),

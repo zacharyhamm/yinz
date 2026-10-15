@@ -137,8 +137,8 @@ impl CliArgs {
     }
 }
 
-/// Authoring JS/TS plugins in the user's plugin folder from a shell.
-/// Extensionless names select TypeScript; explicit .js, .mjs, .ts and .mts names select Deno.
+/// Authoring Steel Scheme plugins in the user's plugin folder from a shell.
+/// Extensionless names use .scm; explicit .scm, .ss and .sld names retain their extension.
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Plugins {
     /// Install configured repository plugins; omit aliases to select all.
@@ -183,7 +183,7 @@ pub enum Plugins {
         #[clap(long)]
         file: PathBuf,
     },
-    /// Run adjacent TypeScript unit and integration tests using the installed runtime.
+    /// Run adjacent plugin unit and integration tests using the installed runtime.
     Test {
         #[clap(required_unless_present = "file")]
         name: Option<String>,
@@ -328,7 +328,7 @@ pub enum Hooks {
         /// Install for one agent. User-level installs default to every agent; a project
         /// install defaults to Claude because only Claude Code has a machine-local
         /// project file.
-        #[clap(long, value_name = "AGENT_OR_TYPESCRIPT_PLUGIN")]
+        #[clap(long, value_name = "AGENT_OR_SCHEME_PLUGIN")]
         agent: Option<String>,
         /// Install into this project's `.claude/settings.local.json` (not committed)
         /// instead of `~/.claude/settings.json`.
@@ -350,7 +350,7 @@ pub enum Hooks {
     Uninstall {
         /// Uninstall for one agent. User-level uninstalls default to every agent; a project
         /// uninstall defaults to Claude.
-        #[clap(long, value_name = "AGENT_OR_TYPESCRIPT_PLUGIN")]
+        #[clap(long, value_name = "AGENT_OR_SCHEME_PLUGIN")]
         agent: Option<String>,
         /// Uninstall from this project's `.claude/settings.local.json` (and its
         /// committed `settings.json`, if an older install is still in it).
@@ -364,7 +364,7 @@ pub enum Hooks {
     /// Say what is wired up, and what would stop it working.
     Status {
         /// Show one agent instead of every one.
-        #[clap(long, value_name = "AGENT_OR_TYPESCRIPT_PLUGIN")]
+        #[clap(long, value_name = "AGENT_OR_SCHEME_PLUGIN")]
         agent: Option<String>,
     },
 }
@@ -426,6 +426,15 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
+    /// Evaluate Steel Scheme interactively, from stdin, or with --eval.
+    Repl {
+        /// Evaluate one expression or program and exit.
+        #[clap(short = 'e', long)]
+        eval: Option<String>,
+        /// Connect to the selected or current session and enable Yinz host commands.
+        #[clap(long)]
+        connect: bool,
+    },
     /// Prepare a persistent project Bubblewrap environment (Linux).
     #[clap(subcommand)]
     Bubblewrap(Bubblewrap),
@@ -663,7 +672,7 @@ pub enum Agent {
         /// --project selects the checkout; tab assignments still take precedence in project listings.
         #[clap(long, num_args = 0..=1, value_name = "NAME")]
         new_tab: Option<Option<String>>,
-        #[clap(long, help = format!("Agent kind (native: {}; loaded TypeScript plugins add more). Overrides the JSON kind", yinz_types::agent::KINDS.join(", ")))]
+        #[clap(long, help = format!("Agent kind (native: {}; loaded Scheme plugins add more). Overrides the JSON kind", yinz_types::agent::KINDS.join(", ")))]
         kind: Option<String>,
         /// Read a JSON launch object from a file, or '-' for stdin. Flags override JSON fields.
         /// JSON also accepts command, args, env and hooks; opening prompts are not allowed.
@@ -1283,7 +1292,7 @@ yinz pipe [OPTIONS] [--] <PAYLOAD>
 
 * Send data to a specific plugin:
 
-yinz pipe --plugin file:/path/to/my/plugin.wasm --name my_pipe_name -- my_arbitrary_data
+yinz pipe --plugin file:/path/to/my/plugin.scm --name my_pipe_name -- my_arbitrary_data
 
 * To all running plugins (that are listening):
 
@@ -1291,7 +1300,7 @@ yinz pipe --name my_pipe_name -- my_arbitrary_data
 
 * Pipe data into this command's STDIN and get output from the plugin on this command's STDOUT
 
-tail -f /tmp/my-live-logfile | yinz pipe --name logs --plugin file:/path/to/my-plugin.wasm | wc -l
+tail -f /tmp/my-live-logfile | yinz pipe --name logs --plugin file:/path/to/my-plugin.scm | wc -l
 "#
     ))]
     Pipe {
@@ -1309,7 +1318,7 @@ tail -f /tmp/my-live-logfile | yinz pipe --name logs --plugin file:/path/to/my-p
         #[clap(short, long, value_parser, display_order(2))]
         /// Comma-separated key=value arguments for the pipe
         args: Option<PluginUserConfiguration>,
-        /// The plugin url (eg. file:/tmp/my-plugin.wasm) to direct this pipe to, if not specified,
+        /// The plugin url (eg. file:/tmp/my-plugin.scm) to direct this pipe to, if not specified,
         /// will be sent to running plugins. If specified and not running, the plugin will be
         /// launched floating by default, without changing focus or revealing a hidden floating layer.
         #[clap(short, long, value_parser, display_order(3))]
@@ -2110,7 +2119,7 @@ pub enum CliAction {
     },
     /// Bind a hook point (agent_exit, agent_start, agent_waiting, pane_exit, session_start,
     /// context_menu) to a plugin, or unbind it with an empty url.
-    /// The plugin is a url as the config spells it: file:my-hook.ts, yinz:agent-exit.
+    /// The plugin is a url as the config spells it: file:my-hook.scm, yinz:agent-exit.
     SetHook {
         /// The hook point, eg. agent_exit
         #[clap(value_parser)]
@@ -2135,7 +2144,7 @@ yinz action pipe [OPTIONS] [--] <PAYLOAD>
 
 * Send data to a specific plugin:
 
-yinz action pipe --plugin file:/path/to/my/plugin.wasm --name my_pipe_name -- my_arbitrary_data
+yinz action pipe --plugin file:/path/to/my/plugin.scm --name my_pipe_name -- my_arbitrary_data
 
 * To all running plugins (that are listening):
 
@@ -2143,7 +2152,7 @@ yinz action pipe --name my_pipe_name -- my_arbitrary_data
 
 * Pipe data into this command's STDIN and get output from the plugin on this command's STDOUT
 
-tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/to/my-plugin.wasm | wc -l
+tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/to/my-plugin.scm | wc -l
 "#))]
     Pipe {
         /// Focus a newly auto-launched plugin pane, revealing floating panes when applicable.
@@ -2160,7 +2169,7 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
         #[clap(short, long, value_parser, display_order(2))]
         /// Comma-separated key=value arguments for the pipe
         args: Option<PluginUserConfiguration>,
-        /// The plugin url (eg. file:/tmp/my-plugin.wasm) to direct this pipe to, if not specified,
+        /// The plugin url (eg. file:/tmp/my-plugin.scm) to direct this pipe to, if not specified,
         /// will be sent to running plugins. If specified and not running, the plugin will be
         /// launched floating by default, without changing focus or revealing a hidden floating layer.
         #[clap(short, long, value_parser, display_order(3))]
@@ -2691,7 +2700,7 @@ mod tests {
             "write",
             "keys",
             "--file",
-            "/tmp/keys.ts",
+            "/tmp/keys.scm",
             "--overwrite",
         ])
         .unwrap();
@@ -2703,7 +2712,7 @@ mod tests {
                 no_check,
             })) => {
                 assert_eq!(name, "keys");
-                assert_eq!(file, Some(PathBuf::from("/tmp/keys.ts")));
+                assert_eq!(file, Some(PathBuf::from("/tmp/keys.scm")));
                 assert!(overwrite && !no_check);
             },
             other => panic!("expected plugins write, got {other:?}"),

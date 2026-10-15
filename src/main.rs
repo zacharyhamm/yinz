@@ -4,6 +4,7 @@ mod agent_hooks;
 mod agent_report;
 mod commands;
 mod portable_skills;
+mod repl;
 mod session_menu;
 #[cfg(test)]
 mod tests;
@@ -20,6 +21,14 @@ use {
 };
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(yinz_steel::worker::ARG))
+    {
+        if let Err(error) = yinz_steel::worker::run_worker() {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some(yinz_config::project_config::bubblewrap::RUN_FLAG)
     {
         let args: Vec<String> = std::env::args().skip(2).collect();
@@ -106,6 +115,13 @@ fn main() {
     }
 
     let opts = CliArgs::parse();
+    if let Some(Command::Repl { eval, connect }) = &opts.command {
+        if let Err(error) = repl::run(&opts, eval.as_deref(), *connect) {
+            eprintln!("Error: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Some(Command::Action(action)) = &opts.command {
         if matches!(action.as_ref(), CliAction::AgentReport { .. }) {
             let result = agent_report::run(*action.clone(), opts.session.clone(), process_started);

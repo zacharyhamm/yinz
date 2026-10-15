@@ -20,15 +20,15 @@ use yinz_types::input::options::Options;
 #[path = "unit/thread_bus_tests.rs"]
 mod tests;
 
-// Generations are process-wide Deno identities. Replies belong to the isolate,
+// Generations are process-wide runtime identities. Replies belong to the runtime,
 // including while notifications wait on the bus or its pinned executor.
-// ponytail: one registry lock per Deno reply; shard if reply traffic contends.
-type DenoReply = (ClientId, yinz_types::data::Event);
+// ponytail: one registry lock per plugin reply; shard if reply traffic contends.
+type PluginReply = (ClientId, yinz_types::data::Event);
 #[derive(Default)]
 struct ReplyMailbox {
     next_id: u64,
-    pending: std::collections::BTreeMap<u64, DenoReply>,
-    cleanup: Option<std::sync::mpsc::Sender<DenoReply>>,
+    pending: std::collections::BTreeMap<u64, PluginReply>,
+    cleanup: Option<std::sync::mpsc::Sender<PluginReply>>,
 }
 static REPLY_MAILBOXES: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<u64, ReplyMailbox>>,
@@ -36,13 +36,13 @@ static REPLY_MAILBOXES: std::sync::LazyLock<
 
 /// An internal notification can claim its reply only on the owning executor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DenoReplyId {
+pub struct PluginReplyId {
     generation: u64,
     id: u64,
 }
 
-impl DenoReplyId {
-    pub fn claim(self) -> Option<DenoReply> {
+impl PluginReplyId {
+    pub fn claim(self) -> Option<PluginReply> {
         let mut mailboxes = REPLY_MAILBOXES
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -54,11 +54,11 @@ impl DenoReplyId {
     }
 }
 
-pub struct DenoReplies {
+pub struct PluginReplies {
     generation: u64,
 }
 
-impl DenoReplies {
+impl PluginReplies {
     pub fn new(generation: u64) -> Self {
         REPLY_MAILBOXES
             .lock()
@@ -67,7 +67,7 @@ impl DenoReplies {
         Self { generation }
     }
 
-    pub fn begin_cleanup(&self) -> std::sync::mpsc::Receiver<DenoReply> {
+    pub fn begin_cleanup(&self) -> std::sync::mpsc::Receiver<PluginReply> {
         let (sender, receiver) = std::sync::mpsc::channel();
         let mut mailboxes = REPLY_MAILBOXES
             .lock()
@@ -82,7 +82,7 @@ impl DenoReplies {
     }
 }
 
-impl Drop for DenoReplies {
+impl Drop for PluginReplies {
     fn drop(&mut self) {
         REPLY_MAILBOXES
             .lock()
@@ -155,32 +155,33 @@ impl ThreadSenders {
     }
 
     pub fn send_to_plugin(&self, instruction: PluginInstruction) -> Result<()> {
-        let instruction =
-            if let PluginInstruction::DenoEvent(plugin, client, generation, event) = instruction {
-                let mut mailboxes = REPLY_MAILBOXES
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                if let Some(mailbox) = mailboxes.get_mut(&generation) {
-                    if let Some(sender) = &mailbox.cleanup {
-                        let _ = sender.send((client, event));
-                        return Ok(());
-                    }
-                    let id = mailbox.next_id;
-                    mailbox.next_id = id.checked_add(1).context("Deno reply IDs exhausted")?;
-                    mailbox.pending.insert(id, (client, event.clone()));
-                    // Enqueue under the routing lock to preserve producer order with cleanup.
-                    return self.send_plugin_notification(PluginInstruction::DenoReply(
-                        plugin,
-                        client,
-                        generation,
-                        event,
-                        DenoReplyId { generation, id },
-                    ));
+        let instruction = if let PluginInstruction::PluginEvent(plugin, client, generation, event) =
+            instruction
+        {
+            let mut mailboxes = REPLY_MAILBOXES
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(mailbox) = mailboxes.get_mut(&generation) {
+                if let Some(sender) = &mailbox.cleanup {
+                    let _ = sender.send((client, event));
+                    return Ok(());
                 }
-                PluginInstruction::DenoEvent(plugin, client, generation, event)
-            } else {
-                instruction
-            };
+                let id = mailbox.next_id;
+                mailbox.next_id = id.checked_add(1).context("plugin reply IDs exhausted")?;
+                mailbox.pending.insert(id, (client, event.clone()));
+                // Enqueue under the routing lock to preserve producer order with cleanup.
+                return self.send_plugin_notification(PluginInstruction::PluginReply(
+                    plugin,
+                    client,
+                    generation,
+                    event,
+                    PluginReplyId { generation, id },
+                ));
+            }
+            PluginInstruction::PluginEvent(plugin, client, generation, event)
+        } else {
+            instruction
+        };
         self.send_plugin_notification(instruction)
     }
 
@@ -288,7 +289,7 @@ impl ThreadSenders {
                 default_mode: new_config.options.default_mode,
                 default_shell,
                 layout_dir: new_config.options.layout_dir,
-                // Re-derived rather than passed through: `WasmBridge::reconfigure` assigns
+                // Re-derived rather than passed through: `PluginBridge::reconfigure` assigns
                 // this verbatim, so a config that does not name the option explicitly would
                 // otherwise wipe the folder derived at session start. The server's cwd has
                 // not moved since then, so a relative folder resolves to the same place.
@@ -296,7 +297,6 @@ impl ThreadSenders {
                     new_config.options.user_plugin_dir,
                     config_dir.map(Path::to_path_buf),
                 ),
-                builtin_plugins_dir: new_config.options.builtin_plugins_dir,
                 hooks: new_config.hooks,
                 context_menu: new_config.context_menu,
                 was_written_to_disk,

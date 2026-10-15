@@ -1,4 +1,4 @@
-//! Display-only Deno palette protocol. Callbacks never cross this boundary.
+//! Display-only plugin palette protocol. Callbacks never cross this boundary.
 use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};

@@ -78,7 +78,7 @@ mod layout_query_trace_tests;
 
 /// The plugin id a state report is addressed to when no plugin wants it but a `yinz events`
 /// client does. No plugin ever has this id, so the plugin thread loads nothing for it and the
-/// report reaches the CLI subscribers alone. See `WasmBridge::forward_events_to_cli_subscribers`.
+/// report reaches the CLI subscribers alone. See `PluginBridge::forward_events_to_cli_subscribers`.
 pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId::new(u32::MAX);
 
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
@@ -155,19 +155,19 @@ pub enum PluginInstruction {
     },
     Update(Vec<(Option<PluginId>, Option<ClientId>, Event)>), // Focused plugin / broadcast, client_id, event data
     InputBarrier(PluginId, NotificationEnd),
-    DenoTick(PluginId, ClientId, u64),
-    DenoPalette(crate::command_palette::Delivery),
+    PluginTick(PluginId, ClientId, u64),
+    PluginPalette(crate::command_palette::Delivery),
     PaletteNote(Box<crate::command_palette::NoteRequest>),
     PaletteAgent(Box<crate::command_palette::AgentRequest>),
-    DenoEvent(PluginId, ClientId, u64, Event),
-    DenoReply(
+    PluginEvent(PluginId, ClientId, u64, Event),
+    PluginReply(
         PluginId,
         ClientId,
         u64,
         Event,
-        crate::thread_bus::DenoReplyId,
+        crate::thread_bus::PluginReplyId,
     ),
-    DenoDispose(PluginId, u64),
+    PluginDispose(PluginId, u64),
     Unload(PluginId), // plugin_id
     Reload(
         Option<bool>,   // should float
@@ -183,6 +183,7 @@ pub enum PluginInstruction {
     Resize(PluginId, usize, usize), // plugin_id, columns, rows
     AddClient(ClientId),
     RemoveClient(ClientId),
+    CliPipesDisconnected(Vec<String>),
     NewTab(
         Option<PathBuf>,
         Option<TerminalAction>,
@@ -330,7 +331,6 @@ pub enum PluginInstruction {
         default_shell: Option<TerminalAction>,
         layout_dir: Option<PathBuf>,
         user_plugin_dir: Option<PathBuf>,
-        builtin_plugins_dir: Option<PathBuf>,
         /// The hook bindings the new configuration declares. Held by this thread rather than
         /// re-read per hook, so a reload has to hand them over or every hook point keeps whatever
         /// the session started with.
@@ -403,19 +403,19 @@ pub enum PluginInstruction {
         plugin_url: String,
         permissions: Vec<PermissionType>,
     },
-    /// A plugin failed to load or trapped. Deno reports are validated against their instance
+    /// A plugin failed to load or trapped. Runtime reports are validated against their instance
     /// generation before painting errors or disposing it. Failed jobs also release their slot.
     PluginFailed {
         load_id: Option<u64>,
         plugin_id: PluginId,
         /// None for legacy runtimes and load failures that precede instance creation.
-        deno_generation: Option<u64>,
+        generation: Option<u64>,
         instance_id: Option<PluginInstanceId>,
         loading_client: Option<ClientId>,
         error: String,
         /// True when the load itself failed, so the loader has already run and given up; false
         /// when a plugin that was loaded trapped. The two need different cleanup - see
-        /// `WasmBridge::queue_plugin_failed`.
+        /// `PluginBridge::queue_plugin_failed`.
         failed_to_load: bool,
     },
     HighlightClicked {
@@ -430,16 +430,15 @@ pub enum PluginInstruction {
 }
 
 impl PluginInstruction {
-    /// Async completions belong to the Deno instance that started the operation.
-    /// Wasm retain their existing event delivery protocol.
+    /// Async completions belong to the runtime instance that started the operation.
     pub fn for_plugin_event(
         plugin_id: PluginId,
         client_id: ClientId,
-        deno_generation: Option<u64>,
+        generation: Option<u64>,
         event: Event,
     ) -> Self {
-        match deno_generation {
-            Some(generation) => Self::DenoEvent(plugin_id, client_id, generation, event),
+        match generation {
+            Some(generation) => Self::PluginEvent(plugin_id, client_id, generation, event),
             None => Self::Update(vec![(Some(plugin_id), Some(client_id), event)]),
         }
     }
@@ -454,12 +453,12 @@ impl From<&PluginInstruction> for PluginContext {
             PluginInstruction::InputBarrier(..) => PluginContext::Update,
             PluginInstruction::PaletteNote(..)
             | PluginInstruction::PaletteAgent(..)
-            | PluginInstruction::DenoPalette(..) => PluginContext::Update,
-            PluginInstruction::DenoTick(..) => PluginContext::Update,
-            PluginInstruction::DenoEvent(..) | PluginInstruction::DenoReply(..) => {
+            | PluginInstruction::PluginPalette(..) => PluginContext::Update,
+            PluginInstruction::PluginTick(..) => PluginContext::Update,
+            PluginInstruction::PluginEvent(..) | PluginInstruction::PluginReply(..) => {
                 PluginContext::Update
             },
-            PluginInstruction::DenoDispose(..) => PluginContext::Unload,
+            PluginInstruction::PluginDispose(..) => PluginContext::Unload,
             PluginInstruction::PipeCompleted(..) => PluginContext::UnblockCliPipes,
             PluginInstruction::ReleasePluginInstancePipes(..) => PluginContext::UnblockCliPipes,
             PluginInstruction::PostMessagesToPluginWorker(..) => {

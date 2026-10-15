@@ -219,5 +219,5 @@ pub(super) fn dispatch(env: &mut PluginEnv, command: PluginCommand) -> Result<()
     let response = yinz_plugin_api::plugin_command::ProtobufMultipaneResponse {
         json: serde_json::to_string(&result)?,
     };
-    wasi_write_object(env, &response.encode_to_vec())
+    write_response(env, &response.encode_to_vec())
 }

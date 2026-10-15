@@ -1,20 +1,6 @@
-//! Pure logic and wire types shared by the agent plugins.
-//!
-//! All of it tests on the host triple without the wasm dance — and the plugins
-//! that link it (`agents`, `agent-service`,
-//! `new-agent`, `project-store`) cannot
-//! drift apart on a message shape, or on a stored schema, which would otherwise
-//! show up only as a silent deserialize failure at runtime.
-//!
-//! The stored schemas, the store seam and the project, todo and note registry live in
-//! `project-data`, which the plugin host links on its own; they are re-exported here unchanged,
-//! so a plugin names them as `agent_proto::store` and so on.
-//!
-//! [`store`] and [`launch`] are the two modules that reach the host, and both are
-//! arranged so that this stays true: the shim is behind a `wasm32`-only item, with a
-//! host-triple stub that fails loudly beside it, and everything either module decides
-//! is in the pure half that the linking crates' own tests exercise. For [`store`] that
-//! pure half runs against the real store engine over a temporary file.
+//! Pure agent models, planning helpers, and wire types shared by the host and Scheme bridge.
+//! Stored schemas and project, todo, and note models come from `project-data`.
+//! Guest lifecycle, host commands, and transaction sequencing remain in Scheme.
 
 /// The session's reading of a Claude Code hook event, for plugins that link only this crate.
 pub use yinz_tile::agent;

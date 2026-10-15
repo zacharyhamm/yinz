@@ -6,7 +6,7 @@ expression: serialized.to_string()
 // Plugin aliases - can be used to change the implementation of Yinz
 // declarations are refreshed on config reload
 plugins {
-    filepicker location="file:///path/to/my/plugin.wasm" {
+    filepicker location="file:///path/to/my/plugin.scm" {
         cwd "/"
     }
     tab-bar location="yinz:tab-bar"

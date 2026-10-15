@@ -317,7 +317,7 @@ pub struct CompletionRequest {
 /// One message, in the one shape all four roles fit through.
 ///
 /// Flat where agent's own `api::WireMessage` is an untagged enum, because this crosses a
-/// JSON boundary a TypeScript object has to be able to write by hand.
+/// JSON boundary a plugin has to be able to write by hand.
 /// `completion::completion_request_body` is what re-nests it into the shapes the endpoint
 /// expects.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -362,7 +362,7 @@ pub struct CompletionUsage {
 /// What became of a [`CompletionRequest`].
 ///
 /// One shape for every outcome with `error` empty on success, the stance [`ResumeResult::detail`] takes. An enum would read better in Rust and worse in
-/// the TypeScript object this becomes, and a caller has to branch on failure either way.
+/// the JSON object this becomes, and a caller has to branch on failure either way.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CompletionReply {
     pub request_id: String,

@@ -16,6 +16,7 @@
 //! reading is a different job from recording, and `agents.rs` is already the largest file in
 //! the crate.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use yinz_tile::prelude::HostId;
 use yinz_types::internal_ids::SessionName;
@@ -124,7 +125,8 @@ const MAX_SCOPE_SCAN: usize = 4_000;
 
 /// Which runs a caller is asking about. Every field `None` means every run in the store — which
 /// includes every session using the data directory.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Filter {
     /// One yinz session's runs, by name.
     ///
@@ -152,7 +154,7 @@ impl Filter {
     /// The predicates the store can answer. `root` is deliberately absent: a run's `cwd` lives
     /// inside its `header` JSON rather than in a column, so narrowing by project is a pass over
     /// the fetched page and costs an over-fetch, which [`list_runs`] pays.
-    fn pred(&self) -> Option<Pred> {
+    pub fn pred(&self) -> Option<Pred> {
         let mut preds = Vec::new();
         if let Some(session) = self.session() {
             preds.push(Pred::eq("yinz_session_name", session));
@@ -195,11 +197,11 @@ impl Filter {
     }
 
     /// Whether this filter needs a guest-side pass, and so an over-fetch.
-    fn narrows_in_guest(&self) -> bool {
+    pub fn narrows_in_guest(&self) -> bool {
         self.root.is_some()
     }
 
-    fn keeps(&self, header: &AgentRunHeader) -> bool {
+    pub fn keeps(&self, header: &AgentRunHeader) -> bool {
         match &self.root {
             Some(scope) => matches_root(
                 header.cwd.as_deref(),
@@ -216,7 +218,8 @@ impl Filter {
 ///
 /// The two together rather than a bare root, so that a caller cannot narrow to a project
 /// without saying whose it is. See [`matches_root`] for why the machine is not optional.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RootScope {
     /// The normalized project root.
     pub root: String,
@@ -603,7 +606,7 @@ pub fn anchored_from(revision: u64) -> u64 {
 /// forward from what it got.
 ///
 /// An exact revision with limit one is exempt from previews: it returns the retained payload.
-fn budget(entries: &mut Vec<RunEntry>, from_end: bool, exact: bool) -> bool {
+pub fn budget(entries: &mut Vec<RunEntry>, from_end: bool, exact: bool) -> bool {
     if !exact {
         for entry in entries.iter_mut() {
             entry.text = cut(&entry.text, ENTRY_TEXT_CHARS);
@@ -644,7 +647,7 @@ fn budget(entries: &mut Vec<RunEntry>, from_end: bool, exact: bool) -> bool {
 
 /// One entry that matched a search, with enough of itself to judge by and enough of its
 /// address to read the rest.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hit {
     pub run_id: String,
     pub revision: u64,
@@ -716,18 +719,7 @@ pub fn search(
     limit: usize,
 ) -> Result<Found, String> {
     let pattern = if regex {
-        if query.is_empty() || query.contains('\0') || query.len() > 4096 {
-            return Err(
-                "regex pattern must be nonempty, contain no NUL, and be at most 4 KiB".into(),
-            );
-        }
-        Some(
-            regex::RegexBuilder::new(query)
-                .size_limit(1024 * 1024)
-                .dfa_size_limit(1024 * 1024)
-                .build()
-                .map_err(|error| format!("invalid regex: {error}"))?,
-        )
+        Some(search_pattern(query)?)
     } else {
         None
     };
@@ -788,6 +780,18 @@ pub fn search(
         runs,
         truncated,
     })
+}
+
+/// Compile a bounded history search pattern shared with the Scheme reader.
+pub fn search_pattern(query: &str) -> Result<regex::Regex, String> {
+    if query.is_empty() || query.contains('\0') || query.len() > 4096 {
+        return Err("regex pattern must be nonempty, contain no NUL, and be at most 4 KiB".into());
+    }
+    regex::RegexBuilder::new(query)
+        .size_limit(1024 * 1024)
+        .dfa_size_limit(1024 * 1024)
+        .build()
+        .map_err(|error| format!("invalid regex: {error}"))
 }
 
 const REGEX_SCAN_ROWS: usize = 4_000;
@@ -884,7 +888,7 @@ fn regex_hits(
     Ok((hits, truncated))
 }
 
-fn regex_snippet(text: &str, at: usize) -> String {
+pub fn regex_snippet(text: &str, at: usize) -> String {
     let start = text[..at]
         .char_indices()
         .rev()
@@ -1082,7 +1086,11 @@ fn hits_for(
     Ok((hits, rows.truncated || scan_cut))
 }
 
-fn hits_from_rows(rows: &yinz_tile::prelude::DataRows, query: &str, tools_only: bool) -> Vec<Hit> {
+pub fn hits_from_rows(
+    rows: &yinz_tile::prelude::DataRows,
+    query: &str,
+    tools_only: bool,
+) -> Vec<Hit> {
     let mut hits = Vec::new();
     let query_lower = query.to_lowercase();
     for (run_id, entries) in rows::entries_from_rows(rows) {

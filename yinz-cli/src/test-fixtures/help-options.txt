@@ -42,10 +42,6 @@ Options:
       --layout-dir <LAYOUT_DIR>
           Set the layout_dir, defaults to subdirectory of config dir
 
-      --builtin-plugins-dir <BUILTIN_PLUGINS_DIR>
-          Set the directory from which builtin plugins are loaded before the installed builtins are
-          tried
-
       --theme-dir <THEME_DIR>
           Set the theme_dir, defaults to subdirectory of config dir
 

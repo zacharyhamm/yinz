@@ -8,14 +8,14 @@
 //! endpoints, never rewritten. OpenAI credentials are never used as a fallback.
 //!
 //! The caller owns HTTP scheduling and permissions. For a plugin subscribed to
-//! `WebRequestResult` with `WebAccess` permission, prepare and send a request:
+//! `WebRequestResult` with `WebAccess` permission, prepare a host command for the caller:
 //!
 //! ```no_run
 //! use std::collections::BTreeMap;
 //! use agent_proto::decisions::{self, Endpoint, Input, Question, Request};
-//! use yinz_tile::prelude::{web_request, HttpVerb};
+//! use yinz_types::data::{HttpVerb, PluginCommand};
 //!
-//! # fn prepare(kdl: &BTreeMap<String, String>, env: &BTreeMap<String, String>) -> Result<(), String> {
+//! # fn prepare(kdl: &BTreeMap<String, String>, env: &BTreeMap<String, String>) -> Result<Option<PluginCommand>, String> {
 //! if let Some(endpoint) = Endpoint::resolve(kdl, env)? {
 //!     let request = Request {
 //!         state: Input::String("The checkout button is broken".into()),
@@ -27,10 +27,11 @@
 //!         session_id: None,
 //!     };
 //!     let body = request.body(&endpoint.model)?;
-//!     web_request(&endpoint.url, HttpVerb::Post, endpoint.headers(), body,
-//!         BTreeMap::from([("request_id".into(), "decision-1".into())]), None);
+//!     let headers = endpoint.headers();
+//!     return Ok(Some(PluginCommand::WebRequest(endpoint.url, HttpVerb::Post, headers, body,
+//!         BTreeMap::from([("request_id".into(), "decision-1".into())]), None, None)));
 //! }
-//! # Ok(())
+//! # Ok(None)
 //! # }
 //! // In the matching WebRequestResult handler, pass its status and body:
 //! # fn receive(status: u16, body: &[u8]) -> Result<(), String> {

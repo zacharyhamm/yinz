@@ -1,0 +1,15 @@
+(define ready #f)
+(define (load config)
+  (yinz-command (hash "Subscribe" (list "Key")))
+  (yinz-then (yinz-wait-for-permissions (list "ChangeApplicationState" "OpenTerminalsOrPlugins"))
+    (lambda (ignored) (set! ready #t))))
+(define (update event)
+  (when (hash-contains? event "Key")
+    (define key (hash-ref (hash-ref event "Key") "bare_key"))
+    (cond
+      ((equal? key (hash "Char" "t"))
+       (yinz-command (hash "OpenTerminal"
+         (hash "path" "/tmp/scheme-fixture-cwd" "line_number" json-null "cwd" json-null))))
+      ((equal? key "Esc") (yinz-command "CloseSelf"))))
+  #t)
+(define (render rows cols) (if ready "scheme fixture with permissions" "waiting for permissions"))

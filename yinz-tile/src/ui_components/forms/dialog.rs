@@ -116,11 +116,11 @@ impl Dialog {
     /// Center the dialog vertically in `area`, shrinking only the form when
     /// the full content does not fit. Optional help and message rows are
     /// dropped before the title or form.
-    pub fn render(&mut self, area: Rect) {
-        self.render_buffer(area).print();
+    pub fn render(&mut self, area: Rect) -> RenderBuffer {
+        self.render_buffer(area)
     }
 
-    /// As [`Self::render`], without printing or calling host shims.
+    /// Render output and cursor metadata without host calls.
     pub fn render_buffer(&mut self, area: Rect) -> RenderBuffer {
         let layout = self.layout(area);
         let inset = if area.columns > 4 { 2 } else { 0 };

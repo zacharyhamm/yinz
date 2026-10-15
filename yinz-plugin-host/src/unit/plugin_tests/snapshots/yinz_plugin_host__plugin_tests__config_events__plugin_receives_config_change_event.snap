@@ -1,5 +1,0 @@
----
-source: yinz-plugin-host/src/./unit/plugin_tests/config_events.rs
-expression: "format!(\"{:#?}\", last_render)"
----
-"Rows: 20, Cols: 121, Received events: [PluginConfigurationChanged({\"size\": \"small\", \"theme\": \"light\"})]\n\r"

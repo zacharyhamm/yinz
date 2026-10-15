@@ -14,7 +14,7 @@ yinz-runtime = { workspace = true }
 yinz-session = { workspace = true }
 yinz-types = { workspace = true }
 anyhow = { workspace = true }
-futures-util = { version = "0.3", features = ["sink"] }
+futures-util = { workspace = true }
 libc = { workspace = true }
 nix = { workspace = true, features = ["process", "user"] }
 serde = { workspace = true }

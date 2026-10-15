@@ -4,7 +4,7 @@ use yinz_types::input::{git_plugin::GitRevision, layout::RunPluginLocation};
 #[test]
 fn repository_aliases_validate_and_round_trip_without_leaking_properties() {
     let text = r#"plugins {
-        remote repo="git@example.com:team/plugin.git" branch="main" entrypoint="src/panel.ts" { greeting "Hello"; }
+        remote repo="git@example.com:team/plugin.git" branch="main" entrypoint="src/panel.scm" { greeting "Hello"; }
         local repo="./tools"
     }"#;
     let config = Config::from_kdl(text, None).unwrap();
@@ -15,30 +15,30 @@ fn repository_aliases_validate_and_round_trip_without_leaking_properties() {
         panic!("Git location")
     };
     assert_eq!(plugin.revision, Some(GitRevision::Branch("main".into())));
-    assert_eq!(plugin.entrypoint, std::path::Path::new("src/panel.ts"));
+    assert_eq!(plugin.entrypoint, std::path::Path::new("src/panel.scm"));
     let RunPluginLocation::Git(local) = &config.plugins.aliases["local"].location else {
         panic!("local Git location")
     };
-    assert_eq!(local.entrypoint, std::path::Path::new("main.ts"));
+    assert_eq!(local.entrypoint, std::path::Path::new("main.scm"));
     let node = crate::kdl::plugin_aliases::to_kdl(&config.plugins, false);
     assert_eq!(
         crate::kdl::plugin_aliases::from_kdl(&node).unwrap(),
         config.plugins
     );
     for declaration in [
-        "repo=\"https://example.com/p.git\" location=\"file:main.ts\"",
+        "repo=\"https://example.com/p.git\" location=\"file:main.scm\"",
         "repo=\"https://example.com/p.git\" branch=\"main\" tag=\"v1\"",
         "repo=\"./local\" branch=\"main\"",
         "repo=\"file:tools\" branch=\"main\"",
-        "repo=\"file:tools\" entrypoint=\"../escape.ts\"",
-        "repo=\"https://example.com/p.git\" entrypoint=\"../escape.ts\"",
+        "repo=\"file:tools\" entrypoint=\"../escape.scm\"",
+        "repo=\"https://example.com/p.git\" entrypoint=\"../escape.scm\"",
         "repo=\"https://example.com/p.git\" entrypoint=\"plugin.wasm\"",
         "repo=\"ext::bad\"",
         "repo=42",
         "repo=\"\"",
         "repo=\"file:\"",
         "repo=\"file://remotehost/tools\"",
-        "location=\"file:main.ts\" commit=\"abc1234\"",
+        "location=\"file:main.scm\" commit=\"abc1234\"",
     ] {
         assert!(
             Config::from_kdl(&format!("plugins {{ panel {declaration}; }}"), None).is_err(),

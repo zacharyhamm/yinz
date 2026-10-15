@@ -7,12 +7,12 @@ use yinz_types::{cli::PluginOperation, input::layout::RunPluginLocation};
 fn relative_file_url_preserves_plugin_directory_fallback() {
     let directory = tempfile::tempdir().unwrap();
     let name = format!(
-        "lifecycle-{}.ts",
+        "lifecycle-{}.scm",
         directory.path().file_name().unwrap().to_string_lossy()
     );
     let declared = std::env::current_dir().unwrap().join(&name);
     assert!(!declared.exists());
-    let source = "export {};";
+    let source = "(void)";
     let path = directory.path().join(&name);
     fs::write(&path, source).unwrap();
 
@@ -45,11 +45,11 @@ fn symlink_file_url_preserves_declaration_for_identity_refresh() {
 
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
-    let first = root.join("first.ts");
-    let second = root.join("second.ts");
-    let link = root.join("current.ts");
+    let first = root.join("first.scm");
+    let second = root.join("second.scm");
+    let link = root.join("current.scm");
     for path in [&first, &second] {
-        fs::write(path, "export {};").unwrap();
+        fs::write(path, "(void)").unwrap();
     }
     std::os::unix::fs::symlink(&first, &link).unwrap();
     let target = url::Url::from_file_path(&link).unwrap().to_string();

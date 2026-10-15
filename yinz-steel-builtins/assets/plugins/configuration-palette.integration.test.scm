@@ -1,0 +1,7 @@
+(require "./testing/common.scm")
+(test "configuration palette submits a scalar value and destination together" (lambda ()
+    (s-start (hash "columns" 160 "backgroundPlugins" (list (hash "path" "yinz:configuration-palette" "configuration" (hash "shared" "true")))))
+    (test-wait-for-text "yinz-test>") (s-key "Ctrl Alt p") (s-text "Configuration") (test-wait-for-text "› Configuration…") (s-key "Enter")
+    (test-wait-for-text "simplified ui…") (s-text "pane frames") (test-wait-for-text "› pane frames…") (s-key "Enter")
+    (test-wait-for-text "Apply change") (assert (string-contains? (s-screen) "Apply to session"))
+    (s-key "Right") (s-key "Enter") (s-key "Enter") (s-key "Enter") (test-wait-for-text "Applied to this session")))

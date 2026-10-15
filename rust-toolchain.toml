@@ -3,5 +3,3 @@
 # NOTE: When updating this, modify `rust-version` in `Cargo.toml` accordingly
 channel = "stable"
 components = ["rustfmt", "clippy"]
-# NOTE: Change this with care, this is also used by the CI pipeline
-targets = ["wasm32-wasip1"]

@@ -104,7 +104,7 @@ fn deliver(
         return;
     }
     senders
-        .send_to_plugin(PluginInstruction::DenoPalette(Delivery {
+        .send_to_plugin(PluginInstruction::PluginPalette(Delivery {
             owner: owner.clone(),
             client,
             message,

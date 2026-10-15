@@ -2,7 +2,7 @@
 //! # This module contain everything you'll need to access local system paths
 //! containing configuration and layouts
 
-use crate::consts::{BUILTIN_PLUGIN_DIR_NAME, SYSTEM_DEFAULT_CONFIG_DIR, VERSION, YINZ_PROJ_DIR};
+use crate::consts::{SYSTEM_DEFAULT_CONFIG_DIR, YINZ_PROJ_DIR};
 
 use std::{path::Component, path::Path, path::PathBuf};
 
@@ -62,31 +62,6 @@ pub fn system_data_dir() -> PathBuf {
     platform::system_data_dir()
 }
 
-/// Where the builtin plugin wasm for *this* version of yinz lives under a data dir:
-/// `<data_dir>/builtins/<VERSION>/<name>.wasm`. `cargo x install` writes it, and it is
-/// searched by `PluginConfig::resolve_wasm_bytes` right after `<data_dir>/plugins`.
-///
-/// Versioned by `VERSION` rather than by `CLIENT_SERVER_CONTRACT_VERSION`: that one versions the
-/// client<->server IPC, but builtin wasm is bound to the host<->plugin API of the binary that
-/// was built alongside it, so a binary must never load another version's wasm. Keyed on the
-/// data dir handed in - not unconditionally on the XDG dir - so `--data-dir X` means "X is
-/// where my builtins are" and a test's scratch data dir never sees the developer's install.
-pub fn builtin_plugin_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(BUILTIN_PLUGIN_DIR_NAME).join(VERSION)
-}
-
-/// The per-user install target for the builtins. Deliberately `xdg_data_dir()` and not
-/// `get_default_data_dir()`: on a machine with a distro `/usr/share/yinz` and no
-/// `~/.local/share/yinz` yet, the latter answers the system dir, which needs root to write.
-pub fn user_builtin_plugin_dir() -> PathBuf {
-    builtin_plugin_dir(&xdg_data_dir())
-}
-
-/// The system-wide install target, `$PREFIX/share/yinz/builtins/<VERSION>`.
-pub fn system_builtin_plugin_dir() -> PathBuf {
-    builtin_plugin_dir(&system_data_dir())
-}
-
 pub fn get_layout_dir(config_dir: Option<PathBuf>) -> Option<PathBuf> {
     config_dir.map(|dir| dir.join("layouts"))
 }
@@ -114,10 +89,7 @@ pub fn default_theme_dir() -> Option<PathBuf> {
     find_default_config_dir().map(|dir| dir.join("themes"))
 }
 
-/// The folder holding the user's own plugins, as opposed to the two that already exist: the
-/// wasm cache under the *data* dir (`<data_dir>/plugins`), and `builtin_plugins_dir`, which
-/// overrides where the shipped builtins are read from. This one is for plugins the user wrote.
-///
+/// The folder holding the user's own plugins.
 /// Like `get_layout_dir` this only computes a path - it deliberately creates nothing. A `get_*`
 /// that makes a directory is a trap, and an empty folder in every user's config dir would be
 /// one more thing to explain for a feature most sessions never touch.
@@ -172,9 +144,7 @@ pub fn absolute_lexical(path: &Path) -> PathBuf {
 ///
 /// The answer is always absolute. Neither option is normalized when it is parsed - and must not be,
 /// since a config write-back would then rewrite the user's own relative path - but a *relative*
-/// folder is only usable by something with a cwd. The server has one; a wasm plugin, whose WASI
-/// preopens are `/host`, `/data`, `/cache` and `/tmp`, has nothing to join against and can only
-/// refuse the path. So the join happens once, here, where the two agree on the answer.
+/// folder is resolved by the server so every plugin receives the same absolute path.
 pub fn user_plugin_dir_or_default(
     configured: Option<PathBuf>,
     config_dir: Option<PathBuf>,
@@ -187,22 +157,6 @@ pub fn user_plugin_dir_or_default(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_builtin_dir_is_versioned_under_the_data_dir() {
-        assert_eq!(
-            builtin_plugin_dir(Path::new("/data")),
-            PathBuf::from("/data").join("builtins").join(VERSION)
-        );
-        assert_eq!(
-            user_builtin_plugin_dir(),
-            xdg_data_dir().join("builtins").join(VERSION)
-        );
-        assert_eq!(
-            system_builtin_plugin_dir(),
-            system_data_dir().join("builtins").join(VERSION)
-        );
-    }
 
     #[test]
     fn the_user_plugin_dir_hangs_off_the_config_dir() {
@@ -290,7 +244,7 @@ mod tests {
         );
     }
 
-    /// It must not be `<data_dir>/plugins`, which is the wasm cache and a different folder
+    /// It must remain under the configuration directory, independently of data storage
     /// entirely - the two are told apart only by which of these functions produced them.
     #[test]
     fn the_user_plugin_dir_is_not_created_by_asking_for_it() {

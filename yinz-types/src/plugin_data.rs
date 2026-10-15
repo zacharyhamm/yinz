@@ -1,10 +1,8 @@
 //! Types for the plugin data store: entity definitions, values, predicates, fetch requests and
 //! mutations.
 //!
-//! Deliberately free of `rusqlite`, and of anything else that cannot build for `wasm32-wasip1`:
-//! these types cross the plugin boundary, so they are compiled into every plugin as well as into
-//! the host. The engine that turns them into SQL is the `yinz-storage` engine, which is
-//! host-only for exactly that reason.
+//! Shared wire types and validation for plugins and native callers. The SQL engine lives
+//! separately in `yinz-storage`.
 //!
 //! Name validation lives here rather than in the engine so that a plugin can reject a bad entity
 //! or attribute name locally, and get the same message it would have got from the host.
@@ -21,16 +19,13 @@ pub const DEFAULT_FETCH_LIMIT: u32 = 100;
 
 /// Hard ceiling on rows per fetch, whatever the request asks for.
 ///
-/// The plugin transport is protobuf wrapped in JSON — payloads cross as a JSON array of decimal
-/// numbers, roughly 3-4x the protobuf size — into a guest whose linear memory is capped at 16 MiB
-/// and configured to *trap* rather than fail gracefully when it can't grow. Truncating a fetch
-/// gives the plugin a `next_cursor` to page with; overrunning kills it.
+/// Fetches return a cursor when this limit is reached so callers can page through large tables.
 pub const MAX_FETCH_ROWS: u32 = 1000;
 
-/// Byte ceiling on the encoded rows of a single fetch, applied alongside [`MAX_FETCH_ROWS`].
+/// Byte budget on the rows of a single fetch, applied alongside [`MAX_FETCH_ROWS`].
 ///
-/// A thousand rows of short text is nothing; a thousand rows each holding a 64 KiB blob is far past
-/// what the guest can hold. Whichever limit is reached first truncates.
+/// The first row is always returned, even if it exceeds this budget. Additional rows stop
+/// before exceeding it, with a cursor to continue the query. Runtime transport limits still apply.
 pub const MAX_FETCH_BYTES: usize = 2 * 1024 * 1024;
 
 /// Nesting limit for [`Pred`] trees, enforced on both sides of the boundary.
@@ -104,7 +99,7 @@ pub enum DataValue {
     Real(f64),
     Text(String),
     Bool(bool),
-    Blob(Vec<u8>),
+    Blob(#[serde(deserialize_with = "crate::compact_bytes::deserialize")] Vec<u8>),
 }
 
 impl DataValue {

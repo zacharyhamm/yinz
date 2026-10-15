@@ -1426,7 +1426,7 @@ message PluginTag {
 }
 
 message OriginatingPlugin {
-  optional uint64 deno_generation = 4;
+  optional uint64 generation = 4;
   uint32 plugin_id = 1;
   uint32 client_id = 2;  // ClientId is u16, but using uint32 for protobuf compatibility
   map<string, string> context = 3;  // Context is BTreeMap<String, String>
@@ -1450,7 +1450,7 @@ message RunEditFileAction {
 // Config Options message - comprehensive configuration structure
 
 message Options {
-  reserved 28, 29, 34, 35, 36, 37, 38, 42;
+  reserved 28, 29, 34, 35, 36, 37, 38, 42, 58;
   optional bool simplified_ui = 1;
   optional string theme = 2;
   optional InputMode default_mode = 3;
@@ -1459,7 +1459,6 @@ message Options {
   optional string default_layout = 6;
   optional string layout_dir = 7;
   optional string theme_dir = 8;
-  optional string builtin_plugins_dir = 58;
   optional string user_plugin_dir = 64;
   optional bool mouse_mode = 9;
   optional bool pane_frames = 10;

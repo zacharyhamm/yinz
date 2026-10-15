@@ -1,7 +1,7 @@
 //! Work queues, end to end: an enqueuer plugin, the real plugin thread, headless job plugins,
 //! and the events that come back.
 //!
-//! Every test here drives a TypeScript enqueuer written to a tempdir, because that is the cheapest way
+//! Every test here drives a Scheme enqueuer written to a tempdir, because that is the cheapest way
 //! to get a plugin that can be told what to do and can say what it saw: it logs one line per
 //! event and renders the log, so a test waits for the *content* it means rather than for a render
 //! count. The fake screen is a plain loop rather than the shared macros because it has to grant
@@ -18,52 +18,59 @@ use {yinz_types::data::MessageToPlugin, yinz_types::data::PermissionStatus};
 const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[test]
-fn deno_jobs_survive_enqueuer_reload_but_addressed_events_keep_the_original_generation() {
+fn steel_jobs_survive_enqueuer_reload_but_addressed_events_keep_the_original_generation() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", r#"
-export default {
-  load(config) { if (config.n === '2') yinz.command('FinishQueueJob', {success: true, payload: 'second'}); },
-  pipe(message) { if (message.name === 'finish') yinz.command('FinishQueueJob', {success: true, payload: 'first'}); }
-};
-"#);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &format!(r#"
-let lines = [];
-export default {{
-  async load() {{
-    yinz.subscribe(['QueueJobStarted', 'QueueJobFinished', 'QueueChanged']);
-    await yinz.waitForPermissions(['MessageAndLaunchOtherPlugins', 'ReadApplicationState']);
-    for (const n of ['1', '2']) yinz.command('EnqueueQueueJob', {{queue: 'deno', plugin_url: {job:?}, config: {{n}}, context: {{n}}}});
-  }},
-  update(event) {{
-    if (event.QueueJobStarted) {{ const e = event.QueueJobStarted; lines.push(`started ${{e.job_id}} pid=${{e.plugin_id}} n=${{e.context.n}}`); }}
-    return true;
-  }},
-  render() {{ return lines.join('\n'); }}
-}};
+    let job = harness.write_plugin(
+        "job.scm",
+        r#"
+(define (load config)
+  (when (equal? (hash-ref config "n") "2")
+    (yinz-command (hash "FinishQueueJob" (hash "success" #t "payload" "second")))))
+(define (pipe message)
+  (when (equal? (hash-ref message "name") "finish")
+    (yinz-command (hash "FinishQueueJob" (hash "success" #t "payload" "first")))))
+"#,
+    );
+    let enqueuer = harness.write_plugin("enqueuer.scm", &format!(r#"
+(define lines '())
+(define (load config)
+  (yinz-command (hash "Subscribe" '("QueueJobStarted" "QueueJobFinished" "QueueChanged")))
+  (yinz-then (yinz-wait-for-permissions '("MessageAndLaunchOtherPlugins" "ReadApplicationState"))
+    (lambda (_)
+      (for-each (lambda (n)
+        (yinz-command (hash "EnqueueQueueJob" (hash "queue" "test" "plugin_url" {job:?}
+          "config" (hash "n" n) "context" (hash "n" n))))) '("1" "2")))))
+(define (update event)
+  (when (and (hash? event) (hash-contains? event "QueueJobStarted"))
+    (define e (hash-ref event "QueueJobStarted"))
+    (set! lines (append lines (list (string-append "started " (number->string (hash-ref e "job_id"))
+      " pid=" (number->string (hash-ref e "plugin_id")) " n=" (hash-ref (hash-ref e "context") "n"))))))
+  #t)
+(define (render rows cols) (string-join lines "\n"))
 "#));
     harness.load(&enqueuer);
     let first = harness.wait_for_started(1);
     harness.write_plugin(
-        "enqueuer.ts",
+        "enqueuer.scm",
         r#"
-let state = 'replacement loading', addressed = 0;
-export default {
-  async load() {
-    yinz.subscribe(['QueueJobStarted', 'QueueJobFinished', 'QueueChanged']);
-    await yinz.waitForPermissions(['ReadApplicationState']);
-    const q = yinz.command('QueueStatus', {queue: 'deno'})[0];
-    state = `replacement p=${q.pending.length} r=${q.running.length}`;
-  },
-  update(event) {
-    if (event.QueueJobStarted || event.QueueJobFinished) addressed++;
-    if (event.QueueChanged) {
-      const q = yinz.command('QueueStatus', {queue: 'deno'})[0];
-      state = `replacement p=${q.pending.length} r=${q.running.length} addressed=${addressed}`;
-    }
-    return true;
-  },
-  render() { return state; }
-};
+(define state "replacement loading")
+(define addressed 0)
+(define (queue-state)
+  (define q (car (yinz-command (hash "QueueStatus" (hash "queue" "test")))))
+  (string-append "replacement p=" (number->string (length (hash-ref q "pending")))
+    " r=" (number->string (length (hash-ref q "running")))))
+(define (load config)
+  (yinz-command (hash "Subscribe" '("QueueJobStarted" "QueueJobFinished" "QueueChanged")))
+  (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
+    (lambda (_) (set! state (queue-state)) (yinz-request-render))))
+(define (update event)
+  (when (hash? event)
+    (when (or (hash-contains? event "QueueJobStarted") (hash-contains? event "QueueJobFinished"))
+      (set! addressed (+ addressed 1)))
+    (when (hash-contains? event "QueueChanged")
+      (set! state (string-append (queue-state) " addressed=" (number->string addressed)))))
+  #t)
+(define (render rows cols) state)
 "#,
     );
     let run =
@@ -90,76 +97,111 @@ const STATUS: char = 's';
 fn enqueuer_source(job_url: &str) -> String {
     format!(
         r#"
-import yinz from 'yinz:plugin';
-const lines=[];
-let n=0, last;
-const log = s => lines.push(s);
-function enqueue(url) {{
-  n++;
-  try {{ last=yinz.command('EnqueueQueueJob', {{queue:'merge',plugin_url:url,config:{{n:String(n)}},context:{{n:String(n)}}}}); log('enqueued '+last); }}
-  catch (error) {{log('enqueue error: '+error);}}
-}}
-yinz.on('QueueJobStarted', e => {{log(`started ${{e.job_id}} pid=${{e.plugin_id}} n=${{e.context.n}}`); return true;}});
-yinz.on('QueueJobFinished', e => {{log(`finished ${{e.job_id}} ${{e.outcome}} payload=${{e.payload ?? 'nil'}} n=${{e.context.n}}`); return true;}});
-yinz.on('QueueChanged', e => {{log(`changed ${{e.queue}} p=${{e.pending.length}} r=${{e.running.length}} c=${{e.concurrency}}`); return true;}});
-export default {{
-  load() {{yinz.subscribe(['Key','QueueJobStarted','QueueJobFinished','QueueChanged']); yinz.requestPermission(['MessageAndLaunchOtherPlugins','ChangeApplicationState','ReadApplicationState']); log('ready');}},
-  update(event) {{
-    if (!event.Key) return false;
-    const k=yinz.event(event).key;
-    if (k === '{ENQUEUE}') enqueue('{job_url}');
-    else if (k === '{ENQUEUE_BAD_URL}') enqueue('file:/nonexistent/job.ts');
-    else if (k === '{RAISE_CONCURRENCY}') yinz.command('ConfigureQueue', {{queue:'merge',concurrency:2}});
-    else if (k === '{CANCEL_JOB_1}') yinz.command('CancelQueueJob', {{job_id:1}});
-    else if (k === '{CANCEL_JOB_2}') yinz.command('CancelQueueJob', {{job_id:2}});
-    else if (k === '{ENQUEUE_AND_CANCEL}') {{enqueue('{job_url}'); yinz.command('CancelQueueJob', {{job_id:last}});}}
-    else if (k === '{STATUS}') {{
-      const q=yinz.command('QueueStatus', {{queue:'merge'}})[0];
-      log(`status p=${{q.pending.length}} r=${{q.running.length}} c=${{q.concurrency}} first_pending=${{q.pending[0]?.job_id ?? 'nil'}} running_url=${{q.running[0]?.plugin_url ?? 'nil'}}`);
-    }}
-    return true;
-  }},
-  pipe(message) {{log('pipe '+message.name); return true;}},
-  render() {{return lines.join('\n');}}
-}};
-        "#
+(define lines '())
+(define n 0)
+(define last-job #f)
+(define (text value) (if (string? value) value (to-string value)))
+(define (log . parts) (set! lines (append lines (list (apply string-append (map text parts))))))
+(define (enqueue url)
+  (set! n (+ n 1))
+  (with-handler (lambda (failure) (log "enqueue error: " failure))
+    (set! last-job (yinz-command (hash "EnqueueQueueJob" (hash "queue" "merge" "plugin_url" url
+      "config" (hash "n" (number->string n)) "context" (hash "n" (number->string n))))))
+    (log "enqueued " last-job)))
+(define (load config)
+  (yinz-command (hash "Subscribe" '("Key" "QueueJobStarted" "QueueJobFinished" "QueueChanged")))
+  (yinz-command (hash "RequestPluginPermissions" '("MessageAndLaunchOtherPlugins" "ChangeApplicationState" "ReadApplicationState")))
+  (log "ready"))
+(define (update event)
+  (cond
+    ((and (hash? event) (hash-contains? event "QueueJobStarted"))
+      (define e (hash-ref event "QueueJobStarted"))
+      (log "started " (hash-ref e "job_id") " pid=" (hash-ref e "plugin_id") " n=" (hash-ref (hash-ref e "context") "n")) #t)
+    ((and (hash? event) (hash-contains? event "QueueJobFinished"))
+      (define e (hash-ref event "QueueJobFinished"))
+      (define payload (hash-ref e "payload"))
+      (log "finished " (hash-ref e "job_id") " " (hash-ref e "outcome")
+        " payload=" (if (equal? payload json-null) "nil" payload) " n=" (hash-ref (hash-ref e "context") "n")) #t)
+    ((and (hash? event) (hash-contains? event "QueueChanged"))
+      (define e (hash-ref event "QueueChanged"))
+      (log "changed " (hash-ref e "queue") " p=" (length (hash-ref e "pending"))
+        " r=" (length (hash-ref e "running")) " c=" (hash-ref e "concurrency")) #t)
+    ((and (hash? event) (hash-contains? event "Key"))
+      (define bare (hash-ref (hash-ref event "Key") "bare_key"))
+      (define key (if (and (hash? bare) (hash-contains? bare "Char")) (hash-ref bare "Char") ""))
+      (cond
+        ((equal? key "{ENQUEUE}") (enqueue {job_url:?}))
+        ((equal? key "{ENQUEUE_BAD_URL}") (enqueue "file:/nonexistent/job.scm"))
+        ((equal? key "{RAISE_CONCURRENCY}") (yinz-command (hash "ConfigureQueue" (hash "queue" "merge" "concurrency" 2))))
+        ((equal? key "{CANCEL_JOB_1}") (yinz-command (hash "CancelQueueJob" (hash "job_id" 1))))
+        ((equal? key "{CANCEL_JOB_2}") (yinz-command (hash "CancelQueueJob" (hash "job_id" 2))))
+        ((equal? key "{ENQUEUE_AND_CANCEL}") (enqueue {job_url:?}) (yinz-command (hash "CancelQueueJob" (hash "job_id" last-job))))
+        ((equal? key "{STATUS}")
+          (define q (car (yinz-command (hash "QueueStatus" (hash "queue" "merge")))))
+          (define pending (hash-ref q "pending"))
+          (define running (hash-ref q "running"))
+          (log "status p=" (length pending) " r=" (length running) " c=" (hash-ref q "concurrency")
+            " first_pending=" (if (null? pending) "nil" (hash-ref (car pending) "job_id"))
+            " running_url=" (if (null? running) "nil" (hash-ref (car running) "plugin_url")))))
+      #t)
+    (else #f)))
+(define (pipe message) (log "pipe " (hash-ref message "name")) #t)
+(define (render rows cols) (string-join lines "\n"))
+"#
     )
 }
 
 /// A job that tells its enqueuer when it has loaded, then waits to be finished or pinged. It
 /// cannot render - a job has no pane - so a message is the only way to see it run.
 const CHATTY_JOB: &str = r#"
-import yinz from 'yinz:plugin';
-let enqueuer;
-function tell(name) {yinz.command('MessageToPlugin', {destination_plugin_id:enqueuer,message_name:name});}
-export default {
-  async load(config) {enqueuer=Number(config.yinz_queue_enqueuer_plugin_id); await yinz.waitForPermissions(['MessageAndLaunchOtherPlugins']); tell('job_loaded');},
-  pipe(message) {if (message.name === 'ping') tell('job_alive'); else if (message.name === 'finish') yinz.command('FinishQueueJob',{success:true}); return false;}
-};
+(define enqueuer #f)
+(define (tell name)
+  (yinz-command (hash "MessageToPlugin" (hash "destination_plugin_id" enqueuer "message_name" name))))
+(define (load config)
+  (set! enqueuer (string->number (hash-ref config "yinz_queue_enqueuer_plugin_id")))
+  (yinz-then (yinz-wait-for-permissions '("MessageAndLaunchOtherPlugins")) (lambda (_) (tell "job_loaded"))))
+(define (pipe message)
+  (cond ((equal? (hash-ref message "name") "ping") (tell "job_alive"))
+    ((equal? (hash-ref message "name") "finish") (yinz-command (hash "FinishQueueJob" (hash "success" #t "payload" json-null)))))
+  #f)
 "#;
 
 /// A job that reports as soon as it is loaded.
 const FINISHING_JOB: &str = r#"
-import yinz from 'yinz:plugin';
-export default {load(config) {if (!yinz.getPluginInfo().background) throw new Error('queue job must be background during load'); yinz.command('FinishQueueJob', {success:true,payload:`hello from ${config.yinz_queue}/${config.yinz_queue_job_id} n=${config.n} by=${config.yinz_queue_enqueuer_plugin_id}`});}};
+(define (load config)
+  (unless (hash-ref (yinz-command (hash "GetPluginInfo" json-null)) "background")
+    (error "queue job must be background during load"))
+  (yinz-command (hash "FinishQueueJob" (hash "success" #t "payload"
+    (string-append "hello from " (hash-ref config "yinz_queue") "/" (hash-ref config "yinz_queue_job_id")
+      " n=" (hash-ref config "n") " by=" (hash-ref config "yinz_queue_enqueuer_plugin_id"))))))
 "#;
 
 /// A job that runs until told to stop, one way or another.
 const WAITING_JOB: &str = r#"
-import yinz from 'yinz:plugin';
-export default {pipe(message) {if (message.name === 'finish') yinz.command('FinishQueueJob',{success:false,payload:'gave up'}); else if (message.name === 'close') yinz.host.closeSelf(); return false;}};
+(define (pipe message)
+  (cond ((equal? (hash-ref message "name") "finish") (yinz-command (hash "FinishQueueJob" (hash "success" #f "payload" "gave up"))))
+    ((equal? (hash-ref message "name") "close") (yinz-command "CloseSelf")))
+  #f)
 "#;
 
 const CRASHING_JOB: &str = r#"
-export default {load() {throw Error('boom');}};
+(define (load config) (error "boom"))
 "#;
 
 /// A bystander that only listens for queue changes.
 const SUBSCRIBER: &str = r#"
-import yinz from 'yinz:plugin';
-const lines=[];
-yinz.on('QueueChanged', e => {lines.push(`bystander saw ${e.queue} p=${e.pending.length} r=${e.running.length}`); return true;});
-export default {load() {yinz.subscribe(['QueueChanged']); yinz.requestPermission(['ReadApplicationState']);}, render() {return lines.join('\n');}};
+(define lines '())
+(define (load config)
+  (yinz-command (hash "Subscribe" '("QueueChanged")))
+  (yinz-command (hash "RequestPluginPermissions" '("ReadApplicationState"))))
+(define (update event)
+  (if (and (hash? event) (hash-contains? event "QueueChanged"))
+    (begin
+      (define e (hash-ref event "QueueChanged"))
+      (set! lines (append lines (list (string-append "bystander saw " (hash-ref e "queue")
+        " p=" (number->string (length (hash-ref e "pending"))) " r=" (number->string (length (hash-ref e "running"))))))) #t)
+    #f))
+(define (render rows cols) (string-join lines "\n"))
 "#;
 
 struct Harness {
@@ -375,8 +417,8 @@ fn assert_never_rendered(harness: &Harness, needle: &str) {
 #[serial(plugin_tests)]
 pub fn a_job_runs_headless_and_reports_back() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", FINISHING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", FINISHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE);
 
@@ -406,8 +448,8 @@ pub fn a_job_runs_headless_and_reports_back() {
 #[serial(plugin_tests)]
 pub fn concurrency_one_serialises_jobs() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", WAITING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE);
     harness.key(ENQUEUE);
@@ -433,8 +475,8 @@ pub fn concurrency_one_serialises_jobs() {
 #[serial(plugin_tests)]
 pub fn raising_concurrency_releases_pending_jobs() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", WAITING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE);
     harness.key(ENQUEUE);
@@ -455,8 +497,8 @@ pub fn raising_concurrency_releases_pending_jobs() {
 #[serial(plugin_tests)]
 pub fn cancelling_a_pending_job_reports_cancelled_and_never_starts_it() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", WAITING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE);
     harness.key(ENQUEUE);
@@ -481,8 +523,8 @@ pub fn cancelling_a_pending_job_reports_cancelled_and_never_starts_it() {
 #[serial(plugin_tests)]
 pub fn cancelling_a_running_job_unloads_it_and_starts_the_next() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", WAITING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE);
     harness.key(ENQUEUE);
@@ -506,8 +548,8 @@ pub fn a_job_is_one_instance_no_matter_how_many_clients_are_attached() {
     // neither does one attaching while it runs. otherwise every client's copy would run the job.
     // the enqueuer is shared too, so that its log comes from one instance.
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", CHATTY_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", CHATTY_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load_with_configuration(&enqueuer, &[("shared", "true")]);
     harness.wait_for("ready");
     harness.add_client(crate::ClientId::new(2));
@@ -536,8 +578,8 @@ pub fn cancelling_a_job_before_its_loader_ran_leaves_no_orphan() {
     // come out the same: the job is gone by the time its cancellation is reported, and a ping to
     // its plugin id reaches nothing.
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", CHATTY_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", CHATTY_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.wait_for("ready");
 
@@ -563,8 +605,8 @@ pub fn cancelling_a_job_before_its_loader_ran_leaves_no_orphan() {
 #[serial(plugin_tests)]
 pub fn a_job_that_closes_itself_is_aborted_and_frees_its_slot() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", WAITING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE);
     harness.key(ENQUEUE);
@@ -585,8 +627,8 @@ pub fn a_job_that_closes_itself_is_aborted_and_frees_its_slot() {
 #[serial(plugin_tests)]
 pub fn a_job_that_raises_is_reported_failed_and_frees_its_slot() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", CRASHING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", CRASHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE);
     harness.key(ENQUEUE);
@@ -606,8 +648,8 @@ pub fn a_job_that_raises_is_reported_failed_and_frees_its_slot() {
 #[serial(plugin_tests)]
 pub fn a_job_that_fails_to_load_is_reported_failed_and_the_next_one_runs() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", FINISHING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", FINISHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE_BAD_URL);
     harness.key(ENQUEUE);
@@ -622,9 +664,9 @@ pub fn a_job_that_fails_to_load_is_reported_failed_and_the_next_one_runs() {
 #[serial(plugin_tests)]
 pub fn queue_changed_is_broadcast_to_other_subscribers() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", FINISHING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
-    let subscriber = harness.write_plugin("subscriber.ts", SUBSCRIBER);
+    let job = harness.write_plugin("job.scm", FINISHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
+    let subscriber = harness.write_plugin("subscriber.scm", SUBSCRIBER);
     harness.load(&enqueuer);
     harness.load(&subscriber);
     harness.wait_for("ready");
@@ -638,8 +680,8 @@ pub fn queue_changed_is_broadcast_to_other_subscribers() {
 #[serial(plugin_tests)]
 pub fn queue_status_answers_with_pending_and_running_jobs() {
     let harness = Harness::new(PermissionStatus::Granted);
-    let job = harness.write_plugin("job.ts", WAITING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", WAITING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE);
     harness.key(ENQUEUE);
@@ -663,8 +705,8 @@ pub fn queue_status_answers_with_pending_and_running_jobs() {
 #[serial(plugin_tests)]
 pub fn enqueue_is_denied_without_permission() {
     let harness = Harness::new(PermissionStatus::Denied);
-    let job = harness.write_plugin("job.ts", FINISHING_JOB);
-    let enqueuer = harness.write_plugin("enqueuer.ts", &enqueuer_source(&job));
+    let job = harness.write_plugin("job.scm", FINISHING_JOB);
+    let enqueuer = harness.write_plugin("enqueuer.scm", &enqueuer_source(&job));
     harness.load(&enqueuer);
     harness.key(ENQUEUE);
 
@@ -679,12 +721,12 @@ pub fn enqueue_is_denied_without_permission() {
 
 #[test]
 #[serial(plugin_tests)]
-pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
+pub fn a_scheme_plugin_can_enqueue_and_be_a_job() {
     let harness = Harness::new(PermissionStatus::Granted);
     let fixture = format!("file:{}", *PLUGIN_FIXTURE);
     harness.load(&fixture);
     // Broadcast pipes enumerate loaded plugins. The fixture's first frame proves it is
-    // loaded; without this wait a slow WASM load can miss the enqueue request entirely.
+    // loaded; without this wait a slow plugin load can miss the enqueue request entirely.
     harness.wait_for("Received events:");
     // The fixture renders every event it receives, so a render mentioning a queue event is the
     // assertion. Ask it to queue *itself*.
@@ -708,7 +750,7 @@ pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
 
     harness.wait_for("enqueued job 1");
     let frame = harness.wait_for("QueueJobStarted");
-    assert!(frame.contains("\"origin\": \"fixture\""), "{frame}");
+    assert!(frame.contains("\"origin\":\"fixture\""), "{frame}");
     let job_plugin_id = *harness
         .suppressed_add_plugin_instructions()
         .last()
@@ -719,13 +761,14 @@ pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
 }
 
 #[test]
-fn first_cli_pipe_and_reload_reach_deno_without_an_attached_ui() {
+fn first_cli_pipe_and_reload_reach_steel_without_an_attached_ui() {
     let harness = Harness::new(PermissionStatus::Granted);
     let plugin = harness.write_plugin(
-        "detached.ts",
+        "detached.scm",
         r#"
-let message = 'not delivered';
-export default {pipe(event) { message = 'received ' + event.payload; }, render() {return message;}};
+(define message "not delivered")
+(define (pipe event) (set! message (string-append "received " (hash-ref event "payload"))) #t)
+(define (render rows cols) message)
 "#,
     );
     harness
@@ -754,8 +797,8 @@ export default {pipe(event) { message = 'received ' + event.payload; }, render()
         .unwrap();
     harness.wait_for("received initial delivery");
     harness.write_plugin(
-        "detached.ts",
-        "export default {render() {return 'reload completed without UI';}};",
+        "detached.scm",
+        r#"(define (render rows cols) "reload completed without UI")"#,
     );
     let run =
         yinz_runtime::plugin_location::run_plugin_or_alias_from_url(&plugin, &None, None, None)

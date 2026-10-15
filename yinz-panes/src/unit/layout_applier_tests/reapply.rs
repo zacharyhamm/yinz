@@ -859,7 +859,7 @@ fn test_apply_layout_with_mixed_plugin_and_terminal_panes() {
         layout {
             pane split_direction="Vertical" {
                 pane size="20%" {
-                    plugin location="file:///path/to/filebrowser.wasm"
+                    plugin location="file:///path/to/filebrowser.scm"
                 }
                 pane size="60%" split_direction="Horizontal" {
                     pane command="vim"
@@ -880,7 +880,7 @@ fn test_apply_layout_with_mixed_plugin_and_terminal_panes() {
     let mut new_plugin_ids = HashMap::new();
 
     let filebrowser_plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-        "file:///path/to/filebrowser.wasm",
+        "file:///path/to/filebrowser.scm",
         &None,
         None,
         None,

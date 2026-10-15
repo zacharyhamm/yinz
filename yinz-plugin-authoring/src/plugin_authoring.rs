@@ -9,9 +9,9 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
-use yinz_plugin_api::authoring::is_deno_plugin;
+use yinz_plugin_api::authoring::is_script_plugin;
 
-/// Check a file with Deno's semantic module checker.
+/// Check a source file in the supervised compilation worker.
 pub fn check_plugin(path: &Path) -> anyhow::Result<()> {
     check_plugin_report(path).map(|_| ())
 }
@@ -20,7 +20,7 @@ pub fn check_plugin(path: &Path) -> anyhow::Result<()> {
 pub fn check_plugin_report(
     path: &Path,
 ) -> anyhow::Result<yinz_types::authoring::PluginCheckReport> {
-    if !is_deno_plugin(path) {
+    if !is_script_plugin(path) {
         anyhow::bail!(
             "{}",
             check_source(path, "", yinz_types::authoring::PluginCheckMode::Syntax)
@@ -46,13 +46,13 @@ pub fn check_source(
     source: &str,
     mode: yinz_types::authoring::PluginCheckMode,
 ) -> yinz_types::authoring::PluginCheckReport {
-    if !is_deno_plugin(path) {
+    if !is_script_plugin(path) {
         return yinz_types::authoring::PluginCheckReport {
             diagnostics: vec![
                 if path.extension().and_then(|ext| ext.to_str()) == Some("lua") {
-                    "Lua plugins are no longer supported; migrate to TypeScript or Wasm".into()
+                    "Lua plugins are no longer supported; migrate to Steel Scheme".into()
                 } else {
-                    "plugin checks require a .ts, .mts, .js or .mjs file".into()
+                    "plugin checks require a .scm, .ss or .sld file".into()
                 },
             ],
             ..Default::default()
@@ -107,7 +107,7 @@ pub struct Written {
     pub replaced: Option<PathBuf>,
 }
 
-/// Write `source` with its explicit script extension (default `.ts`) and one trailing newline, creating the
+/// Write `source` with its explicit script extension (default `.scm`) and one trailing newline, creating the
 /// module folder if the name has one. Refuses a name that is not a plugin name, an existing
 /// file unless `overwrite`, a symlink in place of the file or its folder, and - when `check`
 /// - a source that does not compile.
@@ -364,7 +364,7 @@ fn keep_backup(path: &Path, contents: &str) -> anyhow::Result<Option<PathBuf>> {
     Ok(Some(backup))
 }
 
-/// The last matching log lines, including a registered builtin's exact bare Deno tag.
+/// The last matching log lines, including a registered builtin's exact bare builtin tag.
 pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<String> {
     crate::log_target_tail(log_file, &crate::LogTarget::Legacy(path.to_owned()), lines)
 }
@@ -378,10 +378,10 @@ mod tests {
     fn unchecked_overwrite_backs_up_source_permissions() {
         for (existing_backup, mode) in [(true, 0o600), (false, 0o754)] {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("keys.ts");
-            let backup = dir.path().join("keys.bak.ts");
-            let original = "export default { before: true };\n";
-            let replacement = "export default { after: true };\n";
+            let path = dir.path().join("keys.scm");
+            let backup = dir.path().join("keys.bak.scm");
+            let original = "(define before #t)\n";
+            let replacement = "(define after #t)\n";
             std::fs::write(&path, original).unwrap();
             let permissions = std::fs::Permissions::from_mode(mode);
             std::fs::set_permissions(&path, permissions).unwrap();
@@ -408,9 +408,9 @@ mod tests {
     fn formatting_backs_up_source_permissions() {
         for (existing_backup, mode) in [(true, 0o600), (false, 0o754)] {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("keys.ts");
-            let backup = dir.path().join("keys.bak.ts");
-            let original = "export default {before:true};";
+            let path = dir.path().join("keys.scm");
+            let backup = dir.path().join("keys.bak.scm");
+            let original = "(define before #t)";
             std::fs::write(&path, original).unwrap();
             let permissions = std::fs::Permissions::from_mode(mode);
             std::fs::set_permissions(&path, permissions).unwrap();
@@ -429,7 +429,7 @@ mod tests {
             );
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
-                "export default { before: true };\n"
+                "(define before #t)\n"
             );
             assert_eq!(std::fs::metadata(&path).unwrap().permissions(), permissions);
         }
@@ -438,11 +438,11 @@ mod tests {
     #[test]
     fn plugin_replacement_preserves_hard_linked_sources_and_backups() {
         let dir = tempfile::tempdir().unwrap();
-        let original = "export default { before: true };\n";
-        let replacement = "export default { after: true };\n";
+        let original = "(define before #t)\n";
+        let replacement = "(define after #t)\n";
         let written = write(dir.path(), "keys", original, false, false).unwrap();
-        let alias = dir.path().join("alias.ts");
-        let backup = dir.path().join("keys.bak.ts");
+        let alias = dir.path().join("alias.scm");
+        let backup = dir.path().join("keys.bak.scm");
         std::fs::hard_link(&written.path, &alias).unwrap();
         std::fs::hard_link(&written.path, &backup).unwrap();
 
@@ -463,7 +463,7 @@ mod tests {
                     let gate = &gate;
                     let dir = dir.path();
                     scope.spawn(move || {
-                        let source = format!("export default {{ value: {index} }};\n");
+                        let source = format!("(define value {index})\n");
                         gate.wait();
                         write(dir, "keys", &source, false, false).map(|_| source)
                     })
@@ -475,105 +475,119 @@ mod tests {
                 .collect();
             assert_eq!(successful.len(), 1);
             assert_eq!(
-                std::fs::read_to_string(dir.path().join("keys.ts")).unwrap(),
+                std::fs::read_to_string(dir.path().join("keys.scm")).unwrap(),
                 successful[0]
             );
-            assert!(!dir.path().join("keys.bak.ts").exists());
+            assert!(!dir.path().join("keys.bak.scm").exists());
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         });
     }
 
     #[test]
-    fn check_plugin_report_carries_deno_warnings() {
+    fn check_plugin_report_carries_computed_permission_warnings() {
         let dir = tempfile::tempdir().unwrap();
         // A computed permission request typechecks and cannot be inferred: a warning, not an error.
-        let deno = dir.path().join("computed.ts");
+        let plugin = dir.path().join("computed.scm");
         std::fs::write(
-            &deno,
-            "import yinz, {type Permission} from 'yinz:plugin';\nconst wanted: Permission[] = ['ReadFiles'];\nexport default { load(): void { yinz.requestPermission(wanted); }, render(): string { return ''; } };\n",
+            &plugin,
+            r#"(define wanted '("ReadFiles")) (define (load config) (yinz-wait-for-permissions wanted))"#,
         )
         .unwrap();
-        let report = check_plugin_report(&deno).unwrap();
+        let report = check_plugin_report(&plugin).unwrap();
         assert!(report.diagnostics.is_empty(), "{report:?}");
         assert!(
             report.warnings.iter().any(|w| w.contains("computed")),
             "{report:?}"
         );
-        std::fs::write(&deno, "export const = ;").unwrap();
-        assert!(check_plugin_report(&deno).is_err());
+        std::fs::write(&plugin, "(define value").unwrap();
+        assert!(check_plugin_report(&plugin).is_err());
     }
 
     #[test]
-    fn deno_js_writes_check_syntax_and_preserve_previous_versions() {
-        assert_deno_writes_preserve_previous_versions("js");
+    fn scheme_writes_check_before_replacing_and_preserve_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        for extension in ["scm", "ss", "sld"] {
+            let name = format!("example.{extension}");
+            let source = "; original\n(define (render rows columns) \"hello\")\n";
+            let written = write(dir.path(), &name, source, false, true).unwrap();
+            assert_eq!(std::fs::read_to_string(&written.path).unwrap(), source);
+            assert!(write(dir.path(), &name, "(define (broken", true, true).is_err());
+            assert_eq!(std::fs::read_to_string(&written.path).unwrap(), source);
+            let replacement = "; replacement\n(define (render rows columns) \"updated\")\n";
+            let written = write(dir.path(), &name, replacement, true, true).unwrap();
+            assert_eq!(std::fs::read_to_string(&written.path).unwrap(), replacement);
+            assert_eq!(
+                std::fs::read_to_string(written.replaced.unwrap()).unwrap(),
+                source
+            );
+            assert!(check_plugin_report(&written.path)
+                .unwrap()
+                .outline
+                .iter()
+                .any(|entry| entry.text == "(render rows columns)"));
+        }
     }
 
     #[test]
-    fn deno_mjs_writes_check_syntax_and_preserve_previous_versions() {
-        assert_deno_writes_preserve_previous_versions("mjs");
+    fn scheme_import_writes_preserve_previous_versions() {
+        for extension in ["scm", "ss", "sld"] {
+            assert_scheme_writes_preserve_previous_versions(extension);
+        }
     }
 
-    #[test]
-    fn deno_ts_writes_check_syntax_and_preserve_previous_versions() {
-        assert_deno_writes_preserve_previous_versions("ts");
-    }
-
-    #[test]
-    fn deno_mts_writes_check_syntax_and_preserve_previous_versions() {
-        assert_deno_writes_preserve_previous_versions("mts");
-    }
-
-    fn assert_deno_writes_preserve_previous_versions(extension: &str) {
+    fn assert_scheme_writes_preserve_previous_versions(extension: &str) {
         let dir = tempfile::tempdir().unwrap();
         let name = format!("app/keys.{extension}");
         // Dependencies must exist before authoring their importer.
-        assert!(write(dir.path(), &name, "import './missing.js';", false, true).is_err());
+        assert!(write(
+            dir.path(),
+            &name,
+            r#"(require "./missing.scm")"#,
+            false,
+            true
+        )
+        .is_err());
         assert!(!dir.path().join(&name).exists());
         std::fs::create_dir_all(dir.path().join("app")).unwrap();
         std::fs::write(
-            dir.path().join("app/dep.js"),
-            "export const dependency = 1;\n",
+            dir.path().join("app/dep.scm"),
+            "(provide dependency) (define dependency 1)\n",
         )
         .unwrap();
-        let source = "import \"./dep.js\";\nexport default { before: true };";
+        let source = r#"(require "./dep.scm")
+(define before #t)"#;
         let written = write(dir.path(), &name, source, false, true).unwrap();
         assert_eq!(written.path, dir.path().join(&name));
         assert!(
             check_plugin(&written.path).is_ok(),
             "semantic check resolves existing imports"
         );
-        assert!(write(dir.path(), &name, "export default {};", false, true).is_err());
-        assert!(write(dir.path(), &name, "export default {", true, true).is_err());
+        assert!(write(dir.path(), &name, "(define value 1)", false, true).is_err());
+        assert!(write(dir.path(), &name, "(define value", true, true).is_err());
         assert_eq!(
             std::fs::read_to_string(&written.path).unwrap(),
             format!("{source}\n")
         );
-        let replaced = write(dir.path(), &name, "export default {};", true, true).unwrap();
+        let replaced = write(dir.path(), &name, "(define value 1)", true, true).unwrap();
         let backup = dir.path().join(format!("app/keys.bak.{extension}"));
         assert_eq!(replaced.replaced, Some(backup.clone()));
         assert_eq!(
             std::fs::read_to_string(&backup).unwrap(),
             format!("{source}\n")
         );
-        assert!(
-            write(dir.path(), &name, "export default {};\n\n", true, true)
-                .unwrap()
-                .replaced
-                .is_none()
-        );
+        assert!(write(dir.path(), &name, "(define value 1)\n\n", true, true)
+            .unwrap()
+            .replaced
+            .is_none());
         assert_eq!(
             std::fs::read_to_string(&backup).unwrap(),
             format!("{source}\n")
         );
-        let recursive = format!(
-            "export default {}0{};",
-            "[".repeat(10_000),
-            "]".repeat(10_000)
-        );
+        let recursive = format!("{}0{}", "(".repeat(10_000), ")".repeat(10_000));
         assert!(write(dir.path(), &name, &recursive, true, true).is_err());
         assert_eq!(
             std::fs::read_to_string(&written.path).unwrap(),
-            "export default {};\n"
+            "(define value 1)\n"
         );
         assert_eq!(
             std::fs::read_to_string(&backup).unwrap(),
@@ -583,12 +597,12 @@ mod tests {
         {
             let linked = format!("linked.{extension}");
             std::os::unix::fs::symlink(&written.path, dir.path().join(&linked)).unwrap();
-            assert!(write(dir.path(), &linked, "export default {};", true, true)
+            assert!(write(dir.path(), &linked, "(define value 1)", true, true)
                 .unwrap_err()
                 .to_string()
                 .contains("symlink"));
             let protected = format!("protected.{extension}");
-            std::fs::copy(dir.path().join("app/dep.js"), dir.path().join("dep.js")).unwrap();
+            std::fs::copy(dir.path().join("app/dep.scm"), dir.path().join("dep.scm")).unwrap();
             let original = write(dir.path(), &protected, source, false, true).unwrap();
             std::os::unix::fs::symlink(
                 &written.path,
@@ -596,7 +610,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                write(dir.path(), &protected, "export default {};", true, true)
+                write(dir.path(), &protected, "(define value 1)", true, true)
                     .unwrap_err()
                     .to_string()
                     .contains("backup")
@@ -609,26 +623,13 @@ mod tests {
     }
 
     #[test]
-    fn deno_write_validation_respects_the_selected_language_and_check_option() {
+    fn unchecked_writes_preserve_invalid_source_for_later_editing() {
         let dir = tempfile::tempdir().unwrap();
-        let typed = write(
-            dir.path(),
-            "typed.mts",
-            "const value: number = 1; export { value };",
-            false,
-            true,
-        )
-        .unwrap();
-        assert!(typed.path.ends_with("typed.mts"));
-        assert!(write(
-            dir.path(),
-            "typed.js",
-            "const value: number = 1;",
-            false,
-            true
-        )
-        .is_err());
-        write(dir.path(), "broken.ts", "export default {", false, false).unwrap();
+        let written = write(dir.path(), "broken.scm", "(define value", false, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(written.path).unwrap(),
+            "(define value\n"
+        );
     }
 
     #[test]
@@ -658,81 +659,66 @@ mod tests {
     fn a_write_compiles_first_and_never_clobbers_or_follows_a_link() {
         let dir = tempfile::tempdir().unwrap();
         let plugins = dir.path().join("plugins");
-        let written = write(&plugins, "keys", "export default {};\n\n", false, true).unwrap();
-        assert_eq!(written.path, plugins.join("keys.ts"));
+        let written = write(&plugins, "keys", "(define value 1)\n\n", false, true).unwrap();
+        assert_eq!(written.path, plugins.join("keys.scm"));
         assert!(written.replaced.is_none(), "nothing was there to replace");
         assert_eq!(
             std::fs::read_to_string(&written.path).unwrap(),
-            "export default {};\n"
+            "(define value 1)\n"
         );
-        let refused = write(&plugins, "keys", "export default {};", false, true).unwrap_err();
+        let refused = write(&plugins, "keys", "(define value 1)", false, true).unwrap_err();
         assert!(refused.to_string().contains("--overwrite"), "{refused}");
-        let replaced = write(&plugins, "keys", "export default { x: 1 };", true, true).unwrap();
+        let replaced = write(&plugins, "keys", "(define x 1)", true, true).unwrap();
         assert_eq!(
             replaced.replaced,
-            Some(plugins.join("keys.bak.ts")),
+            Some(plugins.join("keys.bak.scm")),
             "an overwrite keeps what it replaced"
         );
         assert_eq!(
-            std::fs::read_to_string(plugins.join("keys.bak.ts")).unwrap(),
-            "export default {};\n"
+            std::fs::read_to_string(plugins.join("keys.bak.scm")).unwrap(),
+            "(define value 1)\n"
         );
         // A rewrite that changes nothing must not overwrite the backup: what that would throw
         // away is the last version that actually differed.
-        let identical =
-            write(&plugins, "keys", "export default { x: 1 };\n\n", true, true).unwrap();
+        let identical = write(&plugins, "keys", "(define x 1)\n\n", true, true).unwrap();
         assert!(identical.replaced.is_none(), "nothing was replaced");
         assert_eq!(
-            std::fs::read_to_string(plugins.join("keys.bak.ts")).unwrap(),
-            "export default {};\n",
+            std::fs::read_to_string(plugins.join("keys.bak.scm")).unwrap(),
+            "(define value 1)\n",
             "the backup still holds the version before this one"
         );
-        let refused = write(&plugins, "broken", "export default {", false, true).unwrap_err();
+        let refused = write(&plugins, "broken", "(define value", false, true).unwrap_err();
         assert!(
             refused.to_string().contains("does not compile"),
             "{refused}"
         );
-        assert!(!plugins.join("broken.ts").exists());
-        write(&plugins, "broken", "export default {", false, false).unwrap();
-        let module = write(&plugins, "app/ui", "export default {};", false, true).unwrap();
-        assert_eq!(module.path, plugins.join("app").join("ui.ts"));
-        assert!(write(&plugins, "../escape", "export default {};", false, true).is_err());
+        assert!(!plugins.join("broken.scm").exists());
+        write(&plugins, "broken", "(define value", false, false).unwrap();
+        let module = write(&plugins, "app/ui", "(define value 1)", false, true).unwrap();
+        assert_eq!(module.path, plugins.join("app").join("ui.scm"));
+        assert!(write(&plugins, "../escape", "(define value 1)", false, true).is_err());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(dir.path(), plugins.join("linked")).unwrap();
-            let refused =
-                write(&plugins, "linked/x", "export default {};", false, true).unwrap_err();
+            let refused = write(&plugins, "linked/x", "(define value 1)", false, true).unwrap_err();
             assert!(refused.to_string().contains("symlink"), "{refused}");
             // A backup that cannot be kept refuses the write: the alternative is destroying the
             // only copy of the file and saying nothing about it.
-            write(
-                &plugins,
-                "linked-bak",
-                "export default { first: 1 };",
-                false,
-                true,
-            )
-            .unwrap();
+            write(&plugins, "linked-bak", "(define first 1)", false, true).unwrap();
             std::os::unix::fs::symlink(
-                dir.path().join("elsewhere.ts"),
-                plugins.join("linked-bak.bak.ts"),
+                dir.path().join("elsewhere.scm"),
+                plugins.join("linked-bak.bak.scm"),
             )
             .unwrap();
-            let refused = write(
-                &plugins,
-                "linked-bak",
-                "export default { second: 2 };",
-                true,
-                true,
-            )
-            .unwrap_err();
+            let refused =
+                write(&plugins, "linked-bak", "(define second 2)", true, true).unwrap_err();
             assert!(refused.to_string().contains("backup"), "{refused}");
             assert_eq!(
-                std::fs::read_to_string(plugins.join("linked-bak.ts")).unwrap(),
-                "export default { first: 1 };\n",
+                std::fs::read_to_string(plugins.join("linked-bak.scm")).unwrap(),
+                "(define first 1)\n",
                 "the file it could not back up is still there"
             );
-            assert!(!dir.path().join("elsewhere.ts").exists());
+            assert!(!dir.path().join("elsewhere.scm").exists());
         }
     }
 
@@ -742,23 +728,23 @@ mod tests {
         let log = dir.path().join("yinz.log");
         std::fs::write(
             &log,
-            "a [deno:keys.ts] one\nb other\nc [deno:keys.ts] two\nd [deno:keys.ts] three\n",
+            "a [steel:keys.scm] one\nb other\nc [steel:keys.scm] two\nd [steel:keys.scm] three\n",
         )
         .unwrap();
-        let tail = log_tail(&log, Path::new("/p/keys.ts"), 2).unwrap();
-        assert_eq!(tail, "c [deno:keys.ts] two\nd [deno:keys.ts] three\n");
+        let tail = log_tail(&log, Path::new("/p/keys.scm"), 2).unwrap();
+        assert_eq!(tail, "c [steel:keys.scm] two\nd [steel:keys.scm] three\n");
         // A builtin logs under its bare tag; asking for it by name finds those lines and not
         // a written plugin's that happens to share the prefix.
         std::fs::write(
             &log,
-            "a [deno:agent-policy] hook\nb [deno:agent-policy-mine.ts] x\nc [deno:agent-policy] two\n",
+            "a [steel:agent-policy] hook\nb [steel:agent-policy-mine.scm] x\nc [steel:agent-policy] two\n",
         )
         .unwrap();
         assert_eq!(
-            log_tail(&log, Path::new("/p/agent-policy.ts"), 5).unwrap(),
-            "a [deno:agent-policy] hook\nc [deno:agent-policy] two\n"
+            log_tail(&log, Path::new("/p/agent-policy.scm"), 5).unwrap(),
+            "a [steel:agent-policy] hook\nc [steel:agent-policy] two\n"
         );
-        assert_eq!(log_tail(&log, Path::new("/p/other.ts"), 5).unwrap(), "");
-        assert!(log_tail(&dir.path().join("missing"), Path::new("/p/keys.ts"), 5).is_err());
+        assert_eq!(log_tail(&log, Path::new("/p/other.scm"), 5).unwrap(), "");
+        assert!(log_tail(&dir.path().join("missing"), Path::new("/p/keys.scm"), 5).is_err());
     }
 }

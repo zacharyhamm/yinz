@@ -17,6 +17,7 @@
 //! on the host against the real engine.
 
 use crate::store::{fetch_all, Backend};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use yinz_tile::prelude::{DataRevision, DataRowId};
 use yinz_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir};
@@ -64,7 +65,7 @@ pub const LIST_COLUMNS: &[&str] = &[
 /// One note, with its tags and the todo items it references.
 ///
 /// `body` is empty when the note came from a listing, which does not read it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub id: u64,
     /// The normalized project root, or `None` for a global note.
@@ -675,7 +676,7 @@ pub fn note_json(note: &Note, now_ms: i64) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 /// A note as it will be written, after cleaning.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Draft {
     pub root: Option<String>,
     pub title: String,

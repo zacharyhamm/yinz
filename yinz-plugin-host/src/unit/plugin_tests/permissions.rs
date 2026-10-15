@@ -25,7 +25,7 @@ pub fn send_configuration_to_plugins() {
     let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
         _allow_exec_host_cmd: false,
         location: RunPluginLocation::File(PathBuf::from(&*PLUGIN_FIXTURE)),
-        configuration: PluginUserConfiguration::new(configuration),
+        configuration: PluginUserConfiguration::new(configuration.clone()),
         ..Default::default()
     });
     let tab_index = 1;
@@ -73,21 +73,18 @@ pub fn send_configuration_to_plugins() {
     )]));
     screen_thread.join().unwrap(); // this might take a while if the cache is cold
     teardown();
-    // here we make sure we received a rename_tab event with the title being the stringified
-    // (Debug) configuration we sent to the fixture plugin to make sure it got there properly
-
-    let go_to_tab_event = received_screen_instructions
+    let received_configuration = received_screen_instructions
         .lock()
         .iter()
-        .find_map(|i| {
-            if let ScreenInstruction::GoToTabName(..) = i {
-                Some(i.clone())
+        .find_map(|instruction| {
+            if let ScreenInstruction::GoToTabName(name, _, _, _, _) = instruction {
+                Some(serde_json::from_str::<BTreeMap<String, String>>(name).unwrap())
             } else {
                 None
             }
         })
-        .clone();
-    assert_snapshot!(format!("{:#?}", go_to_tab_event));
+        .expect("fixture echoes its configuration through GoToTabName");
+    assert_eq!(received_configuration, configuration);
 }
 
 #[test]

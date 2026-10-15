@@ -15,9 +15,7 @@
 // test comment 5
 //! Environment, errors, and host runtime services.
 
-#[cfg(not(target_family = "wasm"))]
 pub mod channels;
-#[cfg(not(target_family = "wasm"))]
 pub mod common_path;
 pub mod consts;
 pub mod envs;
@@ -25,19 +23,14 @@ pub mod errors;
 pub mod home;
 mod home_unix;
 pub mod host_identity;
-#[cfg(not(target_family = "wasm"))]
 pub mod last_project;
-#[cfg(not(target_family = "wasm"))]
 pub mod logging;
-#[cfg(not(target_family = "wasm"))]
 pub mod own_binary;
 #[cfg(unix)]
 pub mod owned_dir;
-#[cfg(not(target_family = "wasm"))]
 pub mod session_checkpoint;
 pub mod shared;
 
-#[cfg(not(target_family = "wasm"))]
 pub mod host_terminal_env;
 
 pub mod agent;

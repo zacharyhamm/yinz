@@ -1,11 +1,7 @@
 use super::plugin_log_lines;
-use crate::{
-    deno::{background_worker::Workers, DenoPlugin},
-    logging_pipe::LoggingPipe,
-    test_env::test_env,
-};
-use std::{io::Write, sync::OnceLock};
-use yinz_test_support::{default_timeout, Watched};
+use crate::{background_worker::Workers, steel::SteelPlugin, test_env::test_env};
+use std::sync::OnceLock;
+use yinz_test_support::Watched;
 use yinz_types::input::{
     git_plugin::GitPlugin,
     layout::{RunPlugin, RunPluginLocation},
@@ -35,12 +31,20 @@ fn external_plugin_logs_are_isolated_through_cli_and_host() {
     for label in ["first", "second"] {
         let folder = cwd.join(label);
         std::fs::create_dir(&folder).unwrap();
-        let path = folder.join("main.ts");
-        let source = format!("console.log('{label} console'); export default {{ workers: {{ task() {{ yinz.on('CustomMessage', function workerFailure() {{ throw Error('{label} worker exception'); }}); console.log('{label} worker'); }} }} }};");
+        let path = folder.join("main.scm");
+        let source = format!(
+            r#"
+(yinz-log "{label} console")
+(define (worker-failure event) (error "{label} worker exception"))
+(yinz-register-workers (hash "task" (lambda (name payload)
+  (yinz-register-worker-events worker-failure)
+  (yinz-log "{label} worker"))))
+"#
+        );
         std::fs::write(&path, &source).unwrap();
         let location = RunPluginLocation::Git(GitPlugin {
             repo: format!("https://example.com/{label}.git"),
-            entrypoint: "main.ts".into(),
+            entrypoint: "main.scm".into(),
             revision: None,
         });
         aliases.aliases.insert(
@@ -56,8 +60,6 @@ fn external_plugin_logs_are_isolated_through_cli_and_host() {
         env.plugin_config.location = location;
         env.resolved_source_path = Some(path.clone());
         let identity = env.log_identity();
-        let mut pipe = LoggingPipe::new(&identity, env.plugin_id);
-        writeln!(pipe, "{label} stderr").unwrap();
         log::error!("{} attributed error", env.name());
         let mut worker_env = test_env();
         worker_env.plugin_config = env.plugin_config.clone();
@@ -71,26 +73,30 @@ fn external_plugin_logs_are_isolated_through_cli_and_host() {
             .post("task", env.client_id, "job".into(), "".into())
             .unwrap();
         let client = env.client_id;
-        let _plugin = DenoPlugin::new(&source, &path, env, Default::default()).unwrap();
-        capture
-            .0
-            .wait_until("worker log", default_timeout(), |lines| {
+        let _plugin = SteelPlugin::new(&source, &path, env, Default::default()).unwrap();
+        capture.0.wait_until_described(
+            "worker log",
+            std::time::Duration::from_secs(20),
+            |lines| {
                 lines
                     .iter()
                     .any(|line| line.ends_with(&format!("{label} worker")))
                     .then_some(())
-            });
+            },
+            |lines| format!("{lines:#?}"),
+        );
         workers.permissions(
             client,
             &yinz_types::data::Event::CustomMessage("fail".into(), "".into()),
         );
-        capture
-            .0
-            .wait_until("worker failure diagnostics", default_timeout(), |lines| {
+        capture.0.wait_until_described(
+            "worker failure diagnostics",
+            std::time::Duration::from_secs(20),
+            |lines| {
                 [
-                    "Deno worker task failed",
+                    "Plugin worker task failed",
                     &format!("{label} worker exception"),
-                    "at workerFailure",
+                    "main.scm:3",
                 ]
                 .iter()
                 .all(|message| {
@@ -99,29 +105,35 @@ fn external_plugin_logs_are_isolated_through_cli_and_host() {
                         .any(|line| line.contains(&identity) && line.contains(message))
                 })
                 .then_some(())
-            });
+            },
+            |lines| format!("{lines:#?}"),
+        );
         workers.stop();
     }
     let log_dir = cwd.join(format!("yinz-{}/yinz-log", nix::unistd::Uid::current()));
     std::fs::create_dir_all(&log_dir).unwrap();
     let log_file = log_dir.join("yinz.log");
-    std::fs::write(&log_file, capture.0.get().join("\n") + "\nlegacy main.ts\n").unwrap();
+    std::fs::write(
+        &log_file,
+        capture.0.get().join("\n") + "\nlegacy main.scm\n",
+    )
+    .unwrap();
     let config = cwd.join("config.kdl");
-    std::fs::write(&config, "plugins { first repo=\"https://example.com/first.git\" entrypoint=\"main.ts\"; second repo=\"https://example.com/second.git\" entrypoint=\"main.ts\"; }\n").unwrap();
+    std::fs::write(&config, "plugins { first repo=\"https://example.com/first.git\" entrypoint=\"main.scm\"; second repo=\"https://example.com/second.git\" entrypoint=\"main.scm\"; }\n").unwrap();
     let mut env = test_env();
     env.plugin_cwd = cwd.clone();
     *env.plugin_aliases.lock().unwrap() = aliases;
     for label in ["first", "second"] {
-        for target in [label.to_owned(), format!("./{label}/main.ts")] {
+        for target in [label.to_owned(), format!("./{label}/main.scm")] {
             let api = plugin_log_lines(&env, &target, 100, &log_file).unwrap();
-            for message in ["console", "worker", "stderr"] {
+            for message in ["console", "worker"] {
                 assert!(api.contains(&format!("{label} {message}")), "{api}");
             }
             for message in [
                 "attributed error",
-                "Deno worker task failed",
+                "Plugin worker task failed",
                 &format!("{label} worker exception"),
-                "at workerFailure",
+                "main.scm:3",
             ] {
                 assert!(api.contains(message), "{api}");
             }
@@ -174,8 +186,8 @@ fn file_alias_fallback_logs_match_through_cli_and_host() {
     let mut aliases = PluginAliases::default();
     let mut entries = Vec::new();
     for (alias, name, path) in [
-        ("script", "keys.ts", scripts.join("keys.ts")),
-        ("wasm", "keys", data.join("plugins/keys.wasm")),
+        ("script", "keys.scm", scripts.join("keys.scm")),
+        ("local", "local.scm", cwd.join("local.scm")),
     ] {
         std::fs::write(&path, "source").unwrap();
         let (location, relative_path) =
@@ -201,15 +213,14 @@ fn file_alias_fallback_logs_match_through_cli_and_host() {
     std::fs::write(&log_file, entries.join("\n") + "\n").unwrap();
     let config = cwd.join("config.kdl");
     std::fs::write(&config, format!(
-        "user_plugin_dir {:?}\nplugins {{ script location=\"file:keys.ts\"; wasm location=\"file:keys\"; }}\n",
+        "user_plugin_dir {:?}\nplugins {{ script location=\"file:keys.scm\"; local location=\"file:local.scm\"; }}\n",
         scripts.to_str().unwrap()
     )).unwrap();
     let mut env = test_env();
     env.plugin_cwd = cwd.clone();
     env.user_plugin_dir = Some(scripts);
-    env.yinz_data_dir = data.clone();
     *env.plugin_aliases.lock().unwrap() = aliases;
-    for (alias, expected) in ["script", "wasm"].into_iter().zip(entries) {
+    for (alias, expected) in ["script", "local"].into_iter().zip(entries) {
         let api = plugin_log_lines(&env, alias, 100, &log_file).unwrap();
         assert_eq!(api, expected + "\n");
         let output =

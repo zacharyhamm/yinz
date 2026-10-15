@@ -21,8 +21,7 @@ use crate::internal_ids::TabPosition;
 use crate::position::{CellCoordinates, Column, ColumnCount, Row, RowCount};
 use crate::units::{ElapsedMillis, FractionalSeconds, SignedUnixMillis, UnixMillis, UnixSeconds};
 // The data store's types are part of the plugin API, so they belong in the prelude alongside
-// everything else here. They live in their own module because the engine behind them cannot build
-// for wasm and these types must.
+// everything else here. Their module contains portable values without database implementation details.
 use crate::colors::default_colors;
 pub use crate::plugin_data::*;
 use crate::position::Position;
@@ -111,8 +110,7 @@ use crate::geometry::{Direction, Resize, ResizeStrategy};
 /// Each wheel direction has its own variant, carrying a count rather than a sign, because
 /// horizontal scrolling exists alongside vertical. The middle button is not delivered.
 ///
-/// The variants mirror `MouseEventName` in yinz-plugin-api's `event.proto` and the Deno SDK's
-/// `Mouse`.
+/// The variants mirror `MouseEventName` in yinz-plugin-api's `event.proto` and the Scheme SDK event values.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Mouse {
     ScrollUp(usize),   // number of lines
@@ -1335,7 +1333,7 @@ pub struct PaneInfo {
     /// arguments
     pub terminal_command: Option<String>,
     /// The URL from which this plugin was loaded (eg. `yinz:strider` for the built-in `strider`
-    /// plugin or `file:/path/to/my/plugin.wasm` for a local plugin)
+    /// plugin or `file:/path/to/my/plugin.scm` for a local plugin)
     pub plugin_url: Option<String>,
     /// Unselectable panes are often used for UI elements that do not have direct user interaction
     /// (eg. the default `status-bar` or `tab-bar`).
@@ -1697,7 +1695,7 @@ pub enum GetPaneCwdResponse {
 /// they exist.
 ///
 /// A projection of the server's `RemoteGitProbe`, which lives in `yinz-server`
-/// and could never cross the wasm boundary.
+/// and is not part of the plugin wire API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PaneGitProbe {
     /// The machine this was run on, so two checkouts at the same path on
@@ -1743,8 +1741,7 @@ pub enum WarpPaneResponse {
 /// A pane whose session died but whose process is still running.
 ///
 /// A projection of the server's own `HostStatus` rather than that type itself,
-/// which lives in `yinz-server` and could never cross the wasm boundary — and
-/// which carries a host pid and a socket path a plugin has no use for.
+/// which lives in `yinz-server` and carries a host pid and a socket path a plugin has no use for.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrphanedPane {
     /// The id `adopt_orphaned_pane` takes, and that `yinz pty-host adopt` on
@@ -2466,7 +2463,7 @@ use crate::geometry::FloatingPaneCoordinates;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OriginatingPlugin {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deno_generation: Option<u64>,
+    pub generation: Option<u64>,
     pub plugin_id: crate::internal_ids::PluginId,
     pub client_id: ClientId,
     pub context: Context,
@@ -2482,7 +2479,7 @@ impl OriginatingPlugin {
         context: Context,
     ) -> Self {
         OriginatingPlugin {
-            deno_generation: None,
+            generation: None,
             plugin_id,
             client_id,
             context,
@@ -2719,14 +2716,8 @@ type Context = BTreeMap<String, String>;
 
 /// Bytes that may be written as a string.
 ///
-/// `PluginCommand`'s serde representation exists for exactly one caller - the TypeScript runtime, which
-/// builds commands with `from_value` (the wasm side uses protobuf and never touches this). TypeScript
-/// has no byte-array type: text and bytes are both the one string type. So a plugin writing
-/// `yinz.fs.write(path, "hello")` hands over a string, and the default `Vec<u8>` deserializer,
-/// which wants a sequence of numbers, would refuse it.
-///
-/// Accepting both keeps the natural spelling working without giving up binary writes: a plugin
-/// that really does have bytes can still pass an array of numbers.
+/// Plugin commands accept text as UTF-8 bytes and lists of integer byte values.
+/// This preserves convenient text writes alongside exact binary writes.
 mod bytes_or_string {
     use serde::de::{Deserializer, Error, SeqAccess, Visitor};
     use serde::Serializer;
@@ -2788,7 +2779,7 @@ pub struct NotifyClick {
 pub enum PluginCommand {
     InspectConfiguration(Option<String>),
     EditConfiguration(crate::configuration::Edit),
-    /// Private Deno palette transport; has no Wasm wire representation.
+    /// Private command-palette transport between the runtime and host.
     CommandPalette(crate::command_palette::Command),
     PaneTabs(crate::pane_tabs::PaneTabsCommand),
     CreateMultipane(crate::multipane::CreateMultipane),
@@ -2873,7 +2864,7 @@ pub enum PluginCommand {
     GoToTabName(String),
     FocusOrCreateTab(String),
     GoToTab(TabPosition),                                           // tab index
-    StartOrReloadPlugin(String), // plugin url (eg. file:/path/to/plugin.wasm)
+    StartOrReloadPlugin(String), // plugin url (eg. file:/path/to/plugin.scm)
     CloseTerminalPane(crate::internal_ids::TerminalId), // terminal pane id
     ClosePluginPane(crate::internal_ids::PluginId), // plugin pane id
     FocusTerminalPane(crate::internal_ids::TerminalId, bool, bool), // terminal pane id, should_float_if_hidden, should_be_in_place_if_hidden
@@ -2928,12 +2919,9 @@ pub enum PluginCommand {
     WatchFilesystem,
     /// Read a file, answering with its bytes.
     ///
-    /// This and its `Fs*` siblings are the deliberate counterpart to the wasm runtime's WASI
-    /// preopens: a wasm plugin reaches `/host`, `/data`, `/cache` and `/tmp` through `std::fs`,
-    /// and a plugin with no filesystem of its own (TypeScript) reaches the same four roots through
-    /// these. Paths are resolved and confined by `resolve_plugin_fs_path` on the server, which,
-    /// unlike `translate_plugin_path`, refuses a path that escapes its root. Reaching outside the
-    /// four roots needs `FullHdAccess` on top of the read/write permission.
+    /// Paths use virtual roots such as `/host`, `/data`, `/cache` and `/tmp`.
+    /// The host confines each path to its root. Access outside the roots requires
+    /// `FullHdAccess` in addition to the operation's read or write permission.
     ///
     /// Answers synchronously, so that a plugin can read a config file in one expression rather
     /// than through a subscription. `max_bytes` caps the read; the host applies its own ceiling
@@ -2953,6 +2941,9 @@ pub enum PluginCommand {
     /// Metadata for one path, or nothing if it does not exist.
     FsMetadata {
         path: PathBuf,
+        /// Follow the final symlink, while retaining the same root and permission checks.
+        #[serde(default)]
+        follow_symlinks: bool,
     },
     /// Write a file, replacing it or appending to it.
     FsWrite {
@@ -3161,9 +3152,7 @@ pub enum PluginCommand {
     DumpLayout(String),
     ParseLayout(String), // String contains raw KDL layout
     GetLayoutDir,
-    /// The folder holding the user's own plugins. A plugin that writes one needs the absolute
-    /// path, and a wasm plugin cannot discover it: its WASI preopens are `/host`, `/data`,
-    /// `/cache` and `/tmp`, and a config dir is none of them.
+    /// The absolute folder holding the user's own plugins, available through `/plugins`.
     GetUserPluginDir,
     GetFocusedPaneInfo,
     SaveSession,
@@ -3445,7 +3434,7 @@ pub enum PluginCommand {
     /// a pane. Fires `BeforeClose` on the old instance first, for state worth keeping.
     ReloadPluginByUrl(String),
     /// The last `lines` lines of yinz's own log about the plugin `name`: what its
-    /// `yinz.log`/`console` wrote, tagged `[deno:<file>]`, and any loader error naming its file.
+    /// `yinz-log` wrote and any loader error, matched by the source identity marker.
     /// `name` is a plugin name as `plugin_write` spells it (`keys`, `agent/weather`), resolved in
     /// the user's plugin folder the way `yinz plugins log` resolves it, or a builtin's tag.
     ///
@@ -3458,11 +3447,8 @@ pub enum PluginCommand {
     },
     /// Seconds east of UTC where this session is running, at the instant `epoch_ms`.
     ///
-    /// A plugin is wasm and has no timezone of its own: WASI inherits none of the session's
-    /// environment, and nothing that reads a zoneinfo database can be linked into one. So the
-    /// only way a plugin can draw an absolute timestamp - rather than the relative ages every
-    /// plugin in the tree settles for - is to ask the server, which is the one side that has
-    /// `chrono`.
+    /// Plugins have no ambient timezone database or process environment, so the host
+    /// supplies its local UTC offset for formatting absolute timestamps.
     ///
     /// The instant is asked for rather than assumed to be now, because a run that started
     /// before a daylight-saving change is read back long after it: formatting it with today's

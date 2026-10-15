@@ -3219,7 +3219,7 @@ fn originating_pane_replies_preserve_generation_on_open_rerun_exit_and_failure()
     for generation in [None, Some(42)] {
         let (mut pty, plugin_rx, _screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
         let mut origin = step_origin("worker");
-        origin.deno_generation = generation;
+        origin.generation = generation;
         let command = RunCommand {
             hold_on_close: true,
             originating_plugin: Some(origin.clone()),
@@ -3285,7 +3285,7 @@ fn originating_pane_replies_preserve_generation_on_open_rerun_exit_and_failure()
             match (generation, instruction) {
                 (
                     Some(generation),
-                    PluginInstruction::DenoEvent(plugin, client, actual_generation, event),
+                    PluginInstruction::PluginEvent(plugin, client, actual_generation, event),
                 ) => {
                     assert_eq!(
                         (plugin, client, actual_generation),

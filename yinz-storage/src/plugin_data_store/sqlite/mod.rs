@@ -31,6 +31,7 @@ const DB_FILENAME: &str = "plugin-data.db";
 pub struct SqlitePluginDataBackend {
     db_path: PathBuf,
     connection: Mutex<Option<Connection>>,
+    clock: Box<dyn Fn() -> i64 + Send + Sync>,
 }
 
 impl std::fmt::Debug for SqlitePluginDataBackend {
@@ -55,9 +56,15 @@ impl std::fmt::Debug for SqlitePluginDataBackend {
 impl SqlitePluginDataBackend {
     /// Point the store at a data dir. Opens nothing.
     pub fn new(data_dir: &Path) -> Self {
+        Self::with_clock(data_dir, super::value::now_ms)
+    }
+
+    /// Supply a wall clock for deterministic store and guest-runtime comparisons.
+    pub fn with_clock(data_dir: &Path, clock: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
         Self {
             db_path: data_dir.join(DB_FILENAME),
             connection: Mutex::new(None),
+            clock: Box::new(clock),
         }
     }
 
@@ -131,7 +138,9 @@ impl PluginDataBackend for SqlitePluginDataBackend {
         if mutations.is_empty() {
             return Ok(ApplyReport::default());
         }
-        self.in_transaction("write", |exec| engine::apply(exec, namespace, mutations))
+        self.in_transaction("write", |exec| {
+            engine::apply(exec, namespace, mutations, (self.clock)())
+        })
     }
 }
 

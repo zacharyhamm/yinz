@@ -5,21 +5,21 @@ use std::collections::{BTreeSet, HashSet};
 fn file_identity_is_resolved_once_and_preserves_relative_fallback() {
     let root = std::env::temp_dir().join(format!("yinz-plugin-identity-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    let path = root.join("plugin.ts");
-    std::fs::write(&path, "export {}").unwrap();
+    let path = root.join("plugin.scm");
+    std::fs::write(&path, "(void)").unwrap();
     let canonical = path.canonicalize().unwrap();
     let (location, relative) =
-        parse_plugin_location_with_relative("file:plugin.ts", Some(root.clone())).unwrap();
-    assert_eq!(relative, Some(PathBuf::from("plugin.ts")));
+        parse_plugin_location_with_relative("file:plugin.scm", Some(root.clone())).unwrap();
+    assert_eq!(relative, Some(PathBuf::from("plugin.scm")));
     assert_eq!(location, RunPluginLocation::File(canonical.clone()));
     let relative_plugin =
-        run_plugin_from_url_with_cwd("file:plugin.ts", Some(root.clone())).unwrap();
+        run_plugin_from_url_with_cwd("file:plugin.scm", Some(root.clone())).unwrap();
     assert_eq!(relative_plugin.declared_path, Some(path.clone()));
     let absolute_plugin = run_plugin_from_url(&format!("file:{}", path.display())).unwrap();
     let mut plugins = vec![relative_plugin.clone(), absolute_plugin];
     #[cfg(unix)]
     {
-        let link = root.join("link.ts");
+        let link = root.join("link.scm");
         std::os::unix::fs::symlink(&path, &link).unwrap();
         plugins.push(run_plugin_from_url(&format!("file:{}", link.display())).unwrap());
     }
@@ -50,9 +50,9 @@ fn file_identity_is_resolved_once_and_preserves_relative_fallback() {
         RunPluginLocation::File(cwd.join("Cargo.toml").canonicalize().unwrap())
     );
     let (missing, relative) =
-        parse_plugin_location_with_relative("file:missing.ts", Some(root.clone())).unwrap();
-    assert_eq!(missing, RunPluginLocation::File(root.join("missing.ts")));
-    assert_eq!(relative, Some(PathBuf::from("missing.ts")));
+        parse_plugin_location_with_relative("file:missing.scm", Some(root.clone())).unwrap();
+    assert_eq!(missing, RunPluginLocation::File(root.join("missing.scm")));
+    assert_eq!(relative, Some(PathBuf::from("missing.scm")));
     let missing_plugin = RunPlugin {
         location: missing,
         relative_path: relative,
@@ -60,33 +60,33 @@ fn file_identity_is_resolved_once_and_preserves_relative_fallback() {
     };
     assert_eq!(
         missing_plugin.location_for_serialization(),
-        "file:missing.ts"
+        "file:missing.scm"
     );
-    let absolute_missing = format!("file:{}", root.join("missing.ts").display());
+    let absolute_missing = format!("file:{}", root.join("missing.scm").display());
     let explicit = run_plugin_from_url(&absolute_missing).unwrap();
     assert_eq!(explicit.relative_path, None);
     assert_eq!(
         explicit.location_for_serialization(),
-        Url::from_file_path(root.join("missing.ts"))
+        Url::from_file_path(root.join("missing.scm"))
             .unwrap()
             .to_string()
     );
     assert_eq!(
-        parse_plugin_location("file:missing.ts", None).unwrap(),
-        RunPluginLocation::File(cwd.join("missing.ts"))
+        parse_plugin_location("file:missing.scm", None).unwrap(),
+        RunPluginLocation::File(cwd.join("missing.scm"))
     );
     assert_eq!(
-        parse_plugin_location("file:missing.ts", Some(PathBuf::from("subdir"))).unwrap(),
-        RunPluginLocation::File(cwd.join("subdir/missing.ts"))
+        parse_plugin_location("file:missing.scm", Some(PathBuf::from("subdir"))).unwrap(),
+        RunPluginLocation::File(cwd.join("subdir/missing.scm"))
     );
 
     #[cfg(unix)]
     {
-        let loop_path = root.join("loop.ts");
+        let loop_path = root.join("loop.scm");
         std::os::unix::fs::symlink(&loop_path, &loop_path).unwrap();
         assert!(loop_path.try_exists().is_err());
         let (location, relative_path) =
-            parse_plugin_location_with_relative("file:loop.ts", Some(root.clone())).unwrap();
+            parse_plugin_location_with_relative("file:loop.scm", Some(root.clone())).unwrap();
         let plugin = RunPlugin {
             location,
             relative_path,
@@ -129,11 +129,11 @@ fn focus_compares_canonical_identity_after_retargeting_a_declaration() {
 
     let root = std::env::temp_dir().join(format!("yinz-plugin-focus-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    let first = root.join("v1.ts");
-    let second = root.join("v2.ts");
-    let current = root.join("current.ts");
+    let first = root.join("v1.scm");
+    let second = root.join("v2.scm");
+    let current = root.join("current.scm");
     for path in [&first, &second] {
-        std::fs::write(path, "export {}").unwrap();
+        std::fs::write(path, "(void)").unwrap();
     }
     std::os::unix::fs::symlink(&first, &current).unwrap();
     let url = Url::from_file_path(&current).unwrap().to_string();
@@ -183,7 +183,7 @@ fn focus_compares_canonical_identity_after_retargeting_a_declaration() {
     different.configuration.insert("key", "value");
     matches(&different, &running, false);
     different = requested.clone();
-    different.declared_path = Some(root.join("unrelated.ts"));
+    different.declared_path = Some(root.join("unrelated.scm"));
     matches(&different, &running, false);
     different.location = running.location.clone();
     matches(&different, &running, true);

@@ -15,7 +15,6 @@ use super::migrate::migrate_entity;
 use super::query::{run_count_with_search_fallback, run_fetch_with_search_fallback};
 use super::registry::{catalog as registry_catalog, create_entity, load_entity, require_entity};
 use super::schema::EntitySchema;
-use super::value::now_ms;
 use super::write::apply_one;
 
 /// Declare an entity, creating or migrating its table to match. Runs inside the backend's
@@ -80,8 +79,8 @@ pub(super) fn apply(
     exec: &mut dyn Executor,
     namespace: &str,
     mutations: &[Mutation],
+    now: i64,
 ) -> Result<ApplyReport, DataError> {
-    let now = now_ms();
     let mut report = ApplyReport::default();
     // Schemas are looked up once per entity per batch. Not cached across calls: another yinz
     // server sharing this database could have migrated an entity since, and one indexed lookup

@@ -1,0 +1,478 @@
+//! Compare real Scheme guests with recordings captured from the original Wasm runtimes.
+//! Recorded commands run against independent host services, preserving database and filesystem checks.
+use super::reference_trace::Trace;
+use crate::response::{decode_response, DecodedResponse};
+use prost::Message;
+use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+};
+use yinz_plugin_api::{
+    plugin_command::*,
+    plugin_ids::{ProtobufPluginIds, ProtobufYinzVersion},
+};
+use yinz_terminal::panes::{grid::Grid, terminal_character::TerminalCharacter};
+use yinz_types::data::{CommandType, Event, InputMode, ModeInfo, PipeMessage, PluginCommand};
+
+pub(crate) type Responder = Arc<dyn Fn(&PluginCommand) -> Option<Vec<u8>> + Send + Sync>;
+type Commands = Arc<Mutex<Vec<Value>>>;
+
+fn record(commands: &Commands, command: &PluginCommand) {
+    let mut value = serde_json::to_value(command).unwrap();
+    // These payloads are sets. Preserve order for every ordered argument and event.
+    for name in ["Subscribe", "Unsubscribe"] {
+        if let Some(values) = value.get_mut(name).and_then(Value::as_array_mut) {
+            values.sort_by_key(Value::to_string);
+        }
+    }
+    commands.lock().unwrap().push(value);
+}
+
+pub(crate) fn default_reply(command: &PluginCommand) -> Option<Vec<u8>> {
+    Some(match command {
+        PluginCommand::GetPluginIds => ProtobufPluginIds {
+            plugin_id: 1,
+            client_id: 1,
+            yinz_pid: 1234,
+            initial_cwd: "/work".into(),
+            hostname: "parity-host".into(),
+            host_id: "parity-host-id".into(),
+            max_session_name_bytes: Some(80),
+        }
+        .encode_to_vec(),
+        PluginCommand::GetYinzVersion => ProtobufYinzVersion {
+            version: "test".into(),
+        }
+        .encode_to_vec(),
+        PluginCommand::GetLocalUtcOffset { .. } => {
+            ProtobufGetLocalUtcOffsetResponse { offset_seconds: 0 }.encode_to_vec()
+        },
+        PluginCommand::OpenFile(..) => ProtobufOpenFileResponse::default().encode_to_vec(),
+        PluginCommand::OpenTerminal(..) => ProtobufOpenTerminalResponse::default().encode_to_vec(),
+        PluginCommand::OpenFileInPlaceOfPlugin(..) => {
+            ProtobufOpenFileInPlaceOfPluginResponse::default().encode_to_vec()
+        },
+        PluginCommand::OpenTerminalInPlaceOfPlugin(..) => {
+            ProtobufOpenTerminalInPlaceOfPluginResponse::default().encode_to_vec()
+        },
+        PluginCommand::BreakPanesToNewTab(..) => {
+            ProtobufBreakPanesToNewTabResponse::default().encode_to_vec()
+        },
+        PluginCommand::BreakPanesToTabWithIndex(..) => {
+            ProtobufBreakPanesToTabWithIndexResponse::default().encode_to_vec()
+        },
+        _ => return None,
+    })
+}
+
+pub(crate) struct WasmReference {
+    commands: Commands,
+    responder: Responder,
+    trace: Trace,
+}
+impl WasmReference {
+    pub(crate) fn new(
+        name: &str,
+        configuration: BTreeMap<String, String>,
+        filesystem_root: &Path,
+        responder: Responder,
+    ) -> Self {
+        Self::with_clock(name, configuration, filesystem_root, responder, None)
+    }
+    pub(crate) fn with_clock(
+        name: &str,
+        configuration: BTreeMap<String, String>,
+        filesystem_root: &Path,
+        responder: Responder,
+        _clock: Option<Arc<AtomicU64>>,
+    ) -> Self {
+        let mut trace = Trace::new(
+            "wasm",
+            name,
+            serde_json::to_value(configuration).unwrap(),
+            filesystem_root,
+        );
+        let (_, commands) = trace.replay(serde_json::json!(["load"]), |command| responder(command));
+        Self {
+            commands: Arc::new(Mutex::new(commands)),
+            responder,
+            trace,
+        }
+    }
+    pub(crate) fn update(&mut self, event: &Event) -> bool {
+        self.replay(serde_json::json!(["update", event]))
+            .as_bool()
+            .unwrap()
+    }
+    pub(crate) fn pipe(&mut self, message: &PipeMessage) -> Option<bool> {
+        serde_json::from_value(self.replay(serde_json::json!(["pipe", message]))).unwrap()
+    }
+    pub(crate) fn render(&mut self, rows: usize, columns: usize) -> String {
+        let result = self.replay(serde_json::json!(["render", rows, columns]));
+        if let Some(trap) = result.get("trap") {
+            panic!("recorded original runtime render trap: {trap}");
+        }
+        result.as_str().unwrap().to_owned()
+    }
+    fn replay(&mut self, input: Value) -> Value {
+        let (result, commands) = self
+            .trace
+            .replay(input, |command| (self.responder)(command));
+        self.commands.lock().unwrap().extend(commands);
+        result
+    }
+    pub(crate) fn take_commands(&self) -> Vec<Value> {
+        std::mem::take(&mut *self.commands.lock().unwrap())
+    }
+}
+
+pub(crate) struct SteelReference {
+    runtime: yinz_steel::Runtime,
+    commands: Commands,
+}
+impl SteelReference {
+    pub(crate) fn new(
+        name: &str,
+        configuration: BTreeMap<String, String>,
+        filesystem_root: &Path,
+        responder: Responder,
+    ) -> Self {
+        Self::with_clock(name, configuration, filesystem_root, responder, None)
+    }
+    pub(crate) fn with_clock(
+        name: &str,
+        configuration: BTreeMap<String, String>,
+        _filesystem_root: &Path,
+        responder: Responder,
+        clock: Option<Arc<AtomicU64>>,
+    ) -> Self {
+        let commands = Commands::default();
+        let recorded = commands.clone();
+        let host = move |value: Value| {
+            let command = yinz_steel::binary::decode_command(value)?;
+            record(&recorded, &command);
+            let Some(response) = responder(&command) else {
+                return Ok(Value::Null);
+            };
+            Ok(
+                match decode_response(CommandType::from(&command), &response).transpose()? {
+                    Some(DecodedResponse::Json(value)) => value,
+                    Some(DecodedResponse::Bytes(bytes)) => serde_json::to_value(bytes)?,
+                    None => serde_json::to_value(response)?,
+                },
+            )
+        };
+        let mut runtime = match clock {
+            Some(clock) => {
+                let wall_clock = clock.clone();
+                yinz_steel::Runtime::new_with_clocks(
+                    host,
+                    move || clock.load(Ordering::SeqCst),
+                    move || wall_clock.load(Ordering::SeqCst) as i64,
+                )
+            },
+            None => yinz_steel::Runtime::new(host),
+        }
+        .unwrap();
+        let mut sources = BTreeMap::new();
+        let mut directories = vec![&yinz_steel_builtins::BUILTIN_STEEL_FILES];
+        while let Some(directory) = directories.pop() {
+            directories.extend(directory.dirs());
+            for file in directory.files() {
+                sources.insert(
+                    file.path().to_str().unwrap().to_owned(),
+                    file.contents_utf8().unwrap().to_owned(),
+                );
+            }
+        }
+        let mut root =
+            yinz_steel::modules::SourceRoot::embedded(&format!("{name}.scm"), sources).unwrap();
+        runtime
+            .eval_with_source_root(
+                yinz_steel_builtins::builtin_steel_plugin(name).unwrap(),
+                &mut root,
+            )
+            .unwrap();
+        runtime
+            .load(serde_json::to_value(configuration).unwrap())
+            .unwrap();
+        Self { runtime, commands }
+    }
+    pub(crate) fn update(&mut self, event: &Event) -> bool {
+        self.runtime
+            .update(crate::event::event_to_json(event).unwrap())
+            .unwrap()
+    }
+    pub(crate) fn pipe(&mut self, message: &PipeMessage) -> Option<bool> {
+        Some(
+            self.runtime
+                .pipe(serde_json::to_value(message).unwrap())
+                .unwrap(),
+        )
+    }
+    pub(crate) fn render(&mut self, rows: usize, columns: usize) -> String {
+        self.runtime
+            .render(rows, columns)
+            .unwrap()
+            .replace("\n\r", "\n")
+    }
+    pub(crate) fn grant_permissions(&mut self) {
+        self.runtime
+            .eval(
+                "(for-each (lambda (id) (yinz-async-permission id (hash \"Ok\" \"Granted\"))) (hash-keys->list %async-permissions))",
+            )
+            .unwrap();
+    }
+    pub(crate) fn take_commands(&self) -> Vec<Value> {
+        std::mem::take(&mut *self.commands.lock().unwrap())
+    }
+}
+
+pub(crate) struct Pair {
+    pub(crate) wasm: WasmReference,
+    pub(crate) steel: SteelReference,
+    pub(crate) mode: ModeInfo,
+    _root: tempfile::TempDir,
+}
+impl Pair {
+    pub(crate) fn new(name: &str, configuration: BTreeMap<String, String>) -> Self {
+        Self::with_host(name, configuration, Arc::new(default_reply), None)
+    }
+    pub(crate) fn with_host(
+        name: &str,
+        configuration: BTreeMap<String, String>,
+        responder: Responder,
+        clock: Option<Arc<AtomicU64>>,
+    ) -> Self {
+        Self::with_hosts(name, configuration, responder.clone(), responder, clock)
+    }
+    pub(crate) fn with_hosts(
+        name: &str,
+        configuration: BTreeMap<String, String>,
+        wasm_responder: Responder,
+        steel_responder: Responder,
+        clock: Option<Arc<AtomicU64>>,
+    ) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let mut pair = Self {
+            wasm: WasmReference::with_clock(
+                name,
+                configuration.clone(),
+                root.path(),
+                wasm_responder,
+                clock.clone(),
+            ),
+            steel: SteelReference::with_clock(
+                name,
+                configuration,
+                root.path(),
+                steel_responder,
+                clock,
+            ),
+            mode: ModeInfo::default(),
+            _root: root,
+        };
+        pair.commands();
+        pair
+    }
+    pub(crate) fn commands(&mut self) -> Vec<Value> {
+        let normalize = |commands: Vec<Value>| {
+            commands
+                .into_iter()
+                .map(|mut command| {
+                    if let Some(Value::Array(events)) = command.get_mut("Subscribe") {
+                        events.sort_by_key(Value::to_string);
+                    }
+                    normalize_command_settings(&mut command);
+                    command
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = normalize(self.wasm.take_commands());
+        let actual = normalize(self.steel.take_commands());
+        assert_eq!(
+            actual, expected,
+            "actual runtimes emitted different host commands"
+        );
+        expected
+    }
+    pub(crate) fn event(&mut self, event: Event) -> Vec<Value> {
+        if let Event::ModeUpdate(mode) = &event {
+            self.mode = mode.clone();
+        }
+        assert_eq!(
+            self.steel.update(&event),
+            self.wasm.update(&event),
+            "update decision for {event:?}"
+        );
+        self.commands()
+    }
+    pub(crate) fn key(&mut self, key: &str) -> Vec<Value> {
+        self.event(Event::Key(key.parse().unwrap()))
+    }
+    pub(crate) fn pipe(&mut self, message: PipeMessage) {
+        assert_eq!(self.steel.pipe(&message), self.wasm.pipe(&message));
+        self.commands();
+    }
+    pub(crate) fn render(&mut self, rows: usize, cols: usize) {
+        let expected = self.wasm.render(rows, cols);
+        let actual = self.steel.render(rows, cols);
+        self.commands();
+        let cells = |text: &str| {
+            let mut grid = Grid::new(
+                rows.max(1),
+                cols.max(1),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                self.mode.style,
+                false,
+                !self.mode.capabilities.arrow_fonts,
+                true,
+                true,
+                false,
+            );
+            vte::Parser::new().advance(
+                &mut grid,
+                text.replace("\n\r", "\n").replace('\n', "\n\r").as_bytes(),
+            );
+            grid.as_character_lines()
+        };
+        let left = cells(&expected);
+        let right = cells(&actual);
+        let first = left
+            .iter()
+            .zip(&right)
+            .enumerate()
+            .find_map(|(row, (a, b))| {
+                a.iter()
+                    .zip(b)
+                    .enumerate()
+                    .find(|(_, (a, b))| a != b)
+                    .map(|(col, (a, b))| {
+                        (
+                            row,
+                            col,
+                            a.character,
+                            a.styles.clone(),
+                            b.character,
+                            b.styles.clone(),
+                        )
+                    })
+            });
+        let plain = |lines: &[Vec<TerminalCharacter>]| {
+            lines
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.character).collect::<String>())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            left == right,
+            "{rows}x{cols} first difference {first:?}\nWasm: {:?}\nSteel: {:?}",
+            plain(&left),
+            plain(&right)
+        );
+    }
+    pub(crate) fn viewports(&mut self) {
+        for (rows, cols) in [(30, 120), (30, 100), (20, 60), (12, 34), (6, 20)] {
+            self.render(rows, cols);
+        }
+    }
+    pub(crate) fn mode(&mut self, locked: bool) {
+        let mut mode = ModeInfo {
+            base_mode: Some(if locked {
+                InputMode::Locked
+            } else {
+                InputMode::Normal
+            }),
+            ..Default::default()
+        };
+        mode.keybinds = yinz_config::config::Config::from_default_assets()
+            .unwrap()
+            .keybinds
+            .to_keybinds_vec();
+        // The source is a map. Fix its iteration order before either guest sees
+        // the event so captures replay the identical input in another process.
+        mode.keybinds
+            .sort_by_key(|(mode, _)| serde_json::to_string(mode).unwrap());
+        for (_, bindings) in &mut mode.keybinds {
+            bindings.sort_by_key(|(key, _)| serde_json::to_string(key).unwrap());
+        }
+        self.event(Event::ModeUpdate(mode));
+    }
+}
+
+// Native and Wasm builds use different serde_json object-map features. Claude
+// interprets --settings as JSON, so object key order is not an argv difference.
+// Every other argument remains byte-for-byte comparable.
+fn normalize_command_settings(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if object.contains_key("path")
+                && object.contains_key("args")
+                && object.contains_key("target")
+                && serde_json::from_value::<yinz_types::command::CommandToRun>(Value::Object(
+                    object.clone(),
+                ))
+                .is_ok()
+            {
+                if let Some(Value::Array(args)) = object.get_mut("args") {
+                    for index in 1..args.len() {
+                        if args[index - 1].as_str() == Some("--settings") {
+                            if let Some(raw) = args[index].as_str() {
+                                if let Ok(mut settings) = serde_json::from_str::<Value>(raw) {
+                                    settings.sort_all_objects();
+                                    args[index] = Value::String(settings.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for child in object.values_mut() {
+                normalize_command_settings(child);
+            }
+        },
+        Value::Array(values) => {
+            for child in values {
+                normalize_command_settings(child);
+            }
+        },
+        _ => {},
+    }
+}
+
+#[test]
+fn settings_normalization_only_changes_valid_settings_json_in_commands() {
+    let mut command = serde_json::to_value(yinz_types::command::CommandToRun {
+        path: "claude".into(),
+        args: vec![
+            "--settings".into(),
+            r#"{ "z": [{"b":2,"a":1}], "a": true }"#.into(),
+            "--prompt".into(),
+            r#"{ "z": 2, "a": 1 }"#.into(),
+            "--settings".into(),
+            "{broken JSON".into(),
+            "--settings".into(),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    normalize_command_settings(&mut command);
+    assert_eq!(command["args"][1], r#"{"a":true,"z":[{"a":1,"b":2}]}"#);
+    assert_eq!(command["args"][3], r#"{ "z": 2, "a": 1 }"#);
+    assert_eq!(command["args"][5], "{broken JSON");
+    assert_eq!(command["args"][6], "--settings");
+    let mut unrelated = serde_json::json!({"args":["--settings", "{ \"z\": 2, \"a\": 1 }"]});
+    let expected = unrelated.clone();
+    normalize_command_settings(&mut unrelated);
+    assert_eq!(unrelated, expected);
+}

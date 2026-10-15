@@ -577,7 +577,7 @@ pub fn can_subscribe_to_hd_events() {
         .unwrap();
     wait_for_render_containing(
         &received_screen_instructions,
-        "FileSystemCreate([(\"/host/test1\",",
+        "\"FileSystemCreate\":[[\"/host/test1\",",
     );
     teardown();
     screen_thread.join().unwrap();
@@ -588,7 +588,7 @@ pub fn can_subscribe_to_hd_events() {
                 let client_id = plugin_render_asset.client_id;
                 let plugin_bytes = plugin_render_asset.bytes.clone();
                 let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                if plugin_bytes.contains("FileSystemCreate([(\"/host/test1\",") {
+                if plugin_bytes.contains("\"FileSystemCreate\":[[\"/host/test1\",") {
                     return Some((plugin_id, client_id, plugin_bytes));
                 }
             }

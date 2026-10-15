@@ -4,7 +4,7 @@
 //! job, its own wasm `render()` per attached client and its own full re-parse on the screen
 //! thread. The plugin thread now merges the `Update`s waiting on its bus and the wasm bridge
 //! delivers a plugin its whole share of the batch in one job, rendering once at the end. Every
-//! event is still delivered, in order, with its count - the tests here read them back off a TypeScript
+//! event is still delivered, in order, with its count - the tests here read them back off a Scheme
 //! plugin that logs each one and renders the log.
 
 #[cfg(test)]
@@ -12,7 +12,7 @@ const CLIENT_7: yinz_types::internal_ids::ClientId = yinz_types::internal_ids::C
 
 use super::*;
 use crate::ClientId;
-use crate::{coalesce_hovers, drain_deno_events, drain_reloads, drain_updates};
+use crate::{coalesce_hovers, drain_plugin_events, drain_reloads, drain_updates};
 use yinz_test_support::Watched;
 use yinz_types::internal_ids::TabId;
 use yinz_types::keys::{BareKey, KeyWithModifier};
@@ -36,30 +36,41 @@ fn logger_source(permissions: &[&str]) -> String {
         .iter()
         .map(|permission| format!("{permission:?}"))
         .collect::<Vec<_>>()
-        .join(", ");
+        .join(" ");
     format!(
         r#"
-import yinz from 'yinz:plugin';
-const lines=[];
-const log=s => lines.push(s);
-export default {{
-  load() {{yinz.subscribe(['Mouse','Key','PermissionRequestResult']); if ([{permissions}].length) yinz.requestPermission([{permissions}]); log('ready');}},
-  update(raw) {{
-    const event=yinz.event(raw), client=yinz.getPluginIds().client_id;
-    if (event.type === 'PermissionRequestResult') {{log('granted'); return true;}}
-    if (event.type === 'Mouse') {{const at=event.lines ?? (event.line+','+event.col); log(event.kind+' '+at+' client='+client); return true;}}
-    if (event.type === 'Key') {{
-      log('key '+event.key+' client='+client);
-      if (event.key === 'u') {{yinz.host.unblockCliPipeInput('batch_pipe'); return false;}}
-      if (event.key === 'b') {{yinz.host.blockCliPipeInput('batch_pipe'); return false;}}
-      if (event.key === 'e') throw Error('boom');
-      return true;
-    }}
-    return false;
-  }},
-  pipe(message) {{log('pipe '+message.name); yinz.host.blockCliPipeInput('batch_pipe'); return true;}},
-  render(rows,cols) {{return `size ${{rows}}x${{cols}} client=${{yinz.getPluginIds().client_id}}\n`+lines.join('\n');}}
-}};
+(define lines '())
+(define (log text) (set! lines (append lines (list text))))
+(define (load config)
+  (yinz-command (hash "Subscribe" '("Mouse" "Key" "PermissionRequestResult")))
+  (unless (null? '({permissions})) (yinz-command (hash "RequestPluginPermissions" '({permissions}))))
+  (log "ready"))
+(define (update raw)
+  (define client (number->string (hash-ref (yinz-command "GetPluginIds") "client_id")))
+  (cond
+    ((and (hash? raw) (hash-contains? raw "PermissionRequestResult")) (log "granted") #t)
+    ((and (hash? raw) (hash-contains? raw "Mouse"))
+      (define event (hash-ref raw "Mouse"))
+      (define kind (car (hash-keys->list event)))
+      (define position (hash-ref event kind))
+      (define at (if (list? position) (string-join (map number->string position) ",") (number->string position)))
+      (log (string-append kind " " at " client=" client)) #t)
+    ((and (hash? raw) (hash-contains? raw "Key"))
+      (define bare (hash-ref (hash-ref raw "Key") "bare_key"))
+      (define key (if (hash? bare) (hash-ref bare "Char") bare))
+      (log (string-append "key " key " client=" client))
+      (cond ((equal? key "u") (yinz-command (hash "UnblockCliPipeInput" "batch_pipe")) #f)
+        ((equal? key "b") (yinz-command (hash "BlockCliPipeInput" "batch_pipe")) #f)
+        ((equal? key "e") (error "boom"))
+        (else #t)))
+    (else #f)))
+(define (pipe message)
+  (log (string-append "pipe " (hash-ref message "name")))
+  (yinz-command (hash "BlockCliPipeInput" "batch_pipe")) #t)
+(define (render rows cols)
+  (string-append "size " (number->string rows) "x" (number->string cols)
+    " client=" (number->string (hash-ref (yinz-command "GetPluginIds") "client_id"))
+    "\n" (string-join lines "\n")))
 "#
     )
 }
@@ -139,7 +150,7 @@ impl Harness {
     }
 
     fn load_source(&self, source: &str, configuration: &[(&str, &str)], permissions: &[&str]) {
-        let path = self.dir.path().join("logger.ts");
+        let path = self.dir.path().join("logger.scm");
         std::fs::write(&path, source).unwrap();
         let url = format!("file:{}", path.display());
         let mut run_plugin =
@@ -541,26 +552,26 @@ fn deno_drain_preserves_clients_order_and_each_instruction_boundary() {
     let first = ClientId::new(1);
     let second = ClientId::new(2);
     for boundary in [
-        PluginInstruction::DenoEvent(id, first, 42, scroll_up(3)),
-        PluginInstruction::DenoEvent(crate::PluginId::new(2), first, 41, scroll_up(3)),
+        PluginInstruction::PluginEvent(id, first, 42, scroll_up(3)),
+        PluginInstruction::PluginEvent(crate::PluginId::new(2), first, 41, scroll_up(3)),
         PluginInstruction::AddClient(second),
         update_of(&[scroll_up(3)]),
     ] {
         let expected = format!("{boundary:?}");
         let bus = bus_with(vec![
-            PluginInstruction::DenoEvent(id, second, 41, scroll_up(2)),
+            PluginInstruction::PluginEvent(id, second, 41, scroll_up(2)),
             boundary,
-            PluginInstruction::DenoEvent(id, first, 41, scroll_up(4)),
+            PluginInstruction::PluginEvent(id, first, 41, scroll_up(4)),
         ]);
         let mut queued = None;
         assert_eq!(
-            drain_deno_events(&bus, id, 41, vec![(first, scroll_up(1), None)], &mut queued),
+            drain_plugin_events(&bus, id, 41, vec![(first, scroll_up(1), None)], &mut queued),
             vec![(first, scroll_up(1), None), (second, scroll_up(2), None)],
         );
         assert_eq!(format!("{:?}", queued.unwrap().0), expected);
         assert!(matches!(
             bus.try_recv(),
-            Some((PluginInstruction::DenoEvent(_, _, 41, _), _))
+            Some((PluginInstruction::PluginEvent(_, _, 41, _), _))
         ));
         assert!(bus.try_recv().is_none());
     }
@@ -572,11 +583,11 @@ fn deno_drain_stops_at_its_cap() {
     let client = ClientId::new(1);
     let bus = bus_with(
         (0..300)
-            .map(|_| PluginInstruction::DenoEvent(id, client, 41, scroll_up(1)))
+            .map(|_| PluginInstruction::PluginEvent(id, client, 41, scroll_up(1)))
             .collect(),
     );
     let mut queued = None;
-    let events = drain_deno_events(
+    let events = drain_plugin_events(
         &bus,
         id,
         41,
@@ -656,14 +667,14 @@ fn reload_by_url_of(url: &str) -> PluginInstruction {
 #[test]
 pub fn adjacent_reloads_of_one_plugin_collapse_to_one() {
     let bus = bus_with(vec![
-        reload_of("file:/plugins/keys.ts"),
-        reload_of("file:/plugins/keys.ts"),
+        reload_of("file:/plugins/keys.scm"),
+        reload_of("file:/plugins/keys.scm"),
         update_of(&[scroll_up(1)]),
-        reload_of("file:/plugins/keys.ts"),
+        reload_of("file:/plugins/keys.scm"),
     ]);
     let mut queued = None;
 
-    let (taken, _) = drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
+    let (taken, _) = drain_reloads(&bus, reload_of("file:/plugins/keys.scm"), &mut queued);
 
     assert!(matches!(taken, PluginInstruction::Reload(..)));
     assert!(
@@ -681,14 +692,14 @@ pub fn adjacent_reloads_of_one_plugin_collapse_to_one() {
 #[test]
 pub fn a_reload_of_another_plugin_or_kind_stops_the_drain() {
     let bus = bus_with(vec![
-        reload_of("file:/plugins/other.ts"),
-        reload_of("file:/plugins/keys.ts"),
+        reload_of("file:/plugins/other.scm"),
+        reload_of("file:/plugins/keys.scm"),
     ]);
     let mut queued = None;
-    drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
+    drain_reloads(&bus, reload_of("file:/plugins/keys.scm"), &mut queued);
     assert!(
         matches!(&queued, Some((PluginInstruction::Reload(_, _, run, _, _, _), _))
-            if run.location_string().ends_with("other.ts")),
+            if run.location_string().ends_with("other.scm")),
         "got {queued:?}"
     );
     assert!(
@@ -696,9 +707,9 @@ pub fn a_reload_of_another_plugin_or_kind_stops_the_drain() {
         "nothing past the stop was touched"
     );
 
-    let bus = bus_with(vec![reload_by_url_of("file:/plugins/keys.ts")]);
+    let bus = bus_with(vec![reload_by_url_of("file:/plugins/keys.scm")]);
     let mut queued = None;
-    drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
+    drain_reloads(&bus, reload_of("file:/plugins/keys.scm"), &mut queued);
     assert!(
         matches!(queued, Some((PluginInstruction::ReloadPluginByUrl(_), _))),
         "a by-url reload is not the same instruction as a pane reload"
@@ -714,7 +725,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
             Some(true), // floating rather than tiled
             None,
             yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-                "file:/plugins/keys.ts",
+                "file:/plugins/keys.scm",
                 &None,
                 None,
                 None,
@@ -728,7 +739,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
             Some(false),
             Some("titled".to_owned()),
             yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-                "file:/plugins/keys.ts",
+                "file:/plugins/keys.scm",
                 &None,
                 None,
                 None,
@@ -742,7 +753,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
             Some(false),
             None,
             yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-                "file:/plugins/keys.ts",
+                "file:/plugins/keys.scm",
                 &None,
                 None,
                 None,
@@ -756,7 +767,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
     for other in differing {
         let bus = bus_with(vec![other]);
         let mut queued = None;
-        drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
+        drain_reloads(&bus, reload_of("file:/plugins/keys.scm"), &mut queued);
         assert!(
             matches!(queued, Some((PluginInstruction::Reload(..), _))),
             "a reload with other pane arguments is left for its own turn, got {queued:?}"
@@ -771,7 +782,7 @@ pub fn a_reload_of_the_same_plugin_with_other_pane_arguments_stops_the_drain() {
 pub fn collapsed_reloads_hand_their_completion_handles_to_the_caller() {
     let run = || {
         yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-            "file:/plugins/keys.ts",
+            "file:/plugins/keys.scm",
             &None,
             None,
             None,
@@ -791,7 +802,7 @@ pub fn collapsed_reloads_hand_their_completion_handles_to_the_caller() {
     let mut queued = None;
 
     let (_first, completions) =
-        drain_reloads(&bus, reload_of("file:/plugins/keys.ts"), &mut queued);
+        drain_reloads(&bus, reload_of("file:/plugins/keys.scm"), &mut queued);
 
     assert_eq!(
         completions.len(),
@@ -987,22 +998,30 @@ pub fn coalescing_hovers_keeps_positions_before_wheel_events() {
 #[serial(plugin_tests)]
 fn asynchronous_pipe_hold_releases_after_guest_render_output_without_screen_acknowledgements() {
     let harness = Harness::new();
-    harness.load_source(r#"
-let stream, ready = false;
-export default {
-  async load() { await yinz.waitForPermissions(['ReadCliPipes']); ready = true; yinz.requestRender(); },
-  pipe(message) { stream = message.source.Cli; yinz.host.blockCliPipeInput(stream); yinz.host.cliPipeOutput(stream, 'callback'); return true; },
-  async render() {
-    if (stream) {
-      const pipe = stream; stream = null;
-      await yinz.sleep(0);
-      yinz.host.cliPipeOutput(pipe, 'async render');
-      yinz.host.unblockCliPipeInput(pipe);
-    }
-    return ready ? 'ready granted' : 'starting';
-  }
-};
-"#, &[], &["ReadCliPipes"]);
+    harness.load_source(
+        r#"
+(define stream #f)
+(define ready #f)
+(define (load config)
+  (yinz-then (yinz-wait-for-permissions '("ReadCliPipes"))
+    (lambda (_) (set! ready #t) (yinz-request-render))))
+(define (pipe message)
+  (set! stream (hash-ref (hash-ref message "source") "Cli"))
+  (yinz-command (hash "BlockCliPipeInput" stream))
+  (yinz-command (hash "CliPipeOutput" (list stream "callback"))) #t)
+(define (render rows cols)
+  (if stream
+    (let ((current stream))
+      (set! stream #f)
+      (yinz-then (yinz-sleep 0) (lambda (_)
+        (yinz-command (hash "CliPipeOutput" (list current "async render")))
+        (yinz-command (hash "UnblockCliPipeInput" current))
+        (if ready "ready granted" "starting"))))
+    (if ready "ready granted" "starting")))
+"#,
+        &[],
+        &["ReadCliPipes"],
+    );
     harness.cli_pipe("async");
     harness.server.wait_until("asynchronous hold completes", WAIT, |log| {
         log.iter().any(|instruction| matches!(instruction, ServerInstruction::UnblockCliPipeInput(pipe) if pipe == PIPE)).then_some(())

@@ -7,23 +7,11 @@ fn gate_runs_integration_and_aggregates_failures() {
         .parent()
         .unwrap();
     fs::create_dir_all(root.path().join("target/debug")).unwrap();
-    std::os::unix::fs::symlink(
-        checkout.join("target/authoring-tools"),
-        root.path().join("target/authoring-tools"),
-    )
-    .unwrap();
-    let policy = "yinz-plugin-host/src/deno/authoring";
-    fs::create_dir_all(root.path().join(policy)).unwrap();
-    fs::copy(
-        checkout.join(policy).join("oxfmt.json"),
-        root.path().join(policy).join("oxfmt.json"),
-    )
-    .unwrap();
     fs::create_dir_all(root.path().join("example-plugins")).unwrap();
-    fs::create_dir_all(root.path().join("yinz-deno-builtins/assets/plugins")).unwrap();
+    fs::create_dir_all(root.path().join("yinz-steel-builtins/assets/plugins")).unwrap();
     fs::write(
-        root.path().join("example-plugins/main.ts"),
-        "export const value = 1;\n",
+        root.path().join("example-plugins/main.scm"),
+        "(define value 1)\n",
     )
     .unwrap();
     let binary = root.path().join("target/debug/yinz");
@@ -130,6 +118,7 @@ exit 0
         assert!(calls.contains("3|clippy --workspace"), "{calls}");
         if failure == "0" {
             assert!(calls.contains("plugins check --file"), "{calls}");
+            assert!(calls.contains("plugins format --file"), "{calls}");
         }
         if no_nextest == "0" {
             assert!(calls.contains("3|nextest run --profile unit"), "{calls}");

@@ -227,8 +227,13 @@ fn every_client_leaves_when_the_last_pane_closes() {
 
 /// A background plugin that asks for the quit to be confirmed, the way agent does mid-reply.
 const GUARD_PLUGIN: &str = r#"
-import z from 'yinz:plugin';
-export default {async load() {await z.waitForPermissions(['ChangeApplicationState']); z.host.setQuitNotice({notice:'the fixture is still working',guard:true});}, update() {return false;}, render() {return '';}};
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("ChangeApplicationState"))
+    (lambda (_)
+      (yinz-command (hash "SetQuitNotice"
+        (hash "notice" "the fixture is still working" "guard" #t))))))
+(define (update event) #f)
+(define (render rows columns) "")
 "#;
 
 /// Write the fixture to disk with its one permission already granted, so no prompt has to be
@@ -237,7 +242,7 @@ export default {async load() {await z.waitForPermissions(['ChangeApplicationStat
 fn write_guard_plugin(name: &str) -> String {
     let root = yinz_integration_tests::test_env::init().join(name);
     fs::create_dir_all(&root).unwrap();
-    let path = root.join("guard.ts");
+    let path = root.join("guard.scm");
     fs::write(&path, GUARD_PLUGIN).unwrap();
     let url = format!("file:{}", path.display());
     let key = yinz_runtime::plugin_location::parse_plugin_location(&url, None)

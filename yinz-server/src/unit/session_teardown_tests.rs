@@ -200,3 +200,44 @@ fn removed_client_id_stays_reserved_until_its_router_finishes() {
     state.write().unwrap().release_client_id(old);
     assert_eq!(state.write().unwrap().new_client(), old);
 }
+
+#[test]
+fn disconnect_retires_only_the_clients_cli_pipes() {
+    let (screen_tx, _screen_rx) = channels::unbounded();
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    let session = Arc::new(RwLock::new(Some(session_with(
+        SenderWithContext::new(screen_tx),
+        SenderWithContext::new(plugin_tx),
+    ))));
+    let state = Arc::new(RwLock::new(SessionState::new()));
+    let (disconnected, other) = {
+        let mut state = state.write().unwrap();
+        let disconnected = state.new_client();
+        let other = state.new_client();
+        state.associate_pipe_with_client("repl".into(), disconnected);
+        state.associate_pipe_with_client("other".into(), other);
+        (disconnected, other)
+    };
+    let mut os: Box<dyn ServerOsApi> = Box::new(crate::capturing_os::CapturingOs::default());
+    remove_client_and_flush_forwards(disconnected, &mut os, &state, &session);
+    let cleanup: Vec<_> = plugin_rx
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    assert!(
+        matches!(cleanup.as_slice(), [
+        PluginInstruction::CliPipesDisconnected(pipes),
+        PluginInstruction::RemoveClient(id),
+    ] if pipes == &["repl"] && *id == disconnected),
+        "{cleanup:?}"
+    );
+    assert_eq!(
+        state.read().unwrap().pipes,
+        HashMap::from([("other".into(), other)])
+    );
+    remove_client_and_flush_forwards(disconnected, &mut os, &state, &session);
+    assert!(plugin_rx.try_iter().all(|(instruction, _)| !matches!(
+        instruction,
+        PluginInstruction::CliPipesDisconnected(_)
+    )));
+}

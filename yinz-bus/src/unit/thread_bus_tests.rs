@@ -30,7 +30,7 @@ fn save_session_preserves_delivery_errors_during_shutdown() {
 #[test]
 fn replies_survive_queued_notifications_and_cleanup_without_replay() {
     use crate::plugins::{PluginId, PluginInstruction};
-    use crate::thread_bus::DenoReplies;
+    use crate::thread_bus::PluginReplies;
     use yinz_types::data::Event;
     let (sender, receiver) = unbounded();
     let senders = ThreadSenders {
@@ -38,17 +38,18 @@ fn replies_survive_queued_notifications_and_cleanup_without_replay() {
         ..Default::default()
     };
     let reply = |generation, client, value: &str| {
-        PluginInstruction::DenoEvent(
+        PluginInstruction::PluginEvent(
             PluginId::new(1),
             ClientId::new(client),
             generation,
             Event::CustomMessage(value.into(), String::new()),
         )
     };
-    let old = DenoReplies::new(123);
-    let replacement = DenoReplies::new(124);
+    let old = PluginReplies::new(123);
+    let replacement = PluginReplies::new(124);
     let notification = || {
-        let PluginInstruction::DenoReply(_, _, _, _, reply) = receiver.try_recv().unwrap().0 else {
+        let PluginInstruction::PluginReply(_, _, _, _, reply) = receiver.try_recv().unwrap().0
+        else {
             panic!("expected retained reply")
         };
         reply
@@ -85,22 +86,22 @@ fn replies_survive_queued_notifications_and_cleanup_without_replay() {
 #[test]
 fn disposal_discards_pending_replies() {
     use crate::plugins::{PluginId, PluginInstruction};
-    use crate::thread_bus::DenoReplies;
+    use crate::thread_bus::PluginReplies;
     let (sender, receiver) = unbounded();
     let senders = ThreadSenders {
         to_plugin: Some(Shutdown::default().sender(sender)),
         ..Default::default()
     };
-    let mailbox = DenoReplies::new(125);
+    let mailbox = PluginReplies::new(125);
     senders
-        .send_to_plugin(PluginInstruction::DenoEvent(
+        .send_to_plugin(PluginInstruction::PluginEvent(
             PluginId::new(1),
             ClientId::new(2),
             125,
             yinz_types::data::Event::Visible(true),
         ))
         .unwrap();
-    let PluginInstruction::DenoReply(_, _, _, _, reply) = receiver.try_recv().unwrap().0 else {
+    let PluginInstruction::PluginReply(_, _, _, _, reply) = receiver.try_recv().unwrap().0 else {
         panic!("expected retained reply")
     };
     drop(mailbox);

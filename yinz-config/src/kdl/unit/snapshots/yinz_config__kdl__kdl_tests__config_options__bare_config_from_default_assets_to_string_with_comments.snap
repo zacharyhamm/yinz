@@ -378,7 +378,7 @@ plugins {
 }
 
 // Plugins to load in the background when a new session starts
-// eg. "file:/path/to/my-plugin.wasm" or "file:/path/to/my-plugin.ts"
+// eg. "file:/path/to/my-plugin.scm"
 load_plugins {
     yinz:link
     agent-service
@@ -477,11 +477,6 @@ context_menu {
 // (Requires restart)
 // 
 // layout_dir "/tmp"
- 
-// The folder in which Yinz will look for builtin plugin WASM files
-// It falls back to the installed builtin plugins when a file is not present
-// 
-// builtin_plugins_dir "/tmp"
  
 // The folder in which Yinz will look for themes
 // (Requires restart)

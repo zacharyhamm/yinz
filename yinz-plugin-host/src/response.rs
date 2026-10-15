@@ -1,9 +1,8 @@
 //! Runtime-neutral decoding of host command replies.
 //!
-//! Responses use protobuf and have no serde representation. Each arm follows the conversion
-//! in `yinz-tile/src/shim.rs`, then returns JSON or binary file contents. Missing optional
-//! payloads become JSON null; errors remain errors. Unrecognized commands return `None` so
-//! the caller can retain its raw-byte fallback. Deno's reply coverage test pins the command list.
+//! Host responses use protobuf. Each arm returns JSON or binary file contents; missing
+//! optional payloads become JSON null and errors remain errors. Unrecognized commands
+//! return `None` so the caller can retain its raw-byte fallback.
 
 use prost::Message;
 use serde::Serialize;
@@ -180,9 +179,7 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
         CommandType::GetUserPluginDir => {
             decode(bytes).and_then(|r: ProtobufGetUserPluginDirResponse| value(r.user_plugin_dir))
         },
-        // Seconds, as a number. JavaScript has `Date` and does not need this to draw a
-        // calendar - the command is for wasm, which has no timezone at all - but a
-        // reply the shim reads is a reply every runtime should get decoded.
+        // Seconds east of UTC, supplied by the host timezone database.
         CommandType::GetLocalUtcOffset => {
             decode(bytes).and_then(|r: ProtobufGetLocalUtcOffsetResponse| value(r.offset_seconds))
         },
@@ -291,7 +288,14 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
         CommandType::GetPaneGitProbe => {
             decode(bytes).and_then(|r: ProtobufGetPaneGitProbeResponse| match r.result {
                 Some(get_pane_git_probe_response::Result::Probe(probe)) => {
-                    value(PaneGitProbe::from(probe))
+                    let probe = PaneGitProbe::from(probe);
+                    Ok(DecodedResponse::Json(serde_json::json!({
+                        "host": probe.host,
+                        "cwd": probe.cwd,
+                        "exit_code": probe.exit_code,
+                        "metadata": yinz_steel::binary::encode(&probe.metadata)?,
+                        "config": yinz_steel::binary::encode(&probe.config)?,
+                    })))
                 },
                 Some(get_pane_git_probe_response::Result::Pending(_)) => {
                     value(serde_json::Value::Null)
@@ -477,7 +481,9 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 |r: ProtobufDataFetchResponse| match DataFetchResponse::try_from(r)
                     .map_err(|e| anyhow!("{}", e))?
                 {
-                    DataFetchResponse::Ok(rows) => value(rows),
+                    DataFetchResponse::Ok(rows) => {
+                        crate::binary_data::rows(&rows).map(DecodedResponse::Json)
+                    },
                     DataFetchResponse::Err(e) => Err(anyhow!("{}", e)),
                 },
             )
@@ -497,14 +503,19 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 |r: ProtobufDataWatchResponse| match DataWatchResponse::try_from(r)
                     .map_err(|e| anyhow!("{}", e))?
                 {
-                    DataWatchResponse::Ok(handle) => value(handle),
+                    DataWatchResponse::Ok(handle) => Ok(DecodedResponse::Json(serde_json::json!({
+                        "watch_id": handle.watch_id,
+                        "rows": crate::binary_data::rows(&handle.rows)?,
+                    }))),
                     DataWatchResponse::Err(e) => Err(anyhow!("{}", e)),
                 },
             )
         },
         CommandType::DataCatalog => decode(bytes).and_then(|r: ProtobufDataCatalogResponse| {
             match DataCatalogResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {
-                DataCatalogResponse::Ok(entities) => value(entities),
+                DataCatalogResponse::Ok(entities) => {
+                    crate::binary_data::catalog(entities).map(DecodedResponse::Json)
+                },
                 DataCatalogResponse::Err(e) => Err(anyhow!("{}", e)),
             }
         }),
@@ -789,8 +800,7 @@ fn error_or_true(error: Option<String>) -> Result<DecodedResponse> {
     }
 }
 
-/// The shim hands `LayoutParsingError` back as a value; Deno gets it as a raised message, so the
-/// parts a plugin would show - where, what, and the parser's hint - are folded into one line.
+/// Preserve the source location, parser message and hint in the raised guest error.
 fn layout_parsing_error(error: LayoutParsingError) -> anyhow::Error {
     match error {
         LayoutParsingError::KdlError {
@@ -840,5 +850,36 @@ mod tests {
                 .to_string(),
             "denied"
         );
+    }
+
+    #[test]
+    fn remote_git_probe_keeps_large_metadata_and_config_compact() {
+        let probe = PaneGitProbe {
+            host: "remote".into(),
+            cwd: "/project".into(),
+            exit_code: Some(128),
+            metadata: vec![255; 200_001],
+            config: vec![0; 200_001],
+        };
+        let response = ProtobufGetPaneGitProbeResponse::from(
+            yinz_types::data::GetPaneGitProbeResponse::Ok(probe.clone()),
+        )
+        .encode_to_vec();
+        let DecodedResponse::Json(value) = decode_response(CommandType::GetPaneGitProbe, &response)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("expected probe object")
+        };
+        assert_eq!(value["host"], "remote");
+        assert_eq!(value["cwd"], "/project");
+        assert_eq!(value["exit_code"], 128);
+        for (field, bytes) in [("metadata", probe.metadata), ("config", probe.config)] {
+            assert!(
+                value[field].is_object(),
+                "probe {field} expanded into a JSON array"
+            );
+            assert_eq!(yinz_steel::binary::decode(&value[field]).unwrap(), bytes);
+        }
     }
 }

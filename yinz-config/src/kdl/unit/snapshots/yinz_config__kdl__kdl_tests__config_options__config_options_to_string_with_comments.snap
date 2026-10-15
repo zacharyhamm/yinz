@@ -62,11 +62,6 @@ default_layout "compact"
 // 
 layout_dir "/tmp/layouts"
  
-// The folder in which Yinz will look for builtin plugin WASM files
-// It falls back to the installed builtin plugins when a file is not present
-// 
-builtin_plugins_dir "/tmp/builtin-plugins"
- 
 // The folder in which Yinz will look for themes
 // (Requires restart)
 // 

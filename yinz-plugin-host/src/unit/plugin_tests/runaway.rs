@@ -5,8 +5,7 @@
 //! shutdown joins the plugin thread, so one runaway plugin held a dead session's process open,
 //! with every hook client that connected afterwards piling up behind the join. Now an unload
 //! whose cleanup the guest keeps from running sets the plugin's cancel token after a grace
-//! period (shutdown sets it at once), the guest is trapped at its next host call (wasm) or
-//! within a few thousand instructions (Deno), and the unload proceeds.
+//! period (shutdown sets it at once), the confined guest process is terminated, and the unload proceeds.
 //!
 //! The assertion in each test is partly the test finishing: `teardown` joins the plugin thread,
 //! which without the token would never return.
@@ -21,7 +20,7 @@ use yinz_types::internal_ids::TabId;
 
 /// A fake screen thread that grants every permission a plugin asks for and logs everything
 /// else, until `done` is set. Tests use `Watched::wait_until` to observe the first frame and
-/// the marker sent by the Wasm fixture when it enters its loop.
+/// the marker sent by the Scheme fixture when it enters its loop.
 fn observe_screen(
     receiver: Receiver<(ScreenInstruction, ErrorContext)>,
     plugin_thread_sender: SenderWithContext<PluginInstruction>,
@@ -60,8 +59,8 @@ fn observe_screen(
     (log, handle)
 }
 
-fn deno_runaway_plugin() -> RunPluginOrAlias {
-    let path = script_plugin_fixture_path().with_file_name("fixture_runaway.ts");
+fn pure_runaway_plugin() -> RunPluginOrAlias {
+    let path = script_plugin_fixture_path().with_file_name("fixture_runaway.scm");
     RunPluginOrAlias::RunPlugin(RunPlugin {
         _allow_exec_host_cmd: false,
         location: RunPluginLocation::File(path),
@@ -69,7 +68,7 @@ fn deno_runaway_plugin() -> RunPluginOrAlias {
     })
 }
 
-fn wasm_runaway_plugin() -> RunPluginOrAlias {
+fn host_call_runaway_plugin() -> RunPluginOrAlias {
     RunPluginOrAlias::RunPlugin(RunPlugin {
         _allow_exec_host_cmd: false,
         location: RunPluginLocation::File(PathBuf::from(&*PLUGIN_FIXTURE)),
@@ -149,7 +148,11 @@ impl RunawayHarness {
             |instructions| {
                 instructions
                     .iter()
-                    .any(|i| matches!(i, ScreenInstruction::PluginBytes(assets) if assets.iter().any(|a| a.plugin_id == crate::PluginId::new(0))))
+                    .any(|i| matches!(i, ScreenInstruction::PluginBytes(assets) if assets.iter().any(|a| {
+                        let frame = String::from_utf8_lossy(&a.bytes);
+                        a.plugin_id == crate::PluginId::new(0)
+                            && (frame.contains("runaway plugin, idle") || frame.contains("Received events:"))
+                    })))
                     .then_some(())
             },
         );
@@ -244,10 +247,7 @@ fn session_shutdown_stops_a_runaway_plugin_inside_its_budget(run_plugin: RunPlug
     let harness = RunawayHarness::load(run_plugin);
     harness.wait_for_first_frame();
     harness.start_the_loop();
-    // Nothing observable marks the start of the loop — the plugin never renders or calls the
-    // host again once it is in it — so give the key a moment to land. If it has not by the
-    // time the exit arrives, the exit finds an idle plugin and the test proves less, not more.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    harness.wait_for_loop_entry();
 
     let (elapsed, _) = harness.finish();
     assert!(
@@ -257,22 +257,21 @@ fn session_shutdown_stops_a_runaway_plugin_inside_its_budget(run_plugin: RunPlug
     );
 }
 
-/// Wasm: the loop calls the host every iteration, which is where the call hook stops it. (A
-/// wasm loop that never calls the host is not stopped; that would take fuel metering.)
+/// The callback remains interruptible while it continuously dispatches host commands.
 #[test]
 #[serial(plugin_tests)]
-pub fn a_runaway_wasm_plugin_is_stopped_by_its_unload() {
-    a_runaway_plugin_is_stopped_by_its_unload(wasm_runaway_plugin());
+pub fn a_runaway_scheme_plugin_is_stopped_by_its_unload() {
+    a_runaway_plugin_is_stopped_by_its_unload(host_call_runaway_plugin());
 }
 
 #[test]
 #[serial(plugin_tests)]
-pub fn session_shutdown_stops_a_runaway_deno_plugin_inside_its_budget() {
-    session_shutdown_stops_a_runaway_plugin_inside_its_budget(deno_runaway_plugin());
+pub fn session_shutdown_stops_a_pure_scheme_loop_inside_its_budget() {
+    session_shutdown_stops_a_runaway_plugin_inside_its_budget(pure_runaway_plugin());
 }
 
 #[test]
 #[serial(plugin_tests)]
-pub fn session_shutdown_stops_a_runaway_wasm_plugin_inside_its_budget() {
-    session_shutdown_stops_a_runaway_plugin_inside_its_budget(wasm_runaway_plugin());
+pub fn session_shutdown_stops_a_scheme_host_call_loop_inside_its_budget() {
+    session_shutdown_stops_a_runaway_plugin_inside_its_budget(host_call_runaway_plugin());
 }

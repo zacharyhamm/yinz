@@ -17,10 +17,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 
-# The store engine, for `store::Local`. Not a dev-dependency: the crates that
-# link this one test against `Local` too, and a dev-dependency would not reach
-# them. Target-gated because `plugin_data_store` and `rusqlite` do not build for
-# wasm — which is the same reason the plugins get `store::Host` instead.
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# Native model tests use the same SQLite engine as the host.
 yinz-storage = { workspace = true }
 tempfile = { workspace = true }

@@ -480,9 +480,8 @@ fn children<'a>(body: &'a str, names: &[&str]) -> Vec<Field<'a>> {
 
 /// One kind of envelope: how to recognise it, and how to say what it is.
 ///
-/// A `&'static` table of function pointers rather than `Box<dyn …>`. The host *interprets* this
-/// wasm — see `crate::markdown`'s note on why that module pushes into one buffer rather than
-/// allocating per character — so a vector of boxed trait objects built at load costs an
+/// A `&'static` table of function pointers rather than `Box<dyn …>`. A vector of boxed
+/// trait objects built at load costs an
 /// allocation per kind and an indirection per call, and buys extensibility across a crate
 /// boundary that does not exist. A `&'static` table is also walkable by a test, which is how
 /// `RunEntryKind::label` and `from_label` are already held to each other.

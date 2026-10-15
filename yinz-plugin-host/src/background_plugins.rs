@@ -2,35 +2,27 @@
 use super::*;
 use yinz_types::cli::{PluginOperation, PluginRequest, PluginResponse, PluginState, PluginStatus};
 
-impl WasmBridge {
+impl PluginBridge {
     pub(super) fn normalize_plugin(&self, mut run: RunPlugin) -> RunPlugin {
         if let Some(location) = self.resolved_plugin_locations.get(&run.location) {
             run.location = location.clone();
             return run;
         }
         if let RunPluginLocation::File(path) = &run.location {
-            let resolved =
-                PluginConfig::from_run_plugin(&run).and_then(|config| match config.runtime() {
-                    // Identity lookup must not read source bytes on the plugin thread.
-                    yinz_config::plugins::PluginRuntime::Deno => {
-                        match std::fs::metadata(&config.path) {
-                            Ok(metadata) => metadata.is_file().then_some(config.path),
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                                self.user_plugin_dir.as_ref().and_then(|dir| {
-                                    let path = dir.join(
-                                        config.relative_path.as_ref().unwrap_or(&config.path),
-                                    );
-                                    path.is_file().then_some(path)
-                                })
-                            },
-                            Err(_) => None,
-                        }
+            // Identity lookup must not read source bytes on the plugin thread.
+            let resolved = PluginConfig::from_run_plugin(&run).and_then(|config| {
+                match std::fs::metadata(&config.path) {
+                    Ok(metadata) => metadata.is_file().then_some(config.path),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        self.user_plugin_dir.as_ref().and_then(|dir| {
+                            let path =
+                                dir.join(config.relative_path.as_ref().unwrap_or(&config.path));
+                            path.is_file().then_some(path)
+                        })
                     },
-                    yinz_config::plugins::PluginRuntime::Wasm => config
-                        .wasm_lookup_paths(&self.yinz_data_dir, self.builtin_plugins_dir.as_deref())
-                        .into_iter()
-                        .find(|path| path.is_file()),
-                });
+                    Err(_) => None,
+                }
+            });
             run.location = RunPluginLocation::File(yinz_runtime::common_path::source_path(
                 resolved.as_deref().unwrap_or(path),
                 &self.yinz_cwd,

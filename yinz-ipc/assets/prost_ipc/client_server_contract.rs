@@ -2307,7 +2307,7 @@ pub struct PluginTag {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OriginatingPlugin {
     #[prost(uint64, optional, tag="4")]
-    pub deno_generation: ::core::option::Option<u64>,
+    pub generation: ::core::option::Option<u64>,
     #[prost(uint32, tag="1")]
     pub plugin_id: u32,
     /// ClientId is u16, but using uint32 for protobuf compatibility
@@ -2369,8 +2369,6 @@ pub struct Options {
     pub layout_dir: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="8")]
     pub theme_dir: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(string, optional, tag="58")]
-    pub builtin_plugins_dir: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="64")]
     pub user_plugin_dir: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag="9")]

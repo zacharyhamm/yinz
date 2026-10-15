@@ -134,7 +134,7 @@ fn report_pane_start_failure(
                     .send_to_plugin(PluginInstruction::for_plugin_event(
                         originating_plugin.plugin_id,
                         originating_plugin.client_id,
-                        originating_plugin.deno_generation,
+                        originating_plugin.generation,
                         Event::CommandPaneExited(terminal_id, Some(2), originating_plugin.context),
                     ))
                     .with_context(err_context)?;
@@ -533,7 +533,7 @@ fn terminal_quit_callback(
                 let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
                     plugin.plugin_id,
                     plugin.client_id,
-                    plugin.deno_generation,
+                    plugin.generation,
                     Event::EditPaneExited(terminal_id, exit_status, plugin.context.clone()),
                 ));
             }
@@ -549,7 +549,7 @@ fn terminal_quit_callback(
                 let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
                     plugin.plugin_id,
                     plugin.client_id,
-                    plugin.deno_generation,
+                    plugin.generation,
                     Event::CommandPaneExited(terminal_id, exit_status, plugin.context.clone()),
                 ));
             }
@@ -1690,7 +1690,7 @@ impl Pty {
                         .send_to_plugin(PluginInstruction::for_plugin_event(
                             originating_plugin.plugin_id,
                             originating_plugin.client_id,
-                            originating_plugin.deno_generation,
+                            originating_plugin.generation,
                             Event::CommandPaneExited(
                                 terminal_id,
                                 Some(2),
@@ -2635,7 +2635,7 @@ impl Pty {
             .send_to_plugin(PluginInstruction::for_plugin_event(
                 originating_plugin.plugin_id,
                 originating_plugin.client_id,
-                originating_plugin.deno_generation,
+                originating_plugin.generation,
                 update_event,
             ))
     }
@@ -2662,7 +2662,7 @@ impl Pty {
                 .send_to_plugin(PluginInstruction::for_plugin_event(
                     originating_plugin.plugin_id,
                     originating_plugin.client_id,
-                    originating_plugin.deno_generation,
+                    originating_plugin.generation,
                     Event::EditPaneOpened(terminal_id, originating_plugin.context),
                 ))?;
         }
@@ -3481,7 +3481,7 @@ impl Pty {
                 .send_to_plugin(PluginInstruction::for_plugin_event(
                     plugin.plugin_id,
                     plugin.client_id,
-                    plugin.deno_generation,
+                    plugin.generation,
                     Event::CommandPaneReRun(id, plugin.context.clone()),
                 ))?;
         }

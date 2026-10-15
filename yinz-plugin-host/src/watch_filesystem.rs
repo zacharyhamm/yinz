@@ -25,7 +25,7 @@ impl PluginEnv {
                 &self.plugin_cwd,
                 self.plugin_id,
                 self.client_id,
-                self.deno_generation,
+                self.generation,
             )
             .map(|watcher| self.filesystem_watcher = Some(watcher))
             .context("failed to watch plugin host folder")
@@ -214,7 +214,7 @@ mod tests {
         let (sender, receiver) = channels::unbounded();
         let mut one = crate::test_env::test_env();
         one.senders.to_plugin = Some(SenderWithContext::new(sender.clone()));
-        one.deno_generation = Some(42);
+        one.generation = Some(42);
         one.plugin_cwd = first.path().to_owned();
         one.watch_filesystem();
         assert!(one.filesystem_watcher.is_some());
@@ -222,7 +222,7 @@ mod tests {
         two.senders.to_plugin = Some(SenderWithContext::new(sender));
         two.plugin_id = PluginId::new(2);
         two.client_id = ClientId::new(3);
-        two.deno_generation = Some(43);
+        two.generation = Some(43);
         two.plugin_cwd = second.path().to_owned();
         two.watch_filesystem();
         assert!(two.filesystem_watcher.is_some());
@@ -237,7 +237,7 @@ mod tests {
             let (instruction, _) = receiver
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .unwrap();
-            let PluginInstruction::DenoEvent(plugin, client, generation, event) = instruction
+            let PluginInstruction::PluginEvent(plugin, client, generation, event) = instruction
             else {
                 panic!("watch event was not scoped to a generation: {instruction:?}");
             };

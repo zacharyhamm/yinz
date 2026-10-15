@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn scheme_repository_source_is_confined_after_symlink_resolution() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("main.scm"), "(define (load config) #f)").unwrap();
+    fs::write(outside.path().join("escape.scm"), "(define escaped #t)").unwrap();
+    let mut plugin = GitPlugin {
+        repo: root.path().to_str().unwrap().into(),
+        entrypoint: "main.scm".into(),
+        revision: None,
+    };
+    let installed = entrypoint(root.path(), &plugin, None).unwrap();
+    assert_eq!(
+        installed.entrypoint,
+        root.path().join("main.scm").canonicalize().unwrap()
+    );
+    std::os::unix::fs::symlink(
+        outside.path().join("escape.scm"),
+        root.path().join("escape.scm"),
+    )
+    .unwrap();
+    plugin.entrypoint = "escape.scm".into();
+    assert!(entrypoint(root.path(), &plugin, None).is_err());
+}
+
+#[test]
+fn scheme_entrypoint_cannot_hide_an_unsupported_source_extension() {
+    let root = tempfile::tempdir().unwrap();
+    for extension in ["ts", "mts", "js", "mjs", "wasm"] {
+        let target = root.path().join(format!("source.{extension}"));
+        fs::write(&target, "(void)").unwrap();
+        let link = root.path().join(format!("{extension}.scm"));
+        std::os::unix::fs::symlink(target, &link).unwrap();
+        let plugin = GitPlugin {
+            repo: root.path().to_str().unwrap().into(),
+            entrypoint: link.file_name().unwrap().into(),
+            revision: None,
+        };
+        assert!(entrypoint(root.path(), &plugin, None)
+            .unwrap_err()
+            .to_string()
+            .contains("must resolve to a Scheme file"));
+    }
+}
+
+#[test]
 fn cancelled_git_transfer_does_not_publish_a_selection() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -15,7 +60,7 @@ fn cancelled_git_transfer_does_not_publish_a_selection() {
     let data = tempfile::tempdir().unwrap();
     let plugin = GitPlugin {
         repo: format!("git://127.0.0.1:{port}/"),
-        entrypoint: "main.ts".into(),
+        entrypoint: "main.scm".into(),
         revision: None,
     };
     let cancel = Arc::new(AtomicBool::new(false));
@@ -54,11 +99,11 @@ impl Remote {
         let directory = tempfile::tempdir().unwrap();
         fixture_git(directory.path(), &["init", "-b", "main"]);
         fs::create_dir(directory.path().join("src")).unwrap();
-        fs::write(directory.path().join("main.ts"), "export default {};\n").unwrap();
-        fs::write(directory.path().join("src/main.ts"), "export default {};\n").unwrap();
+        fs::write(directory.path().join("main.scm"), "(define value 1)\n").unwrap();
+        fs::write(directory.path().join("src/main.scm"), "(define value 1)\n").unwrap();
         fs::write(
-            directory.path().join("shared.ts"),
-            "export const value = 1;\n",
+            directory.path().join("shared.scm"),
+            "(provide value) (define value 1)\n",
         )
         .unwrap();
         fixture_git(directory.path(), &["add", "."]);
@@ -108,13 +153,13 @@ impl Remote {
     fn plugin(&self, revision: Option<GitRevision>) -> GitPlugin {
         GitPlugin {
             repo: self.url.clone(),
-            entrypoint: "main.ts".into(),
+            entrypoint: "main.scm".into(),
             revision,
         }
     }
 
     fn commit(&self, source: &str) {
-        fs::write(self.directory.path().join("main.ts"), source).unwrap();
+        fs::write(self.directory.path().join("main.scm"), source).unwrap();
         fixture_git(self.directory.path(), &["add", "."]);
         fixture_git(self.directory.path(), &["commit", "-m", "change"]);
     }
@@ -216,8 +261,8 @@ fn git_install_update_pinning_offline_and_failed_update() {
     assert!(status(data.path(), &default).unwrap().is_none());
     assert!(!data.path().join("plugin-repositories").exists());
     let first = resolve(data.path(), &default, &[], &cancel).unwrap();
-    assert!(crate::write(&first.root, "main.ts", "export default {};", true, false).is_err());
-    assert!(!first.root.join("main.bak.ts").exists());
+    assert!(crate::write(&first.root, "main.scm", "(define value 1)", true, false).is_err());
+    assert!(!first.root.join("main.bak.scm").exists());
     let branch = remote.plugin(Some(GitRevision::Branch("main".into())));
     let tag = remote.plugin(Some(GitRevision::Tag("v1".into())));
     let commit = remote.plugin(Some(GitRevision::Commit(first.commit.clone().unwrap())));
@@ -227,7 +272,7 @@ fn git_install_update_pinning_offline_and_failed_update() {
             first.commit
         );
     }
-    remote.commit("export default { changed: true };\n");
+    remote.commit("(define changed #t)\n");
     assert_eq!(resolve(data.path(), &default, &[], &cancel).unwrap(), first);
     let next = install(
         data.path(),
@@ -240,7 +285,7 @@ fn git_install_update_pinning_offline_and_failed_update() {
     assert_ne!(next.commit, first.commit);
     assert_eq!(
         fs::read_to_string(&first.entrypoint).unwrap(),
-        "export default {};\n"
+        "(define value 1)\n"
     );
     assert_eq!(
         install(data.path(), &branch, &[], true, &cancel)
@@ -258,9 +303,9 @@ fn git_install_update_pinning_offline_and_failed_update() {
     }
     // A sibling alias's entrypoint must exist before a shared selection advances.
     let mut nested = default.clone();
-    nested.entrypoint = "src/main.ts".into();
-    fs::remove_file(remote.directory.path().join("src/main.ts")).unwrap();
-    remote.commit("export default { broken: true };\n");
+    nested.entrypoint = "src/main.scm".into();
+    fs::remove_file(remote.directory.path().join("src/main.scm")).unwrap();
+    remote.commit("(define broken #t)\n");
     assert!(install(
         data.path(),
         &default,
@@ -270,7 +315,7 @@ fn git_install_update_pinning_offline_and_failed_update() {
     )
     .is_err());
     assert_eq!(status(data.path(), &default).unwrap().unwrap(), next);
-    fs::remove_file(remote.directory.path().join("main.ts")).unwrap();
+    fs::remove_file(remote.directory.path().join("main.scm")).unwrap();
     fixture_git(remote.directory.path(), &["add", "."]);
     fixture_git(
         remote.directory.path(),
@@ -309,7 +354,7 @@ fn failed_tag_installs_recover_through_install_and_update_and_stay_pinned() {
         assert!(status(data.path(), &plugin).unwrap().is_none());
         fixture_git(remote.directory.path(), &["tag", &name]);
         let installed = install(data.path(), &plugin, &[], update, &cancel).unwrap();
-        remote.commit(&format!("export const changed = '{name}';\n"));
+        remote.commit(&format!("(define changed \"{name}\")\n"));
         fixture_git(remote.directory.path(), &["tag", "-f", &name]);
         for update in [false, true] {
             assert_eq!(
@@ -326,15 +371,15 @@ fn failed_default_branch_install_refreshes_the_remote_head() {
     let data = tempfile::tempdir().unwrap();
     let cancel = AtomicBool::new(false);
     let mut plugin = remote.plugin(None);
-    plugin.entrypoint = "late.ts".into();
+    plugin.entrypoint = "late.scm".into();
     assert!(resolve(data.path(), &plugin, &[], &cancel).is_err());
     fixture_git(remote.directory.path(), &["checkout", "-b", "new-default"]);
     fs::write(
-        remote.directory.path().join("late.ts"),
-        "export default {};\n",
+        remote.directory.path().join("late.scm"),
+        "(define value 1)\n",
     )
     .unwrap();
-    remote.commit("export const changed = true;\n");
+    remote.commit("(define changed #t)\n");
     let installed = resolve(data.path(), &plugin, &[], &cancel).unwrap();
     assert_eq!(
         installed.commit.unwrap(),
@@ -399,11 +444,11 @@ fn concurrent_git_installs_and_cancelled_lock_wait_leave_selection_intact() {
 fn local_git_plugins_are_read_only_and_reject_symlink_escapes() {
     let repository = tempfile::tempdir().unwrap();
     fixture_git(repository.path(), &["init", "-b", "main"]);
-    fs::write(repository.path().join("main.ts"), "dirty plugin").unwrap();
+    fs::write(repository.path().join("main.scm"), "dirty plugin").unwrap();
     let before = fixture_git(repository.path(), &["status", "--porcelain"]);
     let plugin = GitPlugin {
         repo: repository.path().to_string_lossy().into_owned(),
-        entrypoint: "main.ts".into(),
+        entrypoint: "main.scm".into(),
         revision: None,
     };
     let data = tempfile::tempdir().unwrap();
@@ -416,7 +461,7 @@ fn local_git_plugins_are_read_only_and_reject_symlink_escapes() {
     assert!(!data.path().join("plugin-repositories").exists());
     fs::remove_file(&installed.entrypoint).unwrap();
     let outside = tempfile::tempdir().unwrap();
-    fs::write(outside.path().join("main.ts"), "outside").unwrap();
-    std::os::unix::fs::symlink(outside.path().join("main.ts"), &installed.entrypoint).unwrap();
+    fs::write(outside.path().join("main.scm"), "outside").unwrap();
+    std::os::unix::fs::symlink(outside.path().join("main.scm"), &installed.entrypoint).unwrap();
     assert!(resolve(data.path(), &plugin, &[], &AtomicBool::new(false)).is_err());
 }

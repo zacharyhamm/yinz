@@ -10,6 +10,6 @@ Some(
         ClientId(
             1,
         ),
-        "Rows: 20, Cols: 121, Received events: [InputReceived]\n\r",
+        "Rows: 20, Cols: 121, Received events: [{\"PermissionRequestResult\":\"Granted\"},\"InputReceived\"]\n\r",
     ),
 )

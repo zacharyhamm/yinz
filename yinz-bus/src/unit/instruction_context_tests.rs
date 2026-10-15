@@ -27,7 +27,7 @@ fn asynchronous_plugin_events_preserve_generation_and_legacy_routing() {
         PluginInstruction::for_plugin_event(plugin, client, Some(41), Event::InputReceived);
     assert!(matches!(
         tagged,
-        PluginInstruction::DenoEvent(id, origin, 41, Event::InputReceived)
+        PluginInstruction::PluginEvent(id, origin, 41, Event::InputReceived)
             if id == plugin && origin == client
     ));
     assert_eq!(PluginContext::from(&tagged), PluginContext::Update);
@@ -371,7 +371,7 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["DataRequest", "PostMessagesToPluginWorker", "DenoTick", "DenoPalette", "PaletteNote", "PaletteAgent", "DenoEvent", "DenoReply", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
+    special: ["DataRequest", "PostMessagesToPluginWorker", "PluginTick", "PluginPalette", "PaletteNote", "PaletteAgent", "PluginEvent", "PluginReply", "PluginDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
     only_special: ["PostMessageToPluginWorker", "UnblockCliPipes"];
     targets: [(
         "DataRequest",
@@ -407,33 +407,33 @@ pin_context_to_instruction! {
         })),
         "Update"
     ), (
-        "DenoPalette",
-        PluginInstruction::DenoPalette(crate::command_palette::Delivery {
+        "PluginPalette",
+        PluginInstruction::PluginPalette(crate::command_palette::Delivery {
             owner: crate::command_palette::Owner { plugin_id: PluginId::new(1), generation: 1, client_id: None },
             client: ClientId::new(1), message: yinz_types::command_palette::Message::Disconnect, active: None,
         }),
         "Update"
     ), (
-        "DenoTick",
-        PluginInstruction::DenoTick(PluginId::new(1), ClientId::new(1), 1),
+        "PluginTick",
+        PluginInstruction::PluginTick(PluginId::new(1), ClientId::new(1), 1),
         "Update"
     ), (
-        "DenoEvent",
-        PluginInstruction::DenoEvent(PluginId::new(1), ClientId::new(1), 1, yinz_types::data::Event::BeforeClose),
+        "PluginEvent",
+        PluginInstruction::PluginEvent(PluginId::new(1), ClientId::new(1), 1, yinz_types::data::Event::BeforeClose),
         "Update"
     ), (
-        "DenoReply",
+        "PluginReply",
         {
-            let _mailbox = crate::thread_bus::DenoReplies::new(9001);
+            let _mailbox = crate::thread_bus::PluginReplies::new(9001);
             let (sender, receiver) = yinz_runtime::channels::unbounded();
             let senders = crate::thread_bus::ThreadSenders { to_plugin: Some(yinz_runtime::channels::SenderWithContext::new(sender)), ..Default::default() };
-            senders.send_to_plugin(PluginInstruction::DenoEvent(PluginId::new(1), ClientId::new(1), 9001, yinz_types::data::Event::BeforeClose)).unwrap();
+            senders.send_to_plugin(PluginInstruction::PluginEvent(PluginId::new(1), ClientId::new(1), 9001, yinz_types::data::Event::BeforeClose)).unwrap();
             receiver.try_recv().unwrap().0
         },
         "Update"
     ), (
-        "DenoDispose",
-        PluginInstruction::DenoDispose(PluginId::new(1), 1),
+        "PluginDispose",
+        PluginInstruction::PluginDispose(PluginId::new(1), 1),
         "Unload"
     ), (
         "PipeCompleted",
@@ -446,6 +446,16 @@ pin_context_to_instruction! {
         PluginInstruction::ReleasePluginInstancePipes(PluginId::new(1), Default::default()),
         "UnblockCliPipes"
     )];
+}
+
+#[test]
+fn disconnected_cli_pipes_have_a_diagnostic_context() {
+    assert_eq!(
+        PluginContext::from(&PluginInstruction::CliPipesDisconnected(vec![
+            "owned-pipe".into(),
+        ])),
+        PluginContext::CliPipesDisconnected,
+    );
 }
 
 pin_context_to_instruction! {

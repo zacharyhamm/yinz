@@ -37,7 +37,7 @@ vte = { workspace = true }
 url = { workspace = true }
 agent-proto = { path = "../default-plugins/agent-proto" }
 yinz-storage = { workspace = true }
-yinz-deno-builtins = { workspace = true }
+yinz-steel-builtins = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 tempfile = { workspace = true }

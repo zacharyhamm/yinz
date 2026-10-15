@@ -1,9 +1,0 @@
-# Pin the build target so `cargo build` and rust-analyzer stay on wasm. Without
-# this, every check compiles the host-only deps of yinz-runtime (tokio, log4rs)
-# and yinz-storage (rusqlite, through project-data) for the host triple.
-#
-# Note this also redirects `cargo test`, which then can't run the tests. Run them from the repo
-# root instead - `cargo x test -p agent-service`, or bare `cargo test -p agent-service` - where this file is not
-# on Cargo's config search path and the build lands on the host.
-[build]
-target = "wasm32-wasip1"

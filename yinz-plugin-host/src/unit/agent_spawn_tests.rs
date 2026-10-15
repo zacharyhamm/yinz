@@ -285,21 +285,20 @@ fn plugin_agent_control_resolves_only_local_relative_directories() {
 
 #[test]
 fn agent_provider_registration_is_permissioned_owned_and_released() {
-    use crate::plugin_map::ResponseSink;
     use yinz_types::agent::provider::{provider, AgentProvider};
     let mut first = crate::test_env::test_env();
     let mut second = crate::test_env::test_env();
     // Workers share a plugin instance, but each isolate owns its own registrations.
     second.instance_id = first.instance_id;
-    first.response_sink = ResponseSink::Capture(None);
-    second.response_sink = ResponseSink::Capture(None);
+    first.response_sink = None;
+    second.response_sink = None;
     let definition = AgentProvider {
         kind: "host-fixture-agent".into(),
         executable: "host-fixture-agent".into(),
         ..Default::default()
     };
     let response = |env: &mut PluginEnv| -> Result<Vec<AgentProvider>, String> {
-        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        let bytes: Vec<u8> = env.response_sink.take().unwrap();
         let wire = yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse::decode(
             bytes.as_slice(),
         )
@@ -323,16 +322,16 @@ fn agent_provider_registration_is_permissioned_owned_and_released() {
         PluginCommand::RegisterAgentProvider(definition.clone()),
     )
     .unwrap();
-    assert!(response(&mut first).unwrap_err().contains("TypeScript"));
-    first.deno_generation = Some(41);
+    assert!(response(&mut first).unwrap_err().contains("Scheme"));
+    first.generation = Some(41);
     first.resolved_source_path = Some("fixture.js".into());
     run_plugin_command(
         &mut first,
         PluginCommand::RegisterAgentProvider(definition.clone()),
     )
     .unwrap();
-    assert!(response(&mut first).unwrap_err().contains("TypeScript"));
-    first.resolved_source_path = Some("fixture.ts".into());
+    assert!(response(&mut first).unwrap_err().contains("Scheme"));
+    first.resolved_source_path = Some("fixture.scm".into());
     run_plugin_command(
         &mut first,
         PluginCommand::RegisterAgentProvider(definition.clone()),
@@ -340,7 +339,7 @@ fn agent_provider_registration_is_permissioned_owned_and_released() {
     .unwrap();
     assert!(response(&mut first).unwrap_err().contains("shared true"));
     for (generation, env) in [(41, &mut first), (42, &mut second)] {
-        env.deno_generation = Some(generation);
+        env.generation = Some(generation);
         env.plugin_config.initial_userspace_configuration =
             yinz_types::input::layout::PluginUserConfiguration::new(BTreeMap::from([(
                 "shared".into(),
@@ -375,6 +374,16 @@ fn agent_provider_registration_is_permissioned_owned_and_released() {
         "old instance cleanup cannot clear its replacement"
     );
     second.clear_agent_providers();
+    for extension in ["scm", "ss", "sld"] {
+        second.resolved_source_path = Some(format!("fixture.{extension}").into());
+        run_plugin_command(
+            &mut second,
+            PluginCommand::RegisterAgentProvider(definition.clone()),
+        )
+        .unwrap();
+        assert!(response(&mut second).unwrap().contains(&definition));
+        second.clear_agent_providers();
+    }
     second
         .unavailable
         .store(true, std::sync::atomic::Ordering::Release);

@@ -1,4 +1,4 @@
-//! Installation of provider-owned hook files. Agent-specific content comes from TypeScript.
+//! Installation of provider-owned hook files. Agent-specific content comes from Scheme providers.
 use crate::errors::prelude::*;
 use std::{
     io::Write,

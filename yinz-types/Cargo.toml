@@ -9,6 +9,7 @@ description = "Shared domain contracts for Yinz"
 workspace = true
 
 [dependencies]
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 regex = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true, features = ["std"] }

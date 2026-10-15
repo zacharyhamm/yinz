@@ -8,12 +8,12 @@ fn reload_matches_symlinked_plugin_directory_and_missing_paths() {
     let linked = cwd.join("linked");
     std::fs::create_dir(&plugins).unwrap();
     std::os::unix::fs::symlink(&plugins, &linked).unwrap();
-    let canonical = plugins.join("main.ts");
-    let symlinked = linked.join("main.ts");
-    std::fs::write(&canonical, "export default {}").unwrap();
+    let canonical = plugins.join("main.scm");
+    let symlinked = linked.join("main.scm");
+    std::fs::write(&canonical, "(void)").unwrap();
     let run = yinz_runtime::plugin_location::run_plugin_from_url(&format!(
         "file:{}",
-        cwd.join("main.ts").display()
+        cwd.join("main.scm").display()
     ))
     .unwrap();
     let config = PluginConfig::from_run_plugin(&run).unwrap();
@@ -80,7 +80,7 @@ fn reload_matches_symlinked_plugin_directory_and_missing_paths() {
     }
     assert!(map
         .all_plugin_ids_for_plugin_location(
-            &RunPluginLocation::File(cwd.join("other.ts")),
+            &RunPluginLocation::File(cwd.join("other.scm")),
             &PluginUserConfiguration::default(),
             Clone::clone
         )

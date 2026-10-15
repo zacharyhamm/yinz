@@ -131,7 +131,7 @@ Commands:
   set-hook                          Bind a hook point (agent_exit, agent_start, agent_waiting,
                                     pane_exit, session_start, context_menu) to a plugin, or unbind
                                     it with an empty url. The plugin is a url as the config spells
-                                    it: file:my-hook.ts, yinz:agent-exit
+                                    it: file:my-hook.scm, yinz:agent-exit
   notify                            Show a notification that dismisses itself after a timeout. Its
                                     corner and timeout come from the `notification_position` and
                                     `notification_timeout` config options

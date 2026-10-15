@@ -1,17 +1,17 @@
-# TypeScript plugins from Git repositories
+# Steel Scheme plugins from Git repositories
 
 Declare repository plugins in the `plugins` block of your configuration:
 
 ```kdl
 plugins {
     my-panel repo="https://github.com/example/yinz-panel.git" branch="main"
-    local-tools repo="~/src/yinz-tools" entrypoint="src/main.ts" {
+    local-tools repo="~/src/yinz-tools" entrypoint="src/main.scm" {
         greeting "Hello"
     }
 }
 ```
 
-`entrypoint` defaults to `main.ts`. The entrypoint must be a relative `.ts`, `.mts`, `.js`, or `.mjs` file inside the repository.
+`entrypoint` defaults to `main.scm`. The entrypoint must be a relative `.scm`, `.ss`, or `.sld` file inside the repository.
 Use one revision property: `branch`, `tag`, or `commit`. Without a revision property, the plugin follows the remote default branch.
 Tags and commits stay pinned. Repository properties are separate from the configuration sent to the plugin.
 Use either `repo` or `location` for each alias.
@@ -51,14 +51,14 @@ See [plugin lifecycle and permissions](PLUGINS.md) for identity selection, runti
 
 ## Imports and identity
 
-Use explicit relative JS/TS imports inside the canonical repository root. A nested entrypoint can import `../shared.ts` within that root.
+Use `require` with explicit relative Scheme imports inside the canonical repository root. A nested entrypoint can import `../shared.scm` within that root.
 Imports and entrypoints cannot escape the root through symlinks.
 The existing source, module graph, and runtime resource limits apply.
-`yinz:plugin` and embedded builtin imports remain available. Remote module imports, npm, JSR, and `node:` imports remain unsupported.
+The SDK is available without an import. Network imports and external packages are not available.
 
 The declared source identifies permissions and private data. Selecting another installed commit does not change that identity.
 Saved layouts preserve repository declarations with an encoded `git://plugin?repo=…&entrypoint=…` descriptor.
 
 Managed revisions remain immutable. Edit a local repository to develop a plugin, or use the existing commands for authored plugin files.
 This version does not run build hooks or read a repository manifest. It has no automatic reload, revision cleanup, or rollback command.
-Embedded TypeScript builtins and Wasm plugins keep their existing loading behavior.
+Builtin Scheme sources are embedded in the server.

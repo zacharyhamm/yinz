@@ -656,51 +656,66 @@ fn a_notification_does_not_steal_the_cursor() {
 }
 
 #[test]
-fn a_shared_typescript_notification_policy_and_independent_observer_survive_detach() {
+fn a_shared_scheme_notification_policy_and_independent_observer_survive_detach() {
     use yinz_integration_tests::LayoutInfo;
     let dir = tempfile::tempdir().unwrap();
-    let policy = dir.path().join("policy.ts");
-    let observer = dir.path().join("observer.ts");
+    let policy = dir.path().join("policy.scm");
+    let observer = dir.path().join("observer.scm");
     std::fs::write(&policy, r#"
-import z from 'yinz:plugin';
-let count = 0;
-export default {
-  load() {
-    z.subscribe(['NotificationRequested']);
-    z.on('NotificationRequested', notification => {
-      count++;
-      z.host.resolveNotification({id: notification.id, decision: notification.body === 'hide'
-        ? 'Suppress' : {Replace: {title: 'policy', body: `decision-${count}`, delivery: notification.body === 'desktop' ? 'Desktop' : 'Both'}}});
-    });
-  }
-};
+(define count 0)
+(define (load configuration)
+  (yinz-command (hash "Subscribe" '("NotificationRequested"))))
+(define (update event)
+  (when (and (hash? event) (hash-contains? event "NotificationRequested"))
+    (define notification (hash-ref event "NotificationRequested"))
+    (set! count (+ count 1))
+    (yinz-command (hash "ResolveNotification"
+      (hash "id" (hash-ref notification "id")
+        "decision" (if (equal? (hash-ref notification "body") "hide") "Suppress"
+          (hash "Replace" (hash "title" "policy"
+            "body" (string-append "decision-" (number->string count))
+            "delivery" (if (equal? (hash-ref notification "body") "desktop") "Desktop" "Both"))))))))
+  #f)
 "#).unwrap();
     std::fs::write(&observer, r#"
-import z from 'yinz:plugin';
-let state = 'starting observer';
-const arrivals = new Map();
-const results = [];
-export default {
-  async load() {
-    await z.waitForPermissions(['ReadApplicationState']);
-    z.subscribe(['NotificationReceived', 'NotificationResolved', 'ModeUpdate']);
-    z.on('ModeUpdate', () => true);
-    z.on('NotificationReceived', notification => { arrivals.set(notification.id, notification); });
-    z.on('NotificationResolved', result => {
-      const original = arrivals.get(result.original.id);
-      if (!original || original.body !== result.original.body || original.source !== result.original.source) throw Error('arrival correlation');
-      if (result.fallback_reason !== null) throw Error('unexpected fallback: ' + result.fallback_reason);
-      results.push(`${result.original.body}:${result.suppressed ? 'suppressed' : result.body}:${result.delivery}`);
-      const history = z.host.listNotifications();
-      const latest = history[history.length - 1];
-      if (latest.id !== result.original.id || latest.outcome.suppressed !== result.suppressed) throw Error('history metadata');
-      state = results.join('\n');
-      return true;
-    });
-    state = 'observer ready';
-  },
-  render() { return state; }
-};
+(define state "starting observer")
+(define arrivals (hash))
+(define results '())
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
+    (lambda (_)
+      (yinz-command (hash "Subscribe" '("NotificationReceived" "NotificationResolved" "ModeUpdate")))
+      (set! state "observer ready")
+      (yinz-request-render))))
+(define (update event)
+  (cond
+    ((and (hash? event) (hash-contains? event "ModeUpdate")) #t)
+    ((and (hash? event) (hash-contains? event "NotificationReceived"))
+      (define notification (hash-ref event "NotificationReceived"))
+      (set! arrivals (hash-insert arrivals (hash-ref notification "id") notification))
+      #f)
+    ((and (hash? event) (hash-contains? event "NotificationResolved"))
+      (define result (hash-ref event "NotificationResolved"))
+      (define original (hash-ref result "original"))
+      (unless (and (hash-contains? arrivals (hash-ref original "id"))
+                   (equal? (hash-ref (hash-ref arrivals (hash-ref original "id")) "body") (hash-ref original "body"))
+                   (equal? (hash-ref (hash-ref arrivals (hash-ref original "id")) "source") (hash-ref original "source")))
+        (error "arrival correlation"))
+      (unless (equal? (hash-ref result "fallback_reason") json-null)
+        (error (string-append "unexpected fallback: " (hash-ref result "fallback_reason"))))
+      (set! results (append results (list (string-append
+        (hash-ref original "body") ":"
+        (if (hash-ref result "suppressed") "suppressed" (hash-ref result "body"))
+        ":" (hash-ref result "delivery")))))
+      (define history (yinz-command "ListNotifications"))
+      (define latest (list-ref history (- (length history) 1)))
+      (unless (and (equal? (hash-ref latest "id") (hash-ref original "id"))
+                   (equal? (hash-ref (hash-ref latest "outcome") "suppressed") (hash-ref result "suppressed")))
+        (error "history metadata"))
+      (set! state (string-join results "\n"))
+      #t)
+    (else #f)))
+(define (render rows columns) state)
 "#).unwrap();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config_dir(dir.path().to_owned())
@@ -751,14 +766,14 @@ export default {
 }
 
 #[test]
-fn missing_failed_and_unresponsive_typescript_policies_deliver_original_notifications() {
+fn missing_failed_and_unresponsive_scheme_policies_deliver_original_notifications() {
     for source in [
         None,
-        Some("throw Error('policy failed to load');"),
-        Some("export default {load() { yinz.subscribe(['NotificationRequested']); }};"),
+        Some("(error \"policy failed to load\")"),
+        Some("(define (load configuration) (yinz-command (hash \"Subscribe\" '(\"NotificationRequested\"))))"),
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let policy = directory.path().join("policy.ts");
+        let policy = directory.path().join("policy.scm");
         if let Some(source) = source {
             std::fs::write(&policy, source).unwrap();
         }

@@ -1159,13 +1159,9 @@ impl Form {
         self.fields.len() + if self.buttons.is_empty() { 0 } else { 1 }
     }
 
-    /// Draw the form at `(x, y)`, `width` columns wide, and place the cursor.
-    ///
-    /// The cursor is placed before anything is printed, which is required: the
-    /// host reads the cursor position out of the render, so a `show_cursor`
-    /// after a `print_*` lands a frame late.
-    pub fn render(&mut self, x: usize, y: usize, width: usize) {
-        self.render_buffer(x, y, width).print();
+    /// Return the form output and cursor update for delivery by the caller.
+    pub fn render(&mut self, x: usize, y: usize, width: usize) -> RenderBuffer {
+        self.render_buffer(x, y, width)
     }
 
     /// Draw the form inside a bounded-height viewport.
@@ -1174,8 +1170,14 @@ impl Form {
     /// screen. Moving focus with the form's traversal keys is therefore enough
     /// to reach every field and the button row without a second set of scroll
     /// controls.
-    pub fn render_in_viewport(&mut self, x: usize, y: usize, width: usize, rows: usize) {
-        self.render_buffer_in_viewport(x, y, width, rows).print();
+    pub fn render_in_viewport(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        rows: usize,
+    ) -> RenderBuffer {
+        self.render_buffer_in_viewport(x, y, width, rows)
     }
 
     /// Draw in a `rows`-tall viewport, letting an open dropdown overlay down to
@@ -1193,12 +1195,11 @@ impl Form {
         width: usize,
         rows: usize,
         overlay_bottom: usize,
-    ) {
+    ) -> RenderBuffer {
         self.render_buffer_with_overlay(x, y, width, rows, overlay_bottom)
-            .print();
     }
 
-    /// As [`Self::render`], without printing or calling host shims.
+    /// Render output and cursor metadata without host calls.
     pub fn render_buffer(&mut self, x: usize, y: usize, width: usize) -> RenderBuffer {
         self.render_rows(x, y, width, self.height(), None)
     }
@@ -1727,17 +1728,15 @@ mod tests {
 
     #[test]
     fn the_cursor_is_only_shown_while_editing() {
-        use crate::shim::take_last_cursor_position;
-
         let mut form = a_strict_form();
-        form.render(2, 5, 40);
-        assert_eq!(take_last_cursor_position(), Some(None));
+        let rendered = form.render(2, 5, 40);
+        assert_eq!(rendered.cursor, Some(None));
 
         form.handle_key(key(BareKey::Enter));
-        form.render(2, 5, 40);
+        let rendered = form.render(2, 5, 40);
         // The row the focused field was drawn on, which is the row the form was
         // asked to start at.
-        assert_eq!(take_last_cursor_position(), Some(Some((8, 5))));
+        assert_eq!(rendered.cursor, Some(Some((8, 5))));
     }
 
     #[test]
@@ -1874,8 +1873,6 @@ mod tests {
 
     #[test]
     fn cursor_tracks_the_focused_field_row_after_traversal() {
-        use crate::shim::take_last_cursor_position;
-
         let mut form = Form::new()
             .select("kind", "Kind", Select::new(["One", "Two"]))
             .field("name", "Name", TextInput::empty())
@@ -1883,15 +1880,15 @@ mod tests {
 
         form.handle_key(key(BareKey::Tab));
         form.handle_key(key(BareKey::Enter));
-        form.render(2, 5, 40);
+        let rendered = form.render(2, 5, 40);
         let name_row = form.field_by_id("name").unwrap().last_rendered.unwrap().y;
-        assert_eq!(take_last_cursor_position(), Some(Some((8, name_row))));
+        assert_eq!(rendered.cursor, Some(Some((8, name_row))));
 
         form.handle_key(key(BareKey::Tab));
         form.handle_key(key(BareKey::Enter));
-        form.render_in_viewport(2, 5, 40, 1);
+        let rendered = form.render_in_viewport(2, 5, 40, 1);
         let path_row = form.field_by_id("path").unwrap().last_rendered.unwrap().y;
-        assert_eq!(take_last_cursor_position(), Some(Some((8, path_row))));
+        assert_eq!(rendered.cursor, Some(Some((8, path_row))));
     }
 
     #[test]

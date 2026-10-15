@@ -55,19 +55,19 @@ fn load_plugins_in_background_on_startup() {
     yinz.quit();
 }
 
-/// `yinz plugin -- file:keys.ts`, the launch the TypeScript plugin guide documents: a name, not a
+/// `yinz plugin -- file:keys.scm`, the launch the Scheme plugin guide documents: a name, not a
 /// path, resolved against the user's own plugin folder.
 ///
 /// It goes out as `CliAction::NewPane { plugin: Some(url), .. }` with the *caller's* cwd, so by
-/// the time the server sees it the location is an absolute `$cwd/probe.ts` that is not there.
+/// the time the server sees it the location is an absolute `$cwd/probe.scm` that is not there.
 /// Only the relative name the URL was written with can find the file, which is what this proves
 /// - the cwd here is the test process's, and the plugin is somewhere else entirely.
 #[test]
 fn a_relatively_named_script_plugin_is_launched_from_the_user_plugin_dir() {
     let plugin_dir = tempfile::tempdir().expect("a temp dir");
     std::fs::write(
-        plugin_dir.path().join("probe.ts"),
-        "export default {render() {return \"probe is running\";}};\n",
+        plugin_dir.path().join("probe.scm"),
+        r#"(define (render rows columns) "probe is running")"#,
     )
     .expect("the plugin is written");
 
@@ -85,7 +85,7 @@ fn a_relatively_named_script_plugin_is_launched_from_the_user_plugin_dir() {
         command: vec![],
         remote_host: None,
 
-        plugin: Some("file:probe.ts".to_string()),
+        plugin: Some("file:probe.scm".to_string()),
         cwd: None,
         floating: false,
         in_place: false,

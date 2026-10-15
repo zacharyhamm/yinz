@@ -48,7 +48,6 @@ Revisit if cells move to a struct-of-arrays layout or CJK throughput becomes a g
 | RGB to RGBA expansion | `yinz-terminal-graphics/src/kitty_graphics/store.rs:542-554` (`normalize_to_rgba`), `parser.rs:868-891` (`decode_png`) | Once per transmission. The per-pixel `extend_from_slice` + `push` is the cost; a scalar `u32` rewrite gets 90–97% of the gain. SIMD's margin is 0.06–0.3 ms per 1080p image. |
 | `Grid::print`, `Row::width`, `CharacterStyles::eq`, `serialize_chunks`, `pane_contents` | `yinz-terminal/` | Arrays of structs holding `Rc`s and padding, with no safe primitive-slice view, or per-character callbacks from vte. |
 | Sixel decode and encode | `yinz-terminal-graphics/src/sixel.rs` | Decode (`SixelGrid::handle_byte`) receives one byte at a time from vte's DCS `put()` and feeds the external `sixel-tokenizer` 0.1.0 and `sixel-image` 0.2.1 per-byte state machines, which store pixels as `Vec<Vec<Pixel>>`. Encode (`SixelImageStore::serialize_image` → `SixelSerializer::serialize_range`) allocates a `HashMap` per 6-pixel column and a `BTreeMap` of per-color strings, and its output is cached per rect. Both are algorithmic costs inside third-party crates; SIMD would mean vendoring and rewriting them. |
-| Plugins | `default-plugins/` | Built for `wasm32-wasip1` and run on wasmi without its `simd` feature, so `fearless_simd` falls back to scalar. |
 
 If `fearless_simd` is adopted later, note the following, checked against the 1.0.0 source:
 

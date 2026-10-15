@@ -1,0 +1,27 @@
+;; A normal file plugin supplies the authenticated caller for test-session RPC.
+(define ready #f)
+(define (load configuration)
+  (set! ready (yinz-wait-for-permissions '("ReadCliPipes" "MessageAndLaunchOtherPlugins"))))
+(define (pipe message)
+  (define source (hash-ref message "source"))
+  (define payload (hash-ref message "payload"))
+  (if (and (equal? (hash-ref message "name") "test-rpc")
+           (string? payload) (> (string-length payload) 0)
+           (hash? source) (hash-contains? source "Cli"))
+      (let ([pipe-id (hash-ref source "Cli")])
+        (yinz-command (hash "BlockCliPipeInput" pipe-id))
+        (yinz-then
+          (yinz-catch
+            (yinz-then
+              (yinz-then ready (lambda (_) (yinz-rpc-call (yinz-json-parse payload))))
+              (lambda (result)
+                (define response (yinz-json-string (hash "Ok" result)))
+                (when (> (length (bytes->list (string->bytes response))) 32768)
+                  (error "test RPC reply exceeds 32 KiB"))
+                response))
+            (lambda (failure)
+              (yinz-json-string (hash "Err" (substring failure 0 (min 2000 (string-length failure)))))))
+          (lambda (response)
+            (yinz-command (hash "CliPipeOutput" (list pipe-id response)))
+            (yinz-command (hash "UnblockCliPipeInput" pipe-id)) #f)))
+      #f))
