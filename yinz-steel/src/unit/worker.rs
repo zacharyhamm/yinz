@@ -31,6 +31,38 @@ fn binary() -> std::path::PathBuf {
 }
 
 #[test]
+fn layout_diagnostics_never_read_tiled_or_floating_contents_files() {
+    use serde_json::json;
+    let directory = tempfile::tempdir().unwrap();
+    let fifo = directory.path().join("contents.fifo");
+    let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    let mut worker = super::WorkerRuntime::new(&binary(), |_| {
+        panic!("layout diagnostics must not call the host")
+    })
+    .unwrap();
+    // With no writer, opening this FIFO would block until the supervisor kills the worker.
+    for pane in [
+        format!("pane contents_file={:?};", fifo.to_str().unwrap()),
+        format!(
+            "floating_panes {{ pane contents_file={:?}; }};",
+            fifo.to_str().unwrap()
+        ),
+    ] {
+        assert_eq!(
+            worker
+                .invoke(
+                    "yinz-format-layout-error",
+                    vec![json!(format!("layout {{ {pane} }}"))]
+                )
+                .unwrap(),
+            ""
+        );
+        assert_eq!(worker.eval("(+ 40 2)").unwrap().values, ["42"]);
+    }
+}
+
+#[test]
 fn worker_keeps_state_and_transports_host_commands_and_errors() {
     use serde_json::json;
     let mut worker = super::WorkerRuntime::new(&binary(), |value| {

@@ -38,14 +38,12 @@ impl SteelPlugin {
                 if let Err(error) = runtime.invoke("yinz-async-poll", vec![]) {
                     reply["error"] = Value::String(format!("{error:#}"));
                 }
-                for output in [runtime.take_output(), runtime.take_logs()] {
-                    let output = output.unwrap_or_default();
-                    if !output.is_empty() {
-                        reply["output"] = Value::String(format!(
-                            "{}{output}",
-                            reply["output"].as_str().unwrap_or_default(),
-                        ));
-                    }
+                let output = runtime.take_output().unwrap_or_default();
+                if !output.is_empty() {
+                    reply["output"] = Value::String(format!(
+                        "{}{output}",
+                        reply["output"].as_str().unwrap_or_default(),
+                    ));
                 }
                 Ok(reply)
             })?

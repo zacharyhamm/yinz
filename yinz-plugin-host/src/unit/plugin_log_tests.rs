@@ -20,6 +20,134 @@ impl log::Log for Capture {
 }
 
 #[test]
+fn connected_repl_separates_stdout_and_queryable_diagnostics_on_success_and_failure() {
+    use serde_json::{json, Value};
+    use yinz_bus::{channels, ServerInstruction};
+    use yinz_runtime::channels::SenderWithContext;
+    use yinz_types::data::{PipeMessage, PipeSource, PluginTag};
+
+    static CAPTURE: OnceLock<Capture> = OnceLock::new();
+    let capture = CAPTURE.get_or_init(|| Capture(Watched::new(Vec::new())));
+    log::set_logger(capture).unwrap();
+    log::set_max_level(log::LevelFilter::Debug);
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let mut env = test_env();
+    env.plugin_cwd = cwd.clone();
+    env.plugin_config = yinz_config::plugins::PluginConfig::from_run_plugin(&RunPlugin {
+        location: RunPluginLocation::Yinz(PluginTag::new("repl")),
+        ..Default::default()
+    })
+    .unwrap();
+    let identity = env.log_identity();
+    let (sender, receiver) = channels::unbounded();
+    env.senders.to_server = Some(SenderWithContext::new(sender));
+    let mut plugin =
+        SteelPlugin::new("", std::path::Path::new("repl"), env, Default::default()).unwrap();
+    let cases = [
+        (
+            r#"(display "visible") (yinz-log "success diagnostic") 42"#,
+            "visible",
+            "success diagnostic",
+            None,
+        ),
+        (
+            r#"(display "before failure") (yinz-log "eval diagnostic") (error "eval failed")"#,
+            "before failure",
+            "eval diagnostic",
+            Some("eval failed"),
+        ),
+        (
+            r#"(display "immediate") (yinz-then 0 (lambda (_) (display " queued") (yinz-log "queued diagnostic"))) (void)"#,
+            "immediate queued",
+            "queued diagnostic",
+            None,
+        ),
+        (
+            r#"(%async-enqueue %async-client (lambda () (display "poll output") (yinz-log "poll diagnostic") (error "poll failed")))"#,
+            "poll output",
+            "poll diagnostic",
+            Some("poll failed"),
+        ),
+    ];
+    for (source, stdout, diagnostic, error) in cases {
+        plugin
+            .pipe(&PipeMessage::new(
+                PipeSource::Cli("repl-logs".into()),
+                "__yinz_repl_eval",
+                &Some(source.into()),
+                &None,
+                true,
+            ))
+            .unwrap();
+        let (instruction, _) = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let ServerInstruction::CliPipeOutput(pipe, output) = instruction else {
+            panic!("unexpected REPL response: {instruction:?}");
+        };
+        assert_eq!(pipe, "repl-logs");
+        let reply: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(reply["output"], stdout);
+        if let Some(error) = error {
+            assert!(reply["error"].as_str().unwrap().contains(error), "{reply}");
+        } else {
+            assert!(reply.get("error").is_none(), "{reply}");
+        }
+        if diagnostic == "success diagnostic" {
+            assert_eq!(reply["values"], json!(["42"]));
+        }
+        assert!(capture
+            .0
+            .get()
+            .iter()
+            .any(|line| line.contains(&identity) && line.ends_with(diagnostic)));
+    }
+    let log_dir = cwd.join(format!("yinz-{}/yinz-log", nix::unistd::Uid::current()));
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let log_file = log_dir.join("yinz.log");
+    std::fs::write(
+        &log_file,
+        capture.0.get().join("\n") + "\nunrelated diagnostic\n",
+    )
+    .unwrap();
+    let env = test_env();
+    let api = plugin_log_lines(&env, "yinz:repl", 100, &log_file).unwrap();
+    for (_, stdout, diagnostic, _) in cases {
+        assert!(api.contains(diagnostic), "{api}");
+        assert!(!api.contains(stdout), "{api}");
+    }
+    assert!(!api.contains("unrelated"));
+    let config = cwd.join("config.kdl");
+    std::fs::write(&config, "").unwrap();
+    let output = std::process::Command::new(std::env::var_os("YINZ_COMPILATION_WORKER").unwrap())
+        .current_dir(&cwd)
+        .env("TMPDIR", &cwd)
+        .env("YINZ_SOCKET_DIR", cwd.join("no-sessions"))
+        .env_remove("YINZ_SESSION_NAME")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "plugins",
+            "log",
+            "yinz:repl",
+            "--lines",
+            "100",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["output"], api);
+    assert_eq!(reply["historical"], true);
+}
+
+#[test]
 fn external_plugin_logs_are_isolated_through_cli_and_host() {
     static CAPTURE: OnceLock<Capture> = OnceLock::new();
     let capture = CAPTURE.get_or_init(|| Capture(Watched::new(Vec::new())));

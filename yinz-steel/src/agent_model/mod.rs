@@ -87,7 +87,7 @@ fn run_scheme(namespace: &str, op: &str, args: &SteelVal) -> Result<Value> {
                 agents::git_probe(scalar(args, 0)?, metadata, config)
             })
         }),
-        _ => run(namespace, op, crate::from_scheme(args)?),
+        _ => run(namespace, op, crate::bridge::from_model(args)?),
     }
 }
 

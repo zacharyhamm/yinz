@@ -9,12 +9,8 @@ pub(super) fn format(value: Value) -> Result<String> {
         if source == "SyntaxError" {
             LayoutParsingError::SyntaxError
         } else {
-            match yinz_config::kdl::layout::from_kdl(
-                source,
-                Some("parse_layout_api".into()),
-                None,
-                None,
-            ) {
+            // A filename enables contents_file reads; diagnostics have no filesystem authority.
+            match yinz_config::kdl::layout::from_kdl(source, None, None, None) {
                 Ok(_) => return Ok(String::new()),
                 Err(ConfigError::KdlError(error)) => LayoutParsingError::KdlError {
                     kdl_error: Box::new(error.into()),

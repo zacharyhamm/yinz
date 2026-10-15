@@ -143,6 +143,16 @@ pub fn from_scheme(value: &SteelVal) -> Result<Value> {
     )
 }
 
+pub(crate) fn from_model(value: &SteelVal) -> Result<Value> {
+    decode(
+        value,
+        0,
+        &mut Budget::new(MAX_INPUT_ITEMS, MAX_INPUT_BYTES),
+        &mut Vec::new(),
+        false,
+    )
+}
+
 pub(crate) fn from_command(value: &SteelVal) -> Result<Value> {
     decode(
         value,
