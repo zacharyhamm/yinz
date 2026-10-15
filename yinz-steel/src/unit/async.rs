@@ -518,6 +518,66 @@ fn worker_fifo_remains_busy_until_deferred_settles_and_recovers_after_job_errors
 }
 
 #[test]
+fn worker_agent_state_wait_releases_fifo_and_updates_event_callbacks() {
+    let (mut runtime, _) = runtime(
+        r#"
+      (define completed '())
+      (define result #f)
+      (define observed #f)
+      (define (finish payload) (set! completed (append completed (list payload))))
+      (yinz-register-workers (hash "probe"
+        (lambda (name payload)
+          (if (equal? name "wait")
+            (yinz-then (yinz-agent-wait-for-state 7 "Idle")
+              (lambda (pane) (set! result pane) (finish payload)))
+            (finish payload)))))
+      (yinz-register-worker-events (lambda (event) (set! observed (yinz-agent-info 7)) #f))
+    "#,
+    );
+    runtime
+        .invoke("yinz-worker-bind", vec![json!("probe")])
+        .unwrap();
+    runtime
+        .invoke("yinz-worker-message", vec![json!("wait"), json!("first")])
+        .unwrap();
+    assert_eq!(runtime.invoke("yinz-worker-ready", vec![]).unwrap(), false);
+
+    for (id, state) in [(8, "Idle"), (7, "Busy"), (7, "Waiting")] {
+        runtime
+            .invoke(
+                "yinz-worker-event",
+                vec![json!({"PaneUpdate":{"panes":{"0":[{
+                    "id":id,"is_plugin":false,"agent":{"state":state}
+                }]}}})],
+            )
+            .unwrap();
+        assert_eq!(runtime.invoke("yinz-worker-ready", vec![]).unwrap(), false);
+        assert_eq!(runtime.value("completed").unwrap(), json!([]));
+        assert_eq!(runtime.value("result").unwrap(), false);
+    }
+    let pane = json!({"id":7,"is_plugin":false,"agent":{"state":"Idle"}});
+    runtime
+        .invoke(
+            "yinz-worker-event",
+            vec![json!({"PaneUpdate":{"panes":{"0":[pane]}}})],
+        )
+        .unwrap();
+    assert_eq!(runtime.value("result").unwrap(), pane);
+    assert_eq!(runtime.value("observed").unwrap(), pane["agent"]);
+    assert_eq!(runtime.value("completed").unwrap(), json!(["first"]));
+    assert_eq!(runtime.invoke("yinz-worker-ready", vec![]).unwrap(), true);
+
+    runtime
+        .invoke("yinz-worker-message", vec![json!("next"), json!("second")])
+        .unwrap();
+    assert_eq!(
+        runtime.value("completed").unwrap(),
+        json!(["first", "second"])
+    );
+    assert_eq!(runtime.invoke("yinz-worker-ready", vec![]).unwrap(), true);
+}
+
+#[test]
 fn unload_waits_for_replies_and_stops_ordinary_lifecycle_callbacks() {
     let (mut runtime, _) = runtime(
         r#"
