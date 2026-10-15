@@ -14,11 +14,30 @@ fn checks_compile_without_running_the_plugin() {
     );
     assert!(report.diagnostics.is_empty(), "{report:?}");
     assert!(report.formatted_source.is_none());
-    for source in ["(define (", "(not-a-yinz-function)"] {
-        let report = check(path, source, PluginCheckMode::Syntax, None);
+    for mode in [PluginCheckMode::Semantic, PluginCheckMode::Prepare] {
+        let report = check(path, "(not-a-yinz-function)", mode, None);
         assert!(!report.diagnostics.is_empty(), "{report:?}");
         assert!(report.diagnostics[0].contains("example.scm"));
     }
+}
+
+#[test]
+fn syntax_checks_only_parse_the_supplied_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("missing/example.scm");
+    let source = "(require \"./missing.scm\")\n(not-a-yinz-function)";
+    let report = check(&path, source, PluginCheckMode::Syntax, None);
+    assert!(report.diagnostics.is_empty(), "{report:?}");
+    assert!(report.formatted_source.is_none());
+    assert!(report.outline.iter().any(|entry| {
+        entry.kind == OutlineKind::Require
+            && entry.line == 1
+            && entry.text == "(require \"./missing.scm\")"
+    }));
+
+    let report = check(&path, "(define (", PluginCheckMode::Syntax, None);
+    assert!(!report.diagnostics.is_empty(), "{report:?}");
+    assert!(report.diagnostics[0].contains("example.scm"));
 }
 
 #[test]

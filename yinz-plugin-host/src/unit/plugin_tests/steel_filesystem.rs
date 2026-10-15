@@ -455,6 +455,34 @@ fn steel_plugin_check_syntax_is_available_without_semantic_permissions() {
     )
     .unwrap();
     assert_eq!(valid["diagnostics"], json!([]));
+    let private_marker = "syntax-check-private-marker";
+    let dependency = roots.plugins.path().join("private.scm");
+    std::fs::write(
+        &dependency,
+        format!(
+            "(provide private-value)\n(define private-value (not-a-yinz-function \"{private_marker}\"))"
+        ),
+    )
+    .unwrap();
+    let source = "(require \"./private.scm\") (define (render rows cols) private-value)";
+    let syntax = run(&roots, no_grants.clone(), &[check(source, "Syntax")]).unwrap();
+    assert_eq!(syntax["diagnostics"], json!([]));
+    assert!(!syntax.to_string().contains(private_marker), "{syntax}");
+    let semantic = run(
+        &roots,
+        [PermissionType::ReadFiles].into_iter().collect(),
+        &[check(source, "Semantic")],
+    )
+    .unwrap();
+    assert!(
+        semantic["diagnostics"].to_string().contains(private_marker),
+        "{semantic}"
+    );
+    std::fs::remove_file(dependency).unwrap();
+    assert_eq!(
+        run(&roots, no_grants.clone(), &[check(source, "Syntax")]).unwrap(),
+        syntax
+    );
     let invalid = run(&roots, no_grants, &[check("(define (render", "Syntax")]).unwrap();
     assert!(!invalid["diagnostics"].as_array().unwrap().is_empty());
 }
