@@ -331,6 +331,10 @@ fn render_bytes(bytes: &[u8], win_size: Size) -> GridSnapshot {
     let mut vte_parser = vte::Parser::new();
     vte_parser.advance(&mut terminal_pane.grid, bytes);
 
+    snapshot_terminal_pane(&mut terminal_pane)
+}
+
+pub(crate) fn snapshot_terminal_pane(terminal_pane: &mut TerminalPane) -> GridSnapshot {
     let cursor = terminal_pane
         .cursor_coordinates()
         .and_then(|(x, y, visible)| {
@@ -376,7 +380,7 @@ fn render_bytes(bytes: &[u8], win_size: Size) -> GridSnapshot {
     }
 }
 
-fn build_terminal_pane(win_size: Size) -> TerminalPane {
+pub(crate) fn build_terminal_pane(win_size: Size) -> TerminalPane {
     let mut rows = Dimension::fixed(win_size.rows);
     let mut cols = Dimension::fixed(win_size.cols);
     rows.set_inner(win_size.rows);

@@ -506,9 +506,9 @@ fn a_reload_with_no_theme_pair_paints_the_theme() {
     assert_eq!(screen.style.colors, styling(1));
 }
 
-/// A mapping-only reload recolors retained cells, and no pane output follows to paint them.
+/// Reloads recolor retained cells, and no pane output follows to paint them.
 #[test]
-fn a_reload_that_only_changes_agent_theme_mapping_repaints_mapped_cells() {
+fn a_reload_that_changes_the_theme_or_mapping_repaints_mapped_cells() {
     use base64::Engine;
     use yinz_types::agent::theme::*;
     let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
@@ -555,6 +555,19 @@ fn a_reload_that_only_changes_agent_theme_mapping_repaints_mapped_cells() {
     let source_color = "38;2;18;52;86";
     let mapped = frame(&mut screen);
     assert!(mapped.contains("MAPPED") && !mapped.contains(source_color));
+    drain_background_jobs(&background_jobs);
+
+    assert!(screen.host_terminal_theme_mode.is_none());
+    let mut theme = test_screen_config();
+    theme.theme.exit_code_success.base = PaletteColor::Rgb((9, 8, 7));
+    screen
+        .reconfigure(theme, Keybinds::default(), crate::ClientId::new(1))
+        .unwrap();
+    assert!(
+        drain_background_jobs(&background_jobs).contains(&BackgroundJob::RenderToClients),
+        "a static theme reload must request a frame without host theme reports or pane output"
+    );
+    assert!(frame(&mut screen).contains("38;2;9;8;7"));
     drain_background_jobs(&background_jobs);
 
     let mut off = test_screen_config();

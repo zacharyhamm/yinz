@@ -64,6 +64,8 @@ pub struct FakeServerOsApi {
     orphan_sweeps: Arc<Mutex<Vec<String>>>,
     orphan_sweep_error: Arc<Mutex<Option<String>>>,
     metadata_barrier: Arc<Mutex<Option<MetadataBarrier>>>,
+    #[cfg(test)]
+    pub(crate) agent_report: Arc<Mutex<Option<yinz_server::pty_host::client::AgentReportCb>>>,
 }
 
 struct MetadataBarrier {
@@ -101,6 +103,11 @@ impl FakeServerOsApi {
 }
 
 impl ServerOsApi for FakeServerOsApi {
+    #[cfg(test)]
+    fn set_agent_report_callback(&self, callback: yinz_server::pty_host::client::AgentReportCb) {
+        *self.agent_report.lock().unwrap() = Some(callback);
+    }
+
     fn set_terminal_size_using_terminal_id(
         &self,
         id: TerminalId,

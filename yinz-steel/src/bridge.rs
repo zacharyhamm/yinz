@@ -111,9 +111,13 @@ fn encode(
                 .iter()
                 .enumerate()
                 .map(|(index, value)| {
-                    path.push(index.to_string());
+                    if binary.is_some() {
+                        path.push(index.to_string());
+                    }
                     let result = encode(value, depth + 1, budget, path, binary);
-                    path.pop();
+                    if binary.is_some() {
+                        path.pop();
+                    }
                     result
                 })
                 .collect::<Result<Vec<_>>>()?
@@ -123,9 +127,13 @@ fn encode(
             let mut map = steel::HashMap::new();
             for (key, value) in values {
                 budget.visit(depth, key.len())?;
-                path.push(key.clone());
+                if binary.is_some() {
+                    path.push(key.clone());
+                }
                 let value = encode(value, depth + 1, budget, path, binary)?;
-                path.pop();
+                if binary.is_some() {
+                    path.pop();
+                }
                 map.insert(SteelVal::StringV(key.as_str().into()), value);
             }
             SteelVal::HashMapV(Gc::new(map).into())
@@ -206,9 +214,13 @@ fn decode(
                 .iter()
                 .enumerate()
                 .map(|(index, value)| {
-                    path.push(index.to_string());
+                    if command {
+                        path.push(index.to_string());
+                    }
                     let result = decode(value, depth + 1, budget, path, command);
-                    path.pop();
+                    if command {
+                        path.pop();
+                    }
                     result
                 })
                 .collect::<Result<_>>()?,
@@ -218,9 +230,13 @@ fn decode(
                 .iter()
                 .enumerate()
                 .map(|(index, value)| {
-                    path.push(index.to_string());
+                    if command {
+                        path.push(index.to_string());
+                    }
                     let result = decode(value, depth + 1, budget, path, command);
-                    path.pop();
+                    if command {
+                        path.pop();
+                    }
                     result
                 })
                 .collect::<Result<_>>()?,
@@ -232,9 +248,13 @@ fn decode(
                     bail!("JSON object keys must be strings")
                 };
                 budget.visit(depth, key.len())?;
-                path.push(key.to_string());
+                if command {
+                    path.push(key.to_string());
+                }
                 let value = decode(value, depth + 1, budget, path, command)?;
-                path.pop();
+                if command {
+                    path.pop();
+                }
                 map.insert(key.to_string(), value);
             }
             Value::Object(map)

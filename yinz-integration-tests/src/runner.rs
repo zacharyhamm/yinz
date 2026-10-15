@@ -1188,3 +1188,7 @@ mod tests {
 #[cfg(test)]
 #[path = "unit/session_ownership_tests.rs"]
 mod session_ownership_tests;
+
+#[cfg(test)]
+#[path = "unit/agents_hook_traffic.rs"]
+mod agents_hook_traffic;
