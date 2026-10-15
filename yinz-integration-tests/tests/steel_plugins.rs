@@ -1234,34 +1234,42 @@ fn steel_forms_and_markdown_render_beside_builtins() {
         r#"(define (render rows columns) "Scheme companion")"#,
     )
     .unwrap();
-    let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(&format!(
-            "user_plugin_dir \"{}\"",
-            directory.path().display()
-        ))
-        .with_layout(LayoutInfo::Stringified(
-            r#"layout {
-          tab name="Builtin companion" {
-            pane size=1 borderless=true {plugin location="yinz:tab-bar";}
-            pane size=3 {plugin location="file:companion.scm";}
-            pane focus=true {plugin location="file:forms.scm";}
-          }
-        }"#
-            .into(),
-        ))
-        .start();
-    yinz.wait_until(
-        "shared controls and Markdown render in the shared session",
-        |screen| {
-            screen.contains("Builtin companion")
-                && screen.contains("Scheme companion")
-                && screen.contains("Pane frames")
-                && screen.contains("Shared widgets")
+    for size in [
+        TERMINAL_SIZE,
+        yinz_integration_tests::Size {
+            cols: 320,
+            rows: 120,
         },
-    );
-    yinz.send_stdin(b"x");
-    yinz.wait_until("Scheme form edits Unicode text", |screen| {
-        screen.contains("日本語x")
-    });
-    yinz.quit();
+    ] {
+        let mut yinz = TestRunner::new(size)
+            .with_config(&format!(
+                "user_plugin_dir \"{}\"",
+                directory.path().display()
+            ))
+            .with_layout(LayoutInfo::Stringified(
+                r#"layout {
+              tab name="Builtin companion" {
+                pane size=1 borderless=true {plugin location="yinz:tab-bar";}
+                pane size=3 {plugin location="file:companion.scm";}
+                pane focus=true {plugin location="file:forms.scm";}
+              }
+            }"#
+                .into(),
+            ))
+            .start();
+        yinz.wait_until(
+            "shared controls and Markdown render in the shared session",
+            |screen| {
+                screen.contains("Builtin companion")
+                    && screen.contains("Scheme companion")
+                    && screen.contains("Pane frames")
+                    && screen.contains("Shared widgets")
+            },
+        );
+        yinz.send_stdin(b"x");
+        yinz.wait_until("Scheme form edits Unicode text", |screen| {
+            screen.contains("日本語x")
+        });
+        yinz.quit();
+    }
 }

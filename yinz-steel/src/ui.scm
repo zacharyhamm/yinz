@@ -27,7 +27,6 @@
 (define (yinz-ui-pad text width) (%ui-pure "Pad" (list text width)))
 (define (yinz-ui-pad-left text width) (%ui-pure "PadLeft" (list text width)))
 (define (yinz-ui-center text width) (%ui-pure "Center" (list text width)))
-(define (yinz-ui-image-png id bytes) (%ui-pure "ImagePng" (list id bytes)))
 (define (yinz-ui-image-place id columns rows) (%ui-pure "ImagePlace" (list id columns rows)))
 (define (yinz-ui-image-row id row columns) (%ui-pure "ImageRow" (list id row columns)))
 
