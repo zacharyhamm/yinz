@@ -17,6 +17,116 @@ fn lines(lines: &[markdown::MdLine]) -> Value {
 }
 
 #[test]
+fn long_histories_preserve_headers_mutations_fingerprints_and_rendering() {
+    let mut runtime = runtime();
+    let mut run = run();
+    run.host_id = "history-host".into();
+    run.yinz_session_name = "history-session".into();
+    run.entries
+        .extend((3..=8_000).map(|revision| agents::RunEntry {
+            revision,
+            kind: agents::RunEntryKind::ToolResult,
+            text: format!("tool output {revision}"),
+            event_id: Some(format!("event-{revision}")),
+            tool: None,
+            created_at_ms: Some(revision as i64),
+        }));
+    run.revision = 8_000;
+    let value = serde_json::to_value(&run).unwrap();
+    let scheme = to_scheme(&value).unwrap();
+    assert!(crate::from_scheme(&scheme).is_err());
+    runtime.engine.register_value("run", scheme);
+    assert_eq!(
+        runtime
+            .invoke(
+                "yinz-agent-model",
+                vec![json!("agents"), json!("RunHeader"), json!([run])]
+            )
+            .unwrap(),
+        json!(run.header())
+    );
+    assert_eq!(run.header().title, run.entries[0].text);
+    for (op, args, expected) in [
+        (
+            "RunMutation",
+            json!([run]),
+            json!(agents::rows::run_mutation(&run)),
+        ),
+        (
+            "RunOwnedMutation",
+            json!([run, {"host_id":run.host_id, "yinz_session_name":run.yinz_session_name}]),
+            json!(agents::rows::run_owned_mutation(&run, &run.owner())),
+        ),
+    ] {
+        assert_eq!(
+            runtime
+                .invoke("yinz-agent-model", vec![json!("agents"), json!(op), args])
+                .unwrap(),
+            expected
+        );
+    }
+    assert_eq!(
+        runtime
+            .invoke(
+                "yinz-agent-model",
+                vec![json!("history"), json!("Fingerprint"), value]
+            )
+            .unwrap(),
+        json!(agents::run_payload_fingerprint(
+            &serde_json::to_string(&run).unwrap()
+        ))
+    );
+    runtime
+        .eval(
+            r#"(define document (yinz-history-create run))
+        (define rendered #f)
+        (define (render-history) (set! rendered (yinz-history-call document "Lines" '(80 90000 0))))
+        (render-history)"#,
+        )
+        .unwrap();
+    let mut parsed = agents::ParsedRun::new(&run);
+    for updated in [false, true] {
+        if updated {
+            run.entries.push(agents::RunEntry {
+                revision: 8_001,
+                kind: agents::RunEntryKind::Result,
+                text: "new result".into(),
+                event_id: None,
+                tool: None,
+                created_at_ms: Some(80_000),
+            });
+            run.revision += 1;
+            runtime
+                .engine
+                .register_value("next", to_scheme(&json!(run)).unwrap());
+            runtime
+                .eval(r#"(yinz-history-call document "Update" next) (render-history)"#)
+                .unwrap();
+            parsed.update(&run);
+        }
+        let actual =
+            crate::bridge::from_model(&runtime.engine.extract_value("rendered").unwrap()).unwrap();
+        let expected = parsed.lines(80, 90_000, 0);
+        assert_eq!(actual["entries"], lines(&expected.entries));
+        assert_eq!(actual["header"], lines(&expected.header));
+        assert_eq!(actual["label"], expected.label);
+        assert_eq!(
+            actual["events"].as_array().unwrap().len(),
+            run.entries.len()
+        );
+        for (event, entry) in actual["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(&run.entries)
+        {
+            assert_eq!(event["revision"], entry.revision);
+            assert_eq!(event["text"], entry.text);
+        }
+    }
+}
+
+#[test]
 fn history_fingerprint_ignores_json_map_order_and_default_field_omission() {
     let mut runtime = runtime();
     let value = serde_json::to_value(run()).unwrap();

@@ -146,6 +146,36 @@ fn conversion_limits_reject_deep_and_large_values() {
 }
 
 #[test]
+fn model_conversion_uses_bounded_inbound_limits_without_command_encoding() {
+    use steel::rvals::{SteelByteVector, SteelVal};
+    let values = to_scheme(&json!(vec![0; 100_000])).unwrap();
+    assert!(from_scheme(&values).is_err());
+    assert_eq!(
+        bridge::from_model(&values).unwrap(),
+        json!(vec![0; 100_000])
+    );
+    let oversized = SteelVal::ByteVector(SteelByteVector::new(vec![0; 4_194_304]));
+    assert!(bridge::from_model(&oversized).is_err());
+    let oversized = SteelVal::StringV("x".repeat(bridge::MAX_INPUT_BYTES + 1).into());
+    assert!(bridge::from_model(&oversized).is_err());
+    let mut nested = SteelVal::BoolV(false);
+    for _ in 0..65 {
+        nested = SteelVal::ListV(vec![nested].into());
+    }
+    assert!(bridge::from_model(&nested).is_err());
+    let mut runtime = runtime();
+    runtime
+        .eval(r#"(define bytes-model (hash "Write" (string->bytes "abc")))"#)
+        .unwrap();
+    let value = runtime.engine.extract_value("bytes-model").unwrap();
+    assert_eq!(
+        bridge::from_model(&value).unwrap(),
+        json!({"Write": [97, 98, 99]})
+    );
+    assert!(bridge::from_command(&value).unwrap()["Write"].is_object());
+}
+
+#[test]
 fn repl_parser_recognizes_multiline_forms() {
     assert!(!source_complete("(+ 1"));
     assert!(!source_complete("'"));

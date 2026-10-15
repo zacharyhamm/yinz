@@ -26,7 +26,7 @@ pub(super) fn register(engine: &mut Engine) {
     engine.register_fn(
         "yinz-history-create",
         |value: SteelVal| -> steel::rvals::Result<ParsedHistory> {
-            let run = decode(crate::from_scheme(&value).map_err(crate::scheme_error)?)
+            let run = decode(crate::bridge::from_model(&value).map_err(crate::scheme_error)?)
                 .map_err(crate::scheme_error)?;
             Ok(ParsedHistory(Arc::new(Mutex::new(agents::ParsedRun::new(
                 &run,
@@ -37,7 +37,7 @@ pub(super) fn register(engine: &mut Engine) {
         "yinz-history-call",
         |native: &ParsedHistory, op: String, value: SteelVal| -> steel::rvals::Result<SteelVal> {
             let result = (|| -> Result<Value> {
-                let args = crate::from_scheme(&value)?;
+                let args = crate::bridge::from_model(&value)?;
                 let mut parsed = native
                     .0
                     .lock()
