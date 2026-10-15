@@ -46,6 +46,18 @@ needs a new render. Outside `render`, output goes to the plugin log. `yinz-log`
 always writes to the log, including during rendering. During `render`, `display`, `write`, `newline`, and `displayln`
 write the pane's output.
 
+Each client has at most one pending deferred render. During a resize or state
+change, the last accepted frame stays visible until a current render completes.
+Results for obsolete dimensions or state are discarded and another render is
+requested.
+
+During `render` and its deferred continuations, `ShowCursor` commands are held
+with the frame. The last cursor command is sent through the permission-checked
+bridge when the accepted text is returned, including cached frames. `json-null`
+hides the cursor. A frame without a cursor command leaves the cursor unchanged.
+Failed or obsolete renders discard their cursor commands. Outside rendering,
+cursor commands execute immediately.
+
 `unload` runs once during normal close, reload, or session shutdown. Existing
 permissions remain available during cleanup. Cleanup has a two-second limit;
 errors are logged and the host then tears down the instance. Pending operations
@@ -259,9 +271,9 @@ Build forms with `yinz-ui-form` or `yinz-ui-dialog`. Fields come from
 `yinz-ui-input`, `yinz-ui-checkbox`, `yinz-ui-radio`, `yinz-ui-select`,
 `yinz-ui-combo`, and `yinz-ui-button`. Use `yinz-ui-handle-key`,
 `yinz-ui-handle-mouse`, and `yinz-ui-paste!` to deliver input; read values with
-`yinz-ui-value` or `yinz-ui-values`. `yinz-ui-render` returns text and updates the
-host cursor. `yinz-ui-render-buffer` returns text and cursor metadata without a
-host call.
+`yinz-ui-value` or `yinz-ui-values`. `yinz-ui-render` returns text and issues a
+`ShowCursor` command, using the frame timing described above. `yinz-ui-render-buffer`
+returns text and cursor metadata without a host call.
 
 `yinz-ui-markdown` creates a document. `yinz-ui-lines` renders it at a width.
 Text helpers include `yinz-ui-wrap`, `yinz-ui-truncate`, `yinz-ui-truncate-ansi`,

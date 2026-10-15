@@ -15,6 +15,7 @@
 (define %async-unloading #f)
 (define %async-unloaded #f)
 (define %async-frames (hash))
+(define %async-render-context #f)
 
 (define (%async-get object key fallback)
   (if (and (hash? object) (hash-contains? object key)) (hash-ref object key) fallback))
@@ -34,6 +35,16 @@
       (thunk)))
   (set! %async-client previous)
   result)
+(define (%async-with-render context thunk)
+  (define previous %async-render-context)
+  (set! %async-render-context context)
+  (define result
+    (with-handler (lambda (failure)
+                    (set! %async-render-context previous)
+                    (raise-error failure))
+      (thunk)))
+  (set! %async-render-context previous)
+  result)
 (define (%async-host command permission)
   (%trace-command command)
   (if %async-client
@@ -43,12 +54,18 @@
       (%async-native-command command)))
 (define (yinz-command command)
   (define unsubscribe (%async-get command "Unsubscribe" #f))
-  (%async-host
-    (if unsubscribe
-        (hash "Unsubscribe"
-          (filter (lambda (type) (= (%async-get %async-required type 0) 0)) unsubscribe))
-        command)
-    json-null))
+  (if (and %async-render-context (hash? command)
+           (= (length (hash-keys->list command)) 1) (hash-contains? command "ShowCursor"))
+      (begin
+        (%yinz-validate-command command)
+        (vector-set! %async-render-context 0 (cons %async-client command))
+        json-null)
+      (%async-host
+        (if unsubscribe
+            (hash "Unsubscribe"
+              (filter (lambda (type) (= (%async-get %async-required type 0) 0)) unsubscribe))
+            command)
+        json-null)))
 (define (%async-retain type)
   (yinz-command (hash "Subscribe" (list type)))
   (set! %async-required
@@ -60,13 +77,14 @@
   (set! %async-version (+ %async-version 1))
   (set! %async-dirty #t))
 (define (yinz-request-render) (%async-invalidate) json-null)
-(define (%async-enqueue client thunk)
-  (set! %async-jobs (append %async-jobs (list (cons client thunk)))))
+(define (%async-enqueue client context thunk)
+  (set! %async-jobs (append %async-jobs (list (vector client context thunk)))))
 (define (%async-drain)
   (unless (null? %async-jobs)
     (define job (car %async-jobs))
     (set! %async-jobs (cdr %async-jobs))
-    (%async-with-client (car job) (cdr job))
+    (%async-with-client (vector-ref job 0)
+      (lambda () (%async-with-render (vector-ref job 1) (vector-ref job 2))))
     (%async-drain)))
 
 ;; Keep the original exception privately; public catch callbacks still receive its message.
@@ -95,12 +113,12 @@
 (define (yinz-pending? value)
   (and (yinz-deferred? value) (equal? (vector-ref value 1) "pending")))
 (define (%async-observe deferred success failure client)
-  (define observer (vector success failure client))
+  (define observer (vector success failure client %async-render-context))
   (if (yinz-pending? deferred)
       (vector-set! deferred 3 (append (vector-ref deferred 3) (list observer)))
       (%async-notify deferred observer)))
 (define (%async-notify deferred observer)
-  (%async-enqueue (vector-ref observer 2)
+  (%async-enqueue (vector-ref observer 2) (vector-ref observer 3)
     (lambda ()
       (%async-with-error (vector-ref deferred 7)
         (lambda ()
@@ -146,7 +164,7 @@
         (lambda (error)
           (if failure (receive failure error) (yinz-reject! result error)))
         %async-client)
-      (%async-enqueue %async-client (lambda () (receive success value))))
+      (%async-enqueue %async-client %async-render-context (lambda () (receive success value))))
   result)
 (define (yinz-then value callback)
   (%async-chain value callback #f))
@@ -300,27 +318,37 @@
   deferred)
 
 (define (%async-render hook arguments)
+  ;; [requested dimensions, accepted version, (text . cursor command), pending, cacheable]
   (define frame (%async-get %async-frames %async-client #f))
-  (unless (and frame (equal? (vector-ref frame 0) arguments))
-    (set! frame (vector arguments -1 "" #f #f))
+  (unless frame
+    (set! frame (vector arguments -1 (cons "" #f) #f #f))
     (set! %async-frames (hash-insert %async-frames %async-client frame)))
+  (unless (equal? (vector-ref frame 0) arguments)
+    (vector-set! frame 0 arguments)
+    (vector-set! frame 1 -1))
   (unless (or (vector-ref frame 3)
               (and (vector-ref frame 4) (= (vector-ref frame 1) %async-version)))
     (define version %async-version)
-    (define value (if hook (apply hook arguments) ""))
-    (define deferred? (yinz-deferred? value))
-    (vector-set! frame 3 deferred?)
-    (vector-set! frame 4 deferred?)
-    (%async-track value
-      (lambda (text)
-        (vector-set! frame 3 #f)
-        (when (= version %async-version)
-          (unless (or (string? text) (eq? text json-null) (void? text))
-            (error "render must return a string or a deferred string"))
-          (vector-set! frame 2 (if (string? text) text ""))
-          (vector-set! frame 1 version))
-        (when deferred? (set! %async-dirty #t)))
-      (lambda (failure) (vector-set! frame 3 #f) (%async-fail failure))))
+    ;; #f means no cursor command; a command containing json-null explicitly hides it.
+    (define context (vector #f))
+    (define (fail failure) (vector-set! frame 3 #f) (%async-fail failure))
+    (vector-set! frame 3 #t)
+    (%async-with-render context
+      (lambda ()
+        (with-handler fail
+          (define value (if hook (apply hook arguments) ""))
+          (define deferred? (yinz-deferred? value))
+          (%async-track value
+            (lambda (text)
+              (vector-set! frame 3 #f)
+              (when (and (= version %async-version) (equal? arguments (vector-ref frame 0)))
+                (unless (or (string? text) (eq? text json-null) (void? text))
+                  (error "render must return a string or a deferred string"))
+                (vector-set! frame 2 (cons (if (string? text) text "") (vector-ref context 0)))
+                (vector-set! frame 1 version)
+                (vector-set! frame 4 deferred?))
+              (when deferred? (set! %async-dirty #t)))
+            fail)))))
   frame)
 (define (yinz-async-lifecycle kind hook arguments cleanup)
   (when (equal? kind "load")
@@ -340,7 +368,12 @@
      (define frame (and (not %async-unloading) (%async-render hook arguments)))
      (%async-drain)
      (%async-check)
-     (if frame (vector-ref frame 2) ""))
+     (if frame
+         (let* ((output (vector-ref frame 2)) (cursor (cdr output)))
+           (when cursor
+             (%async-with-client (car cursor) (lambda () (%async-host (cdr cursor) json-null))))
+           (car output))
+         ""))
     ((equal? kind "unload")
      (unless %async-unloading
        (set! %async-unloading #t)
