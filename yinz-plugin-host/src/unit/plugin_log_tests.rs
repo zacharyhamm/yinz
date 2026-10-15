@@ -64,7 +64,7 @@ fn connected_repl_separates_stdout_and_queryable_diagnostics_on_success_and_fail
             None,
         ),
         (
-            r#"(%async-enqueue %async-client (lambda () (display "poll output") (yinz-log "poll diagnostic") (error "poll failed")))"#,
+            r#"(%async-enqueue %async-client #f (lambda () (display "poll output") (yinz-log "poll diagnostic") (error "poll failed")))"#,
             "poll output",
             "poll diagnostic",
             Some("poll failed"),

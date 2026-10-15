@@ -120,9 +120,23 @@ impl WasmReference {
         result.as_str().unwrap().to_owned()
     }
     fn replay(&mut self, input: Value) -> Value {
-        let (result, commands) = self
+        let rendering = input[0] == "render";
+        let (result, mut commands) = self
             .trace
             .replay(input, |command| (self.responder)(command));
+        if rendering {
+            // Steel publishes only the final cursor with the accepted frame.
+            let mut cursor = None;
+            commands.retain(|command| {
+                if command.get("ShowCursor").is_some() {
+                    cursor = Some(command.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            commands.extend(cursor);
+        }
         self.commands.lock().unwrap().extend(commands);
         result
     }
