@@ -13,7 +13,7 @@ pub(crate) fn check(
     root: Option<&Path>,
 ) -> PluginCheckReport {
     let checked = (|| -> Result<PluginCheckReport> {
-        if mode != PluginCheckMode::Format {
+        if matches!(mode, PluginCheckMode::Semantic | PluginCheckMode::Prepare) {
             let mut runtime = yinz_steel::Runtime::new(|_| {
                 bail!("host commands are unavailable while checking a plugin")
             })?;
