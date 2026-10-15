@@ -431,29 +431,66 @@ fn injected_wall_clock_tracks_the_same_replay_time_as_monotonic_clock() {
 }
 
 #[test]
-fn data_sdk_pages_through_host_calls_and_rejects_stalled_cursors() {
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let calls = seen.clone();
-    let mut runtime = Runtime::new(move |command| {
-        calls.lock().unwrap().push(command.clone());
-        let page = command["DataFetch"]["request"]["after_id"].as_i64();
-        Ok(if page.is_none() {
-            json!({"columns":["id"],"rows":[[{"Int":1}]],"truncated":true,"next_cursor":1})
-        } else {
-            json!({"columns":["id"],"rows":[[{"Int":2}]],"truncated":false,"next_cursor":null})
+fn data_sdk_pages_through_host_calls_with_optional_initial_cursors() {
+    for initial in [
+        json!({"entity": "todo"}),
+        json!({"entity": "todo", "after_id": null}),
+        json!({"entity": "todo", "after_id": 5}),
+    ] {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let calls = seen.clone();
+        let mut runtime = Runtime::new(move |command| {
+            let mut calls = calls.lock().unwrap();
+            calls.push(command);
+            Ok(if calls.len() == 1 {
+                json!({"columns":["id"],"rows":[[{"Int":6}]],"truncated":true,"next_cursor":6})
+            } else {
+                json!({"columns":["id"],"rows":[[{"Int":7}]],"truncated":false,"next_cursor":null})
+            })
         })
-    })
-    .unwrap();
-    let result = runtime.eval("(define paged (yinz-data-fetch-all \"shared:yinz\" (yinz-agent-model \"store\" \"EntityRequest\" \"todo\"))) (length (hash-ref paged \"rows\"))").unwrap();
-    assert_eq!(result.values, vec!["2"]);
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[1]["DataFetch"]["request"]["namespace"], "shared:yinz");
-    assert_eq!(seen[1]["DataFetch"]["request"]["after_id"], 1);
-    let mut runtime =
-        Runtime::new(|_| Ok(json!({"columns":[],"rows":[],"truncated":true,"next_cursor":1})))
-            .unwrap();
-    assert!(runtime.eval("(yinz-data-fetch-all \"shared:yinz\" (yinz-agent-model \"store\" \"EntityRequest\" \"todo\"))").unwrap_err().to_string().contains("cursor did not advance"));
+        .unwrap();
+        assert_eq!(
+            runtime
+                .invoke(
+                    "yinz-data-fetch-all",
+                    vec![json!("shared:yinz"), initial.clone()]
+                )
+                .unwrap(),
+            json!({"columns":["id"],"rows":[[{"Int":6}],[{"Int":7}]],"truncated":false,"next_cursor":null})
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(
+            seen[0]["DataFetch"]["request"].get("after_id"),
+            initial.get("after_id")
+        );
+        assert_eq!(seen[1]["DataFetch"]["request"]["namespace"], "shared:yinz");
+        assert_eq!(seen[1]["DataFetch"]["request"]["after_id"], 6);
+    }
+}
+
+#[test]
+fn data_sdk_rejects_missing_or_stalled_response_cursors() {
+    for (cursor, expected) in [
+        (None, "next_cursor"),
+        (Some(json!(null)), "missing cursor"),
+        (Some(json!(5)), "cursor did not advance"),
+        (Some(json!(4)), "cursor did not advance"),
+    ] {
+        let mut page = json!({"columns":[],"rows":[],"truncated":true});
+        if let Some(cursor) = cursor {
+            page["next_cursor"] = cursor;
+        }
+        let mut runtime = Runtime::new(move |_| Ok(page.clone())).unwrap();
+        let error = runtime
+            .invoke(
+                "yinz-data-fetch-all",
+                vec![json!("shared:yinz"), json!({"entity":"todo","after_id":5})],
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+    }
 }
 
 #[test]

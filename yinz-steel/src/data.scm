@@ -18,7 +18,7 @@
     (define page (yinz-data-fetch namespace request))
     (define rows (append collected (hash-ref page "rows")))
     (if (hash-ref page "truncated")
-        (let ((cursor (hash-ref page "next_cursor")) (previous (hash-ref request "after_id")))
+        (let ((cursor (hash-ref page "next_cursor")) (previous (%async-get request "after_id" json-null)))
           (when (json-null? cursor) (error "cannot finish pagination: missing cursor"))
           (when (and (not (json-null? previous)) (<= cursor previous))
             (error "cannot finish pagination: cursor did not advance"))
