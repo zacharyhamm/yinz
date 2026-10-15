@@ -37,8 +37,11 @@
         (if value (begin (a-set! "history_hidden" #f) (a-load-history!)) (a-end-visit!)) #t)
       ((equal? tag "PaneTabsUpdate")
         (define tabs (a-find (lambda (tabs) (a-find (lambda (slot) (equal? (hash-ref slot "plugin_id") (a-get "own_plugin_id"))) (hash-ref tabs "tabs"))) value))
+        (define was-focused (member (a-get "own_client_id") (a-get "bar_focused")))
         (a-set! "pane_tabs" (a-field tabs "id" #f)) (a-set! "bar_focused" (a-field tabs "bar_focused" '()))
-        (a-set! "tabs_focused" (if (member (a-get "own_client_id") (a-get "bar_focused")) #t #f)) #f)
+        (a-set! "tabs_focused" (if (member (a-get "own_client_id") (a-get "bar_focused")) #t #f))
+        ; Reverse Tab has already removed this client's bar focus and chosen its content region.
+        (when (and was-focused (not (a-get "tabs_focused"))) (a-set! "focus" "list")) #t)
       ((equal? tag "PaneUpdate")
         (a-panel-panes! value)
         (define pane (a-panel-pane value)) (define own (a-own-pane value))
