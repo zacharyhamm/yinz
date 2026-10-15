@@ -1192,3 +1192,7 @@ mod session_ownership_tests;
 #[cfg(test)]
 #[path = "unit/agents_hook_traffic.rs"]
 mod agents_hook_traffic;
+
+#[cfg(test)]
+#[path = "unit/agents_focus_cycle.rs"]
+mod agents_focus_cycle;

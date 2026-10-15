@@ -674,6 +674,55 @@ impl HistoryPanel {
 }
 
 #[test]
+fn agents_pane_tabs_focus_updates_preserve_another_clients_history() {
+    use yinz_plugin_api::plugin_ids::ProtobufPluginIds;
+
+    let client = Arc::new(AtomicU64::new(1));
+    let acting_client = client.clone();
+    let (_, responder) = host(&[], Arc::new(AtomicU64::new(90_000)));
+    let mut panel = super::runtime_parity::SteelReference::new(
+        "agents",
+        BTreeMap::from([("view".into(), "agents".into())]),
+        std::path::Path::new(""),
+        Arc::new(move |command| {
+            if matches!(command, PluginCommand::GetPluginIds) {
+                let mut ids =
+                    ProtobufPluginIds::decode(default_reply(command)?.as_slice()).unwrap();
+                ids.client_id = acting_client.load(Ordering::SeqCst) as u32;
+                Some(ids.encode_to_vec())
+            } else {
+                responder(command)
+            }
+        }),
+    );
+    let tabs = |clients: &[u32]| {
+        Event::PaneTabsUpdate(vec![serde_json::from_value(json!({
+            "id":7,"pane_id":{"Plugin":1},"active":0,"bar_focused":clients,
+            "tabs":[{"descriptor":{"label":"Agents","location":"yinz:agents"},"plugin_id":1,"state":"Ready"}]
+        })).unwrap()])
+    };
+    panel.pipe(&snapshot_message(1, &[], 2));
+    panel.render(24, 90);
+    assert!(panel.update(&Event::Key("Tab".parse().unwrap())));
+    assert!(history_frame(&panel.render(24, 90)).contains("▸"));
+
+    assert!(panel.update(&tabs(&[2])));
+    // Shared renders leave the cached flag set for the last rendered client.
+    client.store(2, Ordering::SeqCst);
+    assert!(history_frame(&panel.render(24, 90)).contains("←/→ choose"));
+    client.store(1, Ordering::SeqCst);
+    assert!(panel.update(&tabs(&[])));
+    assert!(history_frame(&panel.render(24, 90)).contains("▸"));
+
+    assert!(panel.update(&tabs(&[1])));
+    assert!(history_frame(&panel.render(24, 90)).contains("←/→ choose"));
+    assert!(panel.update(&tabs(&[])));
+    let frame = history_frame(&panel.render(24, 90));
+    assert!(frame.contains("Enter focus"));
+    assert!(!frame.contains("▸"));
+}
+
+#[test]
 fn agents_history_navigation_renders_while_pending_and_only_loads_latest_selection() {
     let runs = [
         run("active", 7, false),
