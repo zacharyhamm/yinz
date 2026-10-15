@@ -2,7 +2,7 @@
   a-row a-row-data a-row-key a-selection-key a-selection a-selected-run a-selected-revision
   a-selectable? a-waiting? a-waiting-rows a-waiting-count a-live? a-step a-set-rows!
   a-leave-row! a-follow-selection! a-close-reader! a-keys-here? a-bar-keys?
-  a-key? a-char a-inc! a-none a-sub a-base-strip a-predecessor-rows)
+  a-invalidate-history! a-key? a-char a-inc! a-none a-sub a-base-strip a-predecessor-rows)
 (define state (hash))
 (define (a-get key) (hash-ref state key))
 (define (a-set! key value) (set! state (hash-insert state key value)))
@@ -29,6 +29,8 @@
       "archived_runs" '() "archive_offset" 0 "archive_loaded_through" #f "archive_more" #f
       "pane_tabs" #f "own_plugin_id" 0 "own_client_id" 0 "initial_cwd" ""
       "bar_focused" '() "tabs_focused" #f "age_minute" 0 "rows" '() "summaries" (hash)
+      "history_request" 0 "history_pending" #f "history_desired" #f "history_next" #f
+      "history_deadline" 0 "history_retry_at" #f "history_hidden" #f "prompt_document" #f "search_headers" (hash)
       "run" #f "run_offset_secs" 0 "history_scroll" 0 "history_cursor" 0
       "history_cursor_anchor" #f "history_bottom_anchor" #f "history_scrolled" #f
       "reading" #f "reader_cache" #f "reading_id" 0 "last_reader_max_scroll" 0 "last_reader_rows" 0
@@ -96,7 +98,14 @@
 (define (a-close-reader!)
   (define had (if (a-get "reading") #t #f))
   (a-set! "reading" #f) (a-set! "reader_cache" #f) had)
+(define (a-invalidate-history!)
+  (a-set! "history_desired" #f)
+  (a-set! "history_retry_at" #f)
+  (define next (a-get "history_next")) (a-set! "history_next" #f)
+  (when next (yinz-resolve! next #f)))
 (define (a-leave-row!)
+  (a-invalidate-history!)
+  (a-set! "run" #f) (a-set! "history_cache" #f) (a-set! "prompt_document" #f)
   (for-each (lambda (key) (a-set! key #f))
     '("pending_history_revision" "list_scroll" "history_cursor_anchor" "history_bottom_anchor"
       "history_scrolled" "summarizing" "confirming_resume" "resume_note" "open_note" "run_error"))

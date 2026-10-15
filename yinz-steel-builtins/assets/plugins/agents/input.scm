@@ -30,7 +30,7 @@
           (when (and armed (equal? armed (a-selection-key)) (a-selected-run)) (a-resume-run! (a-selected-run))))
         ((or (equal? bare "Esc") (and plain (equal? char "n"))) #t)
         (else (a-on-key! key))) #t)
-    ((a-key? key (hash "Char" "r") '("Ctrl")) (a-broadcast! "agent_refresh" #f) #f)
+    ((a-key? key (hash "Char" "r") '("Ctrl")) (a-broadcast! "agent_refresh" #f) (a-load-history! #t) #t)
     ((equal? bare "Tab")
       (cond ((and (not history) (not shift) (> (a-get "last_history_rows") 0)) (a-set! "focus" "history") #t)
         ((and history shift) (a-set! "focus" "list") #t)

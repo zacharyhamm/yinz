@@ -94,6 +94,7 @@
                 (hash "label" "Todos" "location" "yinz:todos" "initial_cwd" (a-get "initial_cwd") "configuration" (hash))))))) #f))
   (a-set! "pane_tabs" (a-field result "id" #f)) (a-set! "mount_pending" (not (a-get "pane_tabs"))))
 (define (a-end-visit!)
+  (a-invalidate-history!) (a-set! "history_hidden" #t)
   (a-set! "tabs_focused" #f) (a-set! "bar_focused" '()) (a-set! "focus" "list")
   (a-set! "click_press" #f) (a-set! "confirming_resume" #f) (a-set! "key_sheet_scroll" #f))
 (define (a-hide!)
