@@ -28,6 +28,7 @@
   (yinz-async-poll)
   json-null)
 (define (yinz-worker-event event)
+  (yinz-agent-cache-event event)
   (yinz-async-lifecycle "update" yinz-worker-event-handler (list event) #f))
 (define (yinz-post-worker worker name payload)
   (yinz-command (hash "PostMessageTo" (hash "worker_name" worker "name" name "payload" payload))))

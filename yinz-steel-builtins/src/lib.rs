@@ -81,3 +81,7 @@ mod agent_service_tests;
 #[cfg(test)]
 #[path = "unit/project_store.rs"]
 mod project_store_tests;
+
+#[cfg(test)]
+#[path = "unit/todos.rs"]
+mod todos_tests;

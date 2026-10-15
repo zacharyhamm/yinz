@@ -369,7 +369,7 @@
         (put "tabs-focused" (and (member (get "client-id") (get "bar-focused")) #t)) #t]
       [(equal? name "PaneUpdate")
         (define panes (apply append (hash-values->list (hash-ref value "panes"))))
-        (define own (filter (lambda (pane) (equal? (hash-ref pane "id") (hash "Plugin" (get "plugin-id")))) panes))
+        (define own (filter (lambda (pane) (and (hash-ref pane "is_plugin") (= (hash-ref pane "id") (get "plugin-id")))) panes))
         (if (null? own) #f
           (let* ([pane (car own)] [visible (not (hash-ref pane "is_suppressed"))] [focus (and visible (hash-ref pane "is_focused"))] [old (get "keyboard")])
             (when (and (get "pane-shown") (not visible)) (end-visit))
