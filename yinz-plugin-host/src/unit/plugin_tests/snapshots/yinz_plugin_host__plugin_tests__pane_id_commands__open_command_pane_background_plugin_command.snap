@@ -1,6 +1,5 @@
 ---
 source: yinz-plugin-host/src/./unit/plugin_tests/pane_id_commands.rs
-assertion_line: 239
 expression: "format!(\"{:#?}\",\nnew_tab_event).replace(&format!(\"{:?}\", temp_folder.path()), \"\\\"CWD\\\"\")"
 ---
 Some(
@@ -21,7 +20,9 @@ Some(
                     hold_on_start: false,
                     originating_plugin: Some(
                         OriginatingPlugin {
-                            deno_generation: None,
+                            generation: Some(
+                                1,
+                            ),
                             plugin_id: PluginId(
                                 0,
                             ),

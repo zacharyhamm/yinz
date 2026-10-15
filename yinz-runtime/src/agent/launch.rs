@@ -2,7 +2,7 @@
 //!
 //! Three callers ask for the same thing by three different routes — the `new-agent`
 //! modal, where a person fills in a form; agent's `agent_spawn` tool, where a model fills in
-//! a JSON object; and a TypeScript plugin's `yinz.agent.spawn { … }`, which the server answers
+//! a JSON object; and a Scheme plugin's `yinz-agent-spawn`, which the server answers
 //! through `PluginCommand::SpawnAgent`. All of them mean "start `claude` on a fresh worktree
 //! off `main`", and none has any business deciding separately what that means: a default
 //! base branch that drifted, or a `cursor` that ran `cursor` on one path and `cursor-agent`
@@ -11,8 +11,7 @@
 //! So the decision lives here, once, in the crate every caller already links.
 //! [`AgentSpawnSpec`] (aliased [`Spec`]) is the request in terms every caller can fill in and
 //! [`plan`] turns it into the pair Yinz wants. Everything here is pure and tests on the
-//! host triple; the host call that acts on the plan is the server's `spawn_agent` handler,
-//! and agent-proto's `open` for the wasm plugins.
+//! host triple; the host call that acts on the plan is the server's `spawn_agent` handler.
 
 use std::collections::BTreeMap;
 

@@ -50,9 +50,6 @@ pub struct CliOptions {
     /// subdirectory of config dir
     #[clap(long, value_parser)]
     pub layout_dir: Option<PathBuf>,
-    /// Set the directory from which builtin plugins are loaded before the installed builtins are tried
-    #[clap(long, value_parser)]
-    pub builtin_plugins_dir: Option<PathBuf>,
     /// Set the theme_dir, defaults to
     /// subdirectory of config dir
     #[clap(long, value_parser)]
@@ -359,7 +356,6 @@ impl From<CliOptions> for Options {
             default_cwd: value.default_cwd,
             default_layout: value.default_layout,
             layout_dir: value.layout_dir,
-            builtin_plugins_dir: value.builtin_plugins_dir,
             theme_dir: value.theme_dir,
             user_plugin_dir: value.user_plugin_dir,
             mouse_mode: value.mouse_mode,
@@ -435,7 +431,6 @@ impl From<Options> for CliOptions {
             default_cwd: value.default_cwd,
             default_layout: value.default_layout,
             layout_dir: value.layout_dir,
-            builtin_plugins_dir: value.builtin_plugins_dir,
             theme_dir: value.theme_dir,
             user_plugin_dir: value.user_plugin_dir,
             mouse_mode: value.mouse_mode,
@@ -528,9 +523,6 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
     let default_cwd = other.default_cwd.or_else(|| base.default_cwd.clone());
     let default_layout = other.default_layout.or_else(|| base.default_layout.clone());
     let layout_dir = other.layout_dir.or_else(|| base.layout_dir.clone());
-    let builtin_plugins_dir = other
-        .builtin_plugins_dir
-        .or_else(|| base.builtin_plugins_dir.clone());
     let theme_dir = other.theme_dir.or_else(|| base.theme_dir.clone());
     let user_plugin_dir = other
         .user_plugin_dir
@@ -616,7 +608,6 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         default_cwd,
         default_layout,
         layout_dir,
-        builtin_plugins_dir,
         theme_dir,
         user_plugin_dir,
         agent_double_escape,

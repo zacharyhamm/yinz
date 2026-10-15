@@ -13,8 +13,8 @@
 //! # Where it is kept, and why that survives a reinstall
 //!
 //! In `<data dir>/host-id`, beside the `plugin-data.db` it labels. Rebuilding and reinstalling
-//! yinz does not disturb it: `cargo x install` writes and prunes `*.wasm` inside
-//! `<data dir>/builtins/<version>/` and never touches the data dir root. So the id is exactly as
+//! yinz does not disturb it: `cargo x install` replaces the binary and never touches
+//! the data dir root. So the id is exactly as
 //! durable as the data it identifies — if the rows are still there, the id that owns them is too.
 //!
 //! What *does* rotate it is a wiped data dir, a fresh container, or a `--data-dir` pointed

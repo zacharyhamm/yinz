@@ -1,6 +1,6 @@
 //! Compatibility reader for OpenCode hook files installed before agent plugins.
 //!
-//! The current TypeScript provider owns event translation and emits [`HookEvent`] directly.
+//! The current provider hook owns event translation and emits [`HookEvent`] directly.
 //! This reader accepts the native payloads from older installed hook files until users run
 //! `yinz hooks install --agent opencode` again. New providers need no Rust adapter.
 

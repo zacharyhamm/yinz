@@ -73,7 +73,6 @@ fn config_options_to_string() {
         default_cwd "/tmp/foo"
         default_layout "compact"
         layout_dir "/tmp/layouts"
-        builtin_plugins_dir "/tmp/builtin-plugins"
         theme_dir "/tmp/themes"
         user_plugin_dir "/tmp/plugins"
         mouse_mode false
@@ -122,7 +121,6 @@ fn config_options_to_string_with_comments() {
         default_cwd "/tmp/foo"
         default_layout "compact"
         layout_dir "/tmp/layouts"
-        builtin_plugins_dir "/tmp/builtin-plugins"
         theme_dir "/tmp/themes"
         user_plugin_dir "/tmp/plugins"
         mouse_mode false

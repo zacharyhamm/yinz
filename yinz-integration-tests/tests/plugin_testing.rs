@@ -2,8 +2,32 @@ use std::{path::Path, sync::atomic::AtomicBool};
 use yinz_types::authoring::{PluginTestKind, PluginTestOptions};
 
 #[test]
-fn installed_builtin_typescript_integration_suites() {
-    for name in yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES {
+fn installed_builtin_scheme_integration_suites() {
+    for name in [
+        "compact-bar",
+        "tab-bar",
+        "status-bar",
+        "context-menu",
+        "agent-policy",
+        "agent-opencode",
+        "agent-exit",
+        "session-palette",
+        "configuration-palette",
+    ] {
+        assert!(
+            yinz_steel_builtins::BUILTIN_STEEL_FILES
+                .get_file(format!("{name}.integration.test.scm"))
+                .is_some(),
+            "missing migrated integration suite for {name}"
+        );
+    }
+    for name in yinz_runtime::consts::BUILTIN_PLUGIN_NAMES {
+        if yinz_steel_builtins::BUILTIN_STEEL_FILES
+            .get_file(format!("{name}.integration.test.scm"))
+            .is_none()
+        {
+            continue;
+        }
         let report = yinz_server::plugin_testing::run_named(
             Path::new("/unused"),
             name,
@@ -22,16 +46,20 @@ fn installed_builtin_typescript_integration_suites() {
 #[test]
 fn installed_integration_failure_and_timeout_reap_the_owned_session() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("cleanup.integration.test.ts");
+    let path = root.path().join("cleanup.integration.test.scm");
     for (body, failure) in [
-        ("throw Error('intentional failure')", "intentional failure"),
-        ("while(true){}", "deadline"),
+        (r#"(error "intentional failure")"#, "intentional failure"),
+        ("(let loop () (loop))", "deadline"),
         (
-            "console.log('x'.repeat(65536)); throw Error('large output failure')",
+            r#"(yinz-log (make-string 65536 #\x)) (error "large output failure")"#,
             "large output failure",
         ),
     ] {
-        std::fs::write(&path,format!("import {{test,session}} from 'yinz:testing'; test('cleanup',()=>{{session.start(); {body};}});")).unwrap();
+        std::fs::write(
+            &path,
+            format!(r#"(test "cleanup" (lambda () (test-session "start") {body}))"#),
+        )
+        .unwrap();
         let report = yinz_server::plugin_testing::run(
             &path,
             &PluginTestOptions {
@@ -77,8 +105,8 @@ fn installed_integration_failure_and_timeout_reap_the_owned_session() {
 #[test]
 fn installed_integration_discovery_failure_has_no_owned_server() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("discovery.integration.test.ts");
-    std::fs::write(&path, "throw Error('controlled discovery failure');").unwrap();
+    let path = root.path().join("discovery.integration.test.scm");
+    std::fs::write(&path, r#"(error "controlled discovery failure")"#).unwrap();
     let report = yinz_server::plugin_testing::run(
         &path,
         &PluginTestOptions::default(),
@@ -108,56 +136,82 @@ fn installed_integration_discovery_failure_has_no_owned_server() {
 #[test]
 fn installed_controller_routes_input_enforces_permissions_and_isolates_storage() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("echo 日本 #?%23%2523.ts"), r#"
-import z, {definePlugin} from 'yinz:plugin';
-let text='ready';
-export default definePlugin({
-  async load() {
-    await z.waitForPermissions(['ReadCliPipes','PluginData']);
-    z.subscribe(['Key']);
-    z.data.define('fixture', {value:{kind:'Text',required:true}}, {version:1});
-    z.data.apply([z.data.put('fixture',{value:import.meta.url},{uid:'url'})]);
-    try { z.command('RunCommand', [['/usr/bin/true'],{},'',{},64,null]); throw Error('permission bypass'); }
-    catch (error) { if (!String(error).includes('permission')) throw error; z.log('permission denied as expected'); }
-    z.requestRender();
-  },
-  update(event) {if (typeof event === 'object' && 'Key' in event && typeof event.Key.bare_key === 'object') {text += event.Key.bare_key.Char; return true;}},
-  pipe(message) { if (typeof message.source === 'object' && 'Cli' in message.source) {
-    z.command('CliPipeOutput',[message.source.Cli, JSON.stringify({echo:message.payload,url:import.meta.url})]);
-    z.command('UnblockCliPipeInput',message.source.Cli);
-  }},
-  render(rows,cols) {return text + ' size=' + rows + 'x' + cols;}
-});
-"#).unwrap();
-    let path = root.path().join("echo.integration.test.ts");
+    let plugin = root
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("echo 日本 #?%23%2523.scm");
+    let target = url::Url::from_file_path(&plugin).unwrap().to_string();
+    std::fs::write(&plugin, r#"
+(define target "TARGET_URL")
+(define text "ready")
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("ReadCliPipes" "PluginData")) (lambda (_)
+    (yinz-command (hash "Subscribe" '("Key")))
+    (yinz-data-define json-null (hash "name" "fixture" "version" 1 "attrs"
+      (list (hash "name" "value" "kind" "Text" "required" #t "indexed" #f "full_text" #f "unique" #f "default" json-null))))
+    (yinz-data-apply json-null (list (hash "Put" (hash "entity" "fixture" "uid" "url"
+      "values" (list (list "value" (hash "Text" target))) "expect_rev" json-null))))
+    (define refusal (with-handler %async-error
+      (yinz-command (hash "RunCommand" (list '("/usr/bin/true") (hash) "" (hash) 64 json-null))) #f))
+    (unless (and (string? refusal) (string-contains? refusal "'RunCommand' requires 'RunCommands'"))
+      (error "permission bypass"))
+    (yinz-log "permission denied as expected")
+    (yinz-request-render))))
+(define (update event)
+  (if (and (hash? event) (hash-contains? event "Key")
+           (hash? (hash-ref (hash-ref event "Key") "bare_key")))
+      (begin (set! text (string-append text (hash-ref (hash-ref (hash-ref event "Key") "bare_key") "Char"))) #t) #f))
+(define (pipe message)
+  (define source (hash-ref message "source"))
+  (when (and (hash? source) (hash-contains? source "Cli"))
+    (define id (hash-ref source "Cli"))
+    (yinz-command (hash "CliPipeOutput" (list id (yinz-json-string (hash "echo" (hash-ref message "payload") "url" target)))))
+    (yinz-command (hash "UnblockCliPipeInput" id))) #f)
+(define (render rows columns) (string-append text " size=" (number->string rows) "x" (number->string columns)))
+"#.replace("TARGET_URL", &target)).unwrap();
+    let path = root.path().join("echo.integration.test.scm");
     std::fs::write(&path, r#"
-import {test,session,assert,assertEquals,assertThrows,assertRejects} from 'yinz:testing';
-const target=import.meta.resolve('./echo%20%E6%97%A5%E6%9C%AC%20%23%3F%2523%252523.ts');
-for (const name of ['first isolated case','second isolated case']) test(name, {grants:['ReadCliPipes','PluginData']}, async () => {
-  assertThrows(()=>session.fixture({}, {forbidden:'exit 0'}),'RunCommands');
-  session.start();
-  await assertRejects(()=>session.waitFor('bounded frozen clock',()=>false,20),'timed out');
-  assertEquals(Date.now(),0);
-  await session.waitForText('yinz-test>');
-  assertEquals(session.catalog(), []);
-  session.text("printf 'terminal-%s' 'input' "); session.key('Enter');
-  await session.waitForText('terminal-input');
-  session.loadPlugin(target); await session.waitForText('ready size=');
-  session.text('xy'); await session.waitForText('readyxy');
-  const before=session.screen.match(/size=\d+x\d+/)?.[0];
-  session.resize(35,100); await session.waitFor('resize reaches plugin',()=>{
-    const after=session.screen.match(/size=\d+x\d+/)?.[0]; return !!after && after !== before;
-  });
-  assertEquals(JSON.parse(session.pipe('echo','payload',{plugin:target})),{echo:'payload',url:target});
-  const data=session.data(target,'fixture');
-  assertEquals(data.rows.length,1);
-  assertEquals(data.rows[0][data.columns.indexOf('value')],{Text:target});
-  await session.waitFor('permission denial logged',()=>session.logs.includes('permission denied as expected'));
-  assert(session.catalog().some(entity=>entity.def.name==='fixture'));
-  session.reload(target); await session.waitForText('ready size=');
-  assert(!session.screen.includes('readyxy'));
-});
-"#).unwrap();
+(define target "TARGET_URL")
+(define encoded-path "./echo%20%E6%97%A5%E6%9C%AC%20%23%3F%2523%252523.scm")
+(define pane-target "PANE_TARGET")
+(define (size)
+  (define parts (split-many (test-session "screen") "size="))
+  (and (pair? (cdr parts))
+    (let scan ([characters (string->list (cadr parts))] [result '()])
+      (if (and (pair? characters) (member (car characters) (string->list "0123456789x")))
+          (scan (cdr characters) (cons (car characters) result))
+          (and (pair? result) (list->string (reverse result)))))))
+(for-each (lambda (name)
+  (test name (hash "grants" '("ReadCliPipes" "PluginData")) (lambda ()
+    (assert-throws (lambda () (test-session "fixture" (hash "files" (hash) "commands" (hash "forbidden" "exit 0")))) "RunCommands")
+    (test-session "start")
+    (assert-throws (lambda () (test-wait-for "bounded frozen clock" (lambda () #f) 20)) "timed out")
+    (assert-equal (yinz-now-ms) 0) (assert-equal (yinz-wall-clock-ms) 0)
+    (test-wait-for-text "yinz-test>")
+    (assert-equal (test-session "catalog") '())
+    (test-session "text" "printf 'terminal-%s' 'input' ") (test-session "key" "Enter")
+    (test-wait-for-text "terminal-input")
+    (test-session "load" (hash "path" encoded-path)) (test-wait-for-text "ready size=")
+    (test-wait-for "encoded URL identifies the loaded pane" (lambda ()
+      (not (null? (filter (lambda (pane) (equal? (%async-get pane "plugin_url" #f) pane-target)) (test-session "panes"))))))
+    (test-session "text" "xy") (test-wait-for-text "readyxy")
+    (define before (size))
+    (test-session "resize" (hash "rows" 35 "columns" 100))
+    (test-wait-for "resize reaches plugin" (lambda () (define after (size)) (and after (not (equal? after before)))))
+    (assert-equal (yinz-json-parse (test-session "pipe" (hash "name" "echo" "payload" "payload" "plugin" target)))
+                  (hash "echo" "payload" "url" target))
+    (define data (test-session "data" (hash "plugin" target "entity" "fixture")))
+    (assert-equal (length (hash-ref data "rows")) 1)
+    (define value-index (- (length (hash-ref data "columns")) (length (member "value" (hash-ref data "columns")))))
+    (assert-equal (list-ref (car (hash-ref data "rows")) value-index) (hash "Text" target))
+    (test-wait-for "permission denial logged" (lambda () (string-contains? (test-session "logs") "permission denied as expected")))
+    (assert (not (null? (filter (lambda (entity) (equal? (hash-ref (hash-ref entity "def") "name") "fixture")) (test-session "catalog")))))
+    (test-session "reload" target) (test-wait-for-text "ready size=")
+    (assert (not (string-contains? (test-session "screen") "readyxy"))))))
+  '("first isolated case" "second isolated case"))
+"#.replace("TARGET_URL", &target)
+    .replace("\"PANE_TARGET\"", &serde_json::to_string(&format!("file:{}", plugin.display())).unwrap())).unwrap();
     let report =
         yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
             .unwrap();
@@ -168,42 +222,41 @@ for (const name of ['first isolated case','second isolated case']) test(name, {g
 fn installed_async_plugin_api_returns_results_and_cancels_while_input_continues() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
-        root.path().join("hanging.test.ts"),
-        "import {test} from 'yinz:testing'; test('loop',()=>{while(true){}});",
+        root.path().join("hanging.test.scm"),
+        r#"(test "loop" (lambda () (let loop () (loop))))"#,
     )
     .unwrap();
-    std::fs::write(root.path().join("caller.ts"), r#"
-import z, {definePlugin, type CancellablePromise, type PluginTestReport} from 'yinz:plugin';
-let status='starting', pending: CancellablePromise<PluginTestReport> | undefined;
-export default definePlugin({
-  async load() {
-    await z.waitForPermissions(['AuthorPlugins']); z.subscribe(['Key']);
-    const report=await z.testPlugin('agent-policy',{kind:'unit',filter:'session'});
-    z.log('API_REPORT '+JSON.stringify(report));
-    pending=z.testPlugin('hanging.test.ts',{kind:'unit'});
-    status='test running; press c to cancel'; z.requestRender();
-    try {await pending; status='unexpected completion';} catch(error){status='cancelled: '+String(error);}
-    z.requestRender();
-  },
-  update(event) {if(typeof event==='object' && 'Key' in event) {pending?.cancel(); return true;}},
-  render(){return status;}
-});
+    std::fs::write(root.path().join("caller.scm"), r#"
+(define status "starting") (define pending #f)
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("AuthorPlugins")) (lambda (_)
+    (yinz-command (hash "Subscribe" '("Key")))
+    (yinz-then (yinz-test-plugin "agent-policy" (hash "kind" "unit" "filter" "session")) (lambda (report)
+      (yinz-log (string-append "API_REPORT " (yinz-json-string report)))
+      (set! pending (yinz-test-plugin "hanging.test.scm" (hash "kind" "unit")))
+      (set! status "test running; press c to cancel") (yinz-request-render)
+      (yinz-then (yinz-catch (yinz-then pending (lambda (_) (set! status "unexpected completion")))
+          (lambda (failure) (set! status (string-append "cancelled: " failure))))
+        (lambda (_) (yinz-request-render))))))))
+(define (update event)
+  (if (and (hash? event) (hash-contains? event "Key"))
+      (begin (when pending (yinz-cancel! pending)) #t) #f))
+(define (render rows columns) status)
 "#).unwrap();
-    let path = root.path().join("api.integration.test.ts");
+    let path = root.path().join("api.integration.test.scm");
     std::fs::write(
         &path,
         r#"
-import {test,session,assert,assertEquals} from 'yinz:testing';
-test('async API agrees and stays responsive', {grants:['AuthorPlugins']}, async () => {
-  session.start(); session.loadPlugin('./caller.ts');
-  await session.waitForText('test running; press c');
-  const line=session.logs.split('API_REPORT ').at(-1)!.split('\n')[0].trim();
-  const report=JSON.parse(line);
-  assertEquals(report.tests.length,1);
-  assertEquals(report.tests[0].kind,'unit'); assertEquals(report.tests[0].status,'passed');
-  assert(report.tests[0].name.includes('session'));
-  session.key('c'); await session.waitForText('cancelled:');
-});
+(test "async API agrees and stays responsive" (hash "grants" '("AuthorPlugins")) (lambda ()
+  (test-session "start") (test-session "load" (hash "path" "./caller.scm"))
+  (test-wait-for-text "test running; press c")
+  (define line (trim (car (split-many (car (reverse (split-many (test-session "logs") "API_REPORT "))) "\n"))))
+  (define report (yinz-json-parse line))
+  (assert-equal (length (hash-ref report "tests")) 1)
+  (define result (car (hash-ref report "tests")))
+  (assert-equal (hash-ref result "kind") "unit") (assert-equal (hash-ref result "status") "passed")
+  (assert (string-contains? (hash-ref result "name") "session"))
+  (test-session "key" "c") (test-wait-for-text "cancelled:")))
 "#,
     )
     .unwrap();
@@ -234,20 +287,23 @@ fn assert_server_gone(output: &str) {
 #[test]
 fn installed_integration_server_crash_is_a_failure_and_is_reaped() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("crash.ts"), r#"
-import z, {definePlugin} from 'yinz:plugin';
-export default definePlugin({async load(){await z.waitForPermissions(['RunCommands']); await z.runCommand({command:['crash-server']});}});
-"#).unwrap();
-    let path = root.path().join("crash.integration.test.ts");
+    std::fs::write(
+        root.path().join("crash.scm"),
+        r#"
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("RunCommands")) (lambda (_)
+    (yinz-run-command (hash "command" '("crash-server"))))))
+"#,
+    )
+    .unwrap();
+    let path = root.path().join("crash.integration.test.scm");
     std::fs::write(
         &path,
         r#"
-import {test,session} from 'yinz:testing';
-test('server crash', {grants:['RunCommands']}, async () => {
-  session.fixture({}, {'crash-server':'kill -KILL "$PPID"'});
-  session.start(); session.loadPlugin('./crash.ts');
-  await session.waitForText('never rendered');
-});
+(test "server crash" (hash "grants" '("RunCommands")) (lambda ()
+  (test-session "fixture" (hash "files" (hash) "commands" (hash "crash-server" "kill -KILL \"$PPID\"")))
+  (test-session "start") (test-session "load" (hash "path" "./crash.scm"))
+  (test-wait-for-text "never rendered")))
 "#,
     )
     .unwrap();
@@ -317,33 +373,31 @@ fn installed_cli_runs_builtin_tests_without_a_configured_plugin_directory() {
 fn installed_session_rpc_uses_real_headless_routing_storage_and_caller_identity() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
-        root.path().join("service.ts"),
+        root.path().join("service.scm"),
         r#"
-import z, {definePlugin} from 'yinz:plugin';
-export default definePlugin({async load(){
-  await z.waitForPermissions(['PluginData','MessageAndLaunchOtherPlugins']);
-  z.data.define('rpc_rows',{value:{kind:'Text',required:true}},{version:1});
-  z.rpc.handle('echo',(payload,call)=>{
-    if(payload==='fail')throw Error('fixture RPC failure');
-    z.data.apply([z.data.put('rpc_rows',{value:String(payload)},{uid:'last'})]);
-    return {echo:payload,source:call.source?.Plugin ?? null};
-  });
-  z.log('RPC_SERVICE_READY');
-}});
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("PluginData" "MessageAndLaunchOtherPlugins")) (lambda (_)
+    (yinz-data-define json-null (hash "name" "rpc_rows" "version" 1 "attrs"
+      (list (hash "name" "value" "kind" "Text" "required" #t "indexed" #f "full_text" #f "unique" #f "default" json-null))))
+    (yinz-rpc-handle "echo" (lambda (payload call)
+      (when (equal? payload "fail") (error "fixture RPC failure"))
+      (yinz-data-apply json-null (list (hash "Put" (hash "entity" "rpc_rows" "uid" "last"
+        "values" (list (list "value" (hash "Text" payload))) "expect_rev" json-null))))
+      (hash "echo" payload "source" (%async-get (hash-ref call "source") "Plugin" json-null))))
+    (yinz-log "RPC_SERVICE_READY"))))
 "#,
     )
     .unwrap();
-    let path = root.path().join("rpc.integration.test.ts");
+    let path = root.path().join("rpc.integration.test.scm");
     std::fs::write(&path,r#"
-import {test,session,assert,assertEquals,assertRejects} from 'yinz:testing';
-test('headless RPC uses authenticated callers and persists its result',{grants:['ReadCliPipes','MessageAndLaunchOtherPlugins','PluginData']},async()=>{
-  session.start({backgroundPlugins:['./service.ts']});
-  await session.waitFor('headless RPC ready',()=>session.logs.includes('RPC_SERVICE_READY'));
-  const reply=await session.rpc('./service.ts','echo','hello') as {echo:string;source:number};
-  assertEquals(reply.echo,'hello'); assert(typeof reply.source==='number');
-  assertEquals(session.data('./service.ts','rpc_rows').rows.length,1);
-  await assertRejects(()=>session.rpc('./service.ts','echo','fail'),'fixture RPC failure');
-});
+(test "headless RPC uses authenticated callers and persists its result"
+  (hash "grants" '("ReadCliPipes" "MessageAndLaunchOtherPlugins" "PluginData")) (lambda ()
+    (test-session "start" (hash "backgroundPlugins" '("./service.scm")))
+    (test-wait-for "headless RPC ready" (lambda () (string-contains? (test-session "logs") "RPC_SERVICE_READY")))
+    (define reply (test-session "rpc" (hash "plugin" "./service.scm" "name" "echo" "payload" "hello" "timeoutMs" 10000)))
+    (assert-equal (hash-ref reply "echo") "hello") (assert (number? (hash-ref reply "source")))
+    (assert-equal (length (hash-ref (test-session "data" (hash "plugin" "./service.scm" "entity" "rpc_rows")) "rows")) 1)
+    (assert-throws (lambda () (test-session "rpc" (hash "plugin" "./service.scm" "name" "echo" "payload" "fail" "timeoutMs" 10000))) "fixture RPC failure")))
 "#).unwrap();
     let report =
         yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
@@ -354,40 +408,37 @@ test('headless RPC uses authenticated callers and persists its result',{grants:[
 #[test]
 fn installed_palette_uses_real_keyboard_discovery_and_execution() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("palette.ts"), r#"
-import z, {definePlugin} from 'yinz:plugin';
-export default definePlugin({async load(){
-  await z.waitForPermissions(['ReadApplicationState']);
-  z.commandPalette.registerProvider({id:'static-fixture',title:'Static fixture',actions:[{
-    id:'static',label:'Unique static fixture action',aliases:['static-keyword'],run(){z.log('STATIC_EXECUTED');},
-  }]});
-  z.commandPalette.registerProvider({id:'function-fixture',title:'Function fixture',provideActions(request){
-    return request.query.includes('dynamic-keyword') ? [{
-      id:'dynamic',label:'Unique dynamic fixture action',run(){z.log('DYNAMIC_EXECUTED');},
-    }] : [];
-  }});
-  z.log('PALETTE_REGISTERED');
-}});
-"#).unwrap();
-    let path = root.path().join("palette.integration.test.ts");
+    std::fs::write(
+        root.path().join("palette.scm"),
+        r#"
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("ReadApplicationState")) (lambda (_)
+    (yinz-palette-register "static-fixture" "Static fixture"
+      (list (hash "id" "static" "label" "Unique static fixture action" "aliases" '("static-keyword")
+        "run" (lambda (values context) (yinz-log "STATIC_EXECUTED") json-null))))
+    (yinz-palette-register "function-fixture" "Function fixture" (lambda (query context)
+      (if (string-contains? query "dynamic-keyword")
+          (list (hash "id" "dynamic" "label" "Unique dynamic fixture action"
+            "run" (lambda (values context) (yinz-log "DYNAMIC_EXECUTED") json-null))) '())))
+    (yinz-log "PALETTE_REGISTERED"))))
+"#,
+    )
+    .unwrap();
+    let path = root.path().join("palette.integration.test.scm");
     std::fs::write(
         &path,
         r#"
-import {test,session,assert} from 'yinz:testing';
-test('real palette input',{grants:['ReadApplicationState']},async()=>{
-  session.start({backgroundPlugins:['./palette.ts']});
-  await session.waitFor('palette registration',()=>session.logs.includes('PALETTE_REGISTERED'));
-  for(const [query,label,marker] of [
-    ['static-keyword','Unique static fixture action','STATIC_EXECUTED'],
-    ['dynamic-keyword','Unique dynamic fixture action','DYNAMIC_EXECUTED'],
-  ]) {
-    session.key('Ctrl Alt p'); session.text(query);
-    await session.waitForText(label);
-    assert(!session.logs.includes(marker));
-    session.key('Enter');
-    await session.waitFor('palette action executed',()=>session.logs.includes(marker));
-  }
-});
+(test "real palette input" (hash "grants" '("ReadApplicationState")) (lambda ()
+  (test-session "start" (hash "backgroundPlugins" '("./palette.scm")))
+  (test-wait-for "palette registration" (lambda () (string-contains? (test-session "logs") "PALETTE_REGISTERED")))
+  (for-each (lambda (entry)
+    (define query (car entry)) (define label (cadr entry)) (define marker (caddr entry))
+    (test-session "key" "Ctrl Alt p") (test-session "text" query)
+    (test-wait-for-text label) (assert (not (string-contains? (test-session "logs") marker)))
+    (test-session "key" "Enter")
+    (test-wait-for "palette action executed" (lambda () (string-contains? (test-session "logs") marker))))
+    '(("static-keyword" "Unique static fixture action" "STATIC_EXECUTED")
+      ("dynamic-keyword" "Unique dynamic fixture action" "DYNAMIC_EXECUTED")))))
 "#,
     )
     .unwrap();
@@ -401,42 +452,39 @@ test('real palette input',{grants:['ReadApplicationState']},async()=>{
 fn installed_headless_lifecycle_exercises_the_permission_modal() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
-        root.path().join("background.ts"),
+        root.path().join("background.scm"),
         r#"
-import z from 'yinz:plugin';
-export default {async load() {
-  await z.waitForPermissions(['ReadApplicationState']);
-  z.log('HEADLESS_READY');
-}};
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("ReadApplicationState")) (lambda (_) (yinz-log "HEADLESS_READY"))))
 "#,
     )
     .unwrap();
-    let path = root.path().join("background.integration.test.ts");
+    let path = root.path().join("background.integration.test.scm");
     std::fs::write(&path, r#"
-import {test,session,assert,assertEquals,assertThrows} from 'yinz:testing';
-test('headless start and stop',{grants:['ReadApplicationState']},async()=>{
-  session.start({autoGrantPermissions:false});
-  await session.waitForText('yinz-test>');
-  await session.waitFor('focused terminal metadata',()=>session.panes.some(p=>!p.is_plugin && p.is_focused));
-  const terminal=session.panes.find(p=>!p.is_plugin && p.is_focused);
-  assert(terminal);
-  const first=session.loadPlugin('./background.ts',{headless:true,configuration:{shared:'true'}});
-  assert(first);
-  const id=first.plugins[0].id;
-  assertEquals(session.loadPlugin('./background.ts',{headless:true,configuration:{shared:'true'}})?.plugins[0].id,id);
-  await session.waitForText('Plugin permissions');
-  assertEquals(session.status('./background.ts').plugins[0].state,'awaiting_permission');
-  session.key('Tab'); session.key('Enter');
-  await session.waitFor('permission promise settles',()=>session.logs.includes('HEADLESS_READY'));
-  assertEquals(session.status('./background.ts').plugins[0].state,'running');
-  assertEquals(session.reload(`plugin_${id}`).plugins[0].id,id);
-  await session.waitFor('replacement available',()=>session.status(`plugin_${id}`).plugins[0].state==='running');
-  assertEquals(session.panes.find(p=>!p.is_plugin && p.is_focused)?.id,terminal.id);
-  assertEquals(session.panes.filter(p=>!p.is_plugin).length,1);
-  assertEquals(session.stop(`plugin_${id}`).plugins[0].state,'stopped');
-  assertEquals(session.status('./background.ts').plugins,[]);
-  assertThrows(()=>session.reload('./background.ts'),'not loaded; use plugins start');
-});
+(define (focused-terminals)
+  (filter (lambda (pane) (and (not (hash-ref pane "is_plugin")) (hash-ref pane "is_focused"))) (test-session "panes")))
+(define (plugin-status path) (car (hash-ref (test-session "status" path) "plugins")))
+(test "headless start and stop" (hash "grants" '("ReadApplicationState")) (lambda ()
+  (test-session "start" (hash "autoGrantPermissions" #f))
+  (test-wait-for-text "yinz-test>")
+  (test-wait-for "focused terminal metadata" (lambda () (pair? (focused-terminals))))
+  (define terminal (car (focused-terminals))) (assert terminal)
+  (define first (test-session "load" (hash "path" "./background.scm" "headless" #t "configuration" (hash "shared" "true"))))
+  (assert first) (define id (hash-ref (car (hash-ref first "plugins")) "id"))
+  (assert-equal (hash-ref (car (hash-ref (test-session "load" (hash "path" "./background.scm" "headless" #t "configuration" (hash "shared" "true"))) "plugins")) "id") id)
+  (test-wait-for-text "Plugin permissions")
+  (assert-equal (hash-ref (plugin-status "./background.scm") "state") "awaiting_permission")
+  (test-session "key" "Tab") (test-session "key" "Enter")
+  (test-wait-for "permission promise settles" (lambda () (string-contains? (test-session "logs") "HEADLESS_READY")))
+  (assert-equal (hash-ref (plugin-status "./background.scm") "state") "running")
+  (define target (string-append "plugin_" (number->string id)))
+  (assert-equal (hash-ref (car (hash-ref (test-session "reload" target) "plugins")) "id") id)
+  (test-wait-for "replacement available" (lambda () (equal? (hash-ref (plugin-status target) "state") "running")))
+  (assert-equal (hash-ref (car (focused-terminals)) "id") (hash-ref terminal "id"))
+  (assert-equal (length (filter (lambda (pane) (not (hash-ref pane "is_plugin"))) (test-session "panes"))) 1)
+  (assert-equal (hash-ref (car (hash-ref (test-session "stop" target) "plugins")) "state") "stopped")
+  (assert-equal (hash-ref (test-session "status" "./background.scm") "plugins") '())
+  (assert-throws (lambda () (test-session "reload" "./background.scm")) "not loaded; use plugins start")))
 "#).unwrap();
     let report =
         yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))

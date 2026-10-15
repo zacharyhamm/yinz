@@ -13,25 +13,30 @@
 // test comment 3
 // test comment 4
 // test comment 5
-//! The plugin host: loads Wasm and Deno plugins, runs them on the plugin thread, and turns their
+//! The plugin host: loads Steel Scheme plugins, runs them on the plugin thread, and turns their
 //! commands into instructions for the other server threads. It talks to the rest of the server
 //! over [`yinz_bus`], using [`yinz_routing`] to dispatch actions. It owns plugin job queues.
-pub mod deno;
+mod agent_provider;
+pub use agent_provider::inspect_agent_provider;
+mod background_worker;
+mod compilation_worker;
+mod permissions;
 #[doc(hidden)]
-pub use deno::run_compilation_worker;
+pub use compilation_worker::run_compilation_worker;
+mod binary_data;
+mod event;
 mod host_bridge;
+mod steel;
+pub mod testing;
 pub use host_bridge::ServerSession;
-pub mod logging_pipe;
 mod pinned_executor;
 mod pipes;
 pub use yinz_plugin_authoring as plugin_authoring;
-mod plugin_limits;
+mod plugin_bridge;
 mod plugin_loader;
 mod plugin_map;
-mod plugin_worker;
 pub mod queues;
 pub(crate) mod response;
-mod wasm_bridge;
 mod watch_filesystem;
 mod yinz_exports;
 use log::info;
@@ -43,17 +48,12 @@ pub use yinz_process::pty_host;
 pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 pub use yinz_types::pane_id::PaneId;
 
-pub fn get_engine() -> Engine {
-    log::info!("Loading plugins using Wasmi interpreter");
-    Engine::default()
-}
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
-use wasmi::Engine;
 
 use yinz_bus::route::NotificationEnd;
 use yinz_bus::screen::ScreenInstruction;
@@ -66,7 +66,7 @@ use {
     yinz_types::input::hooks::Hooks,
 };
 
-use wasm_bridge::WasmBridge;
+use plugin_bridge::PluginBridge;
 mod cli_data;
 
 use yinz_runtime::errors::prelude::*;
@@ -90,7 +90,6 @@ use {
 #[allow(clippy::too_many_arguments)]
 pub fn plugin_thread_main(
     bus: Bus<PluginInstruction>,
-    engine: Engine,
     data_dir: PathBuf,
     data_access: Arc<DataAccess>,
     mut layout: Box<Layout>,
@@ -110,7 +109,6 @@ pub fn plugin_thread_main(
     // which plugin owns a hook point and what a right-click offers without a restart.
     mut hooks: Hooks,
     mut context_menu: ContextMenu,
-    builtin_plugins_dir: Option<PathBuf>,
     // the client id that started the session,
     // we need it here because the thread's own list of connected clients might not yet be updated
     // on session start when we need to load the background plugins, and so we must have an
@@ -120,7 +118,7 @@ pub fn plugin_thread_main(
     // rename reaches plugins loaded after it.
     server_session: ServerSession,
 ) -> Result<()> {
-    info!("Wasm main thread starts");
+    info!("Plugin main thread starts");
     let mut notification_policy = None;
     let yinz_data_dir = data_dir.clone();
     layout.populate_plugin_aliases_in_layout(&plugin_aliases);
@@ -130,9 +128,8 @@ pub fn plugin_thread_main(
     let (shutdown_send, mut shutdown_receive) = tokio::sync::mpsc::channel::<()>(1);
 
     let palette_data = data_access.clone();
-    let mut wasm_bridge = WasmBridge::new(
+    let mut plugin_bridge = PluginBridge::new(
         bus.senders.clone(),
-        engine,
         yinz_data_dir,
         data_access,
         path_to_default_shell,
@@ -141,7 +138,6 @@ pub fn plugin_thread_main(
         default_shell,
         layout_dir,
         user_plugin_dir,
-        builtin_plugins_dir,
         available_layouts,
         available_layout_errors,
         default_mode,
@@ -159,19 +155,19 @@ pub fn plugin_thread_main(
         })
         .cloned()
         .collect();
-    wasm_bridge
+    plugin_bridge
         .reconcile_background_plugins(background_plugins, initiating_client_id)
         .context("reconcile startup background plugins")
         .non_fatal();
     for declaration in host_required {
-        wasm_bridge
+        plugin_bridge
             .start_background_plugin(declaration.clone(), initiating_client_id, true)
             .with_context(|| format!("start host-required plugin {declaration:?}"))
             .non_fatal();
     }
     // A session starts once. The hook fires for its first client, below, not here: a plugin
     // loaded before any client is connected is loaded again for the first one that is
-    // (`WasmBridge::add_client`), and an event handed to the first instance would be lost with
+    // (`PluginBridge::add_client`), and an event handed to the first instance would be lost with
     // it.
     let mut session_started = false;
 
@@ -226,7 +222,7 @@ pub fn plugin_thread_main(
                     };
                     plugin.populate_run_plugin_if_needed(&plugin_aliases);
                     let cwd = plugin.get_initial_cwd();
-                    let (plugin_id, _) = wasm_bridge.load_plugin(
+                    let (plugin_id, _) = plugin_bridge.load_plugin(
                         &plugin.get_run_plugin(),
                         Some(tab_id),
                         size,
@@ -273,14 +269,14 @@ pub fn plugin_thread_main(
                 run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
                 let cwd = run_plugin_or_alias.get_initial_cwd().or(cwd).or_else(|| {
                     if let Some(plugin_id) = focused_plugin_id {
-                        wasm_bridge.get_plugin_cwd(plugin_id, client_id)
+                        plugin_bridge.get_plugin_cwd(plugin_id, client_id)
                     } else {
                         None
                     }
                 });
                 let run_plugin = run_plugin_or_alias.get_run_plugin();
                 let start_suppressed = false;
-                match wasm_bridge.load_plugin(
+                match plugin_bridge.load_plugin(
                     &run_plugin,
                     tab_index,
                     size,
@@ -329,7 +325,7 @@ pub fn plugin_thread_main(
                     payload,
                     client_id,
                     &hooks,
-                    &mut wasm_bridge,
+                    &mut plugin_bridge,
                     &bus,
                     &plugin_aliases,
                     &shutdown_send,
@@ -341,7 +337,7 @@ pub fn plugin_thread_main(
                     client_id,
                     &hooks,
                     &context_menu,
-                    &mut wasm_bridge,
+                    &mut plugin_bridge,
                     &plugin_aliases,
                     &bus,
                     &shutdown_send,
@@ -350,20 +346,20 @@ pub fn plugin_thread_main(
             PluginInstruction::LoadBackgroundPlugin(run_plugin_or_alias, client_id) => {
                 load_background_plugin(
                     run_plugin_or_alias,
-                    &mut wasm_bridge,
+                    &mut plugin_bridge,
                     &bus,
                     &plugin_aliases,
                     client_id,
                 );
             },
             PluginInstruction::Update(updates) => {
-                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+                plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
             PluginInstruction::InputBarrier(plugin_id, completion) => {
-                wasm_bridge.input_barrier(plugin_id, completion);
+                plugin_bridge.input_barrier(plugin_id, completion);
             },
             PluginInstruction::PaletteNote(request) => {
-                wasm_bridge.palette_note(*request);
+                plugin_bridge.palette_note(*request);
             },
             PluginInstruction::PaletteAgent(request) => {
                 let senders = bus.senders.clone();
@@ -374,34 +370,44 @@ pub fn plugin_thread_main(
                     yinz_exports::palette_agents::handle(*request, &senders, &data);
                 });
             },
-            PluginInstruction::DenoPalette(delivery) => {
-                wasm_bridge.deno_palette(delivery, shutdown_send.clone());
+            PluginInstruction::PluginPalette(delivery) => {
+                plugin_bridge.plugin_palette(delivery, shutdown_send.clone());
             },
-            PluginInstruction::DenoTick(plugin_id, _client_id, generation) => {
-                wasm_bridge.deno_tick(plugin_id, generation, shutdown_send.clone());
+            PluginInstruction::PluginTick(plugin_id, _client_id, generation) => {
+                plugin_bridge.plugin_tick(plugin_id, generation, shutdown_send.clone());
             },
-            PluginInstruction::DenoEvent(plugin_id, client_id, generation, event) => {
-                let events = drain_deno_events(
+            PluginInstruction::PluginEvent(plugin_id, client_id, generation, event) => {
+                let events = drain_plugin_events(
                     &bus,
                     plugin_id,
                     generation,
                     vec![(client_id, event, None)],
                     &mut queued,
                 );
-                wasm_bridge.deno_replies(plugin_id, generation, events, shutdown_send.clone())?;
+                plugin_bridge.plugin_replies(
+                    plugin_id,
+                    generation,
+                    events,
+                    shutdown_send.clone(),
+                )?;
             },
-            PluginInstruction::DenoReply(plugin_id, client_id, generation, event, reply) => {
-                let events = drain_deno_events(
+            PluginInstruction::PluginReply(plugin_id, client_id, generation, event, reply) => {
+                let events = drain_plugin_events(
                     &bus,
                     plugin_id,
                     generation,
                     vec![(client_id, event, Some(reply))],
                     &mut queued,
                 );
-                wasm_bridge.deno_replies(plugin_id, generation, events, shutdown_send.clone())?;
+                plugin_bridge.plugin_replies(
+                    plugin_id,
+                    generation,
+                    events,
+                    shutdown_send.clone(),
+                )?;
             },
-            PluginInstruction::DenoDispose(plugin_id, generation) => {
-                wasm_bridge.deno_dispose(plugin_id, generation);
+            PluginInstruction::PluginDispose(plugin_id, generation) => {
+                plugin_bridge.plugin_dispose(plugin_id, generation);
             },
             PluginInstruction::Unload(pid) => {
                 // Eventual cleanup for runtime unloads. Screen destruction paths drop notices
@@ -409,7 +415,7 @@ pub fn plugin_thread_main(
                 bus.senders
                     .send_to_screen(ScreenInstruction::SetQuitNotice(pid, None, false))
                     .non_fatal();
-                wasm_bridge.unload_plugin(pid)?;
+                plugin_bridge.unload_plugin(pid)?;
             },
             PluginInstruction::Reload(
                 should_float,
@@ -426,7 +432,7 @@ pub fn plugin_thread_main(
                 run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
                 match run_plugin_or_alias.get_run_plugin() {
                     Some(run_plugin) => {
-                        match wasm_bridge.reload_plugin(&run_plugin) {
+                        match plugin_bridge.reload_plugin(&run_plugin) {
                             Ok(_) => {
                                 let _ = bus
                                     .senders
@@ -442,7 +448,7 @@ pub fn plugin_thread_main(
                                     // the cli who spawned the command and is not an existing client_id
                                     let skip_cache = true; // when reloading we always skip cache
                                     let start_suppressed = false;
-                                    match wasm_bridge.load_plugin(
+                                    match plugin_bridge.load_plugin(
                                         &Some(run_plugin),
                                         Some(tab_index),
                                         size,
@@ -489,12 +495,12 @@ pub fn plugin_thread_main(
                 }
             },
             PluginInstruction::ReloadPluginWithId(plugin_id) => {
-                wasm_bridge.reload_plugin_with_id(plugin_id).non_fatal();
+                plugin_bridge.reload_plugin_with_id(plugin_id).non_fatal();
             },
             PluginInstruction::ReloadPluginByUrl(mut run_plugin_or_alias) => {
                 run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
                 match run_plugin_or_alias.get_run_plugin() {
-                    Some(run_plugin) => match wasm_bridge.reload_plugin(&run_plugin) {
+                    Some(run_plugin) => match plugin_bridge.reload_plugin(&run_plugin) {
                         Ok(()) => {},
                         Err(e)
                             if matches!(
@@ -515,12 +521,12 @@ pub fn plugin_thread_main(
                 }
             },
             PluginInstruction::Resize(pid, new_columns, new_rows) => {
-                wasm_bridge.resize_plugin(pid, new_columns, new_rows, shutdown_send.clone())?;
+                plugin_bridge.resize_plugin(pid, new_columns, new_rows, shutdown_send.clone())?;
             },
             PluginInstruction::AddClient(client_id) => {
                 let started_at = std::time::Instant::now();
                 log::info!("attach trace: plugin thread client_id={client_id} AddClient begin");
-                let result = wasm_bridge.add_client(client_id);
+                let result = plugin_bridge.add_client(client_id);
                 log::info!(
                     "attach trace: plugin thread client_id={client_id} AddClient finished after {:?} ({})",
                     started_at.elapsed(),
@@ -532,7 +538,7 @@ pub fn plugin_thread_main(
                         notification_policy = load_notification_policy(
                             &hooks,
                             client_id,
-                            &mut wasm_bridge,
+                            &mut plugin_bridge,
                             &bus,
                             &plugin_aliases,
                         );
@@ -549,7 +555,7 @@ pub fn plugin_thread_main(
                         session_start_payload(&server_session, client_id),
                         client_id,
                         &hooks,
-                        &mut wasm_bridge,
+                        &mut plugin_bridge,
                         &bus,
                         &plugin_aliases,
                         &shutdown_send,
@@ -557,20 +563,23 @@ pub fn plugin_thread_main(
                 }
             },
             PluginInstruction::RemoveClient(client_id) => {
-                wasm_bridge.remove_client(client_id);
+                plugin_bridge.remove_client(client_id);
+            },
+            PluginInstruction::CliPipesDisconnected(pipes) => {
+                plugin_bridge.cli_pipes_disconnected(&pipes);
             },
             PluginInstruction::ResolveAgentEventProjects {
                 version,
                 agents,
                 projects,
             } => {
-                wasm_bridge.resolve_agent_event_projects(version, agents, projects);
+                plugin_bridge.resolve_agent_event_projects(version, agents, projects);
             },
             PluginInstruction::SubscribeCliClientToEvents {
                 client_id,
                 event_types,
             } => {
-                wasm_bridge.subscribe_cli_client_to_events(client_id, event_types);
+                plugin_bridge.subscribe_cli_client_to_events(client_id, event_types);
             },
             PluginInstruction::NewTab(
                 cwd,
@@ -588,9 +597,9 @@ pub fn plugin_thread_main(
                 log::info!("startup: plugin NewTab tab={tab_id:?} client={client_id} begin");
                 // prefer connected clients so as to avoid opening plugins in the background for
                 // CLI clients unless no-one else is connected
-                let client_id = if wasm_bridge.client_is_connected(&client_id) {
+                let client_id = if plugin_bridge.client_is_connected(&client_id) {
                     client_id
-                } else if let Some(first_client_id) = wasm_bridge.get_first_client_id() {
+                } else if let Some(first_client_id) = plugin_bridge.get_first_client_id() {
                     first_client_id
                 } else {
                     client_id
@@ -654,7 +663,7 @@ pub fn plugin_thread_main(
                             run_plugin.as_ref().map(|plugin| &plugin.location),
                             startup_started.elapsed()
                         );
-                        match wasm_bridge.load_plugin(
+                        match plugin_bridge.load_plugin(
                             &run_plugin,
                             Some(tab_id),
                             size,
@@ -701,9 +710,9 @@ pub fn plugin_thread_main(
                 completion_tx,
             ) => {
                 // 1. Prefer connected clients over CLI clients
-                let client_id = if wasm_bridge.client_is_connected(&client_id) {
+                let client_id = if plugin_bridge.client_is_connected(&client_id) {
                     client_id
-                } else if let Some(first_client_id) = wasm_bridge.get_first_client_id() {
+                } else if let Some(first_client_id) = plugin_bridge.get_first_client_id() {
                     first_client_id
                 } else {
                     client_id
@@ -747,7 +756,7 @@ pub fn plugin_thread_main(
                             let cwd = run_plugin_or_alias.get_initial_cwd();
                             let skip_cache = false;
 
-                            match wasm_bridge.load_plugin(
+                            match plugin_bridge.load_plugin(
                                 &run_plugin,
                                 Some(tab_id),
                                 size,
@@ -789,7 +798,7 @@ pub fn plugin_thread_main(
                 plugin_ids,
                 done_receiving_permissions,
             } => {
-                wasm_bridge.apply_cached_events_for_load(
+                plugin_bridge.apply_cached_events_for_load(
                     load_id,
                     plugin_ids,
                     done_receiving_permissions,
@@ -797,7 +806,7 @@ pub fn plugin_thread_main(
                 )?;
             },
             PluginInstruction::ApplyCachedWorkerMessages(plugin_id) => {
-                wasm_bridge.apply_cached_worker_messages(plugin_id)?;
+                plugin_bridge.apply_cached_worker_messages(plugin_id)?;
             },
             PluginInstruction::PostMessagesToPluginWorker(
                 plugin_id,
@@ -805,7 +814,7 @@ pub fn plugin_thread_main(
                 worker_name,
                 messages,
             ) => {
-                wasm_bridge.post_messages_to_plugin_worker(
+                plugin_bridge.post_messages_to_plugin_worker(
                     plugin_id,
                     client_id,
                     worker_name,
@@ -818,7 +827,7 @@ pub fn plugin_thread_main(
                     Some(client_id),
                     Event::CustomMessage(message, payload),
                 )];
-                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+                plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
             PluginInstruction::NotificationClicked {
                 plugin_id,
@@ -828,7 +837,7 @@ pub fn plugin_thread_main(
                 payload,
             } => {
                 let client_id = client_for_notification_click(
-                    wasm_bridge.plugin_is_shared(&plugin_id),
+                    plugin_bridge.plugin_is_shared(&plugin_id),
                     raiser,
                     clicker,
                 );
@@ -837,7 +846,7 @@ pub fn plugin_thread_main(
                     Some(client_id),
                     Event::CustomMessage(message, payload),
                 )];
-                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+                plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
             PluginInstruction::PluginSubscribedToEvents(
                 plugin_id,
@@ -855,7 +864,7 @@ pub fn plugin_thread_main(
                     );
                 }
                 if events.contains(&EventType::AgentProvidersChanged) {
-                    wasm_bridge.update_plugins(
+                    plugin_bridge.update_plugins(
                         vec![(
                             Some(plugin_id),
                             Some(client_id),
@@ -865,10 +874,10 @@ pub fn plugin_thread_main(
                     )?;
                 }
                 if events.contains(&EventType::InitialKeybinds) {
-                    wasm_bridge.send_initial_keybinds_to_plugin(plugin_id, client_id);
+                    plugin_bridge.send_initial_keybinds_to_plugin(plugin_id, client_id);
                 }
                 if events.contains(&EventType::HostTerminalThemeChanged) {
-                    wasm_bridge.send_host_terminal_theme_mode_to_plugin(plugin_id, client_id);
+                    plugin_bridge.send_host_terminal_theme_mode_to_plugin(plugin_id, client_id);
                 }
                 if events.contains(&EventType::HintText) {
                     let _ = bus
@@ -882,7 +891,7 @@ pub fn plugin_thread_main(
                 client_id,
                 permissions,
             } => {
-                wasm_bridge.request_permissions(
+                plugin_bridge.request_permissions(
                     plugin_id,
                     instance_id,
                     client_id,
@@ -895,7 +904,7 @@ pub fn plugin_thread_main(
                 status,
                 cache_path,
             } => {
-                wasm_bridge.answer_permissions(
+                plugin_bridge.answer_permissions(
                     request_id,
                     status,
                     cache_path,
@@ -909,7 +918,7 @@ pub fn plugin_thread_main(
             ) => {
                 populate_session_layout_metadata(
                     &mut session_layout_metadata,
-                    &wasm_bridge,
+                    &plugin_bridge,
                     &plugin_aliases,
                     None,
                     None,
@@ -927,7 +936,7 @@ pub fn plugin_thread_main(
             ) => {
                 populate_session_layout_metadata(
                     &mut session_layout_metadata,
-                    &wasm_bridge,
+                    &plugin_bridge,
                     &plugin_aliases,
                     None,
                     None,
@@ -947,7 +956,7 @@ pub fn plugin_thread_main(
                 trace.mark("plugin metadata");
                 populate_session_layout_metadata(
                     &mut session_layout_metadata,
-                    &wasm_bridge,
+                    &plugin_bridge,
                     &plugin_aliases,
                     Some(plugin_id),
                     Some(&trace),
@@ -975,7 +984,7 @@ pub fn plugin_thread_main(
                             None,
                             Event::CustomMessage("session_layout".to_owned(), layout),
                         )];
-                        wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+                        plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
                     },
                     Err(e) => {
                         let error_msg = e.to_string();
@@ -991,7 +1000,7 @@ pub fn plugin_thread_main(
                             None,
                             Event::CustomMessage("session_layout_error".to_owned(), error_msg),
                         )];
-                        wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+                        plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
                     },
                 }
             },
@@ -1003,7 +1012,7 @@ pub fn plugin_thread_main(
             ) => {
                 populate_session_layout_metadata(
                     &mut session_layout_metadata,
-                    &wasm_bridge,
+                    &plugin_bridge,
                     &plugin_aliases,
                     Some(plugin_id),
                     None,
@@ -1022,11 +1031,11 @@ pub fn plugin_thread_main(
                 }
                 let event = Event::ListClients(client_list_for_plugin);
                 if let Some(generation) = generation {
-                    bus.senders.send_to_plugin(PluginInstruction::DenoEvent(
+                    bus.senders.send_to_plugin(PluginInstruction::PluginEvent(
                         plugin_id, client_id, generation, event,
                     ))?;
                 } else {
-                    wasm_bridge.update_plugins(
+                    plugin_bridge.update_plugins(
                         vec![(Some(plugin_id), Some(client_id), event)],
                         shutdown_send.clone(),
                     )?;
@@ -1037,19 +1046,19 @@ pub fn plugin_thread_main(
                 client_id,
                 reply,
             } => {
-                let result = wasm_bridge
+                let result = plugin_bridge
                     .plugin_request(request, client_id)
                     .map_err(|error| format!("{error:#}"));
                 let _ = reply.send(result);
             },
             PluginInstruction::ReconcileBackgroundPlugins { plugins, client_id } => {
-                wasm_bridge
+                plugin_bridge
                     .reconcile_background_plugins(plugins, client_id)
                     .non_fatal();
             },
             PluginInstruction::DataRequest { request, reply } => {
                 let _ = reply.send(
-                    wasm_bridge
+                    plugin_bridge
                         .cli_data(request)
                         .map_err(|error| format!("{error:#}")),
                 );
@@ -1057,7 +1066,7 @@ pub fn plugin_thread_main(
             PluginInstruction::LogLayoutToHd(mut session_layout_metadata) => {
                 populate_session_layout_metadata(
                     &mut session_layout_metadata,
-                    &wasm_bridge,
+                    &plugin_bridge,
                     &plugin_aliases,
                     None,
                     None,
@@ -1092,8 +1101,8 @@ pub fn plugin_thread_main(
                     Some(destination) if destination.starts_with("plugin_") => {
                         match destination.parse::<PaneId>() {
                             Ok(PaneId::Plugin(plugin_id))
-                                if wasm_bridge.run_plugin_of_plugin_id(plugin_id).is_some()
-                                    || wasm_bridge
+                                if plugin_bridge.run_plugin_of_plugin_id(plugin_id).is_some()
+                                    || plugin_bridge
                                         .run_plugin_of_loading_plugin_id(plugin_id)
                                         .is_some() =>
                             {
@@ -1135,7 +1144,7 @@ pub fn plugin_thread_main(
                             &payload,
                             &args,
                             &bus,
-                            &mut wasm_bridge,
+                            &mut plugin_bridge,
                             &plugin_aliases,
                             floating_pane_coordinates,
                             Some(focus_plugin),
@@ -1149,7 +1158,7 @@ pub fn plugin_thread_main(
                         "store_query" | "store_mutate" | "agent_action"
                     ) =>
                     {
-                        match wasm_bridge.builtin_service_instance(match name.as_str() {
+                        match plugin_bridge.builtin_service_instance(match name.as_str() {
                             "agent_action" => "agent-service",
                             _ => "project-store",
                         }) {
@@ -1175,7 +1184,7 @@ pub fn plugin_thread_main(
                             &name,
                             &payload,
                             &args,
-                            &mut wasm_bridge,
+                            &mut plugin_bridge,
                             &mut pipe_messages,
                         );
                     },
@@ -1197,17 +1206,17 @@ pub fn plugin_thread_main(
                             plugin.as_deref().unwrap_or("project-store")
                         ))
                     };
-                    wasm_bridge.finish_empty_pipe(&pipe_id, result);
+                    plugin_bridge.finish_empty_pipe(&pipe_id, result);
                 }
                 for (_, _, message) in pipe_messages.iter_mut() {
                     message.pane_id = source_pane_id;
                 }
-                wasm_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
+                plugin_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
             },
             PluginInstruction::ArrangePanesByProject => {
-                let store = wasm_bridge.builtin_service_instance("project-store");
+                let store = plugin_bridge.builtin_service_instance("project-store");
                 if store.is_err()
-                    || wasm_bridge
+                    || plugin_bridge
                         .builtin_service_instance("agent-service")
                         .is_err()
                 {
@@ -1219,7 +1228,7 @@ pub fn plugin_thread_main(
                         None,
                     ))?;
                 } else if let Ok((id, client)) = store {
-                    wasm_bridge.pipe_messages(
+                    plugin_bridge.pipe_messages(
                         vec![(
                             Some(id),
                             Some(client),
@@ -1282,7 +1291,7 @@ pub fn plugin_thread_main(
                                 &payload,
                                 &args,
                                 &bus,
-                                &mut wasm_bridge,
+                                &mut plugin_bridge,
                                 &plugin_aliases,
                                 floating_pane_coordinates,
                                 None,
@@ -1298,20 +1307,20 @@ pub fn plugin_thread_main(
                                 &name,
                                 &payload,
                                 &args,
-                                &mut wasm_bridge,
+                                &mut plugin_bridge,
                                 &mut pipe_messages,
                             );
                         },
                     }
                 }
-                wasm_bridge.pipe_messages(
+                plugin_bridge.pipe_messages(
                     pipe_messages,
                     shutdown_send.clone(),
                     notification_end,
                 )?;
             },
             PluginInstruction::CachePluginEvents { plugin_id } => {
-                wasm_bridge.cache_plugin_events(plugin_id);
+                plugin_bridge.cache_plugin_events(plugin_id);
             },
             PluginInstruction::MessageFromPlugin {
                 source_plugin_id,
@@ -1356,7 +1365,7 @@ pub fn plugin_thread_main(
                             &message.message_payload,
                             &Some(message.message_args),
                             &bus,
-                            &mut wasm_bridge,
+                            &mut plugin_bridge,
                             &plugin_aliases,
                             floating_pane_coordinates,
                             message.new_plugin_args.and_then(|n| n.should_focus),
@@ -1401,21 +1410,21 @@ pub fn plugin_thread_main(
                             &message.message_name,
                             &message.message_payload,
                             &Some(message.message_args),
-                            &mut wasm_bridge,
+                            &mut plugin_bridge,
                             &mut pipe_messages,
                         );
                     },
                 }
-                wasm_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
+                plugin_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
             },
             PluginInstruction::PipeCompleted(completion) => {
-                let outcomes = wasm_bridge.update_cli_pipe_state(vec![completion]);
-                wasm_bridge.send_pipe_outcomes(outcomes);
+                let outcomes = plugin_bridge.update_cli_pipe_state(vec![completion]);
+                plugin_bridge.send_pipe_outcomes(outcomes);
             },
             PluginInstruction::ReleasePluginInstancePipes(plugin_id, instance_id) => {
-                wasm_bridge.cancel_permission_requests(plugin_id, Some(instance_id));
-                let outcomes = wasm_bridge.release_plugin_instance_pipes(plugin_id, instance_id);
-                wasm_bridge.send_pipe_outcomes(outcomes);
+                plugin_bridge.cancel_permission_requests(plugin_id, Some(instance_id));
+                let outcomes = plugin_bridge.release_plugin_instance_pipes(plugin_id, instance_id);
+                plugin_bridge.send_pipe_outcomes(outcomes);
             },
             PluginInstruction::Reconfigure {
                 plugin_aliases: new_aliases,
@@ -1425,7 +1434,6 @@ pub fn plugin_thread_main(
                 default_shell,
                 layout_dir,
                 user_plugin_dir,
-                builtin_plugins_dir,
                 hooks: new_hooks,
                 context_menu: new_context_menu,
                 was_written_to_disk,
@@ -1439,25 +1447,25 @@ pub fn plugin_thread_main(
                     != new_hooks.get(HookPoint::Notification)
                     || plugin_aliases != new_aliases;
                 plugin_aliases = new_aliases;
-                *wasm_bridge.plugin_aliases.lock().unwrap() = plugin_aliases.clone();
+                *plugin_bridge.plugin_aliases.lock().unwrap() = plugin_aliases.clone();
                 if notification_binding_changed
                     && (hooks.get(HookPoint::Notification).is_some()
                         || new_hooks.get(HookPoint::Notification).is_some())
                 {
                     if let Some(plugin_id) = notification_policy.take() {
-                        wasm_bridge.unload_plugin(plugin_id).non_fatal();
+                        plugin_bridge.unload_plugin(plugin_id).non_fatal();
                     }
                     notification_policy = load_notification_policy(
                         &new_hooks,
                         client_id,
-                        &mut wasm_bridge,
+                        &mut plugin_bridge,
                         &bus,
                         &plugin_aliases,
                     );
                 }
                 hooks = new_hooks;
                 context_menu = new_context_menu;
-                wasm_bridge
+                plugin_bridge
                     .reconfigure(
                         client_id,
                         keybinds,
@@ -1465,13 +1473,12 @@ pub fn plugin_thread_main(
                         default_shell,
                         layout_dir,
                         user_plugin_dir,
-                        builtin_plugins_dir,
                     )
                     .non_fatal();
                 // reconfigure resends InitialKeybinds; the screen also sends ModeUpdate.
                 if was_written_to_disk {
                     let updates = vec![(None, None, Event::ConfigWasWrittenToDisk)];
-                    wasm_bridge
+                    plugin_bridge
                         .update_plugins(updates, shutdown_send.clone())
                         .non_fatal();
                 }
@@ -1485,7 +1492,7 @@ pub fn plugin_thread_main(
                         reason,
                     },
                 )];
-                wasm_bridge
+                plugin_bridge
                     .update_plugins(updates, shutdown_send.clone())
                     .non_fatal();
             },
@@ -1495,12 +1502,12 @@ pub fn plugin_thread_main(
                 client_id,
                 generation,
             ) => {
-                wasm_bridge
+                plugin_bridge
                     .change_plugin_host_dir(new_host_folder, plugin_id, client_id, generation)
                     .non_fatal();
             },
             PluginInstruction::PaneRenderReport(pane_render_report) => {
-                wasm_bridge
+                plugin_bridge
                     .handle_pane_render_report(pane_render_report, shutdown_send.clone())
                     .non_fatal();
             },
@@ -1516,17 +1523,17 @@ pub fn plugin_thread_main(
                     None,
                     Event::UserAction(action, client_id, terminal_id, cli_client_id),
                 )];
-                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+                plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
             PluginInstruction::LayoutListUpdate(layouts, errors) => {
-                wasm_bridge.update_available_layouts(layouts, errors);
+                plugin_bridge.update_available_layouts(layouts, errors);
             },
             PluginInstruction::RequestStateUpdateForPlugin(plugin_id) => {
-                wasm_bridge.state_update_for_plugin(plugin_id);
+                plugin_bridge.state_update_for_plugin(plugin_id);
             },
             PluginInstruction::UpdateSessionSaveTime(timestamp_millis) => {
-                // Store timestamp in WasmBridge (as Unix epoch for internal use)
-                *wasm_bridge.last_session_save_time.lock().unwrap() = Some(timestamp_millis);
+                // Store timestamp in PluginBridge (as Unix epoch for internal use)
+                *plugin_bridge.last_session_save_time.lock().unwrap() = Some(timestamp_millis);
             },
             PluginInstruction::Pick {
                 plugin_id,
@@ -1544,10 +1551,10 @@ pub fn plugin_thread_main(
                     },
                     _ => None,
                 };
-                let result = wasm_bridge
+                let result = plugin_bridge
                     .pick_cwd(focused_plugin, client_id, cwd)
                     .and_then(|cwd| {
-                        wasm_bridge.pick_command(
+                        plugin_bridge.pick_command(
                             plugin_id,
                             instance_id,
                             generation,
@@ -1572,7 +1579,7 @@ pub fn plugin_thread_main(
                 }
                 let _ = response.send(result);
             },
-            PluginInstruction::PickRetired(finder) => wasm_bridge.pick_retired(finder),
+            PluginInstruction::PickRetired(finder) => plugin_bridge.pick_retired(finder),
             PluginInstruction::GetPluginIdsForUrl {
                 url,
                 configuration,
@@ -1580,28 +1587,28 @@ pub fn plugin_thread_main(
             } => {
                 // The matcher reads cached metadata, never a guest runtime lock.
                 let _ = response_channel.send(
-                    wasm_bridge.get_plugin_ids_for_url_with_configuration(&url, configuration),
+                    plugin_bridge.get_plugin_ids_for_url_with_configuration(&url, configuration),
                 );
             },
             PluginInstruction::GetLastSessionSaveTime { response_channel } => {
-                let timestamp = *wasm_bridge.last_session_save_time.lock().unwrap();
+                let timestamp = *plugin_bridge.last_session_save_time.lock().unwrap();
                 let _ = response_channel.send(timestamp);
             },
             PluginInstruction::QueuePump { queue } => {
-                wasm_bridge.pump_queue(&queue);
+                plugin_bridge.pump_queue(&queue);
             },
             PluginInstruction::QueueConfigure { queue, concurrency } => {
-                wasm_bridge.queue_configure(&queue, concurrency);
+                plugin_bridge.queue_configure(&queue, concurrency);
             },
             PluginInstruction::QueueCancelJob { job_id } => {
-                wasm_bridge.queue_cancel(job_id).non_fatal();
+                plugin_bridge.queue_cancel(job_id).non_fatal();
             },
             PluginInstruction::QueueFinishJob {
                 plugin_id,
                 success,
                 payload,
             } => {
-                wasm_bridge
+                plugin_bridge
                     .queue_finish_job(plugin_id, success, payload)
                     .non_fatal();
             },
@@ -1609,22 +1616,22 @@ pub fn plugin_thread_main(
                 plugin_url,
                 permissions,
             } => {
-                wasm_bridge
+                plugin_bridge
                     .grant_permissions_to_location(&plugin_url, permissions, shutdown_send.clone())
                     .non_fatal();
             },
             PluginInstruction::PluginFailed {
                 load_id,
                 plugin_id,
-                deno_generation,
+                generation,
                 instance_id,
                 loading_client,
                 error,
                 failed_to_load,
             } => {
                 if let Some(client) = loading_client.filter(|_| {
-                    load_id.is_none_or(|id| wasm_bridge.load_is_current(plugin_id, id))
-                        && !wasm_bridge.pipe_has_recipient(plugin_id)
+                    load_id.is_none_or(|id| plugin_bridge.load_is_current(plugin_id, id))
+                        && !plugin_bridge.pipe_has_recipient(plugin_id)
                 }) {
                     bus.senders
                         .send_to_server(ServerInstruction::LogError(
@@ -1635,11 +1642,11 @@ pub fn plugin_thread_main(
                         .context("failed to report plugin loading error")
                         .non_fatal();
                 }
-                wasm_bridge
+                plugin_bridge
                     .queue_plugin_failed(
                         plugin_id,
                         load_id,
-                        deno_generation,
+                        generation,
                         instance_id,
                         error,
                         failed_to_load,
@@ -1647,7 +1654,7 @@ pub fn plugin_thread_main(
                     .non_fatal();
             },
             PluginInstruction::DetectPluginConfigChanges(new_plugins) => {
-                wasm_bridge
+                plugin_bridge
                     .detect_and_notify_plugin_config_changes(&new_plugins, shutdown_send.clone())?;
             },
             PluginInstruction::HighlightClicked {
@@ -1665,14 +1672,14 @@ pub fn plugin_thread_main(
                     context,
                 };
                 let updates = vec![(Some(plugin_id), Some(client_id), event)];
-                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+                plugin_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
             PluginInstruction::Exit => {
                 break;
             },
         }
     }
-    info!("wasm main thread exits");
+    info!("Plugin main thread exits");
 
     // first drop our sender, then call recv.
     // once all senders are dropped or the timeout is reached, recv will return an error, that we ignore
@@ -1702,21 +1709,21 @@ pub fn plugin_thread_main(
             "plugin jobs still running {EXIT_GRACE:?} after the exit was requested; cancelling \
              them"
         );
-        wasm_bridge.cancel_all_plugins();
+        plugin_bridge.cancel_all_plugins();
         if let Err(err) = tokio::time::timeout(EXIT_GRACE, shutdown_receive.recv()).await {
             log::error!("timeout waiting for plugin tasks to finish: {}", err);
         }
     });
 
-    wasm_bridge.cleanup(deadline);
-    wasm_bridge.wait_for_cleanup(deadline);
+    plugin_bridge.cleanup(deadline);
+    plugin_bridge.wait_for_cleanup(deadline);
 
     Ok(())
 }
 
 fn populate_session_layout_metadata(
     session_layout_metadata: &mut SessionLayoutMetadata,
-    wasm_bridge: &WasmBridge,
+    plugin_bridge: &PluginBridge,
     plugin_aliases: &PluginAliases,
     exclude_plugin_id: Option<PluginId>,
     trace: Option<&yinz_bus::plugins::LayoutQueryTrace>,
@@ -1732,7 +1739,7 @@ fn populate_session_layout_metadata(
         if let Some(trace) = trace {
             trace.mark("plugin map lock");
         }
-        let plugin_map = wasm_bridge.plugin_map.lock().unwrap();
+        let plugin_map = plugin_bridge.plugin_map.lock().unwrap();
         if let Some(trace) = trace {
             trace.mark("plugin map metadata");
         }
@@ -1781,7 +1788,7 @@ fn pipe_to_all_plugins(
     name: &str,
     payload: &Option<String>,
     args: &Option<BTreeMap<String, String>>,
-    _wasm_bridge: &mut WasmBridge,
+    _plugin_bridge: &mut PluginBridge,
     pipe_messages: &mut Vec<(Option<PluginId>, Option<ClientId>, PipeMessage)>,
 ) {
     let is_private = false;
@@ -1808,7 +1815,7 @@ fn pipe_to_specific_plugins(
     payload: &Option<String>,
     args: &Option<BTreeMap<String, String>>,
     _bus: &Bus<PluginInstruction>,
-    wasm_bridge: &mut WasmBridge,
+    plugin_bridge: &mut PluginBridge,
     plugin_aliases: &PluginAliases,
     floating_pane_coordinates: Option<FloatingPaneCoordinates>,
     should_focus: Option<bool>,
@@ -1824,7 +1831,7 @@ fn pipe_to_specific_plugins(
     ) {
         Ok(run_plugin_or_alias) => {
             let initial_cwd = run_plugin_or_alias.get_initial_cwd();
-            let all_plugin_ids = wasm_bridge.get_or_load_plugins(
+            let all_plugin_ids = plugin_bridge.get_or_load_plugins(
                 run_plugin_or_alias,
                 size,
                 initial_cwd.or_else(|| cwd.clone()),
@@ -1856,7 +1863,7 @@ fn pipe_to_specific_plugins(
 fn load_notification_policy(
     hooks: &Hooks,
     client_id: ClientId,
-    bridge: &mut WasmBridge,
+    bridge: &mut PluginBridge,
     bus: &Bus<PluginInstruction>,
     aliases: &PluginAliases,
 ) -> Option<PluginId> {
@@ -1904,8 +1911,8 @@ fn session_start_payload(session: &ServerSession, client_id: ClientId) -> HookFi
 /// naming a different pane yields a separate instance, which is what makes two agents exiting
 /// at once get a hook pane each rather than fighting over one.
 ///
-/// Loaded and placed here rather than through `WasmBridge::get_or_load_plugins`, for the same
-/// reason `WasmBridge::launch_job` bypasses it: that function opens a pane only when it has to
+/// Loaded and placed here rather than through `PluginBridge::get_or_load_plugins`, for the same
+/// reason `PluginBridge::launch_job` bypasses it: that function opens a pane only when it has to
 /// *load* the plugin, and answers a request for one that already exists with its id and no
 /// screen instruction at all. That is the right shape for "open it, or focus the one already
 /// open". It is the wrong shape for a hook, whose whole contract is that a pane appears - a
@@ -1922,7 +1929,7 @@ fn run_hook(
     payload: HookFiring,
     client_id: ClientId,
     hooks: &Hooks,
-    wasm_bridge: &mut WasmBridge,
+    plugin_bridge: &mut PluginBridge,
     bus: &Bus<PluginInstruction>,
     plugin_aliases: &PluginAliases,
     shutdown_send: &tokio::sync::mpsc::Sender<()>,
@@ -1948,7 +1955,7 @@ fn run_hook(
                 run_plugin_or_alias,
                 client_id,
                 Event::Hook { point, payload },
-                wasm_bridge,
+                plugin_bridge,
                 bus,
                 plugin_aliases,
                 shutdown_send,
@@ -1982,12 +1989,12 @@ fn run_hook(
     // One hook pane per (pane, exit): a point that fires twice for the same moment must not
     // stack a second screen on the first. Asked of the live plugin map, so an instance the
     // user has since closed does not count as one already up.
-    if wasm_bridge.plugin_instance_exists(&run_plugin) {
+    if plugin_bridge.plugin_instance_exists(&run_plugin) {
         log::info!("hook '{point}' is already up for {pane_id:?}");
         return;
     }
     let skip_cache = false;
-    match wasm_bridge.load_plugin(
+    match plugin_bridge.load_plugin(
         &Some(run_plugin.clone()),
         None,
         Size::default(),
@@ -2037,7 +2044,7 @@ fn request_context_menu(
     client_id: ClientId,
     hooks: &Hooks,
     context_menu: &ContextMenu,
-    wasm_bridge: &mut WasmBridge,
+    plugin_bridge: &mut PluginBridge,
     plugin_aliases: &PluginAliases,
     bus: &Bus<PluginInstruction>,
     shutdown_send: &tokio::sync::mpsc::Sender<()>,
@@ -2067,7 +2074,7 @@ fn request_context_menu(
         run_plugin_or_alias,
         client_id,
         Event::ContextMenuRequested(Box::new(context.clone())),
-        wasm_bridge,
+        plugin_bridge,
         bus,
         plugin_aliases,
         shutdown_send,
@@ -2096,7 +2103,7 @@ fn deliver_to_headless_hook(
     run_plugin_or_alias: &RunPluginOrAlias,
     client_id: ClientId,
     event: Event,
-    wasm_bridge: &mut WasmBridge,
+    plugin_bridge: &mut PluginBridge,
     bus: &Bus<PluginInstruction>,
     plugin_aliases: &PluginAliases,
     shutdown_send: &tokio::sync::mpsc::Sender<()>,
@@ -2110,7 +2117,7 @@ fn deliver_to_headless_hook(
     let is_shared = PluginConfig::from_run_plugin(&run_plugin)
         .map(|plugin| plugin.is_shared())
         .unwrap_or(false);
-    let plugin_ids = wasm_bridge.all_plugin_and_client_ids_for_plugin_location(
+    let plugin_ids = plugin_bridge.all_plugin_and_client_ids_for_plugin_location(
         &run_plugin.location,
         &run_plugin.configuration,
     );
@@ -2130,15 +2137,15 @@ fn deliver_to_headless_hook(
         // split one hook's firings across two plugins whenever a second point fired within the
         // first load's time - `agent_start` and `agent_waiting` a hundred milliseconds apart
         // was enough.
-        let in_flight = wasm_bridge.loading_plugin_ids_for_plugin_location(
+        let in_flight = plugin_bridge.loading_plugin_ids_for_plugin_location(
             &run_plugin.location,
             &run_plugin.configuration,
         );
         if let Some(plugin_id) = in_flight
             .first()
-            .filter(|_| is_shared || wasm_bridge.client_is_connected(&client_id))
+            .filter(|_| is_shared || plugin_bridge.client_is_connected(&client_id))
         {
-            wasm_bridge
+            plugin_bridge
                 .update_plugins(
                     vec![(Some(*plugin_id), Some(client_id), event)],
                     shutdown_send.clone(),
@@ -2148,14 +2155,14 @@ fn deliver_to_headless_hook(
         }
         let Some((plugin_id, loaded_client_id)) = load_background_plugin(
             run_plugin_or_alias.clone(),
-            wasm_bridge,
+            plugin_bridge,
             bus,
             plugin_aliases,
             client_id,
         ) else {
             return false;
         };
-        wasm_bridge
+        plugin_bridge
             .update_plugins(
                 vec![(Some(plugin_id), Some(loaded_client_id), event)],
                 shutdown_send.clone(),
@@ -2176,7 +2183,7 @@ fn deliver_to_headless_hook(
             ))
         })
         .collect();
-    wasm_bridge
+    plugin_bridge
         .update_plugins(updates, shutdown_send.clone())
         .non_fatal();
     true
@@ -2184,12 +2191,12 @@ fn deliver_to_headless_hook(
 
 fn load_background_plugin(
     run_plugin_or_alias: RunPluginOrAlias,
-    wasm_bridge: &mut WasmBridge,
+    plugin_bridge: &mut PluginBridge,
     _bus: &Bus<PluginInstruction>,
     _plugin_aliases: &PluginAliases,
     client_id: ClientId,
 ) -> Option<(PluginId, ClientId)> {
-    wasm_bridge
+    plugin_bridge
         .start_background_plugin(run_plugin_or_alias, client_id, true)
         .map_err(|error| log::error!("Failed to start background plugin: {error:#}"))
         .ok()
@@ -2283,21 +2290,21 @@ const MAX_UPDATE_DRAIN: usize = 256;
 type PluginUpdate = (Option<PluginId>, Option<ClientId>, Event);
 
 /// Keep tagged callbacks adjacent and ordered, including their acting client identities.
-fn drain_deno_events(
+fn drain_plugin_events(
     bus: &Bus<PluginInstruction>,
     plugin_id: PluginId,
     generation: u64,
-    mut events: Vec<(ClientId, Event, Option<yinz_bus::thread_bus::DenoReplyId>)>,
+    mut events: Vec<(ClientId, Event, Option<yinz_bus::thread_bus::PluginReplyId>)>,
     queued: &mut Option<(PluginInstruction, ErrorContext)>,
-) -> Vec<(ClientId, Event, Option<yinz_bus::thread_bus::DenoReplyId>)> {
+) -> Vec<(ClientId, Event, Option<yinz_bus::thread_bus::PluginReplyId>)> {
     for _ in 0..MAX_UPDATE_DRAIN {
         match bus.try_recv() {
-            Some((PluginInstruction::DenoEvent(id, client, expected, event), _))
+            Some((PluginInstruction::PluginEvent(id, client, expected, event), _))
                 if id == plugin_id && expected == generation =>
             {
                 events.push((client, event, None));
             },
-            Some((PluginInstruction::DenoReply(id, client, expected, event, reply), _))
+            Some((PluginInstruction::PluginReply(id, client, expected, event, reply), _))
                 if id == plugin_id && expected == generation =>
             {
                 events.push((client, event, Some(reply)));
@@ -2451,8 +2458,6 @@ fn coalesce_hovers(mut updates: Vec<PluginUpdate>) -> Vec<PluginUpdate> {
 #[path = "./unit/plugin_tests/mod.rs"]
 #[cfg(test)]
 mod plugin_tests;
-
-mod ui;
 
 #[cfg(test)]
 mod test_env;

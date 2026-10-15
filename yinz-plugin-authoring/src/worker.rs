@@ -1,11 +1,8 @@
 //! The compilation worker's protocol, and the client side of it.
 //!
-//! SWC owns recursively allocated native ASTs. Only a disposable process may
-//! parse, inspect, transpile, or drop them; even successful output needs a clean exit.
-//! That process is the server binary re-executed with [`ARG`]. Its entry point,
-//! `yinz_plugin_host::run_compilation_worker`, decodes these [`Request`]s and encodes these
-//! [`Response`]s, so the wire format has one definition. This side is process supervision and
-//! JSON only, which is why it links neither V8 nor SWC.
+//! Authoring and provider inspection execute in a disposable, bounded process.
+//! The server binary re-executes with [`ARG`]; this client supervises its lifetime
+//! and exchanges framed JSON without linking the guest interpreter.
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
@@ -18,7 +15,7 @@ use yinz_runtime::errors::prelude::*;
 use yinz_types::authoring::{PluginCheckMode, PluginCheckReport};
 
 /// The first argument that turns the server binary into a compilation worker.
-pub const ARG: &str = "--deno-compilation-worker";
+pub const ARG: &str = "--plugin-compilation-worker";
 /// The first argument of a `yinz plugins test` worker, which `yinz-plugin-host` spawns and
 /// dispatches. Compilation workers started inside one stay in its process group.
 pub const PLUGIN_TEST_WORKER_ARG: &str = "--plugin-test-worker";
@@ -28,7 +25,6 @@ const DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Operation {
-    Transpile,
     Analyze,
     Check(PluginCheckMode),
     AgentProvider,
@@ -39,52 +35,32 @@ pub struct Request {
     pub operation: Operation,
     pub path: PathBuf,
     pub source: String,
-    pub declarations: bool,
     #[serde(default)]
     pub root: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Output {
-    Emitted {
-        text: String,
-        source_map: Option<String>,
-    },
     Analysis(PluginCheckReport),
     AgentProvider(yinz_types::agent::provider::AgentProvider),
 }
 
 pub type Response = std::result::Result<Output, String>;
 
-/// Evaluate a TypeScript plugin's exported provider in the confined, bounded worker.
+/// Evaluate a Scheme plugin's provider descriptor in the confined, bounded worker.
 /// Module initialization cannot invoke host commands; its load callback is never run.
 pub fn agent_provider(
     path: &Path,
     source: &str,
 ) -> Result<yinz_types::agent::provider::AgentProvider> {
-    match request(path, source, false, Operation::AgentProvider, None)? {
+    match request(path, source, Operation::AgentProvider, None)? {
         Output::AgentProvider(provider) => Ok(provider),
         _ => bail!("agent provider worker returned the wrong operation"),
     }
 }
 
-/// The emitted JavaScript and its separate source map.
-pub fn transpile(
-    path: &Path,
-    source: &str,
-    declarations: bool,
-) -> Result<(String, Option<String>)> {
-    match request(path, source, declarations, Operation::Transpile, None)? {
-        Output::Emitted { text, source_map } => Ok((text, source_map)),
-        _ => bail!(
-            "transpile compilation worker for {} returned the wrong operation",
-            path.display()
-        ),
-    }
-}
-
 pub fn analyze(path: &Path, source: &str) -> Result<PluginCheckReport> {
-    match request(path, source, true, Operation::Analyze, None)? {
+    match request(path, source, Operation::Analyze, None)? {
         Output::Analysis(report) => Ok(report),
         _ => bail!(
             "analysis compilation worker for {} returned the wrong operation",
@@ -104,7 +80,7 @@ pub(crate) fn check_with_root(
     mode: PluginCheckMode,
     root: Option<&Path>,
 ) -> Result<PluginCheckReport> {
-    match request(path, source, true, Operation::Check(mode), root)? {
+    match request(path, source, Operation::Check(mode), root)? {
         Output::Analysis(report) => Ok(report),
         _ => bail!("authoring worker returned the wrong operation"),
     }
@@ -114,13 +90,26 @@ fn inside_worker() -> bool {
     std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(ARG))
 }
 
-fn request(
-    path: &Path,
-    source: &str,
-    declarations: bool,
-    operation: Operation,
-    root: Option<&Path>,
-) -> Result<Output> {
+/// The production executable used by compiler and plugin runtime workers.
+pub fn server_executable() -> Result<PathBuf> {
+    let binary = std::env::var_os("YINZ_COMPILATION_WORKER")
+        .map(PathBuf::from)
+        .or_else(|| {
+            if inside_worker() {
+                std::env::current_exe().ok()
+            } else {
+                yinz_runtime::own_binary::server_binary().cloned()
+            }
+        })
+        .context("resolve server executable")?;
+    // Direct cargo/libtest launches must opt in with the freshly built executable.
+    if binary.parent().is_some_and(|dir| dir.ends_with("deps")) {
+        bail!("test launcher must supply YINZ_COMPILATION_WORKER; use cargo x test");
+    }
+    Ok(binary)
+}
+
+fn request(path: &Path, source: &str, operation: Operation, root: Option<&Path>) -> Result<Output> {
     let context = format!("{operation:?} compilation worker for {}", path.display());
     (|| {
         crate::limits::check_source(path, source)?;
@@ -128,24 +117,10 @@ fn request(
             operation,
             path: path.to_owned(),
             source: source.to_owned(),
-            declarations,
             root: root.map(Path::to_owned),
         };
         let input = serde_json::to_vec(&request).context("encode request")?;
-        let binary = std::env::var_os("YINZ_COMPILATION_WORKER")
-            .map(PathBuf::from)
-            .or_else(|| {
-                if inside_worker() {
-                    std::env::current_exe().ok()
-                } else {
-                    yinz_runtime::own_binary::server_binary().cloned()
-                }
-            })
-            .context("resolve server executable")?;
-        // Direct cargo/libtest launches must opt in with the freshly built executable.
-        if binary.parent().is_some_and(|dir| dir.ends_with("deps")) {
-            bail!("test launcher must supply YINZ_COMPILATION_WORKER; use cargo x test");
-        }
+        let binary = server_executable()?;
         exchange(Command::new(binary).arg(ARG), &input, DEADLINE)
     })()
     .with_context(|| context)
@@ -162,7 +137,7 @@ pub fn spawn_count() -> usize {
 struct Reap(Child, bool);
 impl Drop for Reap {
     fn drop(&mut self) {
-        // All worker descendants share this process group, including Oxlint's tsgolint.
+        // All worker descendants share this process group.
         if self.1 {
             unsafe {
                 libc::kill(-(self.0.id() as i32), libc::SIGKILL);

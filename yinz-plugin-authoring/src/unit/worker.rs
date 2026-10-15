@@ -4,7 +4,7 @@ use super::*;
 fn worker_transport_rejects_abnormal_exit_and_invalid_output() {
     for script in [
         "printf garbage",
-        "printf '{\"Ok\":{\"Emitted\":{\"text\":\"ok\",\"source_map\":null}}}'; exit 7",
+        "printf '{\"Ok\":{\"Analysis\":{\"diagnostics\":[],\"outline\":[],\"permissions\":[],\"warnings\":[]}}}'; exit 7",
         "kill -KILL $$",
     ] {
         assert!(exchange(Command::new("/bin/sh").args(["-c", script]), b"", DEADLINE).is_err());
@@ -109,8 +109,8 @@ fn worker_timeout_kills_descendants_that_hold_its_pipes_open() {
 
 #[test]
 fn worker_drains_both_pipes_before_accepting_a_response() {
-    let output = exchange(Command::new("/bin/sh").args(["-c", "head -c 1000000 /dev/zero >&2; cat >/dev/null; printf '{\"Ok\":{\"Emitted\":{\"text\":\"ok\",\"source_map\":null}}}'"]), &vec![b' '; 1024 * 1024], DEADLINE).unwrap();
-    assert!(matches!(output, Output::Emitted { text, .. } if text == "ok"));
+    let output = exchange(Command::new("/bin/sh").args(["-c", "head -c 1000000 /dev/zero >&2; cat >/dev/null; printf '{\"Ok\":{\"Analysis\":{\"diagnostics\":[],\"outline\":[],\"permissions\":[],\"warnings\":[]}}}'"]), &vec![b' '; 1024 * 1024], DEADLINE).unwrap();
+    assert!(matches!(output, Output::Analysis(report) if report == PluginCheckReport::default()));
 }
 
 #[test]

@@ -63,35 +63,27 @@ impl PermissionCache {
         plugin_name: &str,
     ) -> Option<&'a Vec<PermissionType>> {
         granted.get(plugin_name).or_else(|| {
-            #[cfg(target_family = "wasm")]
-            {
-                None
-            }
-            #[cfg(not(target_family = "wasm"))]
-            {
-                let cwd = std::env::current_dir().ok()?;
-                let normalize = |name: &str| {
-                    let location = yinz_runtime::plugin_location::parse_plugin_location(
-                        name,
-                        Some(cwd.clone()),
-                    )
-                    .ok();
-                    match location {
-                        Some(yinz_types::input::layout::RunPluginLocation::File(path)) => {
-                            Some(yinz_runtime::common_path::source_path(&path, &cwd))
-                        },
-                        None if !name.contains(':') => Some(
-                            yinz_runtime::common_path::source_path(Path::new(name), &cwd),
-                        ),
-                        _ => None,
-                    }
-                };
-                let wanted = normalize(plugin_name)?;
-                granted
-                    .iter()
-                    .find(|(key, _)| normalize(key).as_ref() == Some(&wanted))
-                    .map(|(_, grants)| grants)
-            }
+            let cwd = std::env::current_dir().ok()?;
+            let normalize = |name: &str| {
+                let location =
+                    yinz_runtime::plugin_location::parse_plugin_location(name, Some(cwd.clone()))
+                        .ok();
+                match location {
+                    Some(yinz_types::input::layout::RunPluginLocation::File(path)) => {
+                        Some(yinz_runtime::common_path::source_path(&path, &cwd))
+                    },
+                    None if !name.contains(':') => Some(yinz_runtime::common_path::source_path(
+                        Path::new(name),
+                        &cwd,
+                    )),
+                    _ => None,
+                }
+            };
+            let wanted = normalize(plugin_name)?;
+            granted
+                .iter()
+                .find(|(key, _)| normalize(key).as_ref() == Some(&wanted))
+                .map(|(_, grants)| grants)
         })
     }
 

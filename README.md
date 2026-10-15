@@ -1,6 +1,6 @@
 yinz is not zellij
 
-[Load TypeScript plugins from Git repositories](docs/GIT_PLUGINS.md)
+[Load Scheme plugins from Git repositories](docs/GIT_PLUGINS.md)
 
 ## Install
 

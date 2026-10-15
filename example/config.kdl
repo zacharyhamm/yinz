@@ -173,7 +173,7 @@ keybinds {
 // Alias declarations refresh on config reload. Repository updates require an explicit reload.
 plugins {
     // my-panel repo="https://github.com/example/yinz-panel.git" branch="main"
-    // local-tools repo="~/src/yinz-tools" entrypoint="src/main.ts" { greeting "Hello"; }
+    // local-tools repo="~/src/yinz-tools" entrypoint="src/main.scm" { greeting "Hello"; }
     tab-bar location="yinz:tab-bar"
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"

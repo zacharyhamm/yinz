@@ -482,7 +482,7 @@ plugins {
 // replaces them instead
 load_plugins {
     "yinz:link"
-    // "file:/path/to/my-plugin.wasm"
+    // "file:/path/to/my-plugin.scm"
 }
 
 // Plugins to run at a hook point - a moment yinz hands control to a plugin.
@@ -494,13 +494,13 @@ load_plugins {
 //               arrives as configuration: agent_pane_id, agent_cwd,
 //               agent_exit_code, agent_command.
 //
-// The default is a TypeScript plugin shipped with yinz. Your own is a plugin you
-// write into your plugin folder - `yinz-deno-builtins/assets/plugins/agent-exit.ts`
+// The default is a Scheme plugin shipped with yinz. Your own is a plugin you
+// write into your plugin folder - `yinz-steel-builtins/assets/plugins/agent-exit.scm`
 // is the reference implementation to read - and then bind here by name. See
-// docs/DENO_PLUGINS.md.
+// docs/PLUGINS.md.
 hooks {
     agent_exit "yinz:agent-exit"
-    // agent_exit "file:my-agent-exit.ts"   // from your plugin folder
+    // agent_exit "file:my-agent-exit.scm"   // from your plugin folder
     // agent_exit ""   // turn it off: the pane just holds
 
     // context_menu  a right-click asked for a menu. Unlike agent_exit this plugin

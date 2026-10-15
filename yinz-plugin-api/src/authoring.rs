@@ -1,8 +1,8 @@
 //! Naming a plugin in the user's plugin folder, for everything that writes one: `yinz plugins
-//! write`, and agent's `plugin_write`, which spells the same rules in wasm-flavoured paths.
+//! write`, and agent's `plugin_write`, which spells the same rules in host paths.
 //!
 //! A name is `keys` or `folder/module` - a file, or one folder deep for a module a plugin
-//! imports - and defaults to `<dir>/<name>.ts`. The CLI also accepts explicit JS/TS
+//! imports - and defaults to `<dir>/<name>.scm`. The CLI also accepts explicit Scheme
 //! filenames. Path validation prevents a name from escaping the folder.
 
 use std::path::{Component, Path, PathBuf};
@@ -18,26 +18,26 @@ pub use {
 /// The longest plugin name accepted, so a name cannot be used to build an unreasonable path.
 pub const MAX_PLUGIN_NAME_LEN: usize = 64;
 
-/// Whether a path explicitly selects the embedded Deno runtime.
-pub fn is_deno_plugin(path: &Path) -> bool {
+/// Whether a path names a Scheme plugin source.
+pub fn is_script_plugin(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("js" | "mjs" | "ts" | "mts")
+        Some("scm" | "ss" | "sld")
     )
 }
 
-/// `<dir>/<name>.ts`, or an explicit JS/TS filename, after validating the name.
+/// `<dir>/<name>.scm`, or an explicit Scheme filename, after validating the name.
 pub fn resolve_plugin_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("name is required and must not be empty".to_owned());
     }
     let (name, extension) = match name.rsplit_once('.') {
-        Some((stem, ext @ ("js" | "mjs" | "ts" | "mts"))) => (stem, ext),
+        Some((stem, ext @ ("scm" | "ss" | "sld"))) => (stem, ext),
         Some((_, "lua")) => {
-            return Err("Lua plugins are no longer supported; migrate to TypeScript or Wasm".into())
+            return Err("Lua plugins are no longer supported; migrate to Steel Scheme".into())
         },
-        _ => (name, "ts"),
+        _ => (name, "scm"),
     };
     if name.len() > MAX_PLUGIN_NAME_LEN {
         return Err(format!(
@@ -82,7 +82,7 @@ pub fn resolve_plugin_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 /// The backup a write keeps of the file it replaces: `keys` becomes `keys.bak`, which is
-/// `keys.bak.ts` on disk and `plugin_read name=keys.bak` from a tool.
+/// `keys.bak.scm` on disk and `plugin_read name=keys.bak` from a tool.
 ///
 /// A sibling rather than a dotfile or a folder of versions: one previous version is what a
 /// rewrite that lost a feature needs, and naming it as a plugin name means every rule that
@@ -90,7 +90,7 @@ pub fn resolve_plugin_file(dir: &Path, name: &str) -> Result<PathBuf, String> {
 /// a symlink.
 pub fn backup_name(name: &str) -> String {
     let name = name.trim();
-    if let Some((stem, extension @ ("js" | "mjs" | "ts" | "mts"))) = name.rsplit_once('.') {
+    if let Some((stem, extension @ ("scm" | "ss" | "sld"))) = name.rsplit_once('.') {
         return format!("{stem}.bak.{extension}");
     }
     format!("{name}.bak")
@@ -99,7 +99,7 @@ pub fn backup_name(name: &str) -> String {
 /// Whether `name` names a backup rather than a plugin, so a listing can leave it out.
 pub fn is_backup_name(name: &str) -> bool {
     let name = name.trim();
-    let name = if is_deno_plugin(Path::new(name)) {
+    let name = if is_script_plugin(Path::new(name)) {
         name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name)
     } else {
         name
@@ -144,7 +144,7 @@ pub fn all_permission_names() -> Vec<String> {
 }
 
 /// [`nearest_permission`] for a name in either spelling, answering the permission itself so
-/// the caller can spell the suggestion its own way (`ReadFiles` for TypeScript).
+/// the caller can spell the suggestion its own way (`ReadFiles` for Scheme).
 pub fn nearest_permission_type(typo: &str) -> Option<PermissionType> {
     let mut snake = String::new();
     for (i, c) in typo.trim().chars().enumerate() {
@@ -210,13 +210,13 @@ pub use yinz_types::authoring::{
 mod tests {
     use super::*;
     #[test]
-    fn deno_names_and_backups_preserve_extensions_and_name_guards() {
+    fn script_names_and_backups_preserve_extensions_and_name_guards() {
         let dir = Path::new("/plugins");
-        for extension in ["js", "mjs", "ts", "mts"] {
+        for extension in ["scm", "ss", "sld"] {
             let name = format!("app/keys.{extension}");
             let path = resolve_plugin_file(dir, &format!(" {name} ")).unwrap();
             assert_eq!(path, dir.join(&name));
-            assert!(is_deno_plugin(&path));
+            assert!(is_script_plugin(&path));
             let backup = backup_name(&name);
             assert_eq!(backup, format!("app/keys.bak.{extension}"));
             assert_eq!(
@@ -250,11 +250,11 @@ mod tests {
         }
         assert_eq!(
             resolve_plugin_file(dir, "keys").unwrap(),
-            dir.join("keys.ts")
+            dir.join("keys.scm")
         );
         assert_eq!(
             resolve_plugin_file(dir, "keys.jsx").unwrap(),
-            dir.join("keys.jsx.ts")
+            dir.join("keys.jsx.scm")
         );
     }
 
@@ -268,15 +268,15 @@ mod tests {
         let dir = Path::new("/home/someone/.config/yinz/plugins");
         assert_eq!(
             resolve_plugin_file(dir, "keys").unwrap(),
-            dir.join("keys.ts")
+            dir.join("keys.scm")
         );
         assert_eq!(
-            resolve_plugin_file(dir, " keys.ts ").unwrap(),
-            dir.join("keys.ts")
+            resolve_plugin_file(dir, " keys.scm ").unwrap(),
+            dir.join("keys.scm")
         );
         assert_eq!(
             resolve_plugin_file(dir, "app/ui").unwrap(),
-            dir.join("app/ui.ts")
+            dir.join("app/ui.scm")
         );
         for bad in [
             "",
@@ -297,16 +297,16 @@ mod tests {
     #[test]
     fn a_backup_is_a_plugin_name_that_a_listing_leaves_out() {
         assert_eq!(backup_name("keys"), "keys.bak");
-        assert_eq!(backup_name(" keys.ts "), "keys.bak.ts");
+        assert_eq!(backup_name(" keys.scm "), "keys.bak.scm");
         assert_eq!(backup_name("app/ui"), "app/ui.bak");
         let dir = Path::new("/home/someone/.config/yinz/plugins");
         assert_eq!(
             resolve_plugin_file(dir, &backup_name("keys")).unwrap(),
-            dir.join("keys.bak.ts")
+            dir.join("keys.bak.scm")
         );
-        assert!(is_backup_name("keys.bak.ts"));
+        assert!(is_backup_name("keys.bak.scm"));
         assert!(is_backup_name("app/ui.bak"));
-        assert!(!is_backup_name("keys.ts"));
+        assert!(!is_backup_name("keys.scm"));
     }
 }
 

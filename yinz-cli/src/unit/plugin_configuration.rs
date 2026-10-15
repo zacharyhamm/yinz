@@ -6,10 +6,10 @@ use yinz_types::input::{actions::Action, layout::RunPluginOrAlias};
 
 const COMMANDS: &[&[&str]] = &[
     &["plugin"],
-    &["action", "new-pane", "--plugin", "file:/tmp/reader.ts"],
-    &["action", "start-or-reload-plugin", "file:/tmp/reader.ts"],
-    &["action", "launch-or-focus-plugin", "file:/tmp/reader.ts"],
-    &["action", "launch-plugin", "file:/tmp/reader.ts"],
+    &["action", "new-pane", "--plugin", "file:/tmp/reader.scm"],
+    &["action", "start-or-reload-plugin", "file:/tmp/reader.scm"],
+    &["action", "launch-or-focus-plugin", "file:/tmp/reader.scm"],
+    &["action", "launch-plugin", "file:/tmp/reader.scm"],
     &["pipe"],
     &["action", "pipe"],
 ];
@@ -18,7 +18,7 @@ fn parse(command: &[&str], flags: &[&str]) -> Result<CliArgs, clap::Error> {
     let mut args = vec!["yinz".to_owned()];
     args.extend(command.iter().chain(flags).map(|s| s.to_string()));
     if command == ["plugin"] || command == ["p"] {
-        args.extend(["--".into(), "file:/tmp/reader.ts".into()]);
+        args.extend(["--".into(), "file:/tmp/reader.scm".into()]);
     }
     std::thread::Builder::new()
         .stack_size(32 * 1024 * 1024)
@@ -337,7 +337,7 @@ fn session_plugin_lifecycle_commands_parse_without_an_agent() {
     ));
     assert!(matches!(
         parse(
-            &["plugins", "reload", "file:///tmp/palette.ts"],
+            &["plugins", "reload", "file:///tmp/palette.scm"],
             &["--headless"]
         )
         .unwrap()

@@ -1,7 +1,7 @@
 # Yinz
 
-Rust Cargo workspace with a client/server split over IPC, Wasm plugins, and
-embedded TypeScript plugins running on Deno. Configuration uses KDL.
+Rust Cargo workspace with a client/server split over IPC and Scheme plugins
+running on embedded Steel. Configuration uses KDL.
 
 ## Build and test
 
@@ -9,7 +9,7 @@ Use `cargo x` (`cargo xtask`). See `cargo x --help` for all commands.
 The toolchain is `stable`, with no MSRV policy. Install `protoc` and `cargo-nextest`.
 
 ```sh
-cargo x build                 # Wasm plugins, then native binary
+cargo x build                 # native binary with embedded plugins
 cargo x test                  # workspace unit tests and doctests
 cargo x integration-test -j 16 # whole-app tests
 cargo x lint                  # deny warnings; --fix applies suggestions
@@ -40,23 +40,17 @@ For the older E2E suite, run `cargo x ci e2e --build`, then
 The filter selects the five terminal tests.
 The SSH fixture listens on localhost port 2222 with user/password `test`/`test`.
 
-**Never set `CARGO_TARGET_DIR` or change `build.target-dir`.** Checkout plugin
-paths resolve at compile time to `<repo>/target/wasm32-wasip1/{debug,release}`.
+**Never set `CARGO_TARGET_DIR` or change `build.target-dir`.**
 **In a worktree, NEVER use a shared `target/`. Isolate your builds and tests.**
 Keep a separate, real `target/` directory in each worktree; do not symlink it to
-the main checkout or another worktree, or hardlink mutable build artifacts.
-Do not copy workspace binaries, Wasm plugins, or their build metadata between
-worktrees, either.
-Concurrent builds can replace the native binary and Wasm plugins while tests
-are running, causing tests to execute another checkout's code. Build the
-worktree's own binaries and plugins before testing. Builtin Wasm is not checked in.
+another checkout or hardlink mutable build artifacts. Do not copy workspace
+binaries or build metadata between worktrees. Concurrent builds can replace a
+binary while tests run, causing tests to execute another checkout's code.
+Build the worktree's own binary before testing.
 
-`cargo x install <destination>` defaults to `release` and installs Wasm to
-`<data dir>/builtins/<version>`. Use `--builtins-dir <dir>` or `--no-builtins`
-to override. `--profile dev` leaves the host unoptimized. Wasm in the debug
-artifact directory defaults to opt-level 2. `CARGO_PROFILE_DEV_OPT_LEVEL` and
-`CARGO_PROFILE_DEV_DEBUG` override its profile settings. Embedded TypeScript
-builtins live in `yinz-deno-builtins/assets/plugins/`.
+`cargo x install <destination>` defaults to `release`. `--profile dev` leaves
+the host unoptimized. Builtin Scheme sources are embedded from
+`yinz-steel-builtins/assets/plugins/`; no separate plugin installation is needed.
 
 ### Arguments and test selection
 
@@ -65,7 +59,7 @@ Put xtask flags first. Remaining arguments go to:
 | Command | Forwards to |
 |---|---|
 | `x test`, `x integration-test` | `cargo nextest run` |
-| `x build`, `x install` | Native `cargo build`; excludes the Wasm build |
+| `x build`, `x install` | Native `cargo build` |
 | `x run` | Yinz |
 | `x bench` | Criterion |
 | `x ci e2e` | E2E runner |
@@ -89,13 +83,12 @@ Doctests are not listable.
 Remote tests accept `--test -- --exact <name>`.
 
 For a bare `cargo test` inner loop, run from the repo root without `--target`.
-Build plugins first with `cargo x build --plugins-only` if tests load Wasm.
 Nextest runs each test in a separate process; bare `cargo test` does not.
 
 Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
 
 - Shared libraries, plugin-facing APIs, or assets under `yinz-config/`,
-  `yinz-project-config/`, `yinz-deno-builtins/`, `yinz-plugin-api/`,
+  `yinz-project-config/`, `yinz-steel/`, `yinz-steel-builtins/`, `yinz-plugin-api/`,
   `yinz-plugin-location/`, `yinz-ipc/`, `yinz-host-protocol/`, or
   `default-plugins/project-data/` (linked by the agent plugins and the plugin host).
 - Render paths in `yinz-panes/`, `yinz-terminal/` or `yinz-terminal-graphics/`,
@@ -134,8 +127,6 @@ escalation on the first attempt.
 
 ### Platform constraints
 
-- Export `register_plugin!` entry points with `no_mangle` only on Wasm.
-  A native `pipe` export shadows libc on macOS and breaks process spawning.
 - On macOS, child waiters must poll `waitpid` with `WNOHANG` for continued
   children; blocking waits and `SIGCHLD` do not report them.
 - A full Unix socket backlog returns `ECONNREFUSED` on BSD, `EAGAIN` on Linux.
@@ -155,7 +146,8 @@ escalation on the first attempt.
 | `yinz-bus/` | Thread instructions, senders, OS API contract, background jobs |
 | `yinz-server-os/` | OS API backend: ptys, supervisors, remote panes, client writers |
 | `yinz-routing/` | Action dispatch and completion waits |
-| `yinz-plugin-host/` | Wasm/Deno runtime, host functions, events, pipes, jobs |
+| `yinz-plugin-host/` | Steel plugin workers, host functions, events, pipes, jobs |
+| `yinz-steel/` | Sandboxed Scheme evaluator and plugin SDK |
 | `yinz-plugin-authoring/` | V8-free plugin checks and writes; compilation-worker protocol and client |
 | `yinz-process/` | Pane supervisors, local/remote protocols, SSH |
 | `yinz-codex/` | Codex conversation-to-pane binding for `yinz agent codex` |
@@ -163,17 +155,17 @@ escalation on the first attempt.
 | `yinz-terminal-graphics/` | Kitty graphics and Sixel protocol engine; re-exported as `yinz_terminal::panes::{kitty_graphics, sixel}` |
 | `yinz-client/` | Input handling and terminal I/O |
 | `yinz-types/`, `yinz-runtime/`, `yinz-storage/` | Shared models, host services, persistence |
-| `yinz-plugin-location/` | Plugin URL parsing, also built for Wasm; re-exported as `yinz_runtime::plugin_location` |
+| `yinz-plugin-location/` | Plugin URL parsing; re-exported as `yinz_runtime::plugin_location` |
 | `yinz-key-codec/` | Kitty and legacy key encoding and decoding, vendored termwiz input parser |
 | `yinz-host-protocol/` | Host-query and desktop-notification (OSC 9/99/777) types shared by terminal, bus and screen |
 | `yinz-config/`, `yinz-plugin-api/`, `yinz-ipc/` | Config, plugin wire API, transport |
 | `yinz-project-config/` | Agent-exit settings in `.yinz/agent-exit.kdl` |
-| `yinz-deno-builtins/` | Embedded TypeScript builtin plugin sources |
+| `yinz-steel-builtins/` | Embedded Scheme builtin plugin sources |
 | `yinz-session/`, `yinz-cli/` | Session lifecycle, serialization, CLI |
 | `yinz-tile/`, `yinz-tile-utils/` | Plugin-facing API |
 | `yinz-tile-markdown/` | CommonMark to styled terminal lines for plugins |
 | `yinz-test-support/` | Condition waits and warm scripts for tests |
-| `default-plugins/` | Builtin Wasm crates |
+| `default-plugins/` | Native agent and project-data libraries shared with the host |
 | `default-plugins/project-data/` | Agent store seam, entity schemas, project/todo/note registry; re-exported by `agent-proto`, linked by the plugin host |
 | `yinz-integration-tests/` | Whole-app tests |
 | `src/tests/e2e/`, `yinz-server/tests/` | Docker E2E and remote-pane tests |
@@ -220,8 +212,8 @@ One SQLite `plugin-data.db` serves all local servers using the same data directo
 
 ## Plugins, hooks, and skills
 
-- Before changing the Deno runtime or SDK, read
-  [its local instructions](yinz-plugin-host/src/deno/CLAUDE.md).
+- Before changing the Steel runtime or SDK, read
+  [its local instructions](yinz-plugin-host/src/steel/CLAUDE.md).
 - For Kitty graphics conformance, read
   [the graphics instructions](yinz-terminal-graphics/src/kitty_graphics/CLAUDE.md).
 - For render benchmarks, use [the bench skill](.agents/skills/bench/SKILL.md).

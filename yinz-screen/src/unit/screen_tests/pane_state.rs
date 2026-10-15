@@ -112,8 +112,8 @@ fn reloaded_plugin_location_updates_existing_panes_and_preserves_alias_configura
                 screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
                 new_tab(&mut screen, 1, TabId::new(0));
                 let mut original = RunPlugin {
-                    location: RunPluginLocation::File("/plugins/v1.ts".into()),
-                    declared_path: Some("/plugins/current.ts".into()),
+                    location: RunPluginLocation::File("/plugins/v1.scm".into()),
+                    declared_path: Some("/plugins/current.scm".into()),
                     initial_cwd: Some("/work".into()),
                     ..Default::default()
                 };
@@ -145,7 +145,7 @@ fn reloaded_plugin_location_updates_existing_panes_and_preserves_alias_configura
                 if suppressed {
                     tab.suppress_pane(pane_id, None);
                 }
-                let location = RunPluginLocation::File("/plugins/v2.ts".into());
+                let location = RunPluginLocation::File("/plugins/v2.scm".into());
                 screen.update_plugin_location(plugin_id, location.clone());
                 let tab = screen.get_active_tab(ClientId::new(1)).unwrap();
                 let stored = tab.get_pane_with_id(pane_id).unwrap().invoked_with();

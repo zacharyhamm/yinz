@@ -58,7 +58,6 @@ pub fn pi_extension_path() -> PathBuf {
 }
 
 /// Resolve only Yinz's injected argument. Remote agents use remotely installed hooks.
-#[cfg(not(target_family = "wasm"))]
 pub fn prepare_command(command: &mut yinz_types::command::CommandToRun) -> Result<(), String> {
     if command.target.is_remote() {
         strip_extension(&mut command.args);

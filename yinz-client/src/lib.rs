@@ -23,6 +23,7 @@ compile_error!("Yinz does not support Windows");
 
 pub mod cli_client;
 mod client_loop;
+pub mod repl;
 pub use client_loop::ClientOutcome;
 mod command_is_executing;
 mod host_transport;

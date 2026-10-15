@@ -31,6 +31,7 @@ yinz-storage = { workspace = true }
 yinz-process = { path = "yinz-process", version = "0.1.0" }
 yinz-codex = { workspace = true }
 yinz-muse = { workspace = true }
+yinz-steel = { workspace = true }
 tokio = { workspace = true }
 yinz-client = { path = "yinz-client/", version = "0.1.0" }
 yinz-server = { path = "yinz-server/", version = "0.1.0" }
@@ -73,28 +74,10 @@ vte = { workspace = true }
 nix = { workspace = true, features = ["process", "user"] }
 
 [workspace]
+exclude = ["vendor/steel-core"]
 members = [
-    "default-plugins/compact-bar",
-    "default-plugins/status-bar",
-    "default-plugins/strider",
-    "default-plugins/tab-bar",
-    "default-plugins/fixture-plugin-for-tests",
-    "default-plugins/session-manager",
-    "default-plugins/configuration",
-    "default-plugins/plugin-manager",
-    "default-plugins/multiple-select",
-    "default-plugins/layout-manager",
-    "default-plugins/link",
-    "default-plugins/file-finder",
-    "default-plugins/quit-confirmation",
-    "default-plugins/shared-test",
-    "default-plugins/agents",
-    "default-plugins/todos",
-    "default-plugins/new-agent",
     "default-plugins/agent-proto",
     "default-plugins/project-data",
-    "default-plugins/agent-service",
-    "default-plugins/project-store",
     "yinz-client",
     "yinz-integration-tests",
     "yinz-bus",
@@ -114,7 +97,8 @@ members = [
     "yinz-server",
     "yinz-config",
     "yinz-project-config",
-    "yinz-deno-builtins",
+    "yinz-steel",
+    "yinz-steel-builtins",
     "yinz-plugin-api",
     "yinz-ipc",
     "yinz-session",
@@ -132,6 +116,9 @@ members = [
     "xtask",
     ".",
 ]
+
+[patch.crates-io]
+steel-core = { path = "vendor/steel-core" }
 
 [workspace.package]
 edition = "2021"
@@ -174,7 +161,8 @@ yinz-plugin-api = { path = "yinz-plugin-api", version = "0.1.0" }
 yinz-plugin-authoring = { path = "yinz-plugin-authoring", version = "0.1.0" }
 yinz-config = { path = "yinz-config", version = "0.1.0" }
 yinz-project-config = { path = "yinz-project-config", version = "0.1.0" }
-yinz-deno-builtins = { path = "yinz-deno-builtins", version = "0.1.0" }
+yinz-steel = { path = "yinz-steel", version = "0.1.0" }
+yinz-steel-builtins = { path = "yinz-steel-builtins", version = "0.1.0" }
 yinz-storage = { path = "yinz-storage", version = "0.1.0" }
 yinz-types = { path = "yinz-types", version = "0.1.0" }
 yinz-runtime = { path = "yinz-runtime", version = "0.1.0" }
@@ -196,6 +184,8 @@ crossterm = { version = "0.29", default-features = false }
 daemonize = { package = "daemonix", version = "0.1", default-features = false }
 dialoguer = { version = "0.11", default-features = false, features = ["password", "completion"] }
 futures-lite = { version = "1.13", default-features = false, features = ["std"] }
+# Codex needs the sink API in the binary; the shared process graph keeps integration features equal.
+futures-util = { version = "0.3", features = ["sink"] }
 fuzzy-matcher = { version = "0.3.7", default-features = false }
 humantime = { version = "2.1.0", default-features = false }
 interprocess = { version = "2.2", default-features = false, features = ["tokio"] }
@@ -218,10 +208,12 @@ notify = { version = "8.2", default-features = false, features = ["macos_kqueue"
 num_cpus = { version = "1.16", default-features = false }
 pretty-bytes = { version = "0.2.2", default-features = false }
 prost = { version = "0.12.6", default-features = false, features = ["std", "prost-derive"] }
-rand = { version = "0.10.2", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+# Tungstenite enables these defaults in the binary; request the same features in shared runtimes.
+rand = { version = "0.10.2" }
 regex = { version = "1.5.5", default-features = false, features = ["perf", "std", "unicode-perl"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
-serde_json = { version = "1.0", default-features = false, features = ["std"] }
+# Preserve the JSON ordering and float parsing used before the runtime dependency was removed.
+serde_json = { version = "1.0", default-features = false, features = ["std", "preserve_order", "float_roundtrip"] }
 signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
 strip-ansi-escapes = { version = "0.2.1", default-features = false }
 strum = { version = "0.28.0", default-features = false, features = ["std"] }
@@ -246,8 +238,8 @@ sha2 = "0.11"
 debug = "line-tables-only"
 
 # Dependencies are optimized; workspace crates are not. `package."*"` deliberately excludes
-# workspace members, so our own code keeps opt-level 0 and stays debuggable while the ~340
-# third-party crates - `wasmi`, which every plugin test runs a plugin on, above all - are fast.
+# workspace members, so our own code keeps opt-level 0 and stays debuggable while
+# third-party dependencies retain optimized execution.
 # One profile for `x build`, `x run`, `x test` and `x integration-test`, so they share one
 # dependency build instead of maintaining a `debug/` and a `dev-opt/` tree apiece.
 [profile.dev.package."*"]

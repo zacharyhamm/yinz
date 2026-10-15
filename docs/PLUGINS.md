@@ -1,12 +1,124 @@
 # Plugin lifecycle and permissions
 
+## Steel Scheme
+
+Scheme sources use `.scm`, `.ss`, or `.sld`. All builtin plugins use Steel.
+Read [the SDK reference](PLUGIN_SDK.md) for values, host commands, asynchronous
+work, workers, data, and terminal UI. Read [the test API](PLUGIN_TESTING.md) for
+unit tests and disposable-session tests.
+
+Save this source as `hello.scm`:
+
+```scheme
+(define (load configuration)
+  (yinz-command (hash "SetSelectable" #f)))
+
+(define (render rows columns)
+  "Hello from Steel")
+```
+
+Open the plugin with `yinz plugin -- file:/absolute/path/hello.scm`.
+Scheme plugins use the host command dispatcher and permission checks.
+Use `yinz-command` with the serialized command name or a hash that maps the command name to its arguments.
+Objects use string-keyed hashes. Ordinary arrays use lists; typed binary fields use
+bytevectors. JSON null uses the symbol `'json-null`.
+
+The optional callbacks are `load`, `update`, `render`, `pipe`, and `unload`.
+`update` and `pipe` return a boolean that requests a render.
+`render` receives the pane dimensions and returns text, or writes text with `display`.
+Raw filesystem, process, and network APIs are unavailable. Access host resources through permission-checked commands.
+Use `require` and `provide` for modules. Imports must name a relative `.scm`, `.ss`, or `.sld`
+file inside the entrypoint directory. Repository plugins can import from their repository root.
+Symlinks cannot escape that root. Embedded builtins import only from the embedded source tree.
+`only-in` and `prefix-in` select and rename imports.
+
+Named workers have separate state and process messages in order:
+
+```scheme
+(yinz-register-workers
+  (hash "counter"
+    (lambda (name payload)
+      (yinz-post-plugin "result" payload))))
+
+(define (load configuration)
+  (yinz-command (hash "Subscribe" '("CustomMessage")))
+  (yinz-post-worker "counter" "count" "one"))
+```
+
+The parent receives worker replies as `CustomMessage` events. Workers can receive host replies
+through an optional `worker-update` callback. Reload cancels and joins the old workers before
+the replacement starts.
+
+Use `yinz-then` and `yinz-catch` to handle deferred results. `yinz-run-command`,
+`yinz-wait-for-permissions`, `yinz-wait-for-event`, and `yinz-sleep` return deferred values.
+Sleep durations use milliseconds. A callback can return a deferred value; its continuation
+keeps the client that started the operation. A worker finishes that value before it starts
+the next message. Reload cancels pending operations from the old instance.
+
+Check Scheme source with `yinz plugins check ./hello.scm`. Checks compile the entrypoint and its
+confined imports without running plugin callbacks or module initializers. Literal permission
+requests appear in the report. Computed requests require a runtime permission answer.
+Use an explicit Scheme extension with `plugins write`. Checked writes keep a backup before
+replacing a file. Formatting parses only the named file, without loading its imports.
+It adjusts indentation and preserves comments, strings, and line breaks.
+
+Start a local Scheme REPL:
+
+```sh
+yinz repl
+yinz repl --eval '(+ 20 22)'
+printf '(define answer 42)\nanswer\n' | yinz repl
+```
+
+The interactive REPL keeps definitions between expressions and accepts multiline input.
+Use `:quit` or Ctrl-D to exit. Interactive errors leave the REPL open.
+With `--eval` or piped input, an evaluation error produces a nonzero exit status.
+Local evaluation does not execute Yinz host commands. Connect to the current session with
+`--connect`, or select a session explicitly:
+
+```sh
+yinz repl --connect
+yinz --session work repl
+yinz --session work repl --eval '(yinz-command "GetPluginIds")'
+```
+
+A connected REPL keeps its own Scheme definitions and uses the session's host command dispatcher.
+Each REPL has a separate plugin instance. Exiting with `:quit` or Ctrl-D closes that instance.
+
+Put unit tests in an adjacent `hello.test.scm` file:
+
+```scheme
+(test "renders a greeting"
+  (lambda ()
+    (test-load-plugin "./hello.scm")
+    (assert (string-contains? (test-render) "Hello from Steel"))))
+```
+
+Run them with `yinz plugins test --file ./hello.test.scm`. Test files can import confined
+Scheme modules. `test-load-plugin` creates a separate mocked plugin instance. Supply a hash
+with `"configuration"` and `"replies"` as its optional second argument. Unstubbed host
+operations fail, except basic subscription, timer, cursor, selection, and picker commands.
+Use `test-stub` to set a reply, `test-event` or `test-pipe` to deliver input, and
+`test-advance` to advance the plugin's frozen clock in milliseconds. `test-commands`,
+`test-logs`, and `test-renders` return captured history.
+
+Name real session tests `hello.integration.test.scm`. `test-session` sends an operation
+and an optional argument to a disposable session. For example, call `(test-session "start")`,
+then `(test-session "load" (hash "path" "./hello.scm"))`, then
+`(test-wait-for-text "Hello from Steel")`. Declare required grants in the test's options:
+`(test "name" (hash "grants" '("RunCommands")) (lambda () ...))`.
+Each test has a fresh worker and a deadline. The runner closes its disposable session after
+the test, including when the test fails.
+
+## Manage a plugin
+
 Use session commands to manage a background plugin directly:
 
 ```sh
-yinz plugins start ./palette.ts
+yinz plugins start ./palette.scm
 yinz plugins list --running --json
-yinz plugins reload ./palette.ts
-yinz plugins log ./palette.ts
+yinz plugins reload ./palette.scm
+yinz plugins log ./palette.scm
 yinz plugins stop plugin_10
 ```
 
@@ -31,7 +143,7 @@ The CLI includes declarations freshly read from disk. A new declaration can supp
 If more than one configuration matches, the command fails and lists the candidates. Select an exact configuration with:
 
 ```sh
-yinz plugins reload ./palette.ts --configuration-json '{"shared":"true"}' --json
+yinz plugins reload ./palette.scm --configuration-json '{"shared":"true"}' --json
 ```
 
 The JSON object uses string values. `{}` selects empty configuration explicitly.
@@ -69,10 +181,11 @@ Startup requests wait for an interactive client. If that client disconnects, the
 Matching requests from client copies share one decision. Each client has a queue of prompts.
 
 Reload and stop cancel obsolete requests. Late answers cannot grant permissions to replacement runtimes.
-Grants use the existing permission cache. Denial preserves earlier grants and settles `waitForPermissions` with rejection.
+Grants use the existing permission cache. Denial preserves earlier grants and rejects `yinz-wait-for-permissions`.
 A plugin can request permission again. Reload is also a way to retry.
 
-For TypeScript initialization, await `yinz.waitForPermissions([...])` before calling APIs that need those permissions.
+During initialization, chain protected operations with `yinz-then` after
+`(yinz-wait-for-permissions permissions)`.
 No plugin-side `HideSelf` call is needed.
 
 ## Apply background configuration
@@ -80,7 +193,7 @@ No plugin-side `HideSelf` call is needed.
 `load_plugins` is session-wide. Apply changes with the existing reconfiguration command:
 
 ```sh
-yinz action reconfigure --kdl 'load_plugins { "file:/absolute/path/palette.ts" { shared true; }; }'
+yinz action reconfigure --kdl 'load_plugins { "file:/absolute/path/palette.scm" { shared true; }; }'
 yinz action reconfigure --kdl 'load_plugins clear-defaults=true {}'
 ```
 
@@ -98,18 +211,19 @@ Source edits do not trigger reload automatically. Run `plugins reload TARGET` af
 
 ## Test a background plugin
 
-In an integration test, `session.loadPlugin(path, {headless: true})` uses the session lifecycle request.
-Use `session.reload(path)`, `session.stop(path)`, and `session.status(path)` to manage or inspect the identity.
-These methods accept an exact `configuration` option. Reload, stop, and status also accept `plugin_N`.
-Wait for lifecycle state, logs, or rendered content before asserting asynchronous behavior.
+In an integration test, use `(test-session "load" (hash "path" "./palette.scm"
+"headless" #t))` to create a background plugin. The `"reload"`, `"stop"`, and
+`"status"` operations manage its identity. Wait for lifecycle state, logs, or
+rendered content before asserting asynchronous behavior.
 
-The harness grants the test's declared permissions by default. Use `session.start({autoGrantPermissions: false})` to exercise the real permission modal.
-A single load can also opt out with `{headless: true, autoGrantPermissions: false}`.
+Tests declare grants in their options. Start a session with
+`(test-session "start" (hash "autoGrantPermissions" #f))` to exercise the real
+permission modal. A load can also set `"autoGrantPermissions"` to false.
 
 ## Inspect launch provenance
 
-`z.getPluginInfo()` returns `{pluginId, background}` for the calling instance, including during `load()`.
-`z.getPluginInfo(id)` returns the same information for another instance, or `null` if it no longer exists.
+`(yinz-command (hash "GetPluginInfo" json-null))` returns `{pluginId, background}` for the calling instance, including during `load()`.
+`(yinz-command (hash "GetPluginInfo" id))` returns the same information for another instance, or `null` if it no longer exists.
 Inspection of another instance requires `ReadApplicationState`.
 
 The background flag records how the host launched the plugin. Hide, show, reload, and client attachment do not change it.
@@ -119,54 +233,55 @@ Explicit show and focus commands remain available to background plugins.
 
 ## Await a file or directory
 
-`z.pick(options)` requires `MessageAndLaunchOtherPlugins` and a connected acting client.
-It returns a cancellable promise containing an absolute path, or `null` after Escape, no match, or closing the picker.
-The host closes the picker overlay and restores focus before it delivers the result.
+`yinz-pick` requires `MessageAndLaunchOtherPlugins` and a connected acting client:
 
-Use `kind: "file"` or `kind: "directory"`. Optional fields are `roots`, `extensions`, `hidden`, `recursive`, and `timeoutMs`.
-Roots default to the initiating pane's working directory. Relative roots resolve against that directory.
-Hidden entries are excluded by default. Traversal is recursive by default and does not follow directory symlinks.
-Directory results include the roots themselves. Extensions match case-insensitively and contain no leading dots or glob syntax.
-An empty roots array and directory requests with extensions are errors.
+```scheme
+(define result
+  (yinz-pick (hash "kind" "directory")))
+(yinz-then result (lambda (path) (unless (json-null? path) (yinz-log path))))
+```
 
-There is no default interaction deadline. `.cancel()` rejects with `AbortError`. An explicit deadline rejects with `TimeoutError`.
-Invalid options, missing fzf, listing failures, and invalid output reject with an error.
-One client can have one active picker. A concurrent request for that client rejects as busy.
-Disconnect, caller teardown, and driver failure release picker resources.
+The deferred result resolves to a path, or `json-null` after dismissal, and rejects
+on failure. The host closes the overlay and restores focus before delivering it.
 
-Each request uses a fresh builtin finder driver. The `file-finder` alias must resolve to `yinz:file-finder`.
-Alias geometry and fzf settings apply. Request listing fields override alias `listing_json` fields, followed by builtin defaults.
-Arrays replace arrays. Structured invocations ignore `file_command`. Pick results bypass all opener settings.
-Persistent configuration remains unchanged.
+Options use `"kind"` (`"file"` or `"directory"`), `"roots"`, `"extensions"`,
+`"hidden"`, `"recursive"`, and `"timeoutMs"`. Roots default to the initiating
+pane's working directory. Relative roots resolve there. Hidden entries are
+excluded by default. Traversal is recursive and does not follow directory
+symlinks. Directory results include the roots themselves. Extensions match
+case-insensitively without leading dots or glob syntax. Empty roots and directory
+requests with extensions are errors.
 
-See [the folder-to-PDF example](../example-plugins/pick-pdf.ts) for a palette action that closes the palette and awaits two picks.
-The example obtains HOME from the session environment and sends the selected path to the configured reader.
+There is no default interaction deadline. `(yinz-cancel! result)` asks the host
+to close the picker. The deferred result settles when the host acknowledges the
+request; a selection that wins the race still resolves normally.
+Missing fzf, listing failures, and invalid output produce errors. One client can
+have one active picker; a concurrent request fails as busy. Disconnect, caller
+teardown, and driver failure release the resources.
 
-For SDK tests, use `harness.pickRequests`, `completePick(requestId, pathOrNull)`, and `failPick(requestId, message)`.
-These helpers deliver the normal result event. Use `advance()` to exercise deadlines.
+Each request uses a fresh builtin finder driver. The `file-finder` alias must
+resolve to `yinz:file-finder`. Alias geometry and fzf settings apply. Request
+listing fields override alias `listing_json` fields, followed by builtin defaults.
+Arrays replace arrays. Structured requests ignore `file_command`. Results bypass
+opener settings. Persistent configuration remains unchanged.
 
 ## Palette completion feedback
 
-Palette actions and form submissions can return a `PaletteCompletion`, including
-from an async callback:
+Palette actions and form submissions can return completion feedback, directly
+or from a deferred callback:
 
-```ts
-import type { PaletteCompletion } from "yinz:plugin";
-
-const result: PaletteCompletion = {
-  type: "complete",
-  notification: "Report saved",
-  view: { type: "text", title: "Report", text: "Saved report contents" },
-};
+```scheme
+(hash "type" "complete" "notification" "Report saved"
+      "view" (hash "type" "text" "title" "Report" "text" "Saved report contents"))
 ```
 
-Omit `view` to close the palette. Return an ordinary `PaletteView` to navigate
+Omit `view` to close the palette. Return an ordinary view hash to navigate
 without a notification. A callback that returns nothing closes the palette with
 “Completed: <action label>”. Forms use their title. Incidental return values keep
 the same closing behavior. Failed callbacks show a notification and retain the
 inline error so the user can retry.
 
-`context.close()` closes immediately. Feedback waits for the callback to settle.
+A `CommandPalette` close request closes immediately. Feedback waits for the callback to settle.
 After close, the host ignores a returned view but still shows a completion message
 or failure. Cancellation, stale replies, provider reload, and client disconnect
 invalidate pending feedback. Notification text must be nonblank, contain no
@@ -186,10 +301,10 @@ Use **Switch session…** for running or saved local sessions. Selecting a saved
 Kill, deletion, and disconnection commands require confirmation. Cancel has initial focus.
 Use Page Up and Page Down to read all confirmation details.
 
-SDK forms accept optional `actions`. Each action has `id`, `label`, and `run(values, context)`.
-The callback receives current field values keyed by field ID, like `onSubmit`.
-Return a view to continue, or throw an error to keep the form open with an inline error.
-Set `confirmation: true` to put Cancel before Submit and show scrollable confirmation details.
+SDK forms accept optional `actions`. Each action has `"id"`, `"label"`, and a `"run"` procedure taking `(values context)`.
+The callback receives current field values keyed by field ID, like `"onSubmit"`.
+Return a view to continue, or raise an error to keep the form open with an inline error.
+Set `"confirmation"` to `#t` to put Cancel before Submit and show scrollable confirmation details.
 
 All choice fields support typing to search their options. Left and Right select adjacent options.
 A `directory` field accepts text and adds a **Browse…** action using the existing directory picker.
@@ -208,8 +323,7 @@ For commands without replies, the session provider reports that it requested the
 
 ### Disconnect target query
 
-`yinz.command("GetDisconnectTargets")` (Deno) and `get_disconnect_targets()`
-(Wasm) return the IDs of ordinary clients that `DisconnectOtherClients` will
+`(yinz-command "GetDisconnectTargets")` return the IDs of ordinary clients that `DisconnectOtherClients` will
 remove, excluding the initiating client. Watchers remain connected. Requires
 `ReadApplicationState`. Each synchronous query has a separate response channel
 and a 100 ms timeout; send failures, timeout, and closed channels return errors.

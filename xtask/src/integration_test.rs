@@ -15,20 +15,7 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
     crate::status(msg);
     println!("{}", msg);
 
-    // Debug plugins, as `x test` builds them: the suite runs a debug binary, which looks in
-    // `target/wasm32-wasip1/debug` before anything installed, so this tests the plugins in
-    // the tree rather than the last release build.
-    crate::build::build(
-        sh,
-        flags::Build {
-            release: false,
-            profile: None,
-            no_plugins: false,
-            plugins_only: true,
-            args: vec![],
-        },
-    )
-    .context(err_context)?;
+    crate::build::run_proto_codegen(sh, false);
     // Native compiler workers must re-exec this checkout's production binary, never libtest.
     cmd!(sh, "{cargo} build --bin yinz")
         .run()

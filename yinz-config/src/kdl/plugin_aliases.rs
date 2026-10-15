@@ -93,7 +93,7 @@ pub fn from_kdl(kdl_plugin_aliases: &KdlNode) -> Result<PluginAliases, ConfigErr
             let run_plugin = if let Some(repo) = repo {
                 let mut plugin = GitPlugin {
                     repo,
-                    entrypoint: entrypoint.unwrap_or_else(|| "main.ts".into()).into(),
+                    entrypoint: entrypoint.unwrap_or_else(|| "main.scm".into()).into(),
                     revision: branch
                         .map(GitRevision::Branch)
                         .or_else(|| tag.map(GitRevision::Tag))

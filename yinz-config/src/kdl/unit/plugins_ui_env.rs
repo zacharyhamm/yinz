@@ -7,14 +7,19 @@ fn file_plugin_paths_survive_config_serialization() {
 
     let directory = tempfile::tempdir().unwrap();
     let name = format!(
-        "{} # %20?.ts",
+        "{} # %20?.scm",
         directory.path().file_name().unwrap().to_str().unwrap()
     );
     assert!(!std::env::current_dir().unwrap().join(&name).exists());
-    let source = "export default {};";
+    let source = "(void)";
     std::fs::write(directory.path().join(&name), source).unwrap();
     let mut urls = vec![(format!("file:{name}"), directory.path().join(&name), true)];
-    for name in ["hash#.ts", "percent%20.ts", "query?.ts", "space name.ts"] {
+    for name in [
+        "hash#.scm",
+        "percent%20.scm",
+        "query?.scm",
+        "space name.scm",
+    ] {
         let path = directory.path().join(name);
         std::fs::write(&path, source).unwrap();
         urls.push((
@@ -25,7 +30,7 @@ fn file_plugin_paths_survive_config_serialization() {
     }
     #[cfg(unix)]
     {
-        let path = directory.path().join("current # %20?.ts");
+        let path = directory.path().join("current # %20?.scm");
         std::os::unix::fs::symlink(directory.path().join(&name), &path).unwrap();
         urls.push((
             url::Url::from_file_path(&path).unwrap().to_string(),
@@ -138,7 +143,7 @@ fn plugins_to_string_with_file() {
     let fake_config = r##"
         plugins {
             tab-bar location="yinz:tab-bar"
-            filepicker location="file:/path/to/my/plugin.wasm" {
+            filepicker location="file:/path/to/my/plugin.scm" {
                 cwd "/"
             }
         }"##;

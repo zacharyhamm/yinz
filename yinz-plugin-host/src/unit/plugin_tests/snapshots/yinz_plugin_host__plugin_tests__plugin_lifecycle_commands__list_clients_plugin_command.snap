@@ -9,5 +9,7 @@ ListClientsToPlugin(
     ClientId(
         1,
     ),
-    None,
+    Some(
+        1,
+    ),
 )

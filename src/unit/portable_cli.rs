@@ -172,7 +172,7 @@ impl Session {
             .status()
             .unwrap()
             .success());
-        std::fs::write(dir.join("config.kdl"), "plugins { project-store location=\"yinz:project-store\"; agent-service location=\"yinz:agent-service\"; }\nload_plugins clear-defaults=true { \"project-store\"; \"agent-service\"; }\ndetachable_panes false\n").unwrap();
+        std::fs::write(dir.join("config.kdl"), "plugins { project-store location=\"yinz:project-store\" { shared true; }; agent-service location=\"yinz:agent-service\" { shared true; }; }\nload_plugins clear-defaults=true { \"project-store\"; \"agent-service\"; }\ndetachable_panes false\n").unwrap();
         std::fs::write(dir.join("layout.kdl"), "layout { pane command=\"/bin/sh\" { args \"-c\" \"printf 'PORTABLE READY\\n'; exec /bin/sh\"; }; }\n").unwrap();
         setup(dir);
         let out = command(dir)
@@ -299,6 +299,11 @@ impl Drop for Session {
             .args(["kill-session", "portable-test"])
             .output();
         self.2.take();
+        if std::thread::panicking() {
+            let mut logs = Vec::new();
+            attachment_logs(self.0.path(), &mut logs);
+            eprintln!("server logs:\n{}", String::from_utf8_lossy(&logs));
+        }
     }
 }
 
@@ -584,10 +589,10 @@ fn checked_plugin_edits_and_installed_tests_work_without_chat() {
         cmd.arg("--config-dir").arg(dir.path().join("yinz"));
         cmd
     };
-    let source = dir.path().join("source.ts");
-    std::fs::write(&source, "import { definePlugin } from 'yinz:plugin'; export default definePlugin({render() { return 'FIRST'; }});").unwrap();
+    let source = dir.path().join("source.scm");
+    std::fs::write(&source, r#"(define (render rows columns) "FIRST")"#).unwrap();
     let out = plugin_command()
-        .args(["plugins", "write", "fixture.ts", "--file"])
+        .args(["plugins", "write", "fixture.scm", "--file"])
         .arg(&source)
         .output()
         .unwrap();
@@ -600,7 +605,7 @@ fn checked_plugin_edits_and_installed_tests_work_without_chat() {
     let edits = dir.path().join("edits.json");
     let edit = || {
         plugin_command()
-            .args(["plugins", "edit", "fixture.ts", "--file"])
+            .args(["plugins", "edit", "fixture.scm", "--file"])
             .arg(&edits)
             .output()
             .unwrap()
@@ -609,14 +614,14 @@ fn checked_plugin_edits_and_installed_tests_work_without_chat() {
     success(edit());
     let saved = std::fs::read_to_string(&installed).unwrap();
     assert!(saved.contains("SECOND"));
-    assert!(installed.with_file_name("fixture.bak.ts").is_file());
+    assert!(installed.with_file_name("fixture.bak.scm").is_file());
     std::fs::write(&edits, r#"[{"old_string":"SECOND","new_string":"THIRD"},{"old_string":"MISSING","new_string":"bad"}]"#).unwrap();
     assert!(!edit().status.success());
     assert_eq!(std::fs::read_to_string(&installed).unwrap(), saved);
-    std::fs::write(installed.with_file_name("fixture.test.ts"), "import { test, loadPlugin, assertEquals } from 'yinz:testing'; test('renders edited source', async () => { const p = await loadPlugin('./fixture.ts'); assertEquals(await p.render(), 'SECOND'); });").unwrap();
+    std::fs::write(installed.with_file_name("fixture.test.scm"), r#"(test "renders edited source" (lambda () (test-load-plugin "./fixture.scm") (assert-equal (test-render) "SECOND")))"#).unwrap();
     let report = success(
         plugin_command()
-            .args(["plugins", "test", "fixture.ts", "--json"])
+            .args(["plugins", "test", "fixture.scm", "--json"])
             .output()
             .unwrap(),
     );
@@ -680,13 +685,22 @@ impl GitPlugins {
         String::from_utf8(out.stdout).unwrap().trim().to_owned()
     }
     fn write(&self, version: &str) {
-        std::fs::write(self.directory.path().join("main.ts"), format!("import {{ definePlugin }} from 'yinz:plugin';\nlet greeting = '';\nexport default definePlugin({{ load(config) {{ greeting = config['greeting'] ?? ''; }}, render() {{ return 'hello {version} ' + greeting; }} }});\n")).unwrap();
+        std::fs::write(self.directory.path().join("main.scm"), format!(r#"
+(define greeting "")
+(define (load config) (when (hash-contains? config "greeting") (set! greeting (hash-ref config "greeting"))))
+(define (render rows columns) (string-append "hello {version} " greeting))
+"#)).unwrap();
         std::fs::write(
-            self.directory.path().join("shared.ts"),
-            format!("export const version = '{version}';\n"),
+            self.directory.path().join("shared.scm"),
+            format!(r#"(provide version) (define version "{version}")"#),
         )
         .unwrap();
-        std::fs::write(self.directory.path().join("nested/main.ts"), "import { definePlugin } from 'yinz:plugin';\nimport { version } from '../shared.ts';\nlet greeting = '';\nexport default definePlugin({ load(config) { greeting = config['greeting'] ?? ''; }, render() { return 'nested ' + version + ' ' + greeting; } });\n").unwrap();
+        std::fs::write(self.directory.path().join("nested/main.scm"), r#"
+(require "../shared.scm")
+(define greeting "")
+(define (load config) (when (hash-contains? config "greeting") (set! greeting (hash-ref config "greeting"))))
+(define (render rows columns) (string-append "nested " version " " greeting))
+"#).unwrap();
     }
     fn commit(&self) -> String {
         self.git(&["add", "."]);
@@ -744,7 +758,7 @@ impl Drop for GitPlugins {
 fn plugin_config(dir: &Path, repo: &str, pins: Option<&str>, layout: bool) {
     std::fs::write(dir.join("config.kdl"), format!("load_plugins clear-defaults=true {{}}\ndetachable_panes false\nshow_release_notes false\nplugins {{ hello repo=\"{repo}\" {{ greeting \"CONFIGURED\"; }}; }}\n")).unwrap();
     std::fs::create_dir(dir.join("config.d")).unwrap();
-    let mut aliases = format!("plugins {{ nested repo=\"{repo}\" entrypoint=\"nested/main.ts\" {{ greeting \"NESTED_CONFIG\"; }}; ");
+    let mut aliases = format!("plugins {{ nested repo=\"{repo}\" entrypoint=\"nested/main.scm\" {{ greeting \"NESTED_CONFIG\"; }}; ");
     if let Some(commit) = pins {
         aliases.push_str(&format!("branch repo=\"{repo}\" branch=\"feature\" {{ greeting \"BRANCH_CONFIG\"; }}; tagged repo=\"{repo}\" tag=\"v1\" {{ greeting \"TAG_CONFIG\"; }}; pinned repo=\"{repo}\" commit=\"{commit}\" {{ greeting \"COMMIT_CONFIG\"; }}; "));
     }
@@ -834,10 +848,10 @@ fn local_git_plugin_cli_reload_preserves_dirty_sources_and_configuration() {
     );
     assert!(!session.0.path().join("yinz/plugin-repositories").exists());
 
-    std::fs::write(session.0.path().join("config.d/plugins.kdl"), format!("plugins {{ nested repo=\"{}\" entrypoint=\"main.ts\" {{ greeting \"REFRESHED\"; }}; }}\n", fixture.directory.path().display())).unwrap();
+    std::fs::write(session.0.path().join("config.d/plugins.kdl"), format!("plugins {{ nested repo=\"{}\" entrypoint=\"main.scm\" {{ greeting \"REFRESHED\"; }}; }}\n", fixture.directory.path().display())).unwrap();
     assert!(session
         .plugin_cli(&["plugins", "status", "nested"])
-        .contains("entrypoint=main.ts"));
+        .contains("entrypoint=main.scm"));
     // The config watcher is asynchronous; retry future launches until its new
     // declaration renders, waiting on content rather than a fixed delay.
     session.plugin_cli(&["action", "close-pane", "--pane-id", &nested]);
@@ -934,7 +948,7 @@ fn remote_git_plugin_cli_install_update_reload_pins_and_offline() {
         session.reload_plugin(alias, &pane, &format!("hello v1 {greeting}"));
     }
 
-    std::fs::remove_file(fixture.directory.path().join("nested/main.ts")).unwrap();
+    std::fs::remove_file(fixture.directory.path().join("nested/main.scm")).unwrap();
     fixture.commit();
     failure(
         session.run(&["plugins", "update", "hello"], None),
@@ -1020,7 +1034,7 @@ fn bundle_installation_preserves_unrelated_files_and_preflights_conflicts() {
 fn plugin_check_targets_have_text_json_parity() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let path = root.join("space name.ts");
+    let path = root.join("space name.scm");
     std::fs::write(
         root.join("config.kdl"),
         format!(
@@ -1031,18 +1045,18 @@ fn plugin_check_targets_have_text_json_parity() {
     .unwrap();
     let targets = [
         path.display().to_string(),
-        "./space name.ts".into(),
+        "./space name.scm".into(),
         format!(
-            "../{}/space name.ts",
+            "../{}/space name.scm",
             root.file_name().unwrap().to_str().unwrap()
         ),
         format!("file:{}", path.display()),
         format!("file://{}", path.display()),
         format!("file://{}", path.display()).replace(' ', "%20"),
-        "file:./space name.ts".into(),
+        "file:./space name.scm".into(),
         "selected".into(),
     ];
-    for source in ["export const value = 1;", "export const value: string = 1;"] {
+    for (source, valid) in [("(define value 1)", true), ("(define value", false)] {
         std::fs::write(&path, source).unwrap();
         for target in &targets {
             for json in [false, true] {
@@ -1052,7 +1066,6 @@ fn plugin_check_targets_have_text_json_parity() {
                     cmd.arg("--json");
                 }
                 let out = cmd.output().unwrap();
-                let valid = !source.contains(": string");
                 assert_eq!(
                     out.status.success(),
                     valid,
@@ -1068,7 +1081,11 @@ fn plugin_check_targets_have_text_json_parity() {
             }
         }
     }
-    std::fs::write(&path, "import yinz, {type PermissionType} from 'yinz:plugin'; export function ask(permissions: readonly PermissionType[]): void { yinz.requestPermission([...permissions]); }").unwrap();
+    std::fs::write(
+        &path,
+        "(define (ask permissions) (yinz-wait-for-permissions permissions))",
+    )
+    .unwrap();
     for json in [false, true] {
         let mut cmd = command(&root);
         cmd.args(["--config", "config.kdl", "plugins", "check", "selected"]);
@@ -1107,25 +1124,25 @@ fn plugin_check_targets_have_text_json_parity() {
 }
 
 #[test]
-fn plugin_cli_targets_preserve_legacy_names() {
+fn plugin_cli_targets_resolve_managed_names_and_explicit_paths() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let managed = root.join("managed");
     std::fs::create_dir_all(managed.join("folder")).unwrap();
     std::fs::create_dir(root.join("folder")).unwrap();
     for name in [
-        "foo.ts",
-        "folder/foo.ts",
-        "selected.ts",
-        "builtin.ts",
-        "wasm.ts",
+        "foo.scm",
+        "folder/foo.scm",
+        "selected.scm",
+        "builtin.scm",
+        "wasm.scm",
     ] {
-        std::fs::write(managed.join(name), "export const valid = 1;").unwrap();
-        std::fs::write(root.join(name), "export const invalid: string = 1;").unwrap();
+        std::fs::write(managed.join(name), "(define valid 1)").unwrap();
+        std::fs::write(root.join(name), "(define invalid").unwrap();
     }
-    std::fs::write(managed.join("fallback.ts"), "export const valid = 1;").unwrap();
-    std::fs::write(root.join("config.kdl"), format!("user_plugin_dir \"{}\"\nplugins {{ fallback location=\"file:fallback.ts\"; selected location=\"file:{}\"; builtin location=\"yinz:tab-bar\"; wasm location=\"file:missing.wasm\"; }}\n", managed.display(), root.join("selected.ts").display())).unwrap();
-    for name in ["foo", "foo.ts", "folder/foo", "fallback"] {
+    std::fs::write(managed.join("fallback.scm"), "(define valid 1)").unwrap();
+    std::fs::write(root.join("config.kdl"), format!("user_plugin_dir \"{}\"\nplugins {{ fallback location=\"file:fallback.scm\"; selected location=\"file:{}\"; builtin location=\"yinz:tab-bar\"; wasm location=\"file:missing.wasm\"; }}\n", managed.display(), root.join("selected.scm").display())).unwrap();
+    for name in ["foo", "foo.scm", "folder/foo", "fallback"] {
         let report = success(
             command(root)
                 .args(["--config", "config.kdl", "plugins", "check", name, "--json"])
@@ -1164,7 +1181,7 @@ fn plugin_cli_targets_preserve_legacy_names() {
                 "config.kdl",
                 "plugins",
                 "check",
-                "./managed/selected.ts",
+                "./managed/selected.scm",
                 "--json",
             ])
             .output()
@@ -1175,8 +1192,8 @@ fn plugin_cli_targets_preserve_legacy_names() {
 #[test]
 fn plugin_reload_explicit_targets_preserve_instance() {
     let session = Session::with_setup(|dir| {
-        let path = dir.join("space #?%23 name.ts");
-        std::fs::write(&path, "import {definePlugin} from 'yinz:plugin'; export default definePlugin({render() { return 'VERSION_0'; }});").unwrap();
+        let path = dir.join("space #?%23 name.scm");
+        std::fs::write(&path, r#"(define (render rows columns) "VERSION_0")"#).unwrap();
         std::fs::write(dir.join("config.kdl"), format!("load_plugins clear-defaults=true {{}}\ndetachable_panes false\nplugins {{ selected location=\"{}\" {{ greeting \"CONFIGURED\"; }}; }}\n", url::Url::from_file_path(&path).unwrap())).unwrap();
         std::fs::write(
             dir.join("layout.kdl"),
@@ -1184,24 +1201,24 @@ fn plugin_reload_explicit_targets_preserve_instance() {
         )
         .unwrap();
     });
-    let path = session.0.path().join("space #?%23 name.ts");
+    let path = session.0.path().join("space #?%23 name.scm");
     let pane = session.plugin_pane("selected");
     session.rendered(&pane, "VERSION_0");
     let targets = [
         "selected".into(),
         path.display().to_string(),
-        "./space #?%23 name.ts".into(),
+        "./space #?%23 name.scm".into(),
         format!(
-            "../{}/space #?%23 name.ts",
+            "../{}/space #?%23 name.scm",
             session.0.path().file_name().unwrap().to_str().unwrap()
         ),
         format!("file:{}", url::Url::from_file_path(&path).unwrap().path()),
         url::Url::from_file_path(&path).unwrap().to_string(),
-        "file:./space #?%23 name.ts".into(),
+        "file:./space #?%23 name.scm".into(),
     ];
     for (index, target) in targets.iter().enumerate() {
         let content = format!("VERSION_{}", index + 1);
-        std::fs::write(&path, format!("import {{definePlugin}} from 'yinz:plugin'; let greeting = ''; export default definePlugin({{ load(config) {{ greeting = config['greeting'] ?? ''; }}, render() {{ return '{content} ' + greeting; }} }});")).unwrap();
+        std::fs::write(&path, format!(r#"(define greeting "") (define (load config) (set! greeting (hash-ref config "greeting"))) (define (render rows columns) (string-append "{content} " greeting))"#)).unwrap();
         session.plugin_cli(&["plugins", "reload", target]);
         session.rendered(&pane, &format!("{content} CONFIGURED"));
         assert_eq!(session.plugin_pane("selected"), pane);
@@ -1214,8 +1231,8 @@ fn plugin_logs_use_resolved_managed_source_after_deletion() {
         let managed = dir.join("managed #%");
         std::fs::create_dir(&managed).unwrap();
         std::fs::write(
-            managed.join("keys.ts"),
-            "export default { load() { console.log('MANAGED_KEYS_LOADED'); } };",
+            managed.join("keys.scm"),
+            r#"(define (load config) (yinz-log "MANAGED_KEYS_LOADED"))"#,
         )
         .unwrap();
         let config = std::fs::read_to_string(dir.join("config.kdl")).unwrap();
@@ -1225,7 +1242,10 @@ fn plugin_logs_use_resolved_managed_source_after_deletion() {
                 "user_plugin_dir \"{}\"\n{}",
                 managed.display(),
                 config
-                    .replace("plugins {", "plugins { selected location=\"file:keys.ts\";")
+                    .replace(
+                        "plugins {",
+                        "plugins { selected location=\"file:keys.scm\";"
+                    )
                     .replace(
                         "load_plugins clear-defaults=true {",
                         "load_plugins clear-defaults=true { selected;"
@@ -1234,7 +1254,7 @@ fn plugin_logs_use_resolved_managed_source_after_deletion() {
         )
         .unwrap();
     });
-    let source = session.0.path().join("managed #%/keys.ts");
+    let source = session.0.path().join("managed #%/keys.scm");
     let location = url::Url::from_file_path(source.canonicalize().unwrap())
         .unwrap()
         .to_string();
@@ -1243,7 +1263,7 @@ fn plugin_logs_use_resolved_managed_source_after_deletion() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|plugin| plugin["location"].as_str().unwrap().ends_with("keys.ts"))
+        .find(|plugin| plugin["location"].as_str().unwrap().ends_with("keys.scm"))
         .unwrap();
     assert_eq!(plugin["location"], location);
     let id = format!("plugin_{}", plugin["id"].as_u64().unwrap());
@@ -1291,7 +1311,7 @@ fn plugin_logs_use_resolved_managed_source_after_deletion() {
 #[test]
 fn plugin_reload_headless_reserved_paths_preserve_instance() {
     fn write_source(path: &Path, version: usize) {
-        std::fs::write(path, format!("import {{definePlugin}} from 'yinz:plugin'; export default definePlugin({{ load(config) {{ console.log('RELOAD_STATE ' + JSON.stringify({{ version: {version}, id: yinz.getPluginIds().plugin_id, greeting: config['greeting'] ?? '' }})); }} }});")).unwrap();
+        std::fs::write(path, format!(r#"(define (load config) (yinz-log (string-append "RELOAD_STATE " (yinz-json-string (hash "version" {version} "id" (hash-ref (yinz-command "GetPluginIds") "plugin_id") "greeting" (if (hash-contains? config "greeting") (hash-ref config "greeting") ""))))))"#)).unwrap();
     }
     fn loaded(session: &Session, target: &str, version: usize) -> Value {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -1314,7 +1334,7 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
     let session = Session::with_setup(|dir| {
         std::fs::create_dir(dir.join("plugins")).unwrap();
         std::os::unix::fs::symlink(dir.join("plugins"), dir.join("linked")).unwrap();
-        let path = dir.join("linked/space #?%23 name.ts");
+        let path = dir.join("linked/space #?%23 name.scm");
         write_source(&path, 0);
         let config = std::fs::read_to_string(dir.join("config.kdl")).unwrap();
         std::fs::write(
@@ -1334,7 +1354,7 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
         )
         .unwrap();
     });
-    let path = session.0.path().join("linked/space #?%23 name.ts");
+    let path = session.0.path().join("linked/space #?%23 name.scm");
     let canonical = path.canonicalize().unwrap();
     let initial = loaded(&session, "selected", 0);
     let initial_panes = success(session.run(&["action", "list-panes", "--json"], None));
@@ -1342,7 +1362,7 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
     let targets = [
         path.display().to_string(),
         canonical.display().to_string(),
-        "./linked/space #?%23 name.ts".into(),
+        "./linked/space #?%23 name.scm".into(),
         format!("file:{}", url::Url::from_file_path(&path).unwrap().path()),
         url::Url::from_file_path(&canonical).unwrap().to_string(),
         "selected".into(),
@@ -1357,7 +1377,7 @@ fn plugin_reload_headless_reserved_paths_preserve_instance() {
         assert_eq!(state["greeting"], "CONFIGURED");
     }
     // Missing reloads fail. Explicit start supplies the new background identity.
-    let missing = session.0.path().join("new.ts");
+    let missing = session.0.path().join("new.scm");
     write_source(&missing, 100);
     let target = missing.to_str().unwrap();
     let missing_reply = session.run(&["plugins", "reload", target, "--headless", "--json"], None);

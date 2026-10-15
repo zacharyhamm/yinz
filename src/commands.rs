@@ -1408,12 +1408,13 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
         PluginsCli::Test { .. } => unreachable!("tests return above"),
         PluginsCli::Docs { section } => {
             let content = match section.as_str() {
-                "index" => "guide: plugin authoring guide\nsdk: TypeScript API declarations\ntesting: plugin test API\nrepositories: Git repository plugins",
-                "guide" => concat!(include_str!("../docs/PLUGINS.md"), "\n\nAuthor plugins with yinz:plugin and confined relative imports. Use plugins write, check --json, test --json, reload, then log. Read sdk for the full API. Permissions must be requested explicitly. An optional unload(): void | Promise<void> runs once on pane close, closeSelf(), explicit reload, and normal session shutdown. Existing grants remain usable; await runCommand() or sleep() cleanup within two seconds. Errors are logged and timeout forces teardown. No new update/render/pipe calls start during unload; pending cancellable promises are cancelled afterwards. Cleanup is best effort, not guaranteed after a crash, interruption, SIGKILL, or the session shutdown deadline. Worker isolates do not run the pane unload hook.\n\nimport.meta.url identifies the current module. Filesystem modules use canonical, escaped file: URLs. For example:\n\nconst sibling = import.meta.resolve(\"./main.ts\");\n\nThis call synchronously resolves an existing sibling without evaluating it and throws TypeError if resolution fails. It follows import restrictions: supported extensions and canonical paths confined to the entrypoint directory, or the repository root for repository plugins. It is not a general asset-path resolver. The checker checks the call's types but does not execute it or validate its target. Metadata and resolution need no new permission. Launching a plugin still requires the chosen API's permission.\n\nPass filesystem results unchanged to plugin_url inputs. Do not decode them or use RunPluginLocation.File, which expects a path. Embedded modules use private yinz-builtin: URLs, which are not public plugin-launch URLs. A resolved repository sibling is a physical file in the loaded revision. Launching its URL creates a file-based plugin. It does not preserve the repository descriptor, stable repository permission/private-data identity, or repository-wide import root.\n\nComplete executable example:\n\n", include_str!("../example-plugins/clock.ts"), "\n\nBroader host API example:\n\n", include_str!("../example-plugins/capabilities.ts")),
+                "index" => "guide: plugin authoring guide\nsdk: Steel Scheme SDK reference\nprotocol: command and event shapes\ntesting: plugin test API\nrepositories: Git repository plugins",
+                "guide" => concat!(include_str!("../docs/PLUGINS.md"), "\n\nClock example:\n\n", include_str!("../example-plugins/clock.scm"), "\n\nPermission and command example:\n\n", include_str!("../example-plugins/capabilities.scm")),
                 "repositories" => include_str!("../docs/GIT_PLUGINS.md"),
-                "sdk" => include_str!("../yinz-plugin-host/src/deno/sdk.d.ts"),
-                "testing" => include_str!("../yinz-plugin-host/src/deno/testing/testing.d.ts"),
-                _ => anyhow::bail!("unknown docs section; use index, guide, sdk, testing or repositories"),
+                "sdk" => include_str!("../docs/PLUGIN_SDK.md"),
+                "protocol" => include_str!("../docs/PLUGIN_PROTOCOL.md"),
+                "testing" => include_str!("../docs/PLUGIN_TESTING.md"),
+                _ => anyhow::bail!("unknown docs section; use index, guide, sdk, protocol, testing or repositories"),
             };
             println!(
                 "{}",
@@ -1432,7 +1433,7 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                     if kind.is_dir() {
                         sources(&entry.path(), paths)?;
                     } else if kind.is_file()
-                        && yinz_plugin_api::authoring::is_deno_plugin(&entry.path())
+                        && yinz_plugin_api::authoring::is_script_plugin(&entry.path())
                     {
                         paths.push(entry.path());
                     }
@@ -1538,10 +1539,9 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                             );
                         }
                         let plugin = yinz_config::plugins::PluginConfig::from_run_plugin(plugin)
-                            .context("resolve plugin alias configuration")?;
-                        if plugin.runtime() != yinz_config::plugins::PluginRuntime::Deno {
-                            anyhow::bail!("source checking is unsupported for Wasm alias {name:?}");
-                        }
+                            .with_context(|| {
+                                format!("source checking is unsupported for alias {name:?}; expected a Scheme file")
+                            })?;
                         plugin.resolve_source(plugin_dir().ok().as_deref())?.0
                     } else if let Some(path) =
                         yinz_server::plugin_authoring::resolve_explicit_plugin_path(
@@ -1669,10 +1669,6 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             let target = yinz_server::plugin_authoring::resolve_log_target(
                 log_name,
                 plugin_dir().ok().as_deref(),
-                &opts
-                    .data_dir
-                    .clone()
-                    .unwrap_or_else(yinz_runtime::home::get_default_data_dir),
                 &config
                     .as_ref()
                     .map(|config| config.plugins.clone())

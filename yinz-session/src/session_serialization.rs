@@ -1919,7 +1919,7 @@ mod tests {
                 PaneLayoutManifest {
                     run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(
                         yinz_runtime::plugin_location::run_plugin_from_url(
-                            "file:/tmp/\"my/cool cwd/plugin.wasm",
+                            "file:/tmp/\"my/cool cwd/plugin.scm",
                         )
                         .unwrap(),
                     ))),
@@ -1937,7 +1937,7 @@ mod tests {
                 PaneLayoutManifest {
                     run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(
                         yinz_runtime::plugin_location::run_plugin_from_url(
-                            "file:/tmp/\"my/cool cwd/plugin.wasm",
+                            "file:/tmp/\"my/cool cwd/plugin.scm",
                         )
                         .unwrap()
                         .with_configuration(plugin_configuration),
@@ -2082,7 +2082,7 @@ mod tests {
                 PaneLayoutManifest {
                     run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(
                         yinz_runtime::plugin_location::run_plugin_from_url(
-                            "file:/tmp/\"my/cool cwd/plugin.wasm",
+                            "file:/tmp/\"my/cool cwd/plugin.scm",
                         )
                         .unwrap(),
                     ))),
@@ -2100,7 +2100,7 @@ mod tests {
                 PaneLayoutManifest {
                     run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(
                         yinz_runtime::plugin_location::run_plugin_from_url(
-                            "file:/tmp/\"my/cool cwd/plugin.wasm",
+                            "file:/tmp/\"my/cool cwd/plugin.scm",
                         )
                         .unwrap()
                         .with_configuration(plugin_configuration),

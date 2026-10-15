@@ -11,12 +11,12 @@ fn file_plugins_survive_saved_layouts_with_directory_fallback() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let name = format!(
-        "{} # %20?.ts",
+        "{} # %20?.scm",
         directory.path().file_name().unwrap().to_str().unwrap()
     );
-    let source = "export default {};";
+    let source = "(define (render rows cols) \"\")";
     std::fs::write(directory.path().join(&name), source).unwrap();
-    std::fs::write(cwd.path().join("existing.ts"), source).unwrap();
+    std::fs::write(cwd.path().join("existing.scm"), source).unwrap();
     let file_url = |path| {
         RunPlugin {
             location: RunPluginLocation::File(path),
@@ -27,20 +27,25 @@ fn file_plugins_survive_saved_layouts_with_directory_fallback() {
     let mut cases = vec![
         (format!("file:{name}"), Some(directory.path().join(&name))),
         (
-            "file:existing.ts".into(),
-            Some(cwd.path().join("existing.ts")),
+            "file:existing.scm".into(),
+            Some(cwd.path().join("existing.scm")),
         ),
         (file_url(cwd.path().join(&name)), None),
     ];
-    for name in ["hash#.ts", "percent%20.ts", "query?.ts", "space name.ts"] {
+    for name in [
+        "hash#.scm",
+        "percent%20.scm",
+        "query?.scm",
+        "space name.scm",
+    ] {
         let path = cwd.path().join(name);
         std::fs::write(&path, source).unwrap();
         cases.push((file_url(path.clone()), Some(path)));
     }
     #[cfg(unix)]
     {
-        let path = cwd.path().join("current # %20?.ts");
-        std::os::unix::fs::symlink(cwd.path().join("existing.ts"), &path).unwrap();
+        let path = cwd.path().join("current # %20?.scm");
+        std::os::unix::fs::symlink(cwd.path().join("existing.scm"), &path).unwrap();
         cases.push((file_url(path.clone()), Some(path)));
     }
     for (url, expected_source) in cases {
@@ -97,7 +102,7 @@ fn file_plugins_survive_saved_layouts_with_directory_fallback() {
                 } else {
                     assert!(resolved.is_err());
                 }
-                if url.starts_with("file:/") || url == "file:existing.ts" {
+                if url.starts_with("file:/") || url == "file:existing.scm" {
                     assert_eq!(restored.location, plugin.location);
                     assert_eq!(restored.relative_path, None);
                     assert_eq!(restored.declared_path, plugin.declared_path);

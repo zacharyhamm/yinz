@@ -1,6 +1,5 @@
 ---
 source: yinz-plugin-host/src/./unit/plugin_tests/open_and_session_commands.rs
-assertion_line: 925
 expression: "format!(\"{:#?}\", new_tab_event)"
 ---
 Some(
@@ -19,7 +18,9 @@ Some(
                     hold_on_start: false,
                     originating_plugin: Some(
                         OriginatingPlugin {
-                            deno_generation: None,
+                            generation: Some(
+                                1,
+                            ),
                             plugin_id: PluginId(
                                 0,
                             ),

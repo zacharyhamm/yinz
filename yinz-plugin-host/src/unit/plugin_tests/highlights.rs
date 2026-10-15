@@ -193,15 +193,13 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -223,7 +221,7 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
 
     // Send a HighlightClicked event directly to the plugin
     let _ = plugin_thread_sender.send(PluginInstruction::HighlightClicked {
@@ -235,24 +233,16 @@ pub fn highlight_clicked_event_delivered_to_plugin() {
         context: BTreeMap::new(),
     });
 
-    screen_thread.join().unwrap();
+    let frame = wait_for_render_containing(&received_screen_instructions, "HighlightClicked");
     teardown();
+    screen_thread.join().unwrap();
 
-    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
-        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-            for plugin_render_asset in plugin_render_assets {
-                let plugin_bytes = plugin_render_asset.bytes.clone();
-                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                if plugin_bytes.contains("HighlightClicked") {
-                    return Some(plugin_bytes);
-                }
-            }
-        }
-        None
-    });
     assert!(
-        plugin_bytes_event.is_some(),
-        "Expected PluginBytes containing 'HighlightClicked'"
+        fixture_events(frame.as_bytes()).contains(&Event::HighlightClicked {
+            pane_id: PaneId::Terminal(crate::TerminalId::new(1)),
+            pattern: "test".into(),
+            matched_string: "test_match".into(),
+            context: BTreeMap::new(),
+        })
     );
-    assert_snapshot!(format!("{:#?}", plugin_bytes_event));
 }

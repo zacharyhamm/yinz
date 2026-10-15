@@ -14,7 +14,9 @@ Some(
                     ),
                     originating_plugin: Some(
                         OriginatingPlugin {
-                            deno_generation: None,
+                            generation: Some(
+                                1,
+                            ),
                             plugin_id: PluginId(
                                 0,
                             ),

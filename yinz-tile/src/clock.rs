@@ -1,12 +1,6 @@
-//! Civil-calendar arithmetic for plugins, which have no other way to get it.
-//!
-//! Wasm has no timezone and nothing that reads a zoneinfo database can be linked into a
-//! plugin, so the offset comes from the host through
-//! [`get_local_utc_offset`](crate::shim::get_local_utc_offset) and everything downstream of it
-//! — turning an epoch millisecond into a year, a month, a day and a time of day — has to be
-//! done by hand. This is that arithmetic, kept next to the host command that is the reason it
-//! exists, so the plugins that draw a timestamp share one copy rather than each carrying its
-//! own.
+//! Civil-calendar arithmetic shared by plugin renderers.
+//! The host supplies an explicit UTC offset through `GetLocalUtcOffset`; calendar
+//! conversion stays deterministic and does not read the process timezone.
 
 /// Now, as an epoch millisecond.
 pub fn now_ms() -> SignedUnixMillis {
@@ -48,7 +42,7 @@ pub fn civil_from_days(days: i64) -> (i64, i64, i64) {
 /// second, weekday)`, where weekday is 0 = Sunday.
 ///
 /// `utc_offset_secs` is seconds east of UTC, which only the host can say — see
-/// [`get_local_utc_offset`](crate::shim::get_local_utc_offset). `0` means UTC, which is the
+/// the `GetLocalUtcOffset` host command. `0` means UTC, which is the
 /// honest answer for a caller that could not ask rather than a wrong one.
 pub fn civil_from_epoch_ms(epoch_ms: SignedUnixMillis, utc_offset_secs: i32) -> CivilTime {
     let local_ms = epoch_ms

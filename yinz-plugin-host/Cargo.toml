@@ -3,7 +3,7 @@ name = "yinz-plugin-host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The yinz server's plugin host: Wasm and Deno plugin loading, execution, and job queues"
+description = "The yinz server's plugin host: Steel Scheme plugin loading, execution, and job queues"
 
 [lints]
 workspace = true
@@ -16,12 +16,13 @@ vte = { workspace = true }
 yinz-routing = { path = "../yinz-routing", version = "0.1.0" }
 yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
 yinz-config = { workspace = true }
-yinz-deno-builtins = { workspace = true }
 yinz-ipc = { workspace = true }
 yinz-key-codec = { workspace = true }
 yinz-plugin-api = { workspace = true }
 yinz-plugin-authoring = { workspace = true }
 yinz-session = { workspace = true }
+yinz-steel = { path = "../yinz-steel" }
+yinz-steel-builtins = { path = "../yinz-steel-builtins" }
 yinz-storage = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }
@@ -31,9 +32,6 @@ yinz-tile-markdown = { path = "../yinz-tile-markdown" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
-deno_core = "=0.405.0"
-deno_ast = { version = "=0.53.3", features = ["transpiling"] }
-deno_error = "0.7"
 kdl = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
@@ -49,18 +47,6 @@ tokio = { workspace = true, features = ["sync"] }
 unicode-width = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
-wasmi_wasi = { version = "1.1.0" }
-
-[dependencies.wasmi]
-version = "1.1.0"
-default-features = false
-features = ["std"]
-
-# For `LimiterError`, which `ResourceLimiter` returns but `wasmi` does not re-export.
-[dependencies.wasmi_core]
-version = "1.1.0"
-default-features = false
-features = ["std"]
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -68,6 +54,7 @@ close_fds = "0.3.2"
 nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
 
 [dev-dependencies]
+flate2 = "1.1.9"
 regex = { workspace = true }
 hegeltest = "0.29.3"
 insta = "1.48"
@@ -77,5 +64,4 @@ insta = "1.48"
 serial_test = "3.0"
 tempfile = "3.2.0"
 tokio = { workspace = true, features = ["test-util"] }
-wasmi = { version = "1.1.0", features = ["std"] }
 yinz-test-support = { path = "../yinz-test-support" }

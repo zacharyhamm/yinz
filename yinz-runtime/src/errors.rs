@@ -11,15 +11,12 @@
 
 use anyhow::Context;
 use colored::*;
-#[allow(unused_imports)] // used in set_panic_handler; may appear unused under wasm target
 use log::error;
-use std::path::PathBuf;
 
 /// Re-exports of common error-handling code.
 pub mod prelude {
     pub use super::FatalError;
     pub use super::LoggableError;
-    #[cfg(not(target_family = "wasm"))]
     pub use super::ToAnyhow;
     pub use super::YinzError;
     pub use anyhow::anyhow;
@@ -192,56 +189,6 @@ pub enum YinzError {
     #[error("failed to start PTY")]
     FailedToStartPty,
 
-    #[error(
-        "Yinz loads the core plugins from disk, but this plugin wasn't found:
-
-    Plugin name: '{plugin_path}'
-    Plugin directory: '{plugin_dir}'
-
-If you built yinz from source:
-    `cargo x install <destination>` installs the builtin plugins next to the data
-    dir, under 'builtins/<version>'. In a checkout, `cargo x build -p` builds them
-    where a debug binary looks. Do not set CARGO_TARGET_DIR: the checkout paths
-    are baked in at compile time.
-
-If you're a user of a packaged yinz:
-    Please report this error to the distributor of your current yinz version.
-
-Otherwise, place the builtin plugin '.wasm' files in the plugin directory shown
-above, in the 'plugins' folder of the system data directory, or point the
-'builtin_plugins_dir' config option at the directory holding them. Every
-location yinz looks in is listed by `yinz setup --check`.
-"
-    )]
-    BuiltinPluginMissing {
-        plugin_path: PathBuf,
-        plugin_dir: PathBuf,
-        #[source]
-        source: anyhow::Error,
-    },
-
-    #[error(
-        "It seems you tried to load the following builtin plugin:
-
-    Plugin name: '{plugin_path}'
-
-This is not a builtin plugin known to this version of yinz. If you were using
-a custom layout, please refer to the example layouts at:
-
-    https://github.com/zacharyhamm/yinz/tree/main/example/layouts
-
-If you think this is a bug and the plugin is indeed an internal plugin, please
-open an issue on GitHub:
-
-    https://github.com/zacharyhamm/yinz/issues
-"
-    )]
-    BuiltinPluginNonexistent {
-        plugin_path: PathBuf,
-        #[source]
-        source: anyhow::Error,
-    },
-
     #[error("Cannot resize fixed panes")]
     CantResizeFixedPanes {
         pane_ids: Vec<yinz_types::pane_id::PaneId>,
@@ -269,11 +216,9 @@ open an issue on GitHub:
     RanOutOfRoomForSpans,
 }
 
-#[cfg(not(target_family = "wasm"))]
-pub use not_wasm::*;
+pub use panic_context::*;
 
-#[cfg(not(target_family = "wasm"))]
-mod not_wasm {
+mod panic_context {
     use super::*;
     use crate::channels::{SenderWithContext, ASYNCOPENCALLS, OPENCALLS};
     use miette::{Diagnostic, GraphicalReportHandler, GraphicalTheme, Report};
@@ -491,7 +436,7 @@ pub fn format_context(context: &ErrorContext) -> String {
     output
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
 mod context_tests {
     use super::*;
 

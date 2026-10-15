@@ -87,7 +87,7 @@ pub(crate) fn dispatch(env: &mut PluginEnv, mut command: PickCommand) -> Result<
     let response = yinz_plugin_api::plugin_command::ProtobufPickResponse {
         json: serde_json::to_string(&result).context("encode picker reply")?,
     };
-    crate::yinz_exports::wasi_write_object(env, &response.encode_to_vec())
+    crate::yinz_exports::write_response(env, &response.encode_to_vec())
         .context("write picker reply")
 }
 
@@ -106,7 +106,7 @@ fn send_command(
         .send_to_plugin(PluginInstruction::Pick {
             plugin_id: env.plugin_id,
             instance_id: env.instance_id,
-            generation: env.deno_generation,
+            generation: env.generation,
             client_id: env.client_id,
             cwd,
             focused_plugin,
@@ -153,7 +153,7 @@ pub(crate) fn attach_opened_pane(env: &PluginEnv, pane: Option<PaneId>) -> Resul
     result.map(|_| ())
 }
 
-impl WasmBridge {
+impl PluginBridge {
     pub(crate) fn pick_cwd(
         &self,
         focused_plugin: Option<PluginId>,

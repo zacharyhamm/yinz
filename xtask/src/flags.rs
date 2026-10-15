@@ -34,7 +34,7 @@ xflags::xflags! {
             cmd check {
             }
 
-            /// Native release build (plugins + binary, no cross-compilation)
+            /// Native release build (no cross-compilation)
             cmd build-release {
             }
         }
@@ -49,42 +49,34 @@ xflags::xflags! {
             optional -c, --clean
         }
 
-        /// Generate a runnable `yinz` executable and install its builtin plugins
+        /// Install a runnable `yinz` executable with embedded plugins
         cmd install {
             required destination: PathBuf
             /// Cargo profile to build with (e.g. `dev` for a fast, unoptimized install).
             /// Defaults to `release`.
             optional --profile name: String
-            /// Where to put the builtin plugin wasm. Defaults to what the built binary
-            /// reports: `<data dir>/builtins/<version>`, or `$PREFIX/share/yinz/builtins/<version>`
-            /// when PREFIX is set. Nothing is pruned under an explicit directory.
-            optional --builtins-dir path: PathBuf
-            /// Install the binary and authoring tools; skip Wasm builtins
-            optional --no-builtins
             /// Extra arguments appended to the native `cargo build` invocation
             /// (e.g. `--no-default-features`, `--features ...`, `--offline`, `--locked`, `-j N`).
-            /// Not applied to the wasm plugin build.
             repeated args: OsString
         }
 
         /// Run debug version of yinz
         cmd run {
-            /// Skip the plugin build: run against the debug plugins already under target/,
-            /// with a scratch data dir (target/dev-data) instead of the real one.
+            /// Run with a scratch data directory (target/dev-data).
             optional --quick-run
-            /// Take plugins from here, skip building plugins. Passed to yinz verbatim
+            /// Use this application data directory. Passed to yinz verbatim
             optional --data-dir path: PathBuf
             /// Arguments to pass after `cargo run --`
             repeated args: OsString
         }
 
-        /// Format Rust crates and shipped TypeScript plugins
+        /// Format Rust crates and shipped Scheme plugins
         cmd format {
             /// Run `cargo fmt` in check mode
             optional --check
         }
 
-        /// Check Rust crates and shipped TypeScript plugins, denying warnings
+        /// Check Rust crates and shipped Scheme plugins, denying warnings
         cmd lint {
             /// Apply clippy's automatic suggestions instead of only reporting them
             optional --fix
@@ -127,19 +119,14 @@ xflags::xflags! {
             repeated args: OsString
         }
 
-        /// Build the application and all plugins
+        /// Build the application with embedded Scheme plugins
         cmd build {
             /// Build in release mode without debug symbols
             optional -r, --release
             /// Cargo profile to build with (e.g. `dev`). Mutually exclusive with `--release`
             optional --profile name: String
-            /// Build only the plugins
-            optional -p, --plugins-only
-            /// Build everything except the plugins
-            optional --no-plugins
             /// Extra arguments appended to the native `cargo build` invocation
             /// (e.g. `--no-default-features`, `--features ...`, `--offline`, `--locked`, `-j N`).
-            /// Not applied to the wasm plugin build.
             repeated args: OsString
         }
     }
@@ -221,8 +208,6 @@ pub struct Install {
     pub args: Vec<OsString>,
 
     pub profile: Option<String>,
-    pub builtins_dir: Option<PathBuf>,
-    pub no_builtins: bool,
 }
 
 #[derive(Debug)]
@@ -278,8 +263,6 @@ pub struct Build {
 
     pub release: bool,
     pub profile: Option<String>,
-    pub plugins_only: bool,
-    pub no_plugins: bool,
 }
 
 impl Xtask {

@@ -317,9 +317,9 @@ keybinds {
 // Plugin aliases - can be used to change the implementation of Yinz
 // declarations are refreshed on config reload
 plugins {
-    // Repository TypeScript plugins install on first use. Update with `yinz plugins update`.
+    // Repository Scheme plugins install on first use. Update with `yinz plugins update`.
     // my-panel repo="https://github.com/example/yinz-panel.git" branch="main"
-    // local-tools repo="~/src/yinz-tools" entrypoint="src/main.ts" { greeting "Hello"; }
+    // local-tools repo="~/src/yinz-tools" entrypoint="src/main.scm" { greeting "Hello"; }
     tab-bar location="yinz:tab-bar"
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"
@@ -333,7 +333,7 @@ plugins {
     }
     configuration location="yinz:configuration"
     plugin-manager location="yinz:plugin-manager"
-    // The shipped TypeScript hooks, so `hooks { agent_exit "agent-exit" }` below and
+    // The shipped Scheme hooks, so `hooks { agent_exit "agent-exit" }` below and
     // `yinz action set-hook agent_waiting agent-policy --write` can name them by alias.
     context-menu location="yinz:context-menu"
     agent-policy location="yinz:agent-policy"
@@ -374,7 +374,7 @@ plugins {
     // survive. Quotes, spaces, commas, Unicode and percent signs are literal. NUL is invalid.
     //
     // Readers receive the raw absolute selected path as a message payload. Configure
-    // reader settings in a normal plugin alias, e.g. pdf-reader location="file:/.../main.ts".
+    // reader settings in a normal plugin alias, e.g. pdf-reader location="file:/.../main.scm".
     // Destinations accept aliases, yinz: URLs, absolute paths and absolute local file: URLs.
     // Raw paths are file-URL encoded; URLs are decoded once by the host. Thus a raw %2C
     // filename differs from URL %2C (a comma). Escape literal # and ? in URLs; raw paths
@@ -460,18 +460,16 @@ load_plugins {
     "session-palette"
     "configuration-palette"
     "yinz:link"
-    // "file:/path/to/my-plugin.wasm"
-    // "file:/path/to/my-plugin.ts"     // a TypeScript plugin; see docs/DENO_PLUGINS.md
-    // "file:/path/to/my-plugin.ts"     // a TypeScript plugin; see docs/DENO_PLUGINS.md
+    // "file:/path/to/my-plugin.scm"     // see docs/PLUGINS.md
 }
 
 // Hook points a plugin can own: a moment in the session's life. Each takes one plugin url,
-// or an empty string to leave the point unhooked. See docs/DENO_PLUGINS.md "Hooks".
+// or an empty string to leave the point unhooked. See docs/PLUGINS.md "Hooks".
 // (Requires restart)
 //
 // hooks {
 //     agent_exit "yinz:agent-exit"            // opened in place of an exited agent pane
-//     agent_waiting "file:my-policy.ts"       // headless: a plugin in the plugin folder
+//     agent_waiting "file:my-policy.scm"       // headless: a plugin in the plugin folder
 //     context_menu "yinz:context-menu"        // answers right-clicks, with context_menu_on_right_click true
 // }
 
@@ -709,11 +707,6 @@ background_opacity "85%"
 // (Requires restart)
 //
 // layout_dir "/path/to/my/layout_dir"
-
-// The folder in which Yinz will look for builtin plugin WASM files
-// It falls back to the installed builtin plugins when a file is not present
-//
-// builtin_plugins_dir "/path/to/my/builtin_plugins_dir"
 
 // The folder in which Yinz will look for themes
 // (Requires restart)

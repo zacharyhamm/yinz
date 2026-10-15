@@ -477,6 +477,7 @@ pub enum PluginContext {
     CachePluginEvents,
     MessageFromPlugin,
     UnblockCliPipes,
+    CliPipesDisconnected,
     KeybindPipe,
     DumpLayoutToPlugin,
     ListClientsMetadata,

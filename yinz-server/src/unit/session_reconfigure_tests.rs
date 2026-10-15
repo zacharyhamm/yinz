@@ -245,7 +245,7 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
 fn stale_client_rebinding_preserves_session_background_reconciliation() {
     let mut configuration = SessionConfiguration::default();
     let other = ClientId::new(2);
-    let saved = Config::from_kdl("load_plugins { \"file:/first.ts\"; }", None).unwrap();
+    let saved = Config::from_kdl("load_plugins { \"file:/first.scm\"; }", None).unwrap();
     configuration.set_saved_configuration(saved.clone());
     configuration.set_client_runtime_configuration(CLIENT, saved.clone());
     configuration.set_client_runtime_configuration(other, saved);
@@ -256,7 +256,7 @@ fn stale_client_rebinding_preserves_session_background_reconciliation() {
         ..Default::default()
     };
     for (fragment, action) in [
-        ("load_plugins { \"file:/second.ts\"; }", Action::Quit),
+        ("load_plugins { \"file:/second.scm\"; }", Action::Quit),
         ("load_plugins clear-defaults=true {}", Action::NoOp),
     ] {
         let (current, changed) = configuration
@@ -303,7 +303,7 @@ fn background_declarations_are_session_wide_and_preserve_kdl_merge_rules() {
     apply(
         &mut configuration,
         CLIENT,
-        "load_plugins { \"file:/first.ts\"; }",
+        "load_plugins { \"file:/first.scm\"; }",
     );
     let first = configuration
         .get_client_configuration(&other)
@@ -319,7 +319,7 @@ fn background_declarations_are_session_wide_and_preserve_kdl_merge_rules() {
     apply(
         &mut configuration,
         other,
-        "load_plugins { \"file:/second.ts\"; }",
+        "load_plugins { \"file:/second.scm\"; }",
     );
     assert_eq!(
         configuration
@@ -331,7 +331,7 @@ fn background_declarations_are_session_wide_and_preserve_kdl_merge_rules() {
     apply(
         &mut configuration,
         CLIENT,
-        "load_plugins clear-defaults=true { \"file:/third.ts\"; }",
+        "load_plugins clear-defaults=true { \"file:/third.scm\"; }",
     );
     assert_eq!(
         configuration
@@ -365,7 +365,7 @@ fn unsaved_background_aliases_survive_attachment_and_staged_reconfiguration() {
     configuration
         .reconfigure_runtime_config(
             &CLIENT,
-            "plugins { background location=\"file:/unsaved.ts\"; }\nload_plugins { background; }"
+            "plugins { background location=\"file:/unsaved.scm\"; }\nload_plugins { background; }"
                 .into(),
             None,
             None,
@@ -418,8 +418,8 @@ fn background_aliases_keep_overrides_when_rebinding_and_reset_on_saved_replaceme
     let saved = Config::from_kdl(
         r#"
             plugins {
-                background location="file:/saved.ts"
-                unrelated location="file:/saved-only.ts"
+                background location="file:/saved.scm"
+                unrelated location="file:/saved-only.scm"
             }
             load_plugins { background; }
         "#,
@@ -435,12 +435,12 @@ fn background_aliases_keep_overrides_when_rebinding_and_reset_on_saved_replaceme
             &CLIENT,
             r#"
                 plugins {
-                    background location="file:/unsaved.ts" {
+                    background location="file:/unsaved.scm" {
                         cwd "/alias cwd"
                         inherited "alias value"
                         override "alias value"
                     }
-                    unrelated location="file:/first-client.ts"
+                    unrelated location="file:/first-client.scm"
                 }
                 load_plugins clear-defaults=true {
                     background {
@@ -487,7 +487,7 @@ fn background_aliases_keep_overrides_when_rebinding_and_reset_on_saved_replaceme
         assert!(matches!(declaration, RunPluginOrAlias::Alias(_)));
         declaration.populate_run_plugin_if_needed(&reloaded.plugins);
         let run = declaration.get_run_plugin().unwrap();
-        assert_eq!(run.location.display(), "file:/unsaved.ts");
+        assert_eq!(run.location.display(), "file:/unsaved.scm");
         assert_eq!(run.initial_cwd, Some(PathBuf::from("/declaration cwd")));
         assert_eq!(run.configuration.inner()["inherited"], "alias value");
         assert_eq!(run.configuration.inner()["override"], "declaration value");

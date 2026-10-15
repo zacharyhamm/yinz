@@ -1,0 +1,7 @@
+(define (load config) (yinz-command (hash "Subscribe" '("Key"))))
+(define (update event)
+  (when (and (hash? event) (hash-contains? event "Key"))
+    (yinz-command (hash "SetSelectable" #f))
+    (let loop () (loop)))
+  #f)
+(define (render rows cols) "runaway plugin, idle")

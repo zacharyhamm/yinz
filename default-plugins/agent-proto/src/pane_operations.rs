@@ -1,7 +1,7 @@
 //! Shared geometry validation for adjacent pane moves.
 use yinz_tile::prelude::PaneId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PaneDirection {
     Left,
     Right,
@@ -22,7 +22,7 @@ impl PaneDirection {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PanePosition {
     pub id: PaneId,
     /// An option rather than a sentinel: panes with no tab would otherwise compare as

@@ -8,7 +8,7 @@ Some(
             RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: File(
-                    "/path/to/my/plugin.wasm",
+                    "/path/to/my/plugin.scm",
                 ),
                 configuration: PluginUserConfiguration(
                     {},
@@ -16,7 +16,7 @@ Some(
                 initial_cwd: None,
                 relative_path: None,
                 declared_path: Some(
-                    "/path/to/my/plugin.wasm",
+                    "/path/to/my/plugin.scm",
                 ),
             },
         ),

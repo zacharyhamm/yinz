@@ -60,10 +60,10 @@ impl GitPlugin {
                 .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
             || !matches!(
                 self.entrypoint.extension().and_then(|ext| ext.to_str()),
-                Some("ts" | "mts" | "js" | "mjs")
+                Some("scm" | "ss" | "sld")
             )
         {
-            return Err("entrypoint must be a relative JS/TS file inside the repository");
+            return Err("entrypoint must be a relative Scheme file inside the repository");
         }
         if let Some(revision) = &self.revision {
             if self.is_local() {
@@ -143,7 +143,7 @@ impl GitPlugin {
         }
         let plugin = Self {
             repo: repo.ok_or("Git plugin requires repo")?,
-            entrypoint: entrypoint.unwrap_or_else(|| Path::new("main.ts").to_owned()),
+            entrypoint: entrypoint.unwrap_or_else(|| Path::new("main.scm").to_owned()),
             revision,
         };
         plugin.validate()?;

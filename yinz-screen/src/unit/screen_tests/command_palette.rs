@@ -2038,7 +2038,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
         requests
             .try_iter()
             .find_map(|(request, _)| match request {
-                PluginInstruction::DenoPalette(
+                PluginInstruction::PluginPalette(
                     delivery @ Delivery {
                         message: Message::Discover { .. } | Message::Execute { .. },
                         ..
@@ -2062,7 +2062,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!requests.try_iter().any(|(request, _)| matches!(
         request,
-        PluginInstruction::DenoPalette(Delivery {
+        PluginInstruction::PluginPalette(Delivery {
             message: Message::Discover { .. },
             ..
         })
@@ -2087,7 +2087,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
     let releases: Vec<_> = requests
         .try_iter()
         .filter_map(|(request, _)| match request {
-            PluginInstruction::DenoPalette(Delivery {
+            PluginInstruction::PluginPalette(Delivery {
                 message: Message::Release { handles },
                 ..
             }) => Some(handles),
@@ -2117,7 +2117,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
     assert!(snapshot.contains("Loading"), "{snapshot}");
     assert!(!requests.try_iter().any(|(request, _)| matches!(
         request,
-        PluginInstruction::DenoPalette(Delivery {
+        PluginInstruction::PluginPalette(Delivery {
             message: Message::Release { .. },
             ..
         })
@@ -2133,7 +2133,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
     for (request, _) in requests.try_iter() {
         assert!(!matches!(
             request,
-            PluginInstruction::DenoPalette(Delivery {
+            PluginInstruction::PluginPalette(Delivery {
                 message: Message::Release { .. },
                 ..
             })
@@ -2168,7 +2168,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
     );
     assert!(!requests.try_iter().any(|(request, _)| matches!(
         request,
-        PluginInstruction::DenoPalette(Delivery {
+        PluginInstruction::PluginPalette(Delivery {
             message: Message::Execute { .. },
             ..
         })
@@ -2244,7 +2244,7 @@ fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently_wi
     let request = requests
         .try_iter()
         .find_map(|(instruction, _)| match instruction {
-            PluginInstruction::DenoPalette(delivery) => Some(delivery),
+            PluginInstruction::PluginPalette(delivery) => Some(delivery),
             _ => None,
         })
         .unwrap();
@@ -2258,7 +2258,7 @@ fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently_wi
         revision: scope.revision + 1,
     });
     let mut deliveries: Vec<_> = requests.try_iter().filter_map(|(instruction, _)| match instruction {
-        PluginInstruction::DenoPalette(delivery) if matches!(&delivery.message, Message::Discover { scope: current, .. } if current.revision == scope.revision + 1) => Some(delivery), _ => None,
+        PluginInstruction::PluginPalette(delivery) if matches!(&delivery.message, Message::Discover { scope: current, .. } if current.revision == scope.revision + 1) => Some(delivery), _ => None,
     }).collect();
     deliveries.reverse();
     for delivery in deliveries {
@@ -2317,7 +2317,7 @@ fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently_wi
     });
     assert!(!requests.try_iter().any(|(instruction, _)| matches!(
         instruction,
-        PluginInstruction::DenoPalette(yinz_bus::command_palette::Delivery {
+        PluginInstruction::PluginPalette(yinz_bus::command_palette::Delivery {
             message: Message::Discover { .. },
             ..
         })
@@ -2379,7 +2379,7 @@ fn plugin_palette_availability_and_client_scope_control_discovery_and_rendering_
             let discoveries: Vec<_> = requests
                 .try_iter()
                 .filter_map(|(instruction, _)| match instruction {
-                    PluginInstruction::DenoPalette(delivery)
+                    PluginInstruction::PluginPalette(delivery)
                         if matches!(delivery.message, Message::Discover { .. }) =>
                     {
                         Some(delivery)
@@ -2407,7 +2407,7 @@ fn plugin_palette_availability_and_client_scope_control_discovery_and_rendering_
                 assert!(!request.active.unwrap().load(Ordering::Acquire));
             }
             assert!(!requests.try_iter().any(|(instruction, _)| matches!(
-                instruction, PluginInstruction::DenoPalette(delivery)
+                instruction, PluginInstruction::PluginPalette(delivery)
                     if matches!(delivery.message, Message::Discover { .. })
                         || matches!(delivery.message, Message::Release { ref handles } if handles.is_empty())
             )));
@@ -2446,7 +2446,7 @@ fn plugin_palette_filter_submission_refreshes_results_and_releases_old_handles()
         requests
             .try_iter()
             .find_map(|(instruction, _)| match instruction {
-                PluginInstruction::DenoPalette(delivery) => match delivery.message {
+                PluginInstruction::PluginPalette(delivery) => match delivery.message {
                     Message::Discover { scope, query, .. } => Some((scope, query)),
                     _ => None,
                 },
@@ -2507,7 +2507,7 @@ fn plugin_palette_filter_submission_refreshes_results_and_releases_old_handles()
     let releases: Vec<_> = requests
         .try_iter()
         .filter_map(|(instruction, _)| match instruction {
-            PluginInstruction::DenoPalette(delivery) => match delivery.message {
+            PluginInstruction::PluginPalette(delivery) => match delivery.message {
                 Message::Release { handles } => Some(handles),
                 _ => None,
             },
@@ -2564,7 +2564,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         requests
             .try_iter()
             .find_map(|(instruction, _)| match instruction {
-                PluginInstruction::DenoPalette(delivery)
+                PluginInstruction::PluginPalette(delivery)
                     if matches!(
                         delivery.message,
                         Message::Discover { .. } | Message::Execute { .. }
@@ -2610,7 +2610,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
     let releases: Vec<_> = requests
         .try_iter()
         .filter_map(|(instruction, _)| match instruction {
-            PluginInstruction::DenoPalette(delivery) => match delivery.message {
+            PluginInstruction::PluginPalette(delivery) => match delivery.message {
                 Message::Release { handles } => Some(handles),
                 _ => None,
             },
@@ -2692,7 +2692,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
     let releases: Vec<_> = requests
         .try_iter()
         .filter_map(|(instruction, _)| match instruction {
-            PluginInstruction::DenoPalette(delivery) => match delivery.message {
+            PluginInstruction::PluginPalette(delivery) => match delivery.message {
                 Message::Release { handles } => Some(handles),
                 _ => None,
             },
@@ -2749,7 +2749,7 @@ fn root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions
             requests
                 .try_iter()
                 .find_map(|(request, _)| match request {
-                    PluginInstruction::DenoPalette(
+                    PluginInstruction::PluginPalette(
                         delivery @ Delivery {
                             message: Message::Discover { .. } | Message::Execute { .. },
                             ..
@@ -2771,7 +2771,7 @@ fn root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions
         assert!(!request.active.unwrap().load(Ordering::Acquire));
         assert!(requests.try_iter().any(|(instruction, _)| matches!(
             instruction,
-            PluginInstruction::DenoPalette(Delivery {
+            PluginInstruction::PluginPalette(Delivery {
                 message: Message::Cancel { .. },
                 ..
             })
@@ -2801,7 +2801,7 @@ fn root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions
         assert!(!screen.command_palettes.contains_key(&CLIENT));
         assert!(!requests.try_iter().any(|(instruction, _)| matches!(
             instruction,
-            PluginInstruction::DenoPalette(Delivery {
+            PluginInstruction::PluginPalette(Delivery {
                 message: Message::Discover { .. },
                 ..
             })
@@ -3934,7 +3934,7 @@ fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
     assert!(
         !rx.try_iter().any(|(instruction, _)| matches!(
             instruction,
-            PluginInstruction::DenoPalette(yinz_bus::command_palette::Delivery {
+            PluginInstruction::PluginPalette(yinz_bus::command_palette::Delivery {
                 message: yinz_types::command_palette::Message::Dismiss { .. },
                 ..
             })
@@ -4791,7 +4791,7 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                 requests
                     .try_iter()
                     .find_map(|(request, _)| match request {
-                        PluginInstruction::DenoPalette(Delivery {
+                        PluginInstruction::PluginPalette(Delivery {
                             message:
                                 Message::Discover { scope, .. } | Message::Execute { scope, .. },
                             ..
@@ -5114,7 +5114,7 @@ fn suspended_palette_keeps_notifications_hidden_and_releases_mode_only_on_close(
             requests
                 .try_iter()
                 .find_map(|(instruction, _)| match instruction {
-                    PluginInstruction::DenoPalette(delivery) => match delivery.message {
+                    PluginInstruction::PluginPalette(delivery) => match delivery.message {
                         Message::Discover { scope, .. } | Message::Execute { scope, .. } => {
                             Some(scope)
                         },
@@ -5234,7 +5234,7 @@ fn dynamic_palette_refresh_recovers_after_execution_error_and_stops_after_close(
         requests
             .try_iter()
             .find_map(|(instruction, _)| match instruction {
-                PluginInstruction::DenoPalette(delivery) => match delivery.message {
+                PluginInstruction::PluginPalette(delivery) => match delivery.message {
                     message @ (Message::Discover { .. } | Message::Execute { .. }) => Some(message),
                     _ => None,
                 },

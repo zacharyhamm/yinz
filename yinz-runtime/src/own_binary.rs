@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 /// Resolve before a package upgrade unlinks the running executable. Shared by
-/// supervisors, hook payloads and TypeScript helpers that re-exec this server's binary.
+/// supervisors, hook payloads and plugin helpers that re-exec this server's binary.
 pub fn server_binary() -> Option<&'static PathBuf> {
     static BINARY: std::sync::LazyLock<Option<PathBuf>> =
         std::sync::LazyLock::new(|| match std::env::current_exe() {

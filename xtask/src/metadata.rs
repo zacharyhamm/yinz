@@ -34,7 +34,26 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         "yinz-config",
         &["yinz-types", "yinz-runtime", "yinz-project-config"],
     ),
-    ("yinz-deno-builtins", &["yinz-runtime"]),
+    (
+        "yinz-steel-builtins",
+        &[
+            "yinz-runtime",
+            "yinz-types",
+            "yinz-config",
+            "yinz-steel",
+            "yinz-test-support",
+        ],
+    ),
+    (
+        "yinz-steel",
+        &[
+            "yinz-config",
+            "yinz-tile",
+            "yinz-tile-markdown",
+            "yinz-types",
+            "agent-proto",
+        ],
+    ),
     ("yinz-plugin-api", &["yinz-types", "yinz-plugin-location"]),
     (
         "yinz-plugin-authoring",
@@ -166,7 +185,8 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-key-codec",
             "yinz-storage",
             "yinz-config",
-            "yinz-deno-builtins",
+            "yinz-steel-builtins",
+            "yinz-steel",
             "yinz-plugin-api",
             "yinz-plugin-authoring",
             "yinz-ipc",
@@ -223,7 +243,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// assert on IPC messages and recorded events and wait with test-support's timeouts, but neither
 /// thread names those crates otherwise.
 /// The tab's tests parse KDL layouts, stand up client IPC channels, and warm clipboard helpers.
-/// The TypeScript builtins' tests hold their files to the runtime's name list, but the builtins
+/// The Scheme builtins' tests hold their files to the runtime's name list, but the builtins
 /// name no crate, so the sources the plugin host embeds never wait on or rebuild with the runtime.
 const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("yinz-project-config", &["yinz-test-support"]),
@@ -240,7 +260,16 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
         &["yinz-config", "yinz-ipc", "yinz-test-support"],
     ),
     ("yinz-panes", &["yinz-config", "yinz-tile"]),
-    ("yinz-deno-builtins", &["yinz-runtime"]),
+    (
+        "yinz-steel-builtins",
+        &[
+            "yinz-runtime",
+            "yinz-types",
+            "yinz-config",
+            "yinz-steel",
+            "yinz-test-support",
+        ],
+    ),
 ];
 
 /// The package that composes the concrete backends into the running program.
@@ -256,11 +285,13 @@ const ROOT_ONLY_DEPENDENCIES: &[&str] = &["yinz-server-os"];
 /// build has it on, so a `cfg(any(test, feature = "test-support"))` gate excludes nothing.
 const TEST_ONLY_FEATURES: &[&str] = &["test-support"];
 
-/// Crates that must build no JavaScript or Wasm engine and nothing that links one.
-/// `yinz-plugin-authoring` reaches V8 and SWC only through the compilation worker subprocess,
+/// Crates that must build no guest-language engine and nothing that links one.
+/// `yinz-plugin-authoring` reaches the interpreter only through the compilation worker subprocess,
 /// and Agent's native tests check plugin sources through it without waiting for the plugin host.
 const ENGINE_FREE: &[&str] = &["yinz-plugin-authoring"];
 const ENGINES: &[&str] = &[
+    "yinz-steel",
+    "steel-core",
     "deno_core",
     "deno_ast",
     "v8",
@@ -593,6 +624,10 @@ mod tests {
             (AUTHORING, "wasmi", "dev", Some(AUTHORING)),
             (AUTHORING, "v8", "normal", Some(AUTHORING)),
             (AUTHORING, "wasmi_wasi", "normal", Some(AUTHORING)),
+            (AUTHORING, "yinz-steel", "dev", Some(AUTHORING)),
+            (AUTHORING, "steel-core", "normal", Some(AUTHORING)),
+            ("yinz-types", "yinz-steel", "normal", Some(AUTHORING)),
+            ("yinz-runtime", "steel-core", "build", Some(AUTHORING)),
             ("yinz-runtime", "deno_ast", "build", Some(AUTHORING)),
             ("yinz-types", "yinz-bus", "normal", Some(AUTHORING)),
             // A dependency's dev-dependencies are not built.

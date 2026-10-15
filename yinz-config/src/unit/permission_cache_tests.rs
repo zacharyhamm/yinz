@@ -127,9 +127,9 @@ fn permission_publication_preserves_symlinks_and_refuses_a_dangling_target() {
 #[test]
 fn normalized_permission_keys_preserve_legacy_symlink_grants() {
     let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("space here.ts");
-    std::fs::write(&source, "export default {};").unwrap();
-    let link = dir.path().join("legacy.ts");
+    let source = dir.path().join("space here.scm");
+    std::fs::write(&source, "(void)").unwrap();
+    let link = dir.path().join("legacy.scm");
     std::os::unix::fs::symlink(&source, &link).unwrap();
     let path = dir.path().join("permissions.kdl");
     let mut cache = PermissionCache::from_path_or_default(Some(path.clone()));
@@ -163,9 +163,9 @@ fn normalized_permission_keys_preserve_legacy_symlink_grants() {
 fn legacy_permission_migration_respects_concurrent_and_pending_revocations() {
     for (revoke_canonical, same_write) in [(false, false), (true, false), (false, true)] {
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source.ts");
-        fs::write(&source, "export default {};").unwrap();
-        let link = dir.path().join("legacy.ts");
+        let source = dir.path().join("source.scm");
+        fs::write(&source, "(void)").unwrap();
+        let link = dir.path().join("legacy.scm");
         std::os::unix::fs::symlink(&source, &link).unwrap();
         let legacy = link.to_string_lossy().into_owned();
         let canonical = source

@@ -44,14 +44,14 @@ layout {
                 width 10
                 x 0
                 y 50
-                plugin location="file:///tmp/%22my/cool%20cwd/plugin.wasm"
+                plugin location="file:///tmp/%22my/cool%20cwd/plugin.scm"
             }
             pane {
                 height 10
                 width 10
                 x 0
                 y 60
-                plugin location="file:///tmp/%22my/cool%20cwd/plugin.wasm" {
+                plugin location="file:///tmp/%22my/cool%20cwd/plugin.scm" {
                     "key 1\"\\" "val 1\"\\"
                     "key 2\"\\" "val 2\"\\"
                 }

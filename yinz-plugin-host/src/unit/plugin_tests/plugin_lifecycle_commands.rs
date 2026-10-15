@@ -931,7 +931,7 @@ pub fn copy_to_clipboard_without_permission() {
 
     // The key has been handled once the fixture prints it; a CopyTextToClipboard the host wrongly
     // sent while handling it went down the same channel before this frame did.
-    wait_for_render_containing(&received_screen_instructions, "bare_key: Char('c')");
+    wait_for_render_containing(&received_screen_instructions, r#""bare_key":{"Char":"c"}"#);
 
     // Everything the plugin thread will ever send has been sent once teardown has joined it, and
     // the observer returns when the last sender is gone.
@@ -1017,7 +1017,7 @@ pub fn run_action_without_permission() {
     // Proves the key was handled. `run_action` routes on a thread of its own, so a wrongly
     // permitted MoveFocusLeft is not ordered before this frame - it is caught by the observer
     // outliving that thread instead.
-    wait_for_render_containing(&received_screen_instructions, "bare_key: Char('d')");
+    wait_for_render_containing(&received_screen_instructions, r#""bare_key":{"Char":"d"}"#);
 
     // Everything the plugin thread will ever send has been sent once teardown has joined it, and
     // the observer returns when the last sender is gone.

@@ -12,7 +12,7 @@ use yinz_types::{
 fn git_plugins_survive_saved_layouts() {
     let location = RunPluginLocation::Git(GitPlugin {
         repo: "git@example.com:team/panel.git".into(),
-        entrypoint: "src/my panel.ts".into(),
+        entrypoint: "src/my panel.scm".into(),
         revision: Some(GitRevision::Tag("v1".into())),
     });
     let run = Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {

@@ -10,10 +10,6 @@ pub const YINZ_CONFIG_FILE_ENV: &str = "YINZ_CONFIG_FILE";
 pub const YINZ_CONFIG_DIR_ENV: &str = "YINZ_CONFIG_DIR";
 pub const YINZ_LAYOUT_DIR_ENV: &str = "YINZ_LAYOUT_DIR";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// The folder under a data dir that holds the installed builtin plugin wasm, one
-/// subfolder per `VERSION`: `<data dir>/builtins/<VERSION>/<name>.wasm`. See
-/// `home::builtin_plugin_dir`. `xtask install` writes it; `resolve_wasm_bytes` reads it.
-pub const BUILTIN_PLUGIN_DIR_NAME: &str = "builtins";
 pub const DEFAULT_SCROLL_BUFFER_SIZE: usize = 10_000;
 pub static SCROLL_BUFFER_SIZE: OnceLock<usize> = OnceLock::new();
 pub static DEBUG_MODE: OnceLock<bool> = OnceLock::new();
@@ -24,31 +20,42 @@ pub const SYSTEM_DEFAULT_DATA_DIR_PREFIX: &str = system_default_data_dir();
 pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 1;
 /// Maximum protobuf frame length, excluding its four-byte length prefix. `yinz_ipc` re-exports
 /// it for the socket transport; the plugin compilation worker bounds its requests and responses
-/// with it without linking that transport. Available on wasm so plugins can check replies before
-/// handing them to the host.
+/// with it without linking that transport.
 pub const MAX_IPC_FRAME_LEN: usize = 64 * 1024 * 1024;
 
-/// The TypeScript builtins, by tag. The builtin tagged `x` is `x.ts` at the top of
-/// `yinz-deno-builtins/assets/plugins`, compiled into the plugin host, so editing a source
-/// rebuilds neither this crate nor what depends on it. Adding a builtin means adding both; the
-/// tests in `yinz-deno-builtins` fail until they agree. Configuration resolves `yinz:<tag>`
-/// through this list, and plugin authoring, which links no configuration, reads it too.
-pub const BUILTIN_DENO_PLUGIN_NAMES: &[&str] = &[
+/// Embedded Scheme plugins, also used to validate builtin tags in configuration.
+pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "compact-bar",
     "tab-bar",
     "status-bar",
+    "strider",
+    "configuration",
+    "plugin-manager",
+    "session-manager",
+    "file-finder",
+    "layout-manager",
+    "todos",
+    "new-agent",
+    "agents",
+    "agent-service",
+    "project-store",
+    "multiple-select",
+    "link",
     "context-menu",
     "agent-policy",
     "agent-opencode",
     "agent-exit",
+    "quit-confirmation",
     "session-palette",
     "configuration-palette",
+    "shared-test",
+    "repl",
 ];
 
 /// The per-file source budget of a script plugin: configuration applies it when it reads one,
 /// and `yinz_plugin_authoring::limits` before a source reaches the compilation worker, the
 /// loader or the checker. It lives here so authoring need not link configuration.
-pub const MAX_DENO_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_PLUGIN_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Legacy flat metadata path. Read current metadata through `SessionCheckpoint`.
 pub fn session_info_cache_file_name(session_name: &SessionName) -> PathBuf {

@@ -128,7 +128,7 @@ Yinz removes only an unused, empty, launch-created tab after pending layout work
 Tabs with layout content, other activity, or uncertain ownership remain. The failure message describes cleanup.
 Branches and worktrees remain for recovery. After a timeout, inspect the session before retrying. A late launch can still complete.
 The existing create-tab, spawn, then `pane-move-to-tab` sequence remains available for recovery.
-Wasm and Deno `SpawnAgent` APIs retain automatic placement.
+The Scheme `SpawnAgent` API retain automatic placement.
 
 `agent spawn --file PATH` or `--file -` reads launch options from JSON. CLI options override file values.
 JSON placement accepts `"tab": 7`, `"new_tab": true`, or `"new_tab": "review"`.

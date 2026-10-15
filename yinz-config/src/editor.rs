@@ -230,11 +230,9 @@ pub fn catalog() -> Vec<Setting> {
                     None,
                     "Named layout or layout file path.",
                 ),
-                "default_cwd"
-                | "layout_dir"
-                | "theme_dir"
-                | "builtin_plugins_dir"
-                | "user_plugin_dir" => ("directory", vec![], None, None, "Directory path."),
+                "default_cwd" | "layout_dir" | "theme_dir" | "user_plugin_dir" => {
+                    ("directory", vec![], None, None, "Directory path.")
+                },
                 "copy_command" | "post_command_discovery_hook" => (
                     "multiline",
                     vec![],
@@ -278,7 +276,7 @@ pub fn catalog() -> Vec<Setting> {
                 "default_shell" | "default_cwd" | "default_layout" | "layout_dir" => {
                     "Applies to new panes"
                 },
-                "builtin_plugins_dir" | "user_plugin_dir" => "Applies to new plugin instances",
+                "user_plugin_dir" => "Applies to new plugin instances",
                 _ => "Applies to this session",
             };
             Setting {
@@ -1389,13 +1387,13 @@ pub fn templates(config: &Config) -> Result<std::collections::BTreeMap<String, V
     result.insert(
         "plugins".into(),
         vec![Node {
-            properties: [("location".into(), Value::from("file:/path/to/plugin.ts"))].into(),
+            properties: [("location".into(), Value::from("file:/path/to/plugin.scm"))].into(),
             ..node("new-plugin", vec![], vec![])
         }],
     );
     result.insert(
         "load_plugins".into(),
-        std::iter::once(node("file:/path/to/plugin.ts", vec![], vec![]))
+        std::iter::once(node("file:/path/to/plugin.scm", vec![], vec![]))
             .chain(
                 config
                     .plugins

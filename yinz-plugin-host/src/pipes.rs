@@ -1,6 +1,6 @@
 use super::{PipeStateChange, PluginId, PluginInstruction};
+use crate::plugin_bridge::render_plugin_for_clients;
 use crate::plugin_map::RunningPlugin;
-use crate::wasm_bridge::render_plugin_for_clients;
 use crate::{ClientId, PluginRenderAsset};
 use std::collections::{HashMap, HashSet};
 use yinz_bus::plugins::{PipeCompletion, PipeRequestId, PluginInstanceId};

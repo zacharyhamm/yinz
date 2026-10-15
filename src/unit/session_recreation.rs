@@ -196,10 +196,10 @@ fn server_pid(_session: &Session) -> Option<i32> {
 
 fn recreation(delete: bool, kill_first: bool) {
     let session = Session::new();
-    let plugin = session.0.path().join(format!("{MARKER}.ts"));
+    let plugin = session.0.path().join(format!("{MARKER}.scm"));
     fs::write(
         &plugin,
-        "export default { render() { return 'floating-plugin-marker'; } };\n",
+        "(define (render rows columns) \"floating-plugin-marker\")\n",
     )
     .unwrap();
     let layout = session.0.path().join("layout.kdl");

@@ -18,10 +18,6 @@ pub fn lint(sh: &Shell, flags: flags::Lint) -> anyhow::Result<()> {
     crate::status(msg);
     println!("{}", msg);
 
-    // One invocation, so shared dependencies are analysed once. As in `x test`, the plugin
-    // crates' wasm pin lives in their own `.cargo/config.toml` and Cargo reads config from the
-    // invocation directory upward, so running from the root lints them against the host.
-    //
     // Unlike `x test` this asks for `--all-features` when it can: lint wants the widest surface
     // available, and clippy's artifacts live in their own fingerprint namespace anyway, so the
     // wider graph costs nothing that could otherwise have been shared.
@@ -85,16 +81,10 @@ const FILE_LEVEL_ALLOWS: &[(&str, &str)] = &[
     // the dockerised e2e smoke suite, `#[ignore]`d and behind the `e2e` feature; a scaffold
     // of helpers only some of its five tests reach
     ("src/tests/e2e/cases.rs", "unused"),
-    // plugin crates linted for the host triple, where nothing reaches what only the wasm
-    // entry points call
-    (
-        "default-plugins/fixture-plugin-for-tests/src/main.rs",
-        "dead_code",
-    ),
 ];
 
 /// Every `.rs` file under `dir`, as a path relative to `root`, skipping the build output, hidden
-/// directories (`.git`, sibling worktrees) and anything a symlink points at. Only `dir` itself
+/// directories (`.git`, sibling worktrees), vendored dependencies and symlinks. Only `dir` itself
 /// failing to read is an error: an entry or a subdirectory this process cannot read is skipped,
 /// as the caller skips a file it cannot read.
 fn rust_sources(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -109,7 +99,11 @@ fn rust_sources(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> std::io::Res
             continue;
         };
         if file_type.is_dir() {
-            if name.starts_with('.') || name == "target" || name == "node_modules" {
+            if name.starts_with('.')
+                || name == "target"
+                || name == "node_modules"
+                || path == root.join("vendor")
+            {
                 continue;
             }
             // An unreadable subdirectory is skipped, like an unreadable file.
@@ -712,5 +706,17 @@ mod tests {
 
         let mut files = Vec::new();
         assert!(rust_sources(root.path(), root.path(), &mut files).is_err());
+    }
+
+    #[test]
+    fn rust_sources_skips_vendored_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("vendor/steel-core")).unwrap();
+        std::fs::create_dir_all(root.path().join("src/vendor")).unwrap();
+        std::fs::write(root.path().join("vendor/steel-core/lib.rs"), "").unwrap();
+        std::fs::write(root.path().join("src/vendor/adapter.rs"), "").unwrap();
+        let mut files = Vec::new();
+        rust_sources(root.path(), root.path(), &mut files).unwrap();
+        assert_eq!(files, vec![PathBuf::from("src/vendor/adapter.rs")]);
     }
 }

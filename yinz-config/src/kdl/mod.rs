@@ -1284,7 +1284,7 @@ pub fn load_plugins_to_kdl(
         load_plugins.set_leading(format!(
             "\n{}\n{}\n",
             "// Plugins to load in the background when a new session starts",
-            "// eg. \"file:/path/to/my-plugin.wasm\" or \"file:/path/to/my-plugin.ts\"",
+            "// eg. \"file:/path/to/my-plugin.scm\"",
         ));
     }
     load_plugins

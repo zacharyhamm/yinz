@@ -1,45 +1,35 @@
 #![cfg(unix)]
-//! A TypeScript plugin that harnesses an agent, end to end: it spawns the agent through the launch
-//! planner (`yinz.agent.spawn`), waits for the agent's record to move (`yinz.async.agent_state`),
-//! prompts it (`yinz.agent.send`) and awaits its exit (`yinz.async.pane_exit`) - as one task,
-//! in straight-line code, with the fake pty standing in for `claude` and `yinz action
-//! agent-report` standing in for its hooks.
-//!
-//! The same plugin, reloaded, proves the load-time grant: a permission the user answered once is
-//! in force from `request_permission` on, so a gated call made from `load` is not refused.
+//! A Scheme plugin spawns an agent, waits for its state, sends a prompt, and observes exit.
+//! Fake ptys stand in for agent processes; CLI reports stand in for their hooks.
+//! Reload also verifies that granted permissions are available during load.
 
 use std::fs;
 use yinz_cli::args::CliAction;
 use yinz_integration_tests::{default_timeout, LayoutInfo, TestRunner, TERMINAL_SIZE};
 
 const HARNESS: &str = r#"
-import yinz, {definePlugin} from 'yinz:plugin';
-export default definePlugin({
-  async load() {
-    yinz.requestPermission(['RunCommands','ReadApplicationState','WriteToStdin']);
-    let inForce=false;
-    try {yinz.host.listClients(); inForce=true;} catch {
-      // The first load has no grant yet.
-    }
-    yinz.log('in force at load: '+inForce);
-    await yinz.waitForPermissions(['RunCommands','ReadApplicationState','WriteToStdin']);
-    yinz.log('permissions Granted');
-    const pane=yinz.agent.spawn({kind:'claude',hooks:false,cwd:'/host',allow_outside_worktree:true});
-    if (!('Terminal' in pane)) throw new Error('Expected a terminal agent');
-    yinz.log('spawned pane='+pane.Terminal);
-    await yinz.agent.waitForState(pane,'waiting');
-    yinz.log('waiting pane='+pane.Terminal);
-    yinz.agent.send(pane,'go');
-    const exit=await yinz.waitForPaneExit(pane);
-    yinz.log('exited pane='+pane.Terminal+' '+exit.exitCode);
-  },
-  render() {return 'harness is up';}
-});
+(define permissions '("RunCommands" "ReadApplicationState" "WriteToStdin"))
+(define (load configuration)
+  (yinz-command (hash "RequestPluginPermissions" permissions))
+  (define in-force (with-handler (lambda (_) #f) (yinz-command "ListClients") #t))
+  (yinz-log (string-append "in force at load: " (if in-force "true" "false")))
+  (yinz-then (yinz-wait-for-permissions permissions) (lambda (_)
+    (yinz-log "permissions Granted")
+    (define pane (yinz-agent-spawn (hash "kind" "claude" "hooks" #f "cwd" "/host" "allow_outside_worktree" #t)))
+    (unless (hash-contains? pane "Terminal") (error "Expected a terminal agent"))
+    (define id (number->string (hash-ref pane "Terminal")))
+    (yinz-log (string-append "spawned pane=" id))
+    (yinz-then (yinz-agent-wait-for-state pane "waiting") (lambda (_)
+      (yinz-log (string-append "waiting pane=" id))
+      (yinz-agent-send pane "go")
+      (yinz-then (yinz-wait-for-pane-exit pane) (lambda (result)
+        (yinz-log (string-append "exited pane=" id " " (number->string (hash-ref result "exitCode")))))))))))
+(define (render rows columns) "harness is up")
 "#;
 
 const HARNESS_LAYOUT: &str = r#"layout {
     pane {
-        plugin location="file:harness.ts"
+        plugin location="file:harness.scm"
     }
 }
 "#;
@@ -48,9 +38,9 @@ const HARNESS_LAYOUT: &str = r#"layout {
 fn harness_log() -> Vec<String> {
     yinz_integration_tests::test_env::log_tail(400)
         .lines()
-        .filter(|line| line.contains("[deno:") && line.contains("harness.ts]"))
+        .filter(|line| line.contains("[steel:") && line.contains("harness.scm]"))
         .map(|line| {
-            line.split("harness.ts] ")
+            line.split("harness.scm] ")
                 .nth(1)
                 .unwrap_or(line)
                 .trim()
@@ -97,10 +87,10 @@ fn agent_in(
 }
 
 #[test]
-fn a_typescript_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit() {
+fn a_scheme_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit() {
     let config_dir = yinz_integration_tests::test_env::init()
         .join("config")
-        .join("typescript-agent-harness");
+        .join("scheme-agent-harness");
     fs::create_dir_all(&config_dir).unwrap();
     let plugin_dir = config_dir.join("plugins");
     yinz_server::plugin_authoring::write(&plugin_dir, "harness", HARNESS, false, true)
@@ -202,7 +192,7 @@ fn a_typescript_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit(
     // Reloaded, the plugin's `load` runs again with its permissions already granted - and a
     // gated call made right after asking is not refused.
     let (exit_code, reported) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
-        url: format!("file:{}", plugin_dir.join("harness.ts").display()),
+        url: format!("file:{}", plugin_dir.join("harness.scm").display()),
         configuration: None,
         configuration_json: None,
     });

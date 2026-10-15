@@ -120,9 +120,9 @@ fn server_client_contract() {
         .expect("roundtrip test thread panicked");
 }
 
-/// `yinz plugin -- file:keys.ts` is parsed in the client and loaded in the server, so the name
+/// `yinz plugin -- file:keys.scm` is parsed in the client and loaded in the server, so the name
 /// as the user wrote it has to survive this hop - without it the server can only look for
-/// `$cwd/keys.ts`, and the user's plugin folder is never searched.
+/// `$cwd/keys.scm`, and the user's plugin folder is never searched.
 ///
 /// Asserted on the field rather than through `test_client_roundtrip!`, because `RunPlugin`'s
 /// `PartialEq` deliberately ignores `relative_path`: a whole-message comparison would pass just
@@ -132,7 +132,7 @@ fn git_plugins_survive_the_client_server_wire() {
     use crate::client_server_contract::client_server_contract::RunPluginLocationData;
     let original = RunPluginLocation::Git(yinz_types::input::git_plugin::GitPlugin {
         repo: "https://example.com/plugin.git".into(),
-        entrypoint: "src/main.ts".into(),
+        entrypoint: "src/main.scm".into(),
         revision: Some(yinz_types::input::git_plugin::GitRevision::Branch(
             "main".into(),
         )),
@@ -146,9 +146,9 @@ fn a_relative_plugin_path_survives_the_client_server_contract() {
     use crate::client_server_contract::client_server_contract::RunPlugin as ProtoRunPlugin;
 
     let original = RunPlugin {
-        location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.ts")),
-        relative_path: Some(PathBuf::from("keys.ts")),
-        declared_path: Some(PathBuf::from("/somewhere/current.ts")),
+        location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.scm")),
+        relative_path: Some(PathBuf::from("keys.scm")),
+        declared_path: Some(PathBuf::from("/somewhere/current.scm")),
         ..Default::default()
     };
     let protobuf: ProtoRunPlugin = original.clone().into();
@@ -751,7 +751,6 @@ fn test_client_messages() {
                 default_cwd: Some(PathBuf::from("default_cwd")),
                 default_layout: Some(PathBuf::from("default_layout")),
                 layout_dir: Some(PathBuf::from("layout_dir")),
-                builtin_plugins_dir: Some(PathBuf::from("builtin_plugins_dir")),
                 theme_dir: Some(PathBuf::from("theme_dir")),
                 user_plugin_dir: Some(PathBuf::from("user_plugin_dir")),
                 mouse_mode: Some(true),
@@ -1904,7 +1903,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: empty_context.clone(),
@@ -1931,7 +1930,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -1958,7 +1957,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -1992,7 +1991,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -2026,7 +2025,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -2060,7 +2059,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -2094,7 +2093,7 @@ fn test_client_messages() {
                 line_number: Some(1),
                 cwd: Some(PathBuf::from("/my/cwd")),
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(11),
                     client_id: ClientId::new(22),
                     context: demo_context.clone(),
@@ -2175,7 +2174,7 @@ fn test_client_messages() {
                 hold_on_close: true,
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(1),
                     client_id: ClientId::new(2),
                     context: demo_context.clone(),
@@ -2225,7 +2224,7 @@ fn test_client_messages() {
                 hold_on_close: true,
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(1),
                     client_id: ClientId::new(2),
                     context: demo_context.clone(),
@@ -2255,7 +2254,7 @@ fn test_client_messages() {
                 hold_on_close: true,
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(1),
                     client_id: ClientId::new(2),
                     context: demo_context.clone(),
@@ -2299,7 +2298,7 @@ fn test_client_messages() {
                 hold_on_close: true,
                 hold_on_start: true,
                 originating_plugin: Some(OriginatingPlugin {
-                    deno_generation: Some(123),
+                    generation: Some(123),
                     plugin_id: yinz_types::internal_ids::PluginId::new(1),
                     client_id: ClientId::new(2),
                     context: demo_context.clone(),
@@ -2818,7 +2817,7 @@ fn test_client_messages() {
                     hold_on_close: true,
                     hold_on_start: true,
                     originating_plugin: Some(OriginatingPlugin {
-                        deno_generation: Some(123),
+                        generation: Some(123),
                         plugin_id: yinz_types::internal_ids::PluginId::new(11),
                         client_id: ClientId::new(22),
                         context: empty_context.clone(),
@@ -4297,7 +4296,7 @@ fn test_client_messages() {
         request_id: "fetch".into(),
         request: yinz_types::cli::DataRequest::Fetch(
             yinz_types::plugin_data::FetchRequest::entity("item")
-                .in_namespace("plugin:file:/test.ts")
+                .in_namespace("plugin:file:/test.scm")
         )
     });
     test_client_roundtrip!(ClientToServerMsg::DataRequest {
@@ -5434,7 +5433,7 @@ fn originating_plugin_generation_roundtrips_and_defaults_for_legacy_records() {
         legacy
     );
     let mut generated = legacy;
-    generated.deno_generation = Some(u64::MAX);
+    generated.generation = Some(u64::MAX);
     let bytes = WireOrigin::from(generated.clone()).encode_to_vec();
     assert_eq!(
         OriginatingPlugin::try_from(WireOrigin::decode(bytes.as_slice()).unwrap()).unwrap(),

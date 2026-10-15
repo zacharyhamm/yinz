@@ -26,11 +26,10 @@ use yinz_types::style::default_palette;
 pub use yinz_bus::background_jobs;
 pub(crate) use yinz_bus::global_async_runtime;
 pub(crate) use yinz_plugin_host as plugins;
-pub use yinz_plugin_host::deno::inspect_agent_provider;
-pub use yinz_plugin_host::deno::testing as plugin_testing;
-use yinz_plugin_host::get_engine;
+pub use yinz_plugin_host::inspect_agent_provider;
 #[doc(hidden)]
 pub use yinz_plugin_host::run_compilation_worker;
+pub use yinz_plugin_host::testing as plugin_testing;
 mod configuration_editor;
 mod locked_escape;
 pub(crate) use yinz_bus::pty;
@@ -690,7 +689,22 @@ fn remove_client_and_flush_forwards(
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) {
     let _ = os_input.remove_client(client_id);
+    let pipes: Vec<_> = session_state
+        .read()
+        .unwrap()
+        .pipes
+        .iter()
+        .filter(|(_, owner)| **owner == client_id)
+        .map(|(pipe, _)| pipe.clone())
+        .collect();
     with_session_mut(session_data, |session| {
+        if !pipes.is_empty() {
+            session
+                .senders
+                .send_to_plugin(PluginInstruction::CliPipesDisconnected(pipes))
+                .context("retiring disconnected CLI pipes")
+                .non_fatal();
+        }
         session.command_palette_restore_modes.remove(&client_id);
         session.detach_client(client_id);
     });
@@ -2736,7 +2750,7 @@ fn init_session(
         startup_started.elapsed()
     );
     let plugin_thread = thread::Builder::new()
-        .name("wasm".to_string())
+        .name("plugins".to_string())
         .spawn({
             let plugin_bus = Bus::new(
                 vec![plugin_receiver],
@@ -2750,7 +2764,6 @@ fn init_session(
             );
             // A plugin worker can outlive its bounded shutdown wait.
             let ownership = ownership.clone();
-            let engine = get_engine();
 
             let layout = Box::new(layout.clone());
             let default_shell = default_shell.clone();
@@ -2765,7 +2778,6 @@ fn init_session(
                 config_options.user_plugin_dir.clone(),
                 cli_assets.config_dir.clone(),
             );
-            let builtin_plugins_dir = config_options.builtin_plugins_dir.clone();
             let mut background_plugins = config.background_plugins.clone();
             // Agent support is a host requirement independent of configuration ownership.
             background_plugins.insert(RunPluginOrAlias::RunPlugin(
@@ -2784,7 +2796,6 @@ fn init_session(
                 let _ownership = ownership;
                 plugin_thread_main(
                     plugin_bus,
-                    engine,
                     data_dir,
                     data_access,
                     layout,
@@ -2802,7 +2813,6 @@ fn init_session(
                     background_plugins,
                     hooks,
                     context_menu,
-                    builtin_plugins_dir,
                     client_id,
                     // `Process`, not the name as it is now: a rename republishes the variable,
                     // and plugins loaded afterwards must see the new name.

@@ -1,5 +1,4 @@
 use crate::plugin_map::PluginMap;
-use crate::wasm_bridge::PluginCache;
 use crate::ClientId;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,7 +6,6 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use wasmi::Engine;
 use yinz_bus::thread_bus::ThreadSenders;
 use yinz_types::internal_ids::PluginId;
 
@@ -24,8 +22,6 @@ pub struct PinnedExecutor {
     senders: ThreadSenders,
     plugin_map: Arc<Mutex<PluginMap>>,
     connected_clients: Arc<Mutex<Vec<ClientId>>>,
-    plugin_cache: PluginCache,
-    engine: Engine,
 }
 
 /// The pool's mutable bookkeeping, behind a single mutex.
@@ -46,7 +42,7 @@ pub struct PinnedExecutor {
 /// What the lock does not do is order jobs against unregistration: a plugin's
 /// assignment goes away when its `execute_plugin_unload` job finishes, and any job
 /// submitted for that plugin afterwards is dropped with a log line. A caller with
-/// several cleanup jobs for one plugin (one per client, in `WasmBridge::unload_plugin`)
+/// several cleanup jobs for one plugin (one per client, in `PluginBridge::unload_plugin`)
 /// must therefore unregister from the last one only; see `execute_plugin_unload`.
 struct ExecutorState {
     // Sparse: Some(thread) for a live slot, None for a reclaimed one. A vacant slot
@@ -77,9 +73,7 @@ struct ExecutionThread {
 
 /// A job's closure, handed the executor's shared state when it runs on its pinned thread.
 type JobWork = Box<
-    dyn FnOnce(ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>, PluginCache, Engine)
-        + Send
-        + 'static,
+    dyn FnOnce(ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>) + Send + 'static,
 >;
 
 type PendingJob = (JobTag, Instant, JobWork);
@@ -272,8 +266,6 @@ impl PinnedExecutor {
         senders: &ThreadSenders,
         plugin_map: &Arc<Mutex<PluginMap>>,
         connected_clients: &Arc<Mutex<Vec<ClientId>>>,
-        plugin_cache: &PluginCache,
-        engine: &Engine,
     ) -> Self {
         let max_threads = max_threads.max(1); // At least 1
 
@@ -282,8 +274,6 @@ impl PinnedExecutor {
             senders.clone(),
             plugin_map.clone(),
             connected_clients.clone(),
-            plugin_cache.clone(),
-            engine.clone(),
         );
 
         PinnedExecutor {
@@ -295,8 +285,6 @@ impl PinnedExecutor {
             senders: senders.clone(),
             plugin_map: plugin_map.clone(),
             connected_clients: connected_clients.clone(),
-            plugin_cache: plugin_cache.clone(),
-            engine: engine.clone(),
         }
     }
 
@@ -309,8 +297,6 @@ impl PinnedExecutor {
             self.senders.clone(),
             self.plugin_map.clone(),
             self.connected_clients.clone(),
-            self.plugin_cache.clone(),
-            self.engine.clone(),
         )
     }
 
@@ -319,8 +305,6 @@ impl PinnedExecutor {
         senders: ThreadSenders,
         plugin_map: Arc<Mutex<PluginMap>>,
         connected_clients: Arc<Mutex<Vec<ClientId>>>,
-        plugin_cache: PluginCache,
-        engine: Engine,
     ) -> ExecutionThread {
         let (sender, receiver) = channel::<Job>();
         let jobs_in_flight = Arc::new(AtomicUsize::new(0));
@@ -333,8 +317,6 @@ impl PinnedExecutor {
                     let senders = senders;
                     let plugin_map = plugin_map;
                     let connected_clients = connected_clients;
-                    let plugin_cache = plugin_cache;
-                    let engine = engine;
                     let mut stats: HashMap<PluginId, PluginJobStats> = HashMap::new();
                     let mut stats_since = Instant::now();
                     // Jobs taken off the channel but not yet run. Held locally so
@@ -409,8 +391,6 @@ impl PinnedExecutor {
                             senders.clone(),
                             plugin_map.clone(),
                             connected_clients.clone(),
-                            plugin_cache.clone(),
-                            engine.clone(),
                         );
                         jobs_in_flight_clone.fetch_sub(1, Ordering::SeqCst);
                         record_job(&mut stats, &tag, waited, started.elapsed());
@@ -432,7 +412,7 @@ impl PinnedExecutor {
     }
 
     /// Register a plugin and assign it to a thread
-    /// Called from wasm_bridge when loading a plugin
+    /// Called from plugin_bridge when loading a plugin
     pub fn register_plugin(&self, plugin_id: PluginId) -> usize {
         let mut state = self.state.lock().unwrap();
 
@@ -498,14 +478,7 @@ impl PinnedExecutor {
     #[cfg(test)]
     pub fn execute_for_plugin<F>(&self, plugin_id: PluginId, f: F)
     where
-        F: FnOnce(
-                ThreadSenders,
-                Arc<Mutex<PluginMap>>,
-                Arc<Mutex<Vec<ClientId>>>,
-                PluginCache,
-                Engine,
-            ) + Send
-            + 'static,
+        F: FnOnce(ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>) + Send + 'static,
     {
         self.execute_for_plugin_tagged(plugin_id, "job", false, f);
     }
@@ -521,14 +494,7 @@ impl PinnedExecutor {
         f: F,
     ) -> bool
     where
-        F: FnOnce(
-                ThreadSenders,
-                Arc<Mutex<PluginMap>>,
-                Arc<Mutex<Vec<ClientId>>>,
-                PluginCache,
-                Engine,
-            ) + Send
-            + 'static,
+        F: FnOnce(ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>) + Send + 'static,
     {
         // One continuous lock over the lookup and the send: the assignment and the
         // thread it names are read together, so a concurrent unregister/shrink cannot
@@ -570,14 +536,7 @@ impl PinnedExecutor {
     /// This combines registration + execution for plugin loading
     pub fn execute_plugin_load<F>(&self, plugin_id: PluginId, f: F) -> bool
     where
-        F: FnOnce(
-                ThreadSenders,
-                Arc<Mutex<PluginMap>>,
-                Arc<Mutex<Vec<ClientId>>>,
-                PluginCache,
-                Engine,
-            ) + Send
-            + 'static,
+        F: FnOnce(ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>) + Send + 'static,
     {
         // Register plugin and assign to a thread
         self.register_plugin(plugin_id);
@@ -601,23 +560,16 @@ impl PinnedExecutor {
     pub fn execute_plugin_unload(
         self: &Arc<Self>,
         plugin_id: PluginId,
-        f: impl FnOnce(
-                ThreadSenders,
-                Arc<Mutex<PluginMap>>,
-                Arc<Mutex<Vec<ClientId>>>,
-                PluginCache,
-                Engine,
-            ) + Send
-            + 'static,
+        f: impl FnOnce(ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>) + Send + 'static,
     ) -> bool {
         let executor = self.clone();
         self.execute_for_plugin_tagged(
             plugin_id,
             "unload",
             false,
-            move |senders, plugin_map, connected_clients, plugin_cache, engine| {
+            move |senders, plugin_map, connected_clients| {
                 // Execute the cleanup work
-                f(senders, plugin_map, connected_clients, plugin_cache, engine);
+                f(senders, plugin_map, connected_clients);
 
                 // Unregister plugin and potentially shrink the pool
                 executor.unregister_plugin(plugin_id);
@@ -626,7 +578,7 @@ impl PinnedExecutor {
     }
 
     /// Unregister a plugin and shrink the pool if that left a thread idle.
-    /// Called from wasm_bridge after plugin cleanup is complete.
+    /// Called from plugin_bridge after plugin cleanup is complete.
     ///
     /// The shrink is folded in under the same lock rather than being a second
     /// method that re-locks: separating them is exactly what created the ABBA
@@ -690,8 +642,6 @@ mod tests {
         ThreadSenders,
         Arc<Mutex<PluginMap>>,
         Arc<Mutex<Vec<ClientId>>>,
-        PluginCache,
-        Engine,
     );
 
     // Test fixtures
@@ -727,28 +677,22 @@ mod tests {
         let plugin_map = Arc::new(Mutex::new(PluginMap::default()));
         let connected_clients = Arc::new(Mutex::new(vec![]));
 
-        let plugin_cache = Arc::new(Mutex::new(std::collections::HashMap::new()));
-
-        let engine = Engine::default();
-
-        (senders, plugin_map, connected_clients, plugin_cache, engine)
+        (senders, plugin_map, connected_clients)
     }
 
     fn create_test_executor(max_threads: usize) -> Arc<PinnedExecutor> {
-        let (senders, plugin_map, clients, cache, engine) = create_test_dependencies();
+        let (senders, plugin_map, clients) = create_test_dependencies();
         Arc::new(PinnedExecutor::new(
             max_threads,
             &senders,
             &plugin_map,
             &clients,
-            &cache,
-            &engine,
         ))
     }
 
     // Helper to create a job that signals completion via channel
     fn make_signaling_job(tx: Sender<()>) -> JobWork {
-        Box::new(move |_senders, _plugin_map, _clients, _cache, _engine| {
+        Box::new(move |_senders, _plugin_map, _clients| {
             tx.send(()).unwrap();
         })
     }
@@ -756,7 +700,7 @@ mod tests {
     // Helper to verify thread assignment by capturing thread name in job
     fn get_thread_name_for_plugin(executor: &Arc<PinnedExecutor>, plugin_id: PluginId) -> String {
         let (tx, rx) = channel();
-        executor.execute_for_plugin(plugin_id, move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(plugin_id, move |_s, _p, _c| {
             let name = thread::current().name().unwrap().to_string();
             tx.send(name).unwrap();
         });
@@ -789,7 +733,7 @@ mod tests {
 
     #[test]
     fn test_plugin_name_does_not_wait_for_plugin_map() {
-        let (_senders, plugin_map, _clients, _cache, _engine) = create_test_dependencies();
+        let (_senders, plugin_map, _clients) = create_test_dependencies();
         let plugin_map_guard = plugin_map.lock().unwrap();
         let plugin_map_clone = plugin_map.clone();
         let (tx, rx) = channel();
@@ -853,7 +797,7 @@ mod tests {
         let (started_tx, started_rx) = channel();
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c| {
             started_tx.send(()).unwrap();
             barrier_clone.wait();
         });
@@ -866,15 +810,10 @@ mod tests {
         let queue = |plugin_id: PluginId, label: &'static str, is_input: bool| {
             let order = order.clone();
             let tx = tx.clone();
-            executor.execute_for_plugin_tagged(
-                plugin_id,
-                label,
-                is_input,
-                move |_s, _p, _c, _ca, _e| {
-                    order.lock().unwrap().push(label);
-                    tx.send(()).unwrap();
-                },
-            );
+            executor.execute_for_plugin_tagged(plugin_id, label, is_input, move |_s, _p, _c| {
+                order.lock().unwrap().push(label);
+                tx.send(()).unwrap();
+            });
         };
         queue(PluginId::new(2), "b1", false);
         queue(PluginId::new(2), "b2", false);
@@ -906,7 +845,7 @@ mod tests {
         let (started_tx, started_rx) = channel();
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c| {
             started_tx.send(()).unwrap();
             barrier_clone.wait();
         });
@@ -919,15 +858,10 @@ mod tests {
         let queue = |plugin_id: PluginId, label: &'static str| {
             let order = order.clone();
             let tx = tx.clone();
-            executor.execute_for_plugin_tagged(
-                plugin_id,
-                label,
-                false,
-                move |_s, _p, _c, _ca, _e| {
-                    order.lock().unwrap().push(label);
-                    tx.send(()).unwrap();
-                },
-            );
+            executor.execute_for_plugin_tagged(plugin_id, label, false, move |_s, _p, _c| {
+                order.lock().unwrap().push(label);
+                tx.send(()).unwrap();
+            });
         };
         queue(PluginId::new(2), "b1");
         queue(PluginId::new(1), "a1");
@@ -957,7 +891,7 @@ mod tests {
         // Make thread 0 busy with a barrier
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier_clone.wait();
         });
 
@@ -988,7 +922,7 @@ mod tests {
         // Make thread 0 busy
         let barrier1 = Arc::new(Barrier::new(2));
         let barrier1_clone = barrier1.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier1_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
@@ -999,7 +933,7 @@ mod tests {
         // Make thread 1 busy
         let barrier2 = Arc::new(Barrier::new(2));
         let barrier2_clone = barrier2.clone();
-        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c| {
             barrier2_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
@@ -1057,7 +991,7 @@ mod tests {
         // Make thread 0 busy to force plugin 2 to thread 1
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
@@ -1105,7 +1039,7 @@ mod tests {
         for i in 1..=3 {
             let order_clone = order.clone();
             let tx_clone = tx.clone();
-            executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+            executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
                 order_clone.lock().unwrap().push(i);
                 tx_clone.send(()).unwrap();
             });
@@ -1146,7 +1080,7 @@ mod tests {
         // Make thread 0 busy to force plugin 2 to thread 1
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
@@ -1164,13 +1098,13 @@ mod tests {
         let (tx2, rx2) = channel();
 
         let barrier1 = sync_barrier.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier1.wait();
             tx1.send(()).unwrap();
         });
 
         let barrier2 = sync_barrier.clone();
-        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c| {
             barrier2.wait();
             tx2.send(()).unwrap();
         });
@@ -1215,7 +1149,7 @@ mod tests {
         let counter_clone = counter.clone();
         let (tx_unload, rx_unload) = channel();
 
-        executor.execute_plugin_unload(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_plugin_unload(PluginId::new(1), move |_s, _p, _c| {
             counter_clone.fetch_add(1, Ordering::SeqCst);
             tx_unload.send(()).unwrap();
         });
@@ -1252,7 +1186,7 @@ mod tests {
         let sequence_clone = sequence.clone();
         let (tx_unload, rx_unload) = channel();
 
-        executor.execute_plugin_unload(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_plugin_unload(PluginId::new(1), move |_s, _p, _c| {
             sequence_clone.lock().unwrap().push("cleanup");
             tx_unload.send(()).unwrap();
         });
@@ -1266,7 +1200,7 @@ mod tests {
         assert_eq!(*sequence.lock().unwrap(), vec!["cleanup", "after"]);
     }
 
-    /// `WasmBridge::unload_plugin` queues one cleanup per client of a plugin. Only
+    /// `PluginBridge::unload_plugin` queues one cleanup per client of a plugin. Only
     /// the last may go through `execute_plugin_unload`: the jobs are FIFO on the
     /// plugin's thread, so every earlier cleanup (via `execute_for_plugin`) has
     /// run by the time the last one unregisters the plugin.
@@ -1304,7 +1238,7 @@ mod tests {
         let (started_tx, started_rx) = channel();
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(2), move |_s, _p, _c| {
             started_tx.send(()).unwrap();
             barrier_clone.wait();
         });
@@ -1317,11 +1251,7 @@ mod tests {
         let record = |label: &'static str| {
             let order = order.clone();
             let tx = tx.clone();
-            move |_s: ThreadSenders,
-                  _p: Arc<Mutex<PluginMap>>,
-                  _c: Arc<Mutex<Vec<ClientId>>>,
-                  _ca: PluginCache,
-                  _e: Engine| {
+            move |_s: ThreadSenders, _p: Arc<Mutex<PluginMap>>, _c: Arc<Mutex<Vec<ClientId>>>| {
                 order.lock().unwrap().push(label);
                 tx.send(()).unwrap();
             }
@@ -1400,7 +1330,7 @@ mod tests {
         // Make thread 0 busy to force plugin 2 to thread 1
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
@@ -1477,7 +1407,7 @@ mod tests {
         // Force plugin 2 to thread 1 by making thread 0 busy
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
@@ -1535,7 +1465,7 @@ mod tests {
         // Force plugin 2 to thread 1
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
@@ -1579,7 +1509,7 @@ mod tests {
 
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier_clone.wait();
         });
         thread::sleep(Duration::from_millis(50));
@@ -1604,7 +1534,7 @@ mod tests {
 
         let barrier = Arc::new(Barrier::new(2));
         let barrier_clone = barrier.clone();
-        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c, _ca, _e| {
+        executor.execute_for_plugin(PluginId::new(1), move |_s, _p, _c| {
             barrier_clone.wait();
         });
 

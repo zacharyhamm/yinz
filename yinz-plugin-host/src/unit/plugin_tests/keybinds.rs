@@ -2,12 +2,7 @@ use super::*;
 use yinz_test_support::Watched;
 use yinz_types::internal_ids::TabId;
 
-/// Blocks until `plugin_id` has rendered at least once, which is the observable signal that the
-/// plugin finished loading.
-///
-/// Loading a plugin compiles and instantiates a real wasm module, so how long it takes depends
-/// entirely on the machine and its current load. Sleeping a fixed 500ms for it is a guess that is
-/// wasteful when it is too long and flaky when it is too short.
+/// Wait for the fixture to finish loading and report its event history.
 fn wait_for_plugin_to_load(
     log: &Watched<Vec<ScreenInstruction>>,
     plugin_id: yinz_types::internal_ids::PluginId,
@@ -19,9 +14,10 @@ fn wait_for_plugin_to_load(
             instructions
                 .iter()
                 .any(|instruction| match instruction {
-                    ScreenInstruction::PluginBytes(assets) => {
-                        assets.iter().any(|asset| asset.plugin_id == plugin_id)
-                    },
+                    ScreenInstruction::PluginBytes(assets) => assets.iter().any(|asset| {
+                        asset.plugin_id == plugin_id
+                            && frame_of(&asset.bytes).contains("Received events:")
+                    }),
                     _ => false,
                 })
                 .then_some(())
@@ -187,7 +183,6 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
         default_shell: None,
         layout_dir: None,
         user_plugin_dir: None,
-        builtin_plugins_dir: None,
         hooks: Default::default(),
         context_menu: Default::default(),
         was_written_to_disk: false,
@@ -242,40 +237,30 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
     );
 }
 
-/// `(plugin A received keybinds, plugin B received a ModeUpdate with them stripped)`.
-///
-/// Plugin A subscribes to `ModeUpdate` alone and so should still be sent the full keybinds, which
-/// show up as `Quit` under the `ModeUpdate`'s `keybinds:` field. Plugin B also subscribes to
-/// `InitialKeybinds` and so should get a `ModeUpdate` with the keybinds stripped out.
-///
-/// The check looks at the `keybinds:` field of the rendered `ModeUpdate` itself rather than for
-/// `Quit` anywhere in the render: plugin B's render also lists the `InitialKeybinds` event it was
-/// sent on reconfiguration, which carries the same `Quit` binding.
+/// Check each plugin's ModeUpdate independently of InitialKeybinds in the same frame.
 fn mode_update_payloads(instructions: &[ScreenInstruction]) -> (bool, bool) {
-    let mut plugin_a_has_keybinds = false;
-    let mut plugin_b_has_empty_keybinds = false;
+    let mut full = false;
+    let mut stripped = false;
     for instruction in instructions {
-        if let ScreenInstruction::PluginBytes(plugin_render_assets) = instruction {
-            for asset in plugin_render_assets {
-                let bytes = String::from_utf8_lossy(&asset.bytes).to_string();
-                let Some(mode_update_start) = bytes.find("ModeUpdate(") else {
-                    continue;
-                };
-                let mode_update = &bytes[mode_update_start..];
-                let Some(keybinds_start) = mode_update.find("keybinds: ") else {
-                    continue;
-                };
-                let keybinds = &mode_update[keybinds_start..];
-                if keybinds.starts_with("keybinds: [],") {
-                    plugin_b_has_empty_keybinds = true;
-                } else if keybinds.starts_with("keybinds: [(Normal, ") && keybinds.contains("Quit")
-                {
-                    plugin_a_has_keybinds = true;
+        if let ScreenInstruction::PluginBytes(assets) = instruction {
+            for asset in assets {
+                for event in fixture_events(&asset.bytes) {
+                    if let Event::ModeUpdate(mode) = event {
+                        if asset.plugin_id == yinz_types::internal_ids::PluginId::new(0) {
+                            full |= mode.keybinds.iter().any(|(_, bindings)| {
+                                bindings
+                                    .iter()
+                                    .any(|(_, actions)| actions.contains(&Action::Quit))
+                            });
+                        } else if asset.plugin_id == yinz_types::internal_ids::PluginId::new(1) {
+                            stripped |= mode.keybinds.is_empty();
+                        }
+                    }
                 }
             }
         }
     }
-    (plugin_a_has_keybinds, plugin_b_has_empty_keybinds)
+    (full, stripped)
 }
 
 #[test]
@@ -366,12 +351,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
     mode_map.insert(KeyWithModifier::new(BareKey::Char('x')), vec![Action::Quit]);
     keybind_map.insert(InputMode::Normal, mode_map);
     let new_keybinds = Keybinds(keybind_map);
-    // The fixture renders every event it received with `{:?}`, so the InitialKeybinds it is sent
-    // on reconfiguration shows up in its output verbatim.
-    let expected_event = format!(
-        "{:?}",
-        Event::InitialKeybinds(new_keybinds.to_keybinds_vec())
-    );
+    let expected_event = Event::InitialKeybinds(new_keybinds.to_keybinds_vec());
 
     // Send Reconfigure
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
@@ -382,7 +362,6 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         default_shell: None,
         layout_dir: None,
         user_plugin_dir: None,
-        builtin_plugins_dir: None,
         hooks: Default::default(),
         context_menu: Default::default(),
         was_written_to_disk: false,
@@ -399,19 +378,19 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         |instructions| {
             renders_containing(instructions, "InitialKeybinds")
                 .iter()
-                .any(|render| render.contains(&expected_event))
+                .any(|render| fixture_events(render.as_bytes()).contains(&expected_event))
                 .then_some(())
         },
         |instructions| {
             format!(
-                "expected to find: {}\nin one of the renders containing InitialKeybinds: {:#?}",
+                "expected to find: {:?}\nin one of the renders containing InitialKeybinds: {:#?}",
                 expected_event,
                 renders_containing(instructions, "InitialKeybinds"),
             )
         },
     );
 
-    // Exercise the real Wasm subscription and protobuf path with a full-size raw hook.
+    // Exercise the real plugin subscription path with a full-size raw hook.
     let mut raw = serde_json::json!({"hook_event_name":"UserPromptSubmit", "prompt":""});
     let overhead = raw.to_string().len();
     raw["prompt"] = serde_json::Value::String(
@@ -425,7 +404,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         &hook,
         raw,
     ));
-    let expected = format!("{event:?}");
+    let expected = event.clone();
     plugin_thread_sender
         .send(PluginInstruction::Update(vec![(
             None,
@@ -434,12 +413,12 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
         )]))
         .unwrap();
     received_screen_instructions.wait_until_described(
-        "a subscribed Wasm plugin to receive the complete 256 KiB hook",
+        "a subscribed Scheme plugin to receive the complete 256 KiB hook",
         yinz_test_support::default_timeout(),
         |instructions| {
             renders_containing(instructions, "AgentEvent")
                 .iter()
-                .any(|render| render.contains(&expected))
+                .any(|render| fixture_events(render.as_bytes()).contains(&expected))
                 .then_some(())
         },
         |instructions| format!("{} screen instructions", instructions.len()),

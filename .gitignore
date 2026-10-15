@@ -10,7 +10,5 @@ mutants.out/
 mutants.out.*/
 .claude/worktrees
 .claude/settings.local.json
-# Builtin plugin wasm is build output: target/wasm32-wasip1/, installed by `cargo x install`.
-yinz-config/assets/plugins/*.wasm
 __pycache__/
 plugin-data.db

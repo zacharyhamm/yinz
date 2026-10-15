@@ -69,36 +69,33 @@ fn setup_kitty_host(yinz: &TestSession, terminal: &FakePtyHandle) {
 }
 
 #[test]
-fn deno_plugin_images_reach_the_terminal_through_the_shared_render_path() {
+fn steel_plugin_images_reach_the_terminal_through_the_shared_render_path() {
     let directory = tempfile::tempdir().unwrap();
-    let plugin = directory.path().join("image.ts");
+    let plugin = directory.path().join("image.scm");
     let png = include_bytes!("../../yinz-test-support/assets/graphics.png");
     std::fs::write(
         &plugin,
         format!(
             r#"
-const png = new Uint8Array({});
-const image = yinz.ui.image;
-const transmitted = new Set<number>();
-let supported = false;
-export default {{
-  async load() {{
-    yinz.on('ModeUpdate', info => {{ supported = info.capabilities.kitty_graphics; return true; }});
-    yinz.subscribe(['ModeUpdate']);
-    await yinz.waitForPermissions(['ReadApplicationState']);
-  }},
-  render() {{
-    if (!supported) return 'waiting for graphics';
-    const client = yinz.getPluginIds().client_id;
-    let frame = '';
-    if (!transmitted.has(client)) {{
-      frame = image.transmitPng(45056, png) + image.place(45056, 10, 6);
-      transmitted.add(client);
-    }}
-    for (let row = 0; row < 6; row++) frame += `\x1b[${{row + 1}};1H` + image.row(45056, row, 10);
-    return frame;
-  }}
-}};
+(define png (yinz-json-parse {:?}))
+(define transmitted '())
+(define supported #f)
+(define (load configuration)
+  (yinz-on-event "ModeUpdate" (lambda (info)
+    (set! supported (hash-ref (hash-ref info "capabilities") "kitty_graphics")) #t))
+  (yinz-command (hash "Subscribe" '("ModeUpdate")))
+  (yinz-wait-for-permissions '("ReadApplicationState")))
+(define (render rows columns)
+  (if (not supported) "waiting for graphics"
+      (let ([client (hash-ref (yinz-command "GetPluginIds") "client_id")])
+        (define frame "")
+        (unless (member client transmitted)
+          (set! frame (string-append (yinz-ui-image-png 45056 png) (yinz-ui-image-place 45056 10 6)))
+          (set! transmitted (cons client transmitted)))
+        (for-each (lambda (row)
+          (set! frame (string-append frame (string (integer->char 27)) "[" (number->string (+ row 1)) ";1H"
+                        (yinz-ui-image-row 45056 row 10)))) (range 6))
+        frame)))
 "#,
             serde_json::to_string(png.as_slice()).unwrap()
         ),
@@ -116,11 +113,11 @@ export default {{
         contains_bytes(bytes, b"\x1b_Ga=q,i=31,")
     });
     yinz.send_stdin(b"\x1b[6;21;8t\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
-    yinz.wait_until("Deno image plugin asks for permissions", |screen| {
+    yinz.wait_until("Scheme image plugin asks for permissions", |screen| {
         screen.contains("Plugin permissions")
     });
     yinz.send_stdin(b"\t\r");
-    yinz.wait_until_raw_output("Deno image reaches the terminal", |bytes| {
+    yinz.wait_until_raw_output("Scheme image reaches the terminal", |bytes| {
         contains_bytes(bytes, b"\x1b_Ga=t,q=2,")
             && contains_bytes(bytes, b"\x1b_Ga=p,q=2,")
             && contains_bytes(bytes, "\u{10eeee}".as_bytes())
@@ -129,29 +126,26 @@ export default {{
 }
 
 #[test]
-fn one_shot_deno_image_reaches_host_without_a_recovery_redraw() {
+fn one_shot_steel_image_reaches_host_without_a_recovery_redraw() {
     for (width, height, hold_pty) in [(10, 20, false), (23, 43, true)] {
         let directory = tempfile::tempdir().unwrap();
-        let plugin = directory.path().join("one-shot.ts");
+        let plugin = directory.path().join("one-shot.scm");
         let png = include_bytes!("../../yinz-test-support/assets/graphics.png");
         std::fs::write(
             &plugin,
             format!(
                 r#"
-const png = new Uint8Array({});
-let transmitted = false;
-export default {{
-  render() {{
-    const image = yinz.ui.image;
-    let frame = '';
-    if (!transmitted) {{
-      frame = image.transmitPng(42, png) + image.place(42, 10, 6);
-      transmitted = true;
-    }}
-    for (let row = 0; row < 6; row++) frame += `\x1b[${{row + 1}};1H` + image.row(42, row, 10);
-    return frame;
-  }}
-}};
+(define png (yinz-json-parse {:?}))
+(define transmitted #f)
+(define (render rows columns)
+  (define frame "")
+  (unless transmitted
+    (set! frame (string-append (yinz-ui-image-png 42 png) (yinz-ui-image-place 42 10 6)))
+    (set! transmitted #t))
+  (for-each (lambda (row)
+    (set! frame (string-append frame (string (integer->char 27)) "[" (number->string (+ row 1)) ";1H"
+                  (yinz-ui-image-row 42 row 10)))) (range 6))
+  frame)
 "#,
                 serde_json::to_string(png.as_slice()).unwrap()
             ),

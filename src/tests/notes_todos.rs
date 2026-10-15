@@ -64,7 +64,7 @@ fn notes_todos_commands_return_json_and_failures_with_redirected_stdin() {
     let dir = session.0.path();
     let config = dir.join("config.kdl");
     let layout = dir.join("layout.kdl");
-    std::fs::write(&config, "plugins { project-store location=\"yinz:project-store\"; }\nload_plugins clear-defaults=true { \"project-store\"; }\ndetachable_panes false\n").unwrap();
+    std::fs::write(&config, "plugins { project-store location=\"yinz:project-store\" { shared true; }; }\nload_plugins clear-defaults=true { \"project-store\"; }\ndetachable_panes false\n").unwrap();
     std::fs::write(&layout, "layout { pane command=\"/bin/sh\"; }\n").unwrap();
     let started = command(dir)
         .arg("--config")

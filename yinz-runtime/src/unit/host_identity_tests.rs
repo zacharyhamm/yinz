@@ -68,9 +68,7 @@ fn two_data_dirs_get_two_ids() {
 fn a_stored_id_survives_anything_that_leaves_the_data_dir_alone() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join(HOST_ID_FILE), "stable-id").unwrap();
-    // Whatever a reinstall does elsewhere, it lands beside the file rather than on it.
-    std::fs::create_dir_all(dir.path().join("builtins").join("0.44.0")).unwrap();
-    std::fs::write(dir.path().join("builtins/0.44.0/agent.wasm"), b"wasm").unwrap();
+    std::fs::write(dir.path().join("other-data"), b"unrelated").unwrap();
     assert_eq!(resolve_from(None, dir.path(), None), "stable-id");
 }
 

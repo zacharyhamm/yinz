@@ -1,7 +1,7 @@
 # Configuration assets
 
-Default configuration, layouts, and themes are loaded by `yinz-config`. The builtin TypeScript
-plugins live in `yinz-deno-builtins/assets/plugins/`.
+Default configuration, layouts, and themes are loaded by `yinz-config`. The builtin Scheme
+plugins live in `yinz-steel-builtins/assets/plugins/`.
 
 ## Pane surround color
 

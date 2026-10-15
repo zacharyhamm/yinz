@@ -1,5 +1,5 @@
 //! Expected provider data for native planner/restart tests. The shipped implementation is
-//! TypeScript and has its own plugin registration and integration tests.
+//! Scheme and has its own plugin registration and integration tests.
 pub(crate) fn register_opencode() {
     use yinz_types::agent::provider::{register, AgentProvider};
     let provider: AgentProvider = serde_json::from_value(serde_json::json!({

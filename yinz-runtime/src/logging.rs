@@ -44,47 +44,17 @@ pub fn configure_logger() {
         .encoder(Box::new(PatternEncoder::new(file_pattern)))
         .build(
             &*YINZ_TMP_LOG_FILE,
-            Box::new(CompoundPolicy::new(
-                Box::new(trigger),
-                Box::new(roller.clone()),
-            )),
-        )
-        .unwrap();
-
-    // plugin appender. To be used in logging_pipe to forward stderr output from plugins. We do some formatting
-    // in logging_pipe to print plugin name as 'module' and plugin_id instead of thread.
-    let log_plugin = RollingFileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new(
-            "{highlight({level:<6})} {message} {n}",
-        )))
-        .build(
-            &*YINZ_TMP_LOG_FILE,
             Box::new(CompoundPolicy::new(Box::new(trigger), Box::new(roller))),
         )
         .unwrap();
 
-    // Set the default logging level to "info" and log it to yinz.log file
-    // Decrease verbosity for `wasmtime_wasi` module because it has a lot of useless info logs
-    // For `yinz_plugin_host::logging_pipe`, we use custom format as we use logging macros to forward stderr output from plugins
     let config = Config::builder()
         .appender(Appender::builder().build("logFile", Box::new(log_file)))
-        .appender(Appender::builder().build("logPlugin", Box::new(log_plugin)))
         // reduce the verbosity of isahc, otherwise it logs on every failed web request
         .logger(
             Logger::builder()
                 .appender("logFile")
                 .build("isahc", LevelFilter::Error),
-        )
-        .logger(
-            Logger::builder()
-                .appender("logPlugin")
-                .build("wasmtime_wasi", LevelFilter::Warn),
-        )
-        .logger(
-            Logger::builder()
-                .appender("logPlugin")
-                .additive(false)
-                .build("yinz_plugin_host::logging_pipe", LevelFilter::Trace),
         )
         .build(Root::builder().appender("logFile").build(LevelFilter::Info))
         .unwrap();

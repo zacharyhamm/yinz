@@ -6,8 +6,6 @@ Some(
     [
         ChangeApplicationState,
         ReadApplicationState,
-        ReadApplicationState,
-        ChangeApplicationState,
         OpenFiles,
         RunCommands,
         OpenTerminalsOrPlugins,
@@ -21,5 +19,6 @@ Some(
         ReadSessionEnvironmentVariables,
         ReadPaneContents,
         PluginData,
+        WriteFiles,
     ],
 )

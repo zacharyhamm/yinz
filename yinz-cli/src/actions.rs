@@ -118,13 +118,9 @@ pub fn actions_from_cli(
                     )
                 })?;
 
-                #[cfg(not(target_family = "wasm"))]
                 let bytes = yinz_key_codec::keys::serialize_kitty(&key)
                     .map(|s| s.into_bytes())
                     .unwrap_or_default();
-
-                #[cfg(target_family = "wasm")]
-                let bytes = vec![];
 
                 match &pane_id {
                     Some(pane_id_str) => {
@@ -3194,9 +3190,9 @@ mod tests {
             )
         };
         assert_eq!(
-            set_hook("agent_exit", "file:my-hook.ts").unwrap(),
+            set_hook("agent_exit", "file:my-hook.scm").unwrap(),
             vec![Action::Reconfigure {
-                config: "hooks {\n    agent_exit \"file:my-hook.ts\"\n}\n".to_owned(),
+                config: "hooks {\n    agent_exit \"file:my-hook.scm\"\n}\n".to_owned(),
                 write_to_disk: false,
             }]
         );
@@ -3207,23 +3203,23 @@ mod tests {
                 write_to_disk: false,
             }]
         );
-        assert!(set_hook("agent_exit", "file:quote\"d.ts").unwrap()[0]
+        assert!(set_hook("agent_exit", "file:quote\"d.scm").unwrap()[0]
             .to_string()
             .contains("Reconfigure"));
-        let refused = set_hook("on_coffee", "file:x.ts").unwrap_err();
+        let refused = set_hook("on_coffee", "file:x.scm").unwrap_err();
         assert!(refused.contains("agent_exit"), "{refused}");
         // Every point the config knows, the CLI accepts - and the near miss is refused.
         for point in yinz_types::input::hooks::HookPoint::ALL {
-            let actions = set_hook(point.as_str(), "file:x.ts").unwrap();
+            let actions = set_hook(point.as_str(), "file:x.scm").unwrap();
             assert_eq!(
                 actions,
                 vec![Action::Reconfigure {
-                    config: format!("hooks {{\n    {point} \"file:x.ts\"\n}}\n"),
+                    config: format!("hooks {{\n    {point} \"file:x.scm\"\n}}\n"),
                     write_to_disk: false,
                 }]
             );
         }
-        let refused = set_hook("agent_started", "file:x.ts").unwrap_err();
+        let refused = set_hook("agent_started", "file:x.scm").unwrap_err();
         assert!(refused.contains("agent_start,"), "{refused}");
     }
 

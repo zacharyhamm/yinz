@@ -1,0 +1,68 @@
+(require "./common.scm")
+(provide ff-opener)
+
+(define (ff-command argv file structured)
+  (ff-strings argv "argv")
+  (when (null? argv) (error "argv must contain an executable"))
+  (ff-nonblank (car argv) "executable")
+  (when (ff-any (lambda (arg) (string-contains? arg "\u{0}")) argv) (error "argv must not contain NUL"))
+  (define args (map (lambda (arg) (string-replace arg "{}" file)) (cdr argv)))
+  (define placeholder (ff-any (lambda (arg) (string-contains? arg "{}")) (if structured (cdr argv) argv)))
+  (hash "command" (hash "path" (if structured (car argv) (string-replace (car argv) "{}" file))
+      "args" (if placeholder args (append args (list file))))))
+(define (ff-structured-opener value file)
+  (if (json-null? value) "editor"
+    (begin
+      (unless (hash? value) (error "expected argv or plugin/message fields"))
+      (cond
+        [(hash-contains? value "argv")
+          (ff-fields value '("argv"))
+          (ff-command (hash-ref value "argv") file #t)]
+        [else
+          (ff-fields value '("plugin" "plugin_id" "config" "message" "args" "delivery"))
+          (define id? (hash-contains? value "plugin_id"))
+          (define plugin? (hash-contains? value "plugin"))
+          (define config? (hash-contains? value "config"))
+          (when (or (and id? (or plugin? config?)) (not (or id? plugin?)))
+            (error "expected plugin with optional config, or plugin_id without config"))
+          (define id (ff-get value "plugin_id" #f))
+          (when (and id? (not (and (integer? id) (>= id 0) (<= id 4294967295)))) (error "invalid plugin_id"))
+          (define plugin (if plugin? (ff-plugin-destination (hash-ref value "plugin")) json-null))
+          (define message (ff-get value "message" "open"))
+          (ff-nonblank message "message")
+          (define args (ff-get value "args" (hash)))
+          (define raw-config (ff-get value "config" json-null))
+          (define config (if (json-null? raw-config) (hash) raw-config))
+          (for-each (lambda (entry)
+              (unless (and (hash? entry) (ff-all (lambda (key) (string? (hash-ref entry key))) (hash-keys->list entry)))
+                (error "plugin config and args must map strings to strings"))) (list args config))
+          (define delivery (ff-get value "delivery" "auto"))
+          (unless (member delivery '("auto" "message")) (error "unknown delivery"))
+          (hash "plugin" plugin "plugin_id" (if id? id json-null) "config" config
+            "message" message "args" args "delivery" delivery)]))))
+(define (ff-opener config extension-path file)
+  (define raw (trim (ff-get config "openers_json" "")))
+  (define structured (hash))
+  (unless (equal? raw "")
+    (with-handler (lambda (failure) (error (string-append "openers_json: " (error-object-message failure))))
+      (define parsed (yinz-json-parse raw))
+      (unless (hash? parsed) (error "expected an object"))
+      (for-each (lambda (extension)
+          (unless (and (not (equal? extension "")) (not (starts-with? extension "."))
+              (equal? extension (string-downcase extension)) (not (string-contains? extension "\u{0}")))
+            (error "expected a lowercase, nonempty extension without a leading dot"))
+          (set! structured (hash-insert structured extension (ff-structured-opener (hash-ref parsed extension) file))))
+        (hash-keys->list parsed))))
+  (define leaf (ff-leaf extension-path))
+  (define parts (if leaf (split-many leaf ".") '()))
+  (define extension (and (> (length parts) 1)
+      (not (and (= (length parts) 2) (starts-with? leaf "."))) (string-downcase (car (reverse parts)))))
+  (define (legacy value)
+    (define words (split-whitespace value))
+    (if (null? words) "editor" (ff-command words file #f)))
+  (cond
+    [(and extension (hash-contains? structured extension)) (hash-ref structured extension)]
+    [(and extension (hash-contains? config (string-append "open_" extension))) (legacy (hash-ref config (string-append "open_" extension)))]
+    [(hash-contains? structured "default") (hash-ref structured "default")]
+    [(hash-contains? config "open_default") (legacy (hash-ref config "open_default"))]
+    [else "editor"]))

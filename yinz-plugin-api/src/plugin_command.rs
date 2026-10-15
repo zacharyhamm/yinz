@@ -1797,6 +1797,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
             Some(CommandName::FsMetadata) => match protobuf_plugin_command.payload {
                 Some(Payload::FsMetadataPayload(payload)) => Ok(PluginCommand::FsMetadata {
                     path: PathBuf::from(payload.path),
+                    follow_symlinks: payload.follow_symlinks,
                 }),
                 _ => Err("Mismatched payload for FsMetadata"),
             },
@@ -4432,10 +4433,14 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     path: path.display().to_string(),
                 })),
             }),
-            PluginCommand::FsMetadata { path } => Ok(ProtobufPluginCommand {
+            PluginCommand::FsMetadata {
+                path,
+                follow_symlinks,
+            } => Ok(ProtobufPluginCommand {
                 name: CommandName::FsMetadata as i32,
                 payload: Some(Payload::FsMetadataPayload(FsMetadataPayload {
                     path: path.display().to_string(),
+                    follow_symlinks,
                 })),
             }),
             PluginCommand::FsWrite {

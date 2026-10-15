@@ -1457,7 +1457,7 @@ fn pane_output_uses_subscriber_generations_and_cleans_up_each_client() {
     let mut deliveries = received
         .try_iter()
         .flat_map(|(instruction, _)| match instruction {
-            PluginInstruction::DenoEvent(
+            PluginInstruction::PluginEvent(
                 plugin,
                 client,
                 generation,

@@ -1,30 +1,6 @@
-//! The agent plugins' entities, and the one seam through which they reach the
-//! plugin data store.
-//!
-//! Two things live here, and they are here together on purpose.
-//!
-//! The first is the entity definitions. Every plugin that touches a shared
-//! entity has to declare it, because either of them may start first and a fetch
-//! against an undeclared entity is an error. They also have to declare it
-//! *identically*: the host diffs the stored definition against the incoming one,
-//! so a second declarer that omits an attribute is asking to drop it, and gets a
-//! refusal rather than a merge. Since the constructors below are the only way to
-//! build one, two plugins cannot disagree about a schema.
-//!
-//! The second is [`Backend`], which is the only place in any agent crate that
-//! may call `data_fetch` and friends. That is a hard rule rather than a
-//! preference: the shims are `extern "C"` calls into a host that is not there on
-//! the host triple, and `bytes_from_stdin` — which several of them route
-//! through — reads real stdin. A unit test that reached one would block on a
-//! terminal rather than fail. So the shims live behind `Host`, which only exists
-//! for `wasm32`, and the tests get [`Local`], which is the real engine over a
-//! temporary file.
-//!
-//! That `Local` is the genuine `PluginDataStore` and not a hand-written fake is
-//! what makes this affordable. `yinz_storage::plugin_data_store` is compiled for
-//! everything except wasm, so the predicates, the upserts, FTS5 and the
-//! truncation rules under test are the same code that runs in a session. There
-//! is no second implementation to keep honest.
+//! Shared entity definitions and backend operations for project and agent data.
+//! [`Local`] uses the real SQLite store for native model tests. Scheme plugins send
+//! data commands through their confined host bridge and keep transactions in guest code.
 
 use yinz_tile::prelude::DataRevision;
 use yinz_tile::prelude::HostId;
@@ -550,131 +526,6 @@ fn stamped(namespace: Option<&str>, request: &FetchRequest) -> FetchRequest {
     request
 }
 
-// --------------------------------------------------------------- wasm: shims
-
-#[cfg(target_family = "wasm")]
-mod host {
-    use super::*;
-
-    /// The store as reached from inside a plugin.
-    pub struct Host {
-        namespace: Option<String>,
-    }
-
-    impl Host {
-        /// A backend over [`SHARED`].
-        pub fn shared() -> Self {
-            Host {
-                namespace: Some(SHARED.to_owned()),
-            }
-        }
-
-        /// A backend over this plugin's own namespace, which it cannot name —
-        /// the host resolves it from the plugin's URL.
-        pub fn private() -> Self {
-            Host { namespace: None }
-        }
-    }
-
-    impl Backend for Host {
-        fn define(&self, def: &EntityDef) -> Result<DataSchemaInfo, String> {
-            // Never destructive. The rule this crate follows instead is the one
-            // the store's own refusal recommends: leave a retired attribute
-            // declared and stop reading it.
-            data_define_entity(self.namespace.as_deref(), def, false)
-        }
-
-        fn fetch(&self, request: &FetchRequest) -> Result<DataRows, String> {
-            data_fetch(&stamped(self.namespace.as_deref(), request))
-        }
-
-        fn count(&self, request: &FetchRequest) -> Result<u64, String> {
-            data_count(&stamped(self.namespace.as_deref(), request))
-        }
-
-        fn apply(&self, mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
-            data_apply(self.namespace.as_deref(), mutations)
-        }
-
-        fn watch(
-            &self,
-            request: &FetchRequest,
-            mode: WatchMode,
-        ) -> Result<DataWatchHandle, String> {
-            data_watch(&stamped(self.namespace.as_deref(), request), mode)
-        }
-    }
-}
-
-#[cfg(target_family = "wasm")]
-pub use host::Host;
-
-/// `Host` on the host triple, where there is no host to call.
-///
-/// A plugin's `main.rs` names `Host` and is compiled natively to run its tests,
-/// so the type has to exist on both sides. Every method fails rather than
-/// quietly answering nothing: a test that reaches this has escaped [`Local`],
-/// and should say so loudly instead of passing against an empty store.
-#[cfg(not(target_family = "wasm"))]
-mod host_stub {
-    use super::*;
-
-    pub struct Host {
-        namespace: Option<String>,
-    }
-
-    impl Host {
-        pub fn shared() -> Self {
-            Host {
-                namespace: Some(SHARED.to_owned()),
-            }
-        }
-
-        pub fn private() -> Self {
-            Host { namespace: None }
-        }
-    }
-
-    const UNAVAILABLE: &str = "the plugin data store is only reachable from inside yinz";
-
-    fn unavailable<T>() -> Result<T, String> {
-        Err(UNAVAILABLE.to_owned())
-    }
-
-    impl Backend for Host {
-        fn define(&self, _def: &EntityDef) -> Result<DataSchemaInfo, String> {
-            let _ = &self.namespace;
-            unavailable()
-        }
-
-        fn fetch(&self, _request: &FetchRequest) -> Result<DataRows, String> {
-            unavailable()
-        }
-
-        fn count(&self, _request: &FetchRequest) -> Result<u64, String> {
-            unavailable()
-        }
-
-        fn apply(&self, _mutations: Vec<Mutation>) -> Result<ApplyReport, WriteError> {
-            Err(WriteError::Failed(UNAVAILABLE.to_owned()))
-        }
-
-        fn watch(
-            &self,
-            _request: &FetchRequest,
-            _mode: WatchMode,
-        ) -> Result<DataWatchHandle, String> {
-            unavailable()
-        }
-    }
-}
-
-#[cfg(not(target_family = "wasm"))]
-pub use host_stub::Host;
-
-// -------------------------------------------------------- native: the engine
-
-#[cfg(not(target_family = "wasm"))]
 mod local {
     use super::*;
     use yinz_storage::plugin_data_store::PluginDataStore;
@@ -776,7 +627,7 @@ mod local {
                     self.store
                         .apply(&self.namespace, &mutations)
                         .map(|outcome| outcome.report)
-                        // The same split the host makes on the way back to a wasm plugin, so a
+                        // The same split the host makes on the way back to a plugin, so a
                         // test sees the error a session would.
                         .map_err(|e| match e {
                             DataError::Conflict(message) => WriteError::Conflict(message),
@@ -809,7 +660,6 @@ mod local {
     impl_backend!(Joined<'_>);
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub use local::{Joined, Local, LOCAL_WATCH_ID};
 
 // ---------------------------------------------------------------------------

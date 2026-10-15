@@ -1,22 +1,22 @@
 ---
 name: yinz-plugins
-description: Author, check, test, reload, and diagnose Yinz TypeScript plugins using bundled SDK documentation and the installed Yinz CLI.
+description: Author, check, test, reload, and diagnose Yinz Steel Scheme plugins using bundled SDK documentation and the installed Yinz CLI.
 ---
 
 Use `yinz plugins docs index`, then `docs guide`, `docs sdk`, or `docs testing`.
 These commands return JSON with bundled documentation in `content`; no source
 checkout or internet access is required. Use `yinz plugins dir` and `plugins list`
 to locate source files, then native file reading, search, and editing tools.
-Follow the bundled SDK; plugins use confined relative imports and `yinz:plugin`.
+Follow the bundled SDK; plugins use confined `require` imports and the built-in Scheme SDK.
 
 ```sh
-yinz plugins write clock.ts --file clock.ts
-yinz plugins check clock.ts --json
-yinz plugins test clock.ts --json
-yinz --session main plugins start clock.ts
-yinz --session main plugins reload clock.ts
+yinz plugins write clock.scm --file clock.scm
+yinz plugins check clock.scm --json
+yinz plugins test clock.scm --json
+yinz --session main plugins start clock.scm
+yinz --session main plugins reload clock.scm
 yinz --session main plugins list --running --json
-yinz plugins log clock.ts --lines 80
+yinz plugins log clock.scm --lines 80
 ```
 
 `write` formats and checks before publishing. Existing source requires
@@ -24,7 +24,7 @@ yinz plugins log clock.ts --lines 80
 checked edits when matching a specific old fragment:
 
 ```sh
-yinz plugins edit clock.ts --file changes.json
+yinz plugins edit clock.scm --file changes.json
 ```
 
 The edit file is an array of `{old_string,new_string,replace_all?}` objects.

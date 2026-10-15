@@ -3566,7 +3566,7 @@ fn serialize_session_update_event_with_non_default_values() {
     plugins.insert(
         yinz_types::internal_ids::PluginId::new(1),
         PluginInfo {
-            location: "file:/path/to/my-plugin.wasm".to_owned(),
+            location: "file:/path/to/my-plugin.scm".to_owned(),
             configuration: plugin_configuration,
         },
     );
@@ -4175,7 +4175,7 @@ mod tests {
 
     /// The two flags that qualify a reading of a pane: whether the user has scrolled it
     /// back, and how long ago its process last wrote anything. A plugin cannot tell work
-    /// from a repaint without them, so they have to survive the wasm boundary.
+    /// from a repaint without them, so they have to survive the plugin wire boundary.
     #[test]
     fn pane_contents_carries_scroll_and_output_age_across_protobuf() {
         for original in [
@@ -4647,7 +4647,7 @@ fn multipane_manifest_metadata_roundtrips_and_rejects_invalid_ratios() {
 
 #[cfg(test)]
 #[test]
-fn notification_events_and_decisions_round_trip_through_wasm_wire() {
+fn notification_events_and_decisions_round_trip_through_plugin_wire() {
     use yinz_types::internal_ids::{NotificationId, PluginId, TerminalId};
     use yinz_types::notifications::*;
     let notification = NotificationData {

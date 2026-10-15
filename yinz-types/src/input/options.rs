@@ -251,8 +251,6 @@ pub struct Options {
     /// Set the layout_dir, defaults to
     /// subdirectory of config dir
     pub layout_dir: Option<PathBuf>,
-    /// Set the directory from which builtin plugins are loaded before the installed builtins are tried
-    pub builtin_plugins_dir: Option<PathBuf>,
     /// Set the theme_dir, defaults to
     /// subdirectory of config dir
     pub theme_dir: Option<PathBuf>,
@@ -535,9 +533,6 @@ impl Options {
         let default_cwd = other.default_cwd.or_else(|| self.default_cwd.clone());
         let default_layout = other.default_layout.or_else(|| self.default_layout.clone());
         let layout_dir = other.layout_dir.or_else(|| self.layout_dir.clone());
-        let builtin_plugins_dir = other
-            .builtin_plugins_dir
-            .or_else(|| self.builtin_plugins_dir.clone());
         let theme_dir = other.theme_dir.or_else(|| self.theme_dir.clone());
         let user_plugin_dir = other
             .user_plugin_dir
@@ -627,7 +622,6 @@ impl Options {
             default_cwd,
             default_layout,
             layout_dir,
-            builtin_plugins_dir,
             theme_dir,
             user_plugin_dir,
             agent_double_escape,

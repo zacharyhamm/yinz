@@ -257,15 +257,13 @@ pub fn plugin_receives_config_change_event() {
     };
 
     let received_screen_instructions = Watched::new(vec![]);
-    let screen_thread = grant_permissions_and_log_actions_in_thread!(
-        received_screen_instructions,
-        ScreenInstruction::PluginBytes,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        2,
-        &PermissionType::ReadApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
@@ -288,7 +286,7 @@ pub fn plugin_receives_config_change_event() {
         None,
     ));
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
 
     let mut new_config = BTreeMap::new();
     new_config.insert("theme".to_owned(), "light".to_owned()); // Changed
@@ -307,44 +305,13 @@ pub fn plugin_receives_config_change_event() {
 
     let _ = plugin_thread_sender.send(PluginInstruction::DetectPluginConfigChanges(plugin_aliases));
 
-    screen_thread.join().unwrap();
+    let frame =
+        wait_for_render_containing(&received_screen_instructions, "PluginConfigurationChanged");
     teardown();
-
-    let plugin_renders = received_screen_instructions
-        .lock()
-        .iter()
-        .filter_map(|i| {
-            if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-                plugin_render_assets.first().map(|plugin_render_asset| {
-                    let plugin_bytes = plugin_render_asset.bytes.clone();
-                    String::from_utf8_lossy(plugin_bytes.as_slice()).to_string()
-                })
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
+    screen_thread.join().unwrap();
     assert!(
-        plugin_renders
-            .iter()
-            .any(|r| r.contains("PluginConfigurationChanged")),
-        "Plugin should receive PluginConfigurationChanged event"
+        fixture_events(frame.as_bytes()).contains(&Event::PluginConfigurationChanged(new_config))
     );
-
-    let last_render = plugin_renders
-        .last()
-        .expect("Should have at least one render");
-    assert!(
-        last_render.contains("theme") && last_render.contains("light"),
-        "Plugin should render with new theme=light config"
-    );
-    assert!(
-        last_render.contains("size") && last_render.contains("small"),
-        "Plugin should render with new size=small config"
-    );
-
-    assert_snapshot!(format!("{:#?}", last_render));
 }
 
 #[test]
@@ -474,8 +441,10 @@ pub fn get_session_environment_variables_plugin_command() {
     );
     test_env_vars.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
 
-    let (plugin_thread_sender, screen_receiver, teardown) =
-        create_plugin_thread(Some(plugin_host_folder.clone()), Some(test_env_vars));
+    let (plugin_thread_sender, screen_receiver, teardown) = create_plugin_thread(
+        Some(plugin_host_folder.clone()),
+        Some(test_env_vars.clone()),
+    );
 
     let client_id = ClientId::new(1);
     // Logs until disconnect rather than for a fixed number of renders: the fixture watches its
@@ -541,19 +510,19 @@ pub fn get_session_environment_variables_plugin_command() {
     teardown();
     screen_thread.join().unwrap();
 
-    let plugin_bytes_event = received_screen_instructions.lock().iter().find_map(|i| {
-        if let ScreenInstruction::PluginBytes(plugin_render_assets) = i {
-            for plugin_render_asset in plugin_render_assets {
-                let plugin_bytes = plugin_render_asset.bytes.clone();
-                let plugin_bytes = String::from_utf8_lossy(plugin_bytes.as_slice()).to_string();
-                if plugin_bytes.contains("Got") && plugin_bytes.contains("environment variables") {
-                    return Some(plugin_bytes);
-                }
-            }
-        }
-        None
-    });
-    assert_snapshot!(format!("{:#?}", plugin_bytes_event));
+    let frame = rendered_assets(&received_screen_instructions.lock())
+        .into_iter()
+        .map(|(_, frame)| frame)
+        .find(|frame| frame.starts_with("Got environment variables: "))
+        .unwrap();
+    let variables: BTreeMap<String, String> = serde_json::from_str(
+        frame
+            .trim()
+            .strip_prefix("Got environment variables: ")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(variables, test_env_vars);
 }
 
 /// The plugin thread holds the hook bindings and the configured context menu as state captured at
@@ -584,7 +553,6 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
         default_shell: None,
         layout_dir: None,
         user_plugin_dir: None,
-        builtin_plugins_dir: None,
         // No hook bound, so the answer comes straight out of the configuration below. That is also
         // what proves the hooks were replaced: the default binds the shipped hook to this point.
         hooks: Hooks::from_data(Default::default()),
@@ -626,7 +594,7 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
 }
 
 /// A non-shared hook has one instance per client. Client 2 here is never registered via
-/// `AddClient`, so none of `WasmBridge`'s own proactive per-client provisioning (on plugin load,
+/// `AddClient`, so none of `PluginBridge`'s own proactive per-client provisioning (on plugin load,
 /// on a client connecting) ever runs for it - the only way it can get answered is if
 /// `request_context_menu` notices it has no owned instance and loads one itself. Before the fix,
 /// `plugin_ids` being non-empty (client 1's instance) was enough to skip loading anything, the
@@ -657,7 +625,6 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
         default_shell: None,
         layout_dir: None,
         user_plugin_dir: None,
-        builtin_plugins_dir: None,
         hooks: Hooks::from_data(BTreeMap::from([(HookPoint::ContextMenu, hook_plugin)])),
         context_menu: Default::default(),
         was_written_to_disk: false,
@@ -767,7 +734,6 @@ pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
         default_shell: None,
         layout_dir: None,
         user_plugin_dir: None,
-        builtin_plugins_dir: None,
         hooks: Hooks::from_data(BTreeMap::from([(HookPoint::ContextMenu, hook_plugin)])),
         context_menu: Default::default(),
         was_written_to_disk: false,

@@ -1,4 +1,4 @@
-//! Agent behavior registered by plugins and shared with native and Wasm callers.
+//! Agent behavior registered by plugins and shared with host and guest callers.
 use crate::keys::KeyWithModifier;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -296,10 +296,43 @@ const MAX_REGISTRY_BYTES: usize = 8 * 1024 * 1024;
 
 static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(|| RwLock::new(BTreeMap::new()));
 
+thread_local! {
+    static MODEL_SNAPSHOT: std::cell::RefCell<Option<Vec<Arc<AgentProvider>>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Evaluate a pure model against an explicit provider snapshot, without changing the host registry.
+/// Nesting and unwinding restore the caller's context; other threads never observe it.
+pub fn with_snapshot<T>(providers: &[AgentProvider], evaluate: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Vec<Arc<AgentProvider>>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MODEL_SNAPSHOT.with(|snapshot| *snapshot.borrow_mut() = self.0.take());
+        }
+    }
+    let previous = MODEL_SNAPSHOT
+        .with(|snapshot| snapshot.replace(Some(providers.iter().cloned().map(Arc::new).collect())));
+    let _restore = Restore(previous);
+    evaluate()
+}
+
 /// Find canonical kinds, executable names, or declared aliases. Returned snapshots remain
 /// valid after the owning plugin reloads or unloads.
 pub fn provider(kind: &str) -> Option<Arc<AgentProvider>> {
     let name = super::program(kind).to_ascii_lowercase();
+    if let Some(found) = MODEL_SNAPSHOT.with(|snapshot| {
+        snapshot.borrow().as_ref().map(|providers| {
+            providers
+                .iter()
+                .find(|provider| {
+                    provider
+                        .names()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(&name))
+                })
+                .cloned()
+        })
+    }) {
+        return found;
+    }
     let registry = REGISTRY
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -312,6 +345,16 @@ pub fn provider(kind: &str) -> Option<Arc<AgentProvider>> {
 }
 
 pub fn providers() -> Vec<AgentProvider> {
+    if let Some(providers) = MODEL_SNAPSHOT.with(|snapshot| {
+        snapshot.borrow().as_ref().map(|providers| {
+            providers
+                .iter()
+                .map(|provider| provider.as_ref().clone())
+                .collect()
+        })
+    }) {
+        return providers;
+    }
     REGISTRY
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -376,7 +419,7 @@ pub fn unregister_owner(owner: u64) -> bool {
     registry.len() != before
 }
 
-/// Atomically mirror the host's descriptor snapshot into a Wasm plugin.
+/// Atomically replace the local descriptor snapshot.
 pub fn replace_snapshot(providers: Vec<AgentProvider>) -> Result<(), String> {
     let mut registry = BTreeMap::new();
     for provider in providers {

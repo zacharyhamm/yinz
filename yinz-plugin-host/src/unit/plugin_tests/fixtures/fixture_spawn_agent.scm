@@ -1,0 +1,17 @@
+(define ready #f)
+(define (load config)
+  (yinz-command (hash "Subscribe" (list "Key")))
+  (yinz-then (yinz-wait-for-permissions (list "RunCommands"))
+    (lambda (ignored) (set! ready #t))))
+(define (update event)
+  (if (and (hash? event) (hash-contains? event "Key"))
+    (begin
+  (define key (hash-ref (hash-ref event "Key") "bare_key"))
+  (define hooks? (equal? key (hash "Char" "h")))
+  (when (or hooks? (equal? key (hash "Char" "s")))
+    (yinz-command (hash "SpawnAgent"
+      (hash "spec" (hash "kind" "claude" "prompt" "fix it" "allow_outside_worktree" #t "hooks" hooks?)
+        "cwd" "/host" "name" (if hooks? "fixer" json-null)))))
+      #t)
+    #f))
+(define (render rows cols) (if ready "spawn fixture ready" "waiting for permissions"))

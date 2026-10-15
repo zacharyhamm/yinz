@@ -381,7 +381,7 @@ fn permission_modals_queue_reassign_and_consume_paste_without_changing_mode() {
     let (tx, rx) = channels::unbounded();
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
     let mut first = PluginPermission::new(
-        "first.ts".into(),
+        "first.scm".into(),
         vec![PermissionType::ReadApplicationState],
     );
     first.request_id = 1;
@@ -445,7 +445,7 @@ fn permission_modal_mouse_tracks_resizing_and_absorbs_release_after_cancellation
     for (token, size) in [(1, SIZE), (2, Size { cols: 60, rows: 20 })] {
         screen.resize_to_screen(size).unwrap();
         let mut request = PluginPermission::new(
-            "mouse.ts".into(),
+            "mouse.scm".into(),
             vec![PermissionType::ReadApplicationState],
         );
         request.request_id = token;
@@ -507,7 +507,7 @@ fn permission_modal_navigation_hints_and_answers_match_selection() {
     ] {
         screen.open_permission_modal(
             PLUGIN,
-            PluginPermission::new("identity.ts".into(), vec![PermissionType::RunCommands]),
+            PluginPermission::new("identity.scm".into(), vec![PermissionType::RunCommands]),
         );
         assert_hints(&screen, false);
         if navigate {
@@ -565,7 +565,7 @@ fn permission_modal_scrolls_all_rows_and_only_activates_visible_controls() {
     screen.open_permission_modal(
         PLUGIN,
         PluginPermission::new(
-            "identity.ts".into(),
+            "identity.scm".into(),
             vec![
                 PermissionType::ReadApplicationState,
                 PermissionType::ChangeApplicationState,
@@ -588,7 +588,7 @@ fn permission_modal_scrolls_all_rows_and_only_activates_visible_controls() {
     };
     let initial = layout(&screen);
     assert_eq!(initial.window_start, 0);
-    assert!(initial.rows.iter().any(|row| row.label == "identity.ts"));
+    assert!(initial.rows.iter().any(|row| row.label == "identity.scm"));
     assert!(initial.more_below);
     key(&mut screen, BareKey::Enter);
     assert!(
@@ -669,7 +669,7 @@ fn permission_modal_scrolls_all_rows_and_only_activates_visible_controls() {
 
     screen.open_permission_modal(
         PLUGIN,
-        PluginPermission::new("identity.ts".into(), vec![PermissionType::RunCommands; 10]),
+        PluginPermission::new("identity.scm".into(), vec![PermissionType::RunCommands; 10]),
     );
     key(&mut screen, BareKey::End);
     let position = Position::new(layout(&screen).row_of_item(13).unwrap() as i32, 50);
@@ -691,10 +691,10 @@ fn permission_identities_wrap_without_losing_suffixes_and_controls_follow_resize
 
     let prefix = "projects with spaces/界面/cafe\u{301}/".repeat(8);
     let identities = [
-        format!("/plugins/{prefix}trusted.ts"),
-        format!("/plugins/{prefix}untrusted.ts"),
-        format!("git://plugin?repo=/repos/{prefix}&rev=main&path=trusted.ts"),
-        format!("git://plugin?repo=/repos/{prefix}&rev=main&path=untrusted.ts"),
+        format!("/plugins/{prefix}trusted.scm"),
+        format!("/plugins/{prefix}untrusted.scm"),
+        format!("git://plugin?repo=/repos/{prefix}&rev=main&path=trusted.scm"),
+        format!("git://plugin?repo=/repos/{prefix}&rev=main&path=untrusted.scm"),
     ];
     let narrow = Size { rows: 8, cols: 32 };
     let wide = Size { rows: 8, cols: 100 };

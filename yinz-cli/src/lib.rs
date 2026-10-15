@@ -24,15 +24,16 @@ mod cross_contracts;
 #[path = "unit/kdl_action_props.rs"]
 mod kdl_action_props;
 pub mod options;
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
+#[path = "unit/repl.rs"]
+mod repl_tests;
+#[cfg(test)]
 #[path = "unit/session_checkpoint_tests.rs"]
 mod session_checkpoint_tests;
-#[cfg(not(target_family = "wasm"))]
 pub mod session_picker;
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
 #[path = "unit/session_picker_tests.rs"]
 mod session_picker_tests;
-#[cfg(not(target_family = "wasm"))]
 pub mod sessions;
 pub mod setup;
 

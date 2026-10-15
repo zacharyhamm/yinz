@@ -1,4 +1,4 @@
-use crate::{build, flags};
+use crate::flags;
 use anyhow::{anyhow, Context};
 use std::ffi::OsString;
 use xshell::{cmd, Shell};
@@ -18,17 +18,7 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     let _pd = sh.push_dir(crate::project_root());
     let cargo = crate::cargo().context(err_context)?;
 
-    build::build(
-        sh,
-        flags::Build {
-            release: false,
-            profile: None,
-            no_plugins: false,
-            plugins_only: true,
-            args: vec![],
-        },
-    )
-    .context(err_context)?;
+    crate::build::run_proto_codegen(sh, false);
     // Native compiler workers must re-exec this checkout's production binary, never libtest.
     cmd!(sh, "{cargo} build --bin yinz")
         .run()
@@ -46,10 +36,6 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     // One invocation for the whole workspace, rather than one per crate. Cargo resolves features
     // once, so `yinz-types` - and everything above it - is compiled once instead of once per
     // distinct feature set, and there is a single build/link tail rather than eight.
-    //
-    // The plugin crates pin themselves to wasm32-wasip1 in their own `.cargo/config.toml`, but
-    // Cargo reads config from the invocation directory upward and this runs from the project
-    // root, so that pin never applies here and they build for the host.
     //
     // Features are left at their defaults on purpose, keeping this graph identical to the one
     // `x build` produces so the two share artifacts.

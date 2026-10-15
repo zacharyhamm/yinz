@@ -478,6 +478,8 @@ pub struct FsListPayload {
 pub struct FsMetadataPayload {
     #[prost(string, tag="1")]
     pub path: ::prost::alloc::string::String,
+    #[prost(bool, tag="2")]
+    pub follow_symlinks: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

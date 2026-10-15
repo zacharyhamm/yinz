@@ -211,7 +211,7 @@ plugins {
 }
 
 load_plugins clear-defaults=true {
-  "file:/usr/src/yinz/wasm32-wasip1/release/fixture-plugin-for-tests.wasm" {
+  "file:/usr/src/yinz/yinz-steel-builtins/fixtures/fixture-plugin-for-tests.scm" {
       config_key "config_value"
       config_key2 "config_value2"
   }

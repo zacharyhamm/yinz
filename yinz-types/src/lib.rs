@@ -14,6 +14,7 @@
 pub mod animation;
 pub mod cli;
 pub mod colors;
+pub mod compact_bytes;
 pub mod diagnostics;
 pub mod envs;
 pub mod internal_ids;

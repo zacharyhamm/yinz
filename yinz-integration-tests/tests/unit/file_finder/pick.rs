@@ -4,58 +4,60 @@ use super::*;
 fn absolute_roots_work_from_an_exited_pane_but_relative_roots_require_a_cwd() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
-        root.path().join("held-picker.ts"),
+        root.path().join("held-picker.scm"),
         r#"
-import z from 'yinz:plugin';
-let root, held;
-export default {
-  async load(config) {
-    await z.waitForPermissions(['RunCommands','ReadApplicationState','MessageAndLaunchOtherPlugins','ChangeApplicationState']);
-    root = config.root;
-    z.subscribe(['CommandPaneExited']);
-    held = z.host.openCommandPaneFloating([{path:'/usr/bin/true'}, null, {}]);
-  },
-  async update(event) {
-    if (!held || event.CommandPaneExited?.[0] !== held.Terminal) return false;
-    try {
-      if (JSON.stringify(z.host.getFocusedPaneInfo().pane_id) !== JSON.stringify(held))
-        throw new Error('exited pane is not focused');
-      for (const options of [{}, {roots:['.']}, {roots:[root, '.']}]) {
-        let rejected = false;
-        try { await z.pick({kind:'file', ...options}); }
-        catch (error) {
-          if (!/CWD|not running/.test(String(error))) throw error;
-          rejected = true;
-        }
-        if (!rejected) throw new Error('relative roots accepted without cwd');
-      }
-      const file = await z.pick({kind:'file', roots:[root]});
-      if (file !== root + '/book.pdf') throw new Error('wrong selection: ' + file);
-      if (JSON.stringify(z.host.getFocusedPaneInfo().pane_id) !== JSON.stringify(held))
-        throw new Error('focus was not restored');
-      z.host.renameTerminalPane([held.Terminal, 'HELD PICK COMPLETE']);
-    } catch (error) {
-      console.error('HELD PICK ERROR', String(error));
-    }
-    return false;
-  }
-};
+(define root "")
+(define held #f)
+(define (load config)
+  (yinz-then (yinz-wait-for-permissions '("RunCommands" "ReadApplicationState" "MessageAndLaunchOtherPlugins" "ChangeApplicationState"))
+    (lambda (ignored)
+      (set! root (hash-ref config "root"))
+      (yinz-command (hash "Subscribe" '("CommandPaneExited")))
+      (set! held (yinz-command (hash "OpenCommandPaneFloating"
+        (list (hash "path" "/usr/bin/true") json-null (hash))))))))
+(define (reject-relative options)
+  (define pending (with-handler (lambda (failure) (yinz-reject! (yinz-deferred) failure))
+    (yinz-pick (hash-insert options "kind" "file"))))
+  (yinz-then
+    (yinz-catch (yinz-then pending (lambda (ignored) #f))
+      (lambda (failure)
+        (unless (or (string-contains? failure "CWD") (string-contains? failure "not running")) (error failure)) #t))
+    (lambda (rejected) (unless rejected (error "relative roots accepted without cwd")))))
+(define (reject-relatives options)
+  (if (null? options) (yinz-pick (hash "kind" "file" "roots" (list root)))
+    (yinz-then (reject-relative (car options)) (lambda (ignored) (reject-relatives (cdr options))))))
+(define (update event)
+  (if (and held (hash? event) (hash-contains? event "CommandPaneExited")
+           (= (car (hash-ref event "CommandPaneExited")) (hash-ref held "Terminal")))
+    (yinz-catch
+      (yinz-then #t (lambda (ignored)
+        (unless (equal? (hash-ref (yinz-command "GetFocusedPaneInfo") "pane_id") held)
+          (error "exited pane is not focused"))
+        (yinz-then (reject-relatives (list (hash) (hash "roots" '(".")) (hash "roots" (list root "."))))
+          (lambda (file)
+            (unless (equal? file (string-append root "/book.pdf")) (error "wrong selection"))
+            (unless (equal? (hash-ref (yinz-command "GetFocusedPaneInfo") "pane_id") held)
+              (error "focus was not restored"))
+            (yinz-command (hash "RenameTerminalPane" (list (hash-ref held "Terminal") "HELD PICK COMPLETE"))) #f))))
+      (lambda (failure) (yinz-log (string-append "HELD PICK ERROR " failure)) #f))
+    #f))
 "#,
     )
     .unwrap();
-    let path = root.path().join("held-picker.integration.test.ts");
+    let path = root.path().join("held-picker.integration.test.scm");
     std::fs::write(&path, r#"
-import {test, session, assert} from 'yinz:testing';
-test('absolute roots from an exited process', {grants:['RunCommands','ReadApplicationState','MessageAndLaunchOtherPlugins','ChangeApplicationState']}, async () => {
-  const home = session.fixture({'project/book.pdf':''}, {fzf:'cat'});
-  session.start();
-  await session.waitForText('yinz-test>');
-  session.loadPlugin(import.meta.resolve('./held-picker.ts'), {headless:true, configuration:{root:home + '/project'}});
-  await session.waitFor('held pane pick completes', () => {
-    assert(!session.logs.includes('HELD PICK ERROR'), session.logs);
-    return session.panes.some(pane => pane.title === 'HELD PICK COMPLETE' && pane.is_held);
-  });
-});
+(test "absolute roots from an exited process"
+  (hash "grants" '("RunCommands" "ReadApplicationState" "MessageAndLaunchOtherPlugins" "ChangeApplicationState"))
+  (lambda ()
+    (define home (test-session "fixture" (hash "files" (hash "project/book.pdf" "") "commands" (hash "fzf" "cat"))))
+    (test-session "start")
+    (test-wait-for-text "yinz-test>")
+    (test-session "load" (hash "path" "./held-picker.scm" "headless" #t "configuration" (hash "root" (string-append home "/project"))))
+    (test-wait-for "held pane pick completes" (lambda ()
+      (define logs (test-session "logs"))
+      (assert (not (string-contains? logs "HELD PICK ERROR")) logs)
+      (not (null? (filter (lambda (pane)
+        (and (equal? (hash-ref pane "title") "HELD PICK COMPLETE") (hash-ref pane "is_held"))) (test-session "panes"))))))))
 "#).unwrap();
     let report = yinz_server::plugin_testing::run(
         &path,
@@ -70,27 +72,28 @@ test('absolute roots from an exited process', {grants:['RunCommands','ReadApplic
 #[test]
 fn awaited_folder_then_pdf_restores_focus_before_second_picker() {
     let root = tempfile::tempdir().unwrap();
-    let source = root.path().join("picker.ts");
+    let source = root.path().join("picker.scm");
     std::fs::write(&source, r#"
-import z from 'yinz:plugin';
-export default {
-  async load() {
-    if (!z.getPluginInfo().background) throw new Error('load provenance was lost');
-    await z.waitForPermissions(['ReadApplicationState','MessageAndLaunchOtherPlugins','ChangeApplicationState']);
-    const focused = z.host.getFocusedPaneInfo();
-    try {
-      const folder = await z.pick({kind:'directory', roots:['/tmp']});
-      if (folder === null) throw new Error('first pick cancelled');
-      const file = await z.pick({kind:'file', roots:[folder], extensions:['pdf']});
-      if (file !== '/tmp/Papers.pdf/quote\n雪.PDF') throw new Error('path changed: ' + file);
-      if ('Terminal' in focused.pane_id) z.host.renameTerminalPane([focused.pane_id.Terminal, 'PICK COMPLETE']);
-    } catch (error) {
-      console.error('PICK ERROR', String(error));
-      if ('Terminal' in focused.pane_id) z.host.renameTerminalPane([focused.pane_id.Terminal, 'PICK ERROR ' + String(error)]);
-    }
-  },
-  render() { return 'PICKER BACKGROUND MUST NEVER SHOW'; }
-};
+(define (load config)
+  (unless (hash-ref (yinz-command (hash "GetPluginInfo" json-null)) "background") (error "load provenance was lost"))
+  (yinz-then (yinz-wait-for-permissions '("ReadApplicationState" "MessageAndLaunchOtherPlugins" "ChangeApplicationState"))
+    (lambda (ignored)
+      (define focused (hash-ref (yinz-command "GetFocusedPaneInfo") "pane_id"))
+      (define (rename text)
+        (when (hash-contains? focused "Terminal")
+          (yinz-command (hash "RenameTerminalPane" (list (hash-ref focused "Terminal") text)))))
+      (yinz-catch
+        (yinz-then (yinz-pick (hash "kind" "directory" "roots" '("/tmp")))
+          (lambda (folder)
+            (when (json-null? folder) (error "first pick cancelled"))
+            (yinz-then (yinz-pick (hash "kind" "file" "roots" (list folder) "extensions" '("pdf")))
+              (lambda (file)
+                (unless (equal? file "/tmp/Papers.pdf/quote\n雪.PDF") (error "path changed"))
+                (rename "PICK COMPLETE")))))
+        (lambda (failure)
+          (yinz-log (string-append "PICK ERROR " failure))
+          (rename (string-append "PICK ERROR " failure)))))))
+(define (render rows columns) "PICKER BACKGROUND MUST NEVER SHOW")
 "#).unwrap();
     let url = url::Url::from_file_path(source).unwrap();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
@@ -168,32 +171,28 @@ load_plugins clear-defaults=true {{ "picker"; }}
 #[test]
 fn focused_plugin_can_pick_then_query_plugin_ids_in_the_same_callback() {
     let root = tempfile::tempdir().unwrap();
-    let source = root.path().join("focused-picker.ts");
+    let source = root.path().join("focused-picker.scm");
     std::fs::write(&source, r#"
-import z from 'yinz:plugin';
-let state = 'starting';
-export default {
-  async load() {
-    await z.waitForPermissions(['ReadApplicationState','MessageAndLaunchOtherPlugins','ChangeApplicationState']);
-    z.subscribe(['Key']);
-    state = 'READY TO PICK';
-    z.requestRender();
-  },
-  async update(event) {
-    if (event.Key?.bare_key?.Char !== 'p') return false;
-    try {
-      const pending = z.pick({kind:'file'});
-      const ids = z.host.getPluginIdsForUrl('yinz:file-finder');
-      if (ids.length !== 1) throw new Error('picker driver missing');
-      if (await pending !== null) throw new Error('expected cancellation');
-      state = 'PICK AND QUERY COMPLETE';
-    } catch (error) {
-      state = 'PICK ERROR ' + String(error);
-    }
-    return true;
-  },
-  render() { return state; }
-};
+(define state "starting")
+(define (load config)
+  (yinz-then (yinz-wait-for-permissions '("ReadApplicationState" "MessageAndLaunchOtherPlugins" "ChangeApplicationState"))
+    (lambda (ignored)
+      (yinz-command (hash "Subscribe" '("Key")))
+      (set! state "READY TO PICK") (yinz-request-render))))
+(define (update event)
+  (if (and (hash? event) (hash-contains? event "Key")
+           (equal? (hash-ref (hash-ref event "Key") "bare_key") (hash "Char" "p")))
+    (yinz-catch
+      (yinz-then #t (lambda (ignored)
+        (define pending (yinz-pick (hash "kind" "file")))
+        (unless (= (length (yinz-command (hash "GetPluginIdsForUrl" "yinz:file-finder"))) 1)
+          (error "picker driver missing"))
+        (yinz-then pending (lambda (file)
+          (unless (json-null? file) (error "expected cancellation"))
+          (set! state "PICK AND QUERY COMPLETE") #t))))
+      (lambda (failure) (set! state (string-append "PICK ERROR " failure)) #t))
+    #f))
+(define (render rows columns) state)
 "#).unwrap();
     let url = url::Url::from_file_path(source).unwrap();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)

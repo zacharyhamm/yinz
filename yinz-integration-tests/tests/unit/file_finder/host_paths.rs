@@ -57,44 +57,50 @@ fn finder_and_editor_keep_host_paths() {
 #[test]
 fn real_finder_and_editor_use_the_tmp_project() {
     let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("finder.integration.test.ts");
+    let path = root.path().join("finder.integration.test.scm");
     std::fs::write(&path, r#"
-import {test, session, assert} from 'yinz:testing';
-for (const launch of ['keyboard','typed']) test('finder host paths through real PTYs: ' + launch, {grants:['RunCommands']}, async () => {
-  const home = session.fixture({'project/sub/book, #?%23%2523.pdf':'finder-host-path-sentinel'}, {
-    fzf: `set -eu
-expected=$(cd "$HOME/project" && pwd -P)
-[ "$(pwd -P)" = "$expected" ] || exit 1
+(for-each (lambda (launch)
+  (test (string-append "finder host paths through real PTYs: " launch) (hash "grants" '("RunCommands"))
+    (lambda ()
+      (define home (test-session "fixture" (hash
+        "files" (hash "project/sub/book, #?%23%2523.pdf" "finder-host-path-sentinel")
+        "commands" (hash
+          "fzf" "set -eu
+expected=$(cd \"$HOME/project\" && pwd -P)
+[ \"$(pwd -P)\" = \"$expected\" ] || exit 1
 input=$(cat)
-[ "$input" = 'sub/book, #?%23%2523.pdf' ] || exit 2
-printf '%s\\n' "$HOME/project/sub/book, #?%23%2523.pdf"
-`,
-    vi: `set -eu
-[ "$#" -eq 1 ] || exit 3
-[ "$1" = "$HOME/project/sub/book, #?%23%2523.pdf" ] || exit 4
-[ "$(pwd -P)" = "$(cd "$HOME/project/sub" && pwd -P)" ] || exit 5
-printf 'EDITOR_CWD=%s\\nEDITOR_ARG=%s\\n' "$(pwd -P)" "$1"
-cat "$1"
+[ \"$input\" = 'sub/book, #?%23%2523.pdf' ] || exit 2
+printf '%s\\n' \"$HOME/project/sub/book, #?%23%2523.pdf\"
+"
+          "vi" "set -eu
+[ \"$#\" -eq 1 ] || exit 3
+[ \"$1\" = \"$HOME/project/sub/book, #?%23%2523.pdf\" ] || exit 4
+[ \"$(pwd -P)\" = \"$(cd \"$HOME/project/sub\" && pwd -P)\" ] || exit 5
+printf 'EDITOR_CWD=%s\\nEDITOR_ARG=%s\\n' \"$(pwd -P)\" \"$1\"
+cat \"$1\"
 printf '\\nEDITOR_READY\\n'
 read release
-`
-  });
-  session.start({columns:240});
-  await session.waitForText('yinz-test>');
-  session.text(`cd "$HOME/project" && printf 'PROJECT_%s\\n' READY`);
-  session.key('Enter');
-  await session.waitForText('PROJECT_READY');
-  if (launch === 'keyboard') session.key('Alt e');
-  else session.loadPlugin('yinz:file-finder', {configuration:{
-    file_command: "printf '%s\\n' 'sub/book, #?%23%2523.pdf'", open_pdf: 'vi {}',
-  }});
-  await session.waitForText('EDITOR_READY');
-  assert(session.screen.includes('EDITOR_CWD=' + home + '/project/sub'));
-  assert(session.screen.includes('EDITOR_ARG=' + home + '/project/sub/book, #?%23%2523.pdf'));
-  assert(session.screen.includes('finder-host-path-sentinel'));
-  session.key('Enter');
-  await session.waitFor('finder and editor cleaned up', () => session.panes.filter(pane => !pane.is_plugin).length === 1 && !session.panes.some(pane => pane.plugin_url === 'yinz:file-finder') && !session.screen.includes('EDITOR_READY'));
-});
+"))))
+      (test-session "start" (hash "columns" 240))
+      (test-wait-for-text "yinz-test>")
+      (test-session "text" "cd \"$HOME/project\" && printf 'PROJECT_%s\\n' READY")
+      (test-session "key" "Enter")
+      (test-wait-for-text "PROJECT_READY")
+      (if (equal? launch "keyboard") (test-session "key" "Alt e")
+        (test-session "load" (hash "path" "yinz:file-finder" "configuration"
+          (hash "file_command" "printf '%s\\n' 'sub/book, #?%23%2523.pdf'" "open_pdf" "vi {}"))))
+      (test-wait-for-text "EDITOR_READY")
+      (define screen (test-session "screen"))
+      (assert (string-contains? screen (string-append "EDITOR_CWD=" home "/project/sub")))
+      (assert (string-contains? screen (string-append "EDITOR_ARG=" home "/project/sub/book, #?%23%2523.pdf")))
+      (assert (string-contains? screen "finder-host-path-sentinel"))
+      (test-session "key" "Enter")
+      (test-wait-for "finder and editor cleaned up" (lambda ()
+        (define panes (test-session "panes"))
+        (and (= (length (filter (lambda (pane) (not (hash-ref pane "is_plugin"))) panes)) 1)
+          (null? (filter (lambda (pane) (equal? (hash-ref pane "plugin_url") "yinz:file-finder")) panes))
+          (not (string-contains? (test-session "screen") "EDITOR_READY"))))))))
+  '("keyboard" "typed"))
 "#).unwrap();
     let report = yinz_server::plugin_testing::run(
         &path,
