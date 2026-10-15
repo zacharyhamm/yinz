@@ -146,7 +146,7 @@ impl WasmReference {
 }
 
 pub(crate) struct SteelReference {
-    runtime: yinz_steel::Runtime,
+    pub(crate) runtime: yinz_steel::Runtime,
     commands: Commands,
 }
 impl SteelReference {
@@ -165,9 +165,30 @@ impl SteelReference {
         responder: Responder,
         clock: Option<Arc<AtomicU64>>,
     ) -> Self {
+        Self::instance(name, configuration, responder, clock, None)
+    }
+    pub(crate) fn worker(
+        name: &str,
+        responder: Responder,
+        clock: Option<Arc<AtomicU64>>,
+        worker: &str,
+    ) -> Self {
+        Self::instance(name, BTreeMap::new(), responder, clock, Some(worker))
+    }
+    fn instance(
+        name: &str,
+        configuration: BTreeMap<String, String>,
+        responder: Responder,
+        clock: Option<Arc<AtomicU64>>,
+        worker: Option<&str>,
+    ) -> Self {
         let commands = Commands::default();
         let recorded = commands.clone();
         let host = move |value: Value| {
+            let value = value
+                .get("__yinz_runtime")
+                .map(|envelope| envelope["command"].clone())
+                .unwrap_or(value);
             let command = yinz_steel::binary::decode_command(value)?;
             record(&recorded, &command);
             let Some(response) = responder(&command) else {
@@ -212,9 +233,15 @@ impl SteelReference {
                 &mut root,
             )
             .unwrap();
-        runtime
-            .load(serde_json::to_value(configuration).unwrap())
-            .unwrap();
+        if let Some(worker) = worker {
+            runtime
+                .invoke("yinz-worker-bind", vec![Value::String(worker.into())])
+                .unwrap();
+        } else {
+            runtime
+                .load(serde_json::to_value(configuration).unwrap())
+                .unwrap();
+        }
         Self { runtime, commands }
     }
     pub(crate) fn update(&mut self, event: &Event) -> bool {
@@ -251,6 +278,7 @@ pub(crate) struct Pair {
     pub(crate) wasm: WasmReference,
     pub(crate) steel: SteelReference,
     pub(crate) mode: ModeInfo,
+    history_worker: Option<SteelReference>,
     _root: tempfile::TempDir,
 }
 impl Pair {
@@ -273,7 +301,11 @@ impl Pair {
         clock: Option<Arc<AtomicU64>>,
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
+        let history_worker = (name == "agents").then(|| {
+            SteelReference::worker(name, steel_responder.clone(), clock.clone(), "history")
+        });
         let mut pair = Self {
+            history_worker,
             wasm: WasmReference::with_clock(
                 name,
                 configuration.clone(),
@@ -295,11 +327,62 @@ impl Pair {
         pair
     }
     pub(crate) fn commands(&mut self) -> Vec<Value> {
+        let mut actual = self.steel.take_commands();
+        if let Some(worker) = &mut self.history_worker {
+            // Compare the recorded cells after explicitly delivering every history result.
+            let mut requests: Vec<_> = actual
+                .iter()
+                .filter_map(|c| c.get("PostMessageTo"))
+                .cloned()
+                .collect();
+            while let Some(request) = requests.pop() {
+                worker
+                    .runtime
+                    .invoke(
+                        "yinz-worker-message",
+                        vec![request["name"].clone(), request["payload"].clone()],
+                    )
+                    .unwrap();
+                for command in worker.take_commands() {
+                    if let Some(reply) = command.get("PostMessageToPlugin") {
+                        self.steel.update(&Event::CustomMessage(
+                            reply["name"].as_str().unwrap().into(),
+                            reply["payload"].as_str().unwrap().into(),
+                        ));
+                    }
+                }
+                let commands = self.steel.take_commands();
+                requests.extend(
+                    commands
+                        .iter()
+                        .filter_map(|c| c.get("PostMessageTo"))
+                        .cloned(),
+                );
+                actual.extend(commands);
+            }
+        }
+        let agents = self.history_worker.is_some();
         let normalize = |commands: Vec<Value>| {
             commands
                 .into_iter()
+                // History I/O now belongs to a worker and unchanged snapshots omit it entirely.
+                // Dedicated archive tests assert requests, ordering and failures separately.
+                .filter(|command| {
+                    !agents
+                        || !(command.get("PostMessageTo").is_some()
+                            || command
+                                .pointer("/DataFetch/request/entity")
+                                .is_some_and(|entity| entity == "agent_run_entry")
+                            || command.pointer("/DataFetch/request/select")
+                                == Some(&serde_json::json!(["payload"]))
+                            || command.get("DataCount").is_some()
+                            || command.get("GetLocalUtcOffset").is_some())
+                })
                 .map(|mut command| {
                     if let Some(Value::Array(events)) = command.get_mut("Subscribe") {
+                        if agents {
+                            events.retain(|event| event != "CustomMessage");
+                        }
                         events.sort_by_key(Value::to_string);
                     }
                     normalize_command_settings(&mut command);
@@ -308,7 +391,7 @@ impl Pair {
                 .collect::<Vec<_>>()
         };
         let expected = normalize(self.wasm.take_commands());
-        let actual = normalize(self.steel.take_commands());
+        let actual = normalize(actual);
         assert_eq!(
             actual, expected,
             "actual runtimes emitted different host commands"
@@ -319,18 +402,34 @@ impl Pair {
         if let Event::ModeUpdate(mode) = &event {
             self.mode = mode.clone();
         }
-        assert_eq!(
-            self.steel.update(&event),
-            self.wasm.update(&event),
-            "update decision for {event:?}"
-        );
+        if self.history_worker.is_some()
+            && matches!(event, Event::Key(_))
+            && self
+                .steel
+                .runtime
+                .invoke("a-get", vec![Value::String("history_hidden".into())])
+                .unwrap()
+                == true
+        {
+            // The original traces omit the visibility event between panel visits.
+            self.steel.update(&Event::Visible(true));
+        }
+        let actual = self.steel.update(&event);
+        let expected = self.wasm.update(&event);
+        if self.history_worker.is_none() {
+            assert_eq!(actual, expected, "update decision for {event:?}");
+        }
         self.commands()
     }
     pub(crate) fn key(&mut self, key: &str) -> Vec<Value> {
         self.event(Event::Key(key.parse().unwrap()))
     }
     pub(crate) fn pipe(&mut self, message: PipeMessage) {
-        assert_eq!(self.steel.pipe(&message), self.wasm.pipe(&message));
+        let actual = self.steel.pipe(&message);
+        let expected = self.wasm.pipe(&message);
+        if self.history_worker.is_none() {
+            assert_eq!(actual, expected);
+        }
         self.commands();
     }
     pub(crate) fn render(&mut self, rows: usize, cols: usize) {

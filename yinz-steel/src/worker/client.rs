@@ -274,7 +274,9 @@ impl WorkerRuntime {
             match self.input.write(remaining) {
                 Ok(0) => bail!("Steel worker closed input"),
                 Ok(count) => remaining = &remaining[count..],
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.poll(deadline)?,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.poll(deadline, true)?
+                },
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {},
                 Err(error) => return Err(error).context("write Steel worker request"),
             }
@@ -311,7 +313,7 @@ impl WorkerRuntime {
                 Ok(count) => self.received.extend_from_slice(&buffer[..count]),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     self.check_alive(deadline)?;
-                    self.poll(deadline)?;
+                    self.poll(deadline, false)?;
                 },
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {},
                 Err(error) => return Err(error).context("read Steel worker response"),
@@ -358,8 +360,13 @@ impl WorkerRuntime {
         Ok(())
     }
 
-    fn poll(&self, deadline: Instant) -> Result<()> {
+    fn poll(&self, deadline: Instant, writing: bool) -> Result<()> {
         let mut descriptors = [
+            libc::pollfd {
+                fd: if writing { self.input.as_raw_fd() } else { -1 },
+                events: libc::POLLOUT,
+                revents: 0,
+            },
             libc::pollfd {
                 fd: self.output.as_raw_fd(),
                 events: libc::POLLIN,
@@ -406,3 +413,7 @@ fn nonblocking(pipe: &impl AsRawFd) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../unit/worker_transport.rs"]
+mod tests;

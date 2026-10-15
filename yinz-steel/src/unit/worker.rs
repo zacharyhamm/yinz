@@ -17,7 +17,7 @@ fn protocol_roundtrips_and_rejects_oversized_or_truncated_frames() {
     assert!(protocol::read::<Request>(&mut Cursor::new(u32::MAX.to_be_bytes())).is_err());
 }
 
-fn binary() -> std::path::PathBuf {
+pub(super) fn binary() -> std::path::PathBuf {
     if let Some(binary) = std::env::var_os("YINZ_COMPILATION_WORKER") {
         return binary.into();
     }

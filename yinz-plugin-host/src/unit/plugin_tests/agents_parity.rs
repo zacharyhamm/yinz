@@ -40,6 +40,17 @@ fn run(id: &str, pane: u32, ended: bool) -> agents::AgentRun {
        {"revision":3,"kind":"prompt","text":"<task-notification><task-id>task-7</task-id><status>completed</status><output-file>result.txt</output-file><summary>Finished</summary><result>first line\nsecond **line**\nthird line</result></task-notification>","created_at_ms":4_000}]
     })).unwrap()
 }
+fn current_run(run: &agents::AgentRun) -> agents::AgentRun {
+    // The recordings left revisions at zero; Steel needs matching stored and advertised revisions.
+    let mut run = run.clone();
+    run.revision = run
+        .entries
+        .iter()
+        .map(|entry| entry.revision)
+        .max()
+        .unwrap_or(run.revision);
+    run
+}
 fn host(runs: &[agents::AgentRun], clock: Arc<AtomicU64>) -> (Arc<DataHost>, Responder) {
     let data = DataHost::with_clock("agents-parity", clock);
     let responder = data.responder(Arc::new(|command| {
@@ -84,7 +95,10 @@ fn pair(
 ) -> (Pair, Arc<AtomicU64>, Arc<DataHost>, Arc<DataHost>) {
     let clock = Arc::new(AtomicU64::new(90_000));
     let (wasm, wh) = host(runs, clock.clone());
-    let (steel, sh) = host(runs, clock.clone());
+    let (steel, sh) = host(
+        &runs.iter().map(current_run).collect::<Vec<_>>(),
+        clock.clone(),
+    );
     let config = if view {
         BTreeMap::from([("view".into(), "agents".into())])
     } else {
@@ -98,7 +112,10 @@ fn pair(
     )
 }
 fn snapshot(pair: &mut Pair, seq: u64, runs: &[agents::AgentRun], source: u32) {
-    pair.pipe(snapshot_message(seq, runs, source));
+    pair.wasm.pipe(&snapshot_message(seq, runs, source));
+    let current: Vec<_> = runs.iter().map(current_run).collect();
+    pair.steel.pipe(&snapshot_message(seq, &current, source));
+    pair.commands();
 }
 fn snapshot_message(seq: u64, runs: &[agents::AgentRun], source: u32) -> PipeMessage {
     let snapshot: wire::PollReply=serde_json::from_value(json!({"panes":[
@@ -446,9 +463,11 @@ fn agents_actual_runtimes_match_streamed_history_and_summary_deadline() {
     pair.key("Enter");
     pair.render(26, 80);
     run.entries.push(serde_json::from_value(json!({"revision":4,"kind":"message","text":"streamed **answer**","created_at_ms":91000})).unwrap());
-    for data in [&wasm, &steel] {
-        data.apply(store::SHARED, &agents::rows::run_mutations(&run));
-    }
+    wasm.apply(store::SHARED, &agents::rows::run_mutations(&run));
+    steel.apply(
+        store::SHARED,
+        &agents::rows::run_mutations(&current_run(&run)),
+    );
     snapshot(&mut pair, 2, &[run.clone()], 2);
     viewports(&mut pair);
     pair.key("Esc");
@@ -459,9 +478,11 @@ fn agents_actual_runtimes_match_streamed_history_and_summary_deadline() {
     pair.event(Event::Timer(yinz_types::units::FractionalSeconds::new(2.0)));
     viewports(&mut pair);
     run.entries.push(serde_json::from_value(json!({"revision":5,"kind":"summary","text":"completed summary","created_at_ms":160000})).unwrap());
-    for data in [&wasm, &steel] {
-        data.apply(store::SHARED, &agents::rows::run_mutations(&run));
-    }
+    wasm.apply(store::SHARED, &agents::rows::run_mutations(&run));
+    steel.apply(
+        store::SHARED,
+        &agents::rows::run_mutations(&current_run(&run)),
+    );
     snapshot(&mut pair, 3, &[run], 2);
     viewports(&mut pair);
 }
@@ -512,7 +533,10 @@ fn agents_actual_runtimes_match_store_errors_search_retry_and_resume_failure() {
     let clock = Arc::new(AtomicU64::new(90000));
     let fail = Arc::new(AtomicBool::new(false));
     let (_, wasm) = host(&runs, clock.clone());
-    let (_, steel) = host(&runs, clock.clone());
+    let (_, steel) = host(
+        &runs.iter().map(current_run).collect::<Vec<_>>(),
+        clock.clone(),
+    );
     let failing = |original: Responder| -> Responder {
         let fail = fail.clone();
         Arc::new(move |command| {
@@ -558,4 +582,835 @@ fn agents_actual_runtimes_match_store_errors_search_retry_and_resume_failure() {
         .iter()
         .any(|command| command.get("OpenCommandPaneNearPlugin").is_some()));
     viewports(&mut pair);
+}
+
+struct HistoryPanel {
+    panel: super::runtime_parity::SteelReference,
+    worker: super::runtime_parity::SteelReference,
+    clock: Arc<AtomicU64>,
+    data: Arc<DataHost>,
+}
+impl HistoryPanel {
+    fn new(runs: &[agents::AgentRun]) -> Self {
+        let clock = Arc::new(AtomicU64::new(90_000));
+        let (data, responder) = host(runs, clock.clone());
+        let panel = super::runtime_parity::SteelReference::with_clock(
+            "agents",
+            BTreeMap::from([("view".into(), "agents".into())]),
+            std::path::Path::new(""),
+            responder.clone(),
+            Some(clock.clone()),
+        );
+        let worker = super::runtime_parity::SteelReference::worker(
+            "agents",
+            responder,
+            Some(clock.clone()),
+            "history",
+        );
+        panel.take_commands();
+        Self {
+            panel,
+            worker,
+            clock,
+            data,
+        }
+    }
+    fn snapshot(&mut self, seq: u64, runs: &[agents::AgentRun]) {
+        self.panel.pipe(&snapshot_message(seq, runs, 2));
+    }
+    fn key(&mut self, key: &str) -> bool {
+        self.panel.update(&Event::Key(key.parse().unwrap()))
+    }
+    fn tick(&mut self, elapsed_ms: u64) {
+        self.clock.fetch_add(elapsed_ms, Ordering::SeqCst);
+        self.panel
+            .update(&Event::Timer(yinz_types::units::FractionalSeconds::new(
+                2.0,
+            )));
+    }
+    fn get(&mut self, key: &str) -> Value {
+        self.panel
+            .runtime
+            .invoke("a-get", vec![json!(key)])
+            .unwrap()
+    }
+    fn requests(&self) -> Vec<Value> {
+        self.panel
+            .take_commands()
+            .into_iter()
+            .filter_map(|c| c.get("PostMessageTo").cloned())
+            .collect()
+    }
+    fn request(&self) -> Value {
+        let requests = self.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        requests[0].clone()
+    }
+    fn reply(&mut self, request: &Value, payload: &str) -> bool {
+        self.panel.update(&Event::CustomMessage(
+            request["name"].as_str().unwrap().into(),
+            payload.into(),
+        ))
+    }
+    fn complete(&mut self, request: &Value) -> Value {
+        self.worker
+            .runtime
+            .invoke(
+                "yinz-worker-message",
+                vec![request["name"].clone(), request["payload"].clone()],
+            )
+            .unwrap();
+        let replies: Vec<_> = self
+            .worker
+            .take_commands()
+            .into_iter()
+            .filter_map(|c| c.get("PostMessageToPlugin").cloned())
+            .collect();
+        assert_eq!(replies.len(), 1);
+        let payload = replies[0]["payload"].as_str().unwrap();
+        assert!(self.reply(request, payload));
+        serde_json::from_str(payload).unwrap()
+    }
+}
+
+#[test]
+fn agents_history_navigation_renders_while_pending_and_only_loads_latest_selection() {
+    let runs = [
+        run("active", 7, false),
+        run("archive-a", 9, true),
+        run("archive-b", 10, true),
+    ];
+    let mut h = HistoryPanel::new(&runs);
+    h.snapshot(1, &runs);
+    let first = h.request();
+    for expected in ["pane:8", "run:archive-a", "run:archive-b"] {
+        assert!(h.key("Down"));
+        assert_eq!(
+            h.panel.runtime.invoke("a-selection-key", vec![]).unwrap(),
+            expected
+        );
+        let frame = history_frame(&h.panel.render(24, 90));
+        assert!(!frame.is_empty());
+        if expected.starts_with("run:") {
+            assert!(frame.contains("loading…"));
+        }
+        assert!(
+            h.requests().is_empty(),
+            "one history request may run at a time"
+        );
+    }
+    // Invalid JSON proves stale bodies are discarded before decoding.
+    assert!(!h.reply(&first, "obsolete body is not JSON"));
+    assert_eq!(h.get("run_error"), false);
+    let latest = h.request();
+    assert_eq!(
+        serde_json::from_str::<Value>(latest["payload"].as_str().unwrap()).unwrap()["id"],
+        "archive-b"
+    );
+    h.complete(&latest);
+    assert!(history_frame(&h.panel.render(24, 90)).contains("archive-b"));
+    assert!(!history_frame(&h.panel.render(24, 90)).contains("loading…"));
+    assert!(!h.reply(&first, "late duplicate"));
+    assert!(h.requests().is_empty());
+}
+
+#[test]
+fn agents_history_snapshot_headers_refresh_errors_timeout_and_hide() {
+    let mut runs = [run("archive", 9, true)];
+    let mut h = HistoryPanel::new(&runs);
+    h.snapshot(1, &runs);
+    h.key("Down");
+    h.key("Down");
+    let first = h.request();
+    h.complete(&first);
+    for seq in 2..12 {
+        h.snapshot(seq, &runs);
+    }
+    assert!(
+        h.requests().is_empty(),
+        "unchanged snapshots must not fetch history"
+    );
+    runs[0].summary =
+        Some(serde_json::from_value(json!({"text":"new summary","created_at_ms":91000})).unwrap());
+    h.data
+        .apply(store::SHARED, &agents::rows::run_mutations(&runs[0]));
+    h.snapshot(12, &runs);
+    let changed = h.request();
+    h.complete(&changed);
+    h.snapshot(13, &runs);
+    assert!(h.requests().is_empty());
+    runs[0].revision += 1;
+    h.snapshot(14, &runs);
+    let revision = h.request();
+    assert!(h.reply(&revision, r#"{"error":"archive unavailable"}"#));
+    assert!(h
+        .get("run_error")
+        .to_string()
+        .contains("archive unavailable"));
+    assert!(history_frame(&h.panel.render(24, 90)).contains("archive unavailable"));
+    h.snapshot(15, &runs);
+    assert!(
+        h.requests().is_empty(),
+        "errors require a changed header or explicit retry"
+    );
+    assert!(h.key("Ctrl r"));
+    let refresh = h.request();
+    h.clock.fetch_add(30_000, Ordering::SeqCst);
+    assert!(h
+        .panel
+        .update(&Event::Timer(yinz_types::units::FractionalSeconds::new(
+            2.0
+        ))));
+    assert!(h.get("run_error").to_string().contains("did not answer"));
+    assert!(!h.reply(&refresh, "expired"));
+    h.key("Ctrl r");
+    let hidden = h.request();
+    h.panel.update(&Event::Visible(false));
+    h.snapshot(16, &runs);
+    assert!(h.requests().is_empty());
+    assert!(!h.reply(&hidden, "hidden"));
+    h.panel.update(&Event::Visible(true));
+    let reopened = h.request();
+    h.data
+        .apply(store::SHARED, &agents::rows::run_mutations(&runs[0]));
+    h.complete(&reopened);
+    assert_eq!(h.get("run_error"), false);
+    assert!(h.requests().is_empty());
+}
+
+#[test]
+fn agents_history_retries_stale_replies_until_storage_catches_up_without_a_snapshot() {
+    for change in ["revision", "summary", "completion"] {
+        let mut runs = [current_run(&run("archive", 9, true))];
+        let mut h = HistoryPanel::new(&runs);
+        h.snapshot(1, &runs);
+        h.key("Down");
+        h.key("Down");
+        let first = h.request();
+        h.complete(&first);
+        h.panel.render(24, 90);
+        let installed = h.get("run_revision");
+        match change {
+            "revision" => {
+                runs[0].revision += 1;
+                runs[0].entries.push(
+                    serde_json::from_value(json!({
+                        "revision":4,"kind":"message","text":"caught up","created_at_ms":91000
+                    }))
+                    .unwrap(),
+                );
+            },
+            "summary" => {
+                runs[0].summary = Some(
+                    serde_json::from_value(json!({
+                        "text":"caught up","created_at_ms":91000
+                    }))
+                    .unwrap(),
+                );
+            },
+            "completion" => runs[0].ended_at_ms = Some(61_000),
+            _ => unreachable!(),
+        }
+        h.snapshot(2, &runs);
+        let stale = h.request();
+        let displayed = history_frame(&h.panel.render(24, 90));
+        h.complete(&stale);
+        assert_eq!(h.get("run_revision"), installed, "{change}");
+        assert_eq!(
+            history_frame(&h.panel.render(24, 90)),
+            displayed,
+            "{change}"
+        );
+        assert_eq!(h.get("run_error"), false);
+        assert_eq!(h.get("history_retry_at"), 92_000);
+        h.tick(1_999);
+        h.snapshot(3, &runs);
+        assert!(h.requests().is_empty(), "retry must wait two seconds");
+        h.tick(1);
+        let retry = h.request();
+        h.tick(2_000);
+        assert!(h.requests().is_empty(), "only one worker request at a time");
+        h.complete(&retry);
+        assert_eq!(h.get("history_retry_at"), 96_000);
+        assert_eq!(h.get("run_revision"), installed);
+        h.data
+            .apply(store::SHARED, &agents::rows::run_mutations(&runs[0]));
+        h.tick(2_000);
+        let retry = h.request();
+        let reply = h.complete(&retry);
+        assert_eq!(reply["run"]["revision"], runs[0].revision);
+        assert_eq!(h.get("run_revision"), installed.as_u64().unwrap() + 1);
+        assert_eq!(h.get("history_retry_at"), false);
+        if change != "completion" {
+            assert!(history_frame(&h.panel.render(24, 90)).contains("caught up"));
+        }
+        for seq in 4..7 {
+            h.tick(2_000);
+            h.snapshot(seq, &runs);
+            assert!(h.requests().is_empty(), "success must stop retries");
+        }
+    }
+}
+
+#[test]
+fn agents_history_accepts_replies_newer_than_the_advertised_header() {
+    let advertised = current_run(&run("archive", 9, true));
+    let mut stored = advertised.clone();
+    stored.revision += 1;
+    stored.summary = Some(
+        serde_json::from_value(json!({
+            "text":"newer summary","created_at_ms":91000
+        }))
+        .unwrap(),
+    );
+    stored.ended_at_ms = Some(61_000);
+    let mut h = HistoryPanel::new(&[stored]);
+    h.snapshot(1, std::slice::from_ref(&advertised));
+    h.key("Down");
+    h.key("Down");
+    let request = h.request();
+    h.complete(&request);
+    assert_eq!(h.get("run_revision"), 1);
+    assert_eq!(h.get("history_retry_at"), false);
+    assert!(history_frame(&h.panel.render(24, 90)).contains("newer summary"));
+    h.tick(2_000);
+    h.snapshot(2, &[advertised]);
+    assert!(h.requests().is_empty());
+}
+
+#[test]
+fn agents_history_navigation_hiding_and_explicit_refresh_cancel_stale_retries() {
+    for action in ["navigate", "hide", "refresh"] {
+        let mut runs = [current_run(&run("active", 7, false))];
+        let mut h = HistoryPanel::new(&runs);
+        runs[0].revision += 1;
+        h.snapshot(1, &runs);
+        let stale = h.request();
+        h.complete(&stale);
+        assert_eq!(h.get("history_retry_at"), 92_000);
+        assert_eq!(h.get("run_revision"), 0);
+        match action {
+            "navigate" => {
+                h.key("Down");
+            },
+            "hide" => {
+                h.panel.update(&Event::Visible(false));
+            },
+            "refresh" => {
+                h.key("Ctrl r");
+            },
+            _ => unreachable!(),
+        }
+        assert_eq!(h.get("history_retry_at"), false, "{action}");
+        if action == "refresh" {
+            let refresh = h.request();
+            h.tick(2_000);
+            assert!(h.requests().is_empty());
+            h.data
+                .apply(store::SHARED, &agents::rows::run_mutations(&runs[0]));
+            h.complete(&refresh);
+            assert_eq!(h.get("run_revision"), 1);
+        }
+        h.tick(2_000);
+        assert!(h.requests().is_empty(), "{action}");
+    }
+}
+
+#[test]
+fn agents_history_search_revision_is_correlated_before_decoding() {
+    let runs = [run("archive", 9, true)];
+    let mut h = HistoryPanel::new(&runs);
+    h.snapshot(1, &runs);
+    h.key("Down");
+    h.key("Down");
+    let first = h.request();
+    h.key("/");
+    h.panel.update(&Event::PastedText("history".into()));
+    h.key("Enter");
+    assert!(h.requests().is_empty());
+    assert!(!h.reply(&first, "obsolete newest page"));
+    let search = h.request();
+    let body: Value = serde_json::from_str(search["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(body["revision"], 1);
+    let reply = h.complete(&search);
+    assert!(reply["run"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["revision"] == 1));
+    h.panel.render(24, 90);
+    assert_eq!(h.get("history_cursor_anchor"), json!([1]));
+    h.key("c");
+    let cleared = h.request();
+    assert_eq!(
+        serde_json::from_str::<Value>(cleared["payload"].as_str().unwrap()).unwrap()["revision"],
+        false
+    );
+    h.complete(&cleared);
+}
+
+#[test]
+fn agents_history_worker_preserves_utf8_budget_and_oversized_newest_entry() {
+    for (older, newest, expected) in [
+        ("old".into(), "界".repeat(100_000), 1),
+        ("界".repeat(80_000), "界".repeat(10_000), 1),
+        ("界".repeat(70_000), "界".repeat(10_000), 2),
+    ] {
+        let mut run = run("archive", 9, true);
+        run.entries.truncate(2);
+        run.entries[0].text = older;
+        run.entries[1].text = newest.clone();
+        let mut h = HistoryPanel::new(&[run.clone()]);
+        h.snapshot(1, &[run]);
+        h.key("Down");
+        h.key("Down");
+        let request = h.request();
+        let reply = h.complete(&request);
+        let entries = reply["run"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), expected);
+        assert_eq!(entries.last().unwrap()["text"], newest);
+        assert_eq!(reply["run"]["omitted_entries"], 2 - expected);
+    }
+}
+
+fn history_frame(text: &str) -> String {
+    let mut grid = yinz_terminal::panes::grid::Grid::new(
+        24,
+        90,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        false,
+        true,
+        true,
+        true,
+        false,
+    );
+    vte::Parser::new().advance(
+        &mut grid,
+        text.replace("\n\r", "\n").replace('\n', "\n\r").as_bytes(),
+    );
+    grid.as_character_lines()
+        .iter()
+        .map(|line| line.iter().map(|c| c.character).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn agents_history_queued_request_retains_its_client_and_unload_invalidates_it() {
+    let runs = [run("active", 7, false), run("archive", 9, true)];
+    let mut h = HistoryPanel::new(&runs);
+    h.panel
+        .runtime
+        .eval(
+            r#"
+        (define sent-clients '())
+        (define post-worker yinz-post-worker)
+        (set! yinz-post-worker (lambda (worker name payload)
+          (set! sent-clients (cons %async-client sent-clients))
+          (post-worker worker name payload)))
+        (yinz-async-enter 1)
+    "#,
+        )
+        .unwrap();
+    h.snapshot(1, &runs);
+    let first = h.request();
+    h.panel
+        .runtime
+        .invoke("yinz-async-enter", vec![json!(7)])
+        .unwrap();
+    h.key("Down");
+    h.key("Down");
+    assert!(h.requests().is_empty());
+    h.panel
+        .runtime
+        .invoke("yinz-async-enter", vec![json!(1)])
+        .unwrap();
+    assert!(!h.reply(&first, "old client"));
+    let latest = h.request();
+    assert_eq!(
+        h.panel.runtime.value("sent-clients").unwrap(),
+        json!([7, 1])
+    );
+    h.panel.runtime.unload().unwrap();
+    assert_eq!(h.get("history_desired"), false);
+    assert!(!h.reply(&latest, "retired instance"));
+}
+
+#[test]
+fn agents_history_footer_caches_prompt_document_and_skips_other_events() {
+    let runs = [run("active", 7, false)];
+    let mut h = HistoryPanel::new(&runs);
+    h.snapshot(1, &runs);
+    let request = h.request();
+    h.complete(&request);
+    h.panel
+        .runtime
+        .eval(
+            r#"
+        (define document-parses 0)
+        (define create-document yinz-document-create)
+        (set! yinz-document-create (lambda (kind text)
+          (set! document-parses (+ document-parses 1))
+          (create-document kind text)))
+    "#,
+        )
+        .unwrap();
+    h.panel.render(24, 90);
+    h.key("Tab");
+    for _ in 0..4 {
+        h.panel.runtime.eval("(yinz-request-render)").unwrap();
+        h.panel.render(24, 90);
+    }
+    assert_eq!(h.panel.runtime.value("document-parses").unwrap(), 1);
+    h.key("Enter");
+    assert_eq!(
+        h.panel.runtime.value("document-parses").unwrap(),
+        1,
+        "reader reuses footer document"
+    );
+    let sections = h
+        .panel
+        .runtime
+        .invoke("a-reader", vec![json!("sections")])
+        .unwrap();
+    let fold = sections
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|section| section["lines"].as_u64().unwrap() > 1)
+        .unwrap();
+    for _ in 0..fold {
+        h.key("j");
+    }
+    assert!(h.key("Enter"));
+    assert_ne!(
+        h.panel
+            .runtime
+            .invoke("a-reader", vec![json!("sections")])
+            .unwrap(),
+        sections
+    );
+    h.panel.render(24, 90);
+    h.key("Esc");
+    h.key("Enter");
+    assert_eq!(
+        h.panel
+            .runtime
+            .invoke("a-reader", vec![json!("sections")])
+            .unwrap(),
+        sections,
+        "reopening a cached document keeps the original fold defaults"
+    );
+    h.key("Esc");
+    h.key("Up");
+    for _ in 0..4 {
+        h.panel.runtime.eval("(yinz-request-render)").unwrap();
+        h.panel.render(24, 90);
+    }
+    assert_eq!(
+        h.panel.runtime.value("document-parses").unwrap(),
+        1,
+        "message footer needs no document"
+    );
+    h.key("Enter");
+    assert_eq!(
+        h.panel.runtime.value("document-parses").unwrap(),
+        2,
+        "message reader still parses its contents"
+    );
+}
+
+type ProcessCommands = Arc<std::sync::Mutex<Vec<Value>>>;
+fn history_process(
+    responder: Responder,
+    hold: Option<(
+        yinz_test_support::Watched<bool>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+) -> (yinz_steel::worker::WorkerRuntime, ProcessCommands) {
+    use crate::response::{decode_response, DecodedResponse};
+    let commands = ProcessCommands::default();
+    let recorded = commands.clone();
+    let mut hold = hold;
+    let binary = std::env::var_os("YINZ_COMPILATION_WORKER")
+        .expect("cargo x test builds the production worker");
+    let mut runtime = yinz_steel::worker::WorkerRuntime::new(std::path::Path::new(&binary), move |value| {
+        let command = yinz_steel::binary::decode_command(value.clone())?;
+        recorded.lock().unwrap().push(value);
+        if matches!(&command, PluginCommand::DataFetch { request } if request.entity == "agent_run") {
+            if let Some((waiting, release)) = hold.take() {
+                *waiting.lock() = true;
+                release.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            }
+        }
+        let Some(response) = responder(&command) else { return Ok(Value::Null); };
+        Ok(match decode_response(CommandType::from(&command), &response).transpose()? {
+            Some(DecodedResponse::Json(value)) => value,
+            Some(DecodedResponse::Bytes(bytes)) => serde_json::to_value(bytes)?,
+            None => serde_json::to_value(response)?,
+        })
+    }).unwrap();
+    let mut sources = BTreeMap::new();
+    let mut directories = vec![&yinz_steel_builtins::BUILTIN_STEEL_FILES];
+    while let Some(directory) = directories.pop() {
+        directories.extend(directory.dirs());
+        for file in directory.files() {
+            sources.insert(
+                file.path().to_str().unwrap().to_owned(),
+                file.contents_utf8().unwrap().to_owned(),
+            );
+        }
+    }
+    runtime
+        .set_source_root(yinz_steel::modules::SourceRoot::embedded("agents.scm", sources).unwrap());
+    runtime
+        .eval(yinz_steel_builtins::builtin_steel_plugin("agents").unwrap())
+        .unwrap();
+    (runtime, commands)
+}
+fn process_messages(commands: &ProcessCommands, kind: &str) -> Vec<Value> {
+    std::mem::take(&mut *commands.lock().unwrap())
+        .into_iter()
+        .filter_map(|c| c.get(kind).cloned())
+        .collect()
+}
+
+#[test]
+fn agents_history_real_worker_probes_navigation_during_snapshot_bursts() {
+    use std::time::{Duration, Instant};
+    for size in [1024, 256 * 1024, 2 * 1024 * 1024] {
+        let mut runs = [
+            run("active", 7, false),
+            run("archive-a", 9, true),
+            run("archive-b", 10, true),
+        ];
+        for run in &mut runs {
+            run.entries[2].text = "x".repeat(size);
+            run.revision = 3;
+        }
+        let (_, responder) = host(&runs, Arc::new(AtomicU64::new(90_000)));
+        let waiting = yinz_test_support::Watched::new(false);
+        let (release, held) = std::sync::mpsc::channel();
+        let (mut worker, replies) =
+            history_process(responder.clone(), Some((waiting.clone(), held)));
+        worker
+            .invoke("yinz-worker-bind", vec![json!("history")])
+            .unwrap();
+        let (mut panel, commands) = history_process(responder, None);
+        panel.load(json!({"view":"agents"})).unwrap();
+        commands.lock().unwrap().clear();
+        panel
+            .pipe(serde_json::to_value(snapshot_message(1, &runs, 2)).unwrap())
+            .unwrap();
+        let requests = process_messages(&commands, "PostMessageTo");
+        assert_eq!(requests.len(), 1);
+        let request = requests[0].clone();
+        let thread = std::thread::spawn(move || {
+            worker
+                .invoke(
+                    "yinz-worker-message",
+                    vec![request["name"].clone(), request["payload"].clone()],
+                )
+                .unwrap();
+            worker
+        });
+        waiting.wait_until(
+            "history fetch withheld",
+            Duration::from_secs(30),
+            |waiting| (*waiting).then_some(()),
+        );
+        for _ in 0..3 {
+            assert!(panel
+                .update(crate::event::event_to_json(&Event::Key("Down".parse().unwrap())).unwrap())
+                .unwrap());
+        }
+        let mut latency = Vec::new();
+        for i in 0..32 {
+            let key = if i % 2 == 0 { "Up" } else { "Down" };
+            let before = Instant::now();
+            assert!(panel
+                .update(crate::event::event_to_json(&Event::Key(key.parse().unwrap())).unwrap())
+                .unwrap());
+            let frame = panel.render(24, 90).unwrap();
+            latency.push(before.elapsed());
+            assert!(history_frame(&frame).contains("loading…"));
+            assert_eq!(
+                panel.invoke("a-selection-key", vec![]).unwrap(),
+                if i % 2 == 0 {
+                    "run:archive-a"
+                } else {
+                    "run:archive-b"
+                }
+            );
+            for burst in 0..4 {
+                panel
+                    .pipe(
+                        serde_json::to_value(snapshot_message(2 + i * 4 + burst, &runs, 2))
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+            assert!(process_messages(&commands, "PostMessageTo").is_empty());
+        }
+        release.send(()).unwrap();
+        let mut worker = thread.join().unwrap();
+        let obsolete = process_messages(&replies, "PostMessageToPlugin");
+        assert_eq!(obsolete.len(), 1);
+        assert!(!panel
+            .update(json!({"CustomMessage":[obsolete[0]["name"], obsolete[0]["payload"]]}))
+            .unwrap());
+        let latest = process_messages(&commands, "PostMessageTo");
+        assert_eq!(latest.len(), 1);
+        let before = Instant::now();
+        worker
+            .invoke(
+                "yinz-worker-message",
+                vec![latest[0]["name"].clone(), latest[0]["payload"].clone()],
+            )
+            .unwrap();
+        let loaded = process_messages(&replies, "PostMessageToPlugin");
+        assert_eq!(loaded.len(), 1);
+        assert!(panel
+            .update(json!({"CustomMessage":[loaded[0]["name"], loaded[0]["payload"]]}))
+            .unwrap());
+        let frame = history_frame(&panel.render(24, 90).unwrap());
+        assert!(frame.contains("archive-b"));
+        assert!(!frame.contains("loading…"));
+        latency.sort();
+        eprintln!(
+            "history {size} bytes: cursor+frame p95 {:?}, max {:?}; history install+frame {:?}",
+            latency[30],
+            latency[31],
+            before.elapsed()
+        );
+        panel
+            .pipe(serde_json::to_value(snapshot_message(200, &runs, 2)).unwrap())
+            .unwrap();
+        assert!(process_messages(&commands, "PostMessageTo").is_empty());
+    }
+}
+
+#[test]
+fn agents_history_entry_fetch_failure_is_visible_and_refresh_retries() {
+    use std::sync::atomic::AtomicBool;
+    let runs = [run("active", 7, false)];
+    let mut h = HistoryPanel::new(&runs);
+    let (_, responder) = host(&runs, h.clock.clone());
+    let fail = Arc::new(AtomicBool::new(true));
+    let failing = fail.clone();
+    h.worker = super::runtime_parity::SteelReference::worker(
+        "agents",
+        Arc::new(move |command| {
+            if failing.load(Ordering::SeqCst)
+                && matches!(command, PluginCommand::DataFetch { request } if request.entity == "agent_run_entry")
+            {
+                Some(
+                    ProtobufDataFetchResponse::from(DataFetchResponse::Err(
+                        "entry read failed".into(),
+                    ))
+                    .encode_to_vec(),
+                )
+            } else {
+                responder(command)
+            }
+        }),
+        Some(h.clock.clone()),
+        "history",
+    );
+    h.snapshot(1, &runs);
+    let request = h.request();
+    let reply = h.complete(&request);
+    assert!(reply["error"]
+        .as_str()
+        .unwrap()
+        .contains("entry read failed"));
+    assert!(history_frame(&h.panel.render(24, 90)).contains("entry read failed"));
+    fail.store(false, Ordering::SeqCst);
+    h.key("Ctrl r");
+    let request = h.request();
+    h.complete(&request);
+    assert_eq!(h.get("run_error"), false);
+    assert!(history_frame(&h.panel.render(24, 90)).contains("Investigate history"));
+}
+
+#[test]
+fn agents_history_changed_header_preserves_cursor_and_scroll_anchors() {
+    let mut runs = [run("active", 7, false)];
+    let mut h = HistoryPanel::new(&runs);
+    h.snapshot(1, &runs);
+    let request = h.request();
+    h.complete(&request);
+    h.panel.render(12, 90);
+    h.key("Tab");
+    h.key("Up");
+    h.panel.render(12, 90);
+    // Scroll with list focus so the viewport stays anchored independently of cursor reveal.
+    h.key("Shift Tab");
+    h.key("PageUp");
+    h.panel.render(12, 90);
+    let cursor = h.get("history_cursor_anchor");
+    let bottom = h.get("history_bottom_anchor");
+    assert_ne!(bottom, false);
+    runs[0].entries.push(
+        serde_json::from_value(
+            json!({"revision":4,"kind":"message","text":"new output","created_at_ms":91000}),
+        )
+        .unwrap(),
+    );
+    runs[0].revision = 4;
+    h.data
+        .apply(store::SHARED, &agents::rows::run_mutations(&runs[0]));
+    h.snapshot(2, &runs);
+    let request = h.request();
+    h.complete(&request);
+    h.panel.render(12, 90);
+    assert_eq!(h.get("history_cursor_anchor"), cursor);
+    assert_eq!(h.get("history_bottom_anchor"), bottom);
+}
+
+#[test]
+fn agents_history_search_refresh_uses_the_latest_complete_header() {
+    let mut runs = [run("active", 7, false)];
+    let mut h = HistoryPanel::new(&runs);
+    h.snapshot(1, &runs);
+    let request = h.request();
+    h.complete(&request);
+    h.key("/");
+    h.panel.update(&Event::PastedText("history".into()));
+    h.key("Enter");
+    let request = h.request();
+    h.complete(&request);
+    h.snapshot(2, &runs);
+    assert!(
+        h.requests().is_empty(),
+        "unchanged snapshots must preserve newer search headers"
+    );
+    runs[0].summary = Some(
+        serde_json::from_value(
+            json!({"text":"summary from search","title":"refreshed","created_at_ms":91000}),
+        )
+        .unwrap(),
+    );
+    h.data
+        .apply(store::SHARED, &agents::rows::run_mutations(&runs[0]));
+    h.key("/");
+    h.key("Enter");
+    let request = h.request();
+    h.complete(&request);
+    h.snapshot(3, &runs);
+    assert!(h.requests().is_empty());
+    runs[0].summary.as_mut().unwrap().text = "summary from snapshot".into();
+    h.data
+        .apply(store::SHARED, &agents::rows::run_mutations(&runs[0]));
+    h.snapshot(4, &runs);
+    let request = h.request();
+    h.complete(&request);
+    h.snapshot(5, &runs);
+    assert!(h.requests().is_empty());
 }
