@@ -321,7 +321,7 @@
           (vector-set! frame 1 version))
         (when deferred? (set! %async-dirty #t)))
       (lambda (failure) (vector-set! frame 3 #f) (%async-fail failure))))
-  (vector-ref frame 2))
+  frame)
 (define (yinz-async-lifecycle kind hook arguments cleanup)
   (when (equal? kind "load")
     (define trace (%async-get (car arguments) "trace" #f))
@@ -337,10 +337,10 @@
     (set! %async-unloaded #t))
   (cond
     ((equal? kind "render")
-     (define text (if %async-unloading "" (%async-render hook arguments)))
+     (define frame (and (not %async-unloading) (%async-render hook arguments)))
      (%async-drain)
      (%async-check)
-     text)
+     (if frame (vector-ref frame 2) ""))
     ((equal? kind "unload")
      (unless %async-unloading
        (set! %async-unloading #t)

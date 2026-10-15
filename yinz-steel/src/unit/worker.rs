@@ -85,6 +85,61 @@ fn worker_keeps_state_and_transports_host_commands_and_errors() {
 }
 
 #[test]
+fn worker_returns_deferred_text_settled_during_the_same_render() {
+    let mut worker = super::WorkerRuntime::new(&binary(), Ok).unwrap();
+    worker
+        .eval(
+            r#"(define render-calls 0)
+               (define (render rows columns)
+                 (set! render-calls (+ render-calls 1))
+                 (yinz-then "ready" (lambda (s) s)))"#,
+        )
+        .unwrap();
+    assert_eq!(worker.render(10, 20).unwrap(), "ready");
+    assert_eq!(worker.render(10, 20).unwrap(), "ready");
+    assert_eq!(worker.value("render-calls").unwrap(), 1);
+
+    worker
+        .eval(
+            r#"(define (render rows columns)
+                 (set! render-calls (+ render-calls 1))
+                 (yinz-then "fresh" (lambda (s) s)))
+               (yinz-request-render)"#,
+        )
+        .unwrap();
+    assert_eq!(worker.render(10, 20).unwrap(), "fresh");
+    assert_eq!(worker.value("render-calls").unwrap(), 2);
+    worker.unload().unwrap();
+    assert_eq!(worker.render(10, 20).unwrap(), "");
+    assert_eq!(worker.value("render-calls").unwrap(), 2);
+}
+
+#[test]
+fn worker_retains_previous_frame_until_deferred_render_completes() {
+    let mut worker = super::WorkerRuntime::new(&binary(), Ok).unwrap();
+    worker
+        .eval(
+            r#"(define render-calls 0)
+               (define frame "previous")
+               (define (render rows columns)
+                 (set! render-calls (+ render-calls 1))
+                 frame)"#,
+        )
+        .unwrap();
+    assert_eq!(worker.render(10, 20).unwrap(), "previous");
+    worker
+        .eval("(set! frame (yinz-deferred)) (yinz-request-render)")
+        .unwrap();
+    assert_eq!(worker.render(10, 20).unwrap(), "previous");
+    assert_eq!(worker.render(10, 20).unwrap(), "previous");
+    assert_eq!(worker.value("render-calls").unwrap(), 2);
+    worker.eval("(yinz-resolve! frame \"completed\")").unwrap();
+    assert_eq!(worker.render(10, 20).unwrap(), "completed");
+    assert_eq!(worker.render(10, 20).unwrap(), "completed");
+    assert_eq!(worker.value("render-calls").unwrap(), 2);
+}
+
+#[test]
 fn worker_cancellation_kills_infinite_bytecode_and_reaps_process() {
     use std::sync::mpsc;
     use std::time::Duration;

@@ -477,25 +477,27 @@ load_plugins clear-defaults=true { "yinz:context-menu"; "yinz:agent-service"; }
             0
         );
     }
-    // Wait for hook loading before starting the context-menu fallback deadline.
-    assert_eq!(
-        yinz.run_cli_action(CliAction::Pipe {
-            focus_plugin: false,
-            name: Some("ready".into()),
-            payload: Some(String::new()),
-            args: None,
-            plugin: Some("yinz:context-menu".into()),
-            plugin_configuration: None,
-            configuration_json: None,
-            force_launch_plugin: false,
-            skip_plugin_cache: false,
-            floating_plugin: None,
-            in_place_plugin: None,
-            plugin_cwd: None,
-            plugin_title: None,
-        }),
-        0
-    );
+    // Either plugin's per-client load can hold the shared map lock past the menu deadline.
+    for plugin in ["yinz:context-menu", "yinz:agent-service"] {
+        assert_eq!(
+            yinz.run_cli_action(CliAction::Pipe {
+                focus_plugin: false,
+                name: Some("ready".into()),
+                payload: Some(String::new()),
+                args: None,
+                plugin: Some(plugin.into()),
+                plugin_configuration: None,
+                configuration_json: None,
+                force_launch_plugin: false,
+                skip_plugin_cache: false,
+                floating_plugin: None,
+                in_place_plugin: None,
+                plugin_cwd: None,
+                plugin_title: None,
+            }),
+            0
+        );
+    }
     let panes = || {
         let (code, output) = yinz.run_cli_action_reporting(CliAction::ListPanes {
             tab: true,
