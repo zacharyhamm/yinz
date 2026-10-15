@@ -17,6 +17,7 @@ use yinz_tile::ui_components::{forms::*, *};
 use yinz_types::data::{KeyWithModifier, Mouse};
 
 const MAX: usize = crate::MAX_OUTPUT_BYTES;
+const MAX_VIEWPORT_CELLS: usize = 262_144;
 
 pub(crate) fn register(engine: &mut Engine) {
     engine.register_fn(
@@ -40,6 +41,24 @@ pub(crate) fn register(engine: &mut Engine) {
                     .map_err(crate::scheme_error)?;
             let output = call(native, operation).map_err(crate::scheme_error)?;
             crate::to_scheme(&output).map_err(crate::scheme_error)
+        },
+    );
+    engine.register_fn(
+        "yinz-ui-image-png",
+        |id: SteelVal, value: SteelVal| -> steel::rvals::Result<String> {
+            let id = serde_json::from_value(crate::from_scheme(&id).map_err(crate::scheme_error)?)
+                .context("invalid image id")
+                .map_err(crate::scheme_error)?;
+            if let SteelVal::ByteVector(bytes) = &value {
+                return bytes
+                    .with_bytes(|bytes| pure::image_png(id, bytes))
+                    .map_err(crate::scheme_error);
+            }
+            let png: Vec<u8> =
+                serde_json::from_value(crate::from_scheme(&value).map_err(crate::scheme_error)?)
+                    .context("invalid PNG bytes")
+                    .map_err(crate::scheme_error)?;
+            pure::image_png(id, &png).map_err(crate::scheme_error)
         },
     );
     engine.register_fn(
@@ -105,7 +124,7 @@ impl Coordinates {
                 && self.y <= MAX
                 && self.width <= MAX / 256
                 && self.height <= MAX / 256
-                && self.width.saturating_mul(self.height) <= MAX / 256,
+                && self.width.saturating_mul(self.height) <= MAX_VIEWPORT_CELLS,
             "UI viewport exceeds transport budget"
         );
         Ok(())

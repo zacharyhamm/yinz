@@ -61,6 +61,219 @@ fn pure_render_dimensions_can_remain_unspecified() {
 }
 
 #[test]
+fn widgets_and_pure_rendering_accept_ordinary_large_viewports() {
+    let mut runtime = runtime();
+    runtime
+        .eval(
+            r##"
+        (define fields (list (yinz-ui-input "name" "Name" "value")))
+        (define form (yinz-ui-form fields))
+        (define dialog (yinz-ui-dialog "Title" fields))
+        (define markdown (yinz-ui-markdown "# Heading\n\nBody"))
+        (define (frames coordinates)
+          (map (lambda (widget) (yinz-ui-render-buffer widget coordinates))
+               (list form dialog markdown)))
+    "##,
+        )
+        .unwrap();
+    for (width, height) in [(240, 80), (320, 120), (512, 512)] {
+        let coordinates = json!({"x":2,"y":3,"width":width,"height":height});
+        let frames = runtime.invoke("frames", vec![coordinates.clone()]).unwrap();
+        for frame in frames.as_array().unwrap() {
+            assert!(!frame["text"].as_str().unwrap().is_empty());
+        }
+        assert_eq!(
+            runtime
+                .invoke("yinz-ui-text", vec![json!("x"), coordinates])
+                .unwrap(),
+            serialize_text_with_coordinates(&Text::new("x"), 2, 3, Some(width), Some(height))
+        );
+    }
+    for (width, height) in [(0, 0), (0, 80), (240, 0)] {
+        let frames = runtime
+            .invoke(
+                "frames",
+                vec![json!({"x":0,"y":0,"width":width,"height":height})],
+            )
+            .unwrap();
+        for frame in frames.as_array().unwrap() {
+            assert_eq!(frame["text"], "");
+        }
+    }
+}
+
+#[test]
+fn viewport_limits_keep_area_dimensions_and_offsets_bounded() {
+    let mut runtime = runtime();
+    runtime
+        .eval(
+            r#"
+        (define form (yinz-ui-form (list (yinz-ui-input "name" "Name" "value"))))
+        (define (frame coordinates) (yinz-ui-render-buffer form coordinates))
+    "#,
+        )
+        .unwrap();
+    for (x, y, width, height) in [
+        (0, 0, 512, 513),
+        (0, 0, 262_145, 1),
+        (0, 0, 16_385, 0),
+        (0, 0, 0, 16_385),
+        (0, 0, usize::MAX, 2),
+        (0, 0, 2, usize::MAX),
+        (crate::MAX_OUTPUT_BYTES + 1, 0, 1, 1),
+        (0, crate::MAX_OUTPUT_BYTES + 1, 1, 1),
+    ] {
+        let coordinates = json!({"x":x,"y":y,"width":width,"height":height});
+        assert!(runtime.invoke("frame", vec![coordinates.clone()]).is_err());
+        assert!(runtime
+            .invoke("yinz-ui-text", vec![json!("x"), coordinates])
+            .is_err());
+    }
+}
+
+#[test]
+fn forms_example_renders_at_240_by_80() {
+    let mut runtime = Runtime::new(|command| {
+        assert!(command.get("ShowCursor").is_some());
+        Ok(serde_json::Value::Null)
+    })
+    .unwrap();
+    runtime
+        .eval(include_str!("../../../example-plugins/forms.scm"))
+        .unwrap();
+    let output = runtime.render(80, 240).unwrap();
+    for label in ["Pane frames", "Shared widgets"] {
+        let encoded = label
+            .bytes()
+            .map(|byte| byte.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(output.contains(&encoded), "missing {label}");
+    }
+    runtime.eval("(set! confirming #t)").unwrap();
+    assert!(!runtime.render(80, 240).unwrap().is_empty());
+}
+
+#[test]
+fn large_viewports_keep_the_four_mib_output_limit() {
+    let mut runtime = runtime();
+    // Four-byte cells fill the allowed area but exceed 4 MiB when serialized.
+    let source = ("\u{10ffff}".repeat(16_384) + "\n\n").repeat(16);
+    runtime
+        .engine
+        .register_value("source", to_scheme(&json!(source)).unwrap());
+    runtime
+        .eval("(define markdown (yinz-ui-markdown source (hash \"compact\" #t)))")
+        .unwrap();
+    let error = runtime
+        .eval("(yinz-ui-render-buffer markdown (yinz-ui-coordinates 0 0 16384 16))")
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("UI output exceeds transport budget"),
+        "{error}"
+    );
+    let error = runtime
+        .eval("(yinz-ui-text (make-string 1048576 #\\x))")
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("UI output exceeds transport budget"),
+        "{error}"
+    );
+}
+
+#[test]
+fn png_bytevectors_keep_the_shared_encoder_and_two_mib_source_limit() {
+    use yinz_tile::ui_components::{png_transmit_sequence, MAX_IMAGE_ID};
+
+    let mut runtime = runtime();
+    for size in [128 * 1024, 2 * 1024 * 1024] {
+        runtime.eval(&format!("(define png (make-bytes {size} 255)) (define output (yinz-ui-image-png {MAX_IMAGE_ID} png))")).unwrap();
+        assert_eq!(
+            runtime.value("output").unwrap(),
+            png_transmit_sequence(MAX_IMAGE_ID, &vec![255; size])
+        );
+    }
+    let error = runtime
+        .eval("(yinz-ui-image-png 1 (make-bytes 2097153 0))")
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("image source exceeds render budget"),
+        "{error}"
+    );
+    assert!(runtime
+        .eval("(yinz-json-string (make-bytes 131072 0))")
+        .is_err());
+}
+
+#[test]
+fn png_lists_vectors_and_pure_operation_keep_validation() {
+    use yinz_tile::ui_components::png_transmit_sequence;
+
+    let mut runtime = runtime();
+    let expected = png_transmit_sequence(1, &[0, 128, 255]);
+    assert_eq!(
+        runtime
+            .invoke(
+                "yinz-ui-pure",
+                vec![json!({"op":"ImagePng","args":[1,[0,128,255]]})]
+            )
+            .unwrap(),
+        expected
+    );
+    for bytes in [
+        "'(0 128 255)",
+        "(immutable-vector 0 128 255)",
+        "(bytes 0 128 255)",
+    ] {
+        runtime
+            .eval(&format!("(define output (yinz-ui-image-png 1 {bytes}))"))
+            .unwrap();
+        assert_eq!(runtime.value("output").unwrap(), expected);
+        for id in ["0", "-1", "16777216", "4294967297", "1.5", "#t"] {
+            assert!(
+                runtime
+                    .eval(&format!("(yinz-ui-image-png {id} {bytes})"))
+                    .is_err(),
+                "accepted id {id}"
+            );
+            assert!(
+                runtime
+                    .eval(&format!("(%ui-pure \"ImagePng\" (list {id} {bytes}))"))
+                    .is_err(),
+                "accepted id {id}"
+            );
+        }
+    }
+    for bytes in [
+        "'(-1)",
+        "'(256)",
+        "'(1.5)",
+        "'(#t)",
+        "'(\"0\")",
+        "(immutable-vector 256)",
+    ] {
+        assert!(
+            runtime
+                .eval(&format!("(yinz-ui-image-png 1 {bytes})"))
+                .is_err(),
+            "accepted {bytes}"
+        );
+        assert!(
+            runtime
+                .eval(&format!("(%ui-pure \"ImagePng\" (list 1 {bytes}))"))
+                .is_err(),
+            "accepted {bytes}"
+        );
+    }
+}
+
+#[test]
 fn forms_keep_native_edit_focus_selection_and_cursor_state() {
     let mut runtime = runtime();
     runtime.eval("(define form (yinz-ui-form (list (yinz-ui-input \"name\" \"Name\" \"\") (yinz-ui-checkbox \"enabled\" \"Enabled\" #f) (yinz-ui-select \"choice\" \"Choice\" '(\"a\" \"b\") 0) (yinz-ui-button \"save\" \"Save\"))))").unwrap();
