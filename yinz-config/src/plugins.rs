@@ -63,10 +63,10 @@ fn read_source_file(path: &Path) -> Result<Option<String>> {
 impl PluginConfig {
     /// A "shared" plugin runs as a single instance for the whole session, rather than one
     /// instance per connected client. Opted into with a `shared true` key in the plugin's
-    /// configuration block.
+    /// configuration block; builtin pane drivers always share their session lifetime.
     pub fn is_shared(&self) -> bool {
-        // Agent launchers must create one pane per action, not one per attached client.
-        if matches!(&self.location, RunPluginLocation::Yinz(tag) if matches!(tag.to_string().as_str(), "new-agent" | "agent-opencode"))
+        // Pane drivers must survive detach and create only one pane per launch.
+        if matches!(&self.location, RunPluginLocation::Yinz(tag) if matches!(tag.to_string().as_str(), "new-agent" | "agent-opencode" | "file-finder"))
         {
             return true;
         }
@@ -280,6 +280,17 @@ mod tests {
     #[test]
     fn agent_exit_is_client_specific() {
         assert!(!builtin_plugin("agent-exit").is_shared());
+    }
+
+    #[test]
+    fn file_finder_has_one_driver_per_launch_even_when_sharing_is_disabled() {
+        let mut plugin = builtin_plugin("file-finder");
+        assert!(plugin.is_shared());
+        plugin
+            .initial_userspace_configuration
+            .insert("shared", "false");
+        assert!(plugin.is_shared());
+        assert!(!file_plugin("file-finder.scm").is_shared());
     }
 
     fn file_plugin(path: &str) -> PluginConfig {

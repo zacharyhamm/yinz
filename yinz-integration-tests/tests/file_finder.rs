@@ -211,3 +211,6 @@ mod structured_openers;
 
 #[path = "unit/file_finder/pick.rs"]
 mod pick;
+
+#[path = "unit/file_finder/lifecycle.rs"]
+mod lifecycle;
