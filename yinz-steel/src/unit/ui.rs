@@ -186,11 +186,11 @@ fn large_viewports_keep_the_four_mib_output_limit() {
 }
 
 #[test]
-fn png_bytevectors_keep_the_shared_encoder_and_two_mib_source_limit() {
+fn png_bytevectors_keep_the_shared_encoder_and_eight_mib_source_limit() {
     use yinz_tile::ui_components::{png_transmit_sequence, MAX_IMAGE_ID};
 
     let mut runtime = runtime();
-    for size in [128 * 1024, 2 * 1024 * 1024] {
+    for size in [128 * 1024, 2_572_749, crate::MAX_PNG_BYTES] {
         runtime.eval(&format!("(define png (make-bytes {size} 255)) (define output (yinz-ui-image-png {MAX_IMAGE_ID} png))")).unwrap();
         assert_eq!(
             runtime.value("output").unwrap(),
@@ -198,12 +198,12 @@ fn png_bytevectors_keep_the_shared_encoder_and_two_mib_source_limit() {
         );
     }
     let error = runtime
-        .eval("(yinz-ui-image-png 1 (make-bytes 2097153 0))")
+        .eval("(yinz-ui-image-png 1 (make-bytes 8388609 0))")
         .unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("image source exceeds render budget"),
+            .contains("PNG source exceeds 8 MiB"),
         "{error}"
     );
     assert!(runtime

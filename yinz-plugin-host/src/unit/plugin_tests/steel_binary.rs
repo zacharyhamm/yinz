@@ -8,6 +8,149 @@ fn fnv1a(bytes: &[u8]) -> u32 {
 }
 
 #[test]
+#[serial(plugin_tests)]
+fn steel_large_png_survives_repeated_navigation_and_open_in_the_same_instance() {
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 1024, 1024);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fast);
+        let mut state = 1u32;
+        let pixels: Vec<u8> = (0..1024 * 1024 * 3)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect();
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+    }
+    assert!(png.len() > 2_572_749 && png.len() <= 8 * 1024 * 1024);
+    let expected = yinz_tile::ui_components::png_transmit_sequence(1, &png);
+    let harness = Harness::new(
+        "scm",
+        r#"
+        (define image #f)
+        (define instance (yinz-instance-id))
+        (define page 0)
+        (define opens 0)
+        (define (load config)
+          (yinz-command (hash "Subscribe" '("CustomMessage")))
+          (yinz-then (yinz-wait-for-permissions '("ReadFiles" "ReadCliPipes"))
+            (lambda (_)
+              (set! image (yinz-command (hash "FsRead" (hash "path" "/host/page.png"
+                "max_bytes" json-null "offset" json-null))))
+              (yinz-request-render))))
+        (define (update event)
+          (when (and (hash? event) (hash-contains? event "CustomMessage"))
+            (set! page (+ page 1))) #t)
+        (define (pipe message)
+          (when (equal? (hash-ref message "name") "open") (set! opens (+ opens 1))) #t)
+        (define (render rows cols)
+          (if image (string-append "instance=" instance " page=" (number->string page)
+            " opens=" (number->string opens) "\n"
+            (yinz-ui-image-png 1 image) (yinz-ui-image-place 1 80 8)) "loading image"))
+    "#,
+        PermissionStatus::Granted,
+    );
+    std::fs::write(harness.directory.path().join("page.png"), &png).unwrap();
+    harness.load();
+    let initial = harness.rendered("page=0 opens=0");
+    assert!(
+        initial.contains(&expected),
+        "PNG bytes must retain their original resolution"
+    );
+    let identity = initial.split(" page=").next().unwrap().to_owned();
+    #[cfg(target_os = "linux")]
+    let (worker, baseline) = image_worker_memory();
+    for page in 1..=24 {
+        harness.log.lock().clear();
+        harness.event(Event::CustomMessage("next-page".into(), String::new()));
+        let frame = harness.rendered(&format!("page={page} opens=0"));
+        assert!(frame.starts_with(&identity));
+        assert!(frame.contains(&expected));
+    }
+    harness.log.lock().clear();
+    harness
+        .sender
+        .send(PluginInstruction::CliPipe {
+            focus_plugin: false,
+            is_eof: false,
+            pipe_id: "large-png-open".into(),
+            name: "open".into(),
+            payload: Some("next.pdf".into()),
+            plugin: None,
+            args: None,
+            configuration: None,
+            floating: None,
+            pane_id_to_replace: None,
+            pane_title: None,
+            cwd: None,
+            skip_cache: false,
+            cli_client_id: ClientId::new(1),
+            source_pane_id: None,
+        })
+        .unwrap();
+    let frame = harness.rendered("page=24 opens=1");
+    assert!(frame.starts_with(&identity));
+    assert!(frame.contains(&expected));
+    #[cfg(target_os = "linux")]
+    {
+        let (current_worker, current) = image_worker_memory();
+        assert_eq!(
+            worker, current_worker,
+            "navigation must retain the same supervised worker"
+        );
+        assert!(
+            current <= baseline + 64 * 1024,
+            "large-image buffers accumulated: baseline={baseline} KiB current={current} KiB"
+        );
+    }
+    harness.finish();
+}
+
+#[cfg(target_os = "linux")]
+fn image_worker_memory() -> (u32, usize) {
+    let mut children = std::collections::BTreeSet::new();
+    for task in std::fs::read_dir("/proc/self/task").unwrap() {
+        let path = task.unwrap().path().join("children");
+        if let Ok(pids) = std::fs::read_to_string(path) {
+            children.extend(
+                pids.split_whitespace()
+                    .map(|pid| pid.parse::<u32>().unwrap()),
+            );
+        }
+    }
+    let worker = children
+        .into_iter()
+        .find(|pid| {
+            std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|command| {
+                command
+                    .split(|byte| *byte == 0)
+                    .any(|arg| arg == b"--steel-runtime-worker")
+            })
+        })
+        .expect("supervised Steel worker");
+    let status = std::fs::read_to_string(format!("/proc/{worker}/status")).unwrap();
+    let rss = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    (worker, rss)
+}
+
+#[test]
 fn steel_file_ranges_read_large_files_without_weakening_whole_file_limits() {
     use std::io::{Seek, SeekFrom, Write};
 

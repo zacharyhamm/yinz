@@ -6,6 +6,47 @@ fn runtime() -> Runtime {
 }
 
 #[test]
+fn render_budgets_bound_printed_returned_and_combined_output() {
+    let mut runtime = runtime();
+    for (printed, returned, accepted) in [
+        (MAX_RENDER_BYTES, 0, true),
+        (0, MAX_RENDER_BYTES, true),
+        (MAX_RENDER_BYTES / 2, MAX_RENDER_BYTES / 2, true),
+        (MAX_RENDER_BYTES + 1, 0, false),
+        (0, MAX_RENDER_BYTES + 1, false),
+        (MAX_RENDER_BYTES / 2, MAX_RENDER_BYTES / 2 + 1, false),
+    ] {
+        runtime.eval(&format!("(define (render rows cols) (display (make-string {printed} #\\x)) (make-string {returned} #\\y))")).unwrap();
+        let frame = runtime.render(10, 80);
+        assert_eq!(frame.is_ok(), accepted, "{printed} printed + {returned} returned");
+        if let Ok(frame) = frame {
+            assert_eq!(frame.len(), printed + returned);
+            assert!(runtime.take_output().unwrap().is_empty());
+            assert_eq!(runtime.output.0.lock().unwrap().capacity(), 0);
+        }
+    }
+}
+
+#[test]
+fn evaluation_and_diagnostics_have_independent_budgets() {
+    let mut runtime = runtime();
+    // String formatting includes the surrounding quotes.
+    let output = runtime.eval(&format!("(make-string {} #\\x)", MAX_EVAL_BYTES - 2)).unwrap();
+    assert_eq!(output.values[0].len(), MAX_EVAL_BYTES);
+    for source in [
+        format!("(make-string {} #\\x)", MAX_EVAL_BYTES - 1),
+        format!("(make-string {} #\\x) (make-string {} #\\y)", MAX_EVAL_BYTES / 2, MAX_EVAL_BYTES / 2),
+    ] {
+        assert!(runtime.eval(&source).is_err(), "{source}");
+    }
+    runtime.eval(&format!("(yinz-log (make-string {} #\\x))", MAX_OUTPUT_BYTES - 1)).unwrap();
+    assert_eq!(runtime.take_logs().unwrap().len(), MAX_OUTPUT_BYTES);
+    assert_eq!(runtime.logs.0.lock().unwrap().capacity(), 0);
+    assert!(runtime.eval(&format!("(yinz-log (make-string {MAX_OUTPUT_BYTES} #\\x))")).is_err());
+    assert!(runtime.take_output().unwrap().is_empty());
+}
+
+#[test]
 fn garbage_collection_releases_discarded_native_values() {
     use std::sync::Arc;
     use steel::steel_vm::register_fn::RegisterFn;

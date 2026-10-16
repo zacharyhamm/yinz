@@ -31,6 +31,29 @@ pub(super) fn binary() -> std::path::PathBuf {
 }
 
 #[test]
+fn large_image_frames_fit_transport_and_keep_the_worker_healthy() {
+    use super::protocol::{Output, Response};
+    use yinz_tile::ui_components::png_transmit_sequence;
+    let png = vec![255; crate::MAX_PNG_BYTES];
+    let expected = png_transmit_sequence(1, &png);
+    let frame = protocol::encode(&Response::Finished(Ok(Output::Text(expected.clone())))).unwrap();
+    assert!(frame.len() < super::MAX_FRAME);
+    assert!(frame.len() < 64 * 1024 * 1024, "image fits application IPC too");
+    let decoded: Response = protocol::read(&mut Cursor::new(frame)).unwrap();
+    assert!(matches!(decoded, Response::Finished(Ok(Output::Text(text))) if text == expected));
+
+    let mut worker = super::WorkerRuntime::new(&binary(), Ok).unwrap();
+    worker.eval("(define opened 0) (define (pipe message) (set! opened (+ opened 1)) #t) (define (render rows columns) (yinz-ui-image-png 1 (make-bytes 8388608 255)))").unwrap();
+    let pid = worker.process_id();
+    for opened in 1..=12 {
+        assert_eq!(worker.render(24, 80).unwrap(), expected);
+        assert!(worker.pipe(serde_json::json!({"name":"open"})).unwrap());
+        assert_eq!(worker.value("opened").unwrap(), opened);
+        assert_eq!(worker.process_id(), pid);
+    }
+}
+
+#[test]
 fn layout_diagnostics_never_read_tiled_or_floating_contents_files() {
     use serde_json::json;
     let directory = tempfile::tempdir().unwrap();
