@@ -198,6 +198,7 @@ pub struct CommandPalette {
     selected: usize,
     selected_status: Option<usize>,
     selection_explicit: bool,
+    browsing: bool,
     entries: Vec<Entry>,
     entry_sections: Vec<Option<usize>>,
     matches: Vec<usize>,
@@ -331,6 +332,16 @@ impl CommandPalette {
 
     pub fn is_root(&self) -> bool {
         self.view == 0 && self.picker.is_none() && self.form.is_none()
+    }
+
+    fn is_compact(&self) -> bool {
+        self.is_root()
+            && self.query().is_empty()
+            && !self.browsing
+            && self.metadata.is_none()
+            && self.description.is_empty()
+            && self.text.is_none()
+            && self.agent.is_none()
     }
 
     pub fn set_entries(&mut self, entries: Vec<Entry>) {
@@ -924,6 +935,22 @@ impl CommandPalette {
             }
             return Outcome::None;
         }
+        if self.is_compact() {
+            match key.bare_key {
+                BareKey::Enter => return Outcome::None,
+                BareKey::PageUp | BareKey::PageDown | BareKey::Up | BareKey::Down
+                    if key.has_no_modifiers()
+                        || matches!(key.bare_key, BareKey::PageUp | BareKey::PageDown) =>
+                {
+                    self.browsing = true;
+                    if let Some(row) = self.result_rows(1).first() {
+                        self.select_row(row);
+                    }
+                    return Outcome::None;
+                },
+                _ => {},
+            }
+        }
         match key.bare_key {
             BareKey::Enter if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                 if let Some(entry) = self
@@ -1009,6 +1036,9 @@ impl CommandPalette {
     }
 
     fn rematch_query(&mut self) {
+        if self.is_root() {
+            self.browsing = false;
+        }
         self.selection_explicit = false;
         self.selected = 0;
         self.error = None;
@@ -1260,18 +1290,21 @@ impl CommandPalette {
             || !self.description.is_empty()
             || self.text.is_some()
             || self.agent.is_some();
-        let cols = surface.cols.min(if expanded { 110 } else { 64 });
-        let rows = surface.rows.min(if expanded { 36 } else { 11 });
+        let cols = surface.cols.min(if expanded { 110 } else { 74 });
+        let rows = surface.rows.min(if expanded {
+            36
+        } else if self.is_compact() {
+            3
+        } else {
+            11
+        });
         let rect = CellRect {
             x: surface.x + (surface.cols - cols) / 2,
-            y: surface.y
-                + (surface.rows / 3)
-                    .saturating_sub(rows / 2)
-                    .min(surface.rows - rows),
+            y: surface.y + (surface.rows / 4).min(surface.rows - rows),
             cols,
             rows,
         };
-        let border = usize::from(cols >= 3 && rows >= 4);
+        let border = usize::from(cols >= 3 && (rows >= 4 || (rows == 3 && self.is_compact())));
         let input_y = rect.y + border;
         let footer_y = (rows >= 5).then_some(rect.y + rows.saturating_sub(border + 1));
         let description_y = input_y + 1 + usize::from(rows >= 6);

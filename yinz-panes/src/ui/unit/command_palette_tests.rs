@@ -322,6 +322,7 @@ fn confirmation_defaults_to_cancel_and_requires_explicit_selection() {
 #[test]
 fn clicking_uses_scrolled_geometry() {
     let mut palette = palette();
+    palette.set_query(" ".into());
     let surface = Viewport {
         cols: 30,
         rows: 6,
@@ -359,33 +360,255 @@ fn editor_keys_unicode_and_paste() {
         rows: 24,
         ..Default::default()
     });
-    assert_eq!(palette.cursor(&layout), Some((15, 4)));
+    assert_eq!(palette.cursor(&layout), Some((10, 7)));
     palette.handle_key(KeyWithModifier::new(BareKey::Char('n')).with_alt_modifier());
     assert_eq!(palette.input.get_text(), "日界  text ");
 }
 
 #[test]
+fn compact_root_ignores_activation_until_navigation_reveals_results() {
+    for navigation in [
+        KeyWithModifier::new(BareKey::Up),
+        KeyWithModifier::new(BareKey::Down),
+        KeyWithModifier::new(BareKey::PageUp),
+        KeyWithModifier::new(BareKey::PageDown),
+        KeyWithModifier::new(BareKey::Char('n')).with_ctrl_modifier(),
+        KeyWithModifier::new(BareKey::Char('p')).with_ctrl_modifier(),
+    ] {
+        let mut palette = palette();
+        let surface = Viewport {
+            cols: 100,
+            rows: 40,
+            ..Default::default()
+        };
+        let compact = palette.layout(surface);
+        key(&mut palette, BareKey::Enter);
+        assert_eq!(
+            palette.handle_key(KeyWithModifier::new(BareKey::Enter).with_ctrl_modifier()),
+            Outcome::None
+        );
+        assert_eq!(palette.layout(surface).rect, compact.rect);
+        assert_eq!(palette.handle_key(navigation), Outcome::None);
+        let expanded = palette.layout(surface);
+        assert_eq!(expanded.rect.rows, 11);
+        assert_eq!(expanded.input_y, compact.input_y);
+        assert!(rendered_lines(&palette, &expanded)
+            .iter()
+            .any(|line| line.contains("New pane")));
+        assert_eq!(
+            palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+            Outcome::Activate("new".into())
+        );
+        key(&mut palette, BareKey::Down);
+        assert_eq!(
+            palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+            Outcome::Activate("tab".into())
+        );
+    }
+}
+
+#[test]
+fn compact_root_ignores_agent_focus_until_results_are_visible() {
+    let mut palette = CommandPalette::default();
+    palette
+        .agent_metadata
+        .insert("agent".into(), Default::default());
+    palette.set_entries(vec![entry("agent", "Agent", EntryKind::Agent)]);
+    let focus = KeyWithModifier::new(BareKey::Enter).with_ctrl_modifier();
+    assert_eq!(palette.handle_key(focus.clone()), Outcome::None);
+    key(&mut palette, BareKey::Down);
+    assert_eq!(
+        palette.handle_key(focus),
+        Outcome::FocusAgent("agent".into())
+    );
+}
+
+#[test]
+fn root_browsing_survives_picker_query_edits() {
+    for edit in [
+        |palette: &mut CommandPalette| key(palette, BareKey::Char('t')),
+        |palette: &mut CommandPalette| palette.insert_text("t"),
+        |palette: &mut CommandPalette| palette.set_query("t".into()),
+    ] {
+        let mut palette = palette();
+        key(&mut palette, BareKey::Down);
+        key(&mut palette, BareKey::Down);
+        assert_eq!(palette.selected_entry().unwrap().id, "tab");
+        palette.open_picker(EntryKind::Tab);
+        edit(&mut palette);
+        assert_eq!(palette.query(), "t");
+        key(&mut palette, BareKey::Esc);
+        assert!(palette.is_root());
+        assert_eq!(palette.query(), "");
+        assert_eq!(palette.selected_entry().unwrap().id, "tab");
+        assert!(!palette.is_compact());
+        assert_eq!(
+            palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+            Outcome::Activate("tab".into())
+        );
+    }
+}
+
+#[test]
+fn root_browsing_survives_refresh_but_resets_when_query_is_cleared() {
+    let mut palette = palette();
+    key(&mut palette, BareKey::Down);
+    palette.set_entries(vec![entry("tab", "New tab", EntryKind::Command)]);
+    assert!(!palette.is_compact());
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Activate("tab".into())
+    );
+    key(&mut palette, BareKey::Char('t'));
+    key(&mut palette, BareKey::Backspace);
+    assert!(palette.is_compact());
+    key(&mut palette, BareKey::Enter);
+}
+
+#[test]
+fn compact_root_can_start_browsing_before_entries_arrive() {
+    let mut palette = CommandPalette::default();
+    key(&mut palette, BareKey::Down);
+    assert!(!palette.is_compact());
+    key(&mut palette, BareKey::Enter);
+    palette.set_entries(vec![entry("new", "New pane", EntryKind::Command)]);
+    assert!(!palette.is_compact());
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Activate("new".into())
+    );
+}
+
+#[test]
+fn empty_root_keeps_only_the_framed_input_and_expands_downward() {
+    let mut palette = palette();
+    let surface = Viewport {
+        x: 2,
+        y: 3,
+        cols: 100,
+        rows: 40,
+    };
+    let compact = palette.layout(surface);
+    assert_eq!(
+        compact.rect,
+        CellRect {
+            x: 15,
+            y: 13,
+            cols: 74,
+            rows: 3
+        }
+    );
+    assert_eq!(compact.border, 1);
+    assert_eq!(compact.options_rows, 0);
+    assert_eq!(compact.footer_y, None);
+    let lines = rendered_lines(&palette, &compact);
+    assert!(lines[0].starts_with('╭') && lines[2].starts_with('╰'));
+    for query in ["New", "no matching command"] {
+        palette.set_query(query.into());
+        let expanded = palette.layout(surface);
+        assert_eq!(expanded.rect.rows, 11);
+        assert_eq!(expanded.rect.y, compact.rect.y);
+        assert_eq!(expanded.input_y, compact.input_y);
+    }
+    palette.set_query(String::new());
+    assert_eq!(palette.layout(surface).rect, compact.rect);
+    palette.open_picker(EntryKind::Pane);
+    assert_eq!(palette.layout(surface).rect.rows, 11);
+}
+
+#[test]
+fn compact_three_row_palette_keeps_borders() {
+    let palette = palette();
+    let layout = palette.layout(Viewport {
+        cols: 80,
+        rows: 3,
+        ..Default::default()
+    });
+    assert_eq!(layout.border, 1);
+    assert_eq!(layout.options_rows, 0);
+    let lines = rendered_lines(&palette, &layout);
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].starts_with('╭'));
+    assert!(lines[1].starts_with("│> "));
+    assert!(lines[2].starts_with('╰'));
+}
+
+#[test]
+fn expanded_three_row_palettes_keep_selected_results_visible() {
+    for prepare in [
+        |palette: &mut CommandPalette| palette.set_query("new".into()),
+        |palette: &mut CommandPalette| key(palette, BareKey::Down),
+        |palette: &mut CommandPalette| palette.open_picker(EntryKind::Pane),
+    ] {
+        let mut palette = palette();
+        prepare(&mut palette);
+        for _ in 0..palette.matches.len() {
+            let layout = palette.layout(Viewport {
+                cols: 80,
+                rows: 3,
+                ..Default::default()
+            });
+            assert_eq!(layout.border, 0);
+            assert_eq!(layout.options_rows, 2);
+            let lines = rendered_lines(&palette, &layout);
+            let selected = format!("› {}", palette.selected_entry().unwrap().label);
+            assert!(
+                lines.iter().any(|line| line.contains(&selected)),
+                "{selected:?} missing from {lines:?}"
+            );
+            key(&mut palette, BareKey::Down);
+        }
+    }
+}
+
+#[test]
+fn three_row_forms_keep_fields_and_submit_visible() {
+    let mut palette = palette();
+    palette.open_form(Form::new(
+        "form".into(),
+        "New pane".into(),
+        vec![Field::text("Name", "original")],
+        "Create",
+        false,
+    ));
+    let layout = palette.layout(Viewport {
+        cols: 80,
+        rows: 3,
+        ..Default::default()
+    });
+    assert_eq!(layout.border, 0);
+    assert_eq!(layout.options_rows, 2);
+    let lines = rendered_lines(&palette, &layout);
+    assert_eq!(lines[0].trim_end(), "New pane");
+    assert_eq!(lines[1].trim_end(), "Name: original");
+    assert_eq!(lines[2].trim_end(), "Create");
+    assert!(palette.cursor(&layout).is_some());
+}
+
+#[test]
 fn layout_and_cursor_fit_even_the_smallest_surfaces() {
     let mut palette = CommandPalette::default();
-    palette.insert_text("界e\u{301}".repeat(80).as_str());
-    for cols in 0..90 {
-        for rows in 0..35 {
-            let surface = Viewport {
-                x: 2,
-                y: 3,
-                cols,
-                rows,
-            };
-            let layout = palette.layout(surface);
-            assert!(layout.rect.x >= surface.x && layout.rect.y >= surface.y);
-            assert!(layout.rect.x + layout.rect.cols <= surface.x + cols);
-            assert!(layout.rect.y + layout.rect.rows <= surface.y + rows);
-            for chunk in palette.chunks(&layout, &Style::default()) {
-                assert_eq!(chunk.width(), layout.rect.cols);
-                assert!(chunk.y < surface.y + rows);
-            }
-            if let Some((x, y)) = palette.cursor(&layout) {
-                assert!(layout.rect.contains(x, y));
+    for query in ["", "界e\u{301}"] {
+        palette.set_query(query.repeat(80));
+        for cols in 0..90 {
+            for rows in 0..35 {
+                let surface = Viewport {
+                    x: 2,
+                    y: 3,
+                    cols,
+                    rows,
+                };
+                let layout = palette.layout(surface);
+                assert!(layout.rect.x >= surface.x && layout.rect.y >= surface.y);
+                assert!(layout.rect.x + layout.rect.cols <= surface.x + cols);
+                assert!(layout.rect.y + layout.rect.rows <= surface.y + rows);
+                for chunk in palette.chunks(&layout, &Style::default()) {
+                    assert_eq!(chunk.width(), layout.rect.cols);
+                    assert!(chunk.y < surface.y + rows);
+                }
+                if let Some((x, y)) = palette.cursor(&layout) {
+                    assert!(layout.rect.contains(x, y));
+                }
             }
         }
     }
@@ -397,9 +620,9 @@ fn layout_and_cursor_fit_even_the_smallest_surfaces() {
     assert_eq!(
         layout.rect,
         CellRect {
-            x: 18,
-            y: 5,
-            cols: 64,
+            x: 13,
+            y: 7,
+            cols: 74,
             rows: 11
         }
     );
@@ -441,6 +664,7 @@ fn control_navigation_matches_arrows_in_results_and_forms() {
 #[test]
 fn shortcuts_remain_visible_beside_long_unicode_labels() {
     let mut palette = CommandPalette::default();
+    palette.set_query(" ".into());
     let mut entry = entry("new", &"界".repeat(80), EntryKind::Command);
     entry.shortcut = "Ctrl g → Alt n".into();
     palette.set_entries(vec![entry]);
@@ -464,6 +688,7 @@ fn shortcuts_remain_visible_beside_long_unicode_labels() {
 #[test]
 fn shortcuts_are_subtle_on_selected_and_unselected_rows() {
     let mut palette = palette();
+    palette.set_query(" ".into());
     for entry in &mut palette.entries {
         entry.shortcut = "Ctrl n".into();
     }
@@ -498,6 +723,7 @@ fn shortcuts_are_subtle_on_selected_and_unselected_rows() {
 #[test]
 fn semantic_spaces_have_a_background_but_alignment_padding_does_not() {
     let mut palette = palette();
+    palette.set_query(" ".into());
     for entry in &mut palette.entries {
         entry.shortcut = "Ctrl n".into();
         entry.description = "界".repeat(80);
@@ -734,6 +960,7 @@ fn provider_statuses_are_reachable_and_never_activate_entries() {
     ] {
         for entry_count in [0, 9] {
             let mut palette = CommandPalette::default();
+            palette.set_query(" ".into());
             palette.set_entries(
                 (0..entry_count)
                     .map(|i| entry(&i.to_string(), &format!("Command {i}"), EntryKind::Command))
@@ -835,6 +1062,8 @@ fn provider_status_focus_shares_mouse_geometry_and_survives_view_history() {
         rows: 24,
         ..Default::default()
     };
+    key(&mut palette, BareKey::Down);
+    assert_eq!(palette.selected_entry().unwrap().id, "first");
     key(&mut palette, BareKey::Down);
     assert_eq!(palette.selected_status, Some(0));
     key(&mut palette, BareKey::Down);
@@ -1615,6 +1844,7 @@ fn all_result_kinds_wrap_in_root_and_picker_views() {
         EntryKind::WarpPane,
     ] {
         let mut palette = CommandPalette::default();
+        palette.set_query(" ".into());
         palette
             .agent_metadata
             .insert("result".into(), Default::default());
@@ -1693,6 +1923,7 @@ fn all_result_kinds_wrap_in_root_and_picker_views() {
 #[test]
 fn wrapped_shortcuts_and_descriptions_share_the_available_columns() {
     let mut palette = CommandPalette::default();
+    palette.set_query(" ".into());
     let mut result = entry(
         "result",
         "Alpha bravo charlie delta echo",
@@ -1723,6 +1954,7 @@ fn wrapped_shortcuts_and_descriptions_share_the_available_columns() {
 #[test]
 fn page_navigation_moves_past_two_line_results_without_a_section_heading() {
     let mut palette = CommandPalette::default();
+    palette.set_query(" ".into());
     palette.set_entries(
         (0..3)
             .map(|i| {

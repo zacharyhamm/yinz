@@ -727,7 +727,7 @@ fn palette_suspends_history_and_restores_its_selection_and_cells() {
         .change_mode(InputMode::Locked, Some(InputMode::Normal), client)
         .unwrap();
     let (cursor, opened) = render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
-    assert!(opened.contains("Switch current project"), "{opened}");
+    assert!(opened.contains("Do · Project:"), "{opened}");
     assert!(!opened.contains("history entry"), "{opened}");
     assert!(cursor.is_some());
     assert!(screen.command_palette_handles_input(&None, b"Rename tab", false, client));
@@ -793,10 +793,7 @@ fn palette_history_damage_and_cursor_occlusion_follow_each_clients_visibility() 
     let mut grid = grid_for_render_snapshot(size);
     let other_frame = render_frame_into(&mut screen, &receiver, other, &mut grid);
     assert!(other_frame.contains("history"), "{other_frame}");
-    assert!(
-        !other_frame.contains("Switch current project"),
-        "{other_frame}"
-    );
+    assert!(!other_frame.contains("Do · Project:"), "{other_frame}");
     assert!(!screen.last_notification_fill.contains_key(&client));
     assert_eq!(screen.last_notification_fill[&other], rects);
     assert_eq!(screen.notification_occlusion_rects(viewport, now), rects);

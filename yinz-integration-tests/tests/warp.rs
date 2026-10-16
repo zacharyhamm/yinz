@@ -1327,9 +1327,7 @@ fn palette_pull(
     last_tab: Option<usize>,
 ) {
     receiver.send_stdin(b"\x1b[112;7u");
-    receiver.wait_until("palette opens", |grid| {
-        grid.contains("Switch current project")
-    });
+    receiver.wait_until("palette opens", |grid| grid.contains("Do · Project:"));
     receiver.send_stdin(command.as_bytes());
     receiver.send_stdin(&keys::ENTER);
     receiver.wait_until("source picker opens", |grid| {
@@ -1349,7 +1347,11 @@ fn palette_pull(
     }
     receiver.send_stdin(target.as_bytes());
     receiver.wait_until("warp target discovered", |grid| {
-        !grid.contains("Source session") && grid.contains(target) && !grid.contains("No matches")
+        !grid.contains("Source session")
+            && grid
+                .lines()
+                .iter()
+                .any(|line| line.contains('›') && line.contains(target))
     });
     receiver.send_stdin(&keys::ENTER);
 }

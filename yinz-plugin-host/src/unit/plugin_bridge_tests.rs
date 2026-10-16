@@ -1658,6 +1658,50 @@ fn steel_host_folder_changes_report_only_the_active_parent_cwd() {
 }
 
 #[test]
+fn attaching_during_startup_keeps_the_queued_plugin_instance() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    let id = PluginId::new(test.bridge.next_plugin_id);
+    test.bridge.plugin_executor.register_plugin(id);
+    let release = test.hold_executor(id);
+    let path = test._dirs[0].path().join("startup.scm");
+    std::fs::write(&path, "(void)").unwrap();
+    let run = RunPlugin {
+        location: RunPluginLocation::File(path),
+        ..Default::default()
+    };
+    test.bridge
+        .load_plugin(&Some(run), None, Size::default(), None, false, Some(client))
+        .unwrap();
+    let (loaded, original) = std::sync::mpsc::channel();
+    test.bridge
+        .plugin_executor
+        .execute_for_plugin(id, move |_, map, _| {
+            let plugin = map
+                .lock()
+                .unwrap()
+                .get_running_plugin(id, Some(client))
+                .unwrap();
+            loaded.send(plugin).unwrap();
+        });
+    test.bridge.add_client(client).unwrap();
+    release.send(()).unwrap();
+    let original = original
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    test.settle(id);
+    let attached = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, Some(client))
+        .unwrap();
+    assert!(Arc::ptr_eq(&original, &attached));
+    test.bridge.unload_plugin(id).unwrap();
+}
+
+#[test]
 fn steel_startup_instance_is_cancelled_and_recreated_on_reattach() {
     let mut test = TestBridge::new();
     let client = ClientId::new(1);

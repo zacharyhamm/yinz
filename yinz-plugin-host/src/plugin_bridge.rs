@@ -1757,15 +1757,20 @@ impl PluginBridge {
                         "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} acquired plugin_map lock after {:?}; plugin load begin",
                         load_started_at.elapsed()
                     );
-                    match PluginLoader::new(
-                        loading_context,
-                        senders.clone(),
-                        &mut plugin_map,
-                        connected_clients.clone(),
-                    )
-                    .without_connected_clients()
-                    .start_plugin()
-                    {
+                    // The startup load may finish after this attachment is queued.
+                    let loaded = if plugin_map.contains(plugin_id, client_id) {
+                        Ok(())
+                    } else {
+                        PluginLoader::new(
+                            loading_context,
+                            senders.clone(),
+                            &mut plugin_map,
+                            connected_clients.clone(),
+                        )
+                        .without_connected_clients()
+                        .start_plugin()
+                    };
+                    match loaded {
                         Ok(_) => {
                             log::info!(
                                 "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} plugin load complete after {:?}",
