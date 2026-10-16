@@ -11,7 +11,7 @@
 (define (pane-kind id) (define pane (as-find (lambda (pane) (= id (hash-ref pane "pane_id"))) (as-panes))) (define kind (and pane (as-classify pane))) (and (as-present? kind) (car kind)))
 (define (branch id)
   (define location (as-location id)) (define repository (and (as-present? location) (as-map-get "repositories" location #f)))
-  (if repository (hash-ref repository "branch") json-null))
+  (as-field repository "branch" json-null))
 (define (send-request endpoint body context)
   (as-send (hash "WebRequest" (list (hash-ref endpoint "url") "Post" (hash-ref endpoint "headers") body context json-null json-null))))
 (define (next-request table key fingerprint)
