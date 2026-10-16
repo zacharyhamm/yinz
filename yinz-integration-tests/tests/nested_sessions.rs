@@ -471,18 +471,18 @@ fn display_column_of(line: &str, needle: &str) -> Option<usize> {
 #[test]
 fn clicking_the_host_new_tab_button_while_descended_ascends_and_keeps_working() {
     let mut nested = NestedHarness::start_with_host_config(TERMINAL_SIZE, "mouse_mode true");
-    let guest_session_name = nested.guest.session_name().to_string();
+    let guest_tab_title = format!("Yinz:{}", nested.guest.session_name());
 
     boot_and_descend_on_first_load(&nested);
     nested.guest.wait_for_app_load();
 
     let host_before = nested.host.wait_until(
-        "the host tab bar shows the new tab button while descended",
+        "the host tab bar shows the guest title and new tab button while descended",
         |host_grid| {
             host_grid
                 .lines()
                 .first()
-                .is_some_and(|tab_bar| tab_bar.contains('+'))
+                .is_some_and(|tab_bar| tab_bar.contains('+') && tab_bar.contains(&guest_tab_title))
         },
     );
     let tab_bar = host_before.lines().first().cloned().unwrap();
@@ -500,11 +500,9 @@ fn clicking_the_host_new_tab_button_while_descended_ascends_and_keeps_working() 
     let host_after_new_tab = nested.host.wait_until(
         "the host opened a second tab and undimmed after clicking the new tab button",
         |host_grid| {
-            host_grid
-                .lines()
-                .first()
-                .is_some_and(|tab_bar| tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2"))
-                && normal_mode_bar_settled(host_grid)
+            host_grid.lines().first().is_some_and(|tab_bar| {
+                tab_bar.contains(&guest_tab_title) && tab_bar.contains("Tab #2")
+            }) && normal_mode_bar_settled(host_grid)
         },
     );
     assert_snapshot!(
@@ -520,7 +518,6 @@ fn clicking_the_host_new_tab_button_while_descended_ascends_and_keeps_working() 
         |host_grid| host_grid.contains("Pane #2") && normal_mode_bar_settled(host_grid),
     );
 
-    let _ = guest_session_name;
     nested.guest.quit();
     nested.host.quit();
 }
@@ -528,18 +525,18 @@ fn clicking_the_host_new_tab_button_while_descended_ascends_and_keeps_working() 
 #[test]
 fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
     let mut nested = NestedHarness::start_with_host_config(TERMINAL_SIZE, "mouse_mode true");
-    let guest_session_name = nested.guest.session_name().to_string();
+    let guest_tab_title = format!("Yinz:{}", nested.guest.session_name());
 
     boot_and_descend_on_first_load(&nested);
     nested.guest.wait_for_app_load();
 
     let host_before = nested.host.wait_until(
-        "the host tab bar shows the new tab button while descended",
+        "the host tab bar shows the guest title and new tab button while descended",
         |host_grid| {
             host_grid
                 .lines()
                 .first()
-                .is_some_and(|tab_bar| tab_bar.contains('+'))
+                .is_some_and(|tab_bar| tab_bar.contains('+') && tab_bar.contains(&guest_tab_title))
         },
     );
     let tab_bar = host_before.lines().first().cloned().unwrap();
@@ -556,17 +553,15 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
     let host_two_tabs = nested.host.wait_until(
         "the host now has two tabs with the second one focused on a host pane",
         |host_grid| {
-            host_grid
-                .lines()
-                .first()
-                .is_some_and(|tab_bar| tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2"))
-                && normal_mode_bar_settled(host_grid)
+            host_grid.lines().first().is_some_and(|tab_bar| {
+                tab_bar.contains(&guest_tab_title) && tab_bar.contains("Tab #2")
+            }) && normal_mode_bar_settled(host_grid)
         },
     );
     let first_tab_column = host_two_tabs
         .lines()
         .first()
-        .and_then(|tab_bar| display_column_of(tab_bar, "Tab #1"))
+        .and_then(|tab_bar| display_column_of(tab_bar, &guest_tab_title))
         .expect("the first host tab ribbon is on the host tab bar")
         + 1;
     let second_tab_column = host_two_tabs
@@ -588,11 +583,9 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
     nested.host.wait_until(
         "clicking the second host tab switches away from the guest tab in normal mode",
         |host_grid| {
-            host_grid
-                .lines()
-                .first()
-                .is_some_and(|tab_bar| tab_bar.contains("Tab #1") && tab_bar.contains("Tab #2"))
-                && normal_mode_bar_settled(host_grid)
+            host_grid.lines().first().is_some_and(|tab_bar| {
+                tab_bar.contains(&guest_tab_title) && tab_bar.contains("Tab #2")
+            }) && normal_mode_bar_settled(host_grid)
         },
     );
 
@@ -604,7 +597,6 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
         |host_grid| host_grid.contains("Pane #2") && normal_mode_bar_settled(host_grid),
     );
 
-    let _ = guest_session_name;
     nested.guest.quit();
     nested.host.quit();
 }
