@@ -483,6 +483,7 @@ fn clicking_the_host_new_tab_button_while_descended_ascends_and_keeps_working() 
                 .lines()
                 .first()
                 .is_some_and(|tab_bar| tab_bar.contains('+') && tab_bar.contains(&guest_tab_title))
+                && host_descended_bar_settled(host_grid)
         },
     );
     let tab_bar = host_before.lines().first().cloned().unwrap();
