@@ -177,12 +177,17 @@ inside the selected test root or the disposable home used for copied plugins.
 
 `(test-copy-plugin "./example.scm" "example-copy")` copies the entrypoint and its
 confined Scheme dependency graph into a fresh `example-copy` directory under
-the disposable home. It returns an entrypoint URL for `test-session` operations
-or alias KDL. Original source text and relative import paths are retained;
-duplicate imports are copied once. This integration-only helper rejects
+the disposable home. It returns an opaque entrypoint URL for `test-session`
+operations or alias KDL. The URL uses a local repository descriptor to retain
+the copied source root, including when `src/main.scm` imports `../shared.scm`.
+No Git checkout is needed. Keep the URL intact when comparing plugin identities.
+Original source text and relative import paths are retained; duplicate imports
+are copied once. This integration-only helper rejects
 overwrites, destination traversal, symlinks, and special files. The usual source
 graph limits apply: 8 MiB per source, 64 MiB total, 1024 modules, and 64 import
 levels. Runtime assets outside the Scheme graph require explicit fixtures.
+Session operations accept local repository descriptors only for directories
+strictly inside the disposable home, without a branch, tag, or commit selector.
 
 The loaded plugin's `(yinz-plugin-location)` and `(yinz-plugin-resolve path)`
 use its own source identity, including mocked plugins. They are available

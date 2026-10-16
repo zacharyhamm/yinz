@@ -332,6 +332,52 @@ impl Controller {
             }
             bail!("integration test requires a shipped builtin: {path}");
         }
+        if path.starts_with("git:") {
+            let mut plugin = yinz_types::input::git_plugin::GitPlugin::from_descriptor(path)
+                .map_err(anyhow::Error::msg)?;
+            let home = self
+                .root
+                .canonicalize()
+                .context("resolve disposable session root")?
+                .join("home");
+            let repository = Path::new(&plugin.repo);
+            anyhow::ensure!(
+                plugin.is_local() && repository.is_absolute() && plugin.revision.is_none(),
+                "test repository must be an absolute local directory without a revision"
+            );
+            let relative = repository
+                .strip_prefix(&home)
+                .context("test repository escapes the disposable home")?;
+            anyhow::ensure!(
+                !relative.as_os_str().is_empty()
+                    && relative
+                        .components()
+                        .all(|part| matches!(part, std::path::Component::Normal(_))),
+                "test repository must be a confined directory beneath the disposable home"
+            );
+            let target = repository.join(&plugin.entrypoint);
+            let url = url::Url::from_file_path(&target)
+                .map_err(|_| anyhow!("invalid test repository entrypoint"))?;
+            let sources = super::steel::Sources {
+                entry: target,
+                root: home,
+            };
+            // Validate the original path before canonicalization can hide a symlink.
+            sources.resolve_test_path(url.as_str())?;
+            let canonical_repository = repository
+                .canonicalize()
+                .context("resolve test repository")?;
+            anyhow::ensure!(
+                canonical_repository != sources.root
+                    && canonical_repository.starts_with(&sources.root),
+                "test repository escapes the disposable home"
+            );
+            plugin.repo = canonical_repository
+                .to_str()
+                .context("test repository is not UTF-8")?
+                .to_owned();
+            return Ok(plugin.descriptor());
+        }
         if let Ok(url) = url::Url::parse(path) {
             if let Ok(target) = url.to_file_path() {
                 let home = self
@@ -370,9 +416,19 @@ impl Controller {
             .context("resolve disposable session root")?
             .join("home");
         let entry = sources.copy_to(&home, destination)?;
-        Ok(url::Url::from_file_path(entry)
-            .map_err(|_| anyhow!("invalid copied plugin path"))?
-            .to_string())
+        let root = home.join(destination);
+        Ok(yinz_types::input::git_plugin::GitPlugin {
+            repo: root
+                .to_str()
+                .context("copied plugin root is not UTF-8")?
+                .to_owned(),
+            entrypoint: entry
+                .strip_prefix(&root)
+                .context("copied entrypoint escapes its root")?
+                .to_owned(),
+            revision: None,
+        }
+        .descriptor())
     }
     fn grant(&self, location: &str) -> Result<()> {
         if !self.auto_grant_permissions {
