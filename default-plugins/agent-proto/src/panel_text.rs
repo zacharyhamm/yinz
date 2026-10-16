@@ -135,9 +135,7 @@ pub fn divider_text(label: &str, above: usize, below: usize, focused: bool, cols
         .then(|| line.chars().position(|c| c == '!'))
         .flatten();
     let text = Text::new(line);
-    // Dim wins over colour where both are asked for, so an unfocused rule is dimmed around
-    // the marker rather than under it: a waiting `!` painted red under a dim range was drawn
-    // dim, the one character on the row meant to stand out.
+    // Keep the waiting marker bright so it stands out from an unfocused rule.
     let text = match (focused, marker) {
         (true, _) => text.color_range(2, ..),
         (false, Some(at)) => text.dim_range(..at).dim_range(at + 1..),

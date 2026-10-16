@@ -997,6 +997,59 @@ fn nested_list_ui_component_with_coordinates() {
 }
 
 #[test]
+fn dim_text_ui_components_keep_their_theme_colors() {
+    use yinz_types::data::PaletteColor;
+    use yinz_types::style::StyleDeclaration;
+
+    for selected in [false, true] {
+        for base in [PaletteColor::Rgb((25, 45, 65)), PaletteColor::EightBit(123)] {
+            let declaration = StyleDeclaration {
+                base,
+                background: PaletteColor::Rgb((210, 220, 230)),
+                emphasis_0: PaletteColor::Rgb((60, 80, 100)),
+                ..Default::default()
+            };
+            let mut style = Style::default();
+            if selected {
+                style.colors.text_selected = declaration;
+            } else {
+                style.colors.text_unselected = declaration;
+            }
+            let mut grid = create_grid_with_content("");
+            grid.update_theme(style.colors);
+            let selected_flag = if selected { "x" } else { "" };
+            // Dim a base-colored and an emphasized character, then leave the third undimmed.
+            let command = format!(
+                "{UI_COMPONENT_DCS_PREFIX}text;0/0/3/1;{selected_flag}1$$$$0,1$97,98,99\x1b\\"
+            );
+            vte::Parser::new().advance(&mut grid, command.as_bytes());
+            let cells = &grid.viewport[0].columns;
+            for (index, foreground) in [base, declaration.emphasis_0, base].into_iter().enumerate()
+            {
+                assert_eq!(cells[index].character, ['a', 'b', 'c'][index]);
+                assert_eq!(cells[index].styles.foreground, Some(foreground.into()));
+                assert_eq!(
+                    cells[index].styles.dim,
+                    Some(if index < 2 {
+                        AnsiCode::On
+                    } else {
+                        AnsiCode::Reset
+                    })
+                );
+                assert_eq!(
+                    cells[index].styles.background,
+                    Some(if selected {
+                        declaration.background.into()
+                    } else {
+                        AnsiCode::Reset
+                    })
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn text_ui_component() {
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));

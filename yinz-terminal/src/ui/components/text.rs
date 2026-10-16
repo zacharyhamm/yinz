@@ -143,11 +143,7 @@ pub fn color_index_character(
         // Remove bold for this character
         character_style = character_style.bold(Some(AnsiCode::Reset));
     } else if text.is_dimmed_at(index) {
-        // Apply dim for this character
-        character_style = character_style
-            .foreground(Some(AnsiCode::Reset)) // some terminals (eg. alacritty) do not support dimming non 16
-            // colors, so we have to defer to the terminal's default here
-            .dim(Some(AnsiCode::On));
+        character_style = character_style.dim(Some(AnsiCode::On));
     } else {
         character_style = character_style
             .bold(Some(AnsiCode::On))

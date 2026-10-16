@@ -607,7 +607,6 @@ impl HistoryPanel {
             Some(clock.clone()),
             "history",
         );
-        panel.take_commands();
         Self {
             panel,
             worker,
@@ -670,6 +669,102 @@ impl HistoryPanel {
         let payload = replies[0]["payload"].as_str().unwrap();
         assert!(self.reply(request, payload));
         serde_json::from_str(payload).unwrap()
+    }
+}
+
+#[test]
+fn agents_follow_the_theme_on_startup_and_mode_updates() {
+    use yinz_terminal::panes::{grid::Grid, AnsiCode};
+    use yinz_types::style::{Style, StyleDeclaration};
+
+    let theme = |foreground, background, selected_foreground, selected_background| {
+        let declaration = |base, background| StyleDeclaration {
+            base: PaletteColor::Rgb(base),
+            background: PaletteColor::Rgb(background),
+            emphasis_0: PaletteColor::Rgb(base),
+            emphasis_1: PaletteColor::Rgb(base),
+            emphasis_2: PaletteColor::Rgb(base),
+            emphasis_3: PaletteColor::Rgb(base),
+        };
+        let mut style = Style::default();
+        style.colors.text_unselected = declaration(foreground, background);
+        style.colors.text_selected = declaration(selected_foreground, selected_background);
+        style
+    };
+    let dark = theme((220, 225, 230), (20, 25, 30), (240, 245, 250), (50, 55, 60));
+    let light = theme((30, 35, 40), (230, 235, 240), (10, 15, 20), (180, 185, 190));
+    for themes in [[dark, light], [light, dark]] {
+        let mut run = run("active", 7, false);
+        run.entries.truncate(1);
+        run.entries[0].text = "Themed history".into();
+        let runs = [run];
+        let mut h = HistoryPanel::new(&runs);
+        assert!(h.panel.take_commands().iter().any(|command| command
+            .get("Subscribe")
+            .and_then(Value::as_array)
+            .is_some_and(|events| events.contains(&json!("ModeUpdate")))));
+        h.snapshot(1, &runs);
+        h.complete(&h.request());
+        let mut grid = Grid::new(
+            24,
+            90,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            themes[0],
+            false,
+            true,
+            true,
+            true,
+            false,
+        );
+        for (index, style) in themes.into_iter().enumerate() {
+            if index > 0 {
+                grid.update_theme(style.colors);
+                assert!(h.panel.update(&Event::ModeUpdate(ModeInfo {
+                    style,
+                    ..Default::default()
+                })));
+            }
+            let frame = h.panel.render(24, 90);
+            vte::Parser::new().advance(&mut grid, frame.as_bytes());
+            let lines = grid.as_character_lines();
+            for text in ["claude", "codex", "Themed history", "Enter focus"] {
+                let line = lines
+                    .iter()
+                    .find(|line| {
+                        line.iter()
+                            .map(|c| c.character)
+                            .collect::<String>()
+                            .contains(text)
+                    })
+                    .unwrap_or_else(|| panic!("missing {text}: {}", grid.dump_screen(false)));
+                for cell in line.iter().filter(|cell| !cell.character.is_whitespace()) {
+                    let selected = cell.styles.background
+                        == Some(style.colors.text_selected.background.into());
+                    let foreground = if selected {
+                        style.colors.text_selected.base
+                    } else {
+                        style.colors.text_unselected.base
+                    };
+                    assert_eq!(
+                        cell.styles.foreground,
+                        Some(foreground.into()),
+                        "{text}: {cell:?}"
+                    );
+                    if text == "codex" || text == "Enter focus" {
+                        assert_eq!(cell.styles.dim, Some(AnsiCode::On), "{text}: {cell:?}");
+                    }
+                }
+                if text == "claude" {
+                    assert!(line.iter().all(|cell| cell.styles.background
+                        == Some(style.colors.text_selected.background.into())));
+                }
+            }
+        }
     }
 }
 
