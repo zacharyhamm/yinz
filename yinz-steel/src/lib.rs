@@ -51,6 +51,9 @@ impl InterruptHandle {
 
 pub const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_RENDER_BYTES: usize = 16 * 1024 * 1024;
+const MAX_EVAL_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_PNG_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EvalOutput {
@@ -58,8 +61,14 @@ pub struct EvalOutput {
     pub output: String,
 }
 
-#[derive(Clone, Default)]
-struct Output(Arc<Mutex<Vec<u8>>>);
+#[derive(Clone)]
+struct Output(Arc<Mutex<Vec<u8>>>, usize, &'static str);
+
+impl Output {
+    fn new(limit: usize, diagnostic: &'static str) -> Self {
+        Self(Arc::new(Mutex::new(Vec::new())), limit, diagnostic)
+    }
+}
 
 impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -67,8 +76,8 @@ impl Write for Output {
             .0
             .lock()
             .map_err(|_| io::Error::other("output lock poisoned"))?;
-        if output.len().saturating_add(bytes.len()) > MAX_OUTPUT_BYTES {
-            return Err(io::Error::other("Steel output exceeds 4 MiB"));
+        if output.len().saturating_add(bytes.len()) > self.1 {
+            return Err(io::Error::other(self.2));
         }
         output.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -139,8 +148,8 @@ impl Runtime {
         wall_clock: impl Fn() -> i64 + Send + Sync + 'static,
     ) -> Result<Self> {
         let mut engine = sandbox::engine().context("creating confined Steel engine")?;
-        let output = Output::default();
-        let logs = Output::default();
+        let output = Output::new(MAX_RENDER_BYTES, "Steel render output exceeds 16 MiB");
+        let logs = Output::new(MAX_OUTPUT_BYTES, "Steel diagnostic output exceeds 4 MiB");
         let metadata = Arc::new(OnceLock::<ServerMetadata>::new());
         for (name, field) in [
             ("yinz-server-binary", 0),
@@ -465,7 +474,7 @@ impl Runtime {
             .into_iter()
             .filter(|value| !matches!(value, SteelVal::Void))
         {
-            let mut rendered = Output::default();
+            let mut rendered = Output::new(MAX_EVAL_BYTES, "Steel values exceed 16 MiB");
             write!(rendered, "{value}").context("format Steel value within output limit")?;
             let bytes = std::mem::take(
                 &mut *rendered
@@ -474,7 +483,7 @@ impl Runtime {
                     .map_err(|_| anyhow!("Steel value output lock poisoned"))?,
             );
             size += bytes.len();
-            anyhow::ensure!(size <= MAX_OUTPUT_BYTES, "Steel values exceed 4 MiB");
+            anyhow::ensure!(size <= MAX_EVAL_BYTES, "Steel values exceed 16 MiB");
             values.push(String::from_utf8_lossy(&bytes).into_owned());
         }
         Ok(EvalOutput {
@@ -567,8 +576,8 @@ impl Runtime {
         let mut output = self.take_output()?;
         if let Some(SteelVal::StringV(text)) = result {
             anyhow::ensure!(
-                output.len().saturating_add(text.len()) <= MAX_OUTPUT_BYTES,
-                "Steel output exceeds 4 MiB"
+                output.len().saturating_add(text.len()) <= MAX_RENDER_BYTES,
+                "Steel render output exceeds 16 MiB"
             );
             output.push_str(text.as_str());
         }

@@ -138,7 +138,7 @@ pub(super) fn run(value: Value) -> Result<Value> {
                 count, rows, selected
             )));
         },
-        Pure::ImagePng((id, png)) => image_png(id, &png)?,
+        Pure::ImagePng((id, png)) => return image_png(id, &png).map(Value::String),
         Pure::ImagePlace((id, columns, rows)) => {
             image_id(id)?;
             let dimensions = yinz_types::kitty_placeholders::ROWCOLUMN_DIACRITICS.len();
@@ -315,9 +315,9 @@ pub(super) fn run(value: Value) -> Result<Value> {
 
 pub(super) fn image_png(id: u32, png: &[u8]) -> Result<String> {
     image_id(id)?;
-    anyhow::ensure!(png.len() <= MAX / 2, "image source exceeds render budget");
+    anyhow::ensure!(png.len() <= crate::MAX_PNG_BYTES, "PNG source exceeds 8 MiB");
     let output = png_transmit_sequence(id, png);
-    anyhow::ensure!(output.len() <= MAX, "UI output exceeds transport budget");
+    anyhow::ensure!(output.len() <= crate::MAX_RENDER_BYTES, "image output exceeds render budget");
     Ok(output)
 }
 

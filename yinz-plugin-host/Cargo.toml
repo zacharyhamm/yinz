@@ -55,6 +55,7 @@ nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "sign
 
 [dev-dependencies]
 flate2 = "1.1.9"
+png = "0.17.16"
 regex = { workspace = true }
 hegeltest = "0.29.3"
 insta = "1.48"
