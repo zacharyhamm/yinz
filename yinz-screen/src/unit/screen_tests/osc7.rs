@@ -122,7 +122,7 @@ fn osc7_focus_changes_restate_the_directory_after_a_pane_without_a_report() {
 #[test]
 fn osc7_tracks_each_clients_focus_and_last_report_separately() {
     let (mut screen, receiver) = screen_with_two_panes();
-    screen.set_client_size(OTHER_CLIENT, SIZE);
+    screen.set_client_size(OTHER_CLIENT, SIZE).unwrap();
     screen.add_client(OTHER_CLIENT).unwrap();
     screen
         .get_active_tab_mut(OTHER_CLIENT)
@@ -198,7 +198,7 @@ fn osc7_is_not_forwarded_to_watchers() {
 #[test]
 fn osc7_forgets_a_departed_clients_report_before_its_id_is_reused() {
     let (mut screen, receiver) = screen_with_two_panes();
-    screen.set_client_size(OTHER_CLIENT, SIZE);
+    screen.set_client_size(OTHER_CLIENT, SIZE).unwrap();
     screen.add_client(OTHER_CLIENT).unwrap();
     emit_osc7(&mut screen, 1, "file://host/focused");
     assert_eq!(
@@ -210,7 +210,7 @@ fn osc7_forgets_a_departed_clients_report_before_its_id_is_reused() {
     );
     screen.remove_client(OTHER_CLIENT).unwrap();
     assert!(!screen.last_forwarded_osc7.contains_key(&OTHER_CLIENT));
-    screen.set_client_size(OTHER_CLIENT, SIZE);
+    screen.set_client_size(OTHER_CLIENT, SIZE).unwrap();
     screen.add_client(OTHER_CLIENT).unwrap();
     assert_eq!(
         render_osc7(&mut screen, &receiver),

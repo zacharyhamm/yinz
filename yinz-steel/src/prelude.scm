@@ -93,6 +93,8 @@
      (list->vector (%quasiquote (element ...) depth))]
     [(%quasiquote (head . tail) depth)
      (cons (%quasiquote head depth) (%quasiquote tail depth))]
+    [(%quasiquote (quote template) depth)
+     (list 'quote (%quasiquote template depth))]
     [(%quasiquote atom depth) 'atom]))
 
 (define (cdddr x) (cdr (cdr (cdr x))))

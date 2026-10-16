@@ -479,7 +479,9 @@ fn create_new_screen_with_capture(
 }
 
 fn seed_first_client_size(mut screen: Screen, size: Size) -> Screen {
-    screen.set_client_size(crate::ClientId::new(1), size);
+    screen
+        .set_client_size(crate::ClientId::new(1), size)
+        .unwrap();
     screen
 }
 

@@ -220,7 +220,9 @@ fn new_tabs_are_created_at_the_size_of_the_client_creating_them() {
     };
     let mut screen = create_non_mirrored_screen(initial_size);
     let client_size = Size { cols: 80, rows: 24 };
-    screen.set_client_size(crate::ClientId::new(1), client_size);
+    screen
+        .set_client_size(crate::ClientId::new(1), client_size)
+        .unwrap();
 
     new_tab(&mut screen, 1, TabId::new(0));
 
@@ -239,7 +241,9 @@ fn applying_a_layout_to_an_existing_tab_keeps_its_viewer_derived_size() {
     };
     let mut screen = create_non_mirrored_screen(initial_size);
     let client_size = Size { cols: 80, rows: 24 };
-    screen.set_client_size(crate::ClientId::new(1), client_size);
+    screen
+        .set_client_size(crate::ClientId::new(1), client_size)
+        .unwrap();
     new_tab(&mut screen, 1, TabId::new(0));
 
     screen
@@ -274,7 +278,7 @@ fn recompute_tab_size_uses_lone_viewer_size() {
 
     let client_id = ClientId::new(1);
     let client_size = Size { cols: 80, rows: 24 };
-    screen.set_client_size(client_id, client_size);
+    screen.set_client_size(client_id, client_size).unwrap();
     screen.recompute_tab_size(TabId::new(0)).expect("TEST");
 
     assert_eq!(
@@ -294,14 +298,18 @@ fn recompute_tab_size_takes_independent_min_across_axes() {
     new_tab(&mut screen, 1, TabId::new(0));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
 
-    screen.set_client_size(
-        crate::ClientId::new(1),
-        Size {
-            cols: 200,
-            rows: 24,
-        },
-    );
-    screen.set_client_size(crate::ClientId::new(2), Size { cols: 80, rows: 60 });
+    screen
+        .set_client_size(
+            crate::ClientId::new(1),
+            Size {
+                cols: 200,
+                rows: 24,
+            },
+        )
+        .unwrap();
+    screen
+        .set_client_size(crate::ClientId::new(2), Size { cols: 80, rows: 60 })
+        .unwrap();
     screen.recompute_tab_size(TabId::new(0)).expect("TEST");
 
     assert_eq!(
@@ -321,20 +329,24 @@ fn resize_to_clients_takes_the_min_across_clients_and_grows_back_on_detach() {
     new_tab(&mut screen, 1, TabId::new(0));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
 
-    screen.set_client_size(
-        crate::ClientId::new(1),
-        Size {
-            cols: 100,
-            rows: 50,
-        },
-    );
-    screen.set_client_size(
-        crate::ClientId::new(2),
-        Size {
-            cols: 120,
-            rows: 40,
-        },
-    );
+    screen
+        .set_client_size(
+            crate::ClientId::new(1),
+            Size {
+                cols: 100,
+                rows: 50,
+            },
+        )
+        .unwrap();
+    screen
+        .set_client_size(
+            crate::ClientId::new(2),
+            Size {
+                cols: 120,
+                rows: 40,
+            },
+        )
+        .unwrap();
     screen.resize_to_clients().expect("TEST");
 
     assert_eq!(
@@ -370,18 +382,22 @@ fn attaching_client_records_the_surface_before_a_render_tick() {
         true,
     );
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.set_client_size(
-        crate::ClientId::new(1),
-        Size {
-            cols: 200,
-            rows: 60,
-        },
-    );
+    screen
+        .set_client_size(
+            crate::ClientId::new(1),
+            Size {
+                cols: 200,
+                rows: 60,
+            },
+        )
+        .unwrap();
     screen.resize_to_clients().expect("TEST");
 
     // a second, smaller client attaches - what ScreenInstruction::AddClient runs, minus the
     // debounced render that would otherwise be the first thing to record the new surface
-    screen.set_client_size(crate::ClientId::new(2), Size { cols: 80, rows: 24 });
+    screen
+        .set_client_size(crate::ClientId::new(2), Size { cols: 80, rows: 24 })
+        .unwrap();
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
     screen.reflow_all_tabs().expect("TEST");
 
@@ -417,10 +433,14 @@ fn attaching_client_records_the_surface_before_a_render_tick() {
 fn resize_to_clients_reflows_every_tab_and_survives_a_render() {
     let mut screen = create_non_mirrored_screen(Size { cols: 50, rows: 12 });
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.set_client_size(crate::ClientId::new(1), Size { cols: 50, rows: 12 });
+    screen
+        .set_client_size(crate::ClientId::new(1), Size { cols: 50, rows: 12 })
+        .unwrap();
     screen.resize_to_clients().expect("TEST");
 
-    screen.set_client_size(crate::ClientId::new(1), Size { cols: 40, rows: 10 });
+    screen
+        .set_client_size(crate::ClientId::new(1), Size { cols: 40, rows: 10 })
+        .unwrap();
     screen.resize_to_clients().expect("TEST");
 
     let tab = screen.tabs.get(&TabId::new(0)).unwrap();
@@ -439,7 +459,9 @@ fn character_cell_size_is_derived_from_the_resized_screen() {
     new_tab(&mut screen, 1, TabId::new(0));
 
     // a font-size change: the terminal keeps its pixel size but reports fewer, larger cells
-    screen.set_client_size(crate::ClientId::new(1), Size { cols: 40, rows: 12 });
+    screen
+        .set_client_size(crate::ClientId::new(1), Size { cols: 40, rows: 12 })
+        .unwrap();
     screen.resize_to_clients().expect("TEST");
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
@@ -473,14 +495,18 @@ fn resize_to_clients_keeps_every_tab_within_smallest_client_bounds() {
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
-    screen.set_client_size(crate::ClientId::new(1), Size { cols: 80, rows: 24 });
-    screen.set_client_size(
-        crate::ClientId::new(2),
-        Size {
-            cols: 160,
-            rows: 50,
-        },
-    );
+    screen
+        .set_client_size(crate::ClientId::new(1), Size { cols: 80, rows: 24 })
+        .unwrap();
+    screen
+        .set_client_size(
+            crate::ClientId::new(2),
+            Size {
+                cols: 160,
+                rows: 50,
+            },
+        )
+        .unwrap();
     screen
         .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(2))
         .expect("TEST");
@@ -497,13 +523,15 @@ fn resize_to_clients_keeps_every_tab_within_smallest_client_bounds() {
         "A tab viewed only by the larger client is still restricted to the session bounds"
     );
 
-    screen.set_client_size(
-        crate::ClientId::new(2),
-        Size {
-            cols: 240,
-            rows: 70,
-        },
-    );
+    screen
+        .set_client_size(
+            crate::ClientId::new(2),
+            Size {
+                cols: 240,
+                rows: 70,
+            },
+        )
+        .unwrap();
     screen.resize_to_clients().expect("TEST");
     screen.render_to_clients().expect("TEST");
 
@@ -551,14 +579,18 @@ fn switching_tabs_keeps_source_and_destination_at_session_bounds() {
     new_tab(&mut screen, 2, TabId::new(1));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
 
-    screen.set_client_size(crate::ClientId::new(1), Size { cols: 80, rows: 24 });
-    screen.set_client_size(
-        crate::ClientId::new(2),
-        Size {
-            cols: 160,
-            rows: 50,
-        },
-    );
+    screen
+        .set_client_size(crate::ClientId::new(1), Size { cols: 80, rows: 24 })
+        .unwrap();
+    screen
+        .set_client_size(
+            crate::ClientId::new(2),
+            Size {
+                cols: 160,
+                rows: 50,
+            },
+        )
+        .unwrap();
     screen.recompute_tab_size(TabId::new(1)).expect("TEST");
     assert_eq!(
         screen.tabs.get(&TabId::new(1)).unwrap().size,
@@ -593,14 +625,18 @@ fn break_pane_to_new_tab_recomputes_source_and_destination() {
     new_tab(&mut screen, 2, TabId::new(1));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
 
-    screen.set_client_size(crate::ClientId::new(1), Size { cols: 80, rows: 24 });
-    screen.set_client_size(
-        crate::ClientId::new(2),
-        Size {
-            cols: 160,
-            rows: 50,
-        },
-    );
+    screen
+        .set_client_size(crate::ClientId::new(1), Size { cols: 80, rows: 24 })
+        .unwrap();
+    screen
+        .set_client_size(
+            crate::ClientId::new(2),
+            Size {
+                cols: 160,
+                rows: 50,
+            },
+        )
+        .unwrap();
     screen
         .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(1))
         .expect("TEST");
@@ -658,14 +694,18 @@ fn moving_panes_between_tabs_with_focus_change_recomputes_both() {
     new_tab(&mut screen, 2, TabId::new(1));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
 
-    screen.set_client_size(crate::ClientId::new(1), Size { cols: 80, rows: 24 });
-    screen.set_client_size(
-        crate::ClientId::new(2),
-        Size {
-            cols: 160,
-            rows: 50,
-        },
-    );
+    screen
+        .set_client_size(crate::ClientId::new(1), Size { cols: 80, rows: 24 })
+        .unwrap();
+    screen
+        .set_client_size(
+            crate::ClientId::new(2),
+            Size {
+                cols: 160,
+                rows: 50,
+            },
+        )
+        .unwrap();
     screen
         .switch_active_tab(TabPosition::new(0), None, true, crate::ClientId::new(2))
         .expect("TEST");
@@ -732,14 +772,18 @@ fn detaching_client_grows_vacated_tab_back() {
     new_tab(&mut screen, 1, TabId::new(0));
     screen.add_client(crate::ClientId::new(2)).expect("TEST");
 
-    screen.set_client_size(
-        crate::ClientId::new(1),
-        Size {
-            cols: 160,
-            rows: 50,
-        },
-    );
-    screen.set_client_size(crate::ClientId::new(2), Size { cols: 80, rows: 24 });
+    screen
+        .set_client_size(
+            crate::ClientId::new(1),
+            Size {
+                cols: 160,
+                rows: 50,
+            },
+        )
+        .unwrap();
+    screen
+        .set_client_size(crate::ClientId::new(2), Size { cols: 80, rows: 24 })
+        .unwrap();
     screen.recompute_tab_size(TabId::new(0)).expect("TEST");
     assert_eq!(
         screen.tabs.get(&TabId::new(0)).unwrap().size,
@@ -772,7 +816,7 @@ fn closing_a_tab_resizes_the_tab_it_returns_to() {
         rows: 50,
     };
 
-    screen.set_client_size(client_id, small_size);
+    screen.set_client_size(client_id, small_size).unwrap();
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
     assert_eq!(
@@ -781,7 +825,7 @@ fn closing_a_tab_resizes_the_tab_it_returns_to() {
         "Pre-condition: both tabs sized to the small client viewport"
     );
 
-    screen.set_client_size(client_id, large_size);
+    screen.set_client_size(client_id, large_size).unwrap();
     screen.recompute_tab_size(TabId::new(1)).expect("TEST");
     assert_eq!(
         screen.tabs.get(&TabId::new(1)).unwrap().size,
@@ -864,7 +908,9 @@ fn a_pixel_dimensions_reply_arriving_before_the_client_size_still_derives_the_ce
         "there is no client size to divide the text area by yet"
     );
 
-    screen.set_client_size(crate::ClientId::new(1), size);
+    screen
+        .set_client_size(crate::ClientId::new(1), size)
+        .unwrap();
 
     assert_eq!(
         *screen.character_cell_size.borrow(),
@@ -875,13 +921,15 @@ fn a_pixel_dimensions_reply_arriving_before_the_client_size_still_derives_the_ce
         "the size arriving derives what the earlier reply could not"
     );
 
-    screen.set_client_size(
-        crate::ClientId::new(1),
-        Size {
-            cols: 100,
-            rows: 30,
-        },
-    );
+    screen
+        .set_client_size(
+            crate::ClientId::new(1),
+            Size {
+                cols: 100,
+                rows: 30,
+            },
+        )
+        .unwrap();
 
     assert_eq!(
         *screen.character_cell_size.borrow(),

@@ -154,6 +154,22 @@ fn forms_evaluate_once_and_keep_bindings_local() {
 }
 
 #[test]
+fn quasiquote_expands_reader_quotes_at_the_current_depth() {
+    for source in ["(let ((x 42)) `(a ',x))", "(let ((x 42)) `(a (quote ,x)))"] {
+        check(source, "(a (quote 42))");
+    }
+    check("(let ((x 42)) `(a '',x))", "(a (quote (quote 42)))");
+    check(
+        "(let ((xs '(2 3))) `(a '(1 ,@xs 4)))",
+        "(a (quote (1 2 3 4)))",
+    );
+    check(
+        "(let ((x 42)) `(a `(b ',x ',,x)))",
+        "(a (quasiquote (b (quote (unquote x)) (quote (unquote 42)))))",
+    );
+}
+
+#[test]
 fn multiple_values_validate_arity_and_simultaneous_scope() {
     check("(list (call-with-values (lambda () (values 1 2)) +) (call-with-values (lambda () (values)) list) (call-with-values (lambda () 7) list))", "(3 () (7))");
     check("(define count 0) (define-values (a b) (begin (set! count (+ count 1)) (values 3 4))) (list a b count)", "(3 4 1)");

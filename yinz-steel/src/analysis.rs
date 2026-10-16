@@ -130,6 +130,9 @@ fn bindings(expressions: &[ExprKind], bound: &mut HashSet<String>) {
 }
 
 fn unquotes(expression: &ExprKind, depth: usize) -> Vec<&ExprKind> {
+    if let ExprKind::Quote(quote) = expression {
+        return unquotes(&quote.expr, depth);
+    }
     if let ExprKind::Vector(vector) = expression {
         return vector
             .args

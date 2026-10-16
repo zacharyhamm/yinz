@@ -6621,7 +6621,18 @@ fn a_muse_submission_receipt_binds_with_the_first_conversation() {
     assert_eq!(result.outcome, AgentOutcome::Completed);
     assert!(result.acknowledged);
     assert_eq!(result.submission_id.as_deref(), Some("first-muse"));
-    assert_eq!(replies(&messages, pinned_observer), vec![result]);
+    let pinned_results = replies(&messages, pinned_observer);
+    assert_eq!(pinned_results.len(), 1);
+    let pinned_result = &pinned_results[0];
+    // Report age can advance between observers; compare the receipt and conversation.
+    assert_eq!(pinned_result.outcome, result.outcome);
+    assert_eq!(pinned_result.acknowledged, result.acknowledged);
+    assert_eq!(pinned_result.submission_id, result.submission_id);
+    assert_eq!(pinned_result.turn_id, result.turn_id);
+    assert_eq!(
+        pinned_result.agents[0].agent.session_id.as_deref(),
+        Some("conversation")
+    );
     screen.agent_control(wait_submission("first-muse"), CLIENT);
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,

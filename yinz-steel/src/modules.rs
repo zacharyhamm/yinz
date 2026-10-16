@@ -637,6 +637,9 @@ fn collect_quoted_imports(
     depth: usize,
     imports: &mut Vec<Import>,
 ) -> Result<()> {
+    if let ExprKind::Quote(quote) = expression {
+        return collect_quoted_imports(&quote.expr, depth, imports);
+    }
     let (values, head) = match expression {
         ExprKind::List(list) => (&list.args, list.first_ident().map(|name| name.resolve())),
         ExprKind::Vector(vector) => (&vector.args, None),

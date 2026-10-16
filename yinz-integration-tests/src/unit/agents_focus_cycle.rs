@@ -59,8 +59,13 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
             r#"layout { pane command="claude"; pane command="codex"; }"#.into(),
         ))
         .start();
-    let _claude = yinz.expect_pty_spawn();
+    let claude = yinz.expect_pty_spawn();
     let _codex = yinz.expect_pty_spawn();
+    // PTYs spawn before client registration; wait for the layout before sending the shortcut.
+    claude.output(b"focus cycle ready");
+    yinz.wait_until("initial layout rendered", |frame| {
+        frame.contains("focus cycle ready")
+    });
     yinz.send_stdin(&keys::ctrl('b'));
     let initial = yinz.wait_until("both agents appear in the panel", |frame| {
         frame.contains("Agents")

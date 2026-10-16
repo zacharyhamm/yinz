@@ -133,7 +133,7 @@ fn host_focus_loss_is_withheld_while_another_client_is_still_focused() {
     let (mut screen, tty_stdin_bytes, _server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.set_client_size(second_client_id, size);
+    screen.set_client_size(second_client_id, size).unwrap();
     screen.add_client(second_client_id).unwrap();
     subscribe_pane_to_focus_events(
         &mut screen,
@@ -195,7 +195,7 @@ fn host_focus_changes_of_clients_on_different_panes_are_independent() {
     let (mut screen, tty_stdin_bytes, _server_receiver) =
         create_new_screen_with_capture(size, true, true, true, false);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.set_client_size(second_client_id, size);
+    screen.set_client_size(second_client_id, size).unwrap();
     screen.add_client(second_client_id).unwrap();
     {
         let active_tab = screen.get_active_tab_mut(first_client_id).unwrap();
@@ -250,7 +250,9 @@ fn a_departing_client_leaves_no_host_focus_state_behind() {
     let (mut screen, _tty_stdin_bytes, _server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.set_client_size(crate::ClientId::new(2), size);
+    screen
+        .set_client_size(crate::ClientId::new(2), size)
+        .unwrap();
     screen.add_client(crate::ClientId::new(2)).unwrap();
     screen.host_terminal_focus_changed(crate::ClientId::new(2), false);
     assert!(screen.client_host_focused.contains_key(&ClientId::new(2)));

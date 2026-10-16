@@ -266,7 +266,9 @@ fn each_client_is_spoken_to_in_the_protocol_of_its_own_host() {
     let (mut screen, _tty_stdin_bytes, server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.set_client_size(crate::ClientId::new(2), size);
+    screen
+        .set_client_size(crate::ClientId::new(2), size)
+        .unwrap();
     screen.add_client(crate::ClientId::new(2)).unwrap();
     screen.set_client_host_terminal_env(crate::ClientId::new(1), kitty_env());
     screen.set_client_host_terminal_env(crate::ClientId::new(2), BTreeMap::new());
@@ -325,7 +327,9 @@ fn a_departing_client_leaves_no_host_notification_state_behind() {
     let (mut screen, _tty_stdin_bytes, _server_receiver) =
         create_new_screen_with_capture(size, true, true, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    screen.set_client_size(crate::ClientId::new(2), size);
+    screen
+        .set_client_size(crate::ClientId::new(2), size)
+        .unwrap();
     screen.add_client(crate::ClientId::new(2)).unwrap();
     screen.set_client_host_terminal_env(crate::ClientId::new(2), kitty_env());
     assert!(screen
