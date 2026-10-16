@@ -181,34 +181,15 @@ pub fn granted_permission_request_result() {
         rows: 20,
     };
 
-    // here we create a fake screen thread that will send a PermissionStatus::Granted
-    // message for every permission request it gets
-    let screen_thread = std::thread::Builder::new()
-        .name("fake_screen_thread".to_string())
-        .spawn({
-            let cache_path = cache_path.clone();
-            let plugin_thread_sender = plugin_thread_sender.clone();
-            move || loop {
-                let (event, _err_ctx) = screen_receiver
-                    .recv()
-                    .expect("failed to receive event on channel");
-                match event {
-                    ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
-                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
-                            request_id: plugin_permission.request_id,
-                            status: PermissionStatus::Granted,
-                            cache_path: Some(cache_path.clone()),
-                        });
-                        break;
-                    },
-                    ScreenInstruction::Exit => {
-                        break;
-                    },
-                    _ => {},
-                }
-            }
-        })
-        .unwrap();
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
+        screen_receiver,
+        cache_path.clone(),
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
+    );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
@@ -229,14 +210,24 @@ pub fn granted_permission_request_result() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('1')).with_ctrl_modifier()), // this triggers the enent in the fixture plugin
     )]));
-    screen_thread.join().unwrap();
+    // The answer can be deferred while initialization finishes; sending it is not completion.
+    received_screen_instructions.wait_until(
+        "permission answer applied",
+        FAKE_SCREEN_RECV_TIMEOUT,
+        |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, ScreenInstruction::CancelPluginPermission(_)))
+                .then_some(())
+        },
+    );
     teardown();
+    screen_thread.join().unwrap();
 
     let permission_cache = PermissionCache::from_path_or_default(Some(cache_path));
     let mut permissions =
@@ -274,34 +265,15 @@ pub fn denied_permission_request_result() {
         rows: 20,
     };
 
-    // here we create a fake screen thread that will send a PermissionStatus::Granted
-    // message for every permission request it gets
-    let screen_thread = std::thread::Builder::new()
-        .name("fake_screen_thread".to_string())
-        .spawn({
-            let cache_path = cache_path.clone();
-            let plugin_thread_sender = plugin_thread_sender.clone();
-            move || loop {
-                let (event, _err_ctx) = screen_receiver
-                    .recv()
-                    .expect("failed to receive event on channel");
-                match event {
-                    ScreenInstruction::RequestPluginPermissions(_, plugin_permission) => {
-                        let _ = plugin_thread_sender.send(PluginInstruction::PermissionAnswer {
-                            request_id: plugin_permission.request_id,
-                            status: PermissionStatus::Denied,
-                            cache_path: Some(cache_path.clone()),
-                        });
-                        break;
-                    },
-                    ScreenInstruction::Exit => {
-                        break;
-                    },
-                    _ => {},
-                }
-            }
-        })
-        .unwrap();
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
+        screen_receiver,
+        cache_path.clone(),
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Denied,
+    );
 
     let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
     let _ = plugin_thread_sender.send(PluginInstruction::Load(
@@ -322,14 +294,24 @@ pub fn denied_permission_request_result() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('1')).with_ctrl_modifier()), // this triggers the enent in the fixture plugin
     )]));
-    screen_thread.join().unwrap();
+    // The answer can be deferred while initialization finishes; sending it is not completion.
+    received_screen_instructions.wait_until(
+        "permission answer applied",
+        FAKE_SCREEN_RECV_TIMEOUT,
+        |events| {
+            events
+                .iter()
+                .any(|event| matches!(event, ScreenInstruction::CancelPluginPermission(_)))
+                .then_some(())
+        },
+    );
     teardown();
+    screen_thread.join().unwrap();
 
     let permission_cache = PermissionCache::from_path_or_default(Some(cache_path));
     let permissions =
