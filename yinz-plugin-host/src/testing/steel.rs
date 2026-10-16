@@ -34,15 +34,25 @@ impl TestPaths for Sources {
             yinz_plugin_api::authoring::is_script_plugin(&path),
             "test target must be Scheme"
         );
-        let relative = path
-            .strip_prefix(&self.root)
-            .context("test target escapes its root")?;
+        let root = self
+            .root
+            .canonicalize()
+            .context("resolve Scheme test root")?;
+        // Normalize only through the root so symlinks beneath it remain visible to the resolver.
+        let mut prefix = PathBuf::new();
+        let mut relative = path.components();
+        loop {
+            prefix.push(relative.next().context("test target escapes its root")?);
+            if prefix.canonicalize().context("resolve test root alias")? == root {
+                break;
+            }
+        }
         // Keep URL decoding here; the source resolver uses filesystem path characters.
-        let confined_root = yinz_steel::modules::SourceRoot::file(&self.entry, Some(&self.root))?;
-        confined_root.resolve_from_root(relative)?;
+        let confined_root = yinz_steel::modules::SourceRoot::file(&self.entry, Some(&root))?;
+        confined_root.resolve_from_root(relative.as_path())?;
         let path = path.canonicalize().context("resolve Scheme test target")?;
         anyhow::ensure!(
-            path.starts_with(&self.root) && path.is_file(),
+            path.starts_with(&root) && path.is_file(),
             "test target escapes its root or is not a regular file"
         );
         anyhow::ensure!(

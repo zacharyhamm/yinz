@@ -384,6 +384,63 @@ fn scheme_test_targets_are_confined_and_preserve_escaped_names() {
 }
 
 #[test]
+fn scheme_test_targets_allow_root_aliases_but_reject_internal_symlinks() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().canonicalize().unwrap();
+    let root = directory.join("root");
+    std::fs::create_dir(&root).unwrap();
+    let file = root.join("reader #?%23.scm");
+    let external = directory.join("external.scm");
+    for path in [root.join("case.test.scm"), file.clone(), external.clone()] {
+        std::fs::write(path, "").unwrap();
+    }
+    let alias = directory.join("alias");
+    let root_alias = directory.join("root-alias");
+    for (target, link) in [
+        (&directory, alias.clone()),
+        (&root, root_alias.clone()),
+        (&file, root.join("link.scm")),
+        (&root, root.join("loop")),
+        (&external, root.join("escape.scm")),
+        (&directory, root.join("outside")),
+    ] {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+    let expected = url::Url::from_file_path(&file).unwrap().to_string();
+    for aliased_root in [alias.join("root"), root_alias] {
+        for source_root in [&root, &aliased_root] {
+            let sources = Sources {
+                entry: aliased_root.join("case.test.scm"),
+                root: source_root.clone(),
+            };
+            let base = url::Url::from_file_path(&sources.entry).unwrap();
+            let aliased_url = base.join("./reader%20%23%3F%2523.scm").unwrap();
+            for path in [
+                "./reader%20%23%3F%2523.scm",
+                aliased_url.as_str(),
+                &expected,
+            ] {
+                assert_eq!(sources.resolve_test_path(path).unwrap(), expected, "{path}");
+            }
+            for path in [
+                "./link.scm",
+                "./loop/reader%20%23%3F%2523.scm",
+                "./escape.scm",
+                "./outside/external.scm",
+                "../external.scm",
+            ] {
+                assert!(sources.resolve_test_path(path).is_err(), "{path}");
+                let absolute = base.join(path).unwrap();
+                assert!(
+                    sources.resolve_test_path(absolute.as_str()).is_err(),
+                    "{absolute}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_resolution_does_not_anchor_to_a_colliding_fixture_filename() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().canonicalize().unwrap();
