@@ -63,6 +63,7 @@ use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabPosition;
 use yinz_types::keys::{KeyModifier, KeyWithModifier};
+use yinz_types::multiplayer::ColorSlot;
 use yinz_types::position::{CellCoordinates, Column, ColumnCount, Row, RowCount};
 use yinz_types::style::{HostTerminalThemeMode, Style};
 #[allow(hidden_glob_reexports)]
@@ -473,15 +474,6 @@ impl TryFrom<ProtobufEvent> for Event {
                 ),
                 _ => Err("Malformed payload for CellPixelSizeChanged Event"),
             },
-            Ok(ProtobufEventType::ClientGridReset) => match protobuf_event.payload {
-                Some(ProtobufEventPayload::ClientGridResetPayload(client_id)) => {
-                    Ok(Event::ClientGridReset(
-                        ClientId::try_from(client_id)
-                            .map_err(|_| "client_id is outside u16 range")?,
-                    ))
-                },
-                _ => Err("Malformed payload for the ClientGridReset Event"),
-            },
             Ok(ProtobufEventType::BeforeClose) => match protobuf_event.payload {
                 None => Ok(Event::BeforeClose),
                 _ => Err("Malformed payload for the BeforeClose Event"),
@@ -505,16 +497,11 @@ impl TryFrom<ProtobufEvent> for Event {
                         .ok_or("Missing action in UserAction payload")?
                         .try_into()
                         .map_err(|_| "Failed to convert Action in UserAction payload")?;
-                    let client_id = ClientId::try_from(protobuf_payload.client_id)
-                        .map_err(|_| "client_id is outside u16 range")?;
+                    let client_id = ClientId::new(protobuf_payload.client_id);
                     let terminal_id = protobuf_payload
                         .terminal_id
                         .map(yinz_types::internal_ids::TerminalId::new);
-                    let cli_client_id = protobuf_payload
-                        .cli_client_id
-                        .map(ClientId::try_from)
-                        .transpose()
-                        .map_err(|_| "client_id is outside u16 range")?;
+                    let cli_client_id = protobuf_payload.cli_client_id.map(ClientId::new);
                     Ok(Event::UserAction(
                         action,
                         client_id,
@@ -556,9 +543,8 @@ impl TryFrom<ProtobufEvent> for Event {
                     let focused_client_ids: Vec<ClientId> = protobuf_payload
                         .focused_client_ids
                         .into_iter()
-                        .map(ClientId::try_from)
-                        .collect::<Result<_, _>>()
-                        .map_err(|_| "client_id is outside u16 range")?;
+                        .map(ClientId::new)
+                        .collect();
                     Ok(Event::CwdChanged(pane_id, new_cwd, focused_client_ids))
                 },
                 _ => Err("Malformed payload for the CwdChanged Event"),
@@ -573,9 +559,8 @@ impl TryFrom<ProtobufEvent> for Event {
                     let focused_client_ids: Vec<ClientId> = p
                         .focused_client_ids
                         .into_iter()
-                        .map(ClientId::try_from)
-                        .collect::<Result<_, _>>()
-                        .map_err(|_| "client_id is outside u16 range")?;
+                        .map(ClientId::new)
+                        .collect();
                     Ok(Event::CommandChanged(
                         pane_id,
                         p.command,
@@ -787,8 +772,7 @@ impl TryFrom<ProtobufEvent> for Event {
                         Some(hook_payload::Payload::SessionStart(start)) => {
                             yinz_types::data::HookPayload::SessionStart {
                                 session_name: start.session_name.into(),
-                                client_id: ClientId::try_from(start.client_id)
-                                    .map_err(|_| "client_id is outside u16 range")?,
+                                client_id: ClientId::new(start.client_id),
                             }
                         },
                         None => return Err("Malformed payload for Hook Event"),
@@ -896,8 +880,7 @@ impl TryFrom<ProtobufClientInfo> for ClientInfo {
     type Error = &'static str;
     fn try_from(protobuf_client_info: ProtobufClientInfo) -> Result<Self, &'static str> {
         Ok(ClientInfo::new(
-            ClientId::try_from(protobuf_client_info.client_id)
-                .map_err(|_| "client_id is outside u16 range")?,
+            ClientId::new(protobuf_client_info.client_id),
             protobuf_client_info
                 .pane_id
                 .ok_or("No pane id found")?
@@ -912,7 +895,7 @@ impl TryFrom<ClientInfo> for ProtobufClientInfo {
     type Error = &'static str;
     fn try_from(client_info: ClientInfo) -> Result<Self, &'static str> {
         Ok(ProtobufClientInfo {
-            client_id: u32::from(client_info.client_id.get()),
+            client_id: client_info.client_id.get(),
             pane_id: Some(client_info.pane_id.try_into()?),
             running_command: client_info.running_command,
             is_current_client: client_info.is_current_client,
@@ -1325,12 +1308,6 @@ impl TryFrom<Event> for ProtobufEvent {
                     },
                 )),
             }),
-            Event::ClientGridReset(client_id) => Ok(ProtobufEvent {
-                name: ProtobufEventType::ClientGridReset as i32,
-                payload: Some(ProtobufEventPayload::ClientGridResetPayload(u32::from(
-                    client_id.get(),
-                ))),
-            }),
             Event::BeforeClose => Ok(ProtobufEvent {
                 name: ProtobufEventType::BeforeClose as i32,
                 payload: None,
@@ -1351,9 +1328,9 @@ impl TryFrom<Event> for ProtobufEvent {
                     .map_err(|_| "Failed to convert Action to protobuf")?;
                 let protobuf_payload = ProtobufUserActionPayload {
                     action: Some(protobuf_action),
-                    client_id: u32::from(client_id.get()),
+                    client_id: client_id.get(),
                     terminal_id: terminal_id.map(|id| id.get()),
-                    cli_client_id: cli_client_id.map(|id| u32::from(id.get())),
+                    cli_client_id: cli_client_id.map(|id| id.get()),
                 };
                 Ok(ProtobufEvent {
                     name: ProtobufEventType::UserAction as i32,
@@ -1385,10 +1362,8 @@ impl TryFrom<Event> for ProtobufEvent {
                     .to_str()
                     .ok_or("Failed to convert PathBuf to string")?
                     .to_string();
-                let focused_client_ids_u32: Vec<u32> = focused_client_ids
-                    .into_iter()
-                    .map(|id| u32::from(id.get()))
-                    .collect();
+                let focused_client_ids_u32: Vec<u32> =
+                    focused_client_ids.into_iter().map(|id| id.get()).collect();
                 let cwd_changed_payload = ProtobufCwdChangedPayload {
                     pane_id: Some(protobuf_pane_id),
                     new_cwd: new_cwd_string,
@@ -1401,10 +1376,8 @@ impl TryFrom<Event> for ProtobufEvent {
             },
             Event::CommandChanged(pane_id, command, is_foreground, focused_client_ids) => {
                 let protobuf_pane_id: ProtobufPaneId = pane_id.try_into()?;
-                let focused_client_ids_u32: Vec<u32> = focused_client_ids
-                    .into_iter()
-                    .map(|id| u32::from(id.get()))
-                    .collect();
+                let focused_client_ids_u32: Vec<u32> =
+                    focused_client_ids.into_iter().map(|id| id.get()).collect();
                 let payload = ProtobufCommandChangedPayload {
                     pane_id: Some(protobuf_pane_id),
                     command,
@@ -1620,7 +1593,7 @@ impl TryFrom<Event> for ProtobufEvent {
                         client_id,
                     } => hook_payload::Payload::SessionStart(ProtobufSessionStartHookPayload {
                         session_name: session_name.to_string(),
-                        client_id: u32::from(client_id.get()),
+                        client_id: client_id.get(),
                     }),
                 };
                 Ok(ProtobufEvent {
@@ -1802,7 +1775,7 @@ impl TryFrom<(ClientId, Vec<TabId>)> for ProtobufClientTabHistory {
     type Error = &'static str;
     fn try_from((client_id, tab_history): (ClientId, Vec<TabId>)) -> Result<Self, Self::Error> {
         Ok(ProtobufClientTabHistory {
-            client_id: u32::from(client_id.get()),
+            client_id: client_id.get(),
             tab_history: tab_history
                 .into_iter()
                 .map(|t| u32::try_from(t.get()))
@@ -1815,7 +1788,7 @@ impl TryFrom<(ClientId, Vec<TabId>)> for ProtobufClientTabHistory {
 impl From<(ClientId, Vec<PaneId>)> for ProtobufClientPaneHistory {
     fn from((client_id, pane_history): (ClientId, Vec<PaneId>)) -> ProtobufClientPaneHistory {
         ProtobufClientPaneHistory {
-            client_id: u32::from(client_id.get()),
+            client_id: client_id.get(),
             pane_history: pane_history
                 .into_iter()
                 .filter_map(|p| p.try_into().ok())
@@ -1879,10 +1852,7 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
                 .iter()
                 .map(|t| TabId::new(*t as usize))
                 .collect();
-            tab_history.insert(
-                ClientId::try_from(client_id).map_err(|_| "client_id is outside u16 range")?,
-                tab_history_for_client,
-            );
+            tab_history.insert(ClientId::new(client_id), tab_history_for_client);
         }
         let mut pane_history = BTreeMap::new();
         for client_pane_history in protobuf_session_manifest.pane_history.into_iter() {
@@ -1892,10 +1862,7 @@ impl TryFrom<ProtobufSessionManifest> for SessionInfo {
                 .into_iter()
                 .filter_map(|p| p.try_into().ok())
                 .collect();
-            pane_history.insert(
-                ClientId::try_from(client_id).map_err(|_| "client_id is outside u16 range")?,
-                pane_history_for_client,
-            );
+            pane_history.insert(ClientId::new(client_id), pane_history_for_client);
         }
         Ok(SessionInfo {
             name: protobuf_session_manifest.name.into(),
@@ -2418,8 +2385,7 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
                 .iter()
                 .map(|index_in_pane_group| {
                     Ok((
-                        ClientId::try_from(index_in_pane_group.client_id)
-                            .map_err(|_| "client_id is outside u16 range")?,
+                        ClientId::new(index_in_pane_group.client_id),
                         index_in_pane_group.index as usize,
                     ))
                 })
@@ -2488,7 +2454,7 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
                 .index_in_pane_group
                 .iter()
                 .map(|(&client_id, &index)| IndexInPaneGroup {
-                    client_id: u32::from(client_id.get()),
+                    client_id: client_id.get(),
                     index: index as u32,
                 })
                 .collect(),
@@ -2519,9 +2485,13 @@ impl TryFrom<ProtobufTabInfo> for TabInfo {
             other_focused_clients: protobuf_tab_info
                 .other_focused_clients
                 .iter()
-                .map(|c| ClientId::try_from(*c))
-                .collect::<Result<_, _>>()
-                .map_err(|_| "client_id is outside u16 range")?,
+                .map(|c| ClientId::new(*c))
+                .collect(),
+            other_focused_client_slots: protobuf_tab_info
+                .other_focused_client_slots
+                .iter()
+                .map(|slot| u8::try_from(*slot).ok().and_then(ColorSlot::new))
+                .collect(),
             active_swap_layout_name: protobuf_tab_info.active_swap_layout_name,
             is_swap_layout_dirty: protobuf_tab_info.is_swap_layout_dirty,
             viewport_rows: RowCount::try_from(protobuf_tab_info.viewport_rows)
@@ -2558,7 +2528,12 @@ impl TryFrom<TabInfo> for ProtobufTabInfo {
             other_focused_clients: tab_info
                 .other_focused_clients
                 .iter()
-                .map(|c| u32::from(c.get()))
+                .map(|c| c.get())
+                .collect(),
+            other_focused_client_slots: tab_info
+                .other_focused_client_slots
+                .iter()
+                .map(|slot| slot.map_or(0, |slot| u32::from(slot.get())))
                 .collect(),
             active_swap_layout_name: tab_info.active_swap_layout_name,
             is_swap_layout_dirty: tab_info.is_swap_layout_dirty,
@@ -2829,7 +2804,6 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::PastedText => EventType::PastedText,
             ProtobufEventType::ConfigWasWrittenToDisk => EventType::ConfigWasWrittenToDisk,
             ProtobufEventType::CellPixelSizeChanged => EventType::CellPixelSizeChanged,
-            ProtobufEventType::ClientGridReset => EventType::ClientGridReset,
             ProtobufEventType::BeforeClose => EventType::BeforeClose,
             ProtobufEventType::InterceptedKeyPress => EventType::InterceptedKeyPress,
             ProtobufEventType::PaneRenderReport => EventType::PaneRenderReport,
@@ -2902,7 +2876,6 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::PastedText => ProtobufEventType::PastedText,
             EventType::ConfigWasWrittenToDisk => ProtobufEventType::ConfigWasWrittenToDisk,
             EventType::CellPixelSizeChanged => ProtobufEventType::CellPixelSizeChanged,
-            EventType::ClientGridReset => ProtobufEventType::ClientGridReset,
             EventType::BeforeClose => ProtobufEventType::BeforeClose,
             EventType::InterceptedKeyPress => ProtobufEventType::InterceptedKeyPress,
             EventType::PaneRenderReport => ProtobufEventType::PaneRenderReport,
@@ -3241,6 +3214,7 @@ fn serialize_tab_update_event_with_non_default_values() {
             is_sync_panes_active: false,
             are_floating_panes_visible: true,
             other_focused_clients: vec![ClientId::new(2), ClientId::new(3), ClientId::new(4)],
+            other_focused_client_slots: vec![ColorSlot::new(2), None, ColorSlot::new(10)],
             active_swap_layout_name: Some("my cool swap layout".to_owned()),
             is_swap_layout_dirty: false,
             viewport_rows: yinz_types::position::RowCount::new(10),
@@ -3265,6 +3239,7 @@ fn serialize_tab_update_event_with_non_default_values() {
             is_sync_panes_active: true,
             are_floating_panes_visible: true,
             other_focused_clients: vec![ClientId::new(1), ClientId::new(5), ClientId::new(111)],
+            other_focused_client_slots: vec![ColorSlot::new(2), None, ColorSlot::new(10)],
             active_swap_layout_name: None,
             is_swap_layout_dirty: true,
             viewport_rows: yinz_types::position::RowCount::new(10),
@@ -3455,6 +3430,7 @@ fn serialize_session_update_event_with_non_default_values() {
             is_sync_panes_active: false,
             are_floating_panes_visible: true,
             other_focused_clients: vec![ClientId::new(2), ClientId::new(3), ClientId::new(4)],
+            other_focused_client_slots: vec![ColorSlot::new(2), None, ColorSlot::new(10)],
             active_swap_layout_name: Some("my cool swap layout".to_owned()),
             is_swap_layout_dirty: false,
             viewport_rows: yinz_types::position::RowCount::new(10),
@@ -3479,6 +3455,7 @@ fn serialize_session_update_event_with_non_default_values() {
             is_sync_panes_active: true,
             are_floating_panes_visible: true,
             other_focused_clients: vec![ClientId::new(1), ClientId::new(5), ClientId::new(111)],
+            other_focused_client_slots: vec![ColorSlot::new(2), None, ColorSlot::new(10)],
             active_swap_layout_name: None,
             is_swap_layout_dirty: true,
             viewport_rows: yinz_types::position::RowCount::new(10),
@@ -4072,8 +4049,7 @@ impl TryFrom<ProtobufContextMenuContext> for ContextMenuContext {
         let items = context.items.into_iter().map(Into::into).collect();
         Ok(ContextMenuContext {
             request_id: ContextMenuRequestId::new(context.request_id),
-            client_id: ClientId::try_from(context.client_id)
-                .map_err(|_| "client_id is outside u16 range")?,
+            client_id: ClientId::new(context.client_id),
             pane_id,
             tab_position: TabPosition::new(context.tab_position as usize),
             click: (context.click_x as usize, context.click_y as usize),
@@ -4109,7 +4085,7 @@ impl TryFrom<ContextMenuContext> for ProtobufContextMenuContext {
             .collect();
         Ok(ProtobufContextMenuContext {
             request_id: context.request_id.get(),
-            client_id: u32::from(context.client_id.get()),
+            client_id: context.client_id.get(),
             pane_id: Some(context.pane_id.try_into()?),
             tab_position: u32::try_from(context.tab_position.get())
                 .map_err(|_| "Tab position is outside u32 range")?,
@@ -4287,7 +4263,7 @@ mod tests {
             let item_count = tc.draw(generators::integers::<usize>().max_value(3));
             ContextMenuContext {
                 request_id: ContextMenuRequestId::new(tc.draw(generators::integers::<u64>())),
-                client_id: ClientId::new(tc.draw(generators::integers::<u16>())),
+                client_id: ClientId::new(tc.draw(generators::integers::<u32>())),
                 pane_id: pane_id(tc),
                 tab_position: TabPosition::new(tc.draw(generators::integers::<u16>()) as usize),
                 click: (
@@ -4374,7 +4350,7 @@ mod tests {
                         },
                         _ => yinz_types::data::HookPayload::SessionStart {
                             session_name: strings(tc).into(),
-                            client_id: ClientId::new(tc.draw(generators::integers::<u16>())),
+                            client_id: ClientId::new(tc.draw(generators::integers::<u32>())),
                         },
                     },
                 },

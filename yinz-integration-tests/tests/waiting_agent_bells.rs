@@ -63,13 +63,17 @@ fn waiting_agent_bells_render_in_both_tab_bars_pane_titles_and_stack_labels() {
                         }
                 },
             );
-            let (code, output) = yinz.run_actions_reporting(vec![
-                Action::FocusPaneByPaneId { pane_id },
-                Action::RenameTerminalPane {
-                    pane_id: first.terminal_id(),
-                    name: "long-agent-name-".repeat(8).into_bytes(),
-                },
-            ]);
+            // The action is for the attached client, which may already be focused on alpha.
+            let (code, output) =
+                yinz.run_actions_reporting(vec![Action::FocusPaneByPaneId { pane_id }]);
+            assert!(
+                code == 0 || output.contains("is already focused"),
+                "{code}: {output}"
+            );
+            let (code, output) = yinz.run_actions_reporting(vec![Action::RenameTerminalPane {
+                pane_id: first.terminal_id(),
+                name: "long-agent-name-".repeat(8).into_bytes(),
+            }]);
             assert_eq!(code, 0, "{output}");
             yinz.send_stdin(b"y");
             first.wait_for_stdin("answer reaches the waiting pane", |bytes| {

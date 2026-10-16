@@ -23,6 +23,7 @@ type CapturedClientMessages = Watched<HashMap<ClientId, Vec<ServerToClientMsg>>>
 #[derive(Clone, Default)]
 pub(crate) struct CapturingOs {
     pub(crate) server_to_client_messages: CapturedClientMessages,
+    pub(crate) fail_client: Option<ClientId>,
 }
 
 impl ServerOsApi for CapturingOs {
@@ -66,6 +67,9 @@ impl ServerOsApi for CapturingOs {
         Box::new(self.clone())
     }
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
+        if self.fail_client == Some(client_id) {
+            return Err(anyhow!("client disconnected"));
+        }
         self.server_to_client_messages
             .lock()
             .entry(client_id)

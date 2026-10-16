@@ -471,18 +471,13 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError", "ClientRouterFinished"];
+    special: ["ConfigurationEditor", "SavePaletteTheme", "FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
         (
             "ConfigurationEditor",
             ServerInstruction::ConfigurationEditor { edit: None, theme: None, reply: crossbeam::channel::bounded(1).0 },
             "Reconfigure"
-        ),
-        (
-            "ClientRouterFinished",
-            ServerInstruction::ClientRouterFinished(ClientId::new(1)),
-            "RemoveClient"
         ),
         (
             "SavePaletteTheme",

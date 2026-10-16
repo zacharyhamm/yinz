@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use prost::Message;
 use yinz_types::{
-    data::{ClientId, Event, EventType, PluginCommand},
+    data::{Event, EventType, PluginCommand},
     input::actions::Action,
     internal_ids::PluginId,
 };
@@ -132,35 +132,6 @@ fn host_folder_and_keybind_pipe_reject_non_utf8_paths() {
         ProtobufAction::try_from(action).unwrap_err(),
         "KeybindPipe cwd is not valid UTF-8"
     );
-}
-
-#[test]
-fn client_grid_reset_roundtrips_and_rejects_malformed_payloads() {
-    for id in [0, 7, u16::MAX] {
-        let event = Event::ClientGridReset(ClientId::new(id));
-        let protobuf = ProtobufEvent::try_from(event.clone()).unwrap();
-        let decoded = ProtobufEvent::decode(protobuf.encode_to_vec().as_slice()).unwrap();
-        assert_eq!(Event::try_from(decoded).unwrap(), event);
-    }
-    assert_eq!(
-        EventType::try_from(ProtobufEventType::ClientGridReset).unwrap(),
-        EventType::ClientGridReset
-    );
-    assert_eq!(
-        ProtobufEventType::try_from(EventType::ClientGridReset).unwrap(),
-        ProtobufEventType::ClientGridReset
-    );
-    for payload in [
-        None,
-        Some(ProtobufEventPayload::VisiblePayload(true)),
-        Some(ProtobufEventPayload::ClientGridResetPayload(65536)),
-    ] {
-        assert!(Event::try_from(ProtobufEvent {
-            name: ProtobufEventType::ClientGridReset as i32,
-            payload
-        })
-        .is_err());
-    }
 }
 
 #[test]

@@ -12,11 +12,9 @@
 //!
 //! Step 3 is cheap enough to sit in a render loop; steps 1 and 2 are not. Note that a plugin pane
 //! holds one grid *per attached client* and `render` runs once per client, so "once" means once
-//! per client — see `get_plugin_ids().client_id`. Subscribe to `EventType::ClientGridReset`:
-//! `Event::ClientGridReset(client_id)` means that client's grid has a fresh image namespace,
-//! including after reconnect with a reused client id. Clear only that client's transmission
-//! cache and request a render to transmit and place its images again. Ordinary frames preserve
-//! the namespace and do not emit this event.
+//! per client — see `get_plugin_ids().client_id`. A client that reconnects comes back with a new
+//! client id and a fresh grid, so a transmission cache keyed by client id never needs clearing for
+//! it. Ordinary frames preserve the namespace.
 //!
 //! Ids are the caller's to choose and are scoped to the pane, so they cannot collide with a
 //! terminal program's. Keep them under [`MAX_IMAGE_ID`]: the placeholder encoding carries the low

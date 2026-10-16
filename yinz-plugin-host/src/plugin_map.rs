@@ -113,7 +113,6 @@ pub type PluginAssets = (Arc<Mutex<RunningPlugin>>, Arc<Mutex<Subscriptions>>);
 
 /// A running plugin instance and the events it subscribes to, each behind its own lock so
 /// that updating one instance never blocks rendering another.
-#[cfg(test)]
 pub type RunningPluginAndSubscriptions = (Arc<Mutex<RunningPlugin>>, Arc<Mutex<Subscriptions>>);
 
 /// A `RunningPluginAndSubscriptions` together with the plugin and client it was loaded for.
@@ -378,7 +377,6 @@ impl PluginMap {
             )
             .collect()
     }
-    #[cfg(test)]
     pub fn get_running_plugin_and_subscriptions(
         &self,
         plugin_id: PluginId,

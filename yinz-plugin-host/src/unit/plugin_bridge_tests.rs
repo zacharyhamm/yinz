@@ -22,6 +22,15 @@ struct TestBridge {
 }
 
 impl TestBridge {
+    /// Make `clients` the connected ones without loading anything for them, each with the
+    /// attachment token that `add_client` would register: a connected client always has one.
+    fn connect(&self, clients: &[ClientId]) {
+        for client in clients {
+            self.bridge.reserve_client(*client);
+        }
+        *self.bridge.connected_clients.lock().unwrap() = clients.to_vec();
+    }
+
     fn hold_executor(&self, plugin: PluginId) -> std::sync::mpsc::SyncSender<()> {
         let (entered, started) = std::sync::mpsc::sync_channel(1);
         let (release, gate) = std::sync::mpsc::sync_channel(1);
@@ -1477,7 +1486,7 @@ fn removing_an_instance_fails_only_its_pipe_holds_and_ignores_late_completions()
         let plugin = PluginId::new(1);
         let first = ClientId::new(1);
         let second = ClientId::new(2);
-        *test.bridge.connected_clients.lock().unwrap() = vec![first, second];
+        test.connect(&[first, second]);
         for client in [1, 2] {
             let context = test.context(1, client, source);
             test.load(context).unwrap();
@@ -1784,6 +1793,8 @@ fn steel_startup_instance_is_cancelled_and_recreated_on_reattach() {
     let run =
         yinz_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", path.display()))
             .unwrap();
+    // As the plugin thread does for the session's first client before loading anything for it.
+    test.bridge.reserve_client(client);
     let (id, _) = test
         .bridge
         .load_plugin(
@@ -1805,10 +1816,20 @@ fn steel_startup_instance_is_cancelled_and_recreated_on_reattach() {
         .unwrap();
     let generation = original.lock().unwrap().generation().unwrap();
     test.bridge.add_client(client).unwrap();
+    test.bridge.base_modes.insert(client, InputMode::Locked);
+    test.bridge.keybinds.insert(client, Default::default());
     let cancel = test.bridge.client_cancellations.lock().unwrap()[&client].clone();
     assert!(test.bridge.plugin_map.lock().unwrap().contains(id, client));
     test.bridge.remove_client(client);
     assert!(cancel.load(Ordering::Acquire));
+    assert!(!test
+        .bridge
+        .client_cancellations
+        .lock()
+        .unwrap()
+        .contains_key(&client));
+    assert!(!test.bridge.base_modes.contains_key(&client));
+    assert!(!test.bridge.keybinds.contains_key(&client));
     // contains reads the instance's token without waiting for executor disposal.
     assert!(!test.bridge.plugin_map.lock().unwrap().contains(id, client));
     test.bridge.add_client(client).unwrap();
@@ -2557,7 +2578,7 @@ fn a_disconnected_steel_failure_neither_paints_an_error_nor_finishes_a_job() {
     let plugin = PluginId::new(1);
     let departing = ClientId::new(1);
     let remaining = ClientId::new(2);
-    *test.bridge.connected_clients.lock().unwrap() = vec![departing, remaining];
+    test.connect(&[departing, remaining]);
     for client in [1, 2] {
         let context = test.context(1, client, "(void)");
         test.load(context).unwrap();
@@ -2753,7 +2774,7 @@ const SCRATCH_PLUGIN: &str = r#"
 "#;
 
 impl TestBridge {
-    fn context(&mut self, id: u32, client: u16, source: &str) -> LoadingContext {
+    fn context(&mut self, id: u32, client: u32, source: &str) -> LoadingContext {
         let plugin_id = PluginId::new(id);
         let client_id = ClientId::new(client);
         self.bridge.cancel_token(plugin_id);
@@ -2824,7 +2845,7 @@ impl TestBridge {
         self.wait_for_executor(plugin_id);
     }
 
-    fn grant_files(&self, id: u32, client: u16) {
+    fn grant_files(&self, id: u32, client: u32) {
         let map = self.bridge.plugin_map.lock().unwrap();
         let (plugin, _) = map
             .get_running_plugin_and_subscriptions(PluginId::new(id), ClientId::new(client))
@@ -3439,7 +3460,7 @@ fn failed_loads_and_cancelled_loading_contexts_release_temporary_data() {
 #[test]
 fn departing_client_releases_its_data_while_another_client_stays() {
     let mut test = TestBridge::new();
-    *test.bridge.connected_clients.lock().unwrap() = vec![ClientId::new(1), ClientId::new(2)];
+    test.connect(&[ClientId::new(1), ClientId::new(2)]);
     let one = test.context(1, 1, "(void)");
     let one_path = one.plugin_own_data_dir.clone();
     let events = FileEvents::new(one_path.parent().unwrap());
@@ -3611,7 +3632,7 @@ fn unload_cancels_a_queued_recovery_after_load_failure() {
 #[test]
 fn reconnecting_before_client_cleanup_replaces_only_the_cancelled_instance() {
     let mut test = TestBridge::new();
-    *test.bridge.connected_clients.lock().unwrap() = vec![ClientId::new(1), ClientId::new(2)];
+    test.connect(&[ClientId::new(1), ClientId::new(2)]);
     let one = test.context(1, 1, RECOVERABLE_SCHEME);
     let path = one.plugin_own_data_dir.clone();
     test.load(one).unwrap();
@@ -4447,115 +4468,6 @@ fn a_resize_skips_an_instance_whose_lock_is_poisoned() {
     test.settle(plugin);
     assert!(frames(&mut test, plugin).is_empty());
     test.bridge.unload_plugin(plugin).unwrap();
-}
-
-#[test]
-fn client_grid_reset_is_targeted_subscribed_ungated_and_keeps_identity_on_replay() {
-    let mut test = TestBridge::new();
-    let owner = ClientId::new(1);
-    let other = ClientId::new(2);
-    for client in [owner, other] {
-        test.bridge.add_client(client).unwrap();
-    }
-    let source = r#"
-(define resets '())
-(define (update event)
-  (if (and (hash? event) (hash-contains? event "ClientGridReset"))
-    (begin (set! resets (append resets (list (hash-ref event "ClientGridReset")))) #t) #f))
-(define (render rows cols) (string-append "size " (string-join (map number->string resets) ",") ";"))
-"#;
-    let plugin = PluginId::new(1);
-    for id in [1, 2] {
-        for client in [1, 2] {
-            let context = test.context(id, client, source);
-            test.load(context).unwrap();
-        }
-    }
-    // Subscribe directly, as the plugin thread would after the SDK's subscribe command.
-    for (_, _, instance, subscriptions) in test
-        .bridge
-        .plugin_map
-        .lock()
-        .unwrap()
-        .running_plugins_and_subscriptions()
-    {
-        subscriptions
-            .lock()
-            .unwrap()
-            .insert(EventType::ClientGridReset);
-        assert_eq!(
-            check_event_permission(
-                instance.lock().unwrap().env(),
-                &Event::ClientGridReset(other)
-            ),
-            (PermissionStatus::Granted, None)
-        );
-    }
-    let _ = frames(&mut test, plugin);
-    let (shutdown, _receiver) = tokio::sync::mpsc::channel(1);
-    test.bridge
-        .update_plugins(
-            vec![(Some(plugin), Some(other), Event::ClientGridReset(other))],
-            shutdown.clone(),
-        )
-        .unwrap();
-    test.settle(plugin);
-    test.settle(PluginId::new(2));
-    // All instances subscribe, but only the addressed plugin/client receives the event.
-    let deliveries: Vec<_> = test
-        .receiver::<ScreenInstruction>()
-        .try_iter()
-        .filter_map(|(instruction, _)| match instruction {
-            ScreenInstruction::PluginBytes(assets) => Some(assets),
-            _ => None,
-        })
-        .flatten()
-        .map(|asset| (asset.plugin_id, asset.client_id))
-        .collect();
-    assert_eq!(deliveries, [(plugin, other)]);
-
-    test.bridge
-        .plugin_map
-        .lock()
-        .unwrap()
-        .get_running_plugin_and_subscriptions(PluginId::new(2), other)
-        .unwrap()
-        .1
-        .lock()
-        .unwrap()
-        .remove(&EventType::ClientGridReset);
-    // Subscription still matters for lifecycle events with no permission requirement.
-    test.bridge
-        .update_plugins(
-            vec![(
-                Some(PluginId::new(2)),
-                Some(other),
-                Event::ClientGridReset(other),
-            )],
-            shutdown.clone(),
-        )
-        .unwrap();
-    test.settle(PluginId::new(2));
-    assert!(frames(&mut test, PluginId::new(2)).is_empty());
-
-    test.bridge.cache_plugin_events(plugin);
-    test.bridge
-        .update_plugins(
-            vec![(Some(plugin), Some(other), Event::ClientGridReset(other))],
-            shutdown.clone(),
-        )
-        .unwrap();
-    assert!(
-        matches!(&test.bridge.cached_events_for_pending_plugins[&plugin][0], EventOrPipeMessage::Event(Some(target), Event::ClientGridReset(client)) if *target == other && *client == other)
-    );
-    test.bridge
-        .apply_cached_events(vec![plugin], true, shutdown)
-        .unwrap();
-    test.settle(plugin);
-    let mut replayed = frames_by_client(&mut test, plugin);
-    replayed.sort_by_key(|(client, _)| *client);
-    // Caching cannot turn a targeted event into a broadcast to the other instance.
-    assert_eq!(replayed, [(other, "size 2,2".into())]);
 }
 
 #[test]
@@ -5757,7 +5669,7 @@ fn background_permissions_preserve_each_requesting_client_including_cached_grant
         .insert("shared", "true");
     test.load(context).unwrap();
     test.bridge.shared_plugin_ids.insert(id);
-    *test.bridge.connected_clients.lock().unwrap() = vec![owner, other];
+    test.connect(&[owner, other]);
     let instance = test.instance_id(id, owner);
     let (shutdown, _) = tokio::sync::mpsc::channel(1);
     for client in [other, other, owner] {
@@ -5819,7 +5731,7 @@ fn background_permission_cancellation_replays_in_order_and_rechecks_pending_requ
         let id = PluginId::new(1);
         let first = ClientId::new(1);
         let second = ClientId::new(2);
-        *test.bridge.connected_clients.lock().unwrap() = vec![first, second];
+        test.connect(&[first, second]);
         let load_id = test.bridge.begin_plugin_load(id);
         for client in [1, 2] {
             let context = test.context(
@@ -5828,8 +5740,8 @@ fn background_permission_cancellation_replays_in_order_and_rechecks_pending_requ
                 r#"
 (define events '())
 (define (update event)
-  (when (and (hash? event) (hash-contains? event "ClientGridReset"))
-    (set! events (append events (list (number->string (hash-ref event "ClientGridReset")))))) #t)
+  (when (and (hash? event) (hash-contains? event "CustomMessage"))
+    (set! events (append events (list (list-ref (hash-ref event "CustomMessage") 1))))) #t)
 (define (pipe message) (set! events (append events (list "pipe"))) #t)
 (define (render rows cols) (string-append "size " (string-join events ",") ";"))
 "#,
@@ -5846,8 +5758,9 @@ fn background_permission_cancellation_replays_in_order_and_rechecks_pending_requ
             subscriptions
                 .lock()
                 .unwrap()
-                .insert(EventType::ClientGridReset);
+                .insert(EventType::CustomMessage);
         }
+        let probe = |client: ClientId| Event::CustomMessage("probe".into(), client.to_string());
         let (shutdown, _) = tokio::sync::mpsc::channel(1);
         let instance = test.instance_id(id, first);
         test.bridge
@@ -5861,7 +5774,7 @@ fn background_permission_cancellation_replays_in_order_and_rechecks_pending_requ
             .unwrap();
         test.bridge
             .update_plugins(
-                vec![(Some(id), Some(second), Event::ClientGridReset(first))],
+                vec![(Some(id), Some(second), probe(first))],
                 shutdown.clone(),
             )
             .unwrap();
@@ -5907,10 +5820,7 @@ fn background_permission_cancellation_replays_in_order_and_rechecks_pending_requ
                 .unwrap();
         }
         test.bridge
-            .update_plugins(
-                vec![(Some(id), Some(second), Event::ClientGridReset(second))],
-                shutdown,
-            )
+            .update_plugins(vec![(Some(id), Some(second), probe(second))], shutdown)
             .unwrap();
         test.settle(id);
         assert!(frames(&mut test, id)
@@ -6414,7 +6324,7 @@ fn picker_ownership_busy_clients_and_startup_cancellation() {
     let mut test = TestBridge::new();
     let first = ClientId::new(1);
     let second = ClientId::new(2);
-    *test.bridge.connected_clients.lock().unwrap() = vec![first, second];
+    test.connect(&[first, second]);
     let caller = PluginId::new(99);
     let context = test.context(99, 1, "(void)");
     test.load(context).unwrap();
@@ -6648,7 +6558,7 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
     ] {
         let mut test = TestBridge::new();
         let client = ClientId::new(1);
-        *test.bridge.connected_clients.lock().unwrap() = vec![client];
+        test.connect(&[client]);
         let caller = PluginId::new(99);
         let mut context = test.context(99, 1, "(void)");
         let shared = cause.starts_with("shared");
@@ -6919,7 +6829,7 @@ fn shared_cell_pixel_size_events_keep_the_reporting_client_and_need_no_permissio
         .insert("shared", "true");
     test.load(context).unwrap();
     test.bridge.shared_plugin_ids.insert(id);
-    *test.bridge.connected_clients.lock().unwrap() = vec![owner, actor];
+    test.connect(&[owner, actor]);
     let event = Event::CellPixelSizeChanged(Some(yinz_types::pane_size::SizeInPixels {
         width: 11,
         height: 22,
@@ -6978,4 +6888,260 @@ fn shared_cell_pixel_size_events_keep_the_reporting_client_and_need_no_permissio
         "{rendered:?}"
     );
     test.bridge.unload_plugin(id).unwrap();
+}
+
+/// Keybinds that bind `key` in normal mode, to tell one client's keybinds from another's.
+fn keybinds_binding(key: char) -> Keybinds {
+    let mut keybinds = Keybinds::default();
+    keybinds.0.entry(InputMode::Normal).or_default().insert(
+        yinz_types::keys::KeyWithModifier::new(yinz_types::keys::BareKey::Char(key)),
+        vec![yinz_types::input::actions::Action::NoOp],
+    );
+    keybinds
+}
+
+/// Whether `instructions` hold an `InitialKeybinds` with `keybinds`, addressed to `plugin` and
+/// `client`.
+fn sent_initial_keybinds(
+    instructions: &channels::Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
+    plugin: PluginId,
+    client: ClientId,
+    keybinds: &Keybinds,
+) -> bool {
+    let expected = Event::InitialKeybinds(keybinds.to_keybinds_vec());
+    instructions.try_iter().any(|(instruction, _)| {
+        matches!(instruction, PluginInstruction::Update(events)
+        if events.iter().any(|(p, c, event)| {
+            *p == Some(plugin) && *c == Some(client) && *event == expected
+        }))
+    })
+}
+
+const SUBSCRIBES_TO_INITIAL_KEYBINDS: &str = r#"
+(define (load config) (yinz-command (hash "Subscribe" (list "InitialKeybinds"))))
+(define (update event) #f)
+"#;
+
+/// A session-wide reconfigure leaves no entry for `ClientId::NONE`. It moves the keybinds and base
+/// mode that a plugin whose owner has left loads and subscribes with.
+#[test]
+fn a_reconfigure_without_a_client_moves_the_session_wide_keybinds() {
+    let mut test = TestBridge::new();
+    let departed = ClientId::new(1);
+    test.bridge.add_client(departed).unwrap();
+    test.bridge.remove_client(departed);
+    let keybinds = keybinds_binding('g');
+
+    test.bridge
+        .reconfigure(
+            ClientId::NONE,
+            Some(keybinds.clone()),
+            Some(InputMode::Locked),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    assert!(!test.bridge.keybinds.contains_key(&ClientId::NONE));
+    assert!(!test.bridge.base_modes.contains_key(&ClientId::NONE));
+    let context = test.context(1, departed.get(), "(void)");
+    assert_eq!(context.keybinds, keybinds);
+    assert_eq!(context.default_mode, InputMode::Locked);
+    let instructions = test.receiver::<PluginInstruction>();
+    instructions.try_iter().for_each(drop);
+    test.bridge
+        .send_initial_keybinds_to_plugin(PluginId::new(1), departed);
+    assert!(sent_initial_keybinds(
+        &instructions,
+        PluginId::new(1),
+        departed,
+        &keybinds
+    ));
+}
+
+/// An instance whose owner has no keybinds of its own (here a CLI connection's, in a session
+/// nobody was attached to) runs with the session-wide ones, so a client's reconfigure moving those
+/// reconfigures it too, and it hears the new keybinds under its own owner's id.
+#[test]
+fn orphaned_instances_follow_reconfigures_under_their_owner_id() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let cli = ClientId::new(7);
+    let client = ClientId::new(2);
+    let context = test.context(1, cli.get(), SUBSCRIBES_TO_INITIAL_KEYBINDS);
+    test.load(context).unwrap();
+    test.connect(&[client]);
+    let instructions = test.receiver::<PluginInstruction>();
+    instructions.try_iter().for_each(drop);
+    let keybinds = keybinds_binding('g');
+
+    test.bridge
+        .reconfigure(
+            client,
+            Some(keybinds.clone()),
+            Some(InputMode::Locked),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    test.settle(plugin);
+
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, Some(cli))
+        .unwrap();
+    assert_eq!(instance.lock().unwrap().env().keybinds, keybinds);
+    assert_eq!(
+        instance.lock().unwrap().env().default_mode,
+        InputMode::Locked
+    );
+    assert!(sent_initial_keybinds(&instructions, plugin, cli, &keybinds));
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+/// The session's first client gets no reconfigure of its own when it attaches. It keeps the
+/// keybinds and base mode it attached with when another client's reconfigure moves the
+/// session-wide ones.
+#[test]
+fn the_first_client_keeps_its_keybinds_when_another_reconfigures() {
+    let mut test = TestBridge::new();
+    let first = ClientId::new(1);
+    let second = ClientId::new(2);
+    test.bridge.add_client(first).unwrap();
+    let keybinds = keybinds_binding('g');
+
+    test.bridge
+        .reconfigure(
+            second,
+            Some(keybinds.clone()),
+            Some(InputMode::Locked),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    let context = test.context(1, first.get(), "(void)");
+    assert_eq!(context.keybinds, Keybinds::default());
+    assert_eq!(context.default_mode, InputMode::Normal);
+    let departed = test.context(2, 9, "(void)");
+    assert_eq!(departed.keybinds, keybinds);
+    assert_eq!(departed.default_mode, InputMode::Locked);
+}
+
+/// A shared plugin handed over to a remaining client runs with that client's keybinds and base
+/// mode, not those of the client that left.
+#[test]
+fn a_rekeyed_shared_plugin_takes_its_new_owners_keybinds() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let departing = ClientId::new(1);
+    let remaining = ClientId::new(2);
+    test.connect(&[departing, remaining]);
+    test.bridge
+        .reconfigure(
+            departing,
+            Some(keybinds_binding('d')),
+            Some(InputMode::Pane),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let keybinds = keybinds_binding('r');
+    test.bridge
+        .reconfigure(
+            remaining,
+            Some(keybinds.clone()),
+            Some(InputMode::Locked),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let mut context = test.context(1, departing.get(), SUBSCRIBES_TO_INITIAL_KEYBINDS);
+    context
+        .plugin_config
+        .initial_userspace_configuration
+        .insert("shared", "true");
+    test.load(context).unwrap();
+    test.bridge.shared_plugin_ids.insert(plugin);
+    let instructions = test.receiver::<PluginInstruction>();
+    instructions.try_iter().for_each(drop);
+
+    test.bridge.remove_client(departing);
+    test.settle(plugin);
+
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, Some(remaining))
+        .unwrap();
+    assert_eq!(instance.lock().unwrap().env().keybinds, keybinds);
+    assert_eq!(
+        instance.lock().unwrap().env().default_mode,
+        InputMode::Locked
+    );
+    assert!(sent_initial_keybinds(
+        &instructions,
+        plugin,
+        remaining,
+        &keybinds
+    ));
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+/// A load handled after its client's `RemoveClient` gets a token of its own and registers
+/// nothing: no `RemoveClient` will come back to forget it. Its instance is not cancelled.
+#[test]
+fn a_late_load_for_a_departed_client_registers_no_token() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let departed = ClientId::new(1);
+    test.bridge.add_client(departed).unwrap();
+    test.bridge.remove_client(departed);
+
+    let context = test.context(1, departed.get(), "(void)");
+    assert!(!context.client_cancel.load(Ordering::Acquire));
+    test.load(context).unwrap();
+
+    assert!(!test
+        .bridge
+        .client_cancellations
+        .lock()
+        .unwrap()
+        .contains_key(&departed));
+    assert!(test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .contains(plugin, departed));
+    test.bridge.unload_plugin(plugin).unwrap();
+}
+
+/// With nobody attached, a CLI connection owns what it launches. Its work keeps running after
+/// the CLI exits, whether the CLI's `RemoveClient` is handled before the load or after it.
+#[test]
+fn a_headless_cli_load_survives_the_cli_disconnecting() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let cli = ClientId::new(5);
+    let context = test.context(1, cli.get(), "(void)");
+    let token = context.client_cancel.clone();
+    test.load(context).unwrap();
+
+    test.bridge.remove_client(cli);
+    test.settle(plugin);
+
+    assert!(!token.load(Ordering::Acquire));
+    assert!(test.bridge.plugin_map.lock().unwrap().contains(plugin, cli));
+    test.bridge.unload_plugin(plugin).unwrap();
 }

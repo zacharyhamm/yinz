@@ -90,7 +90,7 @@ pub fn from_string(
                     }
                 }
                 tab_history.insert(
-                    ClientId::try_from(client_id).map_err(|_| "client_id is outside u16 range")?,
+                    ClientId::try_from(client_id).map_err(|_| "client_id is outside u32 range")?,
                     history,
                 );
             }
@@ -138,7 +138,7 @@ pub fn from_string(
                     }
                 }
                 pane_history.insert(
-                    ClientId::try_from(client_id).map_err(|_| "client_id is outside u16 range")?,
+                    ClientId::try_from(client_id).map_err(|_| "client_id is outside u32 range")?,
                     history,
                 );
             }

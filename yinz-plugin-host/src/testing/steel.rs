@@ -434,7 +434,7 @@ impl State {
                 let client = argument["client"]
                     .as_u64()
                     .context("palette requires a client ID")?;
-                anyhow::ensure!(u16::try_from(client).is_ok(), "invalid palette client ID");
+                anyhow::ensure!(u32::try_from(client).is_ok(), "invalid palette client ID");
                 let message = argument["message"].clone();
                 if let Some(context) = message.get("context") {
                     anyhow::ensure!(

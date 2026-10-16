@@ -48,7 +48,6 @@ type PaneId = { Terminal: number } | { Plugin: number };
 type PipeSource = { Cli: string } | { Plugin: number } | "Keybind";
 
 interface EventPayloads {
-  ClientGridReset: number;
   CellPixelSizeChanged: { width: Integer; height: Integer } | null;
   ModeUpdate: ModeInfo; TabUpdate: TabInfo[]; PaneUpdate: PaneManifest; Key: KeyWithModifier;
   Mouse: Mouse; Timer: number; CopyToClipboard: 'Command' | 'Primary' | 'System'; Visible: boolean; CustomMessage: [string, string];
@@ -377,7 +376,12 @@ interface PaneInfo {
 
 interface TabInfo {
   position: number; name: string; active: boolean; panes_to_hide: Integer; is_fullscreen_active: boolean; is_sync_panes_active: boolean;
-  are_floating_panes_visible: boolean; other_focused_clients: number[]; active_swap_layout_name: string | null; is_swap_layout_dirty: boolean;
+  are_floating_panes_visible: boolean; other_focused_clients: number[];
+  // Each other focused client's multiplayer color slot (`player_<slot>`), 1 to 10, or null past
+  // the tenth. Client ids are never reused and grow without bound, so color by slot, not by id.
+  // Absent from an older host, whose ids are the slots.
+  other_focused_client_slots?: (number | null)[];
+  active_swap_layout_name: string | null; is_swap_layout_dirty: boolean;
   viewport_rows: Integer; viewport_columns: Integer; display_area_rows: Integer; display_area_columns: Integer;
   selectable_tiled_panes_count: Integer; selectable_floating_panes_count: Integer; tab_id: number; has_bell_notification: boolean; is_flashing_bell: boolean;
 }

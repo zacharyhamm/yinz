@@ -813,11 +813,11 @@ impl Pane for TerminalPane {
     fn clear_screen(&mut self) {
         self.grid.clear_screen()
     }
-    fn scroll_up(&mut self, count: usize, _client_id: ClientId) {
+    fn scroll_up(&mut self, count: usize, _client_id: Option<ClientId>) {
         self.grid.move_viewport_up(count);
         self.set_should_render(true);
     }
-    fn scroll_down(&mut self, count: usize, _client_id: ClientId) {
+    fn scroll_down(&mut self, count: usize, _client_id: Option<ClientId>) {
         self.grid.move_viewport_down(count);
         self.set_should_render(true);
     }

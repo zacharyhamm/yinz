@@ -253,10 +253,10 @@ pub fn searching_inside_and_scroll() {
         terminal_pane.grid.search_results.selections.last()
     );
     // Scrolling up until a new search result appears
-    terminal_pane.scroll_up(4, fake_client_id);
+    terminal_pane.scroll_up(4, Some(fake_client_id));
 
     // Scrolling back down should give the same result as before
-    terminal_pane.scroll_down(4, fake_client_id);
+    terminal_pane.scroll_down(4, Some(fake_client_id));
     assert_eq!(
         terminal_pane.grid.search_results.active.as_ref(),
         terminal_pane.grid.search_results.selections.last()
@@ -267,10 +267,10 @@ pub fn searching_inside_and_scroll() {
     );
 
     // Scrolling up until a the active marker goes out of view
-    terminal_pane.scroll_up(5, fake_client_id);
+    terminal_pane.scroll_up(5, Some(fake_client_id));
     assert_eq!(terminal_pane.grid.search_results.active, None);
 
-    terminal_pane.scroll_down(5, fake_client_id);
+    terminal_pane.scroll_down(5, Some(fake_client_id));
     assert_eq!(terminal_pane.grid.search_results.active, None);
     assert_snapshot!(
         "grid_copy_quam_highlighted",

@@ -46,8 +46,20 @@ fn unreachable_session(tag: &str) -> String {
     format!("warp-tests-no-such-session-{tag}")
 }
 
-#[test]
-fn an_input_unblock_before_the_warp_reply_is_ignored() {
+fn read_reply_after(message: ServerToClientMsg) -> Result<String> {
+    read_reply_from(Duration::from_secs(10), move |mut sender| {
+        sender
+            .send_server_msg(message)
+            .expect("failed to send server message");
+    })
+}
+
+/// What `read_cli_reply`, waiting up to `timeout`, makes of a connection the server
+/// side of which `serve` drives.
+fn read_reply_from(
+    timeout: Duration,
+    serve: impl FnOnce(IpcSenderWithContext<ServerToClientMsg>) + Send + 'static,
+) -> Result<String> {
     let socket_dir = tempfile::TempDir::new().expect("failed to create temp dir");
     let socket_path = socket_dir.path().join("warp-reply.sock");
     let listener = ListenerOptions::new()
@@ -65,15 +77,7 @@ fn an_input_unblock_before_the_warp_reply_is_ignored() {
             .next()
             .expect("listener stopped")
             .expect("failed to accept connection");
-        let mut sender: IpcSenderWithContext<ServerToClientMsg> = IpcSenderWithContext::new(stream);
-        sender
-            .send_server_msg(ServerToClientMsg::UnblockInputThread)
-            .expect("failed to send input unblock");
-        sender
-            .send_server_msg(ServerToClientMsg::Log {
-                lines: vec!["Adopted pane".to_owned()],
-            })
-            .expect("failed to send warp reply");
+        serve(IpcSenderWithContext::new(stream));
     });
 
     let stream = LocalSocketStream::connect(
@@ -83,13 +87,160 @@ fn an_input_unblock_before_the_warp_reply_is_ignored() {
             .expect("invalid socket path"),
     )
     .expect("failed to connect socket");
+    bound_reply_time(&stream, timeout);
     let mut sender: IpcSenderWithContext<ClientToServerMsg> = IpcSenderWithContext::new(stream);
 
-    assert_eq!(
-        read_cli_reply(&mut sender).expect("the warp reply should follow the input unblock"),
-        "Adopted pane"
-    );
+    let reply = read_cli_reply(&mut sender);
+    // Closed, so a server still writing fails rather than blocking on a full socket.
+    drop(sender);
     server.join().expect("server thread panicked");
+    reply
+}
+
+#[test]
+fn a_successful_warp_reply_returns_its_message() {
+    let reply = read_reply_after(ServerToClientMsg::Log {
+        lines: vec!["Adopted".to_owned(), "pane".to_owned()],
+    });
+    assert_eq!(reply.unwrap(), "Adopted pane");
+}
+
+#[test]
+fn a_warp_refusal_returns_its_reason() {
+    let reply = read_reply_after(ServerToClientMsg::LogError {
+        lines: vec!["there is no tab 4 in this session".to_owned()],
+    });
+    assert_eq!(
+        format!("{:#}", reply.expect_err("a LogError is a refusal")),
+        "there is no tab 4 in this session"
+    );
+}
+
+/// What a session running an older server sends a warp connection ahead of its answer.
+fn older_server_pushes() -> [ServerToClientMsg; 3] {
+    [
+        ServerToClientMsg::UnblockInputThread,
+        ServerToClientMsg::SetMouseMode { enabled: true },
+        ServerToClientMsg::ConfigFileUpdated,
+    ]
+}
+
+#[test]
+fn an_unexpected_warp_reply_is_an_error() {
+    let message = ServerToClientMsg::QueryTerminalSize;
+    let expected = format!("unexpected reply from the other session: {message:?}");
+    let reply = read_reply_after(message);
+    assert_eq!(format!("{:#}", reply.unwrap_err()), expected);
+}
+
+#[test]
+fn an_older_servers_pushes_before_the_warp_reply_are_skipped() {
+    let reply = read_reply_from(Duration::from_secs(10), |mut sender| {
+        for message in older_server_pushes() {
+            sender
+                .send_server_msg(message)
+                .expect("failed to send server push");
+        }
+        sender
+            .send_server_msg(ServerToClientMsg::Log {
+                lines: vec!["Adopted pane".to_owned()],
+            })
+            .expect("failed to send warp reply");
+    });
+    assert_eq!(reply.unwrap(), "Adopted pane");
+}
+
+#[test]
+fn an_unanswered_warp_reply_times_out() {
+    let reply = read_reply_from(TEST_TIMEOUT, |sender| {
+        let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
+            sender.get_receiver().unwrap();
+        receiver
+            .set_recv_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        assert!(
+            receiver.recv_client_msg().is_eof(),
+            "the warp client must give up first"
+        );
+    });
+    reply.expect_err("no reply arrived");
+}
+
+#[test]
+fn a_closed_warp_connection_without_a_reply_is_an_error() {
+    let reply = read_reply_from(Duration::from_secs(10), |_| {});
+    assert_eq!(
+        format!("{:#}", reply.unwrap_err()),
+        "the other session closed the connection without answering"
+    );
+}
+
+#[test]
+fn a_shutdown_warp_reply_is_distinct_from_other_errors() {
+    let reply = read_reply_after(ServerToClientMsg::Exit {
+        exit_reason: yinz_ipc::ipc::ExitReason::Normal,
+    });
+    assert!(reply.unwrap_err().downcast_ref::<SessionEnded>().is_some());
+}
+
+#[test]
+fn the_capability_probe_reads_its_answer_after_an_older_servers_pushes() {
+    let session = FakeSession::bind("probe-answer");
+    let listener = session.listener.as_ref().unwrap();
+    let probe = {
+        let name = session.name.clone();
+        std::thread::spawn(move || warp_capabilities(&name, Duration::from_secs(10)))
+    };
+    let mut answer: IpcSenderWithContext<ServerToClientMsg> =
+        IpcSenderWithContext::new(listener.accept().unwrap());
+    let mut request: IpcReceiverWithContext<ClientToServerMsg> = answer.get_receiver().unwrap();
+    assert!(matches!(
+        request.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ConnStatus, _))
+    ));
+    for message in older_server_pushes() {
+        answer.send_server_msg(message).unwrap();
+    }
+    answer
+        .send_server_msg(ServerToClientMsg::Connected {
+            warp_companions: true,
+            warp_held_terminals: false,
+        })
+        .unwrap();
+    assert_eq!(
+        probe
+            .join()
+            .unwrap()
+            .expect("the probe should receive its answer"),
+        (true, false)
+    );
+}
+
+#[test]
+fn an_unanswered_capability_probe_times_out() {
+    let session = FakeSession::bind("probe-timeout");
+    let listener = session.listener.as_ref().unwrap();
+    let probe = {
+        let name = session.name.clone();
+        std::thread::spawn(move || warp_capabilities(&name, TEST_TIMEOUT))
+    };
+    let mut request: IpcReceiverWithContext<ClientToServerMsg> =
+        IpcReceiverWithContext::new(listener.accept().unwrap());
+    request
+        .set_recv_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    assert!(matches!(
+        request.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ConnStatus, _))
+    ));
+    assert!(
+        request.recv_client_msg().is_eof(),
+        "the probe must give up first"
+    );
+    assert_eq!(
+        format!("{:#}", probe.join().unwrap().unwrap_err()),
+        "destination did not answer the warp capability probe"
+    );
 }
 
 #[test]

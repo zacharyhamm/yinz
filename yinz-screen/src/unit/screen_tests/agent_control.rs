@@ -1068,7 +1068,7 @@ fn agent_read_returns_the_latest_lines_even_when_scrolled_up() {
             .unwrap()
             .get_pane_with_id_mut(PANE)
             .unwrap();
-        pane.scroll_up(scroll, CLIENT);
+        pane.scroll_up(scroll, Some(CLIENT));
         pane.start_selection(&Position::new(1, 0), CLIENT);
         pane.end_selection(&Position::new(2, 2), CLIENT);
         let selection = pane.get_selected_text(CLIENT);

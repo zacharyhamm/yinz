@@ -77,20 +77,18 @@ impl fmt::Display for PluginId {
 /// ```compile_fail
 /// use yinz_types::internal_ids::ClientId;
 /// fn for_client(_: ClientId) {}
-/// for_client(1_u16);
+/// for_client(1_u32);
 /// ```
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
-pub struct ClientId(u16);
+pub struct ClientId(u32);
 
-impl TryFrom<u32> for ClientId {
-    type Error = std::num::TryFromIntError;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        u16::try_from(value).map(Self::new)
+impl From<u32> for ClientId {
+    fn from(value: u32) -> Self {
+        Self::new(value)
     }
 }
 
@@ -98,15 +96,20 @@ impl TryFrom<i64> for ClientId {
     type Error = std::num::TryFromIntError;
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
-        u16::try_from(value).map(Self::new)
+        u32::try_from(value).map(Self::new)
     }
 }
 
 impl ClientId {
-    pub const fn new(value: u16) -> Self {
+    /// No client: a change or request that no connection owns. Connections are numbered from
+    /// 1 and a session never gives a departed connection's id to another, so this is never a
+    /// client's id.
+    pub const NONE: ClientId = ClientId::new(0);
+
+    pub const fn new(value: u32) -> Self {
         Self(value)
     }
-    pub const fn get(self) -> u16 {
+    pub const fn get(self) -> u32 {
         self.0
     }
 }
@@ -134,7 +137,7 @@ impl std::str::FromStr for PluginId {
 impl std::str::FromStr for ClientId {
     type Err = std::num::ParseIntError;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        value.parse::<u16>().map(Self::new)
+        value.parse::<u32>().map(Self::new)
     }
 }
 
@@ -171,13 +174,13 @@ impl TryFrom<usize> for PluginId {
 impl TryFrom<u64> for ClientId {
     type Error = std::num::TryFromIntError;
     fn try_from(value: u64) -> Result<Self, Self::Error> {
-        u16::try_from(value).map(Self::new)
+        u32::try_from(value).map(Self::new)
     }
 }
 impl TryFrom<usize> for ClientId {
     type Error = std::num::TryFromIntError;
     fn try_from(value: usize) -> Result<Self, Self::Error> {
-        u16::try_from(value).map(Self::new)
+        u32::try_from(value).map(Self::new)
     }
 }
 
@@ -597,7 +600,7 @@ mod tests {
             assert_eq!(TerminalId::new(id).to_string(), id.to_string());
             assert_eq!(PluginId::new(id).to_string(), id.to_string());
         }
-        for id in [0, u16::MAX] {
+        for id in [0, u32::MAX] {
             assert_eq!(ClientId::new(id).to_string(), id.to_string());
         }
     }
@@ -606,10 +609,12 @@ mod tests {
     fn client_ids_check_narrowing_and_preserve_map_keys() {
         use std::collections::BTreeMap;
 
-        for value in [0, u16::MAX] {
+        for value in [0, 1, 65_536, u32::MAX] {
             let client = ClientId::new(value);
-            assert_eq!(ClientId::try_from(u32::from(value)), Ok(client));
+            assert_eq!(ClientId::from(value), client);
             assert_eq!(ClientId::try_from(i64::from(value)), Ok(client));
+            assert_eq!(ClientId::try_from(u64::from(value)), Ok(client));
+            assert_eq!(value.to_string().parse::<ClientId>(), Ok(client));
             let json = format!("{{\"{value}\":\"client\"}}");
             let map = BTreeMap::from([(client, "client".to_owned())]);
             assert_eq!(serde_json::to_string(&map).unwrap(), json);
@@ -618,11 +623,11 @@ mod tests {
                 map
             );
         }
-        assert!(ClientId::try_from(65536_u32).is_err());
-        assert!(ClientId::try_from(u32::MAX).is_err());
         assert!(ClientId::try_from(-1_i64).is_err());
         assert!(ClientId::try_from(i64::MAX).is_err());
-        assert_eq!(ClientId::default(), ClientId::new(0));
+        assert!(ClientId::try_from(u64::from(u32::MAX) + 1).is_err());
+        assert!("4294967296".parse::<ClientId>().is_err());
+        assert_eq!(ClientId::default(), ClientId::NONE);
     }
     #[test]
     fn ids_preserve_json_numbers_and_map_keys() {
@@ -645,14 +650,14 @@ mod tests {
                 "pane"
             );
         }
-        for value in [0, u16::MAX] {
+        for value in [0, 65_536, u32::MAX] {
             let client = ClientId::new(value);
             assert_eq!(client.get(), value);
             let json = value.to_string();
             assert_eq!(serde_json::to_string(&client).unwrap(), json);
             assert_eq!(serde_json::from_str::<ClientId>(&json).unwrap(), client);
         }
-        assert!(serde_json::from_str::<ClientId>("65536").is_err());
+        assert!(serde_json::from_str::<ClientId>("4294967296").is_err());
         assert!(serde_json::from_str::<TerminalId>("4294967296").is_err());
         assert!(serde_json::from_str::<PluginId>("-1").is_err());
     }

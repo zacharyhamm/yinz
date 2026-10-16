@@ -7818,7 +7818,7 @@ fn get_disconnect_targets(env: &mut PluginEnv) {
         });
     let response = match result {
         Ok(targets) => ProtobufGetDisconnectTargetsResponse {
-            client_ids: targets.into_iter().map(|id| u32::from(id.get())).collect(),
+            client_ids: targets.into_iter().map(|id| id.get()).collect(),
             error: None,
         },
         Err(error) => ProtobufGetDisconnectTargetsResponse {

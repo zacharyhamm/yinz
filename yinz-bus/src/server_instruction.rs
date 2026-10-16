@@ -22,8 +22,6 @@ pub enum ServerInstruction {
     UnblockInputThread,
     ClientExit(ClientId, Option<NotificationEnd>),
     RemoveClient(ClientId),
-    /// The router has queued its last instruction; its connection ID can be reused.
-    ClientRouterFinished(ClientId),
     Error(String),
     KillSession,
     KillSessionWithCompletion(ClientId),
@@ -108,8 +106,8 @@ pub enum ServerInstruction {
     ///
     /// It comes the long way round, through this loop rather than straight from the router to
     /// Screen, so that it cannot overtake the client's own `AttachClient` nor be overtaken by its
-    /// `RemoveClient` - client ids are recycled, and an answer landing on the wrong side of
-    /// either would be attributed to the wrong terminal. Nothing re-sends it.
+    /// `RemoveClient` - an answer landing on the wrong side of either would describe a client the
+    /// screen does not have. Nothing re-sends it.
     SynchronizedOutputSupport {
         client_id: ClientId,
         supported: bool,
@@ -122,7 +120,6 @@ impl From<&ServerInstruction> for ServerContext {
         // a variant is added without either a matching `ServerContext` or an arm here.
         match server_instruction {
             ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,
-            ServerInstruction::ClientRouterFinished(..) => ServerContext::RemoveClient,
             ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
             ServerInstruction::ResolveLockedEscape(..) => ServerContext::ChangeMode,
             ServerInstruction::ConfigurationEditor { .. } => ServerContext::Reconfigure,

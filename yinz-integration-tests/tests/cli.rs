@@ -515,6 +515,23 @@ fn an_agent_report_is_carried_on_the_pane() {
     yinz.quit();
 }
 
+/// A CLI connection has no mode of its own. With a client attached that has not pressed a key
+/// yet, `yinz action switch-mode` switches that client instead of reporting success for nothing.
+#[test]
+fn switch_mode_from_the_cli_acts_for_a_client_that_has_not_pressed_a_key() {
+    let mut yinz = start_yinz();
+    claim_first_terminal_and_wait_for_prompt(&yinz);
+
+    let (exit_code, reported) = yinz.run_cli_action_reporting(CliAction::SwitchMode {
+        input_mode: yinz_types::data::InputMode::Pane,
+    });
+    assert_eq!(exit_code, 0, "{reported}");
+    yinz.wait_until("pane mode active", |grid_snapshot| {
+        grid_snapshot.contains("PANE") && !grid_snapshot.contains("LOCK")
+    });
+    yinz.quit();
+}
+
 /// `yinz action reconfigure` changes the running session: a keybind added from a shell is a
 /// keybind the next keypress honours.
 #[test]

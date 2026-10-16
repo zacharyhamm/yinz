@@ -4415,3 +4415,15 @@ fn ssh_command() -> RunCommand {
         ..Default::default()
     }
 }
+
+#[test]
+fn a_departed_client_is_focused_on_no_pane() {
+    let (mut pty, _plugin_rx) = make_pty_with_plugin_receiver(MockOsApi::new());
+    let pane = PaneId::Terminal(TerminalId::new(7));
+    let (departed, attached) = (ClientId::new(1), ClientId::new(2));
+    pty.set_active_pane(Some(pane), departed);
+    pty.set_active_pane(Some(pane), attached);
+    pty.remove_client(departed);
+    assert_eq!(pty.focused_clients(pane), vec![attached]);
+    assert!(!pty.active_panes.contains_key(&departed));
+}

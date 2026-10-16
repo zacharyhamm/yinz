@@ -712,7 +712,7 @@ impl ClientMetadata {
         lines.join("\n")
     }
     /// One line of `yinz action list-clients`. The header goes through here too,
-    /// so it and the rows share one set of column widths: CLIENT_ID 9, YINZ_PANE_ID
+    /// so it and the rows share one set of column widths: CLIENT_ID 10 (a u32 id), YINZ_PANE_ID
     /// 14 (room for `terminal_12345`, wider than its 12-character name), and
     /// RUNNING_COMMAND 15.
     fn render_row(
@@ -720,7 +720,7 @@ impl ClientMetadata {
         pane_id: impl fmt::Display,
         running_command: impl fmt::Display,
     ) -> String {
-        const CLIENT_ID_WIDTH: usize = 9;
+        const CLIENT_ID_WIDTH: usize = 10;
         const PANE_ID_WIDTH: usize = 14;
         const RUNNING_COMMAND_WIDTH: usize = 15;
         format!(

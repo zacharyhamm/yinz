@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-fn acting_client(host: &Arc<Mutex<Host>>, client: u16) {
+fn acting_client(host: &Arc<Mutex<Host>>, client: u32) {
     host.lock().unwrap().replies.insert(
         "GetPluginIds".into(),
         json!({"plugin_id": 42, "client_id": client}),

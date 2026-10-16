@@ -261,7 +261,7 @@ fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, 
                 },
                 _,
             )) => return Ok((warp_companions, warp_held_terminals)),
-            Some((ServerToClientMsg::UnblockInputThread, _)) => continue,
+            Some((message, _)) if is_older_server_push(&message) => continue,
             _ => {
                 return Err(anyhow!(
                     "destination did not answer the warp capability probe"
@@ -269,6 +269,18 @@ fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, 
             },
         }
     }
+}
+
+/// A push that a session running an older server sends every connection, a warp's included.
+/// It does not answer the warp, so a reply reader passes over it. This server sends these to
+/// interactive clients only.
+fn is_older_server_push(message: &ServerToClientMsg) -> bool {
+    matches!(
+        message,
+        ServerToClientMsg::UnblockInputThread
+            | ServerToClientMsg::SetMouseMode { .. }
+            | ServerToClientMsg::ConfigFileUpdated
+    )
 }
 
 /// Put a ceiling on how long we will wait for the far session's reply.
@@ -305,32 +317,27 @@ impl std::error::Error for SessionEnded {}
 ///
 /// `Log` is success and `LogError` is the reason it failed — the same protocol
 /// `yinz action` reads, which is why both directions of a warp can speak it.
-/// A raw session connection is also registered as a regular client, so it can
-/// receive an unrelated input-unblock broadcast before its action-specific
-/// reply. That control message says nothing about the warp and is skipped.
+/// Any other message is an error, except an older server's pushes.
 fn read_cli_reply(sender: &mut IpcSenderWithContext<ClientToServerMsg>) -> Result<String> {
     let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender
         .get_receiver()
         .context("failed to set up warp reply")?;
-    loop {
+    let reply = loop {
         match receiver.recv_server_msg().msg() {
-            Some((ServerToClientMsg::UnblockInputThread, _)) => continue,
-            Some((ServerToClientMsg::Log { lines }, _)) => return Ok(lines.join(" ")),
-            Some((ServerToClientMsg::LogError { lines }, _)) => {
-                return Err(anyhow!("{}", lines.join(" ")))
-            },
-            Some((ServerToClientMsg::Exit { .. }, _)) => return Err(SessionEnded.into()),
-            Some((other, _)) => {
-                return Err(anyhow!(
-                    "unexpected reply from the other session: {other:?}"
-                ))
-            },
-            None => {
-                return Err(anyhow!(
-                    "the other session closed the connection without answering"
-                ))
-            },
+            Some((message, _)) if is_older_server_push(&message) => continue,
+            reply => break reply,
         }
+    };
+    match reply {
+        Some((ServerToClientMsg::Log { lines }, _)) => Ok(lines.join(" ")),
+        Some((ServerToClientMsg::LogError { lines }, _)) => Err(anyhow!("{}", lines.join(" "))),
+        Some((ServerToClientMsg::Exit { .. }, _)) => Err(SessionEnded.into()),
+        Some((other, _)) => Err(anyhow!(
+            "unexpected reply from the other session: {other:?}"
+        )),
+        None => Err(anyhow!(
+            "the other session closed the connection without answering"
+        )),
     }
 }
 

@@ -8,12 +8,10 @@ use crate::ClientId;
 use std::collections::{HashMap, HashSet};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::animation::blend;
+use yinz_types::data::{InputMode, PaletteColor};
+use yinz_types::multiplayer::{ColorSlot, MultiplayerSlots};
 use yinz_types::pane_size::PaneGeom;
 use yinz_types::style::Style;
-use {
-    yinz_types::data::client_id_to_colors, yinz_types::data::InputMode,
-    yinz_types::data::PaletteColor,
-};
 
 pub fn dim_character_chunks(character_chunks: &mut [CharacterChunk]) {
     for chunk in character_chunks.iter_mut() {
@@ -38,7 +36,7 @@ pub struct PaneContentsAndUi<'a> {
     output: &'a mut Output,
     style: Style,
     focused_clients: Vec<ClientId>,
-    multiple_users_exist_in_session: bool,
+    multiplayer: MultiplayerSlots,
     z_index: Option<usize>,
     pane_is_stacked_under: bool,
     pane_is_stacked_over: bool,
@@ -64,7 +62,7 @@ impl<'a> PaneContentsAndUi<'a> {
         output: &'a mut Output,
         style: Style,
         active_panes: &HashMap<ClientId, PaneId>,
-        multiple_users_exist_in_session: bool,
+        multiplayer: MultiplayerSlots,
         z_index: Option<usize>,
         pane_is_stacked_under: bool,
         pane_is_stacked_over: bool,
@@ -97,7 +95,7 @@ impl<'a> PaneContentsAndUi<'a> {
             output,
             style,
             focused_clients,
-            multiple_users_exist_in_session,
+            multiplayer,
             z_index,
             pane_is_stacked_under,
             pane_is_stacked_over,
@@ -319,10 +317,11 @@ impl<'a> PaneContentsAndUi<'a> {
                 .with_context(|| {
                     format!("failed to render fake cursor if needed for client {client_id}")
                 })?;
-            if let Some(colors) = client_id_to_colors(
-                *fake_cursor_client_id,
-                self.style.colors.multiplayer_user_colors,
-            ) {
+            if let Some(colors) = self
+                .multiplayer
+                .color_slot(*fake_cursor_client_id)
+                .map(|slot| slot.colors(self.style.colors.multiplayer_user_colors))
+            {
                 let cursor_is_visible = self
                     .pane
                     .cursor_coordinates(Some(*fake_cursor_client_id))
@@ -396,6 +395,10 @@ impl<'a> PaneContentsAndUi<'a> {
             .filter(|&&c_id| c_id != client_id)
             .copied()
             .collect();
+        let other_focused_slots = other_focused_clients
+            .iter()
+            .map(|client| self.multiplayer.color_slot(*client))
+            .collect();
         let pane_focused_for_differet_client = !other_focused_clients.is_empty();
 
         let frame_color = self.frame_color(client_id, client_mode, session_is_mirrored);
@@ -466,10 +469,10 @@ impl<'a> PaneContentsAndUi<'a> {
             FrameParams {
                 focused_client,
                 is_main_client: pane_focused_for_client_id,
-                other_focused_clients,
+                other_focused_clients: other_focused_slots,
                 style: self.style,
                 color: frame_color.map(|c| c.0),
-                other_cursors_exist_in_session: self.multiple_users_exist_in_session,
+                other_cursors_exist_in_session: self.multiplayer.multiple_users(),
                 pane_is_stacked_over: self.pane_is_stacked_over,
                 pane_is_stacked_under: self.pane_is_stacked_under,
                 pane_is_stacked,
@@ -578,9 +581,9 @@ impl<'a> PaneContentsAndUi<'a> {
                 mouse_is_hovering_over_pane: self
                     .mouse_is_hovering_over_pane_for_clients
                     .contains(&client_id),
-                multiple_users_exist_in_session: self.multiple_users_exist_in_session,
+                multiple_users_exist_in_session: self.multiplayer.multiple_users(),
+                color_slot: self.multiplayer.color_slot(client_id),
             },
-            client_id,
             mode,
             session_is_mirrored,
         )
@@ -607,6 +610,9 @@ pub struct FrameColorState {
     pub pane_is_related: bool,
     pub mouse_is_hovering_over_pane: bool,
     pub multiple_users_exist_in_session: bool,
+    /// The viewing client's multiplayer color, which a focused frame wears when several clients
+    /// share the session.
+    pub color_slot: Option<ColorSlot>,
 }
 
 /// Fade the focused frame's hue toward the chrome background to mark related panes gently.
@@ -628,7 +634,6 @@ const RELATED_FADE: f32 = 0.55;
 pub fn frame_color(
     style: &Style,
     state: FrameColorState,
-    client_id: ClientId,
     mode: InputMode,
     session_is_mirrored: bool,
 ) -> Option<(PaletteColor, usize)> {
@@ -641,6 +646,7 @@ pub fn frame_color(
         pane_is_related,
         mouse_is_hovering_over_pane,
         multiple_users_exist_in_session,
+        color_slot,
     } = state;
     let (foreground, background) = style.chrome_colors().unwrap_or(host_colors);
     if let Some((override_color, strength)) = frame_color_override.filter(|_| !pane_is_in_group) {
@@ -657,8 +663,8 @@ pub fn frame_color(
                 pane_is_related,
                 mouse_is_hovering_over_pane,
                 multiple_users_exist_in_session,
+                color_slot,
             },
-            client_id,
             mode,
             session_is_mirrored,
         );
@@ -678,9 +684,7 @@ pub fn frame_color(
                 if session_is_mirrored || !multiple_users_exist_in_session {
                     Some((style.colors.frame_selected.base, 8))
                 } else {
-                    let colors =
-                        client_id_to_colors(client_id, style.colors.multiplayer_user_colors);
-                    colors.map(|colors| (colors.0, 8))
+                    color_slot.map(|slot| (slot.colors(style.colors.multiplayer_user_colors).0, 8))
                 }
             },
             _ => Some((style.colors.frame_highlight.base, 8)),

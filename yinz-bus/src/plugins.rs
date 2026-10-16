@@ -181,6 +181,10 @@ pub enum PluginInstruction {
     /// Reload every running instance at a location in place; nothing if none is running.
     ReloadPluginByUrl(RunPluginOrAlias),
     Resize(PluginId, usize, usize), // plugin_id, columns, rows
+    /// Register an attaching client's attachment token before anything can be loaded for it:
+    /// the server sends it before the client counts as attached, so that a `Load` for the
+    /// client always comes after it. Its `RemoveClient` cancels and forgets the token.
+    ReserveClient(ClientId),
     AddClient(ClientId),
     RemoveClient(ClientId),
     CliPipesDisconnected(Vec<String>),
@@ -506,7 +510,7 @@ pub struct PluginRenderAsset {
 impl Default for PluginRenderAsset {
     fn default() -> Self {
         Self {
-            client_id: ClientId::new(0),
+            client_id: ClientId::NONE,
             plugin_id: PluginId::new(0),
             bytes: Vec::new(),
         }

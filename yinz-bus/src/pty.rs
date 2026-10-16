@@ -281,6 +281,9 @@ pub enum PtyInstruction {
         Option<NotificationEnd>,
     ), // Option<usize> is the optional line number
     UpdateActivePane(Option<PaneId>, ClientId),
+    /// The client has gone: forget the pane it was focused on. The screen sends it after the
+    /// client's last `UpdateActivePane`, on the same channel.
+    RemoveClient(ClientId),
     GoToTab(TabNumber, ClientId),
     NewTab(
         Option<PathBuf>,

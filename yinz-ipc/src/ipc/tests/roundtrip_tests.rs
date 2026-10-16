@@ -56,19 +56,17 @@ use {
 const ROUNDTRIP_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 #[test]
-fn client_ids_preserve_detach_bytes_and_reject_narrowing() {
-    use crate::client_server_contract::client_server_contract::{
-        client_to_server_msg, ClientToServerMsg as ProtoClientToServerMsg, DetachSessionMsg,
-    };
+fn client_ids_preserve_detach_bytes() {
+    use crate::client_server_contract::client_server_contract::ClientToServerMsg as ProtoClientToServerMsg;
     use prost::Message;
 
-    let bytes = [0x0a, 0x06, 0x0a, 0x04, 0x00, 0xff, 0xff, 0x03];
+    let bytes = [0x0a, 0x08, 0x0a, 0x06, 0x00, 0xff, 0xff, 0xff, 0xff, 0x0f];
     let proto = ProtoClientToServerMsg::decode(bytes.as_slice()).unwrap();
     let message = ClientToServerMsg::try_from(proto).unwrap();
     assert_eq!(
         message,
         ClientToServerMsg::DetachSession {
-            client_ids: vec![ClientId::new(0), ClientId::new(u16::MAX)],
+            client_ids: vec![ClientId::new(0), ClientId::new(u32::MAX)],
         }
     );
     assert_eq!(
@@ -77,17 +75,6 @@ fn client_ids_preserve_detach_bytes_and_reject_narrowing() {
             .encode_to_vec(),
         bytes
     );
-
-    for id in [65536, u32::MAX] {
-        let proto = ProtoClientToServerMsg {
-            message: Some(client_to_server_msg::Message::DetachSession(
-                DetachSessionMsg {
-                    client_ids: vec![id],
-                },
-            )),
-        };
-        assert!(ClientToServerMsg::try_from(proto).is_err());
-    }
 }
 
 #[test]

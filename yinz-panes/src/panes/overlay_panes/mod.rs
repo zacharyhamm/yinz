@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
+use yinz_types::multiplayer::AttachedClients;
 
 use yinz_runtime::errors::prelude::*;
 use yinz_types::position::{Column, ColumnCount, Position, Row, RowCount};
@@ -186,7 +187,7 @@ pub struct OverlayPanes {
     display_area: Rc<RefCell<Size>>,
     viewport: Rc<RefCell<Viewport>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
-    connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
+    connected_clients_in_app: Rc<RefCell<AttachedClients>>,
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     style: Style,
@@ -209,7 +210,7 @@ impl OverlayPanes {
         display_area: Rc<RefCell<Size>>,
         viewport: Rc<RefCell<Viewport>>,
         connected_clients: Rc<RefCell<HashSet<ClientId>>>,
-        connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
+        connected_clients_in_app: Rc<RefCell<AttachedClients>>,
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         session_is_mirrored: bool,
@@ -966,8 +967,8 @@ impl OverlayPanes {
             self.defocus_pane(client_id);
         }
     }
-    pub fn remove_client(&mut self, client_id: ClientId) {
-        self.active_panes.remove(&client_id, &self.panes);
+    pub fn forget_client(&mut self, client_id: ClientId) {
+        self.active_panes.forget_client(&client_id);
         self.modal_return
             .retain(|(client, _), _| *client != client_id);
     }
@@ -1877,7 +1878,7 @@ impl OverlayPanes {
             }
         }
 
-        let multiple_users_exist_in_session = { self.connected_clients_in_app.borrow().len() > 1 };
+        let multiplayer = self.connected_clients_in_app.borrow().snapshot();
         let style = self.style;
         let session_is_mirrored = self.session_is_mirrored;
         let dimmed_clients = self.dimmed_clients.clone();
@@ -1940,7 +1941,7 @@ impl OverlayPanes {
                     output,
                     style,
                     &active_panes,
-                    multiple_users_exist_in_session,
+                    multiplayer,
                     z_index,
                     false,
                     false,

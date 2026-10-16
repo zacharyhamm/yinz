@@ -71,7 +71,7 @@ fn create_character_chunk_from_str(text: &str, x: usize, y: usize) -> CharacterC
 
 /// Helper to create test clients
 fn create_test_clients(count: usize) -> HashSet<ClientId> {
-    (1..=count).map(|i| ClientId::new(i as u16)).collect()
+    (1..=count).map(|i| ClientId::new(i as u32)).collect()
 }
 
 /// Helper to create PaneGeom for FloatingPanesStack tests

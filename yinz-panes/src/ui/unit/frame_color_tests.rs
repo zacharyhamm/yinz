@@ -8,8 +8,6 @@
 use super::*;
 use yinz_types::data::{Palette, Styling};
 
-const CLIENT: ClientId = ClientId::new(1);
-
 /// The default theme, which is the one that matters: it leaves `frame_unselected` as `None`,
 /// so an ordinary pane's frame has no colour at all and the tint has nothing to be a
 /// variation of.
@@ -38,11 +36,12 @@ fn state() -> FrameColorState {
         pane_is_related: false,
         mouse_is_hovering_over_pane: false,
         multiple_users_exist_in_session: false,
+        color_slot: ColorSlot::new(1),
     }
 }
 
 fn color_of(style: &Style, state: FrameColorState) -> Option<(PaletteColor, usize)> {
-    frame_color(style, state, CLIENT, InputMode::Normal, false)
+    frame_color(style, state, InputMode::Normal, false)
 }
 
 #[test]
@@ -194,7 +193,6 @@ fn hover_uses_the_tab_button_color_without_changing_focus_or_group_colors() {
                         pane_is_in_group: grouped,
                         ..state()
                     },
-                    CLIENT,
                     mode,
                     false,
                 ),
@@ -587,4 +585,35 @@ fn unthemed_pulses_start_at_the_host_foreground() {
             Some((blend(foreground, style.colors.text_unselected.base, 0.4), 1))
         );
     }
+}
+
+#[test]
+fn a_focused_frame_wears_the_viewers_color_slot_when_several_clients_share_the_session() {
+    let mut style = default_style();
+    style.colors.multiplayer_user_colors.player_7 = PaletteColor::Rgb((7, 7, 7));
+    let focused = |color_slot, multiple_users_exist_in_session| {
+        color_of(
+            &style,
+            FrameColorState {
+                pane_is_focused: true,
+                multiple_users_exist_in_session,
+                color_slot,
+                ..state()
+            },
+        )
+    };
+    assert_eq!(
+        focused(ColorSlot::new(7), true),
+        Some((PaletteColor::Rgb((7, 7, 7)), 8))
+    );
+    assert_eq!(
+        focused(None, true),
+        None,
+        "past ten clients there is no color"
+    );
+    assert_eq!(
+        focused(ColorSlot::new(7), false),
+        Some((style.colors.frame_selected.base, 8)),
+        "a lone client draws in the selected-frame color"
+    );
 }

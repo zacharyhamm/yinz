@@ -1,6 +1,7 @@
 use yinz_runtime::errors::prelude::*;
 use yinz_types::internal_ids::PluginId;
 use yinz_types::internal_ids::TerminalId;
+use yinz_types::multiplayer::AttachedClients;
 
 use crate::pane::{get_next_terminal_position, HoldForCommand, Pane};
 use crate::resize_pty;
@@ -17,7 +18,7 @@ use crate::{
     ClientId, NotificationEnd,
 };
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use yinz_types::pane_size::{PaneGeom, Size, SizeInPixels, Viewport};
 use yinz_types::style::{Palette, Style};
@@ -36,7 +37,7 @@ pub struct LayoutApplier<'a> {
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
-    connected_clients: Rc<RefCell<HashSet<ClientId>>>,
+    connected_clients: Rc<RefCell<AttachedClients>>,
     style: Style,
     display_area: Rc<RefCell<Size>>, // includes all panes (including eg. the status bar and tab bar in the default layout)
     tiled_panes: &'a mut TiledPanes,
@@ -89,7 +90,7 @@ impl<'a> LayoutApplier<'a> {
         terminal_emulator_colors: &Rc<RefCell<Palette>>,
         terminal_emulator_color_codes: &Rc<RefCell<HashMap<usize, String>>>,
         character_cell_size: &Rc<RefCell<Option<SizeInPixels>>>,
-        connected_clients: &Rc<RefCell<HashSet<ClientId>>>,
+        connected_clients: &Rc<RefCell<AttachedClients>>,
         style: &Style,
         display_area: &Rc<RefCell<Size>>, // includes all panes (including eg. the status bar and tab bar in the default layout)
         tiled_panes: &'a mut TiledPanes,

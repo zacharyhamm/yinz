@@ -1667,3 +1667,82 @@ fn retiring_a_followed_source_preserves_another_clients_hover() {
             .set_hover_position(Some(position)));
     }
 }
+
+#[test]
+fn a_departed_client_leaves_no_history_group_or_capture_behind() {
+    let size = Size { cols: 80, rows: 24 };
+    let (staying, departed) = (ClientId::new(1), ClientId::new(2));
+    let (mut screen, _capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(departed).unwrap();
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    for client in [staying, departed] {
+        screen.pane_history.insert(client, vec![pane]);
+        screen.permission_mouse_captures.insert(client);
+        screen
+            .currently_marking_pane_group
+            .borrow_mut()
+            .insert(client, true);
+        screen
+            .current_pane_group
+            .borrow_mut()
+            .toggle_pane_id_in_group(pane, size, &client);
+    }
+    screen.remove_client(departed).unwrap();
+    assert_eq!(
+        screen.pane_history.keys().collect::<Vec<_>>(),
+        vec![&staying]
+    );
+    assert!(!screen.permission_mouse_captures.contains(&departed));
+    assert!(!screen
+        .currently_marking_pane_group
+        .borrow()
+        .contains_key(&departed));
+    let groups = screen.current_pane_group.borrow().clone_inner();
+    assert_eq!(groups.keys().collect::<Vec<_>>(), vec![&staying]);
+}
+
+/// A session started detached: the creating connection leaves before its first tab's layout
+/// lands. Registering it then would leave a client that never leaves, since its id is never
+/// handed out again.
+#[test]
+fn a_client_that_leaves_before_its_layout_lands_is_not_registered() {
+    let creator = ClientId::new(1);
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+    screen
+        .new_tab(TabId::new(0), (vec![], vec![]), None, Some(creator))
+        .unwrap();
+    screen.remove_client(creator).unwrap();
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(1), None)],
+            vec![],
+            HashMap::new(),
+            TabId::new(0),
+            true,
+            creator,
+            None,
+        )
+        .unwrap();
+    assert!(screen.tabs[&TabId::new(0)]
+        .get_pane_with_id(PaneId::Terminal(TerminalId::new(1)))
+        .is_some());
+    assert!(!screen.connected_clients.borrow().contains(&creator));
+    assert!(!screen.active_tab_ids.contains_key(&creator));
+    assert!(screen.tabs[&TabId::new(0)].has_no_connected_clients());
+    assert!(screen.departed_before_layout.is_empty());
+
+    let joining = ClientId::new(2);
+    screen.add_client(joining).unwrap();
+    assert_eq!(
+        screen
+            .connected_clients
+            .borrow()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![joining]
+    );
+}

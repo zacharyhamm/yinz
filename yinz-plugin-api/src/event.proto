@@ -10,7 +10,7 @@ import "command.proto";
 package api.event;
 
 enum EventType {
-    reserved 31, 34, 43, 47;
+    reserved 31, 34, 43, 47, 64;
     /// The input mode or relevant metadata changed
     ModeUpdate = 0;
     /// The tab state in the app was changed
@@ -95,7 +95,6 @@ enum EventType {
     AgentProvidersChanged = 63;
     PickResult = 68;
     CellPixelSizeChanged = 69;
-    ClientGridReset = 64;
     NotificationReceived = 65;
     NotificationRequested = 66;
     NotificationResolved = 67;
@@ -106,7 +105,7 @@ message EventNameList {
 }
 
 message Event {
-  reserved 27, 28, 37, 41;
+  reserved 27, 28, 37, 41, 61;
   EventType name = 1;
   oneof payload {
     string pane_tabs_update_payload = 59;
@@ -163,7 +162,6 @@ message Event {
     ModifiersHeldPayload modifiers_held_payload = 53;
     RunCommandOutputPayload run_command_output_payload = 54;
     PaneOutputPayload pane_output_payload = 55;
-    uint32 client_grid_reset_payload = 61;
     string notification_received_payload = 62;
     string notification_requested_payload = 63;
     string notification_resolved_payload = 64;
@@ -690,6 +688,9 @@ message TabInfo {
     bool has_bell_notification = 18;
     bool is_flashing_bell = 19;
     reserved 20, 21;
+    // Parallel to other_focused_clients: each client's multiplayer color slot, 1 to 10, or 0
+    // for none.
+    repeated uint32 other_focused_client_slots = 22;
 }
 
 message ModeUpdatePayload {

@@ -10,10 +10,11 @@ use crate::ui::hint_text::{
 };
 use crate::ClientId;
 use yinz_runtime::errors::prelude::*;
+use yinz_types::data::PaletteColor;
+use yinz_types::multiplayer::ColorSlot;
 use yinz_types::pane_size::{Offset, PaneGeom, Viewport};
 use yinz_types::position::Position;
 use yinz_types::style::Style;
-use {yinz_types::data::client_id_to_colors, yinz_types::data::PaletteColor};
 
 use std::iter::repeat_n;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -124,7 +125,8 @@ impl OpeningRipple {
 pub struct FrameParams {
     pub focused_client: Option<ClientId>,
     pub is_main_client: bool, // more accurately: is_focused_for_main_client
-    pub other_focused_clients: Vec<ClientId>,
+    /// The color slot of each other client focused on this pane.
+    pub other_focused_clients: Vec<Option<ColorSlot>>,
     pub style: Style,
     pub color: Option<PaletteColor>,
     pub other_cursors_exist_in_session: bool,
@@ -163,7 +165,8 @@ pub struct PaneFrame {
     pub focused_client: Option<ClientId>,
     pub is_main_client: bool,
     pub other_cursors_exist_in_session: bool,
-    pub other_focused_clients: Vec<ClientId>,
+    /// The color slot of each other client focused on this pane.
+    pub other_focused_clients: Vec<Option<ColorSlot>>,
     exit_status: Option<ExitStatus>,
     is_first_run: bool,
     /// The pane's root process is stopped. Part of the struct rather than looked
@@ -256,8 +259,8 @@ impl PaneFrame {
     pub fn indicate_first_run(&mut self) {
         self.is_first_run = true;
     }
-    fn client_cursor(&self, client_id: ClientId) -> Vec<TerminalCharacter> {
-        let color = client_id_to_colors(client_id, self.style.colors.multiplayer_user_colors);
+    fn client_cursor(&self, slot: Option<ColorSlot>) -> Vec<TerminalCharacter> {
+        let color = slot.map(|slot| slot.colors(self.style.colors.multiplayer_user_colors));
         background_color(" ", color.map(|c| c.0))
     }
     fn get_corner(&self, corner: &'static str) -> &'static str {
@@ -408,8 +411,8 @@ impl PaneFrame {
         let mut full_indication_len = full_indication_text.width();
         let mut short_indication = foreground_color(short_indication_text, self.color);
         let mut short_indication_len = short_indication_text.width();
-        for client_id in &self.other_focused_clients {
-            let mut text = self.client_cursor(*client_id);
+        for slot in &self.other_focused_clients {
+            let mut text = self.client_cursor(*slot);
             full_indication_len += 2;
             full_indication.push(EMPTY_TERMINAL_CHARACTER);
             full_indication.append(&mut text.clone());
@@ -457,8 +460,8 @@ impl PaneFrame {
         let mut middle_indication_len = middle_indication_text.width();
         let mut short_indication = vec![];
         let mut short_indication_len = 0;
-        for client_id in &self.other_focused_clients {
-            let mut text = self.client_cursor(*client_id);
+        for slot in &self.other_focused_clients {
+            let mut text = self.client_cursor(*slot);
             full_indication_len += 2;
             full_indication.push(EMPTY_TERMINAL_CHARACTER);
             full_indication.append(&mut text.clone());
@@ -1033,9 +1036,9 @@ impl PaneFrame {
     fn focused_users_part(&self, label: &str) -> (Vec<TerminalCharacter>, usize) {
         let mut content = foreground_color(label, self.color);
         let mut content_length = label.width();
-        for client_id in &self.other_focused_clients {
+        for slot in &self.other_focused_clients {
             content.push(EMPTY_TERMINAL_CHARACTER);
-            content.append(&mut self.client_cursor(*client_id));
+            content.append(&mut self.client_cursor(*slot));
             content_length += 2;
         }
         self.bracketed_title_part_from_characters(content, content_length)
@@ -1043,12 +1046,12 @@ impl PaneFrame {
     fn focused_users_cursors_part(&self) -> (Vec<TerminalCharacter>, usize) {
         let mut content = vec![];
         let mut content_length = 0;
-        for client_id in &self.other_focused_clients {
+        for slot in &self.other_focused_clients {
             if content_length > 0 {
                 content.push(EMPTY_TERMINAL_CHARACTER);
                 content_length += 1;
             }
-            content.append(&mut self.client_cursor(*client_id));
+            content.append(&mut self.client_cursor(*slot));
             content_length += 1;
         }
         self.bracketed_title_part_from_characters(content, content_length)

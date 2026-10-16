@@ -1,7 +1,7 @@
 (require "./keys.scm")
 (provide bar-line bar-concat bar-color bar-paint bar-fill bar-arrow bar-dimmed? bar-text-part
   bar-byte-line bar-classic-keys bar-tile-colors bar-prefix-paint bar-prefix-suffix
-  bar-modifier-prefix bar-abbreviated-key bar-shortcut)
+  bar-modifier-prefix bar-abbreviated-key bar-shortcut bar-focused-client-cursors)
 (define (bar-line text len) (hash "part" text "len" len))
 (define (bar-concat . parts)
   (bar-line (apply string-append (map (lambda (p) (hash-ref p "part")) parts))
@@ -16,6 +16,16 @@
   (if (or (equal? text "") (null? codes)) text
     (string-append (string (integer->char 27)) "[" (string-join codes ";") "m" text
       (string (integer->char 27)) "[0m")))
+;; A colored cell for each other client focused on `tab`, in its multiplayer color. A host that
+;; numbers clients without reuse sends each one's color slot; an older one's ids are the slots.
+(define (bar-focused-client-cursors tab players)
+  (define slots
+    (if (hash-contains? tab "other_focused_client_slots")
+      (filter bar-present? (hash-ref tab "other_focused_client_slots"))
+      (filter (lambda (id) (and (>= id 1) (<= id 10))) (hash-ref tab "other_focused_clients"))))
+  (map (lambda (slot)
+      (bar-paint " " (hash "EightBit" 16) (hash-ref players (string-append "player_" (number->string slot))) ""))
+    slots))
 (define (bar-fill mi)
   (string-append (string (integer->char 27)) "["
     (bar-color (hash-ref (hash-ref (hash-ref (hash-ref mi "style") "colors") "text_unselected") "background") #t)

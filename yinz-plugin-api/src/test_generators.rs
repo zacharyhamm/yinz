@@ -446,7 +446,7 @@ pub(crate) fn originating_plugins(tc: &hegel::TestCase) -> OriginatingPlugin {
     OriginatingPlugin {
         generation: booleans(tc).then(|| tc.draw(generators::integers::<u64>())),
         plugin_id: yinz_types::internal_ids::PluginId::new(tc.draw(generators::integers::<u32>())),
-        client_id: yinz_types::data::ClientId::new(tc.draw(generators::integers::<u16>())),
+        client_id: yinz_types::data::ClientId::new(tc.draw(generators::integers::<u32>())),
         context: context(tc),
     }
 }

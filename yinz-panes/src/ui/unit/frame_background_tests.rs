@@ -18,7 +18,7 @@ fn every_frame_shape_uses_terminal_defaults_and_preserves_indicator_backgrounds(
                 should_draw_pane_frames: true,
                 is_main_client: true,
                 other_cursors_exist_in_session: true,
-                other_focused_clients: vec![ClientId::new(2)],
+                other_focused_clients: vec![ColorSlot::new(2)],
                 ..Default::default()
             };
             frame.style.terminal = Some(yinz_types::style::TerminalTheme {

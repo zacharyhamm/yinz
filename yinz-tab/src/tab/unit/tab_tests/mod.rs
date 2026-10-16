@@ -15,12 +15,13 @@ use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabPosition;
 use yinz_types::internal_ids::TerminalId;
+use yinz_types::multiplayer::AttachedClients;
 use {yinz_types::data::NewPanePlacement, yinz_types::data::OverlayPlacement};
 
 use crate::os_input_output::AsyncReader;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 use yinz_ipc::ipc::IpcReceiverWithContext;
 use yinz_types::input::options::PaneFrameStyle;
@@ -169,7 +170,7 @@ fn create_new_tab_with_senders(size: Size, stacked_resize: bool, senders: Thread
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(stacked_resize));
     connected_clients.insert(client_id);
@@ -254,7 +255,7 @@ fn create_new_tab_with_layout(size: Size, layout: TiledPaneLayout) -> Tab {
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     let character_cell_info = Rc::new(RefCell::new(None));
     let stacked_resize = Rc::new(RefCell::new(true));
     connected_clients.insert(client_id);
@@ -346,7 +347,7 @@ fn create_new_tab_with_cell_size(
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let terminal_emulator_colors = Rc::new(RefCell::new(Palette::default()));

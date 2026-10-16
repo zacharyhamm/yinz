@@ -235,7 +235,8 @@ impl SessionConfiguration {
         self.background_plugins = Some(BackgroundPluginConfiguration::from_config(
             &new_saved_config,
         ));
-        self.saved_config = new_saved_config.clone();
+        let previous_saved_config =
+            std::mem::replace(&mut self.saved_config, new_saved_config.clone());
 
         let mut config_changes = vec![];
         let client_ids: Vec<_> = self.runtime_config.keys().copied().collect();
@@ -249,6 +250,14 @@ impl SessionConfiguration {
                 ))
             }
         }
+        // Every attached client has a runtime configuration. With none attached, the threads'
+        // session-wide state still follows the saved config.
+        if self.runtime_config.is_empty() && previous_saved_config != new_saved_config {
+            config_changes.push((
+                ClientId::NONE,
+                self.apply_editor_overrides(new_saved_config),
+            ));
+        }
         self.recompute_effective_keybinds();
         config_changes
     }
@@ -260,6 +269,13 @@ impl SessionConfiguration {
     pub fn set_client_runtime_configuration(&mut self, client_id: ClientId, client_config: Config) {
         self.runtime_config.insert(client_id, client_config);
         self.recompute_effective_keybinds();
+    }
+    /// Forget a departed client's configuration. No other client's effective configuration
+    /// depends on it.
+    pub fn remove_client(&mut self, client_id: ClientId) {
+        self.runtime_config.remove(&client_id);
+        self.editor_effective.remove(&client_id);
+        self.effective_keybinds.remove(&client_id);
     }
     pub fn get_client_keybinds(&self, client_id: &ClientId) -> &Keybinds {
         self.runtime_config
@@ -330,6 +346,7 @@ impl SessionConfiguration {
         self.recompute_effective_keybinds();
         let effective = self.get_client_configuration(client_id);
         let changed = current != effective;
+        self.forget_transient(client_id);
         Ok((Some(effective), changed))
     }
     pub fn rebind_keys(
@@ -380,8 +397,17 @@ impl SessionConfiguration {
             self.recompute_effective_keybinds();
             full_reconfigured_config = Some(self.get_client_configuration(client_id));
         }
+        self.forget_transient(client_id);
 
         (full_reconfigured_config, config_changed)
+    }
+    /// A change for [`ClientId::NONE`] is computed like any client's, then forgotten: no client
+    /// carries it, and a runtime entry left for `NONE` would stop [`Self::change_saved_config`]
+    /// from reporting saved-config changes while nobody is attached.
+    fn forget_transient(&mut self, client_id: &ClientId) {
+        if *client_id == ClientId::NONE {
+            self.remove_client(ClientId::NONE);
+        }
     }
 
     pub fn register_plugin_default_keybinds(
@@ -531,6 +557,16 @@ impl SessionMetaData {
     pub fn remove_key_passthrough_client(&mut self, client_id: ClientId) {
         self.remove_key_passthrough_client_with_notify(client_id, true);
     }
+    /// Drop the per-client state of a client that has gone. A pane it was passing keys through
+    /// to hears that it lost focus.
+    fn forget_client(&mut self, client_id: ClientId) {
+        self.remove_key_passthrough_client(client_id);
+        self.current_input_modes.remove(&client_id);
+        self.command_palette_restore_modes.remove(&client_id);
+        self.pending_mouse_updates
+            .retain(|(client, _)| *client != client_id);
+        self.session_configuration.remove_client(client_id);
+    }
     pub fn remove_key_passthrough_client_with_notify(
         &mut self,
         client_id: ClientId,
@@ -573,8 +609,10 @@ impl SessionMetaData {
         for (client_id, new_config) in config_changes {
             self.locked_escapes.remove(&client_id);
             let new_config = self.session_configuration.with_plugin_defaults(new_config);
-            self.pending_mouse_updates
-                .push((client_id, new_config.options.mouse_mode.unwrap_or(true)));
+            if client_id != ClientId::NONE {
+                self.pending_mouse_updates
+                    .push((client_id, new_config.options.mouse_mode.unwrap_or(true)));
+            }
             effective_changes.push((client_id, new_config));
         }
         if let Some((_, last_config)) = effective_changes.last() {
@@ -589,7 +627,7 @@ impl SessionMetaData {
 }
 
 impl SessionMetaData {
-    /// Queue consumer cleanup before releasing the connection ID for reuse.
+    /// Queue the screen's and plugins' cleanup for a departed connection.
     /// A failed send means that consumer has already exited.
     fn detach_client(&self, client_id: ClientId) {
         self.senders
@@ -705,7 +743,7 @@ fn remove_client_and_flush_forwards(
                 .context("retiring disconnected CLI pipes")
                 .non_fatal();
         }
-        session.command_palette_restore_modes.remove(&client_id);
+        session.forget_client(client_id);
         session.detach_client(client_id);
     });
     let stuck_tokens = session_state.write().unwrap().remove_client(client_id);
@@ -722,6 +760,259 @@ fn remove_client_and_flush_forwards(
                 });
         }
     }
+}
+
+/// Whether `client_id` is an attached interactive client. A plugin keeps the id of the client
+/// that loaded it, and an instruction can be queued before its client leaves and handled after,
+/// so a per-client instruction can name a client that has gone. Handling it would leave state
+/// behind for a client that never comes back. A CLI or warp connection is not attached either:
+/// it has no mode, keybinds or focus.
+fn is_attached(client_id: ClientId, session_state: &Arc<RwLock<SessionState>>) -> Result<bool> {
+    Ok(session_state
+        .read()
+        .to_anyhow()
+        .context("failed to read which clients are attached")?
+        .is_interactive(&client_id))
+}
+
+/// Where a configuration change made for a client lands. See [`configuration_target`].
+struct ConfigurationTarget {
+    /// That client while it is attached, otherwise [`ClientId::NONE`], which the threads apply
+    /// session-wide.
+    client_id: ClientId,
+    /// The change is a departed client's while another client is attached, so only saving it
+    /// may change the session: it is built on the saved config, and applied session-wide it
+    /// would replace the settings the attached clients are running with.
+    save_only: bool,
+}
+
+/// Where a configuration change made for `client_id` lands, or `None` when it is dropped: a
+/// departed client's unsaved change while another client is attached. With nobody attached
+/// there are no settings to replace, and the change applies session-wide.
+fn configuration_target(
+    client_id: ClientId,
+    write_config_to_disk: bool,
+    change: &str,
+    session_state: &Arc<RwLock<SessionState>>,
+) -> Result<Option<ConfigurationTarget>> {
+    let session_state = session_state
+        .read()
+        .to_anyhow()
+        .context("failed to read which clients are attached")?;
+    if session_state.is_interactive(&client_id) {
+        return Ok(Some(ConfigurationTarget {
+            client_id,
+            save_only: false,
+        }));
+    }
+    let save_only = session_state.has_interactive_clients();
+    if save_only && !write_config_to_disk {
+        log::warn!(
+            "dropping {change} for client {client_id}: it is not attached, the change is not \
+             saved, and applying it would replace the attached clients' settings"
+        );
+        return Ok(None);
+    }
+    Ok(Some(ConfigurationTarget {
+        client_id: ClientId::NONE,
+        save_only,
+    }))
+}
+
+/// `ChangeMode`. Only an attached client has a mode. Any other id fails the request, which a
+/// CLI caller reports; it names no attached client only when none is attached.
+fn change_client_mode(
+    client_id: ClientId,
+    input_mode: InputMode,
+    completion: Option<NotificationEnd>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    if !is_attached(client_id, session_state)? {
+        if let Some(mut completion) = completion {
+            completion.set_exit_status(1);
+            completion.set_error_message("No attached client to switch mode for".to_owned());
+        }
+        return Ok(());
+    }
+    with_session_mut(session_data, |session| {
+        session
+            .change_input_mode(client_id, input_mode, completion)
+            .non_fatal()
+    });
+    Ok(())
+}
+
+/// `Reconfigure`, from a plugin or `yinz action`. A departed client's change applies
+/// session-wide, as [`configuration_target`] decides.
+fn reconfigure_client(
+    client_id: ClientId,
+    config: String,
+    write_config_to_disk: bool,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    let Some(target) = configuration_target(
+        client_id,
+        write_config_to_disk,
+        "a reconfiguration",
+        session_state,
+    )?
+    else {
+        return Ok(());
+    };
+    let Some(result) = with_session_mut(session_data, |session| {
+        // A save-only change is worked out on a copy: the session's configuration changes only
+        // once the change is saved, and then through the saved config.
+        let mut staged = target
+            .save_only
+            .then(|| session.session_configuration.clone());
+        staged
+            .as_mut()
+            .unwrap_or(&mut session.session_configuration)
+            .reconfigure_runtime_config(
+                &target.client_id,
+                config.clone(),
+                session.config_file_path.as_deref(),
+                session.config_dir.as_deref(),
+            )
+    }) else {
+        return Ok(());
+    };
+    let (new_config, changed) = result.context("failed to reconfigure")?;
+    let persistence = match write_config_to_disk {
+        true => ConfigPersistence::Fragment(config),
+        false => ConfigPersistence::None,
+    };
+    update_new_saved_config(
+        new_config,
+        persistence,
+        changed && !target.save_only,
+        session_data,
+        target.client_id,
+    )
+}
+
+/// `RebindKeys` for one client. A departed client's rebinding applies session-wide, as
+/// [`configuration_target`] decides.
+fn rebind_client_keys(
+    client_id: ClientId,
+    keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,
+    keys_to_unbind: Vec<(InputMode, KeyWithModifier)>,
+    write_config_to_disk: bool,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    let Some(target) = configuration_target(
+        client_id,
+        write_config_to_disk,
+        "a key rebinding",
+        session_state,
+    )?
+    else {
+        return Ok(());
+    };
+    let Some((new_config, changed)) = with_session_mut(session_data, |session| {
+        // As in `reconfigure_client`: a save-only change does not touch the session until saved.
+        let mut staged = target
+            .save_only
+            .then(|| session.session_configuration.clone());
+        staged
+            .as_mut()
+            .unwrap_or(&mut session.session_configuration)
+            .rebind_keys(&target.client_id, keys_to_rebind, keys_to_unbind)
+    }) else {
+        return Ok(());
+    };
+    update_new_saved_config(
+        new_config,
+        match write_config_to_disk {
+            true => ConfigPersistence::WholeConfig,
+            false => ConfigPersistence::None,
+        },
+        changed && !target.save_only,
+        session_data,
+        target.client_id,
+    )
+}
+
+/// `KeyPassthroughChanged`. Only an attached client has focus to pass keys through.
+fn change_key_passthrough(
+    client_id: ClientId,
+    new_pane_id: PaneId,
+    should_route: bool,
+    entered_from_direction: Option<yinz_types::geometry::Direction>,
+    notify_guest: bool,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) -> Result<()> {
+    if !is_attached(client_id, session_state)? {
+        return Ok(());
+    }
+    with_session_mut(session_data, |session| {
+        session.locked_escapes.remove(&client_id);
+        let previous_pane = session.key_passthrough_clients.get(&client_id).copied();
+
+        if should_route {
+            if previous_pane != Some(new_pane_id) {
+                if previous_pane.is_some() {
+                    session.remove_key_passthrough_client_with_notify(client_id, notify_guest);
+                }
+                let pane_already_active = session
+                    .key_passthrough_clients
+                    .values()
+                    .any(|p| *p == new_pane_id);
+                session
+                    .key_passthrough_clients
+                    .insert(client_id, new_pane_id);
+                if !pane_already_active {
+                    if let PaneId::Terminal(terminal_id) = new_pane_id {
+                        let frame = yinz_ipc::nested_session::encode_frame(
+                            &yinz_ipc::nested_session::NestedSessionMessage::FocusGained {
+                                from_direction: entered_from_direction,
+                            },
+                        );
+                        let _ = session
+                            .senders
+                            .send_to_pty_writer(PtyWriteInstruction::Write(
+                                frame,
+                                terminal_id,
+                                None,
+                            ));
+                    }
+                }
+            }
+        } else if previous_pane.is_some() {
+            session.remove_key_passthrough_client_with_notify(client_id, notify_guest);
+        }
+    });
+    Ok(())
+}
+
+/// Remove a watcher, and any state its id picked up while it was a plain connection.
+fn remove_watcher_client(
+    client_id: ClientId,
+    os_input: &mut Box<dyn ServerOsApi>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) {
+    with_session_mut(session_data, |session| {
+        session.forget_client(client_id);
+        let _ = session
+            .senders
+            .send_to_screen(ScreenInstruction::RemoveWatcherClient(client_id));
+        // Whatever the plugins kept for the connection before it became a watcher.
+        session
+            .senders
+            .send_to_plugin(PluginInstruction::RemoveClient(client_id))
+            .with_context(|| format!("removing watcher {client_id} from the plugins"))
+            .non_fatal();
+    });
+    os_input
+        .remove_client(client_id)
+        .context("removing a watcher client")
+        .non_fatal();
+    session_state.write().unwrap().remove_watcher(client_id);
 }
 
 /// The live session, if there is one. `None` from server start until `FirstClientConnected`
@@ -782,13 +1073,26 @@ fn flush_pending_mouse_updates(
     os_input: &mut Box<dyn ServerOsApi>,
     session_state: &Arc<RwLock<SessionState>>,
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
-) {
+) -> Result<()> {
     let updates = with_session_mut(session_data, |session| {
         std::mem::take(&mut session.pending_mouse_updates)
     })
     .unwrap_or_default();
-    // Client delivery can remove disconnected clients and must run outside the session lock.
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let attached: HashSet<ClientId> = session_state
+        .read()
+        .to_anyhow()
+        .context("failed to read which clients are attached")?
+        .interactive_client_ids()
+        .into_iter()
+        .collect();
+    // Client delivery can remove disconnected clients and must run outside both session locks.
     for (client, enabled) in updates {
+        if !attached.contains(&client) {
+            continue;
+        }
         send_to_client!(
             client,
             *os_input,
@@ -797,13 +1101,16 @@ fn flush_pending_mouse_updates(
             session_data
         );
     }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SessionState {
     clients: HashSet<ClientId>,
-    // Early disconnects still have a router that can enqueue its final removal.
-    router_clients: HashSet<ClientId>,
+    /// The id the next connection gets, or `None` once `u32::MAX` has been handed out. Ids are
+    /// never reused, so an instruction that names a departed connection can never act on a
+    /// newer one.
+    next_client_id: Option<u32>,
     interactive_clients: HashSet<ClientId>,
     pipes: HashMap<String, ClientId>,     // String => pipe_id
     watchers: HashSet<ClientId>,          // watcher clients (read-only observers)
@@ -821,7 +1128,7 @@ impl SessionState {
     pub fn new() -> Self {
         SessionState {
             clients: HashSet::new(),
-            router_clients: HashSet::new(),
+            next_client_id: Some(1),
             interactive_clients: HashSet::new(),
             pipes: HashMap::new(),
             watchers: HashSet::new(),
@@ -829,29 +1136,14 @@ impl SessionState {
             forwards_in_flight: HashMap::new(),
         }
     }
-    pub fn new_client(&mut self) -> ClientId {
-        let all_ids: HashSet<ClientId> = self
-            .clients
-            .iter()
-            .copied()
-            .chain(self.watchers.iter().copied())
-            .chain(self.router_clients.iter().copied())
-            .collect();
-
-        let mut next_client_id = 1;
-        loop {
-            if all_ids.contains(&ClientId::new(next_client_id)) {
-                next_client_id += 1;
-            } else {
-                break;
-            }
-        }
-        self.clients.insert(ClientId::new(next_client_id));
-        self.router_clients.insert(ClientId::new(next_client_id));
-        ClientId::new(next_client_id)
-    }
-    fn release_client_id(&mut self, client_id: ClientId) {
-        self.router_clients.remove(&client_id);
+    /// Number a new connection, from 1 up. `None` once every id has been used: handing one out
+    /// twice would let a departed connection's late instructions reach the new one.
+    pub fn new_client(&mut self) -> Option<ClientId> {
+        let id = self.next_client_id?;
+        self.next_client_id = id.checked_add(1);
+        let client_id = ClientId::new(id);
+        self.clients.insert(client_id);
+        Some(client_id)
     }
     pub fn associate_pipe_with_client(&mut self, pipe_id: String, client_id: ClientId) {
         self.pipes.insert(pipe_id, client_id);
@@ -890,8 +1182,14 @@ impl SessionState {
         targets.sort_unstable();
         targets
     }
-    fn input_unblock_clients(&self) -> Vec<ClientId> {
+    fn interactive_client_ids(&self) -> Vec<ClientId> {
         self.interactive_clients.iter().copied().collect()
+    }
+    fn is_interactive(&self, client_id: &ClientId) -> bool {
+        self.interactive_clients.contains(client_id)
+    }
+    fn has_interactive_clients(&self) -> bool {
+        !self.interactive_clients.is_empty()
     }
     pub fn watcher_client_ids(&self) -> Vec<ClientId> {
         self.watchers.iter().copied().collect()
@@ -926,6 +1224,20 @@ impl SessionState {
     }
     pub fn get_last_active_client(&self) -> Option<ClientId> {
         self.last_active_client
+    }
+    /// The client a CLI action acts for: the attached client that last pressed a key, else the
+    /// client the action names, else the longest-attached client. With nobody attached it is
+    /// the CLI connection itself, so an action that needs an attached client says there is none.
+    pub fn cli_action_target(
+        &self,
+        cli_client_id: ClientId,
+        requested: Option<ClientId>,
+    ) -> ClientId {
+        self.last_active_client
+            .filter(|client| self.interactive_clients.contains(client))
+            .or(requested)
+            .or_else(|| self.interactive_clients.iter().min().copied())
+            .unwrap_or(cli_client_id)
     }
     pub fn clear_last_active_client(&mut self, client_id: ClientId) {
         if self.last_active_client == Some(client_id) {
@@ -1039,6 +1351,7 @@ pub fn start_server_impl(
             let to_server = to_server.clone();
             let live_connections = Arc::new(AtomicUsize::new(0));
             move || {
+                let mut reported_exhausted_ids = false;
                 for stream in listener.incoming() {
                     match stream {
                         Ok(stream) => {
@@ -1067,7 +1380,17 @@ pub fn start_server_impl(
                                 drop(stream);
                                 continue;
                             }
-                            let client_id = session_state.write().unwrap().new_client();
+                            let Some(client_id) = session_state.write().unwrap().new_client()
+                            else {
+                                if !std::mem::replace(&mut reported_exhausted_ids, true) {
+                                    log::error!(
+                                        "refusing client connections: this session has used every client id"
+                                    );
+                                }
+                                drop(slot);
+                                drop(stream);
+                                continue;
+                            };
                             log::info!(
                                 "attach trace: server listener allocated client_id={client_id} after {:?}; registering IPC client",
                                 accepted_at.elapsed()
@@ -1087,14 +1410,12 @@ pub fn start_server_impl(
                                             format!("failed to register client {client_id}")
                                         })
                                         .non_fatal();
-                                    // Give the id back. Nothing has been dispatched
-                                    // to a client this new, so there are no
-                                    // in-flight forwards to flush, and no sender
+                                    // Forget the connection. Nothing has been
+                                    // dispatched to a client this new, so there are
+                                    // no in-flight forwards to flush, and no sender
                                     // was registered for `os_input.remove_client`
                                     // to remove.
-                                    let mut state = session_state.write().unwrap();
-                                    let _ = state.remove_client(client_id);
-                                    state.release_client_id(client_id);
+                                    let _ = session_state.write().unwrap().remove_client(client_id);
                                     drop(slot);
                                     continue;
                                 },
@@ -1163,7 +1484,7 @@ pub fn start_server_impl(
     // deadline as before: a detached session is meant to outlive its clients.
     let first_client_deadline = std::time::Instant::now() + FIRST_CLIENT_TIMEOUT;
     loop {
-        flush_pending_mouse_updates(&mut os_input, &session_state, &session_data);
+        flush_pending_mouse_updates(&mut os_input, &session_state, &session_data).non_fatal();
         let recv = if session_data.read().unwrap().is_none() {
             match server_receiver.recv_deadline(first_client_deadline) {
                 Ok(recv) => Ok(recv),
@@ -1470,6 +1791,13 @@ pub fn start_server_impl(
                 session_data
                     .current_input_modes
                     .insert(client_id, default_mode);
+                // Before the client counts as attached: from then on a CLI action can act for it
+                // and load a plugin for it, which must find its attachment token.
+                session_data
+                    .senders
+                    .send_to_plugin(PluginInstruction::ReserveClient(client_id))
+                    .context("reserving the attaching client in the plugins")
+                    .non_fatal();
                 session_state
                     .write()
                     .unwrap()
@@ -1567,7 +1895,7 @@ pub fn start_server_impl(
                 // Pane closes and plugin reloads release interactive input only. A CLI
                 // must wait for its own route/completion, otherwise it exits before its
                 // reply and that reply can reach a newly allocated client with the same id.
-                let client_ids = session_state.read().unwrap().input_unblock_clients();
+                let client_ids = session_state.read().unwrap().interactive_client_ids();
                 for client_id in client_ids {
                     send_to_client!(
                         client_id,
@@ -1640,22 +1968,8 @@ pub fn start_server_impl(
                 // Check if this is a watcher
                 let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
                 if is_watcher {
-                    // Also notify Screen to remove watcher
-                    if let Some(session_data) = session_data.write().unwrap().as_ref() {
-                        let _ = session_data
-                            .senders
-                            .send_to_screen(ScreenInstruction::RemoveWatcherClient(client_id));
-                    }
-
-                    os_input
-                        .remove_client(client_id)
-                        .context("removing a watcher client")
-                        .non_fatal();
-                    session_state.write().unwrap().remove_watcher(client_id);
+                    remove_watcher_client(client_id, &mut os_input, &session_state, &session_data);
                 } else {
-                    if let Some(session_data) = session_data.write().unwrap().as_mut() {
-                        session_data.remove_key_passthrough_client(client_id);
-                    }
                     // Handle regular client removal
                     remove_client!(client_id, os_input, session_state, session_data);
                     drop(completion_tx); // cleanup is queued before the action completes
@@ -1691,35 +2005,15 @@ pub fn start_server_impl(
                     }
                 }
             },
-            ServerInstruction::RemoveClient(client_id)
-            | ServerInstruction::ClientRouterFinished(client_id) => {
-                let router_finished =
-                    matches!(instruction, ServerInstruction::ClientRouterFinished(_));
+            ServerInstruction::RemoveClient(client_id) => {
                 attach_traces_waiting_for_first_render.remove(&client_id);
                 // Check if this is a watcher
                 let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
                 if is_watcher {
-                    // Also notify Screen to remove watcher
-                    if let Some(session_data) = session_data.write().unwrap().as_ref() {
-                        let _ = session_data
-                            .senders
-                            .send_to_screen(ScreenInstruction::RemoveWatcherClient(client_id));
-                    }
-
-                    os_input
-                        .remove_client(client_id)
-                        .context("removing a watcher client")
-                        .non_fatal();
-                    session_state.write().unwrap().remove_watcher(client_id);
+                    remove_watcher_client(client_id, &mut os_input, &session_state, &session_data);
                 } else {
-                    if let Some(session_data) = session_data.write().unwrap().as_mut() {
-                        session_data.remove_key_passthrough_client(client_id);
-                    }
                     // Handle regular client removal
                     remove_client!(client_id, os_input, session_state, session_data);
-                }
-                if router_finished {
-                    session_state.write().unwrap().release_client_id(client_id);
                 }
             },
             ServerInstruction::KillSession | ServerInstruction::KillSessionWithCompletion(_) => {
@@ -1727,7 +2021,7 @@ pub fn start_server_impl(
                 if let ServerInstruction::KillSessionWithCompletion(client_id) = instruction {
                     kill_completion_client = Some(client_id);
                 }
-                // Keep IDs reserved until exit; disconnect cleanup would cancel plugin unload.
+                // Keep clients registered until exit; disconnect cleanup would cancel plugin unload.
                 let client_ids = session_state.read().unwrap().client_ids();
                 for client_id in client_ids {
                     if Some(client_id) == kill_completion_client {
@@ -1751,9 +2045,6 @@ pub fn start_server_impl(
             ServerInstruction::DisconnectAllClientsExcept(client_id) => {
                 let client_ids = session_state.read().unwrap().disconnect_targets(client_id);
                 for client_id in client_ids {
-                    if let Some(session_data) = session_data.write().unwrap().as_mut() {
-                        session_data.remove_key_passthrough_client(client_id);
-                    }
                     let _ = os_input.send_to_client(
                         client_id,
                         ServerToClientMsg::Exit {
@@ -1765,9 +2056,6 @@ pub fn start_server_impl(
             },
             ServerInstruction::DetachSession(client_ids, completion_tx) => {
                 for client_id in &client_ids {
-                    if let Some(session_data) = session_data.write().unwrap().as_mut() {
-                        session_data.remove_key_passthrough_client(*client_id);
-                    }
                     let _ = os_input.send_to_client(
                         *client_id,
                         ServerToClientMsg::Exit {
@@ -1845,7 +2133,7 @@ pub fn start_server_impl(
                 }
             },
             ServerInstruction::Error(backtrace) => {
-                // Session shutdown owns cleanup; these connection IDs cannot be reused.
+                // Session shutdown owns cleanup.
                 let client_ids = session_state.read().unwrap().client_ids();
                 for client_id in client_ids {
                     let _ = os_input.send_to_client(
@@ -1882,12 +2170,11 @@ pub fn start_server_impl(
                     started_at.elapsed(),
                     if result.is_ok() { "ok" } else { "error" }
                 );
-                // The router queues RemoveClient after ConnStatus. Leave ownership there:
-                // removing twice can close a new connection that reuses this client ID.
+                // The router queues RemoveClient after ConnStatus and owns the removal.
             },
             ServerInstruction::Log(lines_to_log, client_id, completion_tx) => {
-                // A timed-out route may already have released its client ID. Its late reply
-                // belongs to that request, never to a new connection reusing the ID.
+                // A timed-out route has already answered its request; a late reply would
+                // follow that answer.
                 if completion_tx
                     .as_ref()
                     .is_some_and(NotificationEnd::is_cancelled)
@@ -1905,8 +2192,8 @@ pub fn start_server_impl(
                 );
             },
             ServerInstruction::LogError(lines_to_log, client_id, completion_tx) => {
-                // A timed-out route may already have released its client ID. Its late reply
-                // belongs to that request, never to a new connection reusing the ID.
+                // A timed-out route has already answered its request; a late reply would
+                // follow that answer.
                 if completion_tx
                     .as_ref()
                     .is_some_and(NotificationEnd::is_cancelled)
@@ -1959,18 +2246,19 @@ pub fn start_server_impl(
                     .associate_pipe_with_client(pipe_id, client_id);
             },
             ServerInstruction::ChangeMode(client_id, input_mode, completion) => {
-                with_session_mut(&session_data, |session| {
-                    session
-                        .change_input_mode(client_id, input_mode, completion)
-                        .non_fatal()
-                });
+                change_client_mode(
+                    client_id,
+                    input_mode,
+                    completion,
+                    &session_state,
+                    &session_data,
+                )
+                .non_fatal();
             },
             ServerInstruction::SetCommandPaletteOpen(client_id, open) => {
-                if session_state
-                    .read()
-                    .unwrap()
-                    .interactive_clients
-                    .contains(&client_id)
+                if is_attached(client_id, &session_state)
+                    .to_log()
+                    .unwrap_or(false)
                 {
                     with_session_mut(&session_data, |session| {
                         session
@@ -2071,33 +2359,12 @@ pub fn start_server_impl(
                 config,
                 write_config_to_disk,
             } => {
-                let Some(result) = with_session_mut(&session_data, |session| {
-                    session.session_configuration.reconfigure_runtime_config(
-                        &client_id,
-                        config.clone(),
-                        session.config_file_path.as_deref(),
-                        session.config_dir.as_deref(),
-                    )
-                }) else {
-                    continue;
-                };
-                let (new_config, runtime_config_changed) = match result {
-                    Ok(value) => value,
-                    Err(error) => {
-                        log::error!("reconfigure: {error:#}");
-                        continue;
-                    },
-                };
-                let persistence = match write_config_to_disk {
-                    true => ConfigPersistence::Fragment(config),
-                    false => ConfigPersistence::None,
-                };
-                update_new_saved_config(
-                    new_config,
-                    persistence,
-                    runtime_config_changed,
-                    &session_data,
+                reconfigure_client(
                     client_id,
+                    config,
+                    write_config_to_disk,
+                    &session_state,
+                    &session_data,
                 )
                 .non_fatal();
             },
@@ -2107,18 +2374,11 @@ pub fn start_server_impl(
                 mut completion,
             } => {
                 let result = (|| -> Result<()> {
-                    let client_ids: Vec<ClientId> = {
-                        let state = session_state.read().unwrap();
-                        state
-                            .client_ids()
-                            .into_iter()
-                            .filter(|id| !state.is_watcher(id))
-                            .collect()
-                    };
+                    let client_ids = session_state.read().unwrap().interactive_client_ids();
                     // Validate the whole change before mutating live configuration. Background
                     // declarations are session-wide; notify the plugin thread once for the batch.
                     let client_ids = if client_ids.is_empty() {
-                        vec![ClientId::new(0)]
+                        vec![ClientId::NONE]
                     } else {
                         client_ids
                     };
@@ -2176,7 +2436,7 @@ pub fn start_server_impl(
                                     candidates: vec![],
                                     caller: None,
                                 },
-                                client_id: ClientId::new(0),
+                                client_id: ClientId::NONE,
                                 reply,
                             })
                             .context("query scheduled background plugins")?;
@@ -2217,7 +2477,7 @@ pub fn start_server_impl(
                     let config_was_written_to_disk = true;
                     session.propagate_configuration_changes(changes, config_was_written_to_disk);
                 });
-                let client_ids = session_state.read().unwrap().client_ids();
+                let client_ids = session_state.read().unwrap().interactive_client_ids();
                 for client_id in client_ids {
                     send_to_client!(
                         client_id,
@@ -2248,27 +2508,13 @@ pub fn start_server_impl(
                     });
                     continue;
                 }
-                let Some((new_config, runtime_config_changed)) =
-                    with_session_mut(&session_data, |session| {
-                        session.session_configuration.rebind_keys(
-                            &client_id,
-                            keys_to_rebind,
-                            keys_to_unbind,
-                        )
-                    })
-                else {
-                    continue;
-                };
-
-                update_new_saved_config(
-                    new_config,
-                    match write_config_to_disk {
-                        true => ConfigPersistence::WholeConfig,
-                        false => ConfigPersistence::None,
-                    },
-                    runtime_config_changed,
-                    &session_data,
+                rebind_client_keys(
                     client_id,
+                    keys_to_rebind,
+                    keys_to_unbind,
+                    write_config_to_disk,
+                    &session_state,
+                    &session_data,
                 )
                 .non_fatal();
             },
@@ -2393,60 +2639,16 @@ pub fn start_server_impl(
                 entered_from_direction,
                 notify_guest,
             ) => {
-                let mut session_data = session_data.write().unwrap();
-                if let Some(session_data) = session_data.as_mut() {
-                    session_data.locked_escapes.remove(&client_id);
-                    let previous_pane = session_data
-                        .key_passthrough_clients
-                        .get(&client_id)
-                        .copied();
-
-                    if should_route {
-                        if previous_pane != Some(new_pane_id) {
-                            if let Some(previous_pane_id) = previous_pane {
-                                session_data.key_passthrough_clients.remove(&client_id);
-                                let pane_still_active = session_data
-                                    .key_passthrough_clients
-                                    .values()
-                                    .any(|p| *p == previous_pane_id);
-                                if !pane_still_active && notify_guest {
-                                    if let crate::panes::PaneId::Terminal(terminal_id) =
-                                        previous_pane_id
-                                    {
-                                        let frame = yinz_ipc::nested_session::encode_frame(
-                                            &yinz_ipc::nested_session::NestedSessionMessage::FocusLost,
-                                        );
-                                        let _ = session_data.senders.send_to_pty_writer(
-                                            PtyWriteInstruction::Write(frame, terminal_id, None),
-                                        );
-                                    }
-                                }
-                            }
-                            let pane_already_active = session_data
-                                .key_passthrough_clients
-                                .values()
-                                .any(|p| *p == new_pane_id);
-                            session_data
-                                .key_passthrough_clients
-                                .insert(client_id, new_pane_id);
-                            if !pane_already_active {
-                                if let crate::panes::PaneId::Terminal(terminal_id) = new_pane_id {
-                                    let frame = yinz_ipc::nested_session::encode_frame(
-                                        &yinz_ipc::nested_session::NestedSessionMessage::FocusGained {
-                                            from_direction: entered_from_direction,
-                                        },
-                                    );
-                                    let _ = session_data.senders.send_to_pty_writer(
-                                        PtyWriteInstruction::Write(frame, terminal_id, None),
-                                    );
-                                }
-                            }
-                        }
-                    } else if previous_pane.is_some() {
-                        session_data
-                            .remove_key_passthrough_client_with_notify(client_id, notify_guest);
-                    }
-                }
+                change_key_passthrough(
+                    client_id,
+                    new_pane_id,
+                    should_route,
+                    entered_from_direction,
+                    notify_guest,
+                    &session_state,
+                    &session_data,
+                )
+                .non_fatal();
             },
             ServerInstruction::EmitNestedSessionFrameToClient(client_id, payload_bytes) => {
                 send_to_client!(
@@ -3278,17 +3480,112 @@ mod session_state_tests {
     }
 
     #[test]
-    fn input_unblocks_exclude_cli_connections_and_reused_client_ids() {
+    fn interactive_clients_exclude_cli_connections_watchers_and_departed_clients() {
         let mut session = SessionState::new();
-        let cli = session.new_client();
-        let interactive = session.new_client();
+        let cli = session.new_client().unwrap();
+        let interactive = session.new_client().unwrap();
+        let watcher = session.new_client().unwrap();
+        session.interactive_clients.insert(watcher);
+        session.convert_client_to_watcher(watcher);
         session.interactive_clients.insert(interactive);
-        assert_eq!(session.input_unblock_clients(), vec![interactive]);
+        assert_eq!(session.interactive_client_ids(), vec![interactive]);
         session.remove_client(interactive);
-        session.release_client_id(interactive);
-        assert_eq!(session.new_client(), interactive);
-        assert!(session.input_unblock_clients().is_empty());
+        assert!(session.interactive_client_ids().is_empty());
+        let next = session.new_client().unwrap();
+        assert!(
+            next > interactive,
+            "{next} reuses or precedes {interactive}"
+        );
+        assert!(session.interactive_client_ids().is_empty());
         assert!(session.client_ids().contains(&cli));
+    }
+
+    #[test]
+    fn client_ids_start_at_one_and_are_never_reused() {
+        let mut session = SessionState::new();
+        let first = session.new_client().unwrap();
+        assert_eq!(first, ClientId::new(1));
+        let watcher = session.new_client().unwrap();
+        session.convert_client_to_watcher(watcher);
+        session.remove_client(first);
+        session.remove_watcher(watcher);
+        assert!(session.client_ids().is_empty());
+        assert_eq!(session.new_client(), Some(ClientId::new(3)));
+    }
+
+    #[test]
+    fn a_session_that_has_used_every_client_id_refuses_more() {
+        let mut session = SessionState::new();
+        session.next_client_id = Some(u32::MAX - 1);
+        assert_eq!(session.new_client(), Some(ClientId::new(u32::MAX - 1)));
+        assert_eq!(session.new_client(), Some(ClientId::new(u32::MAX)));
+        assert_eq!(session.new_client(), None);
+        assert_eq!(session.new_client(), None);
+        let mut client_ids = session.client_ids();
+        client_ids.sort_unstable();
+        assert_eq!(
+            client_ids,
+            vec![ClientId::new(u32::MAX - 1), ClientId::new(u32::MAX)]
+        );
+    }
+
+    #[test]
+    fn a_cli_action_acts_for_an_attached_client_whenever_there_is_one() {
+        let mut state = SessionState::new();
+        let cli = state.new_client().unwrap();
+        assert_eq!(
+            state.cli_action_target(cli, None),
+            cli,
+            "nobody is attached"
+        );
+        let older = state.new_client().unwrap();
+        let newer = state.new_client().unwrap();
+        state.interactive_clients.extend([older, newer]);
+        assert_eq!(
+            state.cli_action_target(cli, None),
+            older,
+            "no key pressed yet: the longest-attached client"
+        );
+        assert_eq!(state.cli_action_target(cli, Some(newer)), newer);
+        state.set_last_active_client(newer);
+        assert_eq!(state.cli_action_target(cli, Some(older)), newer);
+        state.interactive_clients.remove(&newer);
+        assert_eq!(
+            state.cli_action_target(cli, None),
+            older,
+            "a last-active client that is no longer attached does not count"
+        );
+    }
+
+    #[test]
+    fn a_change_for_no_client_leaves_no_runtime_configuration() {
+        let mut configuration = SessionConfiguration::default();
+        let (config, changed) = configuration
+            .reconfigure_runtime_config(&ClientId::NONE, "mouse_mode false".to_owned(), None, None)
+            .unwrap();
+        assert!(changed);
+        assert_eq!(config.unwrap().options.mouse_mode, Some(false));
+        let (_, rebound) = configuration.rebind_keys(
+            &ClientId::NONE,
+            vec![(
+                InputMode::Normal,
+                "Ctrl g".parse::<KeyWithModifier>().unwrap(),
+                vec![Action::NoOp],
+            )],
+            vec![],
+        );
+        assert!(rebound);
+        assert!(configuration.runtime_config.is_empty());
+        assert!(configuration.editor_effective.is_empty());
+        assert!(configuration.effective_keybinds.is_empty());
+
+        let mut saved = Config::default();
+        saved.options.mouse_mode = Some(false);
+        let changes = configuration.change_saved_config(saved);
+        assert_eq!(
+            changes.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![ClientId::NONE]
+        );
     }
 
     #[test]
@@ -3345,11 +3642,11 @@ mod session_state_tests {
     #[test]
     fn disconnect_targets_exclude_origin_and_watchers_but_include_pipe_clients() {
         let mut state = SessionState::new();
-        let origin = state.new_client();
+        let origin = state.new_client().unwrap();
         state.watchers.insert(ClientId::new(8));
         assert!(state.disconnect_targets(origin).is_empty());
-        let other = state.new_client();
-        let pipe = state.new_client();
+        let other = state.new_client().unwrap();
+        let pipe = state.new_client().unwrap();
         state.associate_pipe_with_client("pipe".into(), pipe);
         assert_eq!(state.disconnect_targets(origin), vec![other, pipe]);
         for id in state.disconnect_targets(origin) {

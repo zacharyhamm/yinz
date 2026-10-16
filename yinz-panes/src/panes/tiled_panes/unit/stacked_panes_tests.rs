@@ -1177,10 +1177,10 @@ impl Pane for MockPane {
     fn clear_screen(&mut self) {
         unimplemented!()
     }
-    fn scroll_up(&mut self, _count: usize, _client_id: ClientId) {
+    fn scroll_up(&mut self, _count: usize, _client_id: Option<ClientId>) {
         unimplemented!()
     }
-    fn scroll_down(&mut self, _count: usize, _client_id: ClientId) {
+    fn scroll_down(&mut self, _count: usize, _client_id: Option<ClientId>) {
         unimplemented!()
     }
     fn clear_scroll(&mut self) {

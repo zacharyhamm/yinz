@@ -32,6 +32,7 @@ pub mod style;
 pub mod pane_id;
 
 pub mod mouse;
+pub mod multiplayer;
 pub mod notifications;
 
 pub mod geometry;
