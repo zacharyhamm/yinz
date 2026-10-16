@@ -621,6 +621,8 @@ pub(crate) struct Screen {
     client_projects: HashMap<ClientId, command_palette::ClientProject>,
     last_project: yinz_runtime::last_project::LastProject,
     pixel_dimensions: PixelDimensions,
+    client_pixel_dimensions: HashMap<ClientId, PixelDimensions>,
+    client_cell_pixel_sizes: HashMap<ClientId, Option<SizeInPixels>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     stacked_resize: Rc<RefCell<bool>>,
     stacked_pane_list: Rc<RefCell<bool>>,
@@ -1351,6 +1353,8 @@ impl Screen {
             bus,
             max_panes,
             pixel_dimensions: Default::default(),
+            client_pixel_dimensions: HashMap::new(),
+            client_cell_pixel_sizes: HashMap::new(),
             character_cell_size,
             stacked_resize: Rc::new(RefCell::new(stacked_resize)),
             stacked_pane_list: Rc::new(RefCell::new(stacked_pane_list)),
@@ -2183,7 +2187,13 @@ impl Screen {
             Ok(())
         })();
         match result {
-            Ok(()) => Ok(self.commit_following_client(client_id, departed)),
+            Ok(()) => {
+                let retired_source = self.commit_following_client(client_id, departed);
+                // Shared plugins can retain state for a recycled client id. Send even unknown
+                // geometry, but only after plugin registration and the screen's attach commit.
+                self.report_cell_pixel_size(None, client_id);
+                Ok(retired_source)
+            },
             Err(error) => {
                 self.rollback_client_registration(client_id, departed);
                 if client_size.is_some() {
@@ -2217,6 +2227,8 @@ impl Screen {
         self.active_tab_ids.remove(&client_id);
         self.tab_history.remove(&client_id);
         self.client_sizes.remove(&client_id);
+        self.client_pixel_dimensions.remove(&client_id);
+        self.client_cell_pixel_sizes.remove(&client_id);
         for tab in self.tabs.values_mut() {
             tab.remove_client(client_id);
         }
@@ -2453,6 +2465,8 @@ impl Screen {
             self.push_sixel_host_support_to_tabs();
         }
         self.client_sizes.remove(&client_id);
+        self.client_pixel_dimensions.remove(&client_id);
+        self.client_cell_pixel_sizes.remove(&client_id);
         self.unowned_strip_fill.remove(&client_id);
         self.last_notification_fill.remove(&client_id);
         self.pane_render_subscribers.remove(&client_id);
@@ -2519,6 +2533,8 @@ impl Screen {
 
     pub fn remove_watcher_client(&mut self, client_id: ClientId) {
         self.watcher_clients.remove(&client_id);
+        self.client_pixel_dimensions.remove(&client_id);
+        self.client_cell_pixel_sizes.remove(&client_id);
         if self.watcher_clients.is_empty() && self.departed_follow_source().is_some() {
             self.clear_disconnected_followed_client_state();
             self.followed_client_id = None;

@@ -94,6 +94,7 @@ enum EventType {
     PaneTabsUpdate = 62;
     AgentProvidersChanged = 63;
     PickResult = 68;
+    CellPixelSizeChanged = 69;
     ClientGridReset = 64;
     NotificationReceived = 65;
     NotificationRequested = 66;
@@ -111,6 +112,7 @@ message Event {
     string pane_tabs_update_payload = 59;
     string agent_providers_changed_payload = 60;
     string pick_result_payload = 65;
+    CellPixelSizeChangedPayload cell_pixel_size_changed_payload = 66;
     ModeUpdatePayload mode_update_payload = 2;
     TabUpdatePayload tab_update_payload = 3;
     PaneUpdatePayload pane_update_payload = 4;
@@ -845,4 +847,13 @@ message MultipaneInfo {
     uint64 columns = 6;
     bool top_bottom = 7;
     uint32 ratio = 8;
+}
+
+message CellPixelSize {
+  uint32 width = 1;
+  uint32 height = 2;
+}
+
+message CellPixelSizeChangedPayload {
+  optional CellPixelSize size = 1;
 }

@@ -38,7 +38,10 @@ fn large_image_frames_fit_transport_and_keep_the_worker_healthy() {
     let expected = png_transmit_sequence(1, &png);
     let frame = protocol::encode(&Response::Finished(Ok(Output::Text(expected.clone())))).unwrap();
     assert!(frame.len() < super::MAX_FRAME);
-    assert!(frame.len() < 64 * 1024 * 1024, "image fits application IPC too");
+    assert!(
+        frame.len() < 64 * 1024 * 1024,
+        "image fits application IPC too"
+    );
     let decoded: Response = protocol::read(&mut Cursor::new(frame)).unwrap();
     assert!(matches!(decoded, Response::Finished(Ok(Output::Text(text))) if text == expected));
 
@@ -290,6 +293,28 @@ fn worker_imports_confined_files_and_keeps_unknown_modules_unavailable() {
         assert!(worker.eval(source).is_err(), "accepted {source}");
     }
     assert_eq!(worker.eval("answer").unwrap().values, ["42"]);
+    worker.eval("(define own-location (yinz-plugin-location)) (define sibling-location (yinz-plugin-resolve \"./constant.scm\"))").unwrap();
+    assert_eq!(
+        worker.value("own-location").unwrap(),
+        url::Url::from_file_path(directory.path().canonicalize().unwrap().join("main.scm"))
+            .unwrap()
+            .as_str()
+    );
+    assert_eq!(
+        worker.value("sibling-location").unwrap(),
+        url::Url::from_file_path(
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("constant.scm")
+        )
+        .unwrap()
+        .as_str()
+    );
+    assert!(worker
+        .eval("(yinz-plugin-resolve \"../escape.scm\")")
+        .is_err());
 }
 
 #[test]

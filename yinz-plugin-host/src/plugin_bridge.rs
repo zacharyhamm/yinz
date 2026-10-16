@@ -61,7 +61,7 @@ fn make_plugin_url_path_safe(url: String) -> String {
 
 #[derive(Debug, Clone)]
 pub enum EventOrPipeMessage {
-    Event(Event),
+    Event(Option<ClientId>, Event),
     PluginEvent(
         ClientId,
         u64,
@@ -95,6 +95,7 @@ impl EventOrPipeMessage {
             {
                 Some(*client)
             },
+            Self::Event(Some(client), _) => (shared || *client == owner).then_some(*client),
             Self::PluginEvent(..) => None,
             _ => Some(owner),
         }
@@ -2371,10 +2372,10 @@ impl PluginBridge {
 
         // loop once more to update the cached events for the pending plugins (probably currently
         // being loaded, we'll send them these events when they load)
-        for (pid, _cid, event) in updates.drain(..) {
+        for (pid, cid, event) in updates.drain(..) {
             for (plugin_id, cached_events) in self.cached_events_for_pending_plugins.iter_mut() {
                 if pid.is_none() || pid.as_ref() == Some(plugin_id) {
-                    cached_events.push(EventOrPipeMessage::Event(event.clone()));
+                    cached_events.push(EventOrPipeMessage::Event(cid, event.clone()));
                 }
             }
         }
@@ -3369,7 +3370,7 @@ impl PluginBridge {
                             continue;
                         };
                         let event = match message {
-                            EventOrPipeMessage::Event(event) => event,
+                            EventOrPipeMessage::Event(_, event) => event,
                             EventOrPipeMessage::PluginEvent(_, _, event, reply) => {
                                 if reply.is_some_and(|reply| reply.claim().is_none()) {
                                     continue;
@@ -4197,6 +4198,7 @@ pub(crate) fn check_event_permission(
         | EventType::InterceptedKeyPress
         | EventType::Timer
         | EventType::Visible
+        | EventType::CellPixelSizeChanged
         | EventType::ClientGridReset
         | EventType::BeforeClose
         | EventType::CustomMessage
@@ -4606,9 +4608,14 @@ mod tests {
             vec![(first, Event::Visible(true))]
         );
         assert_eq!(
-            EventOrPipeMessage::Event(Event::InputReceived).client_for_replay(second, None, false),
+            EventOrPipeMessage::Event(None, Event::InputReceived)
+                .client_for_replay(second, None, false),
             Some(second)
         );
+        let targeted = EventOrPipeMessage::Event(Some(first), Event::CellPixelSizeChanged(None));
+        assert_eq!(targeted.client_for_replay(second, None, true), Some(first));
+        assert_eq!(targeted.client_for_replay(first, None, false), Some(first));
+        assert_eq!(targeted.client_for_replay(second, None, false), None);
     }
 
     fn plugin_config(configuration: &[(&str, &str)]) -> PluginConfig {

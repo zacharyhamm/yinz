@@ -65,12 +65,18 @@ fn head(expressions: &[ExprKind]) -> Option<String> {
 fn inert(head: &str) -> bool {
     matches!(
         head,
-        "quote" | "quasiquote" | "syntax" | "quasisyntax" | "define-syntax" | "syntax-rules"
+        "quote" | "syntax" | "quasisyntax" | "define-syntax" | "syntax-rules"
     )
 }
 
 fn mutations(expression: &ExprKind, out: &mut HashSet<String>) {
     let list = items(expression);
+    if head(list).as_deref() == Some("quasiquote") {
+        for executable in list.iter().skip(1).flat_map(|value| unquotes(value, 1)) {
+            mutations(executable, out);
+        }
+        return;
+    }
     if head(list).is_some_and(|name| inert(&name)) {
         return;
     }
@@ -92,6 +98,25 @@ fn bindings(expressions: &[ExprKind], bound: &mut HashSet<String>) {
                 }
             },
             Some("begin") => bindings(&list[1..], bound),
+            Some("define-values") => {
+                if let Some(target) = list.get(1) {
+                    bound.extend(items(target).iter().filter_map(name));
+                }
+            },
+            Some("struct") => {
+                if let Some(target) = list.get(1).and_then(name) {
+                    bound.insert(format!("{target}?"));
+                    if let Some(fields) = list.get(2) {
+                        bound.extend(
+                            items(fields)
+                                .iter()
+                                .filter_map(name)
+                                .map(|field| format!("{target}-{field}")),
+                        );
+                    }
+                    bound.insert(target);
+                }
+            },
             Some("require") => {
                 // An unrestricted import may replace these bindings; never infer extra grants.
                 bound.extend(
@@ -101,6 +126,36 @@ fn bindings(expressions: &[ExprKind], bound: &mut HashSet<String>) {
             },
             _ => {},
         }
+    }
+}
+
+fn unquotes(expression: &ExprKind, depth: usize) -> Vec<&ExprKind> {
+    if let ExprKind::Vector(vector) = expression {
+        return vector
+            .args
+            .iter()
+            .flat_map(|value| unquotes(value, depth))
+            .collect();
+    }
+    let list = items(expression);
+    match head(list).as_deref() {
+        Some("quasiquote") => list
+            .iter()
+            .skip(1)
+            .flat_map(|value| unquotes(value, depth + 1))
+            .collect(),
+        Some("unquote" | "unquote-splicing" | "#%unquote" | "#%unquote-splicing") if depth == 1 => {
+            list.iter().skip(1).collect()
+        },
+        Some("unquote" | "unquote-splicing" | "#%unquote" | "#%unquote-splicing") => list
+            .iter()
+            .skip(1)
+            .flat_map(|value| unquotes(value, depth - 1))
+            .collect(),
+        _ => list
+            .iter()
+            .flat_map(|value| unquotes(value, depth))
+            .collect(),
     }
 }
 
@@ -133,6 +188,37 @@ impl Visitor {
         }
         let line = self.line(expression);
         match head.as_str() {
+            "case" if list.len() >= 2 => {
+                self.visit(&list[1], bound, during_load);
+                for clause in list.iter().skip(2) {
+                    self.sequence(
+                        items(clause).get(1..).unwrap_or_default(),
+                        bound,
+                        during_load,
+                    );
+                }
+                return;
+            },
+            "quasiquote" => {
+                for executable in list.iter().skip(1).flat_map(|value| unquotes(value, 1)) {
+                    self.visit(executable, bound, during_load);
+                }
+                return;
+            },
+            "define-values" if list.len() >= 3 => {
+                self.result.definitions.extend(
+                    items(&list[1])
+                        .iter()
+                        .filter_map(name)
+                        .map(|name| (line, name)),
+                );
+                self.sequence(&list[2..], bound, during_load);
+                return;
+            },
+            "struct" if list.len() >= 3 => {
+                self.result.definitions.push((line, list[1].to_string()));
+                return;
+            },
             "define" if list.len() >= 3 => {
                 let target = &list[1];
                 self.result.definitions.push((line, target.to_string()));
@@ -171,6 +257,34 @@ impl Visitor {
                     }
                     self.sequence(&list[binding_index + 1..], &scope, during_load);
                 }
+                return;
+            },
+            "let-values" if list.len() >= 3 => {
+                let mut scope = bound.clone();
+                for binding in items(&list[1]) {
+                    let pair = items(binding);
+                    if let Some(names) = pair.first() {
+                        scope.extend(items(names).iter().filter_map(name));
+                    }
+                    self.sequence(pair.get(1..).unwrap_or_default(), bound, during_load);
+                }
+                self.sequence(&list[2..], &scope, during_load);
+                return;
+            },
+            "do" if list.len() >= 3 => {
+                let mut scope = bound.clone();
+                let pairs = items(&list[1]);
+                scope.extend(pairs.iter().filter_map(|pair| self::head(items(pair))));
+                for pair in pairs {
+                    let pair = items(pair);
+                    if let Some(initializer) = pair.get(1) {
+                        self.visit(initializer, bound, during_load);
+                    }
+                    self.sequence(pair.get(2..).unwrap_or_default(), &scope, during_load);
+                }
+                // The termination clause contains an executable test, not a call head.
+                self.sequence(items(&list[2]), &scope, during_load);
+                self.sequence(&list[3..], &scope, during_load);
                 return;
             },
             "require" => self.result.imports.push((line, expression.to_string())),

@@ -3,9 +3,12 @@ use crate::panes::alacritty_functions::xparse_color;
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::panes::terminal_character::AnsiCode;
 use crate::ClientId;
+use yinz_bus::plugins::PluginInstruction;
 use yinz_ipc::ipc::PixelDimensions;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::colors::PaletteColor;
+use yinz_types::data::Event;
+use yinz_types::internal_ids::PluginId;
 use yinz_types::pane_size::SizeInPixels;
 
 impl Screen {
@@ -17,6 +20,8 @@ impl Screen {
         client_id: ClientId,
         mut pixel_dimensions: PixelDimensions,
     ) -> bool {
+        // Reports may precede the first client size. Their server route preserves ordering with
+        // final client removal, which clears these maps before the connection id can be reused.
         let previous_character_cell_size = *self.character_cell_size.borrow();
         let nonzero = |size: &SizeInPixels| size.width > 0 && size.height > 0;
         // Geometry comes from the host terminal. Unknown/invalid sizes must not replace a
@@ -24,24 +29,56 @@ impl Screen {
         pixel_dimensions.character_cell_size = pixel_dimensions.character_cell_size.filter(nonzero);
         pixel_dimensions.text_area_size = pixel_dimensions.text_area_size.filter(nonzero);
         self.pixel_dimensions.merge(pixel_dimensions);
-        if let Some(character_cell_size) = self.pixel_dimensions.character_cell_size {
-            *self.character_cell_size.borrow_mut() = Some(character_cell_size);
-        } else if let Some(text_area_size) = self.pixel_dimensions.text_area_size {
-            let Some(client_size) = self.client_sizes.get(&client_id).copied() else {
-                return false;
-            };
-            if client_size.rows == 0 || client_size.cols == 0 {
-                return false;
-            }
-            let character_cell_size = SizeInPixels {
-                height: text_area_size.height / client_size.rows,
-                width: text_area_size.width / client_size.cols,
-            };
-            if nonzero(&character_cell_size) {
-                *self.character_cell_size.borrow_mut() = Some(character_cell_size);
-            }
+        let previous_client_cell_size = self.cell_pixel_size(client_id);
+        let dimensions = self.client_pixel_dimensions.entry(client_id).or_default();
+        dimensions.merge(pixel_dimensions);
+        let cell_size = dimensions
+            .character_cell_size
+            .or_else(|| {
+                // A resize must not divide an old text area by the new grid. Modern clients pair
+                // each area report with its grid; legacy reports can also wait for the first size.
+                if pixel_dimensions.text_area_size.is_none() && previous_client_cell_size.is_some()
+                {
+                    return previous_client_cell_size;
+                }
+                let area = dimensions.text_area_size?;
+                let size = dimensions
+                    .text_area_grid_size
+                    .or_else(|| self.client_sizes.get(&client_id).copied())?;
+                Some(SizeInPixels {
+                    height: area.height.checked_div(size.rows)?,
+                    width: area.width.checked_div(size.cols)?,
+                })
+                .filter(nonzero)
+            })
+            .or(previous_client_cell_size);
+        if let Some(cell_size) = cell_size {
+            *self.character_cell_size.borrow_mut() = Some(cell_size);
+        }
+        self.client_cell_pixel_sizes.insert(client_id, cell_size);
+        if previous_client_cell_size != cell_size && self.connected_clients_contains(&client_id) {
+            self.report_cell_pixel_size(None, client_id);
         }
         *self.character_cell_size.borrow() != previous_character_cell_size
+    }
+
+    pub(super) fn cell_pixel_size(&self, client_id: ClientId) -> Option<SizeInPixels> {
+        self.client_cell_pixel_sizes
+            .get(&client_id)
+            .copied()
+            .flatten()
+    }
+
+    pub(super) fn report_cell_pixel_size(&self, plugin_id: Option<PluginId>, client_id: ClientId) {
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::Update(vec![(
+                plugin_id,
+                Some(client_id),
+                Event::CellPixelSizeChanged(self.cell_pixel_size(client_id)),
+            )]))
+            .context("report client cell pixel size to plugins")
+            .non_fatal();
     }
 
     /// Re-send every pane's pty size, so a character cell size learned after the

@@ -24,6 +24,14 @@ The notation describes data, not executable plugin source:
 These definitions retain the host field names and tuple positions. The Rust wire
 models remain authoritative when adding or changing a command.
 
+`GetCellPixelSize` reports the acting client's terminal cell width and height in
+pixels, or `null` until a valid report is available. It requires no permission.
+`CellPixelSizeChanged` sends the current value when subscribed, then changes from
+terminal reports and reconnects. Text-area reports carry the grid observed by
+the reporting client, so a resize alone cannot reinterpret stale pixel data.
+Shared plugins receive each report in the reporting client's context.
+No default dimensions are invented.
+
 ```text
 type Permission =
   | "ReadApplicationState" | "ChangeApplicationState" | "OpenFiles" | "RunCommands"
@@ -41,6 +49,7 @@ type PipeSource = { Cli: string } | { Plugin: number } | "Keybind";
 
 interface EventPayloads {
   ClientGridReset: number;
+  CellPixelSizeChanged: { width: Integer; height: Integer } | null;
   ModeUpdate: ModeInfo; TabUpdate: TabInfo[]; PaneUpdate: PaneManifest; Key: KeyWithModifier;
   Mouse: Mouse; Timer: number; CopyToClipboard: 'Command' | 'Primary' | 'System'; Visible: boolean; CustomMessage: [string, string];
   FileSystemCreate: [string, FileMetadata | null][]; FileSystemRead: [string, FileMetadata | null][];
@@ -109,7 +118,7 @@ interface CommandArgs {
   CheckPlugin: {name: string; source: string; mode: PluginCheckMode};
   AgentControl: {id: string; request: string};
   Subscribe: EventType[]; Unsubscribe: EventType[]; SetSelectable: boolean;
-  ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetPluginIdsForUrl: string; GetPluginInfo: number | null; Pick: PickCommand; GetPluginIdsForUrlWithConfiguration: { url: string; configuration: Record<string, string> }; GetYinzVersion: undefined;
+  ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetCellPixelSize: undefined; GetPluginIdsForUrl: string; GetPluginInfo: number | null; Pick: PickCommand; GetPluginIdsForUrlWithConfiguration: { url: string; configuration: Record<string, string> }; GetYinzVersion: undefined;
   OpenFile: [FileToOpen, StringMap]; OpenFileFloating: [FileToOpen, FloatingPaneCoordinates | null, StringMap];
   OpenTerminal: FileToOpen; OpenTerminalFloating: [FileToOpen, FloatingPaneCoordinates | null];
   OpenCommandPane: [CommandToRun, StringMap]; OpenCommandPaneFloating: [CommandToRun, FloatingPaneCoordinates | null, StringMap];
@@ -218,7 +227,7 @@ interface CommandArgs {
 
 interface CommandReplies {
   CheckPlugin: PluginCheckReport;
-  GetPluginIds: PluginIds; GetPluginIdsForUrl: number[]; GetPluginInfo: PluginInfo | null; Pick: { options: PickOptions; cwd: string } | null; GetPluginIdsForUrlWithConfiguration: number[]; GetYinzVersion: string; GetUserPluginDir: string | null; GetLayoutDir: string | null;
+  GetPluginIds: PluginIds; GetCellPixelSize: { width: Integer; height: Integer } | null; GetPluginIdsForUrl: number[]; GetPluginInfo: PluginInfo | null; Pick: { options: PickOptions; cwd: string } | null; GetPluginIdsForUrlWithConfiguration: number[]; GetYinzVersion: string; GetUserPluginDir: string | null; GetLayoutDir: string | null;
   GetLocalUtcOffset: number; GetSessionEnvironmentVariables: StringMap; GetPluginAliasConfiguration: StringMap;
   GetFocusedPaneInfo: {tab_id: number; pane_id: PaneId}; GetPaneInfo: PaneInfo | null; GetTabInfo: TabInfo | null;
   GetPaneCwd: string | null; GetPanePid: number | null; GetPaneRunningCommand: string[] | null; GetPaneGitProbe: PaneGitProbe | null;

@@ -1,3 +1,4 @@
+pub use super::generated_api::api::event::CellPixelSize as ProtobufCellPixelSize;
 pub use super::generated_api::api::{
     action::{Action as ProtobufAction, Position as ProtobufPosition},
     event::{
@@ -465,6 +466,12 @@ impl TryFrom<ProtobufEvent> for Event {
             Ok(ProtobufEventType::ConfigWasWrittenToDisk) => match protobuf_event.payload {
                 None => Ok(Event::ConfigWasWrittenToDisk),
                 _ => Err("Malformed payload for the ConfigWasWrittenToDisk Event"),
+            },
+            Ok(ProtobufEventType::CellPixelSizeChanged) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::CellPixelSizeChangedPayload(payload)) => Ok(
+                    Event::CellPixelSizeChanged(payload.size.map(TryInto::try_into).transpose()?),
+                ),
+                _ => Err("Malformed payload for CellPixelSizeChanged Event"),
             },
             Ok(ProtobufEventType::ClientGridReset) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::ClientGridResetPayload(client_id)) => {
@@ -1309,6 +1316,14 @@ impl TryFrom<Event> for ProtobufEvent {
             Event::ConfigWasWrittenToDisk => Ok(ProtobufEvent {
                 name: ProtobufEventType::ConfigWasWrittenToDisk as i32,
                 payload: None,
+            }),
+            Event::CellPixelSizeChanged(size) => Ok(ProtobufEvent {
+                name: ProtobufEventType::CellPixelSizeChanged as i32,
+                payload: Some(ProtobufEventPayload::CellPixelSizeChangedPayload(
+                    super::generated_api::api::event::CellPixelSizeChangedPayload {
+                        size: size.map(TryInto::try_into).transpose()?,
+                    },
+                )),
             }),
             Event::ClientGridReset(client_id) => Ok(ProtobufEvent {
                 name: ProtobufEventType::ClientGridReset as i32,
@@ -2813,6 +2828,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::FailedToChangeHostFolder => EventType::FailedToChangeHostFolder,
             ProtobufEventType::PastedText => EventType::PastedText,
             ProtobufEventType::ConfigWasWrittenToDisk => EventType::ConfigWasWrittenToDisk,
+            ProtobufEventType::CellPixelSizeChanged => EventType::CellPixelSizeChanged,
             ProtobufEventType::ClientGridReset => EventType::ClientGridReset,
             ProtobufEventType::BeforeClose => EventType::BeforeClose,
             ProtobufEventType::InterceptedKeyPress => EventType::InterceptedKeyPress,
@@ -2885,6 +2901,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::FailedToChangeHostFolder => ProtobufEventType::FailedToChangeHostFolder,
             EventType::PastedText => ProtobufEventType::PastedText,
             EventType::ConfigWasWrittenToDisk => ProtobufEventType::ConfigWasWrittenToDisk,
+            EventType::CellPixelSizeChanged => ProtobufEventType::CellPixelSizeChanged,
             EventType::ClientGridReset => ProtobufEventType::ClientGridReset,
             EventType::BeforeClose => ProtobufEventType::BeforeClose,
             EventType::InterceptedKeyPress => ProtobufEventType::InterceptedKeyPress,
@@ -4700,5 +4717,45 @@ fn notification_events_and_decisions_round_trip_through_plugin_wire() {
         };
         let wire: crate::plugin_command::ProtobufNotificationInfo = info.clone().into();
         assert_eq!(yinz_types::data::NotificationInfo::from(wire), info);
+    }
+}
+
+impl TryFrom<ProtobufCellPixelSize> for yinz_types::pane_size::SizeInPixels {
+    type Error = &'static str;
+
+    fn try_from(size: ProtobufCellPixelSize) -> Result<Self, Self::Error> {
+        if size.width == 0 || size.height == 0 {
+            return Err("Cell pixel dimensions must be nonzero");
+        }
+        Ok(Self {
+            width: size
+                .width
+                .try_into()
+                .map_err(|_| "Cell width is too large")?,
+            height: size
+                .height
+                .try_into()
+                .map_err(|_| "Cell height is too large")?,
+        })
+    }
+}
+
+impl TryFrom<yinz_types::pane_size::SizeInPixels> for ProtobufCellPixelSize {
+    type Error = &'static str;
+
+    fn try_from(size: yinz_types::pane_size::SizeInPixels) -> Result<Self, Self::Error> {
+        if size.width == 0 || size.height == 0 {
+            return Err("Cell pixel dimensions must be nonzero");
+        }
+        Ok(Self {
+            width: size
+                .width
+                .try_into()
+                .map_err(|_| "Cell width is too large")?,
+            height: size
+                .height
+                .try_into()
+                .map_err(|_| "Cell height is too large")?,
+        })
     }
 }

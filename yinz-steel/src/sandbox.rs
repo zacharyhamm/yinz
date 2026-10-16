@@ -102,6 +102,7 @@ pub fn engine() -> Result<Engine> {
     }
     engine.register_module(safe_meta);
     engine.register_module(base);
+    crate::text::register(&mut engine);
     engine
         .run(include_str!("prelude.scm"))
         .context("loading Scheme prelude")?;

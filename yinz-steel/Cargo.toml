@@ -15,15 +15,17 @@ chrono = { workspace = true }
 miette = { workspace = true }
 yinz-config = { workspace = true }
 rand = { workspace = true }
+regex = { workspace = true, features = ["unicode-case", "unicode-gencat"] }
 serde_json = { workspace = true }
 serde = { workspace = true }
 libc = { workspace = true }
 unicode-width = { workspace = true }
+url = { workspace = true }
 strip-ansi-escapes = { workspace = true }
 yinz-tile = { path = "../yinz-tile" }
 yinz-tile-markdown = { path = "../yinz-tile-markdown" }
 yinz-types = { workspace = true }
-steel = { package = "steel-core", git = "https://github.com/zacharyhamm/steel", rev = "515e342bd82ca33bf72dfd9aad9d50ed3376d0fb", version = "=0.8.3", default-features = false, features = ["std", "sync", "interrupt"] }
+steel = { package = "steel-core", git = "https://github.com/zacharyhamm/steel", rev = "8f66a605fdec513dd932aed9d9c38643f1fee166", version = "=0.8.3", default-features = false, features = ["std", "sync", "interrupt"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

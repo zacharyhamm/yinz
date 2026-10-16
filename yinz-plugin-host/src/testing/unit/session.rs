@@ -124,6 +124,19 @@ fn locations_preserve_paths_and_confine_targets() {
 }
 
 #[test]
+fn copied_plugins_cannot_follow_a_replaced_disposable_home() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("main.scm"), "(void)").unwrap();
+    let mut source =
+        yinz_steel::modules::SourceRoot::file(&root.path().join("main.scm"), None).unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.path().join("home")).unwrap();
+    let controller = Controller::new(root.path().to_owned(), vec![]);
+    assert!(controller.copy_plugin(&mut source, "copy").is_err());
+    assert!(!outside.path().join("copy").exists());
+}
+
+#[test]
 fn raw_actions_cannot_launch_or_reconfigure() {
     let root = tempfile::tempdir().unwrap();
     let mut controller = Controller::new(root.path().to_owned(), vec![]);
@@ -174,21 +187,16 @@ fn connected_repl_cli_evaluates_with_session_host_access() {
         entry: entry.clone(),
         root: session.root().canonicalize().unwrap(),
     };
-    let mut controller = Controller::new(session.root().to_owned(), vec![]);
+    let mut controller =
+        Controller::new(session.root().to_owned(), vec![PermissionType::RunCommands]);
+    let binary = binary().unwrap().to_string_lossy().replace('\'', "'\\''");
+    controller.call("fixture", json!({"files": {}, "commands": {
+        "connected-cli": format!(r#"exec '{binary}' --session plugin-test repl --eval '(define id (hash-ref (yinz-command "GetPluginIds") "plugin_id")) (if (number? id) (+ 20 22) (error "missing plugin ID"))'"#)
+    }}), &loader).unwrap();
     controller.call("start", json!({}), &loader).unwrap();
-    let mut command = Command::new(binary().unwrap());
+    let mut command = Command::new(session.root().join("fixtures/connected-cli"));
     environment(&mut command, session.root());
-    let output = command
-        .args([
-            "--session",
-            "plugin-test",
-            "repl",
-            "--eval",
-            r#"(define id (hash-ref (yinz-command "GetPluginIds") "plugin_id"))
-               (if (number? id) (+ 20 22) (error "missing plugin ID"))"#,
-        ])
-        .output()
-        .unwrap();
+    let output = command.output().unwrap();
     assert!(
         output.status.success(),
         "stderr: {}\n{}",

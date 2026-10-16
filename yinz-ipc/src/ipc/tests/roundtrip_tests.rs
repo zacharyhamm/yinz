@@ -627,12 +627,14 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::TerminalPixelDimensions {
         pixel_dimensions: PixelDimensions {
+            text_area_grid_size: None,
             text_area_size: None,
             character_cell_size: None,
         },
     });
     test_client_roundtrip!(ClientToServerMsg::TerminalPixelDimensions {
         pixel_dimensions: PixelDimensions {
+            text_area_grid_size: Some(Size { cols: 80, rows: 30 }),
             text_area_size: Some(SizeInPixels {
                 width: 800,
                 height: 600

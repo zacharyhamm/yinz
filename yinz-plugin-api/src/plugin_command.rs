@@ -1,5 +1,6 @@
 use super::generated_api::api::plugin_command as generated;
 pub use super::generated_api::api::plugin_command::AgentProvidersResponse as ProtobufAgentProvidersResponse;
+pub use super::generated_api::api::plugin_command::GetCellPixelSizeResponse as ProtobufGetCellPixelSizeResponse;
 pub use super::generated_api::api::plugin_command::GetPluginIdsForUrlResponse as ProtobufGetPluginIdsForUrlResponse;
 pub use super::generated_api::api::plugin_command::MultipaneResponse as ProtobufMultipaneResponse;
 pub use super::generated_api::api::plugin_command::PaneTabsResponse as ProtobufPaneTabsResponse;
@@ -860,6 +861,13 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     Ok(PluginCommand::ShowCursor(cursor_position))
                 },
                 _ => Err("Mismatched payload for ShowCursor"),
+            },
+            Some(CommandName::GetCellPixelSize) => {
+                if protobuf_plugin_command.payload.is_some() {
+                    Err("GetCellPixelSize should not have a payload")
+                } else {
+                    Ok(PluginCommand::GetCellPixelSize)
+                }
             },
             Some(CommandName::GetPluginIds) => {
                 if protobuf_plugin_command.payload.is_some() {
@@ -3719,6 +3727,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     payload: Some(Payload::ShowCursorPayload(ShowCursorPayload { position })),
                 })
             },
+            PluginCommand::GetCellPixelSize => Ok(ProtobufPluginCommand {
+                name: CommandName::GetCellPixelSize as i32,
+                payload: None,
+            }),
             PluginCommand::GetPluginIds => Ok(ProtobufPluginCommand {
                 name: CommandName::GetPluginIds as i32,
                 payload: None,
@@ -8008,6 +8020,7 @@ mod tests {
                 | PluginCommand::GetLocalUtcOffset { .. }
                 | PluginCommand::Unsubscribe(_)
                 | PluginCommand::SetSelectable(_)
+                | PluginCommand::GetCellPixelSize
                 | PluginCommand::GetPluginIds
                 | PluginCommand::GetYinzVersion
                 | PluginCommand::OpenFile(..)

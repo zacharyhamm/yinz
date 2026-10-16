@@ -1607,6 +1607,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 tc.draw(generators::integers::<usize>()),
             )
         })),
+        CommandType::GetCellPixelSize => PluginCommand::GetCellPixelSize,
         CommandType::GetPluginIds => PluginCommand::GetPluginIds,
         CommandType::GetYinzVersion => PluginCommand::GetYinzVersion,
         CommandType::TestPlugin => PluginCommand::TestPlugin {

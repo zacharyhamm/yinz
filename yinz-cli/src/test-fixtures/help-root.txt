@@ -29,7 +29,7 @@ Commands:
   events               Stream the session's state events as JSON lines: what plugins see as
                        PaneUpdate, TabUpdate, CommandPaneExited, CwdChanged and the rest. One object
                        per line, `{"event": <type>, "payload": <the event>}`, until the session ends
-  plugins              Write, check, reload and read logs of JS/TS plugins
+  plugins              Write, check, reload and read logs of Scheme plugins
   hooks                Install, inspect or remove coding-agent hooks
   pty-host             Inspect and clean up detached pane supervisors. Panes outlive a server that
                        was killed rather than shut down, and this is how you find them

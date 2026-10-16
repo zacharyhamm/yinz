@@ -95,6 +95,65 @@ fn scheme_installed_integration_tests_use_the_disposable_session() {
 }
 
 #[test]
+fn scheme_installed_locations_work_before_load_and_copy_dependencies() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("lib")).unwrap();
+    std::fs::write(
+        root.path().join("lib/text.scm"),
+        "(provide label) (define label \"copied graph ready\")",
+    )
+    .unwrap();
+    std::fs::write(root.path().join("reader 日本.scm"), r#"
+        (require "./lib/text.scm")
+        (define own-location (yinz-plugin-location))
+        (define helper (yinz-plugin-resolve "./lib/text.scm"))
+        (define (render rows cols)
+          (if (and (string-contains? own-location "reader") (string-contains? helper "lib/text.scm"))
+              label "identity unavailable"))
+    "#).unwrap();
+    let unit = root.path().join("locations.test.scm");
+    std::fs::write(
+        &unit,
+        r#"
+        (define location-before-case (test-location))
+        (define target-before-case (test-resolve "./reader 日本.scm"))
+        (test "mock identity" (lambda ()
+          (assert (string-contains? location-before-case "locations.test.scm"))
+          (assert-equal target-before-case (test-resolve target-before-case))
+          (assert-throws (lambda () (test-resolve "../escape.scm")))
+          (test-load-plugin target-before-case)
+          (assert-equal (test-render) "copied graph ready")))
+    "#,
+    )
+    .unwrap();
+    let report = run(&unit, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    assert!(report.passed(), "{report:#?}");
+    let integration = root.path().join("locations.integration.test.scm");
+    std::fs::write(
+        &integration,
+        r#"
+        (test "copy graph" (lambda ()
+          (define copy (test-copy-plugin "./reader 日本.scm" "日本 copy"))
+          (assert (string-contains? copy "reader"))
+          (assert-throws (lambda () (test-copy-plugin "./reader 日本.scm" "日本 copy")))
+          (assert-throws (lambda () (test-copy-plugin "./reader 日本.scm" "../escape")))
+          (test-session "start")
+          (test-session "load" (hash "path" copy))
+          (test-wait-for-text "copied graph ready")))
+    "#,
+    )
+    .unwrap();
+    let report = run(
+        &integration,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}
+
+#[test]
 fn scheme_installed_rpc_uses_authenticated_plugins_and_releases_errors_and_timeouts() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -238,6 +297,38 @@ fn scheme_test_targets_are_confined_and_preserve_escaped_names() {
             .contains("exceed the calling plugin"),
         "{report:#?}"
     );
+}
+
+#[test]
+fn test_resolution_does_not_anchor_to_a_colliding_fixture_filename() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().canonicalize().unwrap();
+    std::fs::create_dir(directory.join("nested")).unwrap();
+    for name in [
+        "case.test.scm",
+        "actual.scm",
+        "nested/anchor.scm",
+        "nested/link.scm",
+    ] {
+        std::fs::write(directory.join(name), "").unwrap();
+    }
+    std::os::unix::fs::symlink(
+        directory.join("nested/anchor.scm"),
+        directory.join("__test_resolution__.scm"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(directory.join("actual.scm"), directory.join("link.scm")).unwrap();
+    let sources = Sources {
+        entry: directory.join("case.test.scm"),
+        root: directory.clone(),
+    };
+    assert_eq!(
+        sources.resolve_test_path("./actual.scm").unwrap(),
+        url::Url::from_file_path(directory.join("actual.scm"))
+            .unwrap()
+            .as_str()
+    );
+    assert!(sources.resolve_test_path("./link.scm").is_err());
 }
 
 macro_rules! builtin_scheme_suites {

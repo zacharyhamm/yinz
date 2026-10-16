@@ -6,6 +6,7 @@ mod value;
 use crate::plugin_data_store::value::SqlValue;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, TransactionBehavior};
 
@@ -146,33 +147,42 @@ impl PluginDataBackend for SqlitePluginDataBackend {
 
 /// Open the store's file, set its pragmas, and make sure the registry table exists.
 fn open_db(db_path: &Path) -> Result<Connection, DataError> {
-    let started = std::time::Instant::now();
+    open_db_before(db_path, Instant::now() + Duration::from_secs(5))
+}
+
+fn open_db_before(db_path: &Path, deadline: Instant) -> Result<Connection, DataError> {
+    let started = Instant::now();
     log::info!("startup: database open begin path={}", db_path.display());
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| storage_err(&format!("failed to create {:?}", parent), e))?;
     }
-    let mut conn =
-        Connection::open(db_path).with_ctx(|| format!("failed to open {:?}", db_path))?;
+    let conn = Connection::open(db_path).with_ctx(|| format!("failed to open {:?}", db_path))?;
+    conn.busy_timeout(deadline.saturating_duration_since(Instant::now()))
+        .ctx("failed to set initialization busy timeout")?;
     log::info!(
         "startup: database connection opened path={} elapsed={:?}; enabling WAL",
         db_path.display(),
         started.elapsed()
     );
     // WAL and a busy timeout let concurrent yinz servers share this file in the data dir.
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .ctx("failed to enable WAL")?;
+    initialize_before(&conn, deadline, |conn| {
+        conn.pragma_update(None, "journal_mode", "WAL")
+    })
+    .ctx("failed to enable WAL")?;
     log::info!(
         "startup: database WAL enabled path={} elapsed={:?}",
         db_path.display(),
         started.elapsed()
     );
-    conn.pragma_update(None, "busy_timeout", 5000)
-        .ctx("failed to set busy_timeout")?;
-    conn.pragma_update(None, "foreign_keys", "ON")
-        .ctx("failed to enable foreign keys")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")
-        .ctx("failed to set synchronous")?;
+    initialize_before(&conn, deadline, |conn| {
+        conn.pragma_update(None, "foreign_keys", "ON")
+    })
+    .ctx("failed to enable foreign keys")?;
+    initialize_before(&conn, deadline, |conn| {
+        conn.pragma_update(None, "synchronous", "NORMAL")
+    })
+    .ctx("failed to set synchronous")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -190,9 +200,10 @@ fn open_db(db_path: &Path) -> Result<Connection, DataError> {
         db_path.display(),
         started.elapsed()
     );
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .ctx("failed to begin the store migration transaction")?;
+    let tx = initialize_before(&conn, deadline, |conn| {
+        rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+    })
+    .ctx("failed to begin the store migration transaction")?;
     log::info!(
         "startup: database migration lock acquired path={} elapsed={:?}",
         db_path.display(),
@@ -205,6 +216,8 @@ fn open_db(db_path: &Path) -> Result<Connection, DataError> {
         started.elapsed()
     );
     tx.commit().ctx("failed to commit the store migration")?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .ctx("failed to set busy timeout")?;
     log::info!(
         "startup: database open complete path={} elapsed={:?}",
         db_path.display(),
@@ -212,6 +225,36 @@ fn open_db(db_path: &Path) -> Result<Connection, DataError> {
     );
     Ok(conn)
 }
+
+// Retry only initialization operations that have not begun mutating the store.
+fn initialize_before<'a, T>(
+    conn: &'a Connection,
+    deadline: Instant,
+    mut operation: impl FnMut(&'a Connection) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    loop {
+        conn.busy_timeout(deadline.saturating_duration_since(Instant::now()))?;
+        match operation(conn) {
+            Err(error)
+                if matches!(
+                    error.sqlite_error_code(),
+                    Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+                ) =>
+            {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(error);
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(10)));
+            },
+            result => return result,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "unit/initialization.rs"]
+mod initialization_tests;
 
 /// The engine's view of a `rusqlite` connection or transaction (which derefs to one).
 struct SqliteExec<'a>(&'a Connection);

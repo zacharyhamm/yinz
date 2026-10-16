@@ -161,6 +161,11 @@ pub enum ScreenInstruction {
         response_channel: crossbeam::channel::Sender<DumpSessionLayoutResponse>,
         trace: crate::plugins::LayoutQueryTrace,
     },
+    GetCellPixelSize {
+        client_id: ClientId,
+        response_channel: crossbeam::channel::Sender<Option<yinz_types::pane_size::SizeInPixels>>,
+    },
+    ReportCellPixelSize(PluginId, ClientId),
     GetFocusedPaneInfo {
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<GetFocusedPaneInfoResponse>,

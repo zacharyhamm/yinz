@@ -332,7 +332,47 @@ impl Controller {
             }
             bail!("integration test requires a shipped builtin: {path}");
         }
+        if let Ok(url) = url::Url::parse(path) {
+            if let Ok(target) = url.to_file_path() {
+                let home = self
+                    .root
+                    .canonicalize()
+                    .context("resolve disposable session root")?
+                    .join("home");
+                if target.starts_with(&home) {
+                    let sources = super::steel::Sources {
+                        entry: target,
+                        root: home,
+                    };
+                    return sources.resolve_test_path(path);
+                }
+            }
+        }
         loader.resolve_test_path(path)
+    }
+
+    pub(super) fn copy_plugin(
+        &self,
+        sources: &mut yinz_steel::modules::SourceRoot,
+        destination: &str,
+    ) -> Result<String> {
+        let destination = Path::new(destination);
+        anyhow::ensure!(
+            !destination.as_os_str().is_empty()
+                && destination
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_))),
+            "plugin copy destination must stay inside the test home"
+        );
+        let home = self
+            .root
+            .canonicalize()
+            .context("resolve disposable session root")?
+            .join("home");
+        let entry = sources.copy_to(&home, destination)?;
+        Ok(url::Url::from_file_path(entry)
+            .map_err(|_| anyhow!("invalid copied plugin path"))?
+            .to_string())
     }
     fn grant(&self, location: &str) -> Result<()> {
         if !self.auto_grant_permissions {

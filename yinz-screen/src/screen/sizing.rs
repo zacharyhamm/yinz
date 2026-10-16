@@ -9,9 +9,7 @@ use yinz_types::pane_size::Size;
 impl Screen {
     pub fn set_client_size(&mut self, client_id: ClientId, size: Size) {
         self.client_sizes.insert(client_id, size);
-        if self.character_cell_size.borrow().is_none() {
-            self.update_pixel_dimensions(client_id, PixelDimensions::default());
-        }
+        self.update_pixel_dimensions(client_id, PixelDimensions::default());
     }
 
     pub(super) fn session_size(&self) -> Option<Size> {

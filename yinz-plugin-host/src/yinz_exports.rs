@@ -575,6 +575,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::Unsubscribe(event_list) => unsubscribe(env, event_list)?,
             PluginCommand::SetSelectable(selectable) => set_selectable(env, selectable),
             PluginCommand::ShowCursor(cursor_position) => show_cursor(env, cursor_position),
+            PluginCommand::GetCellPixelSize => get_cell_pixel_size(env)?,
             PluginCommand::GetPluginIds => get_plugin_ids(env),
             PluginCommand::GetYinzVersion => get_yinz_version(env),
             PluginCommand::GenerateRandomName => generate_random_name(env),
@@ -1561,6 +1562,26 @@ fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Resu
             client_id: env.client_id,
             permissions,
         })
+}
+
+fn get_cell_pixel_size(env: &mut PluginEnv) -> Result<()> {
+    let (response_channel, receiver) = crossbeam::channel::bounded(1);
+    env.senders
+        .send_to_screen(ScreenInstruction::GetCellPixelSize {
+            client_id: env.client_id,
+            response_channel,
+        })
+        .context("request acting client's cell pixel size")?;
+    let size = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .context("wait for acting client's cell pixel size")?;
+    let response = yinz_plugin_api::plugin_command::ProtobufGetCellPixelSizeResponse {
+        size: size
+            .map(TryInto::try_into)
+            .transpose()
+            .map_err(|error| anyhow!("{error}"))?,
+    };
+    write_response(env, &response.encode_to_vec()).context("write cell pixel size response")
 }
 
 fn get_plugin_ids(env: &mut PluginEnv) {
@@ -9015,6 +9036,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::CloseSelf
         | CommandType::SetTimeout
         | CommandType::ReportPanic
+        | CommandType::GetCellPixelSize
         | CommandType::GetPluginIds
         | CommandType::GetYinzVersion => return None,
         // A message to the plugin's own worker, and the worker's reply to the plugin: both stay
@@ -9746,6 +9768,7 @@ mod permission_tests {
             CommandType::CloseSelf,
             CommandType::SetTimeout,
             CommandType::ReportPanic,
+            CommandType::GetCellPixelSize,
             CommandType::GetPluginIds,
             CommandType::GetYinzVersion,
             CommandType::PostMessageTo,

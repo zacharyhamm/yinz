@@ -15,6 +15,7 @@ pub(super) enum Request {
     Call(Operation),
     HostReply(std::result::Result<Value, String>),
     SourceReply(std::result::Result<crate::modules::ModuleSource, String>),
+    ResolverReply(std::result::Result<String, String>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -41,6 +42,7 @@ pub(super) enum Operation {
 pub(super) enum Response {
     HostCall(Value),
     SourceRequest { origin: String, specifier: String },
+    ResolverRequest(Option<String>),
     Finished(std::result::Result<Output, String>),
 }
 

@@ -26,6 +26,11 @@ bytevectors. JSON null uses the symbol `'json-null`.
 The optional callbacks are `load`, `update`, `render`, `pipe`, and `unload`.
 `update` and `pipe` return a boolean that requests a render.
 `render` receives the pane dimensions and returns text, or writes text with `display`.
+The SDK supports Unicode regex search, common Scheme forms, immutable structs,
+and bounded string builders. See the SDK reference for signatures and limits.
+Use `yinz-plugin-location` and `yinz-plugin-resolve` for confined source identity.
+Use `yinz-cell-pixel-size` and `CellPixelSizeChanged` for the acting client's reported geometry.
+PNG input accepts 8 MiB and render output accepts 16 MiB, including printed and returned text.
 Raw filesystem, process, and network APIs are unavailable. Access host resources through permission-checked commands.
 Use `require` and `provide` for modules. Imports must name a relative `.scm`, `.ss`, or `.sld`
 file inside the entrypoint directory. Repository plugins can import from their repository root.
@@ -58,6 +63,8 @@ the next message. Reload cancels pending operations from the old instance.
 Check Scheme source with `yinz plugins check ./hello.scm`. Checks compile the entrypoint and its
 confined imports without running plugin callbacks or module initializers. Literal permission
 requests appear in the report. Computed requests require a runtime permission answer.
+A successful check does not prove that every callback executes successfully.
+Run unit tests and disposable-session tests to exercise callback behavior.
 Use an explicit Scheme extension with `plugins write`. Checked writes keep a backup before
 replacing a file. Formatting parses only the named file, without loading its imports.
 It adjusts indentation and preserves comments, strings, and line breaks.

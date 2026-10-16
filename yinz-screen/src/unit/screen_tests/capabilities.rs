@@ -441,6 +441,7 @@ pub fn reported_pixel_dimensions_are_applied_to_existing_ptys() {
         .send(ScreenInstruction::TerminalPixelDimensions(
             mock_screen.main_client_id,
             PixelDimensions {
+                text_area_grid_size: None,
                 character_cell_size: Some(SizeInPixels {
                     height: 21,
                     width: 8,
@@ -622,4 +623,354 @@ fn late_kitty_capability_repaints_retained_images_for_each_client() {
         );
         assert!(output.contains("\x1b_Ga=p,"), "no placement for {client}");
     }
+}
+
+#[test]
+fn cell_pixel_geometry_is_per_client_and_updates_after_reports_resizes_and_reconnects() {
+    let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    let second = ClientId::new(2);
+    screen.add_client(second).unwrap();
+    screen.set_client_size(
+        second,
+        Size {
+            cols: 100,
+            rows: 30,
+        },
+    );
+    assert_eq!(screen.cell_pixel_size(CLIENT_1), None);
+    assert_eq!(screen.cell_pixel_size(second), None);
+    capture.drain_plugin_updates();
+    let direct = SizeInPixels {
+        width: 9,
+        height: 18,
+    };
+    screen.update_pixel_dimensions(
+        CLIENT_1,
+        PixelDimensions {
+            text_area_grid_size: None,
+            character_cell_size: Some(direct),
+            text_area_size: None,
+        },
+    );
+    screen.update_pixel_dimensions(
+        second,
+        PixelDimensions {
+            text_area_grid_size: None,
+            character_cell_size: None,
+            text_area_size: Some(SizeInPixels {
+                width: 1000,
+                height: 600,
+            }),
+        },
+    );
+    assert_eq!(screen.cell_pixel_size(CLIENT_1), Some(direct));
+    assert_eq!(
+        screen.cell_pixel_size(second),
+        Some(SizeInPixels {
+            width: 10,
+            height: 20
+        })
+    );
+    screen.set_client_size(second, Size { cols: 50, rows: 20 });
+    assert_eq!(
+        screen.cell_pixel_size(second),
+        Some(SizeInPixels {
+            width: 10,
+            height: 20
+        }),
+        "a resize cannot pair the new grid with a stale area report"
+    );
+    screen.update_pixel_dimensions(
+        second,
+        PixelDimensions {
+            text_area_size: Some(SizeInPixels {
+                width: 1000,
+                height: 600,
+            }),
+            text_area_grid_size: Some(Size { cols: 50, rows: 20 }),
+            character_cell_size: None,
+        },
+    );
+    assert_eq!(
+        screen.cell_pixel_size(second),
+        Some(SizeInPixels {
+            width: 20,
+            height: 30
+        })
+    );
+    let events: Vec<_> = capture
+        .drain_plugin_updates()
+        .into_iter()
+        .filter(|(_, _, event)| matches!(event, Event::CellPixelSizeChanged(_)))
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            (
+                None,
+                Some(CLIENT_1),
+                Event::CellPixelSizeChanged(Some(direct))
+            ),
+            (
+                None,
+                Some(second),
+                Event::CellPixelSizeChanged(Some(SizeInPixels {
+                    width: 10,
+                    height: 20
+                }))
+            ),
+            (
+                None,
+                Some(second),
+                Event::CellPixelSizeChanged(Some(SizeInPixels {
+                    width: 20,
+                    height: 30
+                }))
+            ),
+        ]
+    );
+    screen.report_cell_pixel_size(Some(PLUGIN_77), second);
+    assert!(capture.drain_plugin_updates().contains(&(
+        Some(PLUGIN_77),
+        Some(second),
+        Event::CellPixelSizeChanged(screen.cell_pixel_size(second))
+    )));
+    screen.update_pixel_dimensions(
+        CLIENT_1,
+        PixelDimensions {
+            text_area_grid_size: None,
+            character_cell_size: Some(SizeInPixels {
+                width: 0,
+                height: 18,
+            }),
+            text_area_size: None,
+        },
+    );
+    assert_eq!(screen.cell_pixel_size(CLIENT_1), Some(direct));
+    assert!(capture.drain_plugin_updates().is_empty());
+    screen.remove_client(second).unwrap();
+    screen.add_client(second).unwrap();
+    screen.set_client_size(
+        second,
+        Size {
+            cols: 100,
+            rows: 30,
+        },
+    );
+    assert_eq!(screen.cell_pixel_size(second), None);
+    assert!(capture.drain_plugin_updates().contains(&(
+        None,
+        Some(second),
+        Event::CellPixelSizeChanged(None)
+    )));
+}
+
+#[test]
+fn cell_pixel_geometry_waits_for_client_size_and_never_invents_dimensions() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    let client = ClientId::new(9);
+    screen.update_pixel_dimensions(
+        client,
+        PixelDimensions {
+            text_area_grid_size: None,
+            character_cell_size: None,
+            text_area_size: Some(SizeInPixels {
+                width: 800,
+                height: 400,
+            }),
+        },
+    );
+    assert_eq!(screen.cell_pixel_size(client), None);
+    screen.set_client_size(client, Size { cols: 0, rows: 20 });
+    assert_eq!(screen.cell_pixel_size(client), None);
+    screen.set_client_size(client, Size { cols: 80, rows: 20 });
+    assert_eq!(
+        screen.cell_pixel_size(client),
+        Some(SizeInPixels {
+            width: 10,
+            height: 20
+        })
+    );
+    screen.set_client_size(
+        client,
+        Size {
+            cols: 801,
+            rows: 20,
+        },
+    );
+    assert_eq!(
+        screen.cell_pixel_size(client),
+        Some(SizeInPixels {
+            width: 10,
+            height: 20
+        }),
+        "a later grid cannot reinterpret an old report"
+    );
+    let direct = SizeInPixels {
+        width: 12,
+        height: 24,
+    };
+    screen.update_pixel_dimensions(
+        client,
+        PixelDimensions {
+            text_area_grid_size: None,
+            character_cell_size: Some(direct),
+            text_area_size: None,
+        },
+    );
+    screen.set_client_size(
+        client,
+        Size {
+            cols: 100,
+            rows: 50,
+        },
+    );
+    assert_eq!(screen.cell_pixel_size(client), Some(direct));
+}
+
+#[test]
+fn paired_pixel_reports_are_independent_of_resize_message_order() {
+    for report_first in [true, false] {
+        let (mut screen, capture) =
+            create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.update_pixel_dimensions(
+            CLIENT_1,
+            PixelDimensions {
+                text_area_size: Some(SizeInPixels {
+                    width: 800,
+                    height: 400,
+                }),
+                text_area_grid_size: Some(Size { cols: 80, rows: 20 }),
+                character_cell_size: None,
+            },
+        );
+        capture.drain_plugin_updates();
+        let resized = Size {
+            cols: 100,
+            rows: 30,
+        };
+        let report = PixelDimensions {
+            text_area_size: Some(SizeInPixels {
+                width: 1200,
+                height: 720,
+            }),
+            text_area_grid_size: Some(resized),
+            character_cell_size: None,
+        };
+        let cell = SizeInPixels {
+            width: 12,
+            height: 24,
+        };
+        if report_first {
+            screen.update_pixel_dimensions(CLIENT_1, report);
+            assert_eq!(screen.cell_pixel_size(CLIENT_1), Some(cell));
+            screen.set_client_size(CLIENT_1, resized);
+        } else {
+            screen.set_client_size(CLIENT_1, resized);
+            assert_eq!(
+                screen.cell_pixel_size(CLIENT_1),
+                Some(SizeInPixels {
+                    width: 10,
+                    height: 20
+                })
+            );
+            assert!(capture.drain_plugin_updates().is_empty());
+            screen.update_pixel_dimensions(CLIENT_1, report);
+        }
+        assert_eq!(screen.cell_pixel_size(CLIENT_1), Some(cell));
+        assert_eq!(
+            capture.drain_plugin_updates(),
+            vec![(
+                None,
+                Some(CLIENT_1),
+                Event::CellPixelSizeChanged(Some(cell))
+            )]
+        );
+        let direct = SizeInPixels {
+            width: 11,
+            height: 23,
+        };
+        screen.update_pixel_dimensions(
+            CLIENT_1,
+            PixelDimensions {
+                character_cell_size: Some(direct),
+                ..Default::default()
+            },
+        );
+        capture.drain_plugin_updates();
+        screen.update_pixel_dimensions(CLIENT_1, report);
+        assert_eq!(
+            screen.cell_pixel_size(CLIENT_1),
+            Some(direct),
+            "a direct cell report takes precedence over area division"
+        );
+        assert!(capture.drain_plugin_updates().is_empty());
+    }
+}
+
+#[test]
+fn geometry_learned_before_registration_is_reported_after_add_client() {
+    let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    capture.drain_plugin_events();
+    let arriving = ClientId::new(2);
+    let cell = SizeInPixels {
+        width: 12,
+        height: 24,
+    };
+    screen.update_pixel_dimensions(
+        arriving,
+        PixelDimensions {
+            character_cell_size: Some(cell),
+            ..Default::default()
+        },
+    );
+    assert!(
+        capture.drain_plugin_events().is_empty(),
+        "pixel reports cannot reach plugins before client registration"
+    );
+    screen.add_client(arriving).unwrap();
+    let events: Vec<_> = capture
+        .plugin_rx
+        .try_iter()
+        .map(|(event, _)| event)
+        .collect();
+    assert!(matches!(events.first(), Some(PluginInstruction::AddClient(id)) if *id == arriving));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, PluginInstruction::Update(updates)
+        if updates.contains(&(None, Some(arriving), Event::CellPixelSizeChanged(Some(cell)))))));
+}
+
+#[test]
+fn watcher_geometry_is_cleared_before_its_id_is_reused_by_an_interactive_client() {
+    let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 20 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    let reused = ClientId::new(2);
+    screen.add_watcher_client(reused).unwrap();
+    screen.update_pixel_dimensions(
+        reused,
+        PixelDimensions {
+            character_cell_size: Some(SizeInPixels {
+                width: 12,
+                height: 24,
+            }),
+            ..Default::default()
+        },
+    );
+    assert!(screen.cell_pixel_size(reused).is_some());
+    screen.remove_watcher_client(reused);
+    assert_eq!(screen.cell_pixel_size(reused), None);
+    assert!(!screen.client_pixel_dimensions.contains_key(&reused));
+    capture.drain_plugin_updates();
+    screen.add_client(reused).unwrap();
+    screen.set_client_size(reused, Size { cols: 80, rows: 20 });
+    assert_eq!(screen.cell_pixel_size(reused), None);
+    assert!(capture.drain_plugin_updates().contains(&(
+        None,
+        Some(reused),
+        Event::CellPixelSizeChanged(None)
+    )));
 }

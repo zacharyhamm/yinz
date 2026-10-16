@@ -18,6 +18,13 @@ Use `example.test.scm` for unit tests and `example.integration.test.scm` for
 integration tests. Tests can use relative `require` modules within the selected
 root. Each case runs in a fresh worker process. Discovery also runs in a worker.
 
+`(test-location)` returns the test file's canonical `file:` URL.
+`(test-resolve "./example.scm")` returns a canonical URL for an existing Scheme
+target relative to that file. Both work during discovery and in unit tests,
+without starting a session. Resolution stays inside the selected source root
+and rejects symlinks, special files, and unsupported extensions. Arguments use
+URL syntax: encode literal `#`, `?`, and `%` characters in filenames.
+
 ## Register cases and assertions
 
 ```scheme
@@ -166,12 +173,32 @@ propagates rejection, and applies its deadline while the deferred is pending.
 `backgroundPlugins` accepts paths or hashes with `"path"` and
 `"configuration"`. Hooks map hook names to plugin paths. Builtin URLs such as
 `"yinz:tab-bar"` work in session operations. Local test targets must remain
-inside the selected test root.
+inside the selected test root or the disposable home used for copied plugins.
+
+`(test-copy-plugin "./example.scm" "example-copy")` copies the entrypoint and its
+confined Scheme dependency graph into a fresh `example-copy` directory under
+the disposable home. It returns an entrypoint URL for `test-session` operations
+or alias KDL. Original source text and relative import paths are retained;
+duplicate imports are copied once. This integration-only helper rejects
+overwrites, destination traversal, symlinks, and special files. The usual source
+graph limits apply: 8 MiB per source, 64 MiB total, 1024 modules, and 64 import
+levels. Runtime assets outside the Scheme graph require explicit fixtures.
+
+The loaded plugin's `(yinz-plugin-location)` and `(yinz-plugin-resolve path)`
+use its own source identity, including mocked plugins. They are available
+before `load`; configurations cannot replace that identity.
 
 Executable fixtures, agent requests, and agent reports require the declared
 `RunCommands` grant. RPC requires `ReadCliPipes` and
 `MessageAndLaunchOtherPlugins`. Fixture paths must stay inside the test home.
 Executable names must be simple names, without path separators.
+
+Fixture commands inherit `YINZ_SOCKET_DIR`, `YINZ_SESSION_NAME`, and the isolated
+runtime directory for the disposable session. Invoke the same Yinz binary from
+a fixture to connect to that session; no socket symlink or environment repair is
+needed. The store coordinates concurrent initialization within one five-second
+deadline. Wait for asynchronous data changes with `test-wait-for`; callers do
+not need to retry database-open errors.
 
 ## Failures, limits, and cleanup
 

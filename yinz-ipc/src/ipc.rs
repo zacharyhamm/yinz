@@ -90,6 +90,9 @@ pub struct ClientAttributes {
 pub struct PixelDimensions {
     pub text_area_size: Option<SizeInPixels>,
     pub character_cell_size: Option<SizeInPixels>,
+    /// The grid observed with this text-area report, independent of resize-message ordering.
+    #[serde(default)]
+    pub text_area_grid_size: Option<Size>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
@@ -102,6 +105,7 @@ impl PixelDimensions {
     pub fn merge(&mut self, other: PixelDimensions) {
         if let Some(text_area_size) = other.text_area_size {
             self.text_area_size = Some(text_area_size);
+            self.text_area_grid_size = other.text_area_grid_size;
         }
         if let Some(character_cell_size) = other.character_cell_size {
             self.character_cell_size = Some(character_cell_size);

@@ -1005,6 +1005,7 @@ fn update_screen_pixel_dimensions() {
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: Some(SizeInPixels {
                 height: 10,
                 width: 5,
@@ -1016,6 +1017,7 @@ fn update_screen_pixel_dimensions() {
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: None,
             text_area_size: Some(SizeInPixels {
                 height: 100,
@@ -1027,6 +1029,7 @@ fn update_screen_pixel_dimensions() {
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: None,
             text_area_size: None,
         },
@@ -1035,6 +1038,7 @@ fn update_screen_pixel_dimensions() {
     assert_eq!(
         initial_pixel_dimensions,
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: None,
             text_area_size: None
         },
@@ -1043,6 +1047,7 @@ fn update_screen_pixel_dimensions() {
     assert_eq!(
         pixel_dimensions_after_first_update,
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: Some(SizeInPixels {
                 height: 10,
                 width: 5
@@ -1054,6 +1059,7 @@ fn update_screen_pixel_dimensions() {
     assert_eq!(
         pixel_dimensions_after_second_update,
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: Some(SizeInPixels {
                 height: 10,
                 width: 5
@@ -1068,6 +1074,7 @@ fn update_screen_pixel_dimensions() {
     assert_eq!(
         pixel_dimensions_after_third_update,
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: Some(SizeInPixels {
                 height: 10,
                 width: 5
@@ -1097,6 +1104,7 @@ fn character_cell_size_is_derived_from_the_reporting_client_size() {
     screen.update_pixel_dimensions(
         client_id,
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: None,
             text_area_size: Some(SizeInPixels {
                 height: 1050,
@@ -1146,6 +1154,7 @@ fn invalid_pixel_reports_never_publish_zero_sized_cells() {
                 continue; // A directly reported one-pixel cell is valid.
             }
             let report = |dimensions| PixelDimensions {
+                text_area_grid_size: None,
                 character_cell_size: direct.then_some(dimensions),
                 text_area_size: (!direct).then_some(dimensions),
             };
@@ -1178,6 +1187,7 @@ fn character_cell_size_is_not_derived_for_a_client_of_unknown_size() {
     screen.update_pixel_dimensions(
         crate::ClientId::new(2),
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: None,
             text_area_size: Some(SizeInPixels {
                 height: 1050,

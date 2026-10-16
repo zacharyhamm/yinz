@@ -1170,6 +1170,18 @@ pub fn screen_thread_main(
                         .with_context(err_context)
                         .non_fatal();
                 },
+                ScreenInstruction::GetCellPixelSize {
+                    client_id,
+                    response_channel,
+                } => {
+                    response_channel
+                        .send(screen.cell_pixel_size(client_id))
+                        .context("reply with client cell pixel size")
+                        .non_fatal();
+                },
+                ScreenInstruction::ReportCellPixelSize(plugin_id, client_id) => {
+                    screen.report_cell_pixel_size(Some(plugin_id), client_id);
+                },
                 ScreenInstruction::GetFocusedPaneInfo {
                     client_id,
                     response_channel,

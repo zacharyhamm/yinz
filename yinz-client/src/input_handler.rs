@@ -278,7 +278,10 @@ impl InputHandler {
     }
     fn handle_stdin_ansi_instruction(&mut self, ansi_stdin_instructions: AnsiStdinInstruction) {
         match ansi_stdin_instructions {
-            AnsiStdinInstruction::PixelDimensions(pixel_dimensions) => {
+            AnsiStdinInstruction::PixelDimensions(mut pixel_dimensions) => {
+                if pixel_dimensions.text_area_size.is_some() {
+                    pixel_dimensions.text_area_grid_size = Some(self.os_input.get_terminal_size());
+                }
                 self.os_input
                     .send_to_server(ClientToServerMsg::TerminalPixelDimensions {
                         pixel_dimensions,

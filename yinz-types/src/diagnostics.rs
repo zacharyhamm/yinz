@@ -161,6 +161,8 @@ pub enum ScreenContext {
     BreakPanesToTabWithId,
     RecomputeTabSize,
     TerminalPixelDimensions,
+    GetCellPixelSize,
+    ReportCellPixelSize,
     TerminalBackgroundColor,
     TerminalForegroundColor,
     TerminalColorRegisters,

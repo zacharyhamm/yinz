@@ -3263,7 +3263,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "steel-core"
 version = "0.8.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=515e342bd82ca33bf72dfd9aad9d50ed3376d0fb#515e342bd82ca33bf72dfd9aad9d50ed3376d0fb"
+source = "git+https://github.com/zacharyhamm/steel?rev=8f66a605fdec513dd932aed9d9c38643f1fee166#8f66a605fdec513dd932aed9d9c38643f1fee166"
 dependencies = [
  "arc-swap",
  "bigdecimal",
@@ -3316,7 +3316,7 @@ dependencies = [
 [[package]]
 name = "steel-derive"
 version = "0.8.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=515e342bd82ca33bf72dfd9aad9d50ed3376d0fb#515e342bd82ca33bf72dfd9aad9d50ed3376d0fb"
+source = "git+https://github.com/zacharyhamm/steel?rev=8f66a605fdec513dd932aed9d9c38643f1fee166#8f66a605fdec513dd932aed9d9c38643f1fee166"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3326,7 +3326,7 @@ dependencies = [
 [[package]]
 name = "steel-gen"
 version = "0.8.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=515e342bd82ca33bf72dfd9aad9d50ed3376d0fb#515e342bd82ca33bf72dfd9aad9d50ed3376d0fb"
+source = "git+https://github.com/zacharyhamm/steel?rev=8f66a605fdec513dd932aed9d9c38643f1fee166#8f66a605fdec513dd932aed9d9c38643f1fee166"
 dependencies = [
  "codegen",
  "serde",
@@ -3335,7 +3335,7 @@ dependencies = [
 [[package]]
 name = "steel-parser"
 version = "0.8.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=515e342bd82ca33bf72dfd9aad9d50ed3376d0fb#515e342bd82ca33bf72dfd9aad9d50ed3376d0fb"
+source = "git+https://github.com/zacharyhamm/steel?rev=8f66a605fdec513dd932aed9d9c38643f1fee166#8f66a605fdec513dd932aed9d9c38643f1fee166"
 dependencies = [
  "compact_str",
  "dashmap",
@@ -3356,7 +3356,7 @@ dependencies = [
 [[package]]
 name = "steel-quickscope"
 version = "0.3.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=515e342bd82ca33bf72dfd9aad9d50ed3376d0fb#515e342bd82ca33bf72dfd9aad9d50ed3376d0fb"
+source = "git+https://github.com/zacharyhamm/steel?rev=8f66a605fdec513dd932aed9d9c38643f1fee166#8f66a605fdec513dd932aed9d9c38643f1fee166"
 dependencies = [
  "indexmap 2.14.0",
  "smallvec",
@@ -4877,8 +4877,8 @@ dependencies = [
  "nix",
  "notify-debouncer-full",
  "num_cpus",
- "project-data",
  "png",
+ "project-data",
  "prost",
  "regex",
  "serde",
@@ -5156,12 +5156,14 @@ dependencies = [
  "libc",
  "miette 7.6.0",
  "rand 0.10.2",
+ "regex",
  "serde",
  "serde_json",
  "steel-core",
  "strip-ansi-escapes",
  "tempfile",
  "unicode-width 0.2.2",
+ "url",
  "yinz-config",
  "yinz-tile",
  "yinz-tile-markdown",

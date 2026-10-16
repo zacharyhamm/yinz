@@ -14,6 +14,8 @@ pub struct PixelDimensions {
     pub text_area_size: ::core::option::Option<SizeInPixels>,
     #[prost(message, optional, tag="2")]
     pub character_cell_size: ::core::option::Option<SizeInPixels>,
+    #[prost(message, optional, tag="3")]
+    pub text_area_grid_size: ::core::option::Option<Size>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

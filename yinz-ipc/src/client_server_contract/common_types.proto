@@ -9,6 +9,7 @@ message Size {
 message PixelDimensions {
   optional SizeInPixels text_area_size = 1;
   optional SizeInPixels character_cell_size = 2;
+  optional Size text_area_grid_size = 3;
 }
 
 message SizeInPixels {

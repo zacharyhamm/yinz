@@ -166,6 +166,16 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 value(result.map_err(|error| anyhow!(error))?)
             },
         ),
+        CommandType::GetCellPixelSize => decode(bytes).and_then(
+            |response: yinz_plugin_api::plugin_command::ProtobufGetCellPixelSizeResponse| {
+                let size: Option<yinz_types::pane_size::SizeInPixels> = response
+                    .size
+                    .map(TryInto::try_into)
+                    .transpose()
+                    .map_err(|error| anyhow!("{error}"))?;
+                value(size)
+            },
+        ),
         CommandType::GetPluginIds => decode(bytes).and_then(|response: ProtobufPluginIds| {
             let ids = PluginIds::try_from(response).map_err(|e| anyhow!("{}", e))?;
             value(ids)

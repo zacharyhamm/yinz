@@ -854,6 +854,7 @@ impl From<PixelDimensions>
 {
     fn from(pixel_dims: PixelDimensions) -> Self {
         Self {
+            text_area_grid_size: pixel_dims.text_area_grid_size.map(Into::into),
             text_area_size: pixel_dims.text_area_size.map(|size| {
                 crate::client_server_contract::client_server_contract::SizeInPixels {
                     width: size.width as u32,
@@ -878,6 +879,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::PixelDimensi
         pixel_dims: crate::client_server_contract::client_server_contract::PixelDimensions,
     ) -> Result<Self> {
         Ok(Self {
+            text_area_grid_size: pixel_dims
+                .text_area_grid_size
+                .map(TryInto::try_into)
+                .transpose()?,
             text_area_size: pixel_dims.text_area_size.map(|size| {
                 yinz_types::pane_size::SizeInPixels {
                     width: size.width as usize,

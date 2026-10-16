@@ -20,6 +20,18 @@ const MAX: usize = crate::MAX_OUTPUT_BYTES;
 const MAX_VIEWPORT_CELLS: usize = 262_144;
 
 pub(crate) fn register(engine: &mut Engine) {
+    engine.register_value(
+        "yinz-ui-image-max-id",
+        SteelVal::IntV(MAX_IMAGE_ID as isize),
+    );
+    engine.register_value(
+        "yinz-ui-image-max-dimension",
+        SteelVal::IntV(yinz_types::kitty_placeholders::ROWCOLUMN_DIACRITICS.len() as isize),
+    );
+    engine.register_value(
+        "yinz-ui-image-max-bytes",
+        SteelVal::IntV(crate::MAX_PNG_BYTES as isize),
+    );
     engine.register_fn(
         "yinz-format-layout-error",
         |value: SteelVal| -> steel::rvals::Result<String> {

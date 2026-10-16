@@ -4324,7 +4324,7 @@ fn client_grid_reset_is_targeted_subscribed_ungated_and_keeps_identity_on_replay
         )
         .unwrap();
     assert!(
-        matches!(&test.bridge.cached_events_for_pending_plugins[&plugin][0], EventOrPipeMessage::Event(Event::ClientGridReset(client)) if *client == other)
+        matches!(&test.bridge.cached_events_for_pending_plugins[&plugin][0], EventOrPipeMessage::Event(Some(target), Event::ClientGridReset(client)) if *target == other && *client == other)
     );
     test.bridge
         .apply_cached_events(vec![plugin], true, shutdown)
@@ -4332,10 +4332,8 @@ fn client_grid_reset_is_targeted_subscribed_ungated_and_keeps_identity_on_replay
     test.settle(plugin);
     let mut replayed = frames_by_client(&mut test, plugin);
     replayed.sort_by_key(|(client, _)| *client);
-    assert_eq!(
-        replayed,
-        [(owner, "size 2".into()), (other, "size 2,2".into())]
-    );
+    // Caching cannot turn a targeted event into a broadcast to the other instance.
+    assert_eq!(replayed, [(other, "size 2,2".into())]);
 }
 
 #[test]
@@ -6672,4 +6670,90 @@ fn idle_cli_subscribers_get_snapshots_after_reconnect_and_peer_removal() {
                 ScreenInstruction::SetCliEventSubscribersPresent(false)
             )));
     }
+}
+
+#[test]
+fn shared_cell_pixel_size_events_keep_the_reporting_client_and_need_no_permission() {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(1);
+    let owner = ClientId::new(1);
+    let actor = ClientId::new(2);
+    let mut context = test.context(
+        1,
+        1,
+        r#"
+(define received "none")
+(define (update event)
+  (when (and (hash? event) (hash-contains? event "CellPixelSizeChanged"))
+    (set! received (string-append
+      (number->string (hash-ref (yinz-command "GetPluginIds") "client_id")) ":"
+      (number->string (hash-ref (hash-ref event "CellPixelSizeChanged") "width"))))) #t)
+(define (render rows cols) (string-append "size " received ";"))
+"#,
+    );
+    context
+        .plugin_config
+        .initial_userspace_configuration
+        .insert("shared", "true");
+    test.load(context).unwrap();
+    test.bridge.shared_plugin_ids.insert(id);
+    *test.bridge.connected_clients.lock().unwrap() = vec![owner, actor];
+    let event = Event::CellPixelSizeChanged(Some(yinz_types::pane_size::SizeInPixels {
+        width: 11,
+        height: 22,
+    }));
+    {
+        let map = test.bridge.plugin_map.lock().unwrap();
+        let plugin = map.get_running_plugin(id, Some(owner)).unwrap();
+        let plugin = plugin.lock().unwrap();
+        plugin
+            .env()
+            .subscriptions
+            .lock()
+            .unwrap()
+            .insert(EventType::CellPixelSizeChanged);
+        assert_eq!(
+            check_event_permission(plugin.env(), &event),
+            (PermissionStatus::Granted, None)
+        );
+    }
+    frames(&mut test, id);
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .update_plugins(vec![(None, Some(actor), event)], shutdown)
+        .unwrap();
+    test.settle(id);
+    let rendered = frames(&mut test, id);
+    assert!(!rendered.is_empty());
+    assert!(
+        rendered.iter().all(|frame| frame == "size 2:11"),
+        "{rendered:?}"
+    );
+    // Reports that arrive during loading must keep the same client when replayed.
+    test.bridge.cache_plugin_events(id);
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .update_plugins(
+            vec![(
+                Some(id),
+                Some(actor),
+                Event::CellPixelSizeChanged(Some(yinz_types::pane_size::SizeInPixels {
+                    width: 13,
+                    height: 26,
+                })),
+            )],
+            shutdown.clone(),
+        )
+        .unwrap();
+    test.bridge
+        .apply_cached_events(vec![id], true, shutdown)
+        .unwrap();
+    test.settle(id);
+    let rendered = frames(&mut test, id);
+    assert!(!rendered.is_empty());
+    assert!(
+        rendered.iter().all(|frame| frame == "size 2:13"),
+        "{rendered:?}"
+    );
+    test.bridge.unload_plugin(id).unwrap();
 }

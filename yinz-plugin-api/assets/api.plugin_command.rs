@@ -3235,6 +3235,12 @@ pub struct PickResponse {
     #[prost(string, tag="1")]
     pub json: ::prost::alloc::string::String,
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetCellPixelSizeResponse {
+    #[prost(message, optional, tag="1")]
+    pub size: ::core::option::Option<super::event::CellPixelSize>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum CommandName {
@@ -3501,6 +3507,7 @@ pub enum CommandName {
     GetPluginIdsForUrl = 301,
     GetPluginInfo = 302,
     Pick = 304,
+    GetCellPixelSize = 308,
     GetPluginIdsForUrlWithConfiguration = 303,
 }
 impl CommandName {
@@ -3773,6 +3780,7 @@ impl CommandName {
             CommandName::GetPluginIdsForUrl => "GetPluginIdsForUrl",
             CommandName::GetPluginInfo => "GetPluginInfo",
             CommandName::Pick => "Pick",
+            CommandName::GetCellPixelSize => "GetCellPixelSize",
             CommandName::GetPluginIdsForUrlWithConfiguration => "GetPluginIdsForUrlWithConfiguration",
         }
     }
@@ -4042,6 +4050,7 @@ impl CommandName {
             "GetPluginIdsForUrl" => Some(Self::GetPluginIdsForUrl),
             "GetPluginInfo" => Some(Self::GetPluginInfo),
             "Pick" => Some(Self::Pick),
+            "GetCellPixelSize" => Some(Self::GetCellPixelSize),
             "GetPluginIdsForUrlWithConfiguration" => Some(Self::GetPluginIdsForUrlWithConfiguration),
             _ => None,
         }

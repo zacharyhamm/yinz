@@ -9,3 +9,5 @@
 (define (yinz-log message)
   (yinz-raw-display message yinz-log-port)
   (yinz-raw-write-char #\newline yinz-log-port))
+
+(define (yinz-cell-pixel-size) (yinz-command "GetCellPixelSize"))
