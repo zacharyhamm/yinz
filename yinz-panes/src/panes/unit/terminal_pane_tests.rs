@@ -2560,7 +2560,7 @@ fn agent_restart_is_fresh_and_keeps_command_metadata() {
 #[test]
 fn restart_refusal_keeps_held_state_and_explicit_replacements_work() {
     let mut pane = agent_pane();
-    pane.record_agent_input();
+    pane.record_agent_input(false);
     pane.set_agent_info(Some(AgentInfo {
         kind: "codex".into(),
         state: AgentState::Busy,
@@ -2614,22 +2614,26 @@ fn respawn_resets_input_revision_only_when_the_restart_succeeds() {
             let replacement = replace.then(|| command.clone());
             assert!(pane.agent_input_at().is_none());
             let before = std::time::Instant::now();
-            pane.record_agent_input();
-            pane.record_agent_input();
+            pane.record_agent_input(true);
+            pane.record_agent_input(false);
+            assert_eq!(pane.agent_enter_revision(), 1);
             let input_at = pane.agent_input_at().unwrap();
             assert!(input_at >= before);
             assert!(pane.respawn(replacement.clone(), keep_scrollback).is_none());
             assert_eq!(pane.agent_input_revision(), 2);
+            assert_eq!(pane.agent_enter_revision(), 1);
 
             pane.hold(Some(0), false, command.clone());
             pane.set_warp_pending(true);
             assert!(pane.respawn(replacement.clone(), keep_scrollback).is_none());
             assert_eq!(pane.agent_input_revision(), 2);
+            assert_eq!(pane.agent_enter_revision(), 1);
             pane.set_warp_pending(false);
             assert_eq!(pane.agent_input_at(), Some(input_at));
             assert_eq!(pane.respawn(replacement, keep_scrollback), Some(command));
             assert_eq!(pane.agent_input_revision(), 0);
             assert!(pane.agent_input_at().is_none());
+            assert_eq!(pane.agent_enter_revision(), 0);
         }
     }
 }

@@ -323,6 +323,7 @@ pub(crate) fn apply_pane_agent_report(
     pane_id: PaneId,
     agent: Option<AgentInfo>,
 ) -> Result<bool> {
+    screen.claude_permission_waits.remove(&pane_id);
     // Read before the write: which hooks a change fires is a question about the edge, and the
     // pane only answers whether anything changed.
     let Some(previous) = screen

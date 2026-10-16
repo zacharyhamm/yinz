@@ -222,7 +222,13 @@ fn detach_and_attach_session() {
 
     yinz.detach_main_client();
 
-    let reattached_client = yinz.attach_client(TERMINAL_SIZE);
+    // Unspecified focus depends on whether attachment reuses the departed client's id.
+    let reattached_client = yinz.attach_client_with_focus(
+        TERMINAL_SIZE,
+        Some(yinz_types::pane_id::PaneId::Terminal(
+            right_terminal.terminal_id(),
+        )),
+    );
     let grid_snapshot = reattached_client.wait_until(
         "reattached client sees the restored split and text",
         |grid_snapshot| {
@@ -231,6 +237,7 @@ fn detach_and_attach_session() {
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("Pane #2")
                 && grid_snapshot.contains("I am some text")
+                && grid_snapshot.cursor_is_at(col(76).row(2))
         },
     );
     assert_snapshot!(normalized(&grid_snapshot));

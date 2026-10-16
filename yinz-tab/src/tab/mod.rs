@@ -4804,9 +4804,7 @@ impl Tab {
                     client_id,
                 ) {
                     Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
-                        if count_input && !adjusted_input.is_empty() {
-                            active_pane.record_agent_input();
-                        }
+                        let record_input = count_input && !adjusted_input.is_empty();
                         self.senders
                             .send_to_pty_writer(PtyWriteInstruction::Write(
                                 adjusted_input,
@@ -4814,6 +4812,11 @@ impl Tab {
                                 completion_tx,
                             ))
                             .with_context(err_context)?;
+                        if record_input {
+                            active_pane.record_agent_input(key_with_modifier.as_ref().is_some_and(
+                                |key| key.is_key_without_modifier(yinz_types::keys::BareKey::Enter),
+                            ));
+                        }
                     },
                     Some(AdjustedInput::ReRunCommandInThisPane) => {
                         // Through the screen, which re-runs it with
