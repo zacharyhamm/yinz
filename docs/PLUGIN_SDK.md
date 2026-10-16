@@ -295,6 +295,8 @@ procedure), `"close"`, `"suspend"` (boolean argument), and `"cancelled"` (query)
 Use cancellation callbacks to release obsolete searches when the query changes.
 
 Return a view hash with `"type"` equal to `"text"`, `"actions"`, or `"form"`.
+Action and form views accept an optional `"description"` string. The palette
+wraps this text below the title or search field. Omit it for no description.
 A form has `"title"`, `"fields"`, and an `"onSubmit"` callback. Set
 `"confirmation"` to true for a confirmation form. Directory and file fields add
 a picker action. Completion can return

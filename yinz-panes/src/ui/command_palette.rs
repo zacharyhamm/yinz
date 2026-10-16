@@ -176,6 +176,10 @@ pub struct CommandPalette {
     pub agent_metadata:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub metadata: Option<String>,
+    pub description: String,
+    description_offset: Cell<usize>,
+    description_rows: Cell<usize>,
+    description_total: Cell<usize>,
     agent: Option<RefCell<agent::AgentView>>,
     metadata_offset: usize,
     metadata_focus: u8,
@@ -217,6 +221,8 @@ pub struct CommandPaletteLayout {
     result_rows: Vec<ResultRow>,
     text_lines: Vec<String>,
     metadata_lines: Vec<String>,
+    description_lines: Vec<String>,
+    description_y: usize,
     metadata_y: usize,
     agent: Option<agent::AgentLayout>,
 }
@@ -582,6 +588,7 @@ impl CommandPalette {
             .filter_map(|f| {
                 f.input_options
                     .as_ref()
+                    .filter(|o| !o.help.is_empty() || !o.error.is_empty())
                     .map(|o| format!("{}: {} {}", f.label, o.help, o.error))
             })
             .collect::<Vec<_>>()
@@ -689,6 +696,21 @@ impl CommandPalette {
             return self.back();
         }
         if self.busy {
+            return Outcome::None;
+        }
+        if !self.description.is_empty()
+            && key.has_only_modifiers(&[KeyModifier::Alt])
+            && matches!(key.bare_key, BareKey::PageUp | BareKey::PageDown)
+        {
+            let page = self.description_rows.get().max(1);
+            let end = self.description_total.get().saturating_sub(page);
+            let offset = self.description_offset.get().min(end);
+            self.description_offset
+                .set(if key.bare_key == BareKey::PageDown {
+                    offset.saturating_add(page).min(end)
+                } else {
+                    offset.saturating_sub(page)
+                });
             return Outcome::None;
         }
         if let Some(agent) = &mut self.agent {
@@ -1234,7 +1256,10 @@ impl CommandPalette {
     }
 
     pub fn layout(&self, surface: Viewport) -> CommandPaletteLayout {
-        let expanded = self.metadata.is_some() || self.text.is_some() || self.agent.is_some();
+        let expanded = self.metadata.is_some()
+            || !self.description.is_empty()
+            || self.text.is_some()
+            || self.agent.is_some();
         let cols = surface.cols.min(if expanded { 110 } else { 64 });
         let rows = surface.rows.min(if expanded { 36 } else { 11 });
         let rect = CellRect {
@@ -1248,7 +1273,40 @@ impl CommandPalette {
         };
         let border = usize::from(cols >= 3 && rows >= 4);
         let input_y = rect.y + border;
-        let metadata_y = input_y + 1 + usize::from(rows >= 6);
+        let footer_y = (rows >= 5).then_some(rect.y + rows.saturating_sub(border + 1));
+        let description_y = input_y + 1 + usize::from(rows >= 6);
+        let description_lines = if self.description.is_empty() {
+            vec![]
+        } else {
+            crate::ui::notification::wrapped_text_lines(
+                &self.description,
+                cols.saturating_sub(2 * border),
+            )
+        };
+        let description_height = rows
+            .saturating_sub(7)
+            .min(rows / 3)
+            .max(1)
+            .min(
+                footer_y
+                    .unwrap_or(rect.y + rows - border)
+                    .saturating_sub(description_y)
+                    .saturating_sub(1),
+            )
+            .min(description_lines.len());
+        self.description_total.set(description_lines.len());
+        self.description_rows.set(description_height);
+        let offset = self
+            .description_offset
+            .get()
+            .min(description_lines.len().saturating_sub(description_height));
+        self.description_offset.set(offset);
+        let description_lines = description_lines
+            .into_iter()
+            .skip(offset)
+            .take(description_height)
+            .collect::<Vec<_>>();
+        let metadata_y = description_y + description_lines.len();
         let mut metadata_lines = self
             .metadata
             .as_ref()
@@ -1257,7 +1315,8 @@ impl CommandPalette {
             })
             .unwrap_or_default();
         let metadata_height = if self.metadata.is_some() {
-            rows.saturating_sub(7).min(rows / 3)
+            rows.saturating_sub(7 + description_lines.len())
+                .min(rows / 3)
         } else {
             0
         };
@@ -1272,7 +1331,6 @@ impl CommandPalette {
             .take(metadata_height)
             .collect();
         let options_y = metadata_y + metadata_height;
-        let footer_y = (rows >= 5).then_some(rect.y + rows.saturating_sub(border + 1));
         let options_rows = footer_y
             .unwrap_or(rect.y + rows - border)
             .saturating_sub(options_y);
@@ -1302,6 +1360,8 @@ impl CommandPalette {
             rect,
             metadata_lines,
             metadata_y,
+            description_lines,
+            description_y,
             border,
             input_y,
             options_y,
@@ -1471,7 +1531,7 @@ impl CommandPalette {
                     } else if Some(y) == layout.footer_y {
                         (
                             self.error.clone().unwrap_or_else(|| {
-                                if self.busy {
+                                let help = if self.busy {
                                     "Working…  Esc Cancel"
                                 } else if self.form.as_ref().is_some_and(|f| f.confirmation) {
                                     "↑↓ Select  Enter Choose  PgUp/PgDn Details  Esc Back"
@@ -1491,8 +1551,15 @@ impl CommandPalette {
                                     "↑↓/Ctrl+n/p Select  Enter Choose  Esc Back"
                                 } else {
                                     "↑↓/Ctrl+n/p Select  Enter Choose  Esc Close"
+                                };
+                                if !self.busy && self.description_total.get() > layout.description_lines.len() {
+                                    format!("Alt+PgUp/Dn Desc {}–{}/{} · {help}",
+                                        self.description_offset.get() + 1,
+                                        self.description_offset.get() + layout.description_lines.len(),
+                                        self.description_total.get())
+                                } else {
+                                    help.into()
                                 }
-                                .into()
                             }),
                             if self.error.is_some() {
                                 fill.clone()
@@ -1500,6 +1567,8 @@ impl CommandPalette {
                                 heading.clone()
                             },
                         )
+                    } else if (layout.description_y..layout.metadata_y).contains(&y) {
+                        (layout.description_lines.get(y - layout.description_y).cloned().unwrap_or_default(), heading.clone())
                     } else if (layout.metadata_y..layout.options_y).contains(&y) {
                         (layout.metadata_lines.get(y - layout.metadata_y).cloned().unwrap_or_default(), if self.metadata_focus == 0 { fill.clone() } else { heading.clone() })
                     } else if (layout.options_y..layout.options_y + layout.options_rows)

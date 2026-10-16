@@ -31,6 +31,7 @@ fn palette_display_validation_rejects_ambiguous_controls_and_oversize_payloads()
     }
     let form = |fields| Reply::View {
         view: View::Form {
+            description: String::new(),
             actions: vec![],
             confirmation: false,
             title: "Form".into(),
@@ -154,6 +155,7 @@ fn palette_completion_validates_text_views_and_releases_handles() {
     let reply = Reply::Complete {
         notification: "Report saved".into(),
         view: Some(View::Form {
+            description: String::new(),
             actions: vec![],
             confirmation: false,
             title: "Report".into(),
@@ -201,4 +203,27 @@ fn form_secondary_callbacks_are_validated_and_released() {
         serde_json::json!({"type":"fields","values":{"cwd":1}})
     )
     .is_err());
+}
+
+#[test]
+fn view_descriptions_default_to_empty_and_validate_display_text() {
+    for mut value in [
+        serde_json::json!({"type": "actions", "title": "Settings", "actions": [], "source": null}),
+        serde_json::json!({"type": "form", "title": "Setting", "fields": [], "submitLabel": "Apply", "handle": "1"}),
+    ] {
+        let view: View = serde_json::from_value(value.clone()).unwrap();
+        assert!(serde_json::to_value(&view)
+            .unwrap()
+            .get("description")
+            .is_none());
+        for (description, valid) in [
+            ("Explain the option.\nUnicode: 雪".to_owned(), true),
+            ("bad\x1b[31m".to_owned(), false),
+            ("x".repeat(MAX_DISPLAY_BYTES), false),
+        ] {
+            value["description"] = serde_json::json!(description);
+            let view: View = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(Reply::View { view }.validate().is_ok(), valid);
+        }
+    }
 }

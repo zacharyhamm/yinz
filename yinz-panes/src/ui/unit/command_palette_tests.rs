@@ -1996,3 +1996,323 @@ fn configuration_forms_keep_the_cursor_when_help_is_visible() {
         assert!(palette.cursor(&palette.layout(surface)).is_none());
     }
 }
+
+#[test]
+fn view_descriptions_wrap_without_changing_list_navigation_or_leaking_on_back() {
+    for form in [false, true] {
+        for cols in [32, 80] {
+            let mut palette = palette();
+            palette.push_view(1, "Settings".into());
+            palette.description = "Choose which corner of the screen shows notifications.".into();
+            if form {
+                let mut number = Field::text("Timeout", "10");
+                number.input_options = Some(yinz_types::command_palette::InputOptions {
+                    kind: "number".into(),
+                    ..Default::default()
+                });
+                palette.open_form(Form::new(
+                    "edit".into(),
+                    "Notification position".into(),
+                    vec![
+                        Field::choice("Position", &["top-left", "bottom-right"]),
+                        number,
+                    ],
+                    "Apply",
+                    false,
+                ));
+            } else {
+                palette.set_sections(vec![PluginSection {
+                    title: "Settings".into(),
+                    entries: vec![entry("edit", "Edit setting", EntryKind::Plugin)],
+                    semantic: false,
+                    status: None,
+                }]);
+                palette.insert_text("Edit");
+            }
+            assert!(
+                palette.metadata.is_none(),
+                "empty input help needs no details area"
+            );
+            let layout = palette.layout(Viewport {
+                cols,
+                rows: 24,
+                ..Default::default()
+            });
+            let lines = rendered_lines(&palette, &layout);
+            assert!(lines
+                .iter()
+                .any(|line| line.contains("Choose which corner")));
+            assert!(lines.iter().any(|line| line.contains("notifications.")));
+            assert!(!lines.iter().any(|line| line.contains("Agent info")));
+            assert!(layout.options_rows > 0);
+            if cols == 32 {
+                assert!(layout.description_lines.len() > 1);
+            }
+            if !form {
+                assert_eq!(ids(&palette), ["edit"]);
+                assert!(matches!(
+                    palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                    Outcome::Activate(_)
+                ));
+            }
+            palette.push_view(2, "Next".into());
+            assert!(palette.description.is_empty());
+            key(&mut palette, BareKey::Esc);
+            assert!(palette.description.starts_with("Choose which corner"));
+            key(&mut palette, BareKey::Esc);
+            assert!(palette.description.is_empty());
+        }
+    }
+}
+
+#[test]
+fn overflowing_view_descriptions_scroll_without_changing_actions_or_forms() {
+    for form in [false, true] {
+        let mut palette = palette();
+        palette.push_view(1, "Clipboard access".into());
+        palette.description = "Allow any pane program, including remote programs, to read the clipboard through OSC 52 without asking.".into();
+        if form {
+            palette.open_form(Form::new(
+                "edit".into(),
+                "Clipboard access".into(),
+                vec![Field::text("Value", "unchanged")],
+                "Apply",
+                false,
+            ));
+        } else {
+            palette.set_sections(vec![PluginSection {
+                title: String::new(),
+                entries: vec![
+                    entry("edit", "Edit", EntryKind::Command),
+                    entry("reset", "Reset", EntryKind::Command),
+                ],
+                semantic: false,
+                status: None,
+            }]);
+        }
+        let surface = Viewport {
+            cols: 32,
+            rows: 10,
+            ..Default::default()
+        };
+        let first = rendered_lines(&palette, &palette.layout(surface)).join("\n");
+        assert!(first.contains("Allow any pane program"));
+        assert!(!first.contains("without asking."));
+        assert!(first.contains("Alt+PgUp/Dn Desc 1–3/4"));
+
+        for _ in 0..3 {
+            assert_eq!(
+                palette.handle_key(KeyWithModifier::new(BareKey::PageDown).with_alt_modifier()),
+                Outcome::None
+            );
+            let layout = palette.layout(surface);
+            let text = rendered_lines(&palette, &layout).join("\n");
+            assert!(text.contains("without asking."));
+            assert!(text.contains("Alt+PgUp/Dn Desc 2–4/4"));
+            assert!(layout.options_rows > 0);
+        }
+        if form {
+            assert_eq!(palette.form_values().unwrap().1, ["unchanged"]);
+            assert_eq!(palette.form.as_ref().unwrap().selected, 0);
+        } else {
+            assert_eq!(palette.selected_entry().unwrap().id, "edit");
+        }
+
+        palette.push_view(2, "Next".into());
+        assert_eq!(palette.description_offset.get(), 0);
+        key(&mut palette, BareKey::Esc);
+        assert!(rendered_lines(&palette, &palette.layout(surface))
+            .join("\n")
+            .contains("without asking."));
+        for _ in 0..3 {
+            palette.handle_key(KeyWithModifier::new(BareKey::PageUp).with_alt_modifier());
+            assert_eq!(
+                rendered_lines(&palette, &palette.layout(surface)).join("\n"),
+                first
+            );
+        }
+        key(&mut palette, BareKey::Down);
+        if form {
+            assert_eq!(palette.form.as_ref().unwrap().selected, 1);
+        } else {
+            assert_eq!(palette.selected_entry().unwrap().id, "reset");
+        }
+        key(&mut palette, BareKey::Esc);
+        assert!(palette.description.is_empty());
+        assert_eq!(palette.description_offset.get(), 0);
+    }
+}
+
+#[test]
+fn short_surfaces_keep_controls_visible_with_descriptions() {
+    for rows in [5, 6] {
+        for form in [false, true] {
+            let mut palette = palette();
+            palette.description = "Choose a value.".into();
+            let labels = if form {
+                palette.open_form(Form::new(
+                    "edit".into(),
+                    "Configuration".into(),
+                    vec![Field::text("Value", "unchanged")],
+                    "Apply",
+                    false,
+                ));
+                ["unchanged", "Apply"]
+            } else {
+                ["New pane", "New tab"]
+            };
+            let surface = Viewport {
+                cols: 80,
+                rows,
+                ..Default::default()
+            };
+            for label in labels {
+                let layout = palette.layout(surface);
+                assert_eq!(layout.options_rows, 1, "{rows} rows, form={form}");
+                assert!(layout.description_lines.is_empty());
+                let lines = rendered_lines(&palette, &layout);
+                assert!(
+                    lines[layout.options_y - layout.rect.y].contains(label),
+                    "{rows} rows, form={form}: {lines:?}"
+                );
+                key(&mut palette, BareKey::Down);
+            }
+        }
+    }
+}
+
+#[test]
+fn description_scrolling_clamps_on_resize_and_fits_short_surfaces() {
+    let mut palette = palette();
+    palette.description = "one\ntwo\nthree\nfour\nfive".into();
+    for rows in 0..=10 {
+        let surface = Viewport {
+            x: 3,
+            y: 2,
+            cols: 32,
+            rows,
+        };
+        let layout = palette.layout(surface);
+        let available = layout
+            .footer_y
+            .unwrap_or(layout.rect.y + rows - layout.border);
+        assert!(layout.description_lines.is_empty() || layout.metadata_y <= available);
+        assert_eq!(palette.chunks(&layout, &Style::default()).len(), rows);
+        if available.saturating_sub(layout.description_y) > 1 {
+            assert!(!layout.description_lines.is_empty(), "{rows} rows");
+            let mut seen = layout.description_lines.clone();
+            for _ in 0..5 {
+                palette.handle_key(KeyWithModifier::new(BareKey::PageDown).with_alt_modifier());
+                seen.extend(palette.layout(surface).description_lines);
+            }
+            assert!(seen.iter().any(|line| line == "five"), "{rows} rows");
+        } else {
+            assert!(layout.description_lines.is_empty(), "{rows} rows");
+        }
+    }
+    let large = Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    };
+    let layout = palette.layout(large);
+    assert_eq!(
+        layout.description_lines,
+        ["one", "two", "three", "four", "five"]
+    );
+    assert_eq!(palette.description_offset.get(), 0);
+    assert!(!rendered_lines(&palette, &layout)
+        .join("\n")
+        .contains("Alt+PgUp/Dn"));
+    palette.handle_key(KeyWithModifier::new(BareKey::PageDown).with_alt_modifier());
+    assert_eq!(palette.description_offset.get(), 0);
+
+    palette.description = "A description that wraps across several lines at narrow widths.".into();
+    let narrow = Viewport {
+        cols: 12,
+        rows: 10,
+        ..Default::default()
+    };
+    palette.layout(narrow);
+    for _ in 0..5 {
+        palette.handle_key(KeyWithModifier::new(BareKey::PageDown).with_alt_modifier());
+    }
+    let layout = palette.layout(large);
+    assert_eq!(layout.description_lines, [palette.description.clone()]);
+    assert_eq!(palette.description_offset.get(), 0);
+}
+
+#[test]
+fn description_scrolling_preserves_metadata_navigation_and_message_priority() {
+    for form in [false, true] {
+        let mut palette = palette();
+        if form {
+            palette.open_form(Form::new(
+                "confirm".into(),
+                "Confirm".into(),
+                vec![],
+                "Apply",
+                true,
+            ));
+        }
+        palette.description = (1..=12).map(|i| format!("Description {i}\n")).collect();
+        palette.metadata = Some((1..=12).map(|i| format!("Detail {i}\n")).collect());
+        let surface = Viewport {
+            cols: 80,
+            rows: 24,
+            ..Default::default()
+        };
+        palette.layout(surface);
+        key(&mut palette, BareKey::PageDown);
+        let metadata_offset = palette.metadata_offset;
+        assert!(metadata_offset > 0);
+        palette.handle_key(KeyWithModifier::new(BareKey::PageDown).with_alt_modifier());
+        let layout = palette.layout(surface);
+        assert_eq!(palette.metadata_offset, metadata_offset);
+        assert!(palette.description_offset.get() > 0);
+        let description_offset = palette.description_offset.get();
+        key(&mut palette, BareKey::PageUp);
+        assert_eq!(palette.metadata_offset, 0);
+        assert_eq!(palette.description_offset.get(), description_offset);
+
+        palette.busy = true;
+        palette.handle_key(KeyWithModifier::new(BareKey::PageUp).with_alt_modifier());
+        assert_eq!(palette.description_offset.get(), description_offset);
+        let text = rendered_lines(&palette, &layout).join("\n");
+        assert!(text.contains("Working…"));
+        assert!(!text.contains("Alt+PgUp/Dn"));
+        palette.busy = false;
+        palette.set_error("Validation error".into());
+        let text = rendered_lines(&palette, &layout).join("\n");
+        assert!(text.contains("Validation error"));
+        assert!(!text.contains("Alt+PgUp/Dn"));
+    }
+}
+
+#[test]
+fn description_scroll_shortcuts_remain_capturable_as_form_values() {
+    let mut palette = palette();
+    palette.description = "one\ntwo\nthree\nfour".into();
+    let mut field = Field::text("Key", "");
+    field.input_options = Some(yinz_types::command_palette::InputOptions {
+        kind: "key".into(),
+        ..Default::default()
+    });
+    palette.open_form(Form::new(
+        "edit".into(),
+        "Keybinding".into(),
+        vec![field],
+        "Apply",
+        false,
+    ));
+    palette.layout(Viewport {
+        cols: 32,
+        rows: 10,
+        ..Default::default()
+    });
+    key(&mut palette, BareKey::F(2));
+    let shortcut = KeyWithModifier::new(BareKey::PageDown).with_alt_modifier();
+    palette.handle_key(shortcut.clone());
+    assert_eq!(palette.form_values().unwrap().1, [shortcut.to_string()]);
+    assert_eq!(palette.description_offset.get(), 0);
+}

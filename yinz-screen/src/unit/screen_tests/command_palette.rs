@@ -2539,6 +2539,8 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
     use yinz_types::internal_ids::PluginId;
 
     let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
     let (sender, requests) = unbounded();
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
     let unavailable = Arc::new(AtomicBool::new(false));
@@ -2640,6 +2642,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         scope,
         result: Ok(Reply::View {
             view: View::Actions {
+                description: "Choose a configuration section.".into(),
                 initial_query: String::new(),
                 title: "Nested".into(),
                 actions: vec![action("nested")],
@@ -2647,6 +2650,8 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
             }
         }),
     })));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Choose a configuration section."), "{frame}");
     let nested_request = next();
     let Message::Discover { scope, .. } = nested_request.message else {
         panic!()
@@ -2676,6 +2681,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         scope,
         result: Ok(Reply::View {
             view: View::Actions {
+                description: String::new(),
                 initial_query: String::new(),
                 title: "Nested again".into(),
                 actions: vec![action("nested2")],
@@ -2683,10 +2689,13 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
             },
         }),
     }));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        !frame.contains("Choose a configuration section."),
+        "{frame}"
+    );
     let pending = next();
     unavailable.store(true, Ordering::Release);
-    let receiver = screen_wired_to_server(&mut screen);
-    let mut grid = grid_for_render_snapshot(SIZE);
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!pending.active.unwrap().load(Ordering::Acquire));
     let releases: Vec<_> = requests
@@ -4821,6 +4830,7 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                     scope,
                     result: Ok(Reply::View {
                         view: View::Form {
+                            description: String::new(),
                             actions: vec![],
                             confirmation: false,
                             title: "Edit report".into(),
@@ -5274,6 +5284,7 @@ fn dynamic_palette_refresh_recovers_after_execution_error_and_stops_after_close(
         scope,
         result: Ok(Reply::View {
             view: View::Actions {
+                description: String::new(),
                 initial_query: String::new(),
                 title: "Dynamic".into(),
                 actions: vec![],

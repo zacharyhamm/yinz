@@ -104,7 +104,8 @@ impl Editor {
 #[test]
 fn configuration_scalar_drafts_submit_value_and_destination_together() {
     let mut editor = Editor::new(snapshot(), "mouse_mode");
-    assert!(editor.view["title"].as_str().unwrap().contains("Client 1"));
+    assert_eq!(editor.view["title"], "mouse mode");
+    assert_eq!(editor.view["description"], "Mouse");
     assert!(editor.writes().is_empty());
     assert_eq!(editor.view["fields"][0]["initialValue"], "Enabled");
     assert_eq!(editor.view["fields"][1]["initialValue"], "Apply to session");
@@ -392,4 +393,53 @@ fn configuration_submenu_excludes_theme_settings_and_sections() {
         ["mouse_mode"]
     );
     assert!(editor.writes().is_empty());
+}
+
+#[test]
+fn configuration_explanations_cover_scalar_fields_and_keep_timing_in_details() {
+    for (kind, value, choices) in [
+        ("boolean", json!(true), json!([])),
+        ("choice", json!("normal"), json!(["normal", "locked"])),
+        ("number", json!(5), json!([])),
+        ("file", json!("/bin/sh"), json!([])),
+        ("directory", json!("/tmp"), json!([])),
+    ] {
+        let mut state = snapshot();
+        state["catalog"][0]["kind"] = json!(kind);
+        state["catalog"][0]["choices"] = choices;
+        state["saved"][0]["arguments"] = json!([value]);
+        state["clients"]["1"][0]["arguments"] = json!([value]);
+        let mut editor = Editor::new(state, "mouse_mode");
+        assert_eq!(editor.palette.roots[0]["label"], "mouse mode…");
+        assert_eq!(editor.palette.roots[0]["description"], "");
+        assert_eq!(editor.view["description"], "Mouse", "{kind}");
+        editor.choose("state");
+        let details = editor.view["text"].as_str().unwrap();
+        assert!(details.contains("Applies to this session"));
+        assert!(details.contains("Client 1"));
+        assert!(editor.writes().is_empty());
+    }
+}
+
+#[test]
+fn configuration_sections_explain_themselves_in_nested_lists_and_forms() {
+    for section in [
+        "keybinds",
+        "env",
+        "plugins",
+        "load_plugins",
+        "hooks",
+        "context_menu",
+        "ui",
+    ] {
+        let root = node(section, json!([]), vec![empty("example")]);
+        let mut editor = Editor::new(with_section(section, root), section);
+        let description = editor.view["description"].clone();
+        assert!(!description.as_str().unwrap().is_empty(), "{section}");
+        editor.choose("entry:0");
+        assert_eq!(editor.view["description"], description);
+        editor.choose("edit");
+        assert_eq!(editor.view["description"], description);
+        assert!(editor.writes().is_empty());
+    }
 }
