@@ -1,5 +1,5 @@
 use crate::plugin_bridge::LoadingContext;
-use crate::plugin_map::{PluginEnv, PluginMap, ResponseSink, RunningPlugin};
+use crate::plugin_map::{PluginEnv, PluginMap, ResponseSink, RunningPlugin, CANCELLED_BY_HOST};
 use crate::queues::Queues;
 use crate::{ClientId, PluginId};
 use std::{
@@ -54,7 +54,7 @@ fn script_source(
     }
 }
 
-pub struct PluginLoader<'a> {
+pub struct PluginLoader {
     plugin_roles: crate::plugin_map::PluginRoles,
     pick_request: Option<yinz_types::pick::PickRequest>,
     pick_cancelled: Option<Arc<AtomicBool>>,
@@ -77,6 +77,7 @@ pub struct PluginLoader<'a> {
     user_plugin_dir: Option<PathBuf>,
     default_mode: InputMode,
     keybinds: Keybinds,
+    configuration_version: u64,
     data_access: Arc<DataAccess>,
     watch_generations: super::plugin_map::WatchGenerations,
     queues: Arc<Mutex<Queues>>,
@@ -86,17 +87,17 @@ pub struct PluginLoader<'a> {
     client_cancellations: Arc<Mutex<HashMap<ClientId, Arc<AtomicBool>>>>,
     loading_indication: LoadingIndication,
     senders: ThreadSenders,
-    plugin_map: &'a mut PluginMap, // we receive a mutable reference rather than the Arc so that it
-    // will be held for the lifetime of this struct and thus loading
-    // plugins for all connected clients will be one transaction
+    plugin_map: Arc<Mutex<PluginMap>>,
     connected_clients: Option<Arc<Mutex<Vec<ClientId>>>>,
+    #[cfg(test)]
+    pub(crate) before_register: Option<Box<dyn FnOnce() + Send>>,
 }
 
-impl<'a> PluginLoader<'a> {
+impl PluginLoader {
     pub fn new(
         loading_context: LoadingContext,
         senders: ThreadSenders,
-        plugin_map: &'a mut PluginMap,
+        plugin_map: Arc<Mutex<PluginMap>>,
         connected_clients: Arc<Mutex<Vec<ClientId>>>,
     ) -> Self {
         let loading_indication = LoadingIndication::new("".into());
@@ -127,6 +128,7 @@ impl<'a> PluginLoader<'a> {
             user_plugin_dir: loading_context.user_plugin_dir,
             default_mode: loading_context.default_mode,
             keybinds: loading_context.keybinds,
+            configuration_version: loading_context.configuration_version,
             data_access: loading_context.data_access,
             watch_generations: loading_context.watch_generations,
             queues: loading_context.queues,
@@ -139,6 +141,8 @@ impl<'a> PluginLoader<'a> {
             plugin_map,
             connected_clients: Some(connected_clients),
             loading_indication,
+            #[cfg(test)]
+            before_register: None,
         }
     }
 
@@ -148,27 +152,38 @@ impl<'a> PluginLoader<'a> {
     }
 
     pub fn start_plugin(&mut self) -> Result<()> {
-        let resolved_source_path = self
-            .plugin_map
-            .reload_metadata(self.plugin_id)
-            .filter(|metadata| {
-                metadata.config.path == self.plugin_config.path
-                    && metadata.config.location == self.plugin_config.location
-            })
-            .and_then(|metadata| metadata.resolved_source_path);
-        self.plugin_map.remember_plugin(
-            self.plugin_id,
-            super::plugin_map::PluginMetadata {
-                config: self.plugin_config.clone(),
-                data_owner: self.data_owner.clone(),
-                resolved_source_path,
-                cache_dir: self.plugin_own_cache_dir.clone(),
-                cwd: self.plugin_cwd.clone(),
-                tab_index: self.tab_index,
-                size: (self.size.rows, self.size.cols),
-                owner_client_id: self.client_id,
-            },
-        );
+        {
+            let mut plugin_map = self.plugin_map.lock().unwrap();
+            anyhow::ensure!(
+                plugin_map.load_is_current(self.plugin_id, &self.cancel),
+                CANCELLED_BY_HOST
+            );
+            // An attachment can initialize this client before the initial load reaches its peers.
+            if plugin_map.contains(self.plugin_id, self.client_id) {
+                drop(plugin_map);
+                return self.clone_instance_for_other_clients();
+            }
+            let resolved_source_path = plugin_map
+                .reload_metadata(self.plugin_id)
+                .filter(|metadata| {
+                    metadata.config.path == self.plugin_config.path
+                        && metadata.config.location == self.plugin_config.location
+                })
+                .and_then(|metadata| metadata.resolved_source_path);
+            plugin_map.remember_plugin(
+                self.plugin_id,
+                super::plugin_map::PluginMetadata {
+                    config: self.plugin_config.clone(),
+                    data_owner: self.data_owner.clone(),
+                    resolved_source_path,
+                    cache_dir: self.plugin_own_cache_dir.clone(),
+                    cwd: self.plugin_cwd.clone(),
+                    tab_index: self.tab_index,
+                    size: (self.size.rows, self.size.cols),
+                    owner_client_id: self.client_id,
+                },
+            );
+        }
         if self
             .plugin_config
             .path
@@ -198,9 +213,16 @@ impl<'a> PluginLoader<'a> {
 
         let mut plugin_env = self.create_plugin_env();
         plugin_env.resolved_source_path = resolved_source_path.clone();
-        if let Some(mut metadata) = self.plugin_map.reload_metadata(self.plugin_id) {
-            metadata.resolved_source_path = plugin_env.resolved_source_path.clone();
-            self.plugin_map.remember_plugin(self.plugin_id, metadata);
+        {
+            let mut plugin_map = self.plugin_map.lock().unwrap();
+            anyhow::ensure!(
+                plugin_map.load_is_current(self.plugin_id, &self.cancel),
+                CANCELLED_BY_HOST
+            );
+            if let Some(mut metadata) = plugin_map.reload_metadata(self.plugin_id) {
+                metadata.resolved_source_path = plugin_env.resolved_source_path.clone();
+                plugin_map.remember_plugin(self.plugin_id, metadata);
+            }
         }
         let subscriptions = plugin_env.subscriptions.clone();
         let running = {
@@ -219,30 +241,78 @@ impl<'a> PluginLoader<'a> {
                     },
                     Err(error) => return Err(error).with_context(err_context),
                 };
-            for name in steel.worker_names()? {
-                if let Some(workers) = &steel.env().workers {
-                    workers.spawn(name, &source, &path, self.worker_env(steel.env()))?;
+            let workers_started = (|| -> Result<()> {
+                for name in steel.worker_names()? {
+                    if let Some(workers) = &steel.env().workers {
+                        workers.spawn(name, &source, &path, self.worker_env(steel.env()))?;
+                    }
                 }
+                Ok(())
+            })();
+            if let Err(error) = workers_started {
+                steel.dispose_with_cleanup(false);
+                if self.script_client_disconnected() {
+                    return self.clone_instance_for_other_clients();
+                }
+                return Err(error).with_context(err_context);
             }
             RunningPlugin::new(steel, self.size.rows, self.size.cols)
         };
         let plugin = Arc::new(Mutex::new(running));
+        #[cfg(test)]
+        if let Some(before_register) = self.before_register.take() {
+            before_register();
+        }
         // Inserted before `load` runs, so that host commands issued from `load` can find it.
-        self.plugin_map.insert(
-            self.plugin_id,
-            self.client_id,
-            plugin.clone(),
-            subscriptions,
-        );
+        let previous = {
+            let mut plugin_map = self.plugin_map.lock().unwrap();
+            let load_is_current = plugin_map.load_is_current(self.plugin_id, &self.cancel);
+            if !load_is_current || self.script_client_disconnected() {
+                drop(plugin_map);
+                let mut running = plugin.lock().unwrap();
+                running.mark_failed();
+                running.dispose();
+                drop(running);
+                anyhow::ensure!(load_is_current, CANCELLED_BY_HOST);
+                return self.clone_instance_for_other_clients();
+            }
+            if let Some((version, configuration)) =
+                plugin_map.client_configurations.get(&self.client_id)
+            {
+                // Older updates must not overwrite the bridge defaults captured by a newer context.
+                if *version > self.configuration_version {
+                    configuration.apply_to(&mut plugin.lock().unwrap());
+                }
+            }
+            plugin_map.insert(
+                self.plugin_id,
+                self.client_id,
+                plugin.clone(),
+                subscriptions,
+            )
+        };
+        if let Some((previous, _)) = previous {
+            previous.lock().unwrap().dispose();
+        }
         let loaded = plugin
             .lock()
             .unwrap()
             .load(&self.plugin_config.initial_userspace_configuration)
             .with_context(err_context);
-        if loaded.is_err() {
-            plugin.lock().unwrap().dispose();
+        if loaded.is_err()
+            || self.cancel.load(Ordering::Acquire)
+            || self.script_client_disconnected()
+        {
+            {
+                let mut running = plugin.lock().unwrap();
+                running.mark_failed();
+                running.dispose();
+            }
             self.plugin_map
-                .remove_instance(self.plugin_id, self.client_id);
+                .lock()
+                .unwrap()
+                .remove_matching_instance(self.plugin_id, &plugin);
+            anyhow::ensure!(!self.cancel.load(Ordering::Acquire), CANCELLED_BY_HOST);
             if self.script_client_disconnected() {
                 return self.clone_instance_for_other_clients();
             }

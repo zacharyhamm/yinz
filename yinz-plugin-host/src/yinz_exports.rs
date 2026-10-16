@@ -6826,7 +6826,8 @@ fn list_notifications(env: &mut PluginEnv) {
         .is_ok()
     {
         response_receiver
-            .recv_timeout(Duration::from_millis(100))
+            // Client attachment can keep the screen busy beyond a frame interval.
+            .recv_timeout(Duration::from_secs(1))
             .map_err(|error| match error {
                 crossbeam::channel::RecvTimeoutError::Timeout => {
                     "Timed out listing notifications".to_owned()

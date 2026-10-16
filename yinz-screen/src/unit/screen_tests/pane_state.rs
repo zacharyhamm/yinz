@@ -7,6 +7,50 @@ use super::*;
 use yinz_types::internal_ids::PluginId;
 use yinz_types::internal_ids::TabId;
 
+#[test]
+fn detached_background_plugins_receive_current_panes_and_tabs() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    let client = ClientId::new(1);
+    screen.remove_client(client).unwrap();
+    assert!(screen.active_tab_ids.is_empty());
+    let plugin = PluginId::new(99);
+    screen.background_plugin_subscriptions.insert(
+        (plugin, client),
+        HashSet::from([EventType::PaneUpdate, EventType::TabUpdate]),
+    );
+    screen.background_plugin_subscriptions.insert(
+        (PluginId::new(100), client),
+        HashSet::from([EventType::Timer]),
+    );
+    let (sender, receiver) = channels::unbounded();
+    screen
+        .bus
+        .senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+
+    screen.generate_and_report_pane_state().unwrap();
+    screen.generate_and_report_tab_state().unwrap();
+
+    let updates: Vec<_> = receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => updates,
+            _ => vec![],
+        })
+        .collect();
+    assert_eq!(updates.len(), 2);
+    assert!(updates
+        .iter()
+        .all(|(pid, cid, _)| *pid == Some(plugin) && *cid == Some(client)));
+    assert!(
+        matches!(&updates[0].2, Event::PaneUpdate(manifest) if manifest.panes.values().flatten().any(|pane| pane.id == PaneId::Terminal(TerminalId::new(1))))
+    );
+    assert!(
+        matches!(&updates[1].2, Event::TabUpdate(tabs) if tabs.len() == 1 && tabs[0].tab_id == TabId::new(0))
+    );
+}
+
 /// `CwdChanged` announces a move once. The manifest says where every pane is
 /// every time, which is what puts right a plugin that was not listening yet.
 #[test]

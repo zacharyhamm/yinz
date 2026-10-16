@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use yinz_bus::global_async_runtime::get_tokio_runtime;
@@ -72,6 +72,11 @@ thread_local! {
     static RUNTIMES: RefCell<HashMap<u64, Runtime>> = RefCell::new(HashMap::new());
 }
 
+#[cfg(test)]
+pub(crate) fn runtime_count() -> usize {
+    RUNTIMES.with(|runtimes| runtimes.borrow().len())
+}
+
 type HostEnv = Arc<Mutex<Option<PluginEnv>>>;
 
 struct EnvScope<'a> {
@@ -106,6 +111,7 @@ pub struct SteelPlugin {
     client_cancel: Arc<AtomicBool>,
     repl_pipe: Option<String>,
     disposed: bool,
+    first_render_started: Option<Instant>,
 }
 
 impl SteelPlugin {
@@ -125,6 +131,7 @@ impl SteelPlugin {
         client_cancel: Arc<AtomicBool>,
         generation: u64,
     ) -> Result<Self> {
+        let started = Instant::now();
         if env.cancel.load(Ordering::Acquire) || client_cancel.load(Ordering::Acquire) {
             bail!(CANCELLED_BY_HOST);
         }
@@ -155,7 +162,8 @@ impl SteelPlugin {
         let host: HostEnv = Arc::default();
         let commands = host.clone();
         let binary = crate::plugin_authoring::worker::server_executable()?;
-        let mut runtime = Runtime::new(&binary, move |command| {
+        let worker_started = Instant::now();
+        let runtime = Runtime::new(&binary, move |command| {
             let mut host = commands
                 .lock()
                 .map_err(|_| anyhow!("Steel host lock poisoned"))?;
@@ -163,7 +171,12 @@ impl SteelPlugin {
                 .as_mut()
                 .context("host commands are unavailable during module initialization")?;
             dispatch(env, command)
-        })?;
+        });
+        log::info!(
+            "startup: {} plugin={} client={} generation={generation} phase=worker_ready elapsed={:?} ok={}",
+            env.log_identity(), env.plugin_id, env.client_id, worker_started.elapsed(), runtime.is_ok()
+        );
+        let mut runtime = runtime?;
         let identity = crate::host_bridge::server_identity(&env.server_session)?;
         runtime.set_server_metadata(yinz_steel::ServerMetadata {
             binary: identity.server_binary,
@@ -208,8 +221,10 @@ impl SteelPlugin {
             client_cancel,
             repl_pipe: None,
             disposed: false,
+            first_render_started: Some(started),
         };
         let log_identity = plugin.env().log_identity();
+        let evaluation_started = Instant::now();
         let initialized = plugin.with_runtime(false, |runtime| {
             let evaluated = runtime
                 .eval_with_path(source, Some(&source_path))
@@ -219,6 +234,10 @@ impl SteelPlugin {
             }
             Ok(())
         });
+        log::info!(
+            "startup: {log_identity} plugin={} client={} generation={generation} phase=module_eval elapsed={:?} ok={}",
+            plugin.env().plugin_id, plugin.env().client_id, evaluation_started.elapsed(), initialized.is_ok()
+        );
         if let Err(error) = initialized {
             plugin.dispose_with_cleanup(false);
             return Err(error);
@@ -317,12 +336,23 @@ impl SteelPlugin {
     pub fn load(&mut self, configuration: &BTreeMap<String, String>) -> Result<()> {
         let configuration =
             serde_json::to_value(configuration).context("encoding Steel configuration")?;
-        self.with_runtime(true, |runtime| {
+        let started = Instant::now();
+        let loaded = self.with_runtime(true, |runtime| {
             runtime.load(configuration)?;
             // The load API has no boolean return slot, so re-arm its initial render for the host.
             runtime.invoke("yinz-request-render", vec![])?;
             Ok(())
-        })?;
+        });
+        log::info!(
+            "startup: {} plugin={} client={} generation={} phase=load elapsed={:?} ok={}",
+            self.env().log_identity(),
+            self.env().plugin_id,
+            self.env().client_id,
+            self.generation,
+            started.elapsed(),
+            loaded.is_ok()
+        );
+        loaded?;
         // Permission prompts can hold resize events, so load's render request needs its own tick.
         self.env()
             .senders
@@ -409,11 +439,22 @@ impl SteelPlugin {
     }
 
     pub fn render(&mut self, rows: usize, columns: usize) -> Result<Vec<u8>> {
-        self.with_runtime(true, |runtime| {
+        let started = Instant::now();
+        let frame = self.with_runtime(true, |runtime| {
             runtime
                 .render(rows, columns)
                 .map(|frame| frame.replace('\n', "\n\r").into_bytes())
-        })
+        })?;
+        if !self.is_disposed() {
+            if let Some(startup) = self.first_render_started.take() {
+                log::info!(
+                    "startup: {} plugin={} client={} generation={} phase=first_render elapsed={:?} total={:?}",
+                    self.env().log_identity(), self.env().plugin_id, self.env().client_id,
+                    self.generation, started.elapsed(), startup.elapsed()
+                );
+            }
+        }
+        Ok(frame)
     }
 
     pub fn dispose_with_cleanup(&mut self, run_unload: bool) {

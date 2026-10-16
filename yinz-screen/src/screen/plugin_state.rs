@@ -137,11 +137,24 @@ impl Screen {
                 ));
             }
         }
+        let tab_infos: Vec<_> = tab_infos_for_screen_state.into_values().collect();
+        // Background services keep tracking tabs while no terminal client is attached.
+        if self.active_tab_ids.is_empty() {
+            for ((plugin_id, client_id), subscriptions) in &self.background_plugin_subscriptions {
+                if subscriptions.contains(&EventType::TabUpdate) {
+                    plugin_updates.push((
+                        Some(*plugin_id),
+                        Some(*client_id),
+                        Event::TabUpdate(tab_infos.clone()),
+                    ));
+                }
+            }
+        }
         self.bus
             .senders
             .send_to_plugin(PluginInstruction::Update(plugin_updates))
             .context("failed to update tabs")?;
-        Ok(tab_infos_for_screen_state.values().cloned().collect())
+        Ok(tab_infos)
     }
     pub(super) fn generate_and_report_pane_state(&mut self) -> Result<PaneManifest> {
         self.agent_events.dirty = true;
@@ -170,6 +183,17 @@ impl Screen {
                     Some(client_id),
                     Event::PaneUpdate(pane_manifest.clone()),
                 ));
+            }
+        }
+        if self.active_tab_ids.is_empty() {
+            for ((plugin_id, client_id), subscriptions) in &self.background_plugin_subscriptions {
+                if subscriptions.contains(&EventType::PaneUpdate) {
+                    plugin_updates.push((
+                        Some(*plugin_id),
+                        Some(*client_id),
+                        Event::PaneUpdate(pane_manifest.clone()),
+                    ));
+                }
             }
         }
         // No plugin wants the manifest but a `yinz events` client does: address it to no

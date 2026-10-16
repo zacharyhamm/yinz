@@ -784,12 +784,10 @@ fn registry_updates_palette_and_switching_project_preserves_focus() {
         keybinds {{ shared {{ bind "Ctrl Alt p" {{ ToggleCommandPalette; }}; }}; }}
     "#
     );
+    // Keep the focused pane outside these projects so discovery cannot change the selection.
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config(&config)
-        .with_layout(LayoutInfo::Stringified(format!(
-            "layout {{ pane cwd=\"{}\"; }}",
-            folder.path().display()
-        )))
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
         .start();
     let shell = yinz.expect_pty_spawn();
     shell.output(b"$ ");
@@ -826,7 +824,7 @@ fn registry_updates_palette_and_switching_project_preserves_focus() {
         screen.contains("Project: beta") && screen.contains("> Switch current project")
     });
     yinz.send_stdin(&keys::ESC);
-    yinz.wait_until("palette closed", |screen| !screen.contains("Project: beta"));
+    yinz.wait_until("palette closed", |screen| !screen.contains("Esc Close"));
     yinz.send_stdin(b"still focused");
     shell.wait_for_stdin("input reaches original pane", |bytes| {
         bytes.ends_with(b"still focused")

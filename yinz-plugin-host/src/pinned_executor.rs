@@ -393,7 +393,14 @@ impl PinnedExecutor {
                             connected_clients.clone(),
                         );
                         jobs_in_flight_clone.fetch_sub(1, Ordering::SeqCst);
-                        record_job(&mut stats, &tag, waited, started.elapsed());
+                        let elapsed = started.elapsed();
+                        if tag.label == "load" {
+                            log::info!(
+                                "startup: plugin-exec-{thread_idx} {} phase=executor_load queue={waited:?} execution={elapsed:?}",
+                                plugin_name(&plugin_map, tag.plugin_id)
+                            );
+                        }
+                        record_job(&mut stats, &tag, waited, elapsed);
                         if stats_since.elapsed() >= STATS_LOG_EVERY {
                             log_job_stats(thread_idx, stats_since.elapsed(), &mut stats, &plugin_map);
                             stats_since = Instant::now();
@@ -534,6 +541,7 @@ impl PinnedExecutor {
 
     /// Load a plugin: register it and execute the load work on its assigned thread
     /// This combines registration + execution for plugin loading
+    #[cfg(test)]
     pub fn execute_plugin_load<F>(&self, plugin_id: PluginId, f: F) -> bool
     where
         F: FnOnce(ThreadSenders, Arc<Mutex<PluginMap>>, Arc<Mutex<Vec<ClientId>>>) + Send + 'static,
