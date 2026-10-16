@@ -381,7 +381,9 @@ impl Pair {
                 .map(|mut command| {
                     if let Some(Value::Array(events)) = command.get_mut("Subscribe") {
                         if agents {
-                            events.retain(|event| event != "CustomMessage");
+                            // Worker replies and theme repainting were added after the recordings.
+                            events
+                                .retain(|event| event != "CustomMessage" && event != "ModeUpdate");
                         }
                         events.sort_by_key(Value::to_string);
                     }
