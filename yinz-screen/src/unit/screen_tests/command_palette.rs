@@ -40,6 +40,7 @@ fn palette_text_spaces_cover_dividers_and_dismissal_restores_them() {
         let cells = grid.as_character_lines();
         assert_eq!(cells[11][17].character, '─', "{before}");
         screen.toggle_command_palette(CLIENT);
+        screen.command_palette_handles_input(&None, b" ", false, CLIENT);
         for step in 0..=6 {
             let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
             assert!(
@@ -96,7 +97,22 @@ fn palette_dismissal_restores_cells_outside_floating_panes() {
     let cells_before = grid.as_character_lines();
     screen.toggle_command_palette(CLIENT);
     let opened = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(opened.contains("Switch current project"), "{opened}");
+    assert!(opened.contains("Do · Project:"), "{opened}");
+    let compact_cells = grid.as_character_lines();
+    screen.command_palette_handles_input(&None, b"Rename tab", false, CLIENT);
+    let expanded = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(expanded.contains("> Rename tab"), "{expanded}");
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier()),
+        &[],
+        false,
+        CLIENT,
+    );
+    assert_eq!(
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        opened
+    );
+    assert_eq!(grid.as_character_lines(), compact_cells);
     screen.close_command_palette(CLIENT);
     let (cursor_after, after) =
         render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -128,9 +144,9 @@ fn watchers_see_only_the_followed_palette_and_restore_the_floating_background() 
     screen.toggle_command_palette(CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
-    assert!(snapshot.contains("Switch current project"), "{snapshot}");
+    assert!(snapshot.contains("Do · Project:"), "{snapshot}");
     assert!(!snapshot.contains("private"), "{snapshot}");
-    assert_eq!(cursor, Some((11, 4)));
+    assert_eq!(cursor, Some((6, 7)));
     screen.command_palette_handles_input(&None, b"Rename tab", false, CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
@@ -139,7 +155,7 @@ fn watchers_see_only_the_followed_palette_and_restore_the_floating_background() 
         "{snapshot}"
     );
     assert!(!snapshot.contains("New pane"), "{snapshot}");
-    assert_eq!(cursor, Some((21, 4)));
+    assert_eq!(cursor, Some((16, 7)));
 
     screen.close_command_palette(CLIENT);
     let (cursor_after, after) =
@@ -162,12 +178,12 @@ fn a_smaller_watcher_crops_the_palette_cursor_and_restores_it_when_back_in_bound
     screen.toggle_command_palette(CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
-    assert!(snapshot.contains("New pane"), "{snapshot}");
-    assert_eq!(cursor, Some((11, 4)));
-    screen.command_palette_handles_input(&None, b"long query", false, CLIENT);
+    assert!(snapshot.contains("> "), "{snapshot}");
+    assert_eq!(cursor, Some((6, 7)));
+    screen.command_palette_handles_input(&None, b"a very long query", false, CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
-    assert!(snapshot.contains("> long quer"), "{snapshot}");
+    assert!(snapshot.contains("> a very long qu"), "{snapshot}");
     assert_eq!(
         cursor, None,
         "the input cursor is outside this watcher's width"
@@ -180,12 +196,12 @@ fn a_smaller_watcher_crops_the_palette_cursor_and_restores_it_when_back_in_bound
         CLIENT,
     );
     let (cursor, _) = render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
-    assert_eq!(cursor, Some((11, 4)));
+    assert_eq!(cursor, Some((6, 7)));
     assert!(!screen.watcher_clients[&watcher].cursor_was_cropped());
     screen.close_command_palette(CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
-    assert!(!snapshot.contains("long quer"), "{snapshot}");
+    assert!(!snapshot.contains("a very long qu"), "{snapshot}");
     assert_eq!(cursor, Some(pane_cursor(&mut screen, CLIENT)));
 }
 
@@ -199,8 +215,8 @@ fn palette_keeps_focus_owns_input_and_resets_on_reopen() {
     screen.toggle_command_palette(CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(cursor, Some((11, 4)), "{snapshot}");
-    assert!(snapshot.contains("New pane") && snapshot.contains("Switch current project"));
+    assert_eq!(cursor, Some((6, 7)), "{snapshot}");
+    assert!(snapshot.contains("Do · Project:") && !snapshot.contains("New pane"));
     assert_eq!(screen.get_active_pane_id(&CLIENT), pane);
     // Even an intercepting plugin must not get the palette's keys.
     assert!(!screen
@@ -233,13 +249,13 @@ fn palette_keeps_focus_owns_input_and_resets_on_reopen() {
         render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert_eq!(cursor, Some(underlying_cursor), "{snapshot}");
     assert!(
-        !snapshot.contains("Selected:") && !snapshot.contains("Switch current project"),
+        !snapshot.contains("Selected:") && !snapshot.contains("Do · Project:"),
         "{snapshot}"
     );
     screen.toggle_command_palette(CLIENT);
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(
-        snapshot.contains("New pane") && !snapshot.contains("Selected:"),
+        snapshot.contains("Do · Project:") && !snapshot.contains("Selected:"),
         "{snapshot}"
     );
 }
@@ -254,7 +270,7 @@ fn palette_is_private_to_each_client_and_dismisses_on_tab_change_or_disconnect()
     screen.toggle_command_palette(CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, second, &mut grid);
-    assert!(!snapshot.contains("Switch current project"), "{snapshot}");
+    assert!(!snapshot.contains("Do · Project:"), "{snapshot}");
     assert_eq!(cursor, Some(pane_cursor(&mut screen, second)));
     screen.toggle_command_palette(second);
     screen.command_palette_handles_input(&None, b"Rename tab", false, CLIENT);
@@ -363,7 +379,7 @@ fn palette_repaints_its_background_on_frames_without_new_pane_output() {
         screen
             .get_active_tab_mut(CLIENT)
             .unwrap()
-            .handle_pty_bytes(TerminalId::new(1), format!("\x1b[9;40H{text}").into_bytes())
+            .handle_pty_bytes(TerminalId::new(1), format!("\x1b[8;40H{text}").into_bytes())
             .unwrap();
         let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(snapshot.contains(text), "{snapshot}");
@@ -386,14 +402,14 @@ fn palette_repaints_its_background_on_frames_without_new_pane_output() {
     screen.close_command_palette(CLIENT);
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(
-        snapshot.contains("background two") && !snapshot.contains("Switch current project"),
+        snapshot.contains("background two") && !snapshot.contains("Do · Project:"),
         "{snapshot}"
     );
 }
 
 #[test]
 fn palette_navigation_does_not_repaint_pane_contents_or_borders() {
-    for query in ["", "pane"] {
+    for query in [" ", "pane"] {
         let mut screen = screen();
         let mut config = test_screen_config();
         config.pane_frame_style = PaneFrameStyle::Full;
@@ -456,7 +472,7 @@ fn palette_backing_refreshes_terminal_colors_and_theme() {
         .unwrap()
         .handle_pty_bytes(
             TerminalId::new(1),
-            b"\x1b[9;40Hdefault \x1b[31mindexed".to_vec(),
+            b"\x1b[8;40Hdefault \x1b[31mindexed".to_vec(),
         )
         .unwrap();
     screen.toggle_command_palette(CLIENT);
@@ -494,7 +510,7 @@ fn palette_backing_refreshes_terminal_colors_and_theme() {
         }
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         let refreshed = grid.as_character_lines();
-        assert_ne!(before[8][39..54], refreshed[8][39..54]);
+        assert_ne!(before[7][39..54], refreshed[7][39..54]);
         screen
             .get_active_tab_mut(CLIENT)
             .unwrap()
@@ -519,7 +535,7 @@ fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
         screen.pinned_now = Some(now);
         screen.toggle_command_palette(CLIENT);
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        let before = grid.as_character_lines()[5][60].clone();
+        let before = grid.as_character_lines()[7][60].clone();
         assert_eq!(before.character, ' ');
 
         let mut notification = crate::screen::Notification::new(
@@ -538,17 +554,17 @@ fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
             rows: SIZE.rows,
         };
         let y = screen.notification_layout(surface, now)[0].y;
-        screen.notifications[0].y_offset = Tween::settled(5.0 - y as f32);
+        screen.notifications[0].y_offset = Tween::settled(7.0 - y as f32);
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        assert_eq!(grid.as_character_lines()[5][60].character, '─');
+        assert_eq!(grid.as_character_lines()[7][60].character, '─');
 
         if moved {
-            screen.notifications[0].y_offset = Tween::settled(7.0 - y as f32);
+            screen.notifications[0].y_offset = Tween::settled(9.0 - y as f32);
         } else {
             screen.notifications.clear();
         }
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        assert_eq!(grid.as_character_lines()[5][60], before, "moved: {moved}");
+        assert_eq!(grid.as_character_lines()[7][60], before, "moved: {moved}");
     }
 }
 
@@ -579,7 +595,7 @@ fn palette_backing_keeps_watcher_notifications_separate() {
         rows: SIZE.rows,
     };
     let y = screen.notification_layout(surface, now)[0].y;
-    screen.notifications[0].y_offset = Tween::settled(5.0 - y as f32);
+    screen.notifications[0].y_offset = Tween::settled(7.0 - y as f32);
     screen.toggle_command_palette(CLIENT);
     let mut grids = [
         grid_for_render_snapshot(SIZE),
@@ -600,7 +616,7 @@ fn palette_backing_keeps_watcher_notifications_separate() {
         }
         let cells = grids
             .each_ref()
-            .map(|grid| grid.as_character_lines()[5][60].clone());
+            .map(|grid| grid.as_character_lines()[7][60].clone());
         assert_ne!(
             cells[0], cells[1],
             "only the regular client's backing contains the toast"
@@ -1910,11 +1926,11 @@ fn global_opacity_reloads_open_palettes_and_applies_when_reopened() {
             .reconfigure(config, Keybinds::default(), CLIENT)
             .unwrap();
         let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        assert!(frame.contains("New pane"), "{frame}");
+        assert!(frame.contains("Do · Project:"), "{frame}");
         let cells = grid.as_character_lines();
-        assert_eq!(*control.get_or_insert(cells[6][11].clone()), cells[6][11]);
+        assert_eq!(*control.get_or_insert(cells[5][11].clone()), cells[5][11]);
         // Sample blank palette space, away from the input, choices and border.
-        let (x, y) = (60, 5);
+        let (x, y) = (60, 7);
         let cell = cells[y][x].clone();
         assert_eq!(cell.character, 'w');
         if opacity == 100 {
@@ -4248,9 +4264,8 @@ fn native_note_editor_completion_does_not_replace_a_new_palette_or_restore_a_dis
         assert_eq!(logs.iter().any(|message| message == failure), failed);
         drop(logs);
         if replaced {
-            assert!(
-                render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("Esc Close")
-            );
+            assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid)
+                .contains("Do · Project:"));
         } else {
             assert!(!screen.command_palettes.contains_key(&CLIENT));
             assert!(!screen.command_palette_handles_input(&enter, b"", false, CLIENT));

@@ -655,22 +655,23 @@ fn installed_scripts_keep_neutral_output_after_reporter_failure() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let input = dir.path().join("hook-input");
+    std::fs::write(&input, "not valid JSON").unwrap();
     for (agent, expected) in [(".claude", ""), (".codex", "{}\n")] {
         let started = Instant::now();
-        let mut child = Command::new("sh")
+        let output = Command::new("sh")
             .arg(dir.path().join(agent).join("yinz/yinz-hook.sh"))
             .env("YINZ_SESSION_NAME", "missing")
             .env("YINZ_PANE_ID", "7")
             .env("YINZ_SOCKET_DIR", dir.path())
             .env("TMPDIR", dir.path())
-            .env_remove("YINZ_PANE_REF")
+            .env("YINZ_PANE_REF", "abcdef012345")
+            .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
             .env_remove("YINZ_REMOTE_PANE_TOKEN")
-            .stdin(Stdio::piped())
+            .stdin(std::fs::File::open(&input).unwrap())
             .stdout(Stdio::piped())
-            .spawn()
+            .output()
             .unwrap();
-        write_event(&mut child, "not valid JSON");
-        let output = child.wait_with_output().unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, expected.as_bytes());
         assert!(started.elapsed() < Duration::from_millis(1600));

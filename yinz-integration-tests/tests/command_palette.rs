@@ -37,7 +37,7 @@ fn command_palette_refreshes_shortcuts_after_reconfigure_without_input() {
     yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
     yinz.send_stdin(DO);
     yinz.wait_until("palette opened", |snapshot| {
-        snapshot.contains("Switch current project")
+        snapshot.contains("Do · Project:")
     });
     yinz.send_stdin(b"Fullscreen");
     yinz.wait_until("regular route wins over Tmux route", |snapshot| {
@@ -115,7 +115,7 @@ fn command_palette_receives_original_keys_before_write_bindings() {
     let before = shell.stdin_bytes();
     yinz.send_stdin(DO);
     yinz.wait_until("palette opened", |snapshot| {
-        snapshot.contains("Switch current project")
+        snapshot.contains("Do · Project:")
     });
     yinz.send_stdin(b"x");
     yinz.wait_until("WriteChars preserves the original key", |snapshot| {
@@ -136,6 +136,52 @@ fn command_palette_receives_original_keys_before_write_bindings() {
         "bindings resume after dismissal without leaked input",
         |bytes| bytes == expected,
     );
+    yinz.quit();
+}
+
+#[test]
+fn command_palette_requires_visible_results_before_activation() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let root = yinz.expect_pty_spawn();
+    root.output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    yinz.send_stdin(DO);
+    yinz.wait_until("compact palette opened", |snapshot| {
+        snapshot.contains("Do · Project:") && !snapshot.contains("New pane")
+    });
+    yinz.send_stdin(b"\r\x1b[B");
+    yinz.wait_until("Enter ignored and Down reveals commands", |snapshot| {
+        snapshot.contains("New pane") && snapshot.contains("Esc Close")
+    });
+    let (status, panes) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: false,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(status, 0);
+    let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
+    assert_eq!(
+        panes
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|pane| pane["is_plugin"] == false)
+            .count(),
+        1,
+        "{panes}"
+    );
+    yinz.send_stdin(&keys::ENTER);
+    let child = yinz.expect_pty_spawn();
+    child.output(b"CREATED FROM VISIBLE RESULT");
+    yinz.wait_until("visible new-pane command activated", |snapshot| {
+        snapshot.contains("CREATED FROM VISIBLE RESULT") && !snapshot.contains("Esc Close")
+    });
     yinz.quit();
 }
 
@@ -169,7 +215,7 @@ fn command_palette_default_binding_captures_keys_and_paste_without_running_comma
         for close in [DO, keys::ESC.as_slice()] {
             yinz.send_stdin(DO);
             yinz.wait_until("palette opens with an empty query", |snapshot| {
-                snapshot.contains("Switch current project") && snapshot.contains("New tab")
+                snapshot.contains("Do · Project:") && !snapshot.contains("New tab")
             });
             // The timed unlock prefix must not swallow the following g inside the palette.
             yinz.send_stdin(b"\x07g");
@@ -261,16 +307,16 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
         // Opening and dismissing the palette also drains any ignored Pane-mode paste.
         yinz.send_stdin(DO);
         yinz.wait_until("palette opened", |snapshot| {
-            snapshot.contains("Switch current project")
+            snapshot.contains("Do · Project:")
         });
         yinz.send_stdin(&keys::ESC);
         let before = yinz.wait_until("baseline after dismissal", |snapshot| {
-            !snapshot.contains("Esc Close") && snapshot.tab_bar_appears()
+            !snapshot.contains("Do · Project:") && snapshot.tab_bar_appears()
         });
         let stdin_before = shell.stdin_bytes();
         yinz.send_stdin(DO);
         yinz.wait_until("palette reopened", |snapshot| {
-            snapshot.contains("Switch current project")
+            snapshot.contains("Do · Project:")
         });
         yinz.send_stdin("\x1b[200~café\n東京\x1b[201~".as_bytes());
         yinz.send_stdin("\x1b[200~Ω\x1b[201~".as_bytes());
@@ -279,7 +325,7 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
         });
         yinz.send_stdin(&keys::ESC);
         let after = yinz.wait_until("palette dismissed", |snapshot| {
-            !snapshot.contains("Esc Close") && snapshot.tab_bar_appears()
+            !snapshot.contains("Do · Project:") && snapshot.tab_bar_appears()
         });
         yinz_integration_tests::assert_same_rendered_grid(
             &after,
@@ -342,7 +388,7 @@ fn command_palette_closed_paste_reaches_normal_locked_and_synchronized_terminals
 fn palette_query(yinz: &yinz_integration_tests::TestSession, query: &str) {
     yinz.send_stdin(DO);
     yinz.wait_until("palette opened", |snapshot| {
-        snapshot.contains("Switch current project")
+        snapshot.contains("Do · Project:")
     });
     yinz.send_stdin(query.as_bytes());
     yinz.wait_until("palette query rendered", |snapshot| {
@@ -716,7 +762,7 @@ fn command_palette_launches_agent_in_selected_worktree_and_focuses_it() {
     shell.output(PROMPT);
     yinz.wait_until("shell ready", |s| s.contains("$"));
     yinz.send_stdin(DO);
-    yinz.wait_until("palette open", |s| s.contains("Switch current project"));
+    yinz.wait_until("palette open", |s| s.contains("Do · Project:"));
     yinz.send_stdin(b"claude worktree");
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("caller repository offered", |s| {
@@ -1520,7 +1566,7 @@ fn command_palette_suspends_notifications_mode_and_restores_history() {
     });
     yinz.send_stdin(DO);
     yinz.wait_until("palette suspends history", |snapshot| {
-        snapshot.contains("Switch current project") && !snapshot.contains("Retained history")
+        snapshot.contains("Do · Project:") && !snapshot.contains("Retained history")
     });
     yinz.send_stdin(b"Rename tab");
     yinz.wait_until("palette receives keys in notifications mode", |snapshot| {

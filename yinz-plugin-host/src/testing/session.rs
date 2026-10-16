@@ -585,7 +585,8 @@ impl Controller {
                     },
                 })?;
                 // Event subscribers use their own connection and join the same queue below later.
-                let deadline = Instant::now() + Duration::from_secs(10);
+                // Database fsyncs can delay the first render on a busy test host.
+                let deadline = Instant::now() + Duration::from_secs(30);
                 while !self.rendered {
                     self.collect(true)?;
                     if Instant::now() >= deadline {

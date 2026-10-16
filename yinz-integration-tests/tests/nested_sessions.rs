@@ -530,15 +530,16 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
     boot_and_descend_on_first_load(&nested);
     nested.guest.wait_for_app_load();
 
-    let host_before = nested.host.wait_until(
-        "the host tab bar shows the guest title and new tab button while descended",
-        |host_grid| {
-            host_grid
-                .lines()
-                .first()
-                .is_some_and(|tab_bar| tab_bar.contains('+') && tab_bar.contains(&guest_tab_title))
-        },
-    );
+    let host_before =
+        nested.host.wait_until(
+            "the host tab bar shows the guest title and new tab button while descended",
+            |host_grid| {
+                host_grid.lines().first().is_some_and(|tab_bar| {
+                    tab_bar.contains('+') && tab_bar.contains(&guest_tab_title)
+                }) && host_descended_bar_settled(host_grid)
+                    && host_grid.row_has_italic(0)
+            },
+        );
     let tab_bar = host_before.lines().first().cloned().unwrap();
     let new_tab_button_column =
         display_column_of(&tab_bar, "+").expect("new tab button is on the host tab bar") + 1;
@@ -556,6 +557,7 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
             host_grid.lines().first().is_some_and(|tab_bar| {
                 tab_bar.contains(&guest_tab_title) && tab_bar.contains("Tab #2")
             }) && normal_mode_bar_settled(host_grid)
+                && !host_grid.row_has_italic(0)
         },
     );
     let first_tab_column = host_two_tabs
@@ -564,16 +566,28 @@ fn clicking_a_host_tab_while_descended_switches_tabs_and_ascends() {
         .and_then(|tab_bar| display_column_of(tab_bar, &guest_tab_title))
         .expect("the first host tab ribbon is on the host tab bar")
         + 1;
-    let second_tab_column = host_two_tabs
+    let descended_by_tab_one = nested.mark_host_to_guest();
+    nested.host.send_stdin(&sgr_left_click(first_tab_column, 1));
+    nested.wait_for_host_to_descend_into_guest_after(descended_by_tab_one);
+    // Focus messages can arrive before the tab-bar plugin updates its click targets.
+    let host_descended = nested.host.wait_until(
+        "the host tab bar has rendered the descended first tab before the next click",
+        |grid| {
+            host_descended_bar_settled(grid)
+                && grid.char_dim_of("Yinz") == Some(true)
+                && grid.row_has_italic(0)
+                && grid
+                    .lines()
+                    .first()
+                    .is_some_and(|line| line.contains("Tab #2"))
+        },
+    );
+    let second_tab_column = host_descended
         .lines()
         .first()
         .and_then(|tab_bar| display_column_of(tab_bar, "Tab #2"))
         .expect("the second host tab ribbon is on the host tab bar")
         + 1;
-
-    let descended_by_tab_one = nested.mark_host_to_guest();
-    nested.host.send_stdin(&sgr_left_click(first_tab_column, 1));
-    nested.wait_for_host_to_descend_into_guest_after(descended_by_tab_one);
 
     let ascended_by_tab_two = nested.mark_host_to_guest();
     nested
