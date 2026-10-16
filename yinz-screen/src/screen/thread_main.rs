@@ -1203,7 +1203,7 @@ pub fn screen_thread_main(
                     tab_id,
                     response_channel,
                 } => {
-                    let tab_info = screen.get_tab_info(tab_id);
+                    let tab_info = screen.get_tab_info(tab_id, &screen.plugin_tab_names());
                     let _ = response_channel.send(tab_info);
                 },
                 ScreenInstruction::ListClientsToPlugin(plugin_id, client_id, generation) => {

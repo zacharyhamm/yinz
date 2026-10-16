@@ -33,6 +33,7 @@ impl Screen {
     pub fn generate_and_report_tab_state(&mut self) -> Result<Vec<TabInfo>> {
         let mut plugin_updates = vec![];
         let mut tab_infos_for_screen_state = BTreeMap::new();
+        let plugin_tab_names = self.plugin_tab_names();
         for tab in self.tabs.values() {
             let all_focused_clients: Vec<ClientId> = self
                 .active_tab_ids
@@ -48,7 +49,7 @@ impl Screen {
             let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
             let tab_info_for_screen = TabInfo {
                 position: tab.position,
-                name: tab.name.clone(),
+                name: plugin_tab_names[&tab.id].clone(),
                 active: self.active_tab_ids.values().any(|i| i == &tab.id),
                 panes_to_hide: tab.panes_to_hide_count(),
                 is_fullscreen_active: tab.is_fullscreen_active(),
@@ -71,7 +72,6 @@ impl Screen {
             };
             tab_infos_for_screen_state.insert(tab.position, tab_info_for_screen);
         }
-        let plugin_tab_names = self.plugin_tab_names();
         for (client_id, active_tab_index) in self.active_tab_ids.iter() {
             let mut plugin_tab_updates = vec![];
             for tab in self.tabs.values() {
@@ -196,12 +196,16 @@ impl Screen {
             pane_info.is_selectable || show_all
         }
 
-        fn create_pane_list_entry(pane_info: PaneInfo, tab: &crate::tab::Tab) -> PaneListEntry {
+        fn create_pane_list_entry(
+            pane_info: PaneInfo,
+            tab: &crate::tab::Tab,
+            tab_name: &str,
+        ) -> PaneListEntry {
             PaneListEntry {
                 pane_info,
                 tab_id: tab.id,
                 tab_position: tab.position,
-                tab_name: tab.name.clone(),
+                tab_name: tab_name.to_owned(),
                 pane_command: None,
                 pane_cwd: None,
             }
@@ -213,13 +217,14 @@ impl Screen {
         }
 
         let mut pane_entries = Vec::new();
+        let tab_names = self.plugin_tab_names();
 
         for tab in self.tabs.values() {
             let pane_infos = tab.pane_infos();
 
             for pane_info in pane_infos {
                 if should_include_pane(&pane_info, show_all) {
-                    pane_entries.push(create_pane_list_entry(pane_info, tab));
+                    pane_entries.push(create_pane_list_entry(pane_info, tab, &tab_names[&tab.id]));
                 }
             }
         }
@@ -230,9 +235,10 @@ impl Screen {
 
     pub(super) fn collect_tab_list(&self, _client_id: ClientId) -> Result<ListTabsResponse> {
         let mut tab_infos = Vec::new();
+        let tab_names = self.plugin_tab_names();
 
         for tab in self.tabs.values() {
-            if let Some(tab_info) = self.get_tab_info(tab.id) {
+            if let Some(tab_info) = self.get_tab_info(tab.id, &tab_names) {
                 tab_infos.push(tab_info);
             }
         }
@@ -245,7 +251,7 @@ impl Screen {
 
     pub(super) fn get_current_tab_info(&self, client_id: ClientId) -> Result<Option<TabInfo>> {
         match self.active_tab_ids.get(&client_id) {
-            Some(active_tab_id) => Ok(self.get_tab_info(*active_tab_id)),
+            Some(active_tab_id) => Ok(self.get_tab_info(*active_tab_id, &self.plugin_tab_names())),
             None => Ok(None),
         }
     }

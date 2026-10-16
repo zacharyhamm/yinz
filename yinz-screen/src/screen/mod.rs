@@ -5188,7 +5188,7 @@ impl Screen {
         None
     }
 
-    fn get_tab_info(&self, tab_id: TabId) -> Option<TabInfo> {
+    fn get_tab_info(&self, tab_id: TabId, tab_names: &HashMap<TabId, String>) -> Option<TabInfo> {
         // Look up tab by its stable ID
         self.tabs.get(&tab_id).map(|tab| {
             let all_focused_clients: Vec<ClientId> = self
@@ -5206,7 +5206,7 @@ impl Screen {
 
             TabInfo {
                 position: tab.position,
-                name: tab.name.clone(),
+                name: tab_names[&tab.id].clone(),
                 active: self.active_tab_ids.values().any(|i| i == &tab.id),
                 panes_to_hide: tab.panes_to_hide_count(),
                 is_fullscreen_active: tab.is_fullscreen_active(),

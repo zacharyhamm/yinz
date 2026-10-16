@@ -1393,7 +1393,7 @@ impl Screen {
             FormKind::CloseTab => (
                 format!(
                     "Close {} (tab {}, {} panes)?",
-                    tab.name,
+                    self.plugin_tab_names()[&tab.id],
                     tab.position.get() + 1,
                     tab.pane_infos().len()
                 ),

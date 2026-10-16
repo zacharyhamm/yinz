@@ -1736,20 +1736,13 @@ fn session_palette_cross_session_destination(command: &str) {
     source.wait_until("destination picker ready", |s| {
         s.contains("Esc Back") && !s.contains("Working")
     });
-    source.send_stdin(if command == "Find tab…" {
-        b"target-tab"
-    } else {
-        b"cross-pane"
-    });
+    // The lone pane lends its title to the tab, replacing the layout's name.
+    source.send_stdin(b"cross-pane");
     source.wait_until("cross-session result", |s| {
-        s.lines().iter().any(|line| {
-            line.contains('›')
-                && line.contains(if command == "Find tab…" {
-                    "target-tab"
-                } else {
-                    "cross-pane"
-                })
-        }) && s.contains(destination.session_name())
+        s.lines()
+            .iter()
+            .any(|line| line.contains('›') && line.contains("cross-pane"))
+            && s.contains(destination.session_name())
             && !s.contains("Loading")
     });
     source.send_stdin(&keys::ENTER);
@@ -1814,7 +1807,11 @@ fn session_palette_confirms_killing_others_and_deleting_their_saved_state() {
     });
     assert!(!other.is_exited());
     source.send_stdin(&keys::ENTER);
-    source.wait_until("kill confirmation reopened", |s| s.contains("Cancel"));
+    source.wait_until("kill confirmation reopened", |s| {
+        s.contains(destination.session_name())
+            && s.contains("Stops their processes")
+            && s.contains("Esc Back")
+    });
     source.send_stdin(b"\x1b[B\r");
     destination.wait_for_exit();
     source.wait_until("kill completed", |s| {
@@ -1836,7 +1833,11 @@ fn session_palette_confirms_killing_others_and_deleting_their_saved_state() {
     });
     assert!(saved.exists());
     source.send_stdin(&keys::ENTER);
-    source.wait_until("delete confirmation reopened", |s| s.contains("Cancel"));
+    source.wait_until("delete confirmation reopened", |s| {
+        s.contains(destination.session_name())
+            && s.contains("Permanently removes saved state")
+            && s.contains("Esc Back")
+    });
     source.send_stdin(b"\x1b[B\r");
     source.wait_until("deletion acknowledged", |s| {
         // The pending view replaces Esc Back with Working… Esc Cancel before deletion runs.
