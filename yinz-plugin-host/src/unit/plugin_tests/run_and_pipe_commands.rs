@@ -1067,8 +1067,6 @@ pub fn reconfigure_plugin_command() {
 #[test]
 #[serial(plugin_tests)]
 pub fn run_plugin_in_specific_cwd() {
-    // note that this test might sometimes fail when run alone without the rest of the suite due to
-    // timing issues
     let temp_folder = tempdir().unwrap(); // placed explicitly in the test scope because its
                                           // destructor removes the directory
     let plugin_host_folder = PathBuf::from(temp_folder.path());
@@ -1078,7 +1076,7 @@ pub fn run_plugin_in_specific_cwd() {
     let plugin_should_float = Some(false);
     let plugin_title = Some("test_plugin".to_owned());
     let plugin_initial_cwd = plugin_host_folder.join("custom_plugin_cwd");
-    let _ = std::fs::create_dir_all(&plugin_initial_cwd);
+    std::fs::create_dir_all(&plugin_initial_cwd).unwrap();
     let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
         _allow_exec_host_cmd: false,
         location: RunPluginLocation::File(PathBuf::from(&*PLUGIN_FIXTURE)),
@@ -1094,15 +1092,13 @@ pub fn run_plugin_in_specific_cwd() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
-        received_screen_instructions,
-        ScreenInstruction::Exit,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        1,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
     let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
@@ -1131,21 +1127,31 @@ pub fn run_plugin_in_specific_cwd() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
 
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('8')).with_ctrl_modifier()), // this triggers the enent in the fixture plugin
     )]));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(&received_screen_instructions, r#""bare_key":{"Char":"8"}"#);
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('8'))), // this sends this quit command so tha the test exits cleanly
     )]));
+    received_server_instruction.wait_until(
+        "the plugin's quit command to reach the server before teardown",
+        default_timeout(),
+        |log| {
+            log.iter()
+                .any(|event| matches!(event, ServerInstruction::ClientExit(..)))
+                .then_some(())
+        },
+    );
     teardown();
-    server_thread.join().unwrap(); // this might take a while if the cache is cold
+    screen_thread.join().unwrap();
+    server_thread.join().unwrap();
     assert!(
         std::fs::read_dir(plugin_initial_cwd)
             .unwrap()

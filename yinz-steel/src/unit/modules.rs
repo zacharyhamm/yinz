@@ -110,19 +110,21 @@ fn quasiquoted_import_data_is_inert_but_executable_unquotes_are_confined() {
     let mut requested = Vec::new();
     let (_, modules) = prepare(
         r#"`((require "./inert.scm") `(require "./nested.scm")
+             '(require "./reader-inert.scm") `(data ',(require "./nested-reader.scm"))
+             ',(begin (require "./reader-active.scm") 42)
              ,(begin (require "./active.scm") 42))"#,
         "main",
         &mut |_, specifier| {
             requested.push(specifier.to_owned());
             Ok(ModuleSource {
-                id: "active".into(),
+                id: specifier.into(),
                 source: "(void)".into(),
             })
         },
     )
     .unwrap();
-    assert_eq!(requested, ["./active.scm"]);
-    assert_eq!(modules.len(), 1);
+    assert_eq!(requested, ["./reader-active.scm", "./active.scm"]);
+    assert_eq!(modules.len(), 2);
 }
 
 #[test]

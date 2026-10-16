@@ -10,6 +10,8 @@ fn new_forms_preserve_conservative_command_inference() {
         "(struct yinz-command ()) (yinz-command \"GetPluginIds\")",
         "`(yinz-command \"GetPluginIds\")",
         "``(,(yinz-command \"GetPluginIds\"))",
+        "`('(yinz-command \"GetPluginIds\"))",
+        "``(',(yinz-command \"GetPluginIds\"))",
     ] {
         assert!(analyze(source).unwrap().commands.is_empty(), "{source}");
     }
@@ -26,6 +28,12 @@ fn new_forms_preserve_conservative_command_inference() {
     );
     let report = analyze("`#(,(yinz-command \"GetPluginIds\"))").unwrap();
     assert_eq!(report.commands.len(), 1);
+    let report = analyze("`(',(yinz-command \"GetPluginIds\"))").unwrap();
+    assert_eq!(report.commands.len(), 1);
+    assert_eq!(report.commands[0].name, "GetPluginIds");
+    let report =
+        analyze("`(',(set! yinz-command ignored)) (yinz-command \"GetPluginIds\")").unwrap();
+    assert!(report.commands.is_empty());
     let report =
         analyze("`#(,(set! yinz-command ignored)) (yinz-command \"GetPluginIds\")").unwrap();
     assert!(report.commands.is_empty());

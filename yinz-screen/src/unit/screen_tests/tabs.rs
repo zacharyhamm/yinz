@@ -1093,13 +1093,15 @@ fn character_cell_size_is_derived_from_the_reporting_client_size() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_new_screen(size, true, true);
     let client_id = ClientId::new(2);
-    screen.set_client_size(
-        client_id,
-        Size {
-            cols: 100,
-            rows: 50,
-        },
-    );
+    screen
+        .set_client_size(
+            client_id,
+            Size {
+                cols: 100,
+                rows: 50,
+            },
+        )
+        .unwrap();
 
     screen.update_pixel_dimensions(
         client_id,
@@ -1159,7 +1161,7 @@ fn invalid_pixel_reports_never_publish_zero_sized_cells() {
                 text_area_size: (!direct).then_some(dimensions),
             };
             let mut screen = create_new_screen(size, true, true);
-            screen.set_client_size(client, size);
+            screen.set_client_size(client, size).unwrap();
             assert!(!screen.update_pixel_dimensions(client, report(invalid)));
             assert_eq!(*screen.character_cell_size.borrow(), None);
 

@@ -406,6 +406,84 @@ fn terminal_ids_by_pixel_dimensions(
 }
 
 #[test]
+fn resizing_a_larger_client_updates_pty_pixels_on_an_unchanged_surface() {
+    let size = Size { cols: 80, rows: 20 };
+    let (mut screen, capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    let larger_client = ClientId::new(2);
+    screen.add_client(larger_client).unwrap();
+    screen
+        .set_client_size(
+            larger_client,
+            Size {
+                cols: 100,
+                rows: 30,
+            },
+        )
+        .unwrap();
+    let larger_report = PixelDimensions {
+        character_cell_size: Some(SizeInPixels {
+            width: 10,
+            height: 20,
+        }),
+        ..Default::default()
+    };
+    for (client, report) in [
+        (larger_client, larger_report),
+        (
+            CLIENT_1,
+            PixelDimensions {
+                character_cell_size: Some(SizeInPixels {
+                    width: 8,
+                    height: 16,
+                }),
+                ..Default::default()
+            },
+        ),
+    ] {
+        assert!(screen.update_pixel_dimensions(client, report));
+        screen.resize_pty_all_panes().unwrap();
+    }
+    let mut sizes = HashMap::new();
+    let mut latest_sizes = || {
+        while let Ok((instruction, _)) = capture.pty_writer_rx.try_recv() {
+            if let PtyWriteInstruction::ResizePty(id, cols, rows, width, height) = instruction {
+                sizes.insert(id.get(), (cols, rows, width, height));
+            }
+        }
+        sizes.clone()
+    };
+    assert_eq!(
+        latest_sizes(),
+        HashMap::from([
+            (1, (80, 20, Some(640), Some(320))),
+            (2, (80, 20, Some(640), Some(320))),
+        ])
+    );
+
+    screen
+        .set_client_size(
+            larger_client,
+            Size {
+                cols: 120,
+                rows: 40,
+            },
+        )
+        .unwrap();
+    screen.resize_to_clients().unwrap();
+    assert_eq!(screen.surface_size(), size);
+    let expected = HashMap::from([
+        (1, (80, 20, Some(800), Some(400))),
+        (2, (80, 20, Some(800), Some(400))),
+    ]);
+    assert_eq!(latest_sizes(), expected);
+
+    assert!(!screen.update_pixel_dimensions(larger_client, larger_report));
+    assert_eq!(latest_sizes(), expected);
+}
+
+#[test]
 pub fn reported_pixel_dimensions_are_applied_to_existing_ptys() {
     let size = Size {
         cols: 121,
@@ -631,13 +709,15 @@ fn cell_pixel_geometry_is_per_client_and_updates_after_reports_resizes_and_recon
     new_tab(&mut screen, 1, TabId::new(0));
     let second = ClientId::new(2);
     screen.add_client(second).unwrap();
-    screen.set_client_size(
-        second,
-        Size {
-            cols: 100,
-            rows: 30,
-        },
-    );
+    screen
+        .set_client_size(
+            second,
+            Size {
+                cols: 100,
+                rows: 30,
+            },
+        )
+        .unwrap();
     assert_eq!(screen.cell_pixel_size(CLIENT_1), None);
     assert_eq!(screen.cell_pixel_size(second), None);
     capture.drain_plugin_updates();
@@ -672,7 +752,9 @@ fn cell_pixel_geometry_is_per_client_and_updates_after_reports_resizes_and_recon
             height: 20
         })
     );
-    screen.set_client_size(second, Size { cols: 50, rows: 20 });
+    screen
+        .set_client_size(second, Size { cols: 50, rows: 20 })
+        .unwrap();
     assert_eq!(
         screen.cell_pixel_size(second),
         Some(SizeInPixels {
@@ -751,13 +833,15 @@ fn cell_pixel_geometry_is_per_client_and_updates_after_reports_resizes_and_recon
     assert!(capture.drain_plugin_updates().is_empty());
     screen.remove_client(second).unwrap();
     screen.add_client(second).unwrap();
-    screen.set_client_size(
-        second,
-        Size {
-            cols: 100,
-            rows: 30,
-        },
-    );
+    screen
+        .set_client_size(
+            second,
+            Size {
+                cols: 100,
+                rows: 30,
+            },
+        )
+        .unwrap();
     assert_eq!(screen.cell_pixel_size(second), None);
     assert!(capture.drain_plugin_updates().contains(&(
         None,
@@ -782,9 +866,13 @@ fn cell_pixel_geometry_waits_for_client_size_and_never_invents_dimensions() {
         },
     );
     assert_eq!(screen.cell_pixel_size(client), None);
-    screen.set_client_size(client, Size { cols: 0, rows: 20 });
+    screen
+        .set_client_size(client, Size { cols: 0, rows: 20 })
+        .unwrap();
     assert_eq!(screen.cell_pixel_size(client), None);
-    screen.set_client_size(client, Size { cols: 80, rows: 20 });
+    screen
+        .set_client_size(client, Size { cols: 80, rows: 20 })
+        .unwrap();
     assert_eq!(
         screen.cell_pixel_size(client),
         Some(SizeInPixels {
@@ -792,13 +880,15 @@ fn cell_pixel_geometry_waits_for_client_size_and_never_invents_dimensions() {
             height: 20
         })
     );
-    screen.set_client_size(
-        client,
-        Size {
-            cols: 801,
-            rows: 20,
-        },
-    );
+    screen
+        .set_client_size(
+            client,
+            Size {
+                cols: 801,
+                rows: 20,
+            },
+        )
+        .unwrap();
     assert_eq!(
         screen.cell_pixel_size(client),
         Some(SizeInPixels {
@@ -819,13 +909,15 @@ fn cell_pixel_geometry_waits_for_client_size_and_never_invents_dimensions() {
             text_area_size: None,
         },
     );
-    screen.set_client_size(
-        client,
-        Size {
-            cols: 100,
-            rows: 50,
-        },
-    );
+    screen
+        .set_client_size(
+            client,
+            Size {
+                cols: 100,
+                rows: 50,
+            },
+        )
+        .unwrap();
     assert_eq!(screen.cell_pixel_size(client), Some(direct));
 }
 
@@ -866,9 +958,9 @@ fn paired_pixel_reports_are_independent_of_resize_message_order() {
         if report_first {
             screen.update_pixel_dimensions(CLIENT_1, report);
             assert_eq!(screen.cell_pixel_size(CLIENT_1), Some(cell));
-            screen.set_client_size(CLIENT_1, resized);
+            screen.set_client_size(CLIENT_1, resized).unwrap();
         } else {
-            screen.set_client_size(CLIENT_1, resized);
+            screen.set_client_size(CLIENT_1, resized).unwrap();
             assert_eq!(
                 screen.cell_pixel_size(CLIENT_1),
                 Some(SizeInPixels {
@@ -966,7 +1058,9 @@ fn watcher_geometry_is_cleared_before_its_id_is_reused_by_an_interactive_client(
     assert!(!screen.client_pixel_dimensions.contains_key(&reused));
     capture.drain_plugin_updates();
     screen.add_client(reused).unwrap();
-    screen.set_client_size(reused, Size { cols: 80, rows: 20 });
+    screen
+        .set_client_size(reused, Size { cols: 80, rows: 20 })
+        .unwrap();
     assert_eq!(screen.cell_pixel_size(reused), None);
     assert!(capture.drain_plugin_updates().contains(&(
         None,

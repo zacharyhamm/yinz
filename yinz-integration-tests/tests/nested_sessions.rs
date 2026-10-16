@@ -476,16 +476,15 @@ fn clicking_the_host_new_tab_button_while_descended_ascends_and_keeps_working() 
     boot_and_descend_on_first_load(&nested);
     nested.guest.wait_for_app_load();
 
-    let host_before = nested.host.wait_until(
-        "the host tab bar shows the guest title and new tab button while descended",
-        |host_grid| {
-            host_grid
-                .lines()
-                .first()
-                .is_some_and(|tab_bar| tab_bar.contains('+') && tab_bar.contains(&guest_tab_title))
-                && host_descended_bar_settled(host_grid)
-        },
-    );
+    let host_before =
+        nested.host.wait_until(
+            "the host tab bar shows the guest title and new tab button while descended",
+            |host_grid| {
+                host_grid.lines().first().is_some_and(|tab_bar| {
+                    tab_bar.contains('+') && tab_bar.contains(&guest_tab_title)
+                }) && host_descended_bar_settled(host_grid)
+            },
+        );
     let tab_bar = host_before.lines().first().cloned().unwrap();
     let new_tab_button_column =
         display_column_of(&tab_bar, "+").expect("new tab button is on the host tab bar") + 1;

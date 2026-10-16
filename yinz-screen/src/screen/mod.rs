@@ -2167,10 +2167,11 @@ impl Screen {
         client_size: Option<Size>,
         attaching: bool,
     ) -> Result<Option<ClientId>> {
-        if let Some(size) = client_size {
-            self.set_client_size(client_id, size);
-        }
         let result = (|| {
+            if let Some(size) = client_size {
+                self.set_client_size(client_id, size)
+                    .context("setting the registering client's size")?;
+            }
             if attaching {
                 self.bus
                     .senders

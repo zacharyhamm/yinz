@@ -2114,7 +2114,9 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::RecomputeTabSize(client_id, new_size) => {
                     let previous_surface = screen.surface_size();
-                    screen.set_client_size(client_id, new_size);
+                    screen
+                        .set_client_size(client_id, new_size)
+                        .context("failed to set client size for tab recomputation")?;
                     // the server sends this while setting the session up, before any tab exists
                     if screen.tabs.is_empty() {
                         break 'instruction;

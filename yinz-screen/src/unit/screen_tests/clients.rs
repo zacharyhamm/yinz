@@ -1042,7 +1042,9 @@ fn failed_new_tab_registration_rolls_back_without_disconnecting() {
         .new_tab(TabId::new(0), (vec![], vec![]), None, Some(client))
         .unwrap();
     // Layout can complete at the original size, then registration must reflow it.
-    screen.set_client_size(client, Size { cols: 79, rows: 24 });
+    screen
+        .set_client_size(client, Size { cols: 79, rows: 24 })
+        .unwrap();
     let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
     tab.senders.should_silently_fail = false;
     tab.senders.to_pty_writer = None;
@@ -1133,7 +1135,9 @@ fn removal_finishes_after_follow_render_visibility_or_resize_failure() {
                 screen.bus.senders.should_silently_fail = false;
                 screen.bus.senders.to_plugin = None;
                 // Later cleanup also fails: keep the render error, but attempt it all.
-                screen.set_client_size(remaining, Size { cols: 90, rows: 24 });
+                screen
+                    .set_client_size(remaining, Size { cols: 90, rows: 24 })
+                    .unwrap();
                 for tab in screen.tabs.values_mut() {
                     tab.senders.should_silently_fail = false;
                     tab.senders.to_plugin = None;
@@ -1147,7 +1151,9 @@ fn removal_finishes_after_follow_render_visibility_or_resize_failure() {
                 }
             },
             "resize" => {
-                screen.set_client_size(remaining, Size { cols: 90, rows: 24 });
+                screen
+                    .set_client_size(remaining, Size { cols: 90, rows: 24 })
+                    .unwrap();
                 let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
                 tab.senders.should_silently_fail = false;
                 tab.senders.to_pty_writer = None;
@@ -1487,7 +1493,9 @@ fn failed_layout_registration_preserves_departed_source_and_pending_output() {
             )],
         );
         // The committed layout survives a failure in screen registration's reflow.
-        screen.set_client_size(returning, Size { cols: 79, rows: 24 });
+        screen
+            .set_client_size(returning, Size { cols: 79, rows: 24 })
+            .unwrap();
         let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
         tab.senders.should_silently_fail = false;
         tab.senders.to_pty_writer = None;

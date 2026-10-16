@@ -7,9 +7,13 @@ use yinz_ipc::ipc::PixelDimensions;
 use yinz_types::pane_size::Size;
 
 impl Screen {
-    pub fn set_client_size(&mut self, client_id: ClientId, size: Size) {
+    pub fn set_client_size(&mut self, client_id: ClientId, size: Size) -> Result<()> {
         self.client_sizes.insert(client_id, size);
-        self.update_pixel_dimensions(client_id, PixelDimensions::default());
+        if self.update_pixel_dimensions(client_id, PixelDimensions::default()) {
+            self.resize_pty_all_panes()
+                .context("failed to re-apply pty pixel sizes after a client resize")?;
+        }
+        Ok(())
     }
 
     pub(super) fn session_size(&self) -> Option<Size> {
@@ -44,7 +48,8 @@ impl Screen {
             .chain(self.client_sizes.keys().copied())
             .collect();
         for client_id in client_ids {
-            self.set_client_size(client_id, new_screen_size);
+            self.set_client_size(client_id, new_screen_size)
+                .context("failed to set client size while resizing the screen")?;
         }
         self.resize_to_clients()
     }
