@@ -2405,6 +2405,97 @@ pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded() {
 }
 
 #[test]
+fn launch_or_focus_plugin_rejects_non_selectable_panes_without_exiting() {
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 24 });
+    let run_plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "file:/path/to/fake/plugin",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    let layout = TiledPaneLayout {
+        children_split_direction: SplitDirection::Vertical,
+        children: vec![
+            TiledPaneLayout::default(),
+            TiledPaneLayout {
+                run: Some(Run::Plugin(run_plugin.clone())),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let pane_id = PaneId::Plugin(yinz_types::internal_ids::PluginId::new(1));
+    let pty_receiver = mock_screen.pty_receiver.take().unwrap();
+    let screen_thread = mock_screen.run(Some(layout), vec![]);
+
+    // Rejected requests must leave the screen alive for another request and a later valid focus.
+    for selectable in [false, false, true] {
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::SetSelectable(pane_id, selectable))
+            .unwrap();
+        let (completion_tx, mut completion_rx) = tokio::sync::oneshot::channel();
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::LaunchOrFocusPlugin(
+                run_plugin.clone(),
+                false,
+                true,
+                false,
+                false,
+                None,
+                false,
+                mock_screen.main_client_id,
+                Some(crate::route::NotificationEnd::new(completion_tx)),
+                None,
+            ))
+            .unwrap();
+        let (info_tx, info_rx) = crossbeam::channel::bounded(1);
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::GetFocusedPaneInfo {
+                client_id: mock_screen.main_client_id,
+                response_channel: info_tx,
+            })
+            .unwrap();
+        let info = info_rx
+            .recv_timeout(yinz_test_support::default_timeout())
+            .expect("screen must keep handling requests after a rejected plugin focus");
+        let completion = completion_rx.try_recv().expect("focus request completed");
+        assert_eq!(
+            info,
+            yinz_types::data::GetFocusedPaneInfoResponse::Ok {
+                tab_id: TAB_0,
+                pane_id: if selectable {
+                    pane_id
+                } else {
+                    PaneId::Terminal(TerminalId::new(0))
+                },
+            }
+        );
+        if selectable {
+            assert_eq!(completion.affected_pane_id, Some(pane_id));
+            assert_eq!(completion.error_message, None);
+        } else {
+            assert_eq!(completion.exit_status, Some(1));
+            assert!(completion
+                .error_message
+                .as_deref()
+                .is_some_and(|message| message.contains("pane is not selectable")));
+            assert_eq!(completion.affected_pane_id, None);
+        }
+    }
+    assert!(
+        !pty_receiver
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, PtyInstruction::FillPluginCwd(..))),
+        "a rejected focus must not launch a duplicate plugin"
+    );
+    mock_screen.teardown(vec![screen_thread]);
+}
+
+#[test]
 pub fn send_cli_launch_or_focus_plugin_action_when_plugin_is_already_loaded_for_plugin_alias() {
     let size = Size {
         cols: 121,

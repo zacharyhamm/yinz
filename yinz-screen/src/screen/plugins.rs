@@ -165,14 +165,25 @@ impl Screen {
                     .non_fatal();
                     return Ok(());
                 };
-                if self.focus_plugin_pane(
+                let found_plugin = match self.focus_plugin_pane(
                     &run_plugin,
                     should_float,
                     move_to_focused_tab,
                     should_open_in_place,
                     client_id,
                     &mut completion_tx,
-                )? {
+                ) {
+                    Ok(found) => found,
+                    Err(error) => {
+                        if let Some(completion) = completion_tx.as_mut() {
+                            completion.set_exit_status(1);
+                            completion.set_error_message(format!("{error:#}"));
+                        }
+                        Err::<(), _>(error).non_fatal();
+                        return Ok(());
+                    },
+                };
+                if found_plugin {
                     self.render()?;
                     self.log_and_report_session_state()?;
                 } else {
