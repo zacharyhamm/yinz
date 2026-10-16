@@ -909,11 +909,16 @@ impl MouseHandler {
             },
         );
 
-        tab.tiled_panes
+        let resized = tab
+            .tiled_panes
             .resize_pane_with_strategies(pane_id, strategies, change_by_percent)
             .with_context(err_context)?;
+        drop(viewport);
+        tab.update_agent_pane_widths().with_context(err_context)?;
 
-        tab.swap_layouts.set_is_tiled_damaged();
+        if resized {
+            tab.swap_layouts.set_is_tiled_damaged();
+        }
 
         Ok(())
     }

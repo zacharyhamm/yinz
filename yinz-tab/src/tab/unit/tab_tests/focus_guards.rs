@@ -270,7 +270,7 @@ fn replacing_a_remembered_floating_pane_keeps_focus_last_working() {
 }
 
 #[test]
-fn fixed_tiled_neighbor_resize_errors_clear_drag_state() {
+fn fixed_tiled_neighbor_keeps_resize_drag_active_until_release() {
     use crate::tab::{PaneEdge, PaneResizeState, ResizeDragTarget};
     use yinz_types::{mouse::MouseEvent, pane_size::Dimension};
     let client = ClientId::new(1);
@@ -303,11 +303,20 @@ fn fixed_tiled_neighbor_resize_errors_clear_drag_state() {
         } else {
             MouseEvent::new_left_motion_with_ctrl_event(Position::new(5, 60))
         };
-        assert!(tab.handle_mouse_event(&event, client).is_err());
-        assert!(tab.pane_being_resized_with_mouse.is_none());
+        let damaged = tab.swap_layouts.is_tiled_damaged();
+        tab.handle_mouse_event(&event, client).unwrap();
+        assert_eq!(tab.swap_layouts.is_tiled_damaged(), damaged);
+        if let Some(state) = &tab.pane_being_resized_with_mouse {
+            assert_eq!(state.start_position, Position::new(5, 60));
+        }
+        assert_eq!(tab.pane_being_resized_with_mouse.is_none(), release);
         assert_eq!(
             tab.tiled_panes.get_pane(left).unwrap().position_and_size(),
             before
+        );
+        assert_eq!(
+            tab.tiled_panes.get_pane(right).unwrap().position_and_size(),
+            geom
         );
     }
 }

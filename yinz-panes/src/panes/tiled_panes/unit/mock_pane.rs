@@ -313,7 +313,7 @@ impl Pane for MockPane {
         unimplemented!()
     }
     fn borderless(&self) -> bool {
-        unimplemented!()
+        false
     }
     fn set_exclude_from_sync(&mut self, _exclude_from_sync: bool) {
         unimplemented!()

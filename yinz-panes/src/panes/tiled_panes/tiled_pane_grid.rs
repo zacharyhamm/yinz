@@ -1,5 +1,5 @@
 use super::is_inside_viewport;
-use super::pane_resizer::PaneResizer;
+use super::pane_resizer::{self, PaneResizer};
 use super::stacked_panes::StackedPanes;
 use crate::pane::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use crate::{pane::Pane, panes::PaneId};
@@ -148,7 +148,7 @@ impl<'a> TiledPaneGrid<'a> {
         if let Some(direction) = strategy.direction {
             if !self
                 .pane_is_flexible(direction.into(), pane_id)
-                .unwrap_or(false)
+                .with_context(err_context)?
             {
                 let pane_ids = vec![*pane_id];
                 return Err(YinzError::CantResizeFixedPanes { pane_ids }).with_context(err_context);
@@ -232,27 +232,21 @@ impl<'a> TiledPaneGrid<'a> {
             && strategy.invert_on_boundaries          // Only invert if configured to do so
             && strategy.direction.is_some(); // Only invert if there's a direction
 
-        let can_change_pane_size_in_main_direction = self
+        let mut can_change = |strategy: &ResizeStrategy| match self
             .can_change_pane_size(pane_id, strategy, change_by)
-            .unwrap_or_else(|err| {
-                if let Some(YinzError::CantResizeFixedPanes { pane_ids }) =
-                    err.downcast_ref::<YinzError>()
-                {
-                    fixed_panes_blocking_resize.append(&mut pane_ids.clone());
-                }
-                false
-            });
+        {
+            Ok(can_change) => Ok(can_change),
+            Err(err) => match err.downcast_ref::<YinzError>() {
+                Some(YinzError::CantResizeFixedPanes { pane_ids }) => {
+                    fixed_panes_blocking_resize.extend_from_slice(pane_ids);
+                    Ok(false)
+                },
+                _ => Err(err),
+            },
+        };
+        let can_change_pane_size_in_main_direction = can_change(strategy)?;
         let can_change_pane_size_in_inverted_direction = if can_invert_strategy_if_needed {
-            let strategy = strategy.invert();
-            self.can_change_pane_size(pane_id, &strategy, change_by)
-                .unwrap_or_else(|err| {
-                    if let Some(YinzError::CantResizeFixedPanes { pane_ids }) =
-                        err.downcast_ref::<YinzError>()
-                    {
-                        fixed_panes_blocking_resize.append(&mut pane_ids.clone());
-                    }
-                    false
-                })
+            can_change(&strategy.invert())?
         } else {
             false
         };
@@ -329,15 +323,21 @@ impl<'a> TiledPaneGrid<'a> {
                 Dir::Down | Dir::Up => change_by.1,
             };
 
-            if strategy.resize_increase() && direction.is_horizontal() {
-                [*pane_id]
-                    .iter()
-                    .chain(&some_terminals)
-                    .chain(&other_terminals)
-                    .for_each(|pane| self.increase_pane_width(pane, change_by));
-                neighbor_terminals
-                    .iter()
-                    .for_each(|pane| self.reduce_pane_width(pane, change_by));
+            if direction.is_horizontal() {
+                let resizing: Vec<_> = [*pane_id]
+                    .into_iter()
+                    .chain(some_terminals)
+                    .chain(other_terminals)
+                    .collect();
+                return self
+                    .resize_horizontal(
+                        pane_id,
+                        &strategy,
+                        change_by,
+                        &resizing,
+                        &neighbor_terminals,
+                    )
+                    .with_context(err_context);
             } else if strategy.resize_increase() && direction.is_vertical() {
                 [*pane_id]
                     .iter()
@@ -347,15 +347,6 @@ impl<'a> TiledPaneGrid<'a> {
                 neighbor_terminals
                     .iter()
                     .for_each(|pane| self.reduce_pane_height(pane, change_by));
-            } else if strategy.resize_decrease() && direction.is_horizontal() {
-                [*pane_id]
-                    .iter()
-                    .chain(&some_terminals)
-                    .chain(&other_terminals)
-                    .for_each(|pane| self.reduce_pane_width(pane, change_by));
-                neighbor_terminals
-                    .iter()
-                    .for_each(|pane| self.increase_pane_width(pane, change_by));
             } else if strategy.resize_decrease() && direction.is_vertical() {
                 [*pane_id]
                     .iter()
@@ -461,12 +452,14 @@ impl<'a> TiledPaneGrid<'a> {
                             .can_change_pane_size(pane_id, &sub_strategy, change_by)
                             .unwrap_or(false)
                     {
-                        let result = self
+                        if !self
                             .change_pane_size(pane_id, &main_strategy, change_by)
-                            .and_then(|ret| {
-                                Ok(ret
-                                    && self.change_pane_size(pane_id, &sub_strategy, change_by)?)
-                            })
+                            .with_context(err_context)?
+                        {
+                            continue;
+                        }
+                        let result = self
+                            .change_pane_size(pane_id, &sub_strategy, change_by)
                             .and_then(|ret| {
                                 if let Some(aligned_pane) = aligned_panes[adjust_pane] {
                                     Ok(ret
@@ -517,6 +510,198 @@ impl<'a> TiledPaneGrid<'a> {
         }
 
         Ok(true)
+    }
+
+    fn resize_horizontal(
+        &mut self,
+        pane_id: &PaneId,
+        strategy: &ResizeStrategy,
+        change_by: f64,
+        resizing: &[PaneId],
+        neighbors: &[PaneId],
+    ) -> Result<bool> {
+        let sign = if strategy.resize_increase() {
+            1.0
+        } else {
+            -1.0
+        };
+        let stacks = StackedPanes::new(self.panes.clone());
+        let mut changes = HashMap::new();
+        let mut maximum: f64 = 100.0;
+        let mut maximum_percent: f64 = 100.0;
+        for (ids, sign) in [(resizing, sign), (neighbors, -sign)] {
+            for id in ids {
+                let geom = self.get_pane_geom(id).with_context(|| no_pane_id(id))?;
+                let Some(percent) = geom.cols.as_percent() else {
+                    return Err(YinzError::CantResizeFixedPanes {
+                        pane_ids: vec![*id],
+                    }
+                    .into());
+                };
+                if sign < 0.0 {
+                    maximum_percent = maximum_percent.min(percent - RESIZE_PERCENT);
+                    maximum = maximum.min(maximum_percent).min(
+                        geom.cols.as_usize().saturating_sub(MIN_TERMINAL_WIDTH) as f64 * 100.0
+                            / self.display_area.cols as f64,
+                    );
+                }
+                let id = if geom.is_stacked() {
+                    stacks
+                        .flexible_pane_id_in_stack(id)
+                        .with_context(|| no_pane_id(id))?
+                } else {
+                    *id
+                };
+                changes.insert(id, sign);
+            }
+        }
+        let panes = self.panes.borrow();
+        let pane = panes.get(pane_id).with_context(|| no_pane_id(pane_id))?;
+        let packed = pane.render_width().is_some();
+        let capped = pane.max_content_width() > 0;
+        let current = pane.render_geom().cols.as_usize();
+        let offset = pane.get_content_offset();
+        let frame = offset.left + offset.right;
+        let outer_limit = if capped {
+            pane.max_content_width().saturating_add(frame)
+        } else {
+            usize::MAX
+        };
+        let movement = (change_by * self.viewport.cols as f64 / 100.0 + 1e-9).floor() as usize;
+        let content = current.saturating_sub(frame);
+        let desired = if strategy.resize_increase() {
+            content.saturating_add(movement)
+        } else {
+            content.saturating_sub(movement)
+        }
+        .saturating_add(frame);
+        let mut input = Vec::new();
+        let mut ui = Vec::new();
+        for pane in panes.values() {
+            if super::is_ui_pane(pane.as_ref()) {
+                ui.push(pane.current_geom());
+            } else {
+                input.push(pane_resizer::agent_width_input(pane.as_ref()));
+            }
+        }
+        drop(panes);
+        input.sort_by_key(|(id, _, _, _)| *id);
+        if (packed || capped) && desired == current {
+            return Ok(false);
+        }
+        let mut resizer = PaneResizer::new(self.panes.clone());
+        let mut preview = |amount: f64| -> Result<_> {
+            let changes = changes
+                .iter()
+                .map(|(id, sign)| (*id, sign * amount))
+                .collect();
+            let spans =
+                resizer.preview(SplitDirection::Horizontal, self.display_area.cols, &changes)?;
+            for span in &spans {
+                if span.size.is_percent()
+                    && span.size.as_usize() < MIN_TERMINAL_WIDTH
+                    && span.size.as_usize()
+                        < self
+                            .get_pane_geom(&span.pid)
+                            .with_context(|| no_pane_id(&span.pid))?
+                            .cols
+                            .as_usize()
+                {
+                    return Ok(None);
+                }
+            }
+            let by_id: HashMap<_, _> = spans.iter().map(|span| (span.pid, span)).collect();
+            let mut candidate = input.clone();
+            for (id, geom, _, _) in &mut candidate {
+                let main = if geom.is_stacked() {
+                    stacks
+                        .flexible_pane_id_in_stack(id)
+                        .with_context(|| no_pane_id(id))?
+                } else {
+                    *id
+                };
+                if let Some(span) = by_id.get(&main) {
+                    geom.x = span.pos;
+                    geom.cols = span.size;
+                }
+            }
+            let widths = pane_resizer::agent_widths(&candidate, &ui)?;
+            if packed && widths.is_empty() {
+                return Ok(None);
+            }
+            let main = self
+                .get_pane_geom(pane_id)
+                .filter(|geom| geom.is_stacked())
+                .and_then(|_| stacks.flexible_pane_id_in_stack(pane_id))
+                .unwrap_or(*pane_id);
+            let width = widths
+                .get(pane_id)
+                .map(|(_, width)| *width)
+                .or_else(|| by_id.get(&main).map(|span| span.size.as_usize()))
+                .with_context(|| no_pane_id(pane_id))?;
+            Ok(Some((spans, width.min(outer_limit))))
+        };
+        let chosen = if packed || capped {
+            let mut best = None;
+            let mut best_width = current;
+            let mut best_amount = maximum;
+            let mut target = desired;
+            for _ in 0..2 {
+                let mut low = 0.0;
+                let mut high = best_amount;
+                let mut amount = high;
+                loop {
+                    let candidate = preview(amount)?;
+                    if let Some((spans, width)) = candidate {
+                        let movement = (width as f64 - current as f64) * sign;
+                        let requested = (desired as f64 - current as f64) * sign;
+                        if movement > 0.0
+                            && movement <= requested
+                            && (width.abs_diff(desired) < best_width.abs_diff(desired)
+                                || (width == best_width && amount < best_amount))
+                        {
+                            best = Some(spans);
+                            best_width = width;
+                            best_amount = amount;
+                        }
+                        if (width as f64 - target as f64) * sign >= 0.0 {
+                            high = amount;
+                        } else {
+                            low = amount;
+                        }
+                    } else {
+                        high = amount;
+                    }
+                    if (high - low) * self.display_area.cols as f64 / 100.0 < 0.25 {
+                        break;
+                    }
+                    amount = (low + high) / 2.0;
+                }
+                if best_width == desired || best.is_none() {
+                    break;
+                }
+                // If rounding skipped the target, find the smallest change giving the closest width.
+                target = best_width;
+            }
+            best
+        } else if change_by <= maximum_percent {
+            // Check minimum widths after rounding so a keyboard retry can move one column.
+            match preview(change_by)? {
+                Some((_, width)) if width == current => {
+                    return Err(YinzError::PaneSizeUnchanged.into());
+                },
+                Some((spans, _)) => Some(spans),
+                None => None,
+            }
+        } else {
+            None
+        };
+        if let Some(spans) = chosen {
+            resizer.apply_spans(spans)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     fn can_reduce_pane_width(&self, pane_id: &PaneId, reduce_by: f64) -> Result<bool> {
@@ -618,27 +803,6 @@ impl<'a> TiledPaneGrid<'a> {
             }
         }
     }
-    fn reduce_pane_width(&mut self, id: &PaneId, percent: f64) {
-        if self.can_reduce_pane_width(id, percent).unwrap_or(false) {
-            let Some(current_pane_is_stacked) = self
-                .panes
-                .borrow()
-                .get(id)
-                .map(|p| p.current_geom().is_stacked())
-            else {
-                return;
-            };
-            if current_pane_is_stacked {
-                let _ = StackedPanes::new(self.panes.clone()).reduce_stack_width(id, percent);
-            } else {
-                let mut panes = self.panes.borrow_mut();
-                if let Some(terminal) = panes.get_mut(id) {
-                    terminal.reduce_width(percent);
-                }
-            }
-        }
-    }
-
     /// Return a vector of [`PaneId`]s directly adjacent to the given [`PaneId`], if any.
     ///
     /// The vector is empty for example if the given pane (`id`) is at the boundary of the viewport

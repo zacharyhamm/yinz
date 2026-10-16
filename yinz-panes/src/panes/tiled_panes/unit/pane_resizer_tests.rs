@@ -1136,7 +1136,7 @@ fn agent_width_rounding_preserves_edges_and_hard_limits() {
                     5,
                 ));
             }
-            let widths = agent_widths(&panes).unwrap();
+            let widths = agent_widths(&panes, &[]).unwrap();
             let mut end = widths[&panes[0].0].0;
             for (id, geom, _, minimum) in &panes {
                 let (x, width) = widths[id];
@@ -1168,11 +1168,11 @@ fn agent_widths_preserve_fixed_neighbors_and_give_flexible_neighbors_spare_width
         cols: 101,
     });
     ordinary.x = 100;
-    let widths = agent_widths(&[(ids[0], agent, 42, 5), (ids[1], ordinary, 0, 5)]).unwrap();
+    let widths = agent_widths(&[(ids[0], agent, 42, 5), (ids[1], ordinary, 0, 5)], &[]).unwrap();
     assert_eq!(widths[&ids[0]], (0, 42));
     assert_eq!(widths[&ids[1]], (42, 159));
     ordinary.cols = dim_fixed(101);
-    let widths = agent_widths(&[(ids[0], agent, 42, 5), (ids[1], ordinary, 0, 5)]).unwrap();
+    let widths = agent_widths(&[(ids[0], agent, 42, 5), (ids[1], ordinary, 0, 5)], &[]).unwrap();
     assert_eq!(widths[&ids[0]], (29, 42));
     assert_eq!(widths[&ids[1]], (71, 101));
 }
@@ -1197,7 +1197,7 @@ fn agent_widths_allow_independent_rows_to_absorb_spare_width() {
             )
         })
         .collect();
-    let widths = agent_widths(&panes).unwrap();
+    let widths = agent_widths(&panes, &[]).unwrap();
     for (pane, expected) in panes.iter().zip([(0, 42), (42, 158), (0, 158), (158, 42)]) {
         assert_eq!(widths[&pane.0], expected);
     }
@@ -1218,6 +1218,8 @@ fn agent_widths_infeasible_rows_return_no_overrides() {
         (PaneId::Terminal(TerminalId::new(1)), left, 0, 5),
         (PaneId::Terminal(TerminalId::new(2)), right, 0, 5),
     ];
-    assert!(agent_widths(&panes).unwrap().is_empty());
-    assert!(!agent_widths(&[(panes[0].0, top, 1, 5)]).unwrap().is_empty());
+    assert!(agent_widths(&panes, &[]).unwrap().is_empty());
+    assert!(!agent_widths(&[(panes[0].0, top, 1, 5)], &[])
+        .unwrap()
+        .is_empty());
 }

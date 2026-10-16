@@ -204,18 +204,6 @@ impl<'a> StackedPanes<'a> {
         }
         Ok(())
     }
-    pub fn reduce_stack_width(&mut self, id: &PaneId, percent: f64) -> Result<()> {
-        let err_context = || "Failed to resize panes in stack".to_string();
-        let all_stacked_pane_positions = self.positions_in_stack(id).with_context(err_context)?;
-        for (pane_id, _pane_position) in all_stacked_pane_positions {
-            self.panes
-                .borrow_mut()
-                .get_mut(&pane_id)
-                .with_context(err_context)?
-                .reduce_width(percent);
-        }
-        Ok(())
-    }
     pub fn increase_stack_height(&mut self, id: &PaneId, percent: f64) -> Result<()> {
         let err_context = || "Failed to increase_stack_height".to_string();
         let all_stacked_pane_positions = self.positions_in_stack(id).with_context(err_context)?;
