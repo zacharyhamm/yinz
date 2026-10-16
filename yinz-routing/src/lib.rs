@@ -1838,7 +1838,7 @@ pub fn route_action(
                     plugin_id,
                     completion,
                 },
-                _ => ScreenInstruction::Notify(text, None, None, completion),
+                _ => ScreenInstruction::Notify(text, pane_id, None, completion),
             };
             senders
                 .send_to_screen(instruction)
@@ -2901,6 +2901,10 @@ mod pane_completion_tests;
 #[cfg(test)]
 #[path = "unit/input_barrier_tests.rs"]
 mod input_barrier_tests;
+
+#[cfg(test)]
+#[path = "unit/notification_tests.rs"]
+mod notification_tests;
 
 #[cfg(test)]
 mod tests {

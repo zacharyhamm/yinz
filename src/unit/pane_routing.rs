@@ -197,6 +197,7 @@ fn actions_reports_and_store_requests_use_the_current_owner() {
     let _supervisor = Supervisor::new(dir.path(), "owner", 42);
     for args in [
         vec!["action", "write-chars", "hello"],
+        vec!["action", "notify", "task finished"],
         vec!["action", "agent-report", "--state", "busy"],
         vec!["agent", "register", "terminal_42", "codex"],
     ] {
