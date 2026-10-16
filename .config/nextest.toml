@@ -28,6 +28,11 @@ threads-required = 4
 fail-fast = false
 slow-timeout = { period = "15s", terminate-after = 4 }
 
+# This parity test replays 35,337 operations, including 8,976 terminal renders.
+[[profile.unit.overrides]]
+filter = 'test(=plugin_tests::tab_bar::tab_bar_wasm_deno_mouse_ranges_and_breadcrumbs)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # The CLI note round trip sends several 8 MiB bodies through the interpreter.
 [[profile.unit.overrides]]
 filter = 'binary(notes_todos) & test(=notes_todos_commands_return_json_and_failures_with_redirected_stdin)'
