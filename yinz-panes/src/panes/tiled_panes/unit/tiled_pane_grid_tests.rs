@@ -220,6 +220,92 @@ fn stack_without_flexible_member_uses_complete_height_for_borders() {
 }
 
 #[test]
+fn horizontal_resize_rejects_only_worsening_undersized_spans() {
+    for (current, proposed, allowed) in [(4, 4, true), (3, 4, true), (5, 4, false), (4, 3, false)] {
+        // Exercise rounding changes outside the boundary being resized.
+        let percent = proposed as f64 / 4.0;
+        let specs = [
+            spec(1, 0, 0, dim_pct(percent, current), dim_pct(50.0, 20)),
+            spec(
+                2,
+                current,
+                0,
+                dim_pct(100.0 - percent, 400 - current),
+                dim_pct(50.0, 20),
+            ),
+            spec(3, 0, 20, dim_pct(50.0, 200), dim_pct(50.0, 20)),
+            spec(4, 200, 20, dim_pct(50.0, 200), dim_pct(50.0, 20)),
+        ];
+        let mut panes: HashMap<_, Box<dyn Pane>> = specs
+            .iter()
+            .map(|s| (s.id, Box::new(MockPane::from_spec(*s)) as Box<dyn Pane>))
+            .collect();
+        let viewport = Viewport {
+            x: 0,
+            y: 0,
+            cols: 400,
+            rows: 40,
+        };
+        let mut grid = TiledPaneGrid::new(&mut panes, &HashSet::new(), viewport, viewport);
+        let changed = grid
+            .change_pane_size(
+                &specs[2].id,
+                &ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+                (5.0, 5.0),
+            )
+            .unwrap();
+        assert_eq!(changed, allowed, "width {current} -> {proposed}");
+        if allowed {
+            assert_eq!(
+                grid.get_pane_geom(&specs[0].id).unwrap().cols.as_usize(),
+                proposed
+            );
+            assert_eq!(
+                grid.get_pane_geom(&specs[2].id).unwrap().cols.as_usize(),
+                220
+            );
+        } else {
+            for spec in specs {
+                assert_eq!(grid.get_pane_geom(&spec.id).unwrap(), spec.geom());
+            }
+        }
+    }
+}
+
+#[test]
+fn horizontal_resize_reports_rounding_without_changing_geometry() {
+    let specs = [
+        spec(1, 0, 0, dim_pct(53.0, 6), dim_pct(100.0, 20)),
+        spec(2, 6, 0, dim_pct(47.0, 6), dim_pct(100.0, 20)),
+    ];
+    let mut panes: HashMap<_, Box<dyn Pane>> = specs
+        .iter()
+        .map(|s| (s.id, Box::new(MockPane::from_spec(*s)) as Box<dyn Pane>))
+        .collect();
+    let viewport = Viewport {
+        x: 0,
+        y: 0,
+        cols: 12,
+        rows: 20,
+    };
+    let mut grid = TiledPaneGrid::new(&mut panes, &HashSet::new(), viewport, viewport);
+    let error = grid
+        .change_pane_size(
+            &specs[0].id,
+            &ResizeStrategy::new(Resize::Decrease, Some(Direction::Right)),
+            (5.0, 5.0),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<YinzError>(),
+        Some(YinzError::PaneSizeUnchanged)
+    ));
+    for spec in specs {
+        assert_eq!(grid.get_pane_geom(&spec.id).unwrap(), spec.geom());
+    }
+}
+
+#[test]
 fn missing_geometry_is_ignored_by_resize_and_border_checks() {
     let mut panes = HashMap::new();
     let mut grid = TiledPaneGrid::new(
@@ -229,7 +315,7 @@ fn missing_geometry_is_ignored_by_resize_and_border_checks() {
         Viewport::default(),
     );
     let missing = PaneId::Terminal(crate::TerminalId::new(99));
-    grid.reduce_pane_width(&missing, 5.0);
+    assert!(grid.can_reduce_pane_width(&missing, 5.0).is_err());
     grid.increase_pane_width(&missing, 5.0);
     grid.reduce_pane_height(&missing, 5.0);
     grid.increase_pane_height(&missing, 5.0);

@@ -214,21 +214,7 @@ impl TiledPanes {
             .panes
             .iter()
             .filter(|(id, pane)| !self.panes_to_hide.contains(id) && !is_ui_pane(pane.as_ref()))
-            .map(|(id, pane)| {
-                let offset = pane.get_content_offset();
-                let limit = pane.max_content_width();
-                let outer_limit = if limit == 0 {
-                    0
-                } else {
-                    limit
-                        .saturating_add(offset.left)
-                        .saturating_add(offset.right)
-                };
-                let minimum = pane
-                    .min_width()
-                    .max(offset.left.saturating_add(offset.right).saturating_add(1));
-                (*id, pane.current_geom(), outer_limit, minimum)
-            })
+            .map(|(_, pane)| pane_resizer::agent_width_input(pane.as_ref()))
             .collect();
         let ui: Vec<_> = self
             .panes
@@ -237,17 +223,7 @@ impl TiledPanes {
             .map(|(_, pane)| pane.current_geom())
             .collect();
         if input != self.agent_width_input || ui != self.agent_width_ui {
-            // UI sharing a content row prevents packing across the whole row.
-            let shared_row = ui.iter().any(|ui| {
-                input.iter().any(|(_, geom, _, _)| {
-                    ui.y < geom.y + geom.rows.as_usize() && geom.y < ui.y + ui.rows.as_usize()
-                })
-            });
-            self.agent_widths = if shared_row {
-                HashMap::new()
-            } else {
-                pane_resizer::agent_widths(&input)?
-            };
+            self.agent_widths = pane_resizer::agent_widths(&input, &ui)?;
             self.agent_width_ui = ui;
             self.agent_width_input = input;
         }
@@ -1812,7 +1788,7 @@ impl TiledPanes {
         strategy.invert_on_boundaries = false;
         let successfully_resized_up = self
             .resize_pane_with_id(strategy, pane_id, Some(resize_percent))
-            .is_ok();
+            .unwrap_or(false);
         if successfully_resized_up {
             return true;
         } else {
@@ -1840,7 +1816,7 @@ impl TiledPanes {
         strategy.invert_on_boundaries = false;
         let successfully_resized_up = self
             .resize_pane_with_id(strategy, pane_id, Some(resize_percent))
-            .is_ok();
+            .unwrap_or(false);
         if successfully_resized_up {
             return true;
         } else {
@@ -1868,7 +1844,7 @@ impl TiledPanes {
         strategy.invert_on_boundaries = false;
         let successfully_resized_up = self
             .resize_pane_with_id(strategy, pane_id, Some(resize_percent))
-            .is_ok();
+            .unwrap_or(false);
         if successfully_resized_up {
             return true;
         } else {
@@ -1896,7 +1872,7 @@ impl TiledPanes {
         strategy.invert_on_boundaries = false;
         let successfully_resized_up = self
             .resize_pane_with_id(strategy, pane_id, Some(resize_percent))
-            .is_ok();
+            .unwrap_or(false);
         if successfully_resized_up {
             return true;
         } else {
@@ -2227,7 +2203,7 @@ impl TiledPanes {
         pane_id: PaneId,
         strategies: &[ResizeStrategy],
         change_by: (f64, f64),
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let err_context = || format!("failed to resize pane {:?} with strategies", pane_id);
         let sizes_before = self.content_sizes();
 
@@ -2245,11 +2221,16 @@ impl TiledPanes {
                 Some(_) => change_by.1 != 0.0,
                 None => change_by != (0.0, 0.0),
             })
-            .try_for_each(|strategy| {
-                pane_grid
-                    .change_pane_size(&pane_id, strategy, change_by)
-                    .map(|_| ())
-                    .with_context(err_context)
+            .try_fold(false, |changed, strategy| {
+                match pane_grid.change_pane_size(&pane_id, strategy, change_by) {
+                    Ok(resized) => Ok(changed || resized),
+                    Err(err) => match err.downcast_ref::<YinzError>() {
+                        Some(
+                            YinzError::CantResizeFixedPanes { .. } | YinzError::PaneSizeUnchanged,
+                        ) => Ok(changed),
+                        _ => Err(err).with_context(err_context),
+                    },
+                }
             });
         drop(pane_grid);
         // A corner drag may have changed one axis before the other failed.

@@ -7107,6 +7107,7 @@ impl Tab {
                     _ => Err::<(), _>(err).non_fatal(),
                 },
             }
+            self.update_agent_pane_widths().with_context(err_context)?;
         } else if self.suppressed_panes.contains_key(&pane_id) {
             log::error!("Cannot resize suppressed panes");
         }

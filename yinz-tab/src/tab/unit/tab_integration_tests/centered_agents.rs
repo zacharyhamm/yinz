@@ -1566,14 +1566,455 @@ fn centered_agent_packing_keeps_flexible_shell_content_visible() {
 }
 
 #[test]
+fn capped_agent_undirected_resize_still_grows_height() {
+    for by_id in [true, false] {
+        let layout = yinz_config::layout::from_str(
+            r#"layout { pane split_direction="vertical" { pane focus=true; pane; }; pane; }"#,
+            "layout.kdl".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        let (tiled, floating) = layout.new_tab();
+        let mut tab = create_new_tab_with_swap_layouts(
+            Size {
+                cols: 400,
+                rows: 40,
+            },
+            ModeInfo::default(),
+            (vec![], vec![]),
+            Some((
+                tiled,
+                floating,
+                (0..3).map(|id| (TerminalId::new(id), None)).collect(),
+                vec![],
+                HashMap::new(),
+            )),
+            true,
+            false,
+        );
+        let agent = PaneId::Terminal(TerminalId::new(0));
+        tab.max_agent_width = 80;
+        mark_agent(&mut tab, agent);
+        draw(&mut tab);
+        let before = tab.get_pane_with_id(agent).unwrap().current_geom();
+        assert_eq!(
+            tab.get_pane_with_id(agent).unwrap().get_content_columns(),
+            80
+        );
+        let strategy = ResizeStrategy::new(Resize::Increase, None);
+        if by_id {
+            tab.resize_pane_with_id(strategy, agent).unwrap();
+        } else {
+            tab.resize(ClientId::new(1), strategy).unwrap();
+        }
+        draw(&mut tab);
+        let pane = tab.get_pane_with_id(agent).unwrap();
+        assert_eq!(
+            pane.current_geom().rows.as_usize(),
+            before.rows.as_usize() + 2
+        );
+        assert_eq!(pane.current_geom().cols, before.cols);
+        assert_eq!(pane.get_content_columns(), 80);
+    }
+}
+
+#[test]
+fn capped_agent_stacked_resize_falls_back_to_stacking() {
+    let client = ClientId::new(1);
+    for (agent_id, direction) in [(0, Direction::Right), (1, Direction::Left)] {
+        let mut tab = create_new_tab_with_layout(
+            Size {
+                cols: 400,
+                rows: 40,
+            },
+            ModeInfo::default(),
+            r#"layout split_direction="vertical" { pane; pane; }"#,
+        );
+        let agent = PaneId::Terminal(TerminalId::new(agent_id));
+        let neighbor = PaneId::Terminal(TerminalId::new(1 - agent_id));
+        tab.max_agent_width = 80;
+        mark_agent(&mut tab, agent);
+        tab.focus_pane_with_id(agent, false, false, client).unwrap();
+        draw(&mut tab);
+        assert_eq!(
+            tab.get_pane_with_id(agent).unwrap().get_content_columns(),
+            80
+        );
+        let before = [agent, neighbor].map(|id| tab.get_pane_with_id(id).unwrap().current_geom());
+        assert!(!tab
+            .tiled_panes
+            .resize_pane_with_id(
+                ResizeStrategy::new(Resize::Increase, Some(direction)),
+                agent,
+                None,
+            )
+            .unwrap());
+        for (id, geom) in [agent, neighbor].into_iter().zip(before) {
+            assert_eq!(tab.get_pane_with_id(id).unwrap().current_geom(), geom);
+        }
+
+        tab.resize(client, ResizeStrategy::new(Resize::Increase, None))
+            .unwrap();
+        let agent_geom = tab.get_pane_with_id(agent).unwrap().current_geom();
+        let neighbor_geom = tab.get_pane_with_id(neighbor).unwrap().current_geom();
+        assert!(agent_geom.is_stacked());
+        assert_eq!(agent_geom.stacked, neighbor_geom.stacked);
+        assert_eq!(agent_geom.cols.as_usize(), 400);
+    }
+}
+
+#[test]
+fn horizontal_resize_ignores_unchanged_undersized_pane_after_terminal_shrink() {
+    let mut tab = create_new_tab_with_layout(
+        Size {
+            cols: 800,
+            rows: 40,
+        },
+        ModeInfo::default(),
+        r#"layout {
+            pane split_direction="vertical" { pane size="1%"; pane; }
+            pane split_direction="vertical" { pane; pane; }
+        }"#,
+    );
+    tab.resize_whole_tab(Size {
+        cols: 400,
+        rows: 40,
+    })
+    .unwrap();
+    let narrow = PaneId::Terminal(TerminalId::new(0));
+    let before = tab.get_pane_with_id(narrow).unwrap().current_geom();
+    assert_eq!(before.cols.as_usize(), 4);
+    let resizing = PaneId::Terminal(TerminalId::new(1));
+    assert_eq!(
+        tab.get_pane_with_id(resizing)
+            .unwrap()
+            .current_geom()
+            .cols
+            .as_usize(),
+        200
+    );
+    tab.resize_pane_with_id(
+        ResizeStrategy::new(Resize::Increase, Some(Direction::Right)),
+        resizing,
+    )
+    .unwrap();
+    assert_eq!(
+        tab.get_pane_with_id(resizing)
+            .unwrap()
+            .current_geom()
+            .cols
+            .as_usize(),
+        220
+    );
+    assert_eq!(tab.get_pane_with_id(narrow).unwrap().current_geom(), before);
+    assert_eq!(
+        tab.get_pane_with_id(PaneId::Terminal(TerminalId::new(3)))
+            .unwrap()
+            .current_geom()
+            .cols
+            .as_usize(),
+        180,
+    );
+}
+
+#[test]
+fn capped_agent_resize_with_side_chrome_uses_displayed_columns() {
+    let mut tab = create_new_tab_with_layout(
+        Size {
+            cols: 800,
+            rows: 20,
+        },
+        ModeInfo::default(),
+        "layout {\n pane split_direction=\"vertical\" { pane; pane; pane size=40; }\n}",
+    );
+    let agent = PaneId::Terminal(TerminalId::new(0));
+    tab.set_pane_selectable(PaneId::Terminal(TerminalId::new(2)), false);
+    tab.max_agent_width = 80;
+    mark_agent(&mut tab, agent);
+    draw(&mut tab);
+    let pane = tab.get_pane_with_id(agent).unwrap();
+    assert!(pane.render_width().is_none());
+    assert_eq!(pane.get_content_columns(), 80);
+    let before = pane.current_geom();
+    let strategy = ResizeStrategy::new(Resize::Decrease, Some(Direction::Right));
+    assert!(!tab
+        .tiled_panes
+        .resize_pane_with_strategies(agent, &[strategy], (0.01, 0.0))
+        .unwrap());
+    assert_eq!(tab.get_pane_with_id(agent).unwrap().current_geom(), before);
+    let movement = tab.viewport.borrow().cols / 20;
+    tab.resize_pane_with_id(strategy, agent).unwrap();
+    for _ in 0..2 {
+        draw(&mut tab);
+        assert_eq!(
+            tab.get_pane_with_id(agent).unwrap().get_content_columns(),
+            80 - movement
+        );
+    }
+}
+
+#[test]
+fn packed_agent_resize_preserves_stacks_and_frame_offsets() {
+    for style in [
+        PaneFrameStyle::Full,
+        PaneFrameStyle::Titles,
+        PaneFrameStyle::None,
+    ] {
+        let mut tab = create_new_tab_with_layout(
+            Size { cols: 400, rows: 40 }, ModeInfo::default(),
+            "layout {\n pane\n pane split_direction=\"vertical\" {\n pane stacked=true { pane; pane; }\n pane\n }\n}",
+        );
+        tab.set_pane_frames(style);
+        tab.max_agent_width = 80;
+        for id in tab.get_all_pane_ids() {
+            mark_agent(&mut tab, id);
+        }
+        draw(&mut tab);
+        let stack: Vec<_> = tab
+            .tiled_panes
+            .get_panes()
+            .filter(|(_, pane)| pane.current_geom().is_stacked())
+            .map(|(id, _)| *id)
+            .collect();
+        let before: Vec<_> = stack
+            .iter()
+            .map(|id| {
+                let pane = tab.get_pane_with_id(*id).unwrap();
+                (pane.current_geom(), pane.get_content_columns())
+            })
+            .collect();
+        for (resize, delta) in [(Resize::Decrease, 20), (Resize::Increase, 0)] {
+            tab.resize_pane_with_id(
+                ResizeStrategy::new(resize, Some(Direction::Right)),
+                stack[0],
+            )
+            .unwrap();
+            for _ in 0..2 {
+                draw(&mut tab);
+                for (id, (geom, cols)) in stack.iter().zip(&before) {
+                    let pane = tab.get_pane_with_id(*id).unwrap();
+                    assert_eq!(pane.get_content_columns(), cols - delta);
+                    assert_eq!(pane.current_geom().stacked, geom.stacked);
+                    assert_eq!(
+                        (pane.current_geom().y, pane.current_geom().rows),
+                        (geom.y, geom.rows)
+                    );
+                }
+                let first = tab.get_pane_with_id(stack[0]).unwrap().render_geom();
+                let second = tab.get_pane_with_id(stack[1]).unwrap().render_geom();
+                assert_eq!((first.x, first.cols), (second.x, second.cols));
+            }
+        }
+    }
+}
+
+#[test]
+fn blocked_tiled_drags_preserve_automatic_layouts() {
+    let client = ClientId::new(1);
+    for (layout, capped) in [
+        ("layout { pane; }", false),
+        (
+            "layout {\n pane split_direction=\"vertical\" { pane; pane size=40; }\n}",
+            false,
+        ),
+        (
+            "layout {\n pane split_direction=\"vertical\" { pane; pane; pane size=350; }\n}",
+            false,
+        ),
+        (
+            "layout {\n pane split_direction=\"vertical\" { pane; pane; }\n}",
+            true,
+        ),
+    ] {
+        let mut tab = create_new_tab_with_layout(
+            Size {
+                cols: 400,
+                rows: 40,
+            },
+            ModeInfo::default(),
+            layout,
+        );
+        let agent = PaneId::Terminal(TerminalId::new(0));
+        if capped {
+            tab.max_agent_width = 80;
+            for id in tab.get_all_pane_ids() {
+                mark_agent(&mut tab, id);
+            }
+        }
+        draw(&mut tab);
+        let before: Vec<_> = tab
+            .tiled_panes
+            .get_panes()
+            .map(|(id, pane)| (*id, pane.current_geom()))
+            .collect();
+        let geom = tab.get_pane_with_id(agent).unwrap().render_geom();
+        let from = Position::new(5, (geom.x + geom.cols.as_usize() - 1) as u16);
+        tab.handle_mouse_event(&MouseEvent::new_left_press_with_ctrl_event(from), client)
+            .unwrap();
+        for dx in [0, 1, if capped { 2 } else { 0 }] {
+            let to = Position::new(5, (from.column() + dx) as u16);
+            tab.handle_mouse_event(&MouseEvent::new_left_motion_with_ctrl_event(to), client)
+                .unwrap();
+            let state = tab.pane_being_resized_with_mouse.as_ref().unwrap();
+            assert_eq!(state.start_position, to);
+            assert!(!tab.swap_layouts.is_tiled_damaged(), "{layout}");
+            assert_eq!(
+                tab.tiled_panes
+                    .get_panes()
+                    .map(|(id, pane)| (*id, pane.current_geom()))
+                    .collect::<Vec<_>>(),
+                before
+            );
+        }
+        let last = tab
+            .pane_being_resized_with_mouse
+            .as_ref()
+            .unwrap()
+            .start_position;
+        tab.handle_mouse_event(&MouseEvent::new_left_release_with_ctrl_event(last), client)
+            .unwrap();
+        let swaps = yinz_config::kdl::layout::from_kdl(
+            "layout {\n swap_tiled_layout {\n tab {\n pane { children; }\n }\n }\n}",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        tab.swap_layouts
+            .set_swap_tiled_layouts(swaps.swap_tiled_layouts);
+        let new = PaneId::Terminal(TerminalId::new(9));
+        tab.new_pane(
+            new,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        assert!(!tab.swap_layouts.is_tiled_damaged());
+        assert!(tab
+            .tiled_panes
+            .get_panes()
+            .all(|(_, pane)| pane.current_geom().cols.as_usize() == 400));
+        tab.close_pane(new, false, None);
+        assert!(!tab.swap_layouts.is_tiled_damaged());
+        assert!(tab
+            .tiled_panes
+            .get_panes()
+            .all(|(_, pane)| pane.current_geom().cols.as_usize() == 400));
+    }
+}
+
+#[test]
+fn packed_agent_resize_tracks_displayed_columns() {
+    for below in [false, true] {
+        for right in [false, true] {
+            for other_is_agent in [false, true] {
+                let (sender, receiver) = channels::unbounded();
+                let mut tab = create_new_tab_with_mock_pty_writer(
+                    Size {
+                        cols: 400,
+                        rows: 40,
+                    },
+                    ModeInfo::default(),
+                    SenderWithContext::new(sender),
+                );
+                let client = ClientId::new(1);
+                let first = PaneId::Terminal(TerminalId::new(1));
+                let second = PaneId::Terminal(TerminalId::new(2));
+                let third = PaneId::Terminal(TerminalId::new(3));
+                tab.horizontal_split(second, None, None, client, None, None)
+                    .unwrap();
+                let left = if below { second } else { first };
+                tab.focus_pane_with_id(left, false, false, client).unwrap();
+                tab.vertical_split(third, None, None, client, None, None)
+                    .unwrap();
+                let agent = if right { third } else { left };
+                let neighbor = if right { left } else { third };
+                tab.max_agent_width = 80;
+                for id in [first, second, third] {
+                    if id != neighbor || other_is_agent {
+                        mark_agent(&mut tab, id);
+                    }
+                }
+                draw(&mut tab);
+                let pane = tab.get_pane_with_id(agent).unwrap();
+                assert_eq!(pane.get_content_columns(), 39);
+                let geom = pane.render_geom();
+                let x = if right {
+                    geom.x
+                } else {
+                    geom.x + geom.cols.as_usize() - 1
+                };
+                let mut position = Position::new((geom.y + 5) as i32, x as u16);
+                tab.handle_mouse_event(
+                    &MouseEvent::new_left_press_with_ctrl_event(position),
+                    client,
+                )
+                .unwrap();
+                let mut cols: usize = 39;
+                for delta in [-1, -4, 2, 3, 1] {
+                    position = Position::new(
+                        position.line() as i32,
+                        position
+                            .column()
+                            .checked_add_signed(if right { -delta } else { delta })
+                            .unwrap() as u16,
+                    );
+                    cols = cols.checked_add_signed(delta).unwrap();
+                    tab.handle_mouse_event(
+                        &MouseEvent::new_left_motion_with_ctrl_event(position),
+                        client,
+                    )
+                    .unwrap();
+                    assert!(tab.pane_being_resized_with_mouse.is_some());
+                    let PaneId::Terminal(terminal) = agent else {
+                        unreachable!()
+                    };
+                    assert_resized_agent(&mut tab, &receiver, terminal, cols, 18);
+                    let left_geom = tab.get_pane_with_id(left).unwrap().render_geom();
+                    let right_geom = tab.get_pane_with_id(third).unwrap().render_geom();
+                    assert_eq!(left_geom.x + left_geom.cols.as_usize(), right_geom.x);
+                    assert_eq!(left_geom.cols.as_usize() + right_geom.cols.as_usize(), 82);
+                }
+                tab.handle_mouse_event(
+                    &MouseEvent::new_left_release_with_ctrl_event(position),
+                    client,
+                )
+                .unwrap();
+                let direction = if right {
+                    Direction::Left
+                } else {
+                    Direction::Right
+                };
+                for (resize, expected) in [(Resize::Decrease, 20), (Resize::Increase, 40)] {
+                    tab.resize_pane_with_id(ResizeStrategy::new(resize, Some(direction)), agent)
+                        .unwrap();
+                    let PaneId::Terminal(terminal) = agent else {
+                        unreachable!()
+                    };
+                    assert_resized_agent(&mut tab, &receiver, terminal, expected, 18);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn centered_agent_resize_uses_rendered_edges() {
     use yinz_panes::pane::PaneEdge;
-    let mut tab = create_new_tab(
+    let (sender, receiver) = channels::unbounded();
+    let mut tab = create_new_tab_with_mock_pty_writer(
         Size {
             cols: 400,
             rows: 20,
         },
         ModeInfo::default(),
+        SenderWithContext::new(sender),
     );
     let client = ClientId::new(1);
     let agent = PaneId::Terminal(TerminalId::new(1));
@@ -1591,7 +2032,6 @@ fn centered_agent_resize_uses_rendered_edges() {
     draw(&mut tab);
     let pane = tab.get_pane_with_id(agent).unwrap();
     let geom = pane.render_geom();
-    let requested = pane.current_geom();
     let right = geom.x + geom.cols.as_usize() - 1;
     for (position, edge) in [
         (Position::new(0, geom.x as u16), PaneEdge::TopLeft),
@@ -1607,22 +2047,332 @@ fn centered_agent_resize_uses_rendered_edges() {
         client,
     )
     .unwrap();
-    let moved = Position::new(5, (right + 10) as u16);
-    assert!(
+    // One drag: shrink immediately, shrink further, reverse, return to the cap,
+    // then hit the minimum and reverse without losing the drag.
+    let mut column = right as i32;
+    for (delta, expected_cols) in [(-1, 79), (-4, 75), (2, 77), (3, 80), (-60, 20)] {
+        column += delta;
+        let moved = Position::new(5, column as u16);
         tab.handle_mouse_event(&MouseEvent::new_left_motion_with_ctrl_event(moved), client)
-            .unwrap()
-            .state_changed
+            .unwrap();
+        assert!(tab.pane_being_resized_with_mouse.is_some());
+        assert_resized_agent(&mut tab, &receiver, TerminalId::new(1), expected_cols, 18);
+        let left = tab.get_pane_with_id(agent).unwrap().render_geom();
+        let neighbor = tab
+            .get_pane_with_id(PaneId::Terminal(TerminalId::new(2)))
+            .unwrap();
+        assert_eq!(left.x + left.cols.as_usize(), neighbor.render_geom().x);
+        assert!(neighbor.render_geom().cols.as_usize() >= neighbor.min_width());
+    }
+    column -= 4;
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_motion_with_ctrl_event(Position::new(5, column as u16)),
+        client,
+    )
+    .unwrap();
+    draw(&mut tab);
+    assert_eq!(
+        tab.get_pane_with_id(agent).unwrap().get_content_columns(),
+        20
     );
-    tab.handle_mouse_event(&MouseEvent::new_left_release_with_ctrl_event(moved), client)
+    assert!(tab.pane_being_resized_with_mouse.is_some());
+    column += 2;
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_motion_with_ctrl_event(Position::new(5, column as u16)),
+        client,
+    )
+    .unwrap();
+    assert_resized_agent(&mut tab, &receiver, TerminalId::new(1), 22, 18);
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_release_with_ctrl_event(Position::new(5, column as u16)),
+        client,
+    )
+    .unwrap();
+    assert!(tab.pane_being_resized_with_mouse.is_none());
+}
+
+fn assert_resized_agent(
+    tab: &mut Tab,
+    receiver: &Receiver<(PtyWriteInstruction, ErrorContext)>,
+    terminal: TerminalId,
+    cols: usize,
+    rows: usize,
+) {
+    for render in [false, true, true] {
+        if render {
+            draw(tab);
+        }
+        let pane = tab.get_pane_with_id(PaneId::Terminal(terminal)).unwrap();
+        assert_eq!(
+            (pane.get_content_columns(), pane.get_content_rows()),
+            (cols, rows)
+        );
+        assert_eq!(
+            (
+                pane.render_geom().cols.as_usize(),
+                pane.render_geom().rows.as_usize()
+            ),
+            (cols + 2, rows + 2)
+        );
+    }
+    let last_size = receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyWriteInstruction::ResizePty(id, cols, rows, _, _) if id == terminal => {
+                Some((cols as usize, rows as usize))
+            },
+            _ => None,
+        })
+        .last();
+    assert_eq!(last_size, Some((cols, rows)));
+}
+
+#[test]
+fn centered_agent_directional_resize_preserves_visible_width() {
+    for limit in [0, 80] {
+        for other_is_agent in [false, true] {
+            for direction in [Direction::Left, Direction::Right] {
+                let (sender, receiver) = channels::unbounded();
+                let mut tab = create_new_tab_with_mock_pty_writer(
+                    Size {
+                        cols: 400,
+                        rows: 20,
+                    },
+                    ModeInfo::default(),
+                    SenderWithContext::new(sender),
+                );
+                let client = ClientId::new(1);
+                tab.vertical_split(
+                    PaneId::Terminal(TerminalId::new(2)),
+                    None,
+                    None,
+                    client,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let terminal = TerminalId::new(if direction == Direction::Right { 1 } else { 2 });
+                let agent = PaneId::Terminal(terminal);
+                tab.max_agent_width = limit;
+                mark_agent(&mut tab, agent);
+                if other_is_agent {
+                    mark_agent(
+                        &mut tab,
+                        PaneId::Terminal(TerminalId::new(if terminal == TerminalId::new(1) {
+                            2
+                        } else {
+                            1
+                        })),
+                    );
+                }
+                draw(&mut tab);
+                let initial = tab.get_pane_with_id(agent).unwrap().get_content_columns();
+                for (resize, expected) in [
+                    (Resize::Decrease, initial - 20),
+                    (Resize::Decrease, initial - 40),
+                    (Resize::Increase, initial - 20),
+                    (Resize::Increase, initial),
+                ] {
+                    tab.resize_pane_with_id(ResizeStrategy::new(resize, Some(direction)), agent)
+                        .unwrap();
+                    assert_resized_agent(&mut tab, &receiver, terminal, expected, 18);
+                    let left = tab
+                        .get_pane_with_id(PaneId::Terminal(TerminalId::new(1)))
+                        .unwrap()
+                        .render_geom();
+                    let right = tab
+                        .get_pane_with_id(PaneId::Terminal(TerminalId::new(2)))
+                        .unwrap()
+                        .render_geom();
+                    assert_eq!(left.x + left.cols.as_usize(), right.x);
+                    if expected == initial - 40 {
+                        tab.resize_whole_tab(Size {
+                            cols: 800,
+                            rows: 20,
+                        })
+                        .unwrap();
+                        let doubled = (expected + 2) * 2 - 2;
+                        let widened = if limit == 80 {
+                            doubled.min(80)
+                        } else {
+                            doubled
+                        };
+                        draw(&mut tab);
+                        assert_resized_agent(&mut tab, &receiver, terminal, widened, 18);
+                        tab.resize_whole_tab(Size {
+                            cols: 400,
+                            rows: 20,
+                        })
+                        .unwrap();
+                        draw(&mut tab);
+                        assert_resized_agent(&mut tab, &receiver, terminal, expected, 18);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn centered_agent_vertical_drag(diagonal: bool) {
+    for limit in [0, 80] {
+        for below in [false, true] {
+            for other_is_agent in [false, true] {
+                let (sender, receiver) = channels::unbounded();
+                let mut tab = create_new_tab_with_mock_pty_writer(
+                    Size {
+                        cols: 400,
+                        rows: 40,
+                    },
+                    ModeInfo::default(),
+                    SenderWithContext::new(sender),
+                );
+                let client = ClientId::new(1);
+                tab.horizontal_split(
+                    PaneId::Terminal(TerminalId::new(2)),
+                    None,
+                    None,
+                    client,
+                    None,
+                    None,
+                )
+                .unwrap();
+                let terminal = TerminalId::new(if below { 2 } else { 1 });
+                let agent = PaneId::Terminal(terminal);
+                tab.max_agent_width = limit;
+                mark_agent(&mut tab, agent);
+                if other_is_agent {
+                    mark_agent(
+                        &mut tab,
+                        PaneId::Terminal(TerminalId::new(if below { 1 } else { 2 })),
+                    );
+                }
+                draw(&mut tab);
+                let geom = tab.get_pane_with_id(agent).unwrap().render_geom();
+                let row = if below {
+                    geom.y
+                } else {
+                    geom.y + geom.rows.as_usize() - 1
+                };
+                let column = geom.x
+                    + if diagonal {
+                        geom.cols.as_usize() - 1
+                    } else {
+                        geom.cols.as_usize() / 2
+                    };
+                let mut position = Position::new(row as i32, column as u16);
+                tab.handle_mouse_event(
+                    &MouseEvent::new_left_press_with_ctrl_event(position),
+                    client,
+                )
+                .unwrap();
+                for delta in [-2, 4, -2] {
+                    position = Position::new(
+                        position.line() as i32 + delta,
+                        (position.column() + usize::from(diagonal)) as u16,
+                    );
+                    tab.handle_mouse_event(
+                        &MouseEvent::new_left_motion_with_ctrl_event(position),
+                        client,
+                    )
+                    .unwrap();
+                    assert!(tab.pane_being_resized_with_mouse.is_some());
+                    let movement = position.line() - row as isize;
+                    let rows = (18 + if below { -movement } else { movement }) as usize;
+                    assert_resized_agent(
+                        &mut tab,
+                        &receiver,
+                        terminal,
+                        geom.cols.as_usize() - 2,
+                        rows,
+                    );
+                    let top = tab
+                        .get_pane_with_id(PaneId::Terminal(TerminalId::new(1)))
+                        .unwrap()
+                        .render_geom();
+                    let bottom = tab
+                        .get_pane_with_id(PaneId::Terminal(TerminalId::new(2)))
+                        .unwrap()
+                        .render_geom();
+                    assert_eq!(top.y + top.rows.as_usize(), bottom.y);
+                    assert_eq!(top.rows.as_usize() + bottom.rows.as_usize(), 40);
+                }
+                tab.handle_mouse_event(
+                    &MouseEvent::new_left_release_with_ctrl_event(position),
+                    client,
+                )
+                .unwrap();
+                assert!(tab.pane_being_resized_with_mouse.is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn centered_agent_drag_resizes_height() {
+    centered_agent_vertical_drag(false);
+}
+
+#[test]
+fn centered_agent_diagonal_drag_keeps_resizing_height_when_width_is_blocked() {
+    centered_agent_vertical_drag(true);
+}
+
+#[test]
+fn centered_agent_drag_preserves_fixed_neighbors_and_reports_unexpected_errors() {
+    let mut tab = create_new_tab_with_layout(
+        Size { cols: 400, rows: 40 },
+        ModeInfo::default(),
+        "layout {\n pane split_direction=\"vertical\" {\n pane { pane; pane; }\n pane size=40\n }\n}",
+    );
+    let agent = PaneId::Terminal(TerminalId::new(0));
+    let fixed = tab
+        .tiled_panes
+        .get_panes()
+        .find_map(|(id, pane)| pane.current_geom().cols.is_fixed().then_some(*id))
         .unwrap();
-    assert!(
-        tab.get_pane_with_id(agent)
-            .unwrap()
-            .current_geom()
-            .cols
-            .as_usize()
-            > requested.cols.as_usize()
-    );
+    tab.max_agent_width = 80;
+    mark_agent(&mut tab, agent);
+    draw(&mut tab);
+    let fixed_geom = tab.get_pane_with_id(fixed).unwrap().current_geom();
+    let geom = tab.get_pane_with_id(agent).unwrap().render_geom();
+    let client = ClientId::new(1);
+    assert!(!tab.swap_layouts.is_tiled_damaged());
+    let x = geom.x + geom.cols.as_usize() - 1;
+    let y = geom.y + geom.rows.as_usize() - 1;
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_press_with_ctrl_event(Position::new(y as i32, x as u16)),
+        client,
+    )
+    .unwrap();
+    for (dx, dy) in [(1, 0), (2, -2)] {
+        tab.handle_mouse_event(
+            &MouseEvent::new_left_motion_with_ctrl_event(Position::new(
+                y as i32 + dy,
+                (x + dx) as u16,
+            )),
+            client,
+        )
+        .unwrap();
+        assert!(tab.pane_being_resized_with_mouse.is_some());
+        assert_eq!(tab.swap_layouts.is_tiled_damaged(), dy != 0);
+        assert_eq!(
+            tab.get_pane_with_id(fixed).unwrap().current_geom(),
+            fixed_geom
+        );
+    }
+    assert_eq!(tab.get_pane_with_id(agent).unwrap().get_content_rows(), 16);
+    let error = tab
+        .tiled_panes
+        .resize_pane_with_strategies(
+            PaneId::Terminal(TerminalId::new(999)),
+            &[ResizeStrategy::new(
+                Resize::Decrease,
+                Some(Direction::Right),
+            )],
+            (1.0, 1.0),
+        )
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("no tiled pane with ID"));
 }
 
 #[test]

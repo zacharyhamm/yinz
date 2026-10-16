@@ -53,6 +53,36 @@ fn focused_directional_splits_preserve_launch_command_and_title() {
 }
 
 #[test]
+fn keyboard_horizontal_resize_retries_when_rounding_prevents_movement() {
+    let mut tab = create_new_tab_with_layout(
+        Size { cols: 12, rows: 20 },
+        ModeInfo::default(),
+        r#"layout split_direction="vertical" { pane size="53%" focus=true; pane; }"#,
+    );
+    let left = PaneId::Terminal(TerminalId::new(0));
+    let right = PaneId::Terminal(TerminalId::new(1));
+    for id in [left, right] {
+        assert_eq!(
+            tab.get_pane_with_id(id)
+                .unwrap()
+                .current_geom()
+                .cols
+                .as_usize(),
+            6
+        );
+    }
+    tab.resize(
+        ClientId::new(1),
+        ResizeStrategy::new(Resize::Decrease, Some(Direction::Right)),
+    )
+    .unwrap();
+    for (id, x, cols) in [(left, 0, 5), (right, 5, 7)] {
+        let geom = tab.get_pane_with_id(id).unwrap().current_geom();
+        assert_eq!((geom.x, geom.cols.as_usize()), (x, cols));
+    }
+}
+
+#[test]
 fn tiled_resize_only_notifies_panes_whose_content_size_changed() {
     let client = ClientId::new(1);
     let first = PaneId::Terminal(TerminalId::new(1));
@@ -80,9 +110,10 @@ fn tiled_resize_only_notifies_panes_whose_content_size_changed() {
         while receiver.try_recv().is_ok() {}
         let strategy = ResizeStrategy::new(Resize::Increase, Some(Direction::Right));
         if use_strategies {
-            tab.tiled_panes
+            assert!(tab
+                .tiled_panes
                 .resize_pane_with_strategies(first, &[strategy], (5.0, 5.0))
-                .unwrap();
+                .unwrap());
         } else {
             assert!(tab
                 .tiled_panes
@@ -98,9 +129,10 @@ fn tiled_resize_only_notifies_panes_whose_content_size_changed() {
         resized.sort_unstable();
         assert_eq!(resized, vec![TerminalId::new(1), TerminalId::new(2)]);
 
-        tab.tiled_panes
+        assert!(!tab
+            .tiled_panes
             .resize_pane_with_strategies(first, &[], (5.0, 5.0))
-            .unwrap();
+            .unwrap());
         assert!(
             receiver.try_recv().is_err(),
             "an empty resize must not notify panes"

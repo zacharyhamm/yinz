@@ -23,11 +23,11 @@ pub struct PaneResizer<'a> {
 /// `size` as scratch values, `is_layout_valid` checks them before any pane changes, and
 /// `apply_spans` writes them back by id.
 #[derive(Debug, Clone, Copy)]
-struct Span {
-    pid: PaneId,
+pub(super) struct Span {
+    pub pid: PaneId,
     direction: SplitDirection,
-    pos: usize,
-    size: Dimension,
+    pub pos: usize,
+    pub size: Dimension,
     size_var: Variable,
 }
 
@@ -47,9 +47,19 @@ impl<'a> PaneResizer<'a> {
     }
 
     pub fn layout(&mut self, direction: SplitDirection, space: usize) -> Result<()> {
+        let spans = self.preview(direction, space, &HashMap::new())?;
+        self.apply_spans(spans)
+    }
+
+    pub(super) fn preview(
+        &mut self,
+        direction: SplitDirection,
+        space: usize,
+        percent_changes: &HashMap<PaneId, f64>,
+    ) -> Result<Vec<Span>> {
         self.solver.reset();
         let grid = self
-            .solve(direction, space)
+            .solve(direction, space, percent_changes)
             .map_err(|err| anyhow!("{}", err))?;
         let spans = self
             .discretize_spans(grid, space)
@@ -59,15 +69,28 @@ impl<'a> PaneResizer<'a> {
             return Err(YinzError::PaneLayoutRejected)
                 .with_context(|| format!("failed to lay out {direction:?} in {space} cells"));
         }
-        self.apply_spans(spans)
+        Ok(spans)
     }
 
-    fn solve(&mut self, direction: SplitDirection, space: usize) -> Result<Grid, String> {
-        let grid: Grid = self
+    fn solve(
+        &mut self,
+        direction: SplitDirection,
+        space: usize,
+        percent_changes: &HashMap<PaneId, f64>,
+    ) -> Result<Grid, String> {
+        let mut grid: Grid = self
             .grid_boundaries(direction)
             .into_iter()
             .map(|b| self.spans_in_boundary(direction, b))
             .collect();
+
+        for span in grid.iter_mut().flatten() {
+            if let (Some(percent), Some(change)) =
+                (span.size.as_percent(), percent_changes.get(&span.pid))
+            {
+                span.size.set_percent(percent + change);
+            }
+        }
 
         let mut constraints: HashSet<kasuari::Constraint> = HashSet::new();
         for spans in &grid {
@@ -162,7 +185,7 @@ impl<'a> PaneResizer<'a> {
         true
     }
 
-    fn apply_spans(&mut self, spans: Vec<Span>) -> Result<()> {
+    pub(super) fn apply_spans(&mut self, spans: Vec<Span>) -> Result<()> {
         let err_context = || "Failed to apply spans".to_string();
         let mut geoms_changed = false;
         for span in spans {
@@ -364,10 +387,19 @@ fn stable_round(x: f64) -> f64 {
 /// Keep each row contiguous while retaining requested sizes for later layout changes.
 pub(super) fn agent_widths(
     panes: &[(PaneId, PaneGeom, usize, usize)],
+    ui: &[PaneGeom],
 ) -> Result<HashMap<PaneId, (usize, usize)>> {
     use kasuari::WeightedRelation::{GE, LE};
 
     if !panes.iter().any(|(_, _, limit, _)| *limit > 0) {
+        return Ok(HashMap::new());
+    }
+    // UI sharing a content row prevents packing across the whole row.
+    if ui.iter().any(|ui| {
+        panes.iter().any(|(_, geom, _, _)| {
+            ui.y < geom.y + geom.rows.as_usize() && geom.y < ui.y + ui.rows.as_usize()
+        })
+    }) {
         return Ok(HashMap::new());
     }
     let start = panes
@@ -437,7 +469,9 @@ pub(super) fn agent_widths(
         };
         constraints.push(width | GE(Strength::REQUIRED) | minimum as f64);
         if *limit > 0 {
-            constraints.push(width | LE(Strength::REQUIRED) | *limit as f64);
+            // A user can request less than the cap, even when the packed grid has spare room.
+            constraints
+                .push(width | LE(Strength::REQUIRED) | (*limit).min(geom.cols.as_usize()) as f64);
         }
         if geom.cols.is_fixed() && *limit == 0 {
             constraints.push(width | EQ(Strength::STRONG) | geom.cols.as_usize() as f64);
@@ -465,4 +499,20 @@ pub(super) fn agent_widths(
             (*id, (origin + start, end.saturating_sub(start)))
         })
         .collect())
+}
+
+pub(super) fn agent_width_input(pane: &dyn Pane) -> (PaneId, PaneGeom, usize, usize) {
+    let offset = pane.get_content_offset();
+    let limit = pane.max_content_width();
+    let outer_limit = if limit == 0 {
+        0
+    } else {
+        limit
+            .saturating_add(offset.left)
+            .saturating_add(offset.right)
+    };
+    let minimum = pane
+        .min_width()
+        .max(offset.left.saturating_add(offset.right).saturating_add(1));
+    (pane.pid(), pane.current_geom(), outer_limit, minimum)
 }
