@@ -98,6 +98,8 @@ impl Field {
 pub enum View {
     Actions {
         title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
         actions: Vec<Action>,
         source: Option<String>,
         #[serde(default, rename = "initialQuery")]
@@ -105,6 +107,8 @@ pub enum View {
     },
     Form {
         title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
         fields: Vec<Field>,
         #[serde(rename = "submitLabel")]
         submit_label: String,
@@ -256,10 +260,12 @@ impl Reply {
             Self::View { view } => match view {
                 View::Actions {
                     title,
+                    description,
                     actions,
                     source,
                     initial_query,
                 } => {
+                    plain_text(description)?;
                     plain_text(initial_query)?;
                     label(title)?;
                     if let Some(source) = source {
@@ -273,6 +279,7 @@ impl Reply {
                 },
                 View::Form {
                     title,
+                    description,
                     fields,
                     submit_label,
                     handle,
@@ -280,6 +287,7 @@ impl Reply {
                     ..
                 } => {
                     label(title)?;
+                    plain_text(description)?;
                     label(submit_label)?;
                     label(handle)?;
                     validate_actions(actions)?;

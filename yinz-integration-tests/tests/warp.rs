@@ -1319,7 +1319,13 @@ fn palette_sessions() -> ((TestSession, FakePtyHandle), (TestSession, FakePtyHan
     (sender, receiver)
 }
 
-fn palette_warp_source(receiver: &TestSession, sender: &TestSession, command: &str) {
+fn palette_pull(
+    receiver: &TestSession,
+    sender: &TestSession,
+    command: &str,
+    target: &str,
+    last_tab: Option<usize>,
+) {
     receiver.send_stdin(b"\x1b[112;7u");
     receiver.wait_until("palette opens", |grid| {
         grid.contains("Switch current project")
@@ -1334,10 +1340,13 @@ fn palette_warp_source(receiver: &TestSession, sender: &TestSession, command: &s
         grid.contains(&format!("› {}", sender.session_name()))
     });
     receiver.send_stdin(&keys::ENTER);
-}
-
-fn palette_pull(receiver: &TestSession, sender: &TestSession, command: &str, target: &str) {
-    palette_warp_source(receiver, sender, command);
+    if let Some(last_tab) = last_tab {
+        // Peer metadata can lag source renders; "All tabs" exists even in an older snapshot.
+        let label = format!("(tab {last_tab})");
+        receiver.wait_until("latest source tab discovered", |grid| {
+            !grid.contains("Source session") && grid.contains(&label)
+        });
+    }
     receiver.send_stdin(target.as_bytes());
     receiver.wait_until("warp target discovered", |grid| {
         !grid.contains("Source session") && grid.contains(target) && !grid.contains("No matches")
@@ -1363,6 +1372,7 @@ fn palette_pulls_one_tab_and_all_tabs_through_source_shutdown() {
             &sender,
             "Warp tab",
             if all { "All tabs" } else { "Tab #2" },
+            Some(2),
         );
         let adopted: Vec<_> = (0..if all { 2 } else { 1 })
             .map(|_| receiver.expect_adopted_pty())
@@ -1400,7 +1410,7 @@ fn palette_pulls_a_visible_stack_with_its_hidden_editor_subject() {
     sender.wait_until("editor ready", |grid| grid.contains("EDITING SCROLLBACK"));
     type_and_confirm(&sender, &editor, b"stack-editor-before");
     let entries = stack_list_entries(&sender.snapshot());
-    palette_pull(&receiver, &sender, "Warp pane", "EDITING SCROLLBACK");
+    palette_pull(&receiver, &sender, "Warp pane", "EDITING SCROLLBACK", None);
     let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
     let first = adopted_with_marker(&adopted, b"stack-first-before");
     let subject = adopted_with_marker(&adopted, b"stack-subject-before");
@@ -1442,13 +1452,7 @@ fn palette_all_tabs_failure_retains_completed_and_unattempted_tabs() {
         panes.push(pane);
     }
     panes[0].fail_warp(WarpFailure::UnadoptableOnce);
-    palette_warp_source(&receiver, &sender, "Warp tab");
-    // The receiver's session scan can still describe the source before its third tab existed.
-    receiver.wait_until("all three source tabs discovered", |grid| {
-        grid.contains("(tab 3)")
-    });
-    receiver.send_stdin(b"All tabs");
-    receiver.send_stdin(&keys::ENTER);
+    palette_pull(&receiver, &sender, "Warp tab", "All tabs", Some(3));
     let arrived = receiver.expect_adopted_pty();
     assert!(arrived
         .stdin_bytes()
@@ -1762,7 +1766,7 @@ fn warp_adoption_failure_restores_the_sessions_only_live_pane() {
 fn warp_disconnected_destination_restores_the_only_held_pane() {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     use yinz_ipc::ipc::{
-        ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
+        ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
     };
 
     struct RemoveOnDrop(std::path::PathBuf);
@@ -1783,38 +1787,39 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
         .create_sync()
         .unwrap();
     let (disconnect, wait_to_disconnect) = std::sync::mpsc::channel();
-    let destination = std::thread::spawn(move || {
-        // Session discovery may probe the listener before the warp client does.
-        let _adoption = loop {
-            let connection = listener.accept().unwrap();
-            let mut reply: IpcSenderWithContext<ServerToClientMsg> =
-                IpcSenderWithContext::new(connection);
-            let mut request: IpcReceiverWithContext<ClientToServerMsg> =
-                reply.get_receiver().unwrap();
-            match request.recv_client_msg().msg() {
-                Some((ClientToServerMsg::ConnStatus, _)) => {
-                    reply
-                        .send_server_msg(ServerToClientMsg::Connected {
-                            warp_companions: true,
-                            warp_held_terminals: true,
-                        })
-                        .unwrap();
+    let destination = std::thread::spawn(move || loop {
+        let connection = listener.accept().unwrap();
+        let mut reply: IpcSenderWithContext<ServerToClientMsg> =
+            IpcSenderWithContext::new(connection);
+        let mut request: IpcReceiverWithContext<ClientToServerMsg> = reply.get_receiver().unwrap();
+        match request.recv_client_msg() {
+            // Session discovery also probes by connecting and immediately closing.
+            IpcRecv::Eof => {},
+            IpcRecv::Msg(ClientToServerMsg::ConnStatus, _) => {
+                reply
+                    .send_server_msg(ServerToClientMsg::Connected {
+                        warp_companions: true,
+                        warp_held_terminals: true,
+                    })
+                    .unwrap();
+            },
+            IpcRecv::Msg(
+                ClientToServerMsg::Action {
+                    action: yinz_types::input::actions::Action::AdoptPane { .. },
+                    ..
                 },
-                Some((
-                    ClientToServerMsg::Action {
-                        action: yinz_types::input::actions::Action::AdoptPane { .. },
-                        ..
-                    },
-                    _,
-                )) => break request,
-                other => panic!("unexpected destination request: {other:?}"),
-            }
-        };
-        wait_to_disconnect
-            .recv_timeout(yinz_test_support::default_timeout())
-            .unwrap();
-        // Drop the adoption connection after accepting the request, without a reply.
+                _,
+            ) => {
+                wait_to_disconnect
+                    .recv_timeout(yinz_test_support::default_timeout())
+                    .unwrap();
+                // Drop the adoption connection after accepting the request, without a reply.
+                break;
+            },
+            _ => panic!("unexpected warp destination request"),
+        }
     });
+    drop(yinz_ipc::consts::ipc_connect(&path).unwrap());
     let sender = start(Some(
         r#"layout { pane name="sole held task" command="codex" cwd="/tmp"; }"#,
     ));

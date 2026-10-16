@@ -54,6 +54,18 @@
 (define (list-view title collect)
   (hash "type" "actions" "title" title
     "source" (lambda (query context) (search-actions (collect) query))))
+(define (section-help root)
+  (get (hash
+      "keybinds" "Assign keyboard shortcuts to actions in each input mode."
+      "env" "Set environment variables for panes. Changes take effect when the next session starts."
+      "plugins" "Define plugin aliases and their default configuration."
+      "load_plugins" "Choose plugins to load in the background when a session starts."
+      "hooks" "Run commands when session events occur, such as a pane opening or closing."
+      "context_menu" "Choose and order the actions shown in the pane context menu."
+      "ui" "Customize pane frame corners and whether frames show the session name.") root ""))
+(define (section-view path collect)
+  (hash-insert (list-view (clean (string-join path " / ")) collect)
+    "description" (section-help (car path))))
 (define (search-actions actions query)
   (define words (split-whitespace (string-downcase query)))
   (define found
@@ -123,7 +135,8 @@
   (define setting (find (lambda (setting) (equal? (hash-ref setting "name") root)) (hash-ref snapshot "catalog")))
   (define timing (get setting "timing" (get (hash-ref snapshot "section_timing") root "Applies to this session")))
   (define startup? (equal? timing "On next session start"))
-  (hash "type" "form" "title" (string-append (clean root) " — " timing)
+  (hash "type" "form" "title" (string-replace (clean root) "_" " ")
+    "description" (get setting "help" (section-help root))
     "fields" (append (if (null? fields) '() (car fields)) (list (hash "type" "choice" "id" "destination" "label" "Destination"
           "options" (if startup? '("Save permanently") '("Apply to session" "Save permanently"))
           "initialValue" (if startup? "Save permanently" "Apply to session"))))
@@ -169,7 +182,7 @@
   (when (and (equal? kind "number") (string? value)) (set! value (string->number (trim-end-matches value "%"))))
   (define choices (if (equal? kind "boolean") '() (hash-ref setting "choices")))
   (define help (state-help draft (list (hash-ref setting "name"))))
-  (define field (scalar-field "value" (hash-ref setting "label") value kind choices (string-append (hash-ref setting "help") "\n" help)))
+  (define field (scalar-field "value" (hash-ref setting "label") value kind choices ""))
   (when (equal? (hash-ref field "type") "number")
     (for-each (lambda (key) (when (present? (get setting key 'json-null)) (set! field (hash-insert field key (hash-ref setting key)))))
       '("minimum" "maximum")))
@@ -181,7 +194,7 @@
         (define saved (diff (saved-node (draft-snapshot draft) path) (draft-value draft) path))
         (hash "patches" effective "permanentPatches" (if (pair? saved) saved effective)))
       (list field)))
-  (hash-insert (hash-insert form "title" (string-append (hash-ref setting "label") " — " (hash-ref setting "timing") ". " (string-replace help "\n" "; ")))
+  (hash-insert (hash-insert form "title" (hash-ref setting "label"))
     "actions" (append (hash-ref form "actions")
       (list (action "state" "Current values and effect timing…"
           (defer (lambda () (hash "type" "text" "title" (hash-ref setting "label")
@@ -207,7 +220,7 @@
     (else (list (node "entry" '("") '())))))
 
 (define (child-list draft parent path)
-  (list-view (string-append (clean (string-join path " / ")) " — draft")
+  (section-view path
     (lambda ()
       (append
         (list
@@ -250,7 +263,7 @@
   (unless (and index (< index (length (node-children parent)))) (error "Entry was removed from the draft"))
   (define child (list-ref (node-children parent) index))
   (define child-path (append path (list (node-key child))))
-  (list-view (clean (string-join child-path " / "))
+  (section-view child-path
     (lambda ()
       (append
         (list
@@ -320,12 +333,12 @@
   (define (local-done) (replace-node target local) (done))
   (define (reopen-local) (node-form draft local path local-done))
   (if (> (length fields) 16)
-    (list-view "Fields"
+    (section-view path
       (lambda () (map (lambda (field)
             (action (hash-ref field "id") (hash-ref field "label")
-              (defer (lambda () (hash "type" "form" "title" (hash-ref field "label") "fields" (list field)
+              (defer (lambda () (hash "type" "form" "title" (hash-ref field "label") "description" (section-help (car path)) "fields" (list field)
                     "onSubmit" (lambda (values context) (assign values) (local-done))))))) fields)))
-    (hash "type" "form" "title" (clean (string-join path " / ")) "fields" fields "submitLabel" "Keep in draft"
+    (hash "type" "form" "title" (clean (string-join path " / ")) "description" (section-help (car path)) "fields" fields "submitLabel" "Keep in draft"
       "onSubmit" (lambda (values context)
         (assign values)
         (define parent (and (equal? (car path) "keybinds") (= (length path) 3)
@@ -398,7 +411,6 @@
         (define name (hash-ref setting "name"))
         (hash "id" name "label" (string-append (hash-ref setting "label") "…")
           "aliases" (append (list name "configuration settings") (if (starts-with? name "copy_") '("clipboard") '()))
-          "description" (hash-ref setting "timing")
           "run" (defer (lambda () (setting-form (new-draft (read-config) client name) setting)))))
       (filter (lambda (setting) (not (member (hash-ref setting "name")
               '("theme" "theme_dark" "theme_light" "theme_dir" "explicit_theme_hue" "agent_theme_mapping"))))

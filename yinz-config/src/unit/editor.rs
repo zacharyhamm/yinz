@@ -47,6 +47,11 @@ fn catalog_covers_and_validates_every_option() {
     let catalog = catalog();
     assert_eq!(fields.as_object().unwrap().len(), catalog.len());
     for setting in catalog {
+        assert!(
+            !setting.help.is_empty(),
+            "missing explanation for {}",
+            setting.name
+        );
         let value = match setting.kind {
             "number" => json!(setting.minimum.unwrap_or(0)),
             "boolean" => json!(true),

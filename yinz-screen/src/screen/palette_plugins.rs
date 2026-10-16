@@ -1038,6 +1038,12 @@ impl Screen {
                         | View::Text { title, .. } => title.clone(),
                     };
                     state.widget.push_view(id, title.clone());
+                    state.widget.description = match &view {
+                        View::Actions { description, .. } | View::Form { description, .. } => {
+                            description.clone()
+                        },
+                        View::Text { .. } => String::new(),
+                    };
                     match &view {
                         View::Form {
                             fields,

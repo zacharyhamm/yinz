@@ -55,7 +55,7 @@
 (define (%palette-wire-view view scope client)
   (define kind (hash-ref view "type"))
   (define title (hash-ref view "title"))
-  (cond
+  (define wired (cond
     ((equal? kind "text") view)
     ((equal? kind "actions")
      (hash "type" "actions" "title" title "initialQuery" (%palette-get view "initialQuery" "")
@@ -75,6 +75,8 @@
            "handle" (%palette-remember (hash-ref view "onSubmit") scope client)
            "actions" (%palette-wire-actions (append (%palette-get view "actions" '()) browse-actions) scope client)
            "confirmation" (%palette-get view "confirmation" #f)))))
+  (define description (%palette-get view "description" ""))
+  (if (equal? description "") wired (hash-insert wired "description" description)))
 
 (define (%palette-reply scope result)
   (%palette-command (hash "type" "reply" "scope" scope "result" result)))
