@@ -5,7 +5,8 @@ use crate::pipes::{
 };
 use crate::plugin_loader::PluginLoader;
 use crate::plugin_map::{
-    AtomicEvent, PluginEnv, PluginMap, RunningPlugin, RunningPluginEntry, Subscriptions,
+    AtomicEvent, PluginConfiguration, PluginEnv, PluginMap, RunningPlugin, RunningPluginEntry,
+    Subscriptions,
 };
 use crate::{PipeStateChange, PluginRenderAsset};
 use yinz_bus::plugins::{PipeCompletion, PipeRequestId, PluginInstanceId};
@@ -126,6 +127,7 @@ pub struct LoadingContext {
     pub user_plugin_dir: Option<PathBuf>,
     pub default_mode: InputMode,
     pub keybinds: Keybinds,
+    pub(crate) configuration_version: u64,
     pub yinz_data_dir: PathBuf,
     pub data_access: Arc<DataAccess>,
     pub watch_generations: super::plugin_map::WatchGenerations,
@@ -192,7 +194,6 @@ impl LoadingContext {
                                 &senders,
                                 Some(load_id),
                                 plugin_id,
-                                &mut LoadingIndication::new(source.descriptor()),
                                 error.context(
                                     crate::plugin_authoring::LogIdentity::repository(source)
                                         .marker(),
@@ -205,17 +206,12 @@ impl LoadingContext {
                 }
             }
             let work = move |senders, map, clients| job(self, senders, map, clients);
-            let accepted = if register {
-                executor.execute_plugin_load(plugin_id, work)
-            } else {
-                executor.execute_for_plugin_tagged(plugin_id, "load", false, work)
-            };
+            let accepted = executor.execute_for_plugin_tagged(plugin_id, "load", false, work);
             if !accepted {
                 handle_plugin_loading_failure(
                     &senders,
                     Some(load_id),
                     plugin_id,
-                    &mut LoadingIndication::new(plugin_id.to_string()),
                     "Plugin executor rejected loading",
                     None,
                 );
@@ -259,20 +255,13 @@ impl LoadingContext {
                     ))
                     .join("plugin_cache")
             });
-        let default_mode = plugin_bridge
-            .base_modes
-            .get(&client_id)
-            .copied()
-            .unwrap_or(plugin_bridge.default_mode);
-        let keybinds = plugin_bridge
-            .keybinds
-            .get(&client_id)
-            .cloned()
-            .unwrap_or_else(|| plugin_bridge.default_keybinds.clone());
+        let configuration = plugin_bridge.plugin_configuration(client_id);
         let plugin_cwd = cwd.unwrap_or_else(|| plugin_bridge.yinz_cwd.clone());
         let data_owner;
+        let configuration_version;
         {
             let mut plugin_map = plugin_bridge.plugin_map.lock().unwrap();
+            configuration_version = plugin_map.configuration_version;
             let previous = plugin_map.reload_metadata(plugin_id);
             data_owner = previous
                 .as_ref()
@@ -315,11 +304,12 @@ impl LoadingContext {
             server_session: plugin_bridge.server_session.clone(),
             plugin_aliases: plugin_bridge.plugin_aliases.clone(),
             plugin_cwd,
-            default_shell: plugin_bridge.default_shell.clone(),
-            layout_dir: plugin_bridge.layout_dir.clone(),
-            user_plugin_dir: plugin_bridge.user_plugin_dir.clone(),
-            keybinds,
-            default_mode,
+            default_shell: configuration.default_shell,
+            layout_dir: configuration.layout_dir,
+            user_plugin_dir: configuration.user_plugin_dir,
+            keybinds: configuration.keybinds,
+            default_mode: configuration.default_mode,
+            configuration_version,
             plugin_own_data_dir,
             temporary_data_dir,
             plugin_own_cache_dir,
@@ -400,12 +390,8 @@ pub struct PluginBridge {
     // message,
     // payload>
     loading_plugins: HashSet<(PluginId, RunPlugin)>, // tracks loading plugins without handles
-    /// Plugins unloaded before their loader ran. `unload_plugin` marks a plugin here when it is
-    /// in `loading_plugins` but not yet in the `PluginMap`; the loader closure checks the mark
-    /// and gives up instead of instantiating. Both sides do so **under the `plugin_map` lock**,
-    /// which the loader holds from before instantiation until after `load` returns, so an unload
-    /// either finds the runtime in the map or the loader finds the mark - never neither. Do not
-    /// move either check outside that lock.
+    /// Loads unloaded before registration. The cancel token prevents publication; the loader
+    /// or its queued retirement consumes this mark and releases the executor assignment.
     unloaded_while_loading: Arc<Mutex<HashSet<PluginId>>>,
     pending_plugin_reloads: HashSet<RunPlugin>,
     pending_plugin_id_reloads: HashSet<PluginId>,
@@ -695,20 +681,16 @@ impl PluginBridge {
                     Some(plugin_config) => plugin_config,
                     None => {
                         self.next_plugin_id += 1;
-                        let mut loading_indication =
-                            LoadingIndication::new(run.location.to_string());
                         handle_plugin_loading_failure(
                             &self.senders,
                             None,
                             plugin_id,
-                            &mut loading_indication,
                             format!("Failed to resolve plugin: {}", run.location),
                             Some(client_id),
                         );
                         return Ok((plugin_id, client_id));
                     },
                 };
-                let plugin_name = run.location.to_string();
 
                 if plugin_config.is_shared() {
                     self.shared_plugin_ids.insert(plugin_id);
@@ -737,7 +719,6 @@ impl PluginBridge {
 
                 let _ =
                     senders.send_to_background_jobs(BackgroundJob::AnimatePluginLoading(plugin_id));
-                let mut loading_indication = LoadingIndication::new(plugin_name.clone());
 
                 let accepted = loading_context.execute_prepared(
                     self.plugin_executor.clone(),
@@ -745,7 +726,6 @@ impl PluginBridge {
                     load_id,
                     true,
                     move |loading_context, senders, plugin_map, connected_clients| {
-                        let mut plugin_map = plugin_map.lock().unwrap();
                         if load_was_cancelled(
                             &unloaded_while_loading,
                             plugin_id,
@@ -754,23 +734,30 @@ impl PluginBridge {
                         ) {
                             return;
                         }
-                        match PluginLoader::new(
+                        let loaded = PluginLoader::new(
                             loading_context,
                             senders.clone(),
-                            &mut plugin_map,
+                            plugin_map.clone(),
                             connected_clients.clone(),
                         )
-                        .start_plugin()
-                        {
+                        .start_plugin();
+                        if load_was_cancelled(
+                            &unloaded_while_loading,
+                            plugin_id,
+                            &senders,
+                            &plugin_executor,
+                        ) {
+                            return;
+                        }
+                        match loaded {
                             Ok(_) => {
-                                let plugin_list = plugin_map.list_plugins();
+                                let plugin_list = plugin_map.lock().unwrap().list_plugins();
                                 handle_plugin_successful_loading(&senders, plugin_id, plugin_list);
                             },
                             Err(e) => handle_plugin_loading_failure(
                                 &senders,
                                 Some(load_id),
                                 plugin_id,
-                                &mut loading_indication,
                                 e,
                                 Some(client_id),
                             ),
@@ -788,7 +775,6 @@ impl PluginBridge {
                         &self.senders,
                         Some(load_id),
                         plugin_id,
-                        &mut LoadingIndication::new(plugin_id.to_string()),
                         "Plugin executor rejected loading",
                         None,
                     );
@@ -798,12 +784,10 @@ impl PluginBridge {
             },
             None => {
                 self.next_plugin_id += 1;
-                let mut loading_indication = LoadingIndication::new(format!("{}", plugin_id));
                 handle_plugin_loading_failure(
                     &self.senders,
                     None,
                     plugin_id,
-                    &mut loading_indication,
                     "Failed to resolve plugin alias",
                     None,
                 );
@@ -818,15 +802,15 @@ impl PluginBridge {
     /// The token every instance of `plugin_id` checks; made on first use, so a load and the
     /// `LoadingContext` built for it share one. Removed by `unload_plugin`.
     fn cancel_token(&mut self, plugin_id: PluginId) -> Arc<AtomicBool> {
-        self.cancel_tokens.entry(plugin_id).or_default().clone()
+        let cancel = self.cancel_tokens.entry(plugin_id).or_default().clone();
+        self.plugin_map
+            .lock()
+            .unwrap()
+            .set_load_token(plugin_id, cancel.clone());
+        cancel
     }
 
     /// `unload_plugin`, with a bound on how long to wait for `plugin_map` when one is given.
-    ///
-    /// The loader holds that lock across the guest's `load()`, so at shutdown a plugin looping
-    /// there without ever calling the host (which is what the cancel token needs) would hold the
-    /// plugin thread forever. With a deadline the unload is skipped instead: the process is
-    /// exiting, and what is lost is that plugin's `BeforeClose`.
     fn unload_plugin_with_deadline(
         &mut self,
         pid: PluginId,
@@ -854,11 +838,7 @@ impl PluginBridge {
         // `UNLOAD_GRACE` after the unload.
         let cancel = self.cancel_tokens.remove(&pid);
         let shutting_down = plugin_map_deadline.is_some();
-        // The one exception: a plugin whose loader is still running. Its loader holds
-        // `plugin_map` across the guest's `load()`, so if that `load()` is what never returns,
-        // the lock below would wait on it forever — and after the `remove` above nothing else
-        // could ever set its token. A plugin still loading has no `update()` to protect, so its
-        // token can go first.
+        // Cancel a pending load before removing its identity so it cannot publish an instance.
         let still_loading = self.loading_plugins.iter().any(|(p_id, _)| *p_id == pid);
         if let (Some(cancel), true) = (&cancel, still_loading) {
             cancel.store(true, Ordering::Relaxed);
@@ -924,6 +904,16 @@ impl PluginBridge {
         // submitted for an unregistered plugin is dropped — see
         // `PinnedExecutor::execute_plugin_unload`.
         let last_cleanup = plugins_to_cleanup.len().saturating_sub(1);
+        if plugins_to_cleanup.is_empty() && still_loading {
+            let _ = self
+                .senders
+                .send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(pid));
+            let unloaded_while_loading = self.unloaded_while_loading.clone();
+            self.plugin_executor
+                .execute_plugin_unload(pid, move |_, _, _| {
+                    unloaded_while_loading.lock().unwrap().remove(&pid);
+                });
+        }
         if let (Some(cancel), false, false) =
             (&cancel, shutting_down, plugins_to_cleanup.is_empty())
         {
@@ -1090,6 +1080,26 @@ impl PluginBridge {
                 }
             }
         } else {
+            self.plugin_map
+                .lock()
+                .unwrap()
+                .reload_data_dirs
+                .remove(&plugin_id);
+            let name = self
+                .run_plugin_of_loading_plugin_id(plugin_id)
+                .map(|run| run.location.to_string())
+                .unwrap_or_else(|| plugin_id.to_string());
+            let mut loading_indication = LoadingIndication::new(name);
+            loading_indication.indicate_loading_error(error.clone());
+            let _ = self
+                .senders
+                .send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id));
+            let _ = self
+                .senders
+                .send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(
+                    plugin_id,
+                    loading_indication,
+                ));
             self.pending_pipes.reject_cached(plugin_id, load_id, &error);
         }
         self.cancel_plugin_picks(plugin_id);
@@ -1343,7 +1353,15 @@ impl PluginBridge {
             return Ok(());
         }
         // Retire queued callbacks before the reload notification can release an active host call.
-        self.plugin_map.lock().unwrap().retire_instances(plugin_id);
+        let cancel = self.cancel_token(plugin_id);
+        {
+            let mut map = self.plugin_map.lock().unwrap();
+            map.retire_instances(plugin_id);
+            // Supersede initializers atomically with retirement, without cancelling guest cleanup.
+            let replacement = Arc::new(AtomicBool::new(false));
+            map.set_load_token(plugin_id, replacement.clone());
+            self.cancel_tokens.insert(plugin_id, replacement);
+        }
         self.cancel_permission_requests(plugin_id, None);
         self.senders
             .send_to_screen(ScreenInstruction::NotificationPolicyUnavailable {
@@ -1358,9 +1376,6 @@ impl PluginBridge {
         // once also stops a call that was about to return, and an instance stopped mid-call
         // is not given `BeforeClose`.
         let reload_pending = {
-            let cancel = self.cancel_token(plugin_id);
-            self.cancel_tokens
-                .insert(plugin_id, Arc::new(AtomicBool::new(false)));
             let instances = self
                 .plugin_map
                 .lock()
@@ -1397,7 +1412,7 @@ impl PluginBridge {
         self.cached_resizes_for_pending_plugins
             .insert(plugin_id, (rows, columns));
 
-        let mut loading_indication = LoadingIndication::new(run_plugin.location.to_string());
+        let loading_indication = LoadingIndication::new(run_plugin.location.to_string());
         self.start_plugin_loading_indication(&[plugin_id], &loading_indication);
         self.loading_plugins.insert((plugin_id, run_plugin.clone()));
 
@@ -1447,6 +1462,12 @@ impl PluginBridge {
             tab_index,
             size,
         )?;
+        self.plugin_map
+            .lock()
+            .unwrap()
+            .reload_data_dirs
+            .entry(plugin_id)
+            .or_default();
 
         let accepted = loading_context.execute_prepared(
             plugin_executor,
@@ -1457,15 +1478,17 @@ impl PluginBridge {
                   senders,
                   plugin_map,
                   connected_clients| {
-                if let Some(pending) = reload_pending {
-                    // The old call returned; its watchdog must not interrupt BeforeClose.
-                    *pending.lock().unwrap() = false;
-                }
                 let instances = {
                     let mut map = plugin_map.lock().unwrap();
                     // A failed instance retains its identity; explicit unload removes it.
-                    if map.run_plugin_of_plugin_id(plugin_id).is_none() {
+                    if !map.load_is_current(plugin_id, &loading_context.cancel)
+                        || map.run_plugin_of_plugin_id(plugin_id).is_none()
+                    {
                         return;
+                    }
+                    if let Some(pending) = reload_pending {
+                        // The old call returned; its watchdog must not interrupt BeforeClose.
+                        *pending.lock().unwrap() = false;
                     }
                     map.running_plugins_and_subscriptions()
                 };
@@ -1500,15 +1523,13 @@ impl PluginBridge {
                         running_plugin.env().cancel.load(Ordering::Acquire),
                         running_plugin.env().cancel_tripped.load(Ordering::Acquire),
                     );
-                    if client_id == first_client_id
+                    let retained_directory = if client_id == first_client_id
                         || running_plugin.env().plugin_config.is_shared()
                     {
-                        if let Some(directory) = &running_plugin.env().temporary_data_dir {
-                            // Retain the reload owner's data, independent of instance iteration order.
-                            loading_context.plugin_own_data_dir = directory.path().to_path_buf();
-                            loading_context.temporary_data_dir = directory.clone();
-                        }
-                    }
+                        running_plugin.env().temporary_data_dir.clone()
+                    } else {
+                        None
+                    };
                     if wants_before_close && !running_plugin.is_disposed() && !running_plugin.failed
                     {
                         // As in the unload job: holding the lock means the guest is not
@@ -1546,24 +1567,42 @@ impl PluginBridge {
                     }
                     running_plugin.dispose();
                     drop(running_plugin);
-                    plugin_map.lock().unwrap().remove_instance(plugin_id, client_id);
+                    let mut map = plugin_map.lock().unwrap();
+                    // A failed or unloaded replacement must not regain ownership after cleanup.
+                    if let (Some(retained), Some(directory)) = (
+                        map.reload_data_dirs.get_mut(&plugin_id), retained_directory,
+                    ) {
+                        *retained = Some(directory);
+                    }
+                    map.remove_instance(plugin_id, client_id);
                 }
-                let mut plugin_map = plugin_map.lock().unwrap();
-                // An explicit unload may have removed the identity while cleanup ran.
-                if plugin_map.run_plugin_of_plugin_id(plugin_id).is_none() {
-                    return;
+                {
+                    let map = plugin_map.lock().unwrap();
+                    if !map.load_is_current(plugin_id, &loading_context.cancel) {
+                        return;
+                    }
+                    if let Some(Some(directory)) = map.reload_data_dirs.get(&plugin_id) {
+                        loading_context.plugin_own_data_dir = directory.path().to_path_buf();
+                        loading_context.temporary_data_dir = directory.clone();
+                    }
                 }
                 // A replacement must opt in again, including when BeforeClose resubscribed.
                 let _ = senders
                     .send_to_screen(ScreenInstruction::UnsubscribePaneOutput(plugin_id, None));
-                match PluginLoader::new(
+                let cancel = loading_context.cancel.clone();
+                let loaded = PluginLoader::new(
                     loading_context,
                     senders.clone(),
-                    &mut plugin_map,
+                    plugin_map.clone(),
                     connected_clients.clone(),
                 )
-                .start_plugin()
-                {
+                .start_plugin();
+                let mut plugin_map = plugin_map.lock().unwrap();
+                if !plugin_map.load_is_current(plugin_id, &cancel) {
+                    return;
+                }
+                plugin_map.reload_data_dirs.remove(&plugin_id);
+                match loaded {
                     Ok(_) => {
                         if let Some(location) = plugin_map.update_reloaded_file_location(plugin_id)
                         {
@@ -1581,7 +1620,6 @@ impl PluginBridge {
                         &senders,
                         Some(load_id),
                         plugin_id,
-                        &mut loading_indication,
                         e,
                         Some(first_client_id),
                     ),
@@ -1751,27 +1789,20 @@ impl PluginBridge {
                     log::info!(
                         "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} waiting for plugin_map lock"
                     );
-                    let plugin_map_for_cleanup = plugin_map.clone();
-                    let mut plugin_map = plugin_map.lock().unwrap();
-                    if !plugin_map.plugin_ids().contains(&plugin_id) { return; }
+                    if !plugin_map.lock().unwrap().plugin_ids().contains(&plugin_id) { return; }
                     log::info!(
                         "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} acquired plugin_map lock after {:?}; plugin load begin",
                         load_started_at.elapsed()
                     );
-                    // The startup load may finish after this attachment is queued.
-                    let loaded = if plugin_map.contains(plugin_id, client_id) {
-                        Ok(())
-                    } else {
-                        PluginLoader::new(
-                            loading_context,
-                            senders.clone(),
-                            &mut plugin_map,
-                            connected_clients.clone(),
-                        )
-                        .without_connected_clients()
-                        .start_plugin()
-                    };
-                    match loaded {
+                    match PluginLoader::new(
+                        loading_context,
+                        senders.clone(),
+                        plugin_map.clone(),
+                        connected_clients.clone(),
+                    )
+                    .without_connected_clients()
+                    .start_plugin()
+                    {
                         Ok(_) => {
                             log::info!(
                                 "attach trace: plugin executor client_id={client_id} plugin_id={plugin_id} plugin load complete after {:?}",
@@ -1800,8 +1831,7 @@ impl PluginBridge {
                             });
                         },
                     }
-                    drop(plugin_map);
-                    cleanup_disconnected_instances(plugin_id, &connected_clients, &plugin_map_for_cleanup, senders);
+                    cleanup_disconnected_instances(plugin_id, &connected_clients, &plugin_map, senders);
 
                 },
             );
@@ -2254,7 +2284,7 @@ impl PluginBridge {
                 }
             }
         }
-        // Loading holds the map; cached updates must not block the cancellation behind them.
+        // Pending plugins replay these updates after initialization.
         let plugins_to_update: Vec<RunningPluginEntry> = if updates.iter().all(|(id, _, _)| {
             id.is_some_and(|id| self.cached_events_for_pending_plugins.contains_key(&id))
         }) {
@@ -2684,10 +2714,30 @@ impl PluginBridge {
 
     pub fn apply_cached_events(
         &mut self,
-        plugin_ids: Vec<PluginId>,
+        mut plugin_ids: Vec<PluginId>,
         done_receiving_permissions: bool,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
+        if done_receiving_permissions {
+            plugin_ids.retain(|id| {
+                if !self
+                    .loading_plugins
+                    .iter()
+                    .any(|(loading, _)| loading == id)
+                {
+                    return true;
+                }
+                // A permission answer cannot finish initialization for the remaining clients.
+                if !self
+                    .permission_requests
+                    .values()
+                    .any(|pending| pending.contains_plugin(*id))
+                {
+                    self.plugin_ids_waiting_for_permission_request.remove(id);
+                }
+                false
+            });
+        }
         let mut applied_plugin_paths = HashSet::new();
         for plugin_id in plugin_ids.iter().copied() {
             // The loader has returned, even if a live instance still needs permission.
@@ -3162,6 +3212,24 @@ impl PluginBridge {
             .run_plugin_of_plugin_id(plugin_id)
     }
 
+    fn plugin_configuration(&self, client_id: ClientId) -> PluginConfiguration {
+        PluginConfiguration {
+            keybinds: self
+                .keybinds
+                .get(&client_id)
+                .unwrap_or(&self.default_keybinds)
+                .clone(),
+            default_mode: self
+                .base_modes
+                .get(&client_id)
+                .copied()
+                .unwrap_or(self.default_mode),
+            default_shell: self.default_shell.clone(),
+            layout_dir: self.layout_dir.clone(),
+            user_plugin_dir: self.user_plugin_dir.clone(),
+        }
+    }
+
     pub fn reconfigure(
         &mut self,
         client_id: ClientId,
@@ -3171,21 +3239,6 @@ impl PluginBridge {
         layout_dir: Option<PathBuf>,
         user_plugin_dir: Option<PathBuf>,
     ) -> Result<()> {
-        let plugins_to_reconfigure: Vec<(PluginId, Arc<Mutex<RunningPlugin>>)> = self
-            .plugin_map
-            .lock()
-            .unwrap()
-            .running_plugins()
-            .iter()
-            .cloned()
-            .filter_map(|(plugin_id, c_id, running_plugin)| {
-                if c_id == client_id {
-                    Some((plugin_id, running_plugin.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
         if let Some(default_mode) = default_mode.as_ref() {
             self.base_modes.insert(client_id, *default_mode);
         }
@@ -3195,6 +3248,21 @@ impl PluginBridge {
         self.default_shell = default_shell.clone();
         self.layout_dir = layout_dir.clone();
         self.user_plugin_dir = user_plugin_dir.clone();
+        let configuration = self.plugin_configuration(client_id);
+        let plugins_to_reconfigure: Vec<_> = {
+            let mut map = self.plugin_map.lock().unwrap();
+            // Publication takes this lock too, so every initializer sees the latest settings.
+            map.configuration_version += 1;
+            let version = map.configuration_version;
+            map.client_configurations
+                .insert(client_id, (version, configuration.clone()));
+            map.running_plugins()
+                .into_iter()
+                .filter_map(|(plugin_id, c_id, running_plugin)| {
+                    (c_id == client_id).then_some((plugin_id, running_plugin))
+                })
+                .collect()
+        };
         // Collect plugins subscribed to InitialKeybinds for post-reconfigure notification
         let plugins_subscribed_to_initial_keybinds: Vec<PluginId> = if keybinds.is_some() {
             self.plugin_map
@@ -3214,22 +3282,9 @@ impl PluginBridge {
         for (plugin_id, running_plugin) in plugins_to_reconfigure {
             self.plugin_executor
                 .execute_for_plugin_tagged(plugin_id, "reconfigure", false, {
-                    let running_plugin = running_plugin.clone();
-                    let keybinds = keybinds.clone();
-                    let default_shell = default_shell.clone();
-                    let layout_dir = layout_dir.clone();
-                    let user_plugin_dir = user_plugin_dir.clone();
+                    let configuration = configuration.clone();
                     move |_senders, _plugin_map, _connected_clients| {
-                        let mut running_plugin = running_plugin.lock().unwrap();
-                        if let Some(keybinds) = keybinds {
-                            running_plugin.update_keybinds(keybinds);
-                        }
-                        if let Some(default_mode) = default_mode {
-                            running_plugin.update_default_mode(default_mode);
-                        }
-                        running_plugin.update_default_shell(default_shell);
-                        running_plugin.update_layout_dir(layout_dir);
-                        running_plugin.update_user_plugin_dir(user_plugin_dir);
+                        configuration.apply_to(&mut running_plugin.lock().unwrap());
                     }
                 });
         }
@@ -4049,9 +4104,7 @@ impl PluginBridge {
     }
 }
 
-/// The loader's first move, with the `PluginMap` lock held: if the plugin was unloaded while it
-/// was still loading, tidy up what `load_plugin` set in motion and report that there is nothing
-/// to do. See `PluginBridge::unloaded_while_loading` for why the lock matters.
+/// Retire a load unloaded before registration; its cancel token prevents publication.
 fn load_was_cancelled(
     unloaded_while_loading: &Arc<Mutex<HashSet<PluginId>>>,
     plugin_id: PluginId,
@@ -4114,12 +4167,10 @@ fn handle_plugin_loading_failure(
     senders: &ThreadSenders,
     load_id: Option<u64>,
     plugin_id: PluginId,
-    loading_indication: &mut LoadingIndication,
     error: impl std::fmt::Debug,
     client_id: Option<ClientId>,
 ) {
     log::error!("{:?}", error);
-    let _ = senders.send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id));
     let _ = senders.send_to_plugin(PluginInstruction::PluginFailed {
         load_id,
         plugin_id,
@@ -4129,11 +4180,6 @@ fn handle_plugin_loading_failure(
         error: format!("{:?}", error),
         failed_to_load: true,
     });
-    loading_indication.indicate_loading_error(format!("{:?}", error));
-    let _ = senders.send_to_screen(ScreenInstruction::UpdatePluginLoadingStage(
-        plugin_id,
-        loading_indication.clone(),
-    ));
 }
 
 pub(crate) fn check_event_permission(

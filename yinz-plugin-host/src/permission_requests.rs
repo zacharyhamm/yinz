@@ -127,6 +127,32 @@ impl PluginBridge {
         cache_path: Option<PathBuf>,
         shutdown: Sender<()>,
     ) -> Result<()> {
+        let initializing = self.permission_requests.get(&token).and_then(|pending| {
+            self.loading_plugins
+                .iter()
+                .find_map(|(id, _)| pending.contains_plugin(*id).then_some(*id))
+        });
+        if let Some(plugin) = initializing {
+            // Let every initializing client join the request before consuming its answer.
+            let cache_path = cache_path.clone();
+            if self.plugin_executor.execute_for_plugin_tagged(
+                plugin,
+                "permission answer",
+                false,
+                move |senders, _, _| {
+                    senders
+                        .send_to_plugin(PluginInstruction::PermissionAnswer {
+                            request_id: token,
+                            status,
+                            cache_path,
+                        })
+                        .context("defer permission answer until initialization finishes")
+                        .non_fatal();
+                },
+            ) {
+                return Ok(());
+            }
+        }
         let Some(pending) = self.permission_requests.remove(&token) else {
             return Ok(());
         };

@@ -2,6 +2,7 @@ use super::*;
 use crate::plugin_map::{PluginMap, RunningPlugin};
 use crate::test_env::test_env;
 use serde_json::json;
+use std::collections::HashSet;
 use yinz_runtime::channels::{self, SenderWithContext};
 use yinz_types::data::{EventType, PermissionType, PipeSource};
 use yinz_types::input::layout::RunPluginLocation;
@@ -118,23 +119,22 @@ fn replacement_and_disconnect_reject_old_generations() {
     let id = first.env().plugin_id;
     let client = first.env().client_id;
     let subscriptions = first.env().subscriptions.clone();
-    map.insert(
-        id,
-        client,
-        Arc::new(Mutex::new(RunningPlugin::new(first, 10, 80))),
-        subscriptions,
-    );
+    let first = Arc::new(Mutex::new(RunningPlugin::new(first, 10, 80)));
+    let previous = map.insert(id, client, first.clone(), subscriptions);
+    assert!(previous.is_none());
     assert!(map.contains_generation(id, old));
     let second = plugin("(define (render rows columns) \"new\")");
     let new = second.generation();
     let cancel = second.client_cancel();
     let subscriptions = second.env().subscriptions.clone();
-    map.insert(
+    let previous = map.insert(
         id,
         client,
         Arc::new(Mutex::new(RunningPlugin::new(second, 10, 80))),
         subscriptions,
     );
+    previous.unwrap().0.lock().unwrap().dispose();
+    assert!(map.remove_matching_instance(id, &first).is_none());
     assert!(!map.contains_generation(id, old));
     assert!(map.contains_generation(id, new));
     assert!(RUNTIMES.with(|runtimes| !runtimes.borrow().contains_key(&old)));
@@ -187,6 +187,35 @@ fn invalid_commands_are_rejected_before_dispatch() {
     assert!(dispatch(&mut env, json!({"Subscribe": ["NotAnEvent"]})).is_err());
     assert!(env.subscriptions.lock().unwrap().is_empty());
     assert!(env.response_sink.is_none());
+}
+
+#[test]
+fn notification_history_waits_for_a_busy_screen() {
+    let mut env = env();
+    env.set_permissions(HashSet::from([PermissionType::ReadApplicationState]));
+    let (sender, receiver) = channels::unbounded();
+    env.senders.to_screen = Some(SenderWithContext::new(sender));
+    let (finished, completion) = std::sync::mpsc::channel();
+    let screen = thread::spawn(move || {
+        let (instruction, _) = receiver
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        let yinz_bus::screen::ScreenInstruction::ListNotifications { response_channel } =
+            instruction
+        else {
+            panic!("expected notification history request");
+        };
+        // Reattachment can exceed the old 100ms deadline; the query must keep waiting.
+        assert!(matches!(
+            completion.recv_timeout(Duration::from_millis(250)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        response_channel.send(vec![]).unwrap();
+    });
+    let result = dispatch(&mut env, json!("ListNotifications"));
+    let _ = finished.send(());
+    screen.join().unwrap();
+    assert_eq!(result.unwrap(), json!([]));
 }
 
 #[test]

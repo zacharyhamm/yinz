@@ -10,6 +10,9 @@ use tempfile::tempdir;
 use yinz_runtime::channels::{self, SenderWithContext};
 use yinz_types::data::PluginTag;
 
+#[path = "plugin_loader_tests.rs"]
+mod loader_tests;
+
 /// Senders nothing listens to. The receivers are returned so the channels stay connected for as
 /// long as the bridge does.
 struct TestBridge {
@@ -414,6 +417,9 @@ fn old_cleanup_and_render_acknowledgements_cannot_release_a_reconnected_instance
         let release = test.hold_executor(plugin);
         let (shutdown, _) = tokio::sync::mpsc::channel(1);
         test.bridge
+            .apply_cached_events(vec![plugin], false, shutdown.clone())
+            .unwrap();
+        test.bridge
             .apply_cached_events(vec![plugin], true, shutdown)
             .unwrap();
         assert!(test.retire(plugin, old_instance).is_empty());
@@ -441,7 +447,7 @@ fn cached_pipe_without_an_instance_fails_on_replay_or_load_failure() {
         } else {
             let (shutdown, _) = tokio::sync::mpsc::channel(1);
             test.bridge
-                .apply_cached_events(vec![plugin], true, shutdown)
+                .apply_cached_events(vec![plugin], false, shutdown)
                 .unwrap();
         }
         assert_eq!(test.pipe_failures(), ["no-instance"]);
@@ -695,7 +701,7 @@ fn stale_loader_results_cannot_drop_or_replay_a_replacements_cached_pipe() {
     test.pipe(plugin, "replacement");
     let (shutdown, _) = tokio::sync::mpsc::channel(1);
     test.bridge
-        .apply_cached_events_for_load(old_load, vec![plugin], true, shutdown.clone())
+        .apply_cached_events_for_load(old_load, vec![plugin], false, shutdown.clone())
         .unwrap();
     test.bridge
         .queue_plugin_failed(
@@ -716,10 +722,69 @@ fn stale_loader_results_cannot_drop_or_replay_a_replacements_cached_pipe() {
     let context = test.context(1, 1, RECOVERABLE_SCHEME);
     test.load(context).unwrap();
     test.bridge
+        .apply_cached_events_for_load(new_load, vec![plugin], false, shutdown.clone())
+        .unwrap();
+    test.bridge
         .apply_cached_events_for_load(new_load, vec![plugin], true, shutdown)
         .unwrap();
     test.settle(plugin);
     assert_eq!(test.pipe_acknowledgements(), ["replacement"]);
+}
+
+#[test]
+fn loading_failure_notifications_wait_for_the_current_load_identity() {
+    for superseded in [false, true] {
+        let mut test = TestBridge::new();
+        let plugin = PluginId::new(1);
+        let load = test.bridge.begin_plugin_load(plugin);
+        handle_plugin_loading_failure(
+            &test.bridge.senders,
+            Some(load),
+            plugin,
+            crate::plugin_map::CANCELLED_BY_HOST,
+            Some(ClientId::new(1)),
+        );
+        assert!(test.receiver::<ScreenInstruction>().is_empty());
+        assert!(test.receiver::<BackgroundJob>().is_empty());
+        if superseded {
+            test.bridge.begin_plugin_load(plugin);
+        }
+        let PluginInstruction::PluginFailed {
+            plugin_id,
+            load_id,
+            generation,
+            instance_id,
+            error,
+            failed_to_load,
+            ..
+        } = test.receiver::<PluginInstruction>().try_recv().unwrap().0
+        else {
+            panic!("expected loading failure");
+        };
+        test.bridge
+            .queue_plugin_failed(
+                plugin_id,
+                load_id,
+                generation,
+                instance_id,
+                error,
+                failed_to_load,
+            )
+            .unwrap();
+        assert_eq!(
+            test.receiver::<ScreenInstruction>().try_iter().any(|(instruction, _)| {
+                matches!(instruction, ScreenInstruction::UpdatePluginLoadingStage(id, indication)
+                    if id == plugin && indication.is_error())
+            }),
+            !superseded,
+        );
+        assert_eq!(
+            test.receiver::<BackgroundJob>().try_iter().any(|(instruction, _)| {
+                matches!(instruction, BackgroundJob::StopPluginLoadingAnimation(id) if id == plugin)
+            }),
+            !superseded,
+        );
+    }
 }
 
 #[test]
@@ -883,10 +948,10 @@ fn detached_cached_cli_pipe(loading: bool, unload: bool) {
         }
         if !unload {
             test.settle(id);
+            test.bridge
+                .apply_cached_events(vec![id], false, shutdown.clone())
+                .unwrap();
             if !loading && shared {
-                test.bridge
-                    .apply_cached_events(vec![id], false, shutdown.clone())
-                    .unwrap();
                 assert!(test
                     .bridge
                     .cached_events_for_pending_plugins
@@ -2324,6 +2389,29 @@ fn cancellation_marks(bridge: &PluginBridge) -> Vec<PluginId> {
 }
 
 #[test]
+fn unloading_pending_plugin_stops_animation_before_executor_retirement() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(7);
+    test.bridge.plugin_executor.register_plugin(plugin);
+    let release = test.hold_executor(plugin);
+    test.bridge.loading_plugins.insert((plugin, run_plugin()));
+
+    test.bridge.unload_plugin(plugin).unwrap();
+
+    let stopped = test
+        .receiver::<BackgroundJob>()
+        .try_iter()
+        .any(|(instruction, _)| {
+            matches!(instruction, BackgroundJob::StopPluginLoadingAnimation(id) if id == plugin)
+        });
+    release.send(()).unwrap();
+    assert!(
+        stopped,
+        "a pending load's animation must stop without waiting for executor retirement"
+    );
+}
+
+#[test]
 fn steel_repl_disconnect_unloads_only_its_active_pipe_owner() {
     let mut test = TestBridge::new();
     let plugin = PluginId::new(41);
@@ -2699,14 +2787,9 @@ impl TestBridge {
             "fixture load",
             false,
             move |senders, plugin_map, connected_clients| {
-                let result = PluginLoader::new(
-                    context,
-                    senders,
-                    &mut plugin_map.lock().unwrap(),
-                    connected_clients,
-                )
-                .without_connected_clients()
-                .start_plugin();
+                let result = PluginLoader::new(context, senders, plugin_map, connected_clients)
+                    .without_connected_clients()
+                    .start_plugin();
                 *observed.lock() = Some(result);
             },
         );
@@ -2822,6 +2905,145 @@ fn reload_retains_temporary_data_and_old_users_cannot_remove_it() {
     drop(map);
     test.bridge.unload_plugin(PluginId::new(1)).unwrap();
     events.wait("reloaded instance cleanup", || !path.exists());
+}
+
+#[test]
+fn overlapping_reloads_retain_data_until_success_failure_or_unload() {
+    for outcome in ["success", "failure", "unload"] {
+        let mut test = TestBridge::new();
+        let id = PluginId::new(1);
+        let client = ClientId::new(1);
+        test.bridge.add_client(client).unwrap();
+        let source = SCRATCH_PLUGIN.replace(
+            "(write-file \"/data/closed\"",
+            "(yinz-command (hash \"PaneTabs\" (hash \"Close\" (hash \"id\" 1))))\n    (write-file \"/data/closed\"",
+        );
+        let context = test.context(1, 1, &source);
+        let path = context.plugin_own_data_dir.clone();
+        let script = context.plugin_config.path.clone();
+        let events = FileEvents::new(path.parent().unwrap());
+        std::fs::write(path.join("value"), "retained across overlapping reloads").unwrap();
+        test.load(context).unwrap();
+        test.grant_files(1, 1);
+        {
+            let plugin = test
+                .bridge
+                .plugin_map
+                .lock()
+                .unwrap()
+                .get_running_plugin(id, Some(client))
+                .unwrap();
+            plugin
+                .lock()
+                .unwrap()
+                .env()
+                .permissions
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .insert(PermissionType::ChangeApplicationState);
+        }
+        // Only the original instance blocks in BeforeClose; replacements use the normal hook.
+        std::fs::write(&script, SCRATCH_PLUGIN).unwrap();
+        test.bridge.reload_plugin_with_id(id).unwrap();
+        let response = loop {
+            if let ScreenInstruction::PaneTabs { response, .. } = test
+                .receiver::<ScreenInstruction>()
+                .recv_timeout(yinz_test_support::default_timeout())
+                .unwrap()
+                .0
+            {
+                break response;
+            }
+        };
+        test.bridge.reload_plugin_with_id(id).unwrap();
+        match outcome {
+            "failure" => std::fs::write(
+                &script,
+                "(define (load config) (error \"replacement failed\"))",
+            )
+            .unwrap(),
+            "unload" => test.bridge.unload_plugin(id).unwrap(),
+            _ => {},
+        }
+        // Queue the barrier while the executor is still registered, including the unload case.
+        let finished = yinz_test_support::Watched::new(false);
+        let done = finished.clone();
+        assert!(test.bridge.plugin_executor.execute_for_plugin_tagged(
+            id,
+            "overlapping reload completion",
+            false,
+            move |_, _, _| *done.lock() = true,
+        ));
+        response.send(Ok(None)).unwrap();
+        finished.wait_until(
+            "overlapping reload completion",
+            yinz_test_support::default_timeout(),
+            |done| done.then_some(()),
+        );
+        let mut failed = false;
+        for (instruction, _) in test.receiver::<PluginInstruction>().try_iter() {
+            if let PluginInstruction::PluginFailed {
+                plugin_id,
+                load_id,
+                generation,
+                instance_id,
+                error,
+                failed_to_load,
+                ..
+            } = instruction
+            {
+                assert!(test.bridge.load_is_current(id, load_id.unwrap()));
+                assert!(error.contains("replacement failed"), "{error}");
+                failed = true;
+                test.bridge
+                    .queue_plugin_failed(
+                        plugin_id,
+                        load_id,
+                        generation,
+                        instance_id,
+                        error,
+                        failed_to_load,
+                    )
+                    .unwrap();
+            }
+        }
+        assert_eq!(failed, outcome == "failure");
+        assert!(test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .reload_data_dirs
+            .is_empty());
+        assert_eq!(
+            test.receiver::<ScreenInstruction>().try_iter().any(|(instruction, _)| {
+                matches!(instruction, ScreenInstruction::UpdatePluginLoadingStage(_, indication) if indication.is_error())
+            }),
+            outcome == "failure",
+        );
+        if outcome == "success" {
+            test.finish_reload(id);
+            for name in ["value", "closed"] {
+                assert_eq!(
+                    std::fs::read_to_string(path.join(name)).unwrap(),
+                    "retained across overlapping reloads"
+                );
+            }
+            let plugin = test
+                .bridge
+                .plugin_map
+                .lock()
+                .unwrap()
+                .get_running_plugin(id, Some(client))
+                .unwrap();
+            assert_eq!(plugin.lock().unwrap().env().plugin_own_data_dir, path);
+            drop(plugin);
+            test.bridge.unload_plugin(id).unwrap();
+        }
+        events.wait("overlapping reload data cleanup", || !path.exists());
+    }
 }
 
 const RECOVERABLE_SCHEME: &str = r#"

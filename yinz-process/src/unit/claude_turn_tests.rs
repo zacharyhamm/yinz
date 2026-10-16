@@ -412,6 +412,9 @@ fn agy_observer_waits_for_api_idle_after_model_completion() {
     let idle = Arc::new(AtomicBool::new(false));
     let server_idle = idle.clone();
     let (queried_tx, queried_rx) = std::sync::mpsc::channel();
+    let (idle_query_tx, idle_query_rx) = std::sync::mpsc::channel();
+    let (idle_reply_tx, idle_reply_rx) = std::sync::mpsc::channel();
+    let mut idle_responses = 0;
     let server = std::thread::spawn(move || loop {
         let (mut stream, _) = listener.accept().unwrap();
         stream
@@ -433,7 +436,29 @@ fn agy_observer_waits_for_api_idle_after_model_completion() {
         assert!(headers
             .to_lowercase()
             .contains("x-codeium-csrf-token: fixture-token"));
+        let length: usize = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .unwrap()
+            .1
+            .trim()
+            .parse()
+            .unwrap();
+        let mut request = vec![0; length];
+        reader.read_exact(&mut request).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request).unwrap(),
+            json!({"cascadeId": "conversation"})
+        );
         let done = server_idle.load(Ordering::SeqCst);
+        if done {
+            idle_responses += 1;
+            if idle_responses == 1 {
+                idle_query_tx.send(()).unwrap();
+                idle_reply_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+        }
         let body = agy_response(if done {
             "CASCADE_RUN_STATUS_IDLE"
         } else {
@@ -447,7 +472,7 @@ fn agy_observer_waits_for_api_idle_after_model_completion() {
         )
         .unwrap();
         queried_tx.send(()).unwrap();
-        if done {
+        if idle_responses == 2 {
             break;
         }
     });
@@ -467,6 +492,9 @@ fn agy_observer_waits_for_api_idle_after_model_completion() {
     queried_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     // The timed absence of completion is the behavior under test, even with model DONE.
     assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+    idle.store(true, Ordering::SeqCst);
+    idle_query_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    // A transcript change during Idle requires another query after the observer reads it.
     let mut writer = OpenOptions::new().append(true).open(&path).unwrap();
     writeln!(
         writer,
@@ -474,7 +502,7 @@ fn agy_observer_waits_for_api_idle_after_model_completion() {
         json!({"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","content":"SECOND"})
     )
     .unwrap();
-    idle.store(true, Ordering::SeqCst);
+    idle_reply_tx.send(()).unwrap();
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(5))
             .unwrap()

@@ -27,15 +27,16 @@ use {
 };
 use {yinz_types::data::Event, yinz_types::data::PermissionType, yinz_types::data::PipeMessage};
 
-// the idea here is to provide atomicity when adding/removing plugins from the map (eg. when a new
-// client connects) but to also allow updates/renders not to block each other
-// so when adding/removing from the map - everything is halted, that's life
-// but when cloning the internal RunningPlugin and Subscriptions atomics, we can call methods on
-// them without blocking other instances
+// Guest execution and disposal happen outside the map lock, on each plugin's pinned executor.
 #[derive(Default)]
 pub struct PluginMap {
     // Value-only retry state survives failed instances without retaining their resources.
     plugin_metadata: BTreeMap<PluginId, PluginMetadata>,
+    load_tokens: HashMap<PluginId, Arc<AtomicBool>>,
+    // A pending reload keeps the owner's /data alive across superseded cleanup jobs.
+    pub(crate) reload_data_dirs: HashMap<PluginId, Option<Arc<yinz_runtime::owned_dir::OwnedDir>>>,
+    pub(crate) configuration_version: u64,
+    pub(crate) client_configurations: HashMap<ClientId, (u64, PluginConfiguration)>,
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
     instance_ids: HashMap<(PluginId, ClientId), PluginInstanceId>,
     instance_cwds: HashMap<(PluginId, ClientId), PathBuf>,
@@ -45,6 +46,25 @@ pub struct PluginMap {
     resize_slots: HashMap<(PluginId, ClientId), Arc<ResizeSlot>>,
     client_cancellations: HashMap<(PluginId, ClientId), (Option<u64>, Arc<AtomicBool>)>,
     workers: HashMap<(PluginId, ClientId), Arc<crate::background_worker::Workers>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PluginConfiguration {
+    pub keybinds: Keybinds,
+    pub default_mode: InputMode,
+    pub default_shell: Option<TerminalAction>,
+    pub layout_dir: Option<PathBuf>,
+    pub user_plugin_dir: Option<PathBuf>,
+}
+
+impl PluginConfiguration {
+    pub fn apply_to(&self, plugin: &mut RunningPlugin) {
+        plugin.update_keybinds(self.keybinds.clone());
+        plugin.update_default_mode(self.default_mode);
+        plugin.update_default_shell(self.default_shell.clone());
+        plugin.update_layout_dir(self.layout_dir.clone());
+        plugin.update_user_plugin_dir(self.user_plugin_dir.clone());
+    }
 }
 
 #[derive(Clone)]
@@ -132,6 +152,18 @@ fn configuration_matches_for_reload(
 }
 
 impl PluginMap {
+    pub(crate) fn set_load_token(&mut self, plugin: PluginId, cancel: Arc<AtomicBool>) {
+        self.load_tokens.insert(plugin, cancel);
+    }
+
+    pub(crate) fn load_is_current(&self, plugin: PluginId, cancel: &Arc<AtomicBool>) -> bool {
+        !cancel.load(Ordering::Acquire)
+            && self
+                .load_tokens
+                .get(&plugin)
+                .is_some_and(|current| Arc::ptr_eq(current, cancel))
+    }
+
     pub(crate) fn instance_cwd(
         &self,
         plugin: PluginId,
@@ -218,10 +250,12 @@ impl PluginMap {
             }
         }
         self.instance_ids.retain(|(id, _), _| *id != plugin);
-        self.instance_cwds.retain(|(id, _), _| *id != plugin);
     }
     pub fn remove_plugins(&mut self, pid: PluginId) -> HashMap<(PluginId, ClientId), PluginAssets> {
         self.retire_instances(pid);
+        self.load_tokens.remove(&pid);
+        self.reload_data_dirs.remove(&pid);
+        self.instance_cwds.retain(|(id, _), _| *id != pid);
         self.availability.retain(|(id, _), _| *id != pid);
         self.resize_slots.retain(|(id, _), _| *id != pid);
         self.plugin_metadata.remove(&pid);
@@ -258,6 +292,21 @@ impl PluginMap {
             PluginMetadata::from_running(&assets.0.lock().unwrap()),
         );
         Some(assets)
+    }
+
+    pub(crate) fn remove_matching_instance(
+        &mut self,
+        plugin_id: PluginId,
+        instance: &Arc<Mutex<RunningPlugin>>,
+    ) -> Option<PluginAssets> {
+        // Cleanup must preserve replacements and follow shared instances across map rekeys.
+        let client = self
+            .plugin_assets
+            .iter()
+            .find_map(|((id, client), (current, _))| {
+                (*id == plugin_id && Arc::ptr_eq(current, instance)).then_some(*client)
+            })?;
+        self.remove_instance(plugin_id, client)
     }
 
     /// Detached instances release their resources while retaining retry metadata.
@@ -476,7 +525,7 @@ impl PluginMap {
         client_id: ClientId,
         running_plugin: Arc<Mutex<RunningPlugin>>,
         subscriptions: Arc<Mutex<Subscriptions>>,
-    ) {
+    ) -> Option<PluginAssets> {
         {
             // A poisoned guest still holds the identity and cwd needed to file it.
             let plugin = running_plugin
@@ -503,14 +552,9 @@ impl PluginMap {
                 ),
             );
         }
-        if let Some((previous, _)) = self
-            .plugin_assets
+        // The caller disposes any previous instance after releasing the map lock.
+        self.plugin_assets
             .insert((plugin_id, client_id), (running_plugin, subscriptions))
-        {
-            // Insertion runs on the pinned executor. Queued jobs may still hold the old
-            // handle, so dropping the map's Arc alone does not release its isolate.
-            previous.lock().unwrap().dispose();
-        }
     }
     /// Move a plugin's single instance from one owner client to another, eg. when the client
     /// owning a shared plugin disconnects. Returns true if an instance was moved.
@@ -647,9 +691,25 @@ impl PluginMap {
     }
 
     pub(crate) fn reload_metadata(&self, plugin_id: PluginId) -> Option<PluginMetadata> {
-        self.get_running_plugin(plugin_id, None)
-            .map(|plugin| PluginMetadata::from_running(&plugin.lock().unwrap()))
-            .or_else(|| self.plugin_metadata.get(&plugin_id).cloned())
+        let mut metadata = self.plugin_metadata.get(&plugin_id)?.clone();
+        if let Some((key, (plugin, _))) = self
+            .plugin_assets
+            .iter()
+            .find(|((id, _), _)| *id == plugin_id)
+        {
+            if let Ok(plugin) = plugin.try_lock() {
+                return Some(PluginMetadata::from_running(&plugin));
+            }
+            // Attachment and reload must not wait for a guest callback to finish.
+            metadata.owner_client_id = key.1;
+            if let Some(size) = self.resize_slots.get(key) {
+                metadata.size = size.wanted();
+            }
+            if let Some(cwd) = self.instance_cwds.get(key) {
+                metadata.cwd = cwd.clone();
+            }
+        }
+        Some(metadata)
     }
 }
 
