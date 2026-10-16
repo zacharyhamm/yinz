@@ -9,9 +9,11 @@ threads-required = "num-test-threads"
 slow-timeout = { period = "60s", terminate-after = 2 }
 
 # This test runs all builtin Scheme integration cases sequentially, including
-# the real Git cleanup fixtures. Each case also retains its own runner timeout.
+# the real Git cleanup fixtures. Run it alone to avoid competing session and disk workloads.
+# Each case also retains its own runner timeout.
 [[profile.default.overrides]]
 filter = 'binary(plugin_testing) & test(=installed_builtin_scheme_integration_suites)'
+threads-required = "num-test-threads"
 slow-timeout = { period = "60s", terminate-after = 3 }
 
 [[profile.default.overrides]]
