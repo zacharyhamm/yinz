@@ -198,7 +198,7 @@ pub enum Plugins {
         #[clap(long)]
         json: bool,
     },
-    /// Write a plugin from a file or stdin, after formatting and strict type/lint checks. Refuses to replace one that
+    /// Write a Scheme plugin from a file or stdin, after formatting and source checks. Refuses to replace one that
     /// exists unless --overwrite is given.
     Write {
         name: String,
@@ -211,7 +211,7 @@ pub enum Plugins {
         #[clap(long)]
         no_check: bool,
     },
-    /// Check strict JS/TS types and lint by managed name, alias, absolute path, ./path, ../path,
+    /// Check a Scheme plugin by managed name, alias, absolute path, ./path, ../path,
     /// file: URL, or --file.
     Check {
         name: Option<String>,
@@ -220,7 +220,7 @@ pub enum Plugins {
         #[clap(long)]
         json: bool,
     },
-    /// Format a plugin with Oxfmt; --check only verifies formatting.
+    /// Format Scheme source; --check only verifies formatting.
     Format {
         name: Option<String>,
         #[clap(short, long, value_parser, conflicts_with = "name")]
@@ -479,7 +479,7 @@ pub enum Command {
     #[clap(override_usage("yinz [--session <OTHER SESSION NAME>] events [--type <EVENT>]..."))]
     Events(EventsCli),
 
-    /// Write, check, reload and read logs of JS/TS plugins.
+    /// Write, check, reload and read logs of Scheme plugins.
     #[clap(subcommand)]
     Plugins(Plugins),
 

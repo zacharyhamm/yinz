@@ -326,3 +326,53 @@ fn keybind_events_discard_only_malformed_bindings() {
         }
     }
 }
+
+#[test]
+fn cell_pixel_geometry_roundtrips_and_rejects_invalid_dimensions() {
+    use crate::event::ProtobufCellPixelSize;
+    use crate::plugin_command::ProtobufGetCellPixelSizeResponse;
+    use yinz_types::pane_size::SizeInPixels;
+
+    for size in [
+        None,
+        Some(SizeInPixels {
+            width: 9,
+            height: 18,
+        }),
+    ] {
+        let event = Event::CellPixelSizeChanged(size);
+        let protobuf = ProtobufEvent::try_from(event.clone()).unwrap();
+        assert_eq!(
+            Event::try_from(ProtobufEvent::decode(protobuf.encode_to_vec().as_slice()).unwrap())
+                .unwrap(),
+            event
+        );
+        let response = ProtobufGetCellPixelSizeResponse {
+            size: size.map(|size| size.try_into().unwrap()),
+        };
+        let decoded =
+            ProtobufGetCellPixelSizeResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(
+            decoded
+                .size
+                .map(|size| SizeInPixels::try_from(size).unwrap()),
+            size
+        );
+    }
+    for (width, height) in [(0, 18), (9, 0)] {
+        assert!(SizeInPixels::try_from(ProtobufCellPixelSize { width, height }).is_err());
+    }
+    assert_eq!(
+        EventType::try_from(ProtobufEventType::CellPixelSizeChanged).unwrap(),
+        EventType::CellPixelSizeChanged
+    );
+    assert_eq!(
+        ProtobufEventType::try_from(EventType::CellPixelSizeChanged).unwrap(),
+        ProtobufEventType::CellPixelSizeChanged
+    );
+    let command = PluginCommand::GetCellPixelSize;
+    assert_eq!(
+        PluginCommand::try_from(ProtobufPluginCommand::try_from(command.clone()).unwrap()).unwrap(),
+        command
+    );
+}

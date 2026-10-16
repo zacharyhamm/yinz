@@ -2,6 +2,42 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn new_forms_preserve_conservative_command_inference() {
+    for source in [
+        "(define-values (yinz-command) (values ignored)) (yinz-command \"GetPluginIds\")",
+        "(let-values ([(yinz-command) (values ignored)]) (yinz-command \"GetPluginIds\"))",
+        "(do ([yinz-command ignored]) [#t] (yinz-command \"GetPluginIds\"))",
+        "(struct yinz-command ()) (yinz-command \"GetPluginIds\")",
+        "`(yinz-command \"GetPluginIds\")",
+        "``(,(yinz-command \"GetPluginIds\"))",
+    ] {
+        assert!(analyze(source).unwrap().commands.is_empty(), "{source}");
+    }
+    let report =
+        analyze("`(data ,(yinz-command \"GetPluginIds\") ,@(list (yinz-command \"GetPaneId\")))")
+            .unwrap();
+    assert_eq!(
+        report
+            .commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<Vec<_>>(),
+        ["GetPluginIds", "GetPaneId"]
+    );
+    let report = analyze("`#(,(yinz-command \"GetPluginIds\"))").unwrap();
+    assert_eq!(report.commands.len(), 1);
+    let report =
+        analyze("`#(,(set! yinz-command ignored)) (yinz-command \"GetPluginIds\")").unwrap();
+    assert!(report.commands.is_empty());
+    let report = analyze(
+        "(case value [((yinz-command \"NotExecutable\")) (yinz-command \"GetPluginIds\")])",
+    )
+    .unwrap();
+    assert_eq!(report.commands.len(), 1);
+    assert_eq!(report.commands[0].name, "GetPluginIds");
+}
+
+#[test]
 fn analysis_only_collects_executable_unshadowed_literal_commands() {
     let report = analyze(r#"
 ; (yinz-command (hash "RequestPluginPermissions" '("RunCommands")))

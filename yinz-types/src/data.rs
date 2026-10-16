@@ -278,6 +278,8 @@ pub enum Event {
     BeforeClose,
     /// This client's plugin grid has a fresh image namespace. Retransmit cached images.
     ClientGridReset(ClientId),
+    /// The acting client's terminal cell geometry, or unknown before a valid report.
+    CellPixelSizeChanged(Option<crate::pane_size::SizeInPixels>),
     InterceptedKeyPress(KeyWithModifier),
     /// An action was performed by the user (requires InterceptInput permission)
     UserAction(
@@ -2790,6 +2792,7 @@ pub enum PluginCommand {
     SetSelectable(bool),
     ShowCursor(Option<(usize, usize)>),
     GetPluginIds,
+    GetCellPixelSize,
     GetYinzVersion,
     OpenFile(FileToOpen, Context),
     OpenFileFloating(FileToOpen, Option<FloatingPaneCoordinates>, Context),

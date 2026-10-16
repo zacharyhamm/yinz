@@ -137,7 +137,18 @@ impl SteelPlugin {
                 .clone()
                 .unwrap_or_else(|| path.to_owned()),
         };
-        let sources = source_root(&source_path, env.plugin_config.repository_root.as_deref())?;
+        let mut location = env.plugin_config.location.clone();
+        if let yinz_types::input::layout::RunPluginLocation::Git(repository) = &mut location {
+            if let Some(commit) = &env.plugin_config.installed_commit {
+                if !repository.is_local() {
+                    repository.revision = Some(yinz_types::input::git_plugin::GitRevision::Commit(
+                        commit.clone(),
+                    ));
+                }
+            }
+        }
+        let sources = source_root(&source_path, env.plugin_config.repository_root.as_deref())?
+            .with_location(location);
         env.generation = Some(generation);
         env.workers
             .get_or_insert_with(|| Arc::new(crate::background_worker::Workers::new(generation)));

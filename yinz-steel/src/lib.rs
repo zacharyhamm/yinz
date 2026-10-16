@@ -9,6 +9,7 @@ pub mod format;
 pub mod modules;
 pub mod repl;
 mod sandbox;
+mod text;
 pub mod ui;
 pub mod worker;
 
@@ -100,7 +101,10 @@ pub struct Runtime {
     output: Output,
     logs: Output,
     metadata: Arc<OnceLock<ServerMetadata>>,
+    plugin_resolver: Arc<OnceLock<PluginResolver>>,
 }
+
+type PluginResolver = Box<dyn Fn(Option<String>) -> Result<String> + Send + Sync>;
 
 impl Runtime {
     /// Add an explicit, reentrant JSON operation to a host-owned interpreter.
@@ -151,6 +155,29 @@ impl Runtime {
         let output = Output::new(MAX_RENDER_BYTES, "Steel render output exceeds 16 MiB");
         let logs = Output::new(MAX_OUTPUT_BYTES, "Steel diagnostic output exceeds 4 MiB");
         let metadata = Arc::new(OnceLock::<ServerMetadata>::new());
+        let plugin_resolver = Arc::new(OnceLock::<PluginResolver>::new());
+        let resolver = plugin_resolver.clone();
+        engine.register_fn(
+            "yinz-plugin-location",
+            move || -> steel::rvals::Result<String> {
+                resolver
+                    .get()
+                    .ok_or_else(|| scheme_error("plugin source is unknown"))?(None)
+                .map_err(scheme_error)
+            },
+        );
+        let resolver = plugin_resolver.clone();
+        engine.register_fn(
+            "yinz-plugin-resolve",
+            move |path: String| -> steel::rvals::Result<String> {
+                resolver
+                    .get()
+                    .ok_or_else(|| scheme_error("plugin source is unknown"))?(Some(
+                    path,
+                ))
+                .map_err(scheme_error)
+            },
+        );
         for (name, field) in [
             ("yinz-server-binary", 0),
             ("yinz-server-session", 1),
@@ -217,6 +244,19 @@ impl Runtime {
             unicode_width::UnicodeWidthStr::width(text.as_str())
         });
         engine.register_fn("char-alphanumeric?", char::is_alphanumeric);
+        engine.register_fn(
+            "yinz-key-name",
+            |value: SteelVal| -> steel::rvals::Result<String> {
+                let key: yinz_types::keys::BareKey =
+                    serde_json::from_value(from_scheme(&value).map_err(scheme_error)?)
+                        .map_err(scheme_error)?;
+                Ok(match key {
+                    yinz_types::keys::BareKey::Char(character) => character.to_string(),
+                    yinz_types::keys::BareKey::F(number) => format!("F{number}"),
+                    key => format!("{key:?}"),
+                })
+            },
+        );
         engine.register_fn("yinz-now-ms", move || {
             clock().min(isize::MAX as u64) as isize
         });
@@ -317,6 +357,7 @@ impl Runtime {
             output,
             logs,
             metadata,
+            plugin_resolver,
         })
     }
 
@@ -325,6 +366,27 @@ impl Runtime {
         self.metadata
             .set(metadata)
             .map_err(|_| anyhow!("Steel server metadata is already initialized"))
+    }
+
+    /// Install immutable, confined source identity supplied by the host.
+    pub fn set_plugin_resolver(
+        &mut self,
+        resolver: impl Fn(Option<String>) -> Result<String> + Send + Sync + 'static,
+    ) -> Result<()> {
+        self.plugin_resolver
+            .set(Box::new(resolver))
+            .map_err(|_| anyhow!("Steel plugin resolver is already initialized"))
+    }
+
+    fn set_source_identity(&mut self, root: &modules::SourceRoot) -> Result<()> {
+        if self.plugin_resolver.get().is_none() {
+            let root = root.try_clone()?;
+            self.set_plugin_resolver(move |path| match path {
+                Some(path) => root.resolve(&path),
+                None => root.location(),
+            })?;
+        }
+        Ok(())
     }
 
     /// Interrupt running bytecode with `interrupt()`; call `resume()` before reuse.
@@ -374,6 +436,7 @@ impl Runtime {
         source: &str,
         root: &mut modules::SourceRoot,
     ) -> Result<()> {
+        self.set_source_identity(root)?;
         root.begin(source.len())?;
         let entry = root.entry_id().to_owned();
         let rewritten =
@@ -386,6 +449,7 @@ impl Runtime {
         source: &str,
         root: &mut modules::SourceRoot,
     ) -> Result<EvalOutput> {
+        self.set_source_identity(root)?;
         root.begin(source.len())?;
         let entry = root.entry_id().to_owned();
         let rewritten =

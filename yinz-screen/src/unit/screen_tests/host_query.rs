@@ -648,6 +648,7 @@ fn empty_reply_falls_back_to_cached_pixel_dimensions() {
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: Some(SizeInPixels {
                 height: 19,
                 width: 9,

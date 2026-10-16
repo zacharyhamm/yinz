@@ -665,6 +665,7 @@ fn installed_scripts_keep_neutral_output_after_reporter_failure() {
             .env("YINZ_PANE_ID", "7")
             .env("YINZ_SOCKET_DIR", dir.path())
             .env("TMPDIR", dir.path())
+            // The installed hook only invokes the reporter for a stable pane reference.
             .env("YINZ_PANE_REF", "abcdef012345")
             .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
             .env_remove("YINZ_REMOTE_PANE_TOKEN")

@@ -315,9 +315,15 @@ pub(super) fn run(value: Value) -> Result<Value> {
 
 pub(super) fn image_png(id: u32, png: &[u8]) -> Result<String> {
     image_id(id)?;
-    anyhow::ensure!(png.len() <= crate::MAX_PNG_BYTES, "PNG source exceeds 8 MiB");
+    anyhow::ensure!(
+        png.len() <= crate::MAX_PNG_BYTES,
+        "PNG source exceeds 8 MiB"
+    );
     let output = png_transmit_sequence(id, png);
-    anyhow::ensure!(output.len() <= crate::MAX_RENDER_BYTES, "image output exceeds render budget");
+    anyhow::ensure!(
+        output.len() <= crate::MAX_RENDER_BYTES,
+        "image output exceeds render budget"
+    );
     Ok(output)
 }
 

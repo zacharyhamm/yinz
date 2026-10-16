@@ -285,6 +285,7 @@ enum CommandName {
   GetPluginIdsForUrl = 301;
   GetPluginInfo = 302;
   Pick = 304;
+  GetCellPixelSize = 308;
   GetPluginIdsForUrlWithConfiguration = 303;
 }
 
@@ -2104,3 +2105,7 @@ message GetPluginInfoPayload { optional uint32 plugin_id = 1; }
 message GetPluginInfoResponse { string json = 1; }
 
 message PickResponse { string json = 1; }
+
+message GetCellPixelSizeResponse {
+  optional event.CellPixelSize size = 1;
+}

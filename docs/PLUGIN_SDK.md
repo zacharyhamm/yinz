@@ -4,6 +4,72 @@ Yinz loads `.scm`, `.ss`, and `.sld` entrypoints in a confined Steel interpreter
 The functions below are available without an import. Use `require` and `provide`
 for your own modules inside the entrypoint directory or Git repository root.
 
+## Scheme language and text
+
+The sandbox uses Steel's raw engine without its macro kernel or full standard library.
+It includes `assoc` (`equal?`), `assq` (`eq?`), `cdddr`, `vector->list` with optional
+start/end indices, `list-index`, and multi-list `map`. `map` stops at the shortest list.
+`any` aliases `ormap`. `ormap` and `andmap` short-circuit and preserve predicate result values.
+
+Available forms include `case`, `do`, `letrec`, quasiquote with unquote/splicing,
+and `cond` clauses with `=>`. `do` evaluates steps before assigning the next iteration's values.
+`values` and `call-with-values` use Steel's list convention for multiple values.
+`let-values` evaluates producers before binding their results. `define-values` binds
+results once. Both forms reject an incorrect number of results.
+
+`(struct point (x y))` defines `point`, `point?`, `point-x`, and `point-y`.
+Fields are immutable. Types with the same fields remain distinct.
+Unsupported struct options produce an error. Struct reflection is unavailable.
+String literals accept `\f` for form feed.
+
+| Function | Behavior |
+|---|---|
+| `(char-upper-case? character)` | Unicode uppercase property |
+| `(char-alphabetic? character)` | Unicode alphabetic property |
+| `(char-foldcase character)` | Unicode simple case folding of one character |
+| `(string-contains text needle [start])` | Character index of the first match, or `#f` |
+| `(string-search-forward text needle [start])` | Alias of `string-contains` |
+| `(string-index text character-or-predicate [start])` | First matching character index, or `#f` |
+| `(string-split text [separator])` | Unicode whitespace splitting, or literal splitting with empty fields retained |
+| `(string-trim text)` | Alias of `trim` |
+| `(string-trim-left text)` | Alias of `trim-start` |
+| `(string-trim-right text)` | Alias of `trim-end` |
+| `(string-copy text [start [end]])` | Copy a character range with an exclusive end |
+| `(string-pad-left text width [fill])` | Pad to a character count. Default fill is a space. Longer text remains intact |
+| `(string-builder)` | Create an empty mutable builder |
+| `(string-builder-append! builder text)` | Append within the 16 MiB builder limit |
+| `(string-builder->string builder)` | Return the accumulated text |
+
+Indices count Unicode scalar values, not UTF-8 bytes or grapheme clusters.
+Start indices may equal the string length. Negative indices and indices past the end are errors.
+An empty substring matches at the requested start. Literal splitting uses an exact
+separator, including adjacent and trailing empty fields.
+
+`(regex pattern [flags])` compiles Rust regex syntax. Flags are a string containing
+`i` (Unicode case-insensitive), `m` (multiline), or `s` (dot matches newlines).
+Invalid patterns and unsupported flags produce errors. Backreferences and lookaround are unavailable.
+
+| Function | Result |
+|---|---|
+| `(regex? value)` | Whether the value is a compiled regex |
+| `(regex-match? pattern text)` | Whether any match exists |
+| `(regex-find pattern text)` | First match hash, or `#f` |
+| `(regex-find-all pattern text)` | List of match hashes, including progressing empty matches |
+| `(regex-replace-all pattern text replacement)` | Text with all matches replaced |
+| `(regex-escape text)` | Escaped literal regex text |
+
+Match hashes contain `"start"`, `"end"`, and `"groups"`.
+The end index is exclusive. Group zero is the full match. Unmatched groups are `#f`.
+Replacement strings accept `$1`, `${name}`, and `$$` for a literal dollar sign.
+Patterns are limited to 64 KiB. Compiled regex size, input, aggregate match data,
+and replacement output are bounded to 16 MiB. At most 100,000 matches are returned.
+
+Unicode case-insensitive matching uses simple folding, so indices remain valid.
+It matches `s` with `ſ`, `K` with `K`, and the sigma variants.
+It does not equate `ß` with `ss` or remove accents.
+For smart case that tests the exact uppercase letter category, use `\\p{Lu}`
+in a Scheme regex string. The Unicode uppercase property and category `Lu` differ.
+
 ## Values and host commands
 
 `(yinz-command command)` executes a permission-checked host command. A command
@@ -31,6 +97,26 @@ a deferred result. The predicate receives the event payload.
 See [command and event shapes](PLUGIN_PROTOCOL.md), also available through
 `yinz plugins docs protocol`, for every command payload and synchronous reply.
 
+## Plugin identity and client geometry
+
+`(yinz-plugin-location)` returns the immutable entrypoint location supplied by the host.
+`(yinz-plugin-resolve relative-path)` resolves an existing Scheme target relative to the entrypoint without executing it.
+Both are available before `load`, including in named workers and mocked plugins.
+File locations are canonical file URLs. Git locations retain their repository and resolved revision.
+Builtin locations resolve only to embedded sources. Root escapes, symlinks, special files,
+and unsupported extensions are rejected. These functions do not grant filesystem access.
+
+`(yinz-key-name bare-key)` returns names such as `"PageDown"`, `"Esc"`, `"F1"`, or a Unicode character.
+Pass the `"bare_key"` field of a key event. Malformed keys are rejected.
+
+`(yinz-cell-pixel-size)` queries the acting client's cell geometry through `GetCellPixelSize`.
+It returns a hash with `"width"` and `"height"`, or `json-null` when unknown.
+Subscribe to `CellPixelSizeChanged` for the current geometry and subsequent changes.
+Terminal reports, including reports after resizes, can change the value.
+A resize alone retains the last measured cell size. Reconnecting clears previous measurements.
+Own-client geometry does not require `ReadApplicationState`.
+Shared plugins must keep geometry-dependent state per client and accept unknown geometry.
+
 ## Lifecycle
 
 | Callback | Arguments | Result |
@@ -40,6 +126,10 @@ See [command and event shapes](PLUGIN_PROTOCOL.md), also available through
 | `pipe` | pipe message hash | same as `update` |
 | `render` | row count, column count | text, output written with `display`, or deferred text |
 | `unload` | none | ignored, or deferred cleanup |
+
+Rendered text has a 16 MiB limit, including printed and returned text together.
+Formatted evaluation results have a separate aggregate 16 MiB limit.
+Diagnostic output retains its 4 MiB limit. Worker and application transport limits remain separate.
 
 All callbacks are optional. Use `(yinz-request-render)` after a state change that
 needs a new render. Outside `render`, output goes to the plugin log. `yinz-log`
@@ -260,6 +350,23 @@ Use the revision read by the value's author as `expect_rev` for read-modify-writ
 operations. A conflict rolls back the batch. Shared session-owned data must use
 both the host ID and session name to distinguish owners.
 
+The following builders are pure. Pass their results to the existing permission-checked commands.
+
+| Function | Result |
+|---|---|
+| `(yinz-data-eq attribute value)` | Equality predicate |
+| `(yinz-data-put entity values [options])` | Put mutation. Values may be an attribute hash or a list of name/value pairs |
+| `(yinz-data-attr name kind [options])` | Attribute definition. Kind accepts a symbol or string |
+| `(yinz-data-query entity [options])` | Fetch request with the ordinary wire defaults |
+| `(yinz-data-row columns-or-response values)` | Hash that pairs columns with decoded row values, including `rev` |
+
+Put options include `"uid"` and `"expect_rev"`. Attribute options include `"indexed"`,
+`"full_text"`, `"unique"`, `"required"`, and `"default"`. Query options use wire field names.
+Plain strings, numbers, booleans, bytevectors, and `json-null` become tagged data values.
+Explicit tags such as `(hash "Int" 7)` are preserved. Row decoding preserves binary bytes.
+Column/value count mismatches and malformed builder options produce errors.
+These helpers do not fetch a fresh revision before writing.
+
 ## Terminal UI
 
 `yinz-ui-text`, `yinz-ui-ribbon`, `yinz-ui-table`, and `yinz-ui-nested-list` return
@@ -275,6 +382,14 @@ Build forms with `yinz-ui-form` or `yinz-ui-dialog`. Fields come from
 `ShowCursor` command, using the frame timing described above. `yinz-ui-render-buffer`
 returns text and cursor metadata without a host call.
 
+`(yinz-ui-text-input label [text])` creates a standalone input.
+It uses the same key, mouse, paste, render, and cursor operations as forms.
+`(yinz-ui-text-input-op input operation [arguments])` supports `"Text"`, `"SetText"`,
+`"CursorPosition"`, `"SetCursorPosition"`, `"ReplaceText"`, `"History"`, `"SetHistory"`,
+`"DrainText"`, `"Key"`, `"InsertText"`, `"Undo"`, and `"Redo"`.
+Cursor positions count Unicode characters. `"ReplaceText"` takes a list of text and cursor position.
+Rendering a buffer is pure. Cursor delivery from `yinz-ui-render` uses normal host permissions.
+
 `yinz-ui-markdown` creates a document. `yinz-ui-lines` renders it at a width.
 Text helpers include `yinz-ui-wrap`, `yinz-ui-truncate`, `yinz-ui-truncate-ansi`,
 `yinz-ui-pad`, `yinz-ui-pad-left`, `yinz-ui-center`, and `yinz-ui-fuzzy-filter`.
@@ -282,6 +397,11 @@ Text helpers include `yinz-ui-wrap`, `yinz-ui-truncate`, `yinz-ui-truncate-ansi`
 `(yinz-ui-image-png id bytes)`, `(yinz-ui-image-place id columns rows)`, and
 `(yinz-ui-image-row id row columns)` produce Kitty image output. Check
 `ModeUpdate`'s `capabilities.kitty_graphics` before using images.
+PNG input is limited to 8 MiB before encoding. Encoding uses the shared Kitty encoder.
+Exported constants are `yinz-ui-image-max-id` (the shared encoder's ID limit),
+`yinz-ui-image-max-dimension` (the placeholder dimension limit), and
+`yinz-ui-image-max-bytes` (8 MiB). Widget, table, and coordinate limits are unchanged.
+Large PNG, base64, transport, and decoded buffers can coexist within the worker's existing memory limit.
 
 ## Command palette
 

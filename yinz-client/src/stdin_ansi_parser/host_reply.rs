@@ -91,6 +91,7 @@ impl HostReply {
             let second: usize = caps[3].parse().ok()?;
             return match which {
                 4 => Some(HostReply::PixelDimensions(PixelDimensions {
+                    text_area_grid_size: None,
                     character_cell_size: None,
                     text_area_size: Some(SizeInPixels {
                         height: first,
@@ -98,6 +99,7 @@ impl HostReply {
                     }),
                 })),
                 6 => Some(HostReply::PixelDimensions(PixelDimensions {
+                    text_area_grid_size: None,
                     character_cell_size: Some(SizeInPixels {
                         height: first,
                         width: second,

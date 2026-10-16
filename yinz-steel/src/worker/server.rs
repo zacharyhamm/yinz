@@ -13,6 +13,16 @@ pub fn run_worker() -> Result<()> {
             _ => Err(anyhow!("expected Steel host reply")),
         }
     })?;
+    runtime.set_plugin_resolver(|specifier| {
+        protocol::write(
+            &mut io::stdout().lock(),
+            &Response::ResolverRequest(specifier),
+        )?;
+        match protocol::read(&mut io::stdin().lock())? {
+            Request::ResolverReply(reply) => reply.map_err(|error| anyhow!(error)),
+            _ => Err(anyhow!("expected Steel plugin location reply")),
+        }
+    })?;
     protocol::write(
         &mut io::stdout().lock(),
         &Response::Finished(Ok(Output::Ready)),

@@ -66,22 +66,20 @@ fn focus_and_confirm(yinz: &TestSession, focus_key: &[u8], expected: &FakePtyHan
 /// Record process identity before transfer, and observe keyboard routing afterwards.
 fn type_and_confirm(session: &TestSession, pane: &FakePtyHandle, marker: &[u8]) {
     session.send_stdin(marker);
-    session.wait_until("input to reach the expected process", |_| {
-        pane.stdin_bytes()
-            .windows(marker.len())
-            .any(|bytes| bytes == marker)
+    pane.wait_for_stdin("input to reach the expected process", |bytes| {
+        bytes.windows(marker.len()).any(|bytes| bytes == marker)
     });
 }
 
-fn assert_redrawn(session: &TestSession, pane: &FakePtyHandle) {
-    session.wait_until(
+fn assert_redrawn(pane: &FakePtyHandle) {
+    pane.wait_for_size_history(
         "adopted process to receive a redraw nudge and its final size",
-        |_| {
-            pane.size_history().windows(3).any(|sizes| {
+        |history| {
+            history.windows(3).any(|sizes| {
                 let (cols, rows) = sizes[0];
                 sizes[1] == (if cols == 1 { 2 } else { cols - 1 }, rows)
                     && sizes[2] == sizes[0]
-                    && pane.size() == Some(sizes[2])
+                    && history.last() == Some(&sizes[2])
             })
         },
     );
@@ -325,7 +323,7 @@ fn an_individual_warp_to_a_new_tab_preserves_the_terminal_header() {
     });
     assert_eq!(code, 0, "the warp was refused: {reported}");
     let arrived = receiver.expect_adopted_pty();
-    assert_redrawn(&receiver, &arrived);
+    assert_redrawn(&arrived);
     receiver.wait_until("the terminal to arrive in its new tab", |grid| {
         grid.contains("before transfer") && grid.tab_bar_appears() && grid.status_bar_appears()
     });
@@ -365,7 +363,7 @@ fn a_pane_keeps_its_process_when_it_moves_between_sessions() {
     warp_focused_pane_expecting_success(&sender, &receiver, false);
 
     let arrived = receiver.expect_adopted_pty();
-    assert_redrawn(&receiver, &arrived);
+    assert_redrawn(&arrived);
     assert!(
         !arrived.is_exited(),
         "the pane's process was killed rather than handed over",
@@ -463,7 +461,7 @@ fn a_remote_pane_keeps_its_process_when_it_moves_between_sessions() {
     assert_eq!(exit_code, 0, "the warp was refused: {reported}");
 
     let arrived = receiver.expect_adopted_pty();
-    assert_redrawn(&receiver, &arrived);
+    assert_redrawn(&arrived);
     assert!(
         !arrived.is_exited(),
         "the remote pane's process was killed rather than handed over",
@@ -537,7 +535,7 @@ fn a_tab_of_local_and_remote_panes_warps_whole() {
     });
     let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
     for pane in &adopted {
-        assert_redrawn(&receiver, pane);
+        assert_redrawn(pane);
     }
     let mut arrived_sizes: Vec<_> = adopted.iter().map(FakePtyHandle::size).collect();
     let mut original_sizes = original_sizes.to_vec();
@@ -819,7 +817,7 @@ fn warping_a_visible_editor_carries_its_subject_and_restores_it_on_close() {
     assert_eq!(exit_code, 0, "the warp was refused: {reported}");
     let adopted = [receiver.expect_adopted_pty(), receiver.expect_adopted_pty()];
     for pane in &adopted {
-        assert_redrawn(&receiver, pane);
+        assert_redrawn(pane);
     }
     let arrived_editor = adopted_with_marker(&adopted, b"editor-before");
     let arrived_subject = adopted_with_marker(&adopted, b"subject-before");
@@ -997,7 +995,7 @@ fn a_visible_stack_warps_to_the_floating_layer_with_selectable_members() {
     warp_focused_pane_expecting_success(&sender, &receiver, true);
     let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
     for pane in &adopted {
-        assert_redrawn(&receiver, pane);
+        assert_redrawn(pane);
     }
     let first = adopted_with_marker(&adopted, b"first-before");
     let second = adopted_with_marker(&adopted, b"SECOND_FLOATING_MEMBER");
@@ -1284,7 +1282,7 @@ fn adopted_local_and_remote_panes_redraw_in_each_destination_layer() {
             });
             assert_eq!(code, 0, "{reported}");
             let arrived = receiver.expect_adopted_pty();
-            assert_redrawn(&receiver, &arrived);
+            assert_redrawn(&arrived);
             assert_ne!(
                 arrived.size(),
                 old_size,
@@ -1326,6 +1324,7 @@ fn palette_pull(
     target: &str,
     last_tab: Option<usize>,
 ) {
+    let sessions = receiver.stream_events(&["session_update"]);
     receiver.send_stdin(b"\x1b[112;7u");
     receiver.wait_until("palette opens", |grid| grid.contains("Do · Project:"));
     receiver.send_stdin(command.as_bytes());
@@ -1336,6 +1335,13 @@ fn palette_pull(
     receiver.send_stdin(sender.session_name().as_bytes());
     receiver.wait_until("source discovered", |grid| {
         grid.contains(&format!("› {}", sender.session_name()))
+    });
+    // All tabs captures the receiver's peer metadata, which can lag the source's render.
+    sessions.wait_for_event_matching("SessionUpdate", |json| {
+        let event: yinz_types::data::Event = serde_json::from_str(json).unwrap();
+        matches!(event, yinz_types::data::Event::SessionUpdate(peers, _)
+            if peers.iter().any(|peer|
+                peer.name.as_str() == sender.session_name() && peer.tabs.len() == last_tab.unwrap_or(1)))
     });
     receiver.send_stdin(&keys::ENTER);
     if let Some(last_tab) = last_tab {

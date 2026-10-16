@@ -587,6 +587,56 @@ fn session_palette_deno_steel_runtime_parity() {
 }
 
 #[test]
+fn configuration_palette_discovers_full_default_configuration() {
+    use yinz_config::{config::Config, editor};
+
+    let config = Config::from_default_assets().unwrap();
+    let snapshot = json!({
+        "revision": "defaults", "catalog": editor::catalog(),
+        "saved": editor::inspection_document(&config, None, false).unwrap(),
+        "clients": {"1": editor::inspection_document(&config, None, true).unwrap()},
+        "overrides": [], "notice": "", "actions": editor::action_templates(&config).unwrap(),
+        "action_properties": editor::action_properties(), "action_children": editor::action_children(),
+        "sections": editor::SECTIONS, "section_timing": {}, "templates": editor::templates(&config).unwrap(),
+    });
+    let mut runtime = yinz_steel::Runtime::new(|_| Ok(Value::Null)).unwrap();
+    runtime
+        .eval(yinz_steel_builtins::builtin_steel_plugin("configuration-palette").unwrap())
+        .unwrap();
+    runtime
+        .eval(
+            r#"(define (default-configuration-labels snapshot)
+                (map (lambda (item) (hash-ref item "label"))
+                     (root-actions snapshot 1)))"#,
+        )
+        .unwrap();
+    // A tiny snapshot misses recursive map closures retaining the whole configuration tree.
+    let interrupt = runtime.interruption_handle();
+    let (done, finished) = std::sync::mpsc::channel();
+    let watchdog = std::thread::spawn(move || {
+        if finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_err()
+        {
+            interrupt.interrupt();
+        }
+    });
+    let result = runtime.invoke("default-configuration-labels", vec![snapshot]);
+    let _ = done.send(());
+    watchdog.join().unwrap();
+    let labels = result.unwrap();
+    let labels = labels.as_array().unwrap();
+    assert!(
+        labels.len() > 100,
+        "expected the full default keybinding tree"
+    );
+    assert!(labels.iter().any(|label| label == "simplified ui…"));
+    assert!(labels
+        .iter()
+        .any(|label| label.as_str().unwrap().starts_with("keybinding ")));
+}
+
+#[test]
 fn configuration_palette_deno_steel_runtime_parity() {
     let _scenario = Scenario::new("configuration_palette_deno_steel_runtime_parity");
     let setting = json!({"name":"mouse_mode","arguments":[true],"properties":{},"children":[]});

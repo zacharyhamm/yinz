@@ -572,7 +572,8 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
 #[test]
 fn kitty_probe_routing_preserves_client_lifecycle_order() {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
-    use yinz_ipc::ipc::IpcSenderWithContext;
+    use yinz_ipc::ipc::{IpcSenderWithContext, PixelDimensions};
+    use yinz_types::pane_size::{Size, SizeInPixels};
 
     for first_message in [
         ClientToServerMsg::FirstClientConnected {
@@ -596,10 +597,18 @@ fn kitty_probe_routing_preserves_client_lifecycle_order() {
                 .unwrap();
         let server = listener.accept().unwrap();
         let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
+        let reported_pixels = PixelDimensions {
+            text_area_size: Some(SizeInPixels {
+                width: 800,
+                height: 480,
+            }),
+            text_area_grid_size: Some(Size { cols: 80, rows: 24 }),
+            character_cell_size: None,
+        };
         for message in [
             first_message,
             ClientToServerMsg::TerminalPixelDimensions {
-                pixel_dimensions: Default::default(),
+                pixel_dimensions: reported_pixels,
             },
             ClientToServerMsg::KittyGraphicsSupport { supported: false },
             ClientToServerMsg::KittyGraphicsSupport { supported: true },
@@ -647,6 +656,11 @@ fn kitty_probe_routing_preserves_client_lifecycle_order() {
                 ]
             ),
             "{instructions:?}"
+        );
+        assert!(
+            matches!(instructions.get(1), Some(ServerInstruction::TerminalPixelDimensions {
+            pixel_dimensions, ..
+        }) if *pixel_dimensions == reported_pixels)
         );
         assert!(
             threads.screen_receiver.is_empty(),

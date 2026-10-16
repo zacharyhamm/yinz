@@ -437,3 +437,46 @@ fn steel_load_schedules_its_initial_render_while_permissions_are_unanswered() {
     assert_eq!(plugin.render(2, 40).unwrap(), b"waiting for permission");
     plugin.dispose_with_cleanup(true);
 }
+
+#[test]
+fn cell_pixel_size_dispatch_uses_acting_client_without_permissions() {
+    use yinz_bus::screen::ScreenInstruction;
+    use yinz_types::pane_size::SizeInPixels;
+
+    let mut env = env();
+    let owner = env.client_id;
+    let (sender, receiver) = channels::unbounded();
+    env.senders.to_screen = Some(SenderWithContext::new(sender));
+    let responder = std::thread::spawn(move || {
+        for size in [
+            Some(SizeInPixels {
+                width: 9,
+                height: 18,
+            }),
+            None,
+        ] {
+            let (instruction, _) = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+            let ScreenInstruction::GetCellPixelSize {
+                client_id,
+                response_channel,
+            } = instruction
+            else {
+                panic!("unexpected instruction: {instruction:?}");
+            };
+            assert_eq!(client_id, yinz_types::internal_ids::ClientId::new(9));
+            response_channel.send(size).unwrap();
+        }
+    });
+    for expected in [json!({"width": 9, "height": 18}), Value::Null] {
+        let result = dispatch(
+            &mut env,
+            json!({"__yinz_runtime": {
+                "client": 9, "command": "GetCellPixelSize", "permission_id": null
+            }}),
+        )
+        .unwrap();
+        assert_eq!(result, expected);
+        assert_eq!(env.client_id, owner);
+    }
+    responder.join().unwrap();
+}

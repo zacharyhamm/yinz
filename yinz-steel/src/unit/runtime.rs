@@ -18,7 +18,11 @@ fn render_budgets_bound_printed_returned_and_combined_output() {
     ] {
         runtime.eval(&format!("(define (render rows cols) (display (make-string {printed} #\\x)) (make-string {returned} #\\y))")).unwrap();
         let frame = runtime.render(10, 80);
-        assert_eq!(frame.is_ok(), accepted, "{printed} printed + {returned} returned");
+        assert_eq!(
+            frame.is_ok(),
+            accepted,
+            "{printed} printed + {returned} returned"
+        );
         if let Ok(frame) = frame {
             assert_eq!(frame.len(), printed + returned);
             assert!(runtime.take_output().unwrap().is_empty());
@@ -31,18 +35,31 @@ fn render_budgets_bound_printed_returned_and_combined_output() {
 fn evaluation_and_diagnostics_have_independent_budgets() {
     let mut runtime = runtime();
     // String formatting includes the surrounding quotes.
-    let output = runtime.eval(&format!("(make-string {} #\\x)", MAX_EVAL_BYTES - 2)).unwrap();
+    let output = runtime
+        .eval(&format!("(make-string {} #\\x)", MAX_EVAL_BYTES - 2))
+        .unwrap();
     assert_eq!(output.values[0].len(), MAX_EVAL_BYTES);
     for source in [
         format!("(make-string {} #\\x)", MAX_EVAL_BYTES - 1),
-        format!("(make-string {} #\\x) (make-string {} #\\y)", MAX_EVAL_BYTES / 2, MAX_EVAL_BYTES / 2),
+        format!(
+            "(make-string {} #\\x) (make-string {} #\\y)",
+            MAX_EVAL_BYTES / 2,
+            MAX_EVAL_BYTES / 2
+        ),
     ] {
         assert!(runtime.eval(&source).is_err(), "{source}");
     }
-    runtime.eval(&format!("(yinz-log (make-string {} #\\x))", MAX_OUTPUT_BYTES - 1)).unwrap();
+    runtime
+        .eval(&format!(
+            "(yinz-log (make-string {} #\\x))",
+            MAX_OUTPUT_BYTES - 1
+        ))
+        .unwrap();
     assert_eq!(runtime.take_logs().unwrap().len(), MAX_OUTPUT_BYTES);
     assert_eq!(runtime.logs.0.lock().unwrap().capacity(), 0);
-    assert!(runtime.eval(&format!("(yinz-log (make-string {MAX_OUTPUT_BYTES} #\\x))")).is_err());
+    assert!(runtime
+        .eval(&format!("(yinz-log (make-string {MAX_OUTPUT_BYTES} #\\x))"))
+        .is_err());
     assert!(runtime.take_output().unwrap().is_empty());
 }
 

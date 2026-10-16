@@ -224,7 +224,10 @@ fn steel_git_plugin_aliases_refresh_on_config_reload_for_new_launches() {
     std::fs::create_dir(harness.directory.path().join("src")).unwrap();
     std::fs::write(
         harness.directory.path().join("src/main.scm"),
-        r#"(require "../shared.scm") (define (render rows cols) value)"#,
+        r#"(require "../shared.scm")
+           (define own-location (yinz-plugin-location))
+           (define sibling-location (yinz-plugin-resolve "../shared.scm"))
+           (define (render rows cols) (string-append value "\n" own-location "\n" sibling-location))"#,
     )
     .unwrap();
     std::fs::write(
@@ -232,12 +235,13 @@ fn steel_git_plugin_aliases_refresh_on_config_reload_for_new_launches() {
         r#"(provide value) (define value "reconfigured repository")"#,
     )
     .unwrap();
+    let repository = GitPlugin {
+        repo: harness.directory.path().to_string_lossy().into_owned(),
+        entrypoint: "src/main.scm".into(),
+        revision: None,
+    };
     let plugin = RunPlugin {
-        location: RunPluginLocation::Git(GitPlugin {
-            repo: harness.directory.path().to_string_lossy().into_owned(),
-            entrypoint: "src/main.scm".into(),
-            revision: None,
-        }),
+        location: RunPluginLocation::Git(repository.clone()),
         ..Default::default()
     };
     harness
@@ -266,7 +270,11 @@ fn steel_git_plugin_aliases_refresh_on_config_reload_for_new_launches() {
             None,
         )),
     );
-    harness.rendered("reconfigured repository");
+    let frame = harness.rendered("reconfigured repository");
+    assert!(frame.contains(&repository.descriptor()));
+    let mut sibling = repository;
+    sibling.entrypoint = "shared.scm".into();
+    assert!(frame.contains(&sibling.descriptor()));
     harness.finish();
 }
 
@@ -325,7 +333,11 @@ fn steel_git_plugins_pin_imports_workers_and_attached_clients_until_reload() {
 (define parent "idle")
 (define worker "idle")
 (define saved "pending")
-(yinz-register-workers (hash "probe" (lambda (name payload) (yinz-post-plugin "reply" late-value))))
+(define own-location (yinz-plugin-location))
+(define sibling-location (yinz-plugin-resolve "../late.scm"))
+(yinz-register-workers (hash "probe" (lambda (name payload)
+  (yinz-post-plugin "reply" (yinz-json-string (list late-value (yinz-plugin-location)
+    (yinz-plugin-resolve "../late.scm")))))))
 (define (load config)
   (yinz-then (yinz-wait-for-permissions (list "PluginData"))
     (lambda (ignored)
@@ -340,9 +352,13 @@ fn steel_git_plugins_pin_imports_workers_and_attached_clients_until_reload() {
     (define message (hash-ref event "CustomMessage"))
     (cond
       ((equal? (car message) "probe") (set! parent late-value) (yinz-post-worker "probe" "go" ""))
-      ((equal? (car message) "reply") (set! worker (cadr message)))))
+      ((equal? (car message) "reply")
+        (define reply (yinz-json-parse (cadr message)))
+        (assert-data (equal? (cadr reply) own-location))
+        (assert-data (equal? (caddr reply) sibling-location))
+        (set! worker (car reply)))))
   #t)
-(define (render rows cols) (string-append value " " parent " " worker " " saved))
+(define (render rows cols) (string-append value " " parent " " worker " " saved "\n" own-location "\n" sibling-location))
 "#
         ),
     )
@@ -427,6 +443,15 @@ fn steel_git_plugins_pin_imports_workers_and_attached_clients_until_reload() {
     let first = crate::plugin_authoring::git::status(harness.directory.path(), &source)
         .unwrap()
         .unwrap();
+    let mut pinned = source.clone();
+    pinned.revision = first
+        .commit
+        .clone()
+        .map(yinz_types::input::git_plugin::GitRevision::Commit);
+    let frame = harness.rendered("one idle idle one");
+    assert!(frame.contains(&pinned.descriptor()));
+    pinned.entrypoint = "late.scm".into();
+    assert!(frame.contains(&pinned.descriptor()));
     write_revision("two");
     let next = crate::plugin_authoring::git::install(
         harness.directory.path(),

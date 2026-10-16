@@ -444,6 +444,7 @@ fn character_cell_size_is_derived_from_the_resized_screen() {
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
         PixelDimensions {
+            text_area_grid_size: None,
             text_area_size: Some(SizeInPixels {
                 width: 800,
                 height: 480,
@@ -849,6 +850,7 @@ fn a_pixel_dimensions_reply_arriving_before_the_client_size_still_derives_the_ce
     screen.update_pixel_dimensions(
         crate::ClientId::new(1),
         PixelDimensions {
+            text_area_grid_size: None,
             character_cell_size: None,
             text_area_size: Some(SizeInPixels {
                 width: 800,

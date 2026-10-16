@@ -258,6 +258,18 @@ impl WorkerRuntime {
                         .map_err(|error| format!("{error:#}"));
                     self.send(&Request::SourceReply(source), deadline)?;
                 },
+                Response::ResolverRequest(specifier) => {
+                    let location = self
+                        .sources
+                        .as_ref()
+                        .context("Steel plugin has no source root")
+                        .and_then(|root| match specifier {
+                            Some(path) => root.resolve(&path),
+                            None => root.location(),
+                        })
+                        .map_err(|error| format!("{error:#}"));
+                    self.send(&Request::ResolverReply(location), deadline)?;
+                },
             }
         }
     }

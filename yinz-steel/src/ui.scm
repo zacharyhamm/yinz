@@ -73,4 +73,12 @@
 (define (yinz-ui-input-op widget id op . args)
   (yinz-ui-op widget "Input" (list id (if (null? args) (hash "op" op) (hash "op" op "args" (car args))))))
 
+(define (yinz-ui-text-input label . value)
+  (yinz-ui-form (list (yinz-ui-input "value" label (%ui-option value "")))))
+(define (yinz-ui-text-input-op input op . args)
+  (cond
+    ((equal? op "Text") (yinz-ui-op input "TextValue" "value"))
+    ((equal? op "SetText") (yinz-ui-set-value! input "value" (car args)))
+    (else (apply yinz-ui-input-op (append (list input "value" op) args)))))
+
 (define (yinz-ui-truncate-ansi text width) (yinz-ui-pure (hash "op" "TruncateAnsi" "args" (list text width))))

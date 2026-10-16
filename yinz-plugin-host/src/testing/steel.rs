@@ -34,6 +34,12 @@ impl TestPaths for Sources {
             yinz_plugin_api::authoring::is_script_plugin(&path),
             "test target must be Scheme"
         );
+        let relative = path
+            .strip_prefix(&self.root)
+            .context("test target escapes its root")?;
+        // Keep URL decoding here; the source resolver uses filesystem path characters.
+        let confined_root = yinz_steel::modules::SourceRoot::file(&self.entry, Some(&self.root))?;
+        confined_root.resolve_from_root(relative)?;
         let path = path.canonicalize().context("resolve Scheme test target")?;
         anyhow::ensure!(
             path.starts_with(&self.root) && path.is_file(),
@@ -274,6 +280,38 @@ impl State {
     }
     fn call(&mut self, operation: &str, argument: Value) -> Result<Value> {
         let result = match operation {
+            "location" => Ok(json!(url::Url::from_file_path(&self.sources.entry)
+                .map_err(|_| anyhow!("invalid test location"))?
+                .to_string())),
+            "resolve" => Ok(json!(self.sources.resolve_test_path(
+                argument
+                    .as_str()
+                    .context("test-resolve requires a relative path")?
+            )?)),
+            "copy-plugin" => {
+                let source = self.sources.resolve_test_path(
+                    argument["source"]
+                        .as_str()
+                        .context("test-copy-plugin source must be text")?,
+                )?;
+                let path = url::Url::parse(&source)
+                    .context("parse copy source URL")?
+                    .to_file_path()
+                    .map_err(|_| anyhow!("invalid copy source path"))?;
+                let mut sources =
+                    yinz_steel::modules::SourceRoot::file(&path, Some(&self.sources.root))?;
+                let location = self
+                    .session
+                    .as_mut()
+                    .context("test-copy-plugin requires an integration test")?
+                    .copy_plugin(
+                        &mut sources,
+                        argument["destination"]
+                            .as_str()
+                            .context("test-copy-plugin destination must be text")?,
+                    )?;
+                Ok(json!(location))
+            },
             "load" => {
                 anyhow::ensure!(self.plugin.is_none(), "one plugin harness per test");
                 let url = self.sources.resolve_test_path(

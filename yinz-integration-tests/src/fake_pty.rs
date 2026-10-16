@@ -860,6 +860,13 @@ impl FakePtyHandle {
         })
     }
 
+    pub fn wait_for_size_history(&self, what: &str, predicate: impl Fn(&[(u16, u16)]) -> bool) {
+        self.shared_ptys.wait_for(what, |registry| {
+            let terminal = registry.fake_pty_states.get(&self.terminal_id)?;
+            predicate(&terminal.size_history).then_some(())
+        });
+    }
+
     pub fn wait_for_cell_size(&self, width: u16, height: u16) {
         self.shared_ptys
             .wait_for("host cell dimensions applied to PTY", |registry| {

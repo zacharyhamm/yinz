@@ -863,6 +863,13 @@ pub fn plugin_thread_main(
                         ),
                     );
                 }
+                if events.contains(&EventType::CellPixelSizeChanged) {
+                    bus.senders
+                        .send_to_screen(ScreenInstruction::ReportCellPixelSize(
+                            plugin_id, client_id,
+                        ))
+                        .context("send current cell pixel size to subscriber")?;
+                }
                 if events.contains(&EventType::AgentProvidersChanged) {
                     plugin_bridge.update_plugins(
                         vec![(

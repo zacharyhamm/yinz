@@ -201,9 +201,7 @@ fn png_bytevectors_keep_the_shared_encoder_and_eight_mib_source_limit() {
         .eval("(yinz-ui-image-png 1 (make-bytes 8388609 0))")
         .unwrap_err();
     assert!(
-        error
-            .to_string()
-            .contains("PNG source exceeds 8 MiB"),
+        error.to_string().contains("PNG source exceeds 8 MiB"),
         "{error}"
     );
     assert!(runtime
@@ -410,5 +408,67 @@ fn ansi_truncation_retains_colors_and_terminal_columns() {
             .invoke("yinz-ui-truncate-ansi", vec![json!(source), json!(20)])
             .unwrap(),
         format!("{source}\x1b[0m")
+    );
+}
+
+#[test]
+fn image_constants_match_the_shared_encoder() {
+    let runtime = runtime();
+    assert_eq!(
+        runtime.value("yinz-ui-image-max-id").unwrap(),
+        yinz_tile::ui_components::MAX_IMAGE_ID
+    );
+    assert_eq!(
+        runtime.value("yinz-ui-image-max-dimension").unwrap(),
+        yinz_types::kitty_placeholders::ROWCOLUMN_DIACRITICS.len()
+    );
+    assert_eq!(
+        runtime.value("yinz-ui-image-max-bytes").unwrap(),
+        crate::MAX_PNG_BYTES
+    );
+}
+
+#[test]
+fn standalone_text_input_reuses_unicode_editing_paste_and_cursor_dispatch() {
+    let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let received = commands.clone();
+    let mut runtime = Runtime::new(move |command| {
+        received.lock().unwrap().push(command);
+        Ok(serde_json::Value::Null)
+    })
+    .unwrap();
+    runtime
+        .eval(
+            r#"
+      (define input (yinz-ui-text-input "/" "日a"))
+      (yinz-ui-text-input-op input "SetCursorPosition" 1)
+      (yinz-ui-text-input-op input "InsertText" "é")
+      (define text (yinz-ui-text-input-op input "Text"))
+      (define cursor (yinz-ui-text-input-op input "CursorPosition"))
+      (yinz-ui-paste! input "界")
+      (define pasted (yinz-ui-text-input-op input "Text"))
+      (define buffer (yinz-ui-render-buffer input (yinz-ui-coordinates 0 0 8 1)))
+    "#,
+        )
+        .unwrap();
+    assert_eq!(runtime.value("text").unwrap(), "日éa");
+    assert_eq!(runtime.value("cursor").unwrap(), 2);
+    assert_eq!(runtime.value("pasted").unwrap(), "日é界a");
+    assert!(commands.lock().unwrap().is_empty());
+    runtime
+        .eval("(yinz-ui-render input (yinz-ui-coordinates 0 0 8 1))")
+        .unwrap();
+    assert!(commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|command| command.get("ShowCursor").is_some()));
+    runtime.eval("(yinz-ui-text-input-op input \"ReplaceText\" '(\"é\" 1)) (yinz-ui-handle-key input (hash \"bare_key\" \"Backspace\" \"key_modifiers\" '()))").unwrap();
+    assert_eq!(
+        runtime
+            .eval("(yinz-ui-text-input-op input \"Text\")")
+            .unwrap()
+            .values,
+        ["\"\""]
     );
 }

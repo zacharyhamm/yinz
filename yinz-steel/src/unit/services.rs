@@ -272,3 +272,82 @@ fn integer_wire_fields_reject_inexact_scheme_numbers_before_dispatch() {
     );
     assert!(commands.lock().unwrap().is_empty());
 }
+
+#[test]
+fn data_builders_preserve_wire_defaults_tags_and_revision_guards() {
+    use yinz_types::plugin_data::{AttrDef, AttrKind, FetchRequest, Mutation, Pred};
+    let mut runtime = Runtime::new(|_| anyhow::bail!("builders are pure")).unwrap();
+    runtime.eval(r#"
+      (define attr (yinz-data-attr "page" 'int (hash "required" #t "default" 1)))
+      (define query (yinz-data-query "position" (hash "filter" (yinz-data-eq "path" "日.pdf") "limit" 1)))
+      (define mutation (yinz-data-put "position" '(("page" 4)) (hash "uid" "日.pdf" "expect_rev" 7)))
+      (define row (yinz-data-row '("rev" "page" "empty" "blob")
+        (list (hash "Int" 7) (hash "Int" 4) "Null" (hash "Blob" (bytes 0 255)))))
+    "#).unwrap();
+    let mut attr = AttrDef::new("page", AttrKind::Int);
+    attr.required = true;
+    attr.default = Some(yinz_types::plugin_data::DataValue::Int(1));
+    assert_eq!(
+        runtime.value("attr").unwrap(),
+        serde_json::to_value(attr).unwrap()
+    );
+    let query: FetchRequest = serde_json::from_value(runtime.value("query").unwrap()).unwrap();
+    assert_eq!(query.limit, 1);
+    assert_eq!(query.offset, 0);
+    assert_eq!(
+        query.filter,
+        Some(Pred::Eq(
+            "path".into(),
+            yinz_types::plugin_data::DataValue::Text("日.pdf".into())
+        ))
+    );
+    let mutation: Mutation = serde_json::from_value(runtime.value("mutation").unwrap()).unwrap();
+    assert!(
+        matches!(mutation, Mutation::Put { expect_rev: Some(rev), uid: Some(uid), .. } if rev.get() == 7 && uid == "日.pdf")
+    );
+    assert_eq!(
+        runtime.value("row").unwrap(),
+        json!({"rev":7,"page":4,"empty":null,"blob":[0,255]})
+    );
+    for source in [
+        "(yinz-data-attr \"x\" 'unknown)",
+        "(yinz-data-attr \"x\" 'text (hash \"required\" 1))",
+        "(yinz-data-query \"x\" (hash \"limti\" 1))",
+        "(yinz-data-eq \"x\" (hash \"Int\" \"oops\"))",
+        "(yinz-data-eq \"x\" (hash \"Int\" 1.0))",
+        "(yinz-data-eq \"x\" 9223372036854775808)",
+        "(yinz-data-eq \"x\" -9223372036854775809)",
+        "(yinz-data-eq \"x\" (hash \"Blob\" '(256)))",
+        "(yinz-data-eq \"x\" (hash \"Blob\" '(-1)))",
+        "(yinz-data-eq \"x\" (hash \"Blob\" '(1.0)))",
+        "(yinz-data-eq \"x\" (hash \"Blob\" '(\"0\")))",
+        "(yinz-data-put \"x\" '((\"x\" 1 2)))",
+        "(yinz-data-row '(\"x\") '())",
+    ] {
+        assert!(runtime.eval(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn key_names_use_bare_key_wire_shapes() {
+    let mut runtime = Runtime::new(Ok).unwrap();
+    for (key, expected) in [
+        (json!("PageDown"), "PageDown"),
+        (json!({"Char":"日"}), "日"),
+        (json!({"Char":" "}), " "),
+        (json!({"F":12}), "F12"),
+    ] {
+        assert_eq!(
+            runtime.invoke("yinz-key-name", vec![key]).unwrap(),
+            expected
+        );
+    }
+    for key in [
+        json!("Bogus"),
+        json!({"Char":"ab"}),
+        json!({"F":-1}),
+        json!({"Char":"a", "F":1}),
+    ] {
+        assert!(runtime.invoke("yinz-key-name", vec![key]).is_err());
+    }
+}
