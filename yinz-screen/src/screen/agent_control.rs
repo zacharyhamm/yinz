@@ -26,6 +26,11 @@ pub(super) struct WorkerWaits {
     waits: std::collections::BTreeMap<String, Option<String>>,
 }
 
+pub(super) struct PermissionWait {
+    conversation: String,
+    input_revision: u64,
+}
+
 pub(super) struct Lifecycle {
     kind: String,
     conversation: String,
@@ -481,6 +486,7 @@ impl Screen {
         self.agent_dialog_inputs.remove(&pane);
         self.agent_clear_inputs.remove(&pane);
         self.agent_worker_waits.remove(&pane);
+        self.claude_permission_waits.remove(&pane);
         let mut keep = Vec::new();
         for pending in std::mem::take(&mut self.agent_controls) {
             if pending.pane == pane && pending.submission_id.is_some() {
@@ -602,6 +608,25 @@ impl Screen {
         if agent.is_none() {
             workers = None;
         }
+        let permission_wait = if hook.is_some_and(HookEvent::is_worker) {
+            self.claude_permission_waits.remove(&pane)
+        } else {
+            hook.filter(|hook| {
+                report.kind == "claude"
+                    && hook.hook_event_name == "Notification"
+                    && hook.notification_type.as_deref() == Some("permission_prompt")
+                    && !hook.archive_only
+                    && agent.as_ref().is_some_and(|agent| {
+                        agent.kind == "claude"
+                            && agent.state == AgentState::Waiting
+                            && agent.session_id.as_deref() == Some(hook.session_id.as_str())
+                    })
+            })
+            .map(|hook| PermissionWait {
+                conversation: hook.session_id.clone(),
+                input_revision: self.agent_input_revision(pane),
+            })
+        };
         let mut visible = agent.clone();
         if let (Some(workers), Some(parent)) = (&mut workers, agent) {
             if workers.parent.kind == parent.kind
@@ -648,6 +673,11 @@ impl Screen {
             .flatten();
         let result = super::thread_main::apply_pane_agent_report(self, pane, visible)
             .context("apply parent state and worker waits")?;
+        if result {
+            if let Some(wait) = permission_wait {
+                self.claude_permission_waits.insert(pane, wait);
+            }
+        }
         if let Some(input) = startup_input {
             self.agent_dialog_inputs.insert(pane, input);
         }
@@ -1987,6 +2017,7 @@ impl Screen {
     }
 
     pub(crate) fn refresh_agent_controls_at(&mut self, now: Instant) {
+        self.refresh_claude_permission_waits();
         self.refresh_draft_clears(now);
         self.agent_clear_inputs
             .retain(|_, input| now < input.deadline);
@@ -2237,6 +2268,48 @@ impl Screen {
             }
         }
         self.agent_controls = keep;
+    }
+
+    fn refresh_claude_permission_waits(&mut self) {
+        for (pane, wait) in std::mem::take(&mut self.claude_permission_waits) {
+            let Some(info) = self.get_pane_info(pane) else {
+                continue;
+            };
+            let Some(mut agent) = info.agent else {
+                continue;
+            };
+            if let Some(workers) = self.agent_worker_waits.get(&pane) {
+                agent = workers.parent.clone();
+            }
+            if info.is_held
+                || info.exited
+                || agent.kind != "claude"
+                || agent.session_id.as_deref() != Some(wait.conversation.as_str())
+                || agent.state != AgentState::Waiting
+            {
+                continue;
+            }
+            let enter_revision = self
+                .tab_containing_pane(pane)
+                .and_then(|tab| tab.get_pane_with_id(pane))
+                .map_or(0, |pane| pane.agent_enter_revision());
+            if enter_revision <= wait.input_revision {
+                self.claude_permission_waits.insert(pane, wait);
+                continue;
+            }
+            // shortcut: Enter infers an answer and may open another dialog; use dialog detection if needed.
+            agent.state = AgentState::Busy;
+            agent.detail = None;
+            agent.waiting_on = None;
+            agent.wait_needs_a_person = false;
+            if let Some(workers) = self.agent_worker_waits.get_mut(&pane) {
+                workers.parent = agent;
+            } else {
+                super::thread_main::apply_pane_agent_report(self, pane, Some(agent))
+                    .context("clear Claude permission wait after Enter")
+                    .non_fatal();
+            }
+        }
     }
 
     pub(super) fn agent_control_event(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {

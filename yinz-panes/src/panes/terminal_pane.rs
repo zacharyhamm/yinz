@@ -141,6 +141,7 @@ pub struct TerminalPane {
     waiting_pulse_started_at: Option<Instant>,
     waiting_pulse: Option<f32>,
     agent_input_revision: u64,
+    agent_enter_revision: u64,
     agent_input_at: Option<Instant>,
     /// Whether this pane has ever held an agent record, however it got there.
     ///
@@ -1491,11 +1492,17 @@ impl Pane for TerminalPane {
     fn agent_input_revision(&self) -> u64 {
         self.agent_input_revision
     }
+    fn agent_enter_revision(&self) -> u64 {
+        self.agent_enter_revision
+    }
     fn agent_input_at(&self) -> Option<Instant> {
         self.agent_input_at
     }
-    fn record_agent_input(&mut self) {
+    fn record_agent_input(&mut self, is_enter: bool) {
         self.agent_input_revision = self.agent_input_revision.wrapping_add(1);
+        if is_enter {
+            self.agent_enter_revision = self.agent_input_revision;
+        }
         self.agent_input_at = Some(Instant::now());
     }
     fn last_agent_cwd(&self) -> Option<&str> {
@@ -1693,6 +1700,7 @@ impl Pane for TerminalPane {
             self.is_held = None;
             self.suspended = false;
             self.agent_input_revision = 0;
+            self.agent_enter_revision = 0;
             self.agent_input_at = None;
             self.clear_waiting_pulse();
             if let Some(agent) = self.agent.as_mut() {
@@ -2116,6 +2124,7 @@ impl TerminalPane {
             waiting_pulse_started_at: None,
             waiting_pulse: None,
             agent_input_revision: 0,
+            agent_enter_revision: 0,
             agent_input_at: None,
             is_related: false,
             borderless: false,

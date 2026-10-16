@@ -5,6 +5,7 @@ use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse, NotR
 use yinz_types::agent::report::{AgentReport, AgentReportState};
 use yinz_types::agent::{hook_outcome, AgentEvent, AgentState, HookEvent, HookOutcome};
 use yinz_types::command::PaneTarget;
+use yinz_types::internal_ids::PluginId;
 use yinz_types::keys::{BareKey, KeyWithModifier};
 
 const PANE: PaneId = PaneId::Terminal(TerminalId::new(7));
@@ -40,6 +41,19 @@ fn setup_with_size(
     CapturedClientMessages,
     Receiver<(PtyWriteInstruction, ErrorContext)>,
 ) {
+    setup_with_placement(command, target, size, NewPanePlacement::default())
+}
+
+fn setup_with_placement(
+    command: &str,
+    target: PaneTarget,
+    size: Size,
+    placement: NewPanePlacement,
+) -> (
+    Screen,
+    CapturedClientMessages,
+    Receiver<(PtyWriteInstruction, ErrorContext)>,
+) {
     let mut screen = create_non_mirrored_screen(size);
     let os = FakeInputOutput::default();
     let messages = os.server_to_client_messages.clone();
@@ -65,7 +79,7 @@ fn setup_with_size(
         }),
         false,
         true,
-        NewPanePlacement::default(),
+        placement,
         Some(CLIENT),
         None,
     )
@@ -3394,6 +3408,303 @@ fn claude_permission_notification_waits_even_in_auto_mode() {
             assert_eq!(agent.waiting_on, None);
         }
     }
+}
+
+fn claude_permission_prompt() -> HookEvent {
+    HookEvent {
+        notification_type: Some("permission_prompt".into()),
+        message: Some("Allow Bash?".into()),
+        ..hook("Notification")
+    }
+}
+
+fn permission_key(screen: &mut Screen, key: KeyWithModifier, cli: bool) {
+    if cli {
+        screen.agent_control(
+            AgentRequest::SendKeys {
+                pane_id: PANE,
+                expected_session_id: None,
+                keys: vec![key],
+            },
+            CLIENT,
+        );
+    } else {
+        let bytes = match key.bare_key {
+            BareKey::Enter => b"\r".to_vec(),
+            BareKey::Up => b"\x1b[A".to_vec(),
+            BareKey::Down => b"\x1b[B".to_vec(),
+            BareKey::Char(c) => c.to_string().into_bytes(),
+            _ => panic!("unsupported fixture key"),
+        };
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .write_to_active_terminal(&Some(key), bytes, false, CLIENT, None)
+            .unwrap();
+    }
+    screen.refresh_agent_controls();
+}
+
+#[test]
+fn claude_permission_enter_clears_wait_before_tool_completion_in_every_placement() {
+    use yinz_types::data::{OverlayKind, OverlayPlacement};
+    for placement in [
+        NewPanePlacement::default(),
+        NewPanePlacement::Floating(None),
+        NewPanePlacement::Overlay(OverlayPlacement::new(OverlayKind::Modal, None)),
+    ] {
+        for cli in [false, true] {
+            let (mut screen, messages, writes) = setup_with_placement(
+                "claude",
+                PaneTarget::Local,
+                Size { cols: 80, rows: 24 },
+                placement.clone(),
+            );
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+            report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            let (sender, plugins) = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            screen.background_plugin_subscriptions.insert(
+                (PluginId::new(99), CLIENT),
+                HashSet::from([EventType::PaneUpdate]),
+            );
+            for _ in 0..2 {
+                report_kind(&mut screen, "claude", claude_permission_prompt());
+                let waiting = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+                assert_eq!(
+                    waiting.state,
+                    AgentState::Waiting,
+                    "old Enter is not an answer"
+                );
+                for key in [
+                    KeyWithModifier::new(BareKey::Down),
+                    KeyWithModifier::new(BareKey::Up),
+                    KeyWithModifier::new(BareKey::Char('y')),
+                    KeyWithModifier::new(BareKey::Enter).with_shift_modifier(),
+                    KeyWithModifier::new(BareKey::Enter).with_ctrl_modifier(),
+                ] {
+                    permission_key(&mut screen, key, cli);
+                    assert_eq!(
+                        screen.get_pane_info(PANE).unwrap().agent,
+                        Some(waiting.clone())
+                    );
+                }
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .paste_to_pane_id(b"yes\r\n".to_vec(), PANE, None)
+                    .unwrap();
+                screen.refresh_agent_controls();
+                assert_eq!(screen.get_pane_info(PANE).unwrap().agent, Some(waiting));
+                plugins.try_iter().for_each(drop);
+                finish_paste(&writes);
+                permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), cli);
+                assert_eq!(finish_paste(&writes), b"\r");
+                let busy = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+                assert_eq!(busy.state, AgentState::Busy);
+                assert_eq!(busy.waiting_on, None);
+                assert_eq!(busy.detail, None);
+                assert!(!busy.wait_needs_a_person);
+                assert!(screen.claude_permission_waits.is_empty());
+                assert!(plugins.try_iter().any(|(instruction, _)| {
+                    let PluginInstruction::Update(updates) = instruction else { return false };
+                    updates.into_iter().any(|(_, _, event)| {
+                        matches!(event, Event::PaneUpdate(manifest) if manifest.panes.values().flatten()
+                            .any(|pane| pane.id == PANE && pane.agent.as_ref() == Some(&busy)))
+                    })
+                }));
+                report_kind(&mut screen, "claude", hook("PostToolUse"));
+                assert_eq!(
+                    screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+                    AgentState::Busy
+                );
+            }
+            report_kind(&mut screen, "claude", hook("Stop"));
+            assert_eq!(
+                screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+                AgentState::Idle
+            );
+            assert!(replies(&messages, CLIENT)
+                .iter()
+                .all(|reply| reply.outcome == AgentOutcome::Ok));
+        }
+    }
+}
+
+#[test]
+fn claude_permission_enter_ignores_other_waits_and_replaced_conversations() {
+    for case in [
+        "question",
+        "elicitation",
+        "conversation",
+        "direct",
+        "codex",
+        "pi",
+    ] {
+        let kind = if matches!(case, "codex" | "pi") {
+            case
+        } else {
+            "claude"
+        };
+        let (mut screen, _, _writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        if kind == "claude" {
+            report_kind(&mut screen, kind, claude_permission_prompt());
+        }
+        let mut replacement = permission_wait(kind);
+        if case == "question" {
+            replacement = HookEvent {
+                tool_name: Some("AskUserQuestion".into()),
+                ..hook("PreToolUse")
+            };
+        } else if case == "conversation" {
+            replacement.session_id = "new-conversation".into();
+        }
+        if case == "direct" {
+            let agent = screen.get_pane_info(PANE).unwrap().agent;
+            crate::screen::apply_pane_agent_report(&mut screen, PANE, agent).unwrap();
+        } else {
+            report_kind(&mut screen, kind, replacement);
+        }
+        let waiting = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        assert_eq!(waiting.state, AgentState::Waiting, "{case}");
+        assert!(screen.claude_permission_waits.is_empty(), "{case}");
+        permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
+        assert_eq!(
+            screen.get_pane_info(PANE).unwrap().agent,
+            Some(waiting),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn claude_permission_enter_preserves_unrelated_worker_waits() {
+    for worker_first in [false, true] {
+        let (mut screen, _, _writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        let worker = HookEvent {
+            agent_id: Some("worker".into()),
+            tool_name: Some("AskUserQuestion".into()),
+            ..hook("PreToolUse")
+        };
+        if worker_first {
+            report_kind(&mut screen, "claude", worker.clone());
+        }
+        report_kind(&mut screen, "claude", claude_permission_prompt());
+        if !worker_first {
+            report_kind(&mut screen, "claude", worker.clone());
+        }
+        let waiting = screen.get_pane_info(PANE).unwrap().agent;
+        permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
+        assert_eq!(screen.get_pane_info(PANE).unwrap().agent, waiting);
+        assert!(screen.claude_permission_waits.is_empty());
+        assert!(screen.agent_worker_waits.contains_key(&PANE));
+        report_kind(
+            &mut screen,
+            "claude",
+            HookEvent {
+                hook_event_name: "PostToolUse".into(),
+                ..worker
+            },
+        );
+        let agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        assert_eq!(agent.state, AgentState::Busy);
+        assert_eq!(agent.waiting_on, None);
+        assert!(!agent.wait_needs_a_person);
+    }
+}
+
+#[test]
+fn claude_permission_wait_requires_forwarded_enter_and_stays_with_its_pane() {
+    let (mut screen, _, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(&mut screen, "claude", claude_permission_prompt());
+    let waiting = screen.get_pane_info(PANE).unwrap().agent;
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .get_pane_with_id_mut(PANE)
+        .unwrap()
+        .set_suspended(true);
+    finish_paste(&writes);
+    permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), false);
+    assert!(finish_paste(&writes).is_empty());
+    assert_eq!(screen.get_pane_info(PANE).unwrap().agent, waiting);
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .get_pane_with_id_mut(PANE)
+        .unwrap()
+        .set_suspended(false);
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen
+        .tabs
+        .get_mut(&TabId::new(1))
+        .unwrap()
+        .write_to_active_terminal(
+            &Some(KeyWithModifier::new(BareKey::Enter)),
+            b"\r".to_vec(),
+            false,
+            CLIENT,
+            None,
+        )
+        .unwrap();
+    screen.refresh_agent_controls();
+    assert_eq!(screen.get_pane_info(PANE).unwrap().agent, waiting);
+    let moved = screen
+        .break_multiple_panes_to_tab_with_id(vec![PANE], TabId::new(1), false, CLIENT)
+        .unwrap();
+    assert!(moved.succeeded());
+    screen.refresh_agent_controls();
+    assert_eq!(screen.get_pane_info(PANE).unwrap().agent, waiting);
+    permission_key(&mut screen, KeyWithModifier::new(BareKey::Enter), true);
+    assert_eq!(
+        screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+        AgentState::Busy
+    );
+    report_kind(&mut screen, "claude", claude_permission_prompt());
+    let waiting = screen.get_pane_info(PANE).unwrap().agent;
+    drop(writes);
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    tab.senders.should_silently_fail = false;
+    assert!(tab
+        .write_key_to_pane_id(PANE, KeyWithModifier::new(BareKey::Enter), None)
+        .is_err());
+    tab.senders.should_silently_fail = true;
+    screen.refresh_agent_controls();
+    assert_eq!(screen.get_pane_info(PANE).unwrap().agent, waiting);
+    screen.close_pane_explicitly(PANE, None);
+    assert!(screen.claude_permission_waits.is_empty());
+}
+
+#[test]
+fn claude_permission_tracking_requires_an_accepted_state_report() {
+    for event in [
+        HookEvent {
+            archive_only: true,
+            ..claude_permission_prompt()
+        },
+        HookEvent {
+            agent_id: Some("worker".into()),
+            ..claude_permission_prompt()
+        },
+        HookEvent {
+            notification_type: Some("worker_permission_prompt".into()),
+            ..claude_permission_prompt()
+        },
+    ] {
+        let (mut screen, _, _writes) = setup("claude");
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        report_kind(&mut screen, "claude", event);
+        assert!(screen.claude_permission_waits.is_empty());
+    }
+    let (mut screen, _, _writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    report_kind(&mut screen, "claude", hook("Interrupt"));
+    report_kind(&mut screen, "claude", claude_permission_prompt());
+    assert!(screen.claude_permission_waits.is_empty());
 }
 
 #[test]
