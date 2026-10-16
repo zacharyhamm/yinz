@@ -137,6 +137,105 @@ fn copied_plugins_cannot_follow_a_replaced_disposable_home() {
 }
 
 #[test]
+fn copied_plugins_keep_their_root_and_reject_unconfined_descriptors() {
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    use yinz_types::input::git_plugin::{GitPlugin, GitRevision};
+
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let home = root.join("home");
+    fs::create_dir(&home).unwrap();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(root.join("src/main.scm"), "(require \"../shared.scm\")").unwrap();
+    fs::write(root.join("shared.scm"), "(provide value) (define value 42)").unwrap();
+    let loader = super::super::steel::Sources {
+        entry: root.join("src/main.scm"),
+        root: root.clone(),
+    };
+    let mut source = yinz_steel::modules::SourceRoot::file(&loader.entry, Some(&root)).unwrap();
+    let controller = Controller::new(root.clone(), vec![]);
+    let copied = controller
+        .copy_plugin(&mut source, "日本 copy #?%23")
+        .unwrap();
+    let plugin = GitPlugin::from_descriptor(&copied).unwrap();
+    let repository = home.join("日本 copy #?%23");
+    assert_eq!(plugin.repo, repository.to_str().unwrap());
+    assert_eq!(plugin.entrypoint, Path::new("src/main.scm"));
+    assert_eq!(plugin.revision, None);
+    assert_eq!(controller.location(&copied, &loader).unwrap(), copied);
+    assert_eq!(
+        fs::read_to_string(repository.join("shared.scm")).unwrap(),
+        fs::read_to_string(root.join("shared.scm")).unwrap()
+    );
+
+    fs::create_dir(home.join("src")).unwrap();
+    fs::write(home.join("src/main.scm"), "").unwrap();
+    fs::create_dir_all(root.join("home-sibling/src")).unwrap();
+    fs::write(root.join("home-sibling/src/main.scm"), "").unwrap();
+    fs::create_dir(repository.join("directory.scm")).unwrap();
+    fs::write(repository.join("other.txt"), "").unwrap();
+    symlink(&repository, home.join("internal-link")).unwrap();
+    symlink(&root, home.join("external-link")).unwrap();
+    symlink(
+        repository.join("src/main.scm"),
+        repository.join("internal.scm"),
+    )
+    .unwrap();
+    symlink(root.join("src/main.scm"), repository.join("external.scm")).unwrap();
+    let fifo = repository.join("pipe.scm");
+    let fifo = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    for repo in [
+        home.clone(),
+        root.clone(),
+        root.join("home-sibling"),
+        home.join("internal-link"),
+        home.join("external-link"),
+        home.join("../home-sibling"),
+        home.join("missing/../日本 copy #?%23"),
+        PathBuf::from("./relative"),
+        PathBuf::from("https://example.com/plugins.git"),
+    ] {
+        let descriptor = GitPlugin {
+            repo: repo.to_str().unwrap().to_owned(),
+            entrypoint: "src/main.scm".into(),
+            revision: None,
+        }
+        .descriptor();
+        assert!(
+            controller.location(&descriptor, &loader).is_err(),
+            "{descriptor}"
+        );
+    }
+    for entrypoint in [
+        "../shared.scm",
+        "/main.scm",
+        "directory.scm",
+        "pipe.scm",
+        "internal.scm",
+        "external.scm",
+        "other.txt",
+        "missing.scm",
+    ] {
+        let descriptor = GitPlugin {
+            entrypoint: entrypoint.into(),
+            ..plugin.clone()
+        }
+        .descriptor();
+        assert!(
+            controller.location(&descriptor, &loader).is_err(),
+            "{descriptor}"
+        );
+    }
+    let pinned = GitPlugin {
+        revision: Some(GitRevision::Branch("main".into())),
+        ..plugin
+    }
+    .descriptor();
+    assert!(controller.location(&pinned, &loader).is_err());
+}
+
+#[test]
 fn raw_actions_cannot_launch_or_reconfigure() {
     let root = tempfile::tempdir().unwrap();
     let mut controller = Controller::new(root.path().to_owned(), vec![]);

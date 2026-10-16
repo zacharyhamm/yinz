@@ -187,17 +187,3 @@
     [(%let-values-bind results ((name ...) rest ...) body ...)
      (apply (lambda (name ...) (%let-values-bind (cdr results) (rest ...) body ...))
             (car results))]))
-(define-syntax define-values
-  (syntax-rules ()
-    [(define-values (name ...) producer)
-     (begin
-       (define results (%values-list producer))
-       (unless (= (length results) (length '(name ...)))
-         (error "define-values arity mismatch"))
-       (%define-values-bind (name ...) results))]))
-(define-syntax %define-values-bind
-  (syntax-rules ()
-    [(%define-values-bind () results) (#%void)]
-    [(%define-values-bind (name rest ...) results)
-     (begin (define name (car results))
-            (%define-values-bind (rest ...) (cdr results)))]))

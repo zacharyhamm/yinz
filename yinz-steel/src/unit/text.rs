@@ -169,6 +169,45 @@ fn multiple_values_validate_arity_and_simultaneous_scope() {
 }
 
 #[test]
+fn define_values_expansions_are_independent_and_hygienic() {
+    check(
+        "(define-values (a b) (values 1 2)) (define-values (c d) (values 3 4)) (list a b c d)",
+        "(1 2 3 4)",
+    );
+    check("(define count 0) (define-values () (begin (set! count (+ count 1)) (values))) (define-values () (begin (set! count (+ count 1)) (values))) (define-values (x y) (begin (set! count (+ count 1)) (values 8 9))) (list count x y)", "(3 8 9)");
+    check("(let () (define-values (a b) (values 1 2)) (define-values () (values)) (define-values (c) (values 3)) (list a b c))", "(1 2 3)");
+    check("(define results 40) (define-values (a b) (values results (+ results 1))) (define-values (c) results) (list a b c results)", "(40 41 40 40)");
+    check("(let ([#%values-destructure #f] [#%values-ref #f] [results 9]) (define-values (a b) (values results 10)) (list a b results))", "(9 10 9)");
+    check("(define (unpack producer #%values-destructure #%values-ref) (define-values (a b) producer) (list a b)) (unpack (values 11 12) #f #f)", "(11 12)");
+    check("(let () (define trace 0) (define-values (a) (begin (set! trace (+ (* trace 10) 1)) (values 3))) (set! trace (+ (* trace 10) 2)) (define-values (b) (begin (set! trace (+ (* trace 10) 3)) (values a))) (define-values () (begin (set! trace (+ (* trace 10) 4)) (values))) (list trace a b))", "(1234 3 3)");
+    check(
+        "(define-values (even?) (values (lambda (_) 77))) (even? 2)",
+        "77",
+    );
+    check("(define-syntax definitions (syntax-rules () [(definitions x y) (begin (define-values (x) (values 6)) (define-values (y) (values 7)))])) (definitions a b) (list a b)", "(6 7)");
+    for source in [
+        "(define-values (recur-even recur-odd) (values (lambda (n) (or (= n 0) (recur-odd (- n 1)))) (lambda (n) (and (> n 0) (recur-even (- n 1)))))) (list (recur-even 8) (recur-odd 9))",
+        "(let () (define-values (recur-even) (values (lambda (n) (or (= n 0) (recur-odd (- n 1)))))) (define-values (recur-odd) (values (lambda (n) (and (> n 0) (recur-even (- n 1)))))) (list (recur-even 8) (recur-odd 9)))",
+    ] {
+        check(source, "(#true #true)");
+    }
+}
+
+#[test]
+fn define_values_arity_errors_retain_the_form_source_location() {
+    let mut runtime = Runtime::new(Ok).unwrap();
+    let error = runtime
+        .eval_with_path(
+            "\n\n(define-values (first second) (values 1))",
+            Some(std::path::Path::new("values.scm")),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("define-values arity mismatch"), "{error}");
+    assert!(error.contains("values.scm:3:"), "{error}");
+}
+
+#[test]
 fn structs_are_distinct_immutable_and_confined() {
     check("(struct point (x y)) (struct other (x y)) (define value (point 3 4)) (list (point? value) (other? value) (point-x value) (point-y value))", "(#true #false 3 4)");
     check("(let ([list-ref #f] [make-struct-type #f]) (struct point (value)) (point-value (point 9)))", "9");
@@ -195,16 +234,16 @@ fn structs_are_distinct_immutable_and_confined() {
 fn structs_and_multiple_values_export_from_confined_modules() {
     let mut root = crate::modules::SourceRoot::embedded("main.scm", std::collections::BTreeMap::from([(
         "values.scm".into(),
-        "(provide point point? point-x a b) (struct point (x)) (define-values (a b) (values 3 4))".into(),
+        "(provide point point? point-x a b c) (struct point (x)) (define-values (a b) (values 3 4)) (define-values () (values)) (define-values (c) (values 5))".into(),
     )])).unwrap();
     let mut runtime = Runtime::new(Ok).unwrap();
     let output = runtime
         .eval_with_source_root(
-            "(require \"./values.scm\") (list (point? (point a)) (point-x (point b)) a b)",
+            "(require \"./values.scm\") (list (point? (point a)) (point-x (point b)) a b c)",
             &mut root,
         )
         .unwrap();
-    assert_eq!(output.values.last().unwrap(), "(#true 4 3 4)");
+    assert_eq!(output.values.last().unwrap(), "(#true 4 3 4 5)");
 }
 
 #[test]

@@ -103,14 +103,18 @@ fn scheme_installed_locations_work_before_load_and_copy_dependencies() {
         "(provide label) (define label \"copied graph ready\")",
     )
     .unwrap();
-    std::fs::write(root.path().join("reader 日本.scm"), r#"
+    std::fs::write(
+        root.path().join("reader 日本.scm"),
+        r#"
         (require "./lib/text.scm")
         (define own-location (yinz-plugin-location))
         (define helper (yinz-plugin-resolve "./lib/text.scm"))
         (define (render rows cols)
-          (if (and (string-contains? own-location "reader") (string-contains? helper "lib/text.scm"))
+          (if (and (string-contains? own-location "reader") (string-contains? helper "text.scm"))
               label "identity unavailable"))
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     let unit = root.path().join("locations.test.scm");
     std::fs::write(
         &unit,
@@ -150,6 +154,86 @@ fn scheme_installed_locations_work_before_load_and_copy_dependencies() {
         &AtomicBool::new(false),
     )
     .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}
+
+#[test]
+fn scheme_installed_locations_keep_parent_imports_through_reload_workers_and_aliases() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("src")).unwrap();
+    std::fs::write(
+        root.path().join("shared.scm"),
+        "(provide label) (define label \"parent import ready\")",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("src/main.scm"),
+        r#"
+        (require "../shared.scm")
+        (define own-location (yinz-plugin-location))
+        (define sibling-location (yinz-plugin-resolve "../shared.scm"))
+        (define phase "unloaded")
+        (define ready #f)
+        (yinz-register-workers (hash "identity" (lambda (name payload)
+          (yinz-post-plugin "identity" (yinz-json-string
+            (list label (yinz-plugin-location) (yinz-plugin-resolve "../shared.scm")))))))
+        (define (load config)
+          (unless (equal? own-location (hash-ref config "expected"))
+            (error "copy identity changed"))
+          (set! phase (hash-ref config "phase"))
+          (yinz-command (hash "Subscribe" '("CustomMessage" "Key")))
+          (yinz-post-worker "identity" "probe" ""))
+        (define (update event)
+          (when (and (hash? event) (hash-contains? event "Key"))
+            (set! phase "await reload"))
+          (when (and (hash? event) (hash-contains? event "CustomMessage"))
+            (define reply (yinz-json-parse (cadr (hash-ref event "CustomMessage"))))
+            (unless (equal? reply (list label own-location sibling-location))
+              (error "worker lost copy identity"))
+            (set! ready #t))
+          #t)
+        (define (render rows cols)
+          (if ready (string-append phase " " label) "waiting for worker identity"))
+    "#,
+    )
+    .unwrap();
+    let binary = super::super::binary()
+        .unwrap()
+        .to_string_lossy()
+        .replace('\'', "'\\''");
+    let command = format!(
+        "'{binary}' --session plugin-test action reconfigure --file \"$HOME/aliases.kdl\" && exec '{binary}' --session plugin-test action launch-or-focus-plugin copied-reader"
+    );
+    let path = root.path().join("copy.integration.test.scm");
+    let script = r#"
+        (test "nested copy" (hash "grants" '("RunCommands")) (lambda ()
+          (define copy (test-copy-plugin "./src/main.scm" "日本 copy #?%23"))
+          (assert (string-contains? copy "git://plugin?"))
+          (test-session "fixture" (hash
+            "files" (hash "aliases.kdl" (string-append
+              "plugins { copied-reader location=" (yinz-json-string copy)
+              " { expected " (yinz-json-string copy) "; phase \"alias\"; }; }"))
+            "commands" (hash "launch-copy-alias" COMMAND)))
+          (test-session "start")
+          (test-session "load" (hash "path" copy
+            "configuration" (hash "expected" copy "phase" "loaded")))
+          (test-wait-for-text "loaded parent import ready")
+          (test-session "key" "r")
+          (test-wait-for-text "await reload parent import ready")
+          (test-session "reload" (hash "path" copy))
+          (test-wait-for-text "loaded parent import ready")
+          (test-session "stop" (hash "path" copy))
+          (test-wait-for "terminal restored" (lambda ()
+            (define screen (test-session "screen"))
+            (and (string-contains? screen "yinz-test>")
+                 (not (string-contains? screen "parent import ready")))))
+          (test-session "text" "launch-copy-alias")
+          (test-session "key" "Enter")
+          (test-wait-for-text "alias parent import ready")))
+    "#
+    .replace("COMMAND", &serde_json::to_string(&command).unwrap());
+    std::fs::write(&path, script).unwrap();
+    let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
     assert!(report.passed(), "{report:#?}");
 }
 
