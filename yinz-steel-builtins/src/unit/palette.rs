@@ -540,3 +540,20 @@ fn session_palette_failed_picker_unsuspends_the_form_and_clears_pending_state() 
         .palette(json!({"type": "dismiss", "opening": 1}))
         .unwrap();
 }
+
+#[test]
+fn session_palette_searches_displayed_tab_names_and_keeps_tab_identity() {
+    let mut session = live("current", true);
+    session["tabs"][0]["name"] = json!("🔔 [4] yinz:topic #2");
+    let mut h = Palette::new(json!({"live_sessions": [session], "resurrectable_sessions": []}));
+    let view = h.open("find-tab");
+    let actions = h.discover(view["source"].clone(), "yinz:topic");
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0]["label"]
+        .as_str()
+        .unwrap()
+        .contains("🔔 [4] yinz:topic #2"));
+    h.execute(actions[0]["handle"].clone(), Value::Null)
+        .unwrap();
+    assert!(h.issued(json!({"GoToTabWithId": 7})));
+}

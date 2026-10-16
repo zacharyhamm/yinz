@@ -1319,7 +1319,7 @@ fn palette_sessions() -> ((TestSession, FakePtyHandle), (TestSession, FakePtyHan
     (sender, receiver)
 }
 
-fn palette_pull(receiver: &TestSession, sender: &TestSession, command: &str, target: &str) {
+fn palette_warp_source(receiver: &TestSession, sender: &TestSession, command: &str) {
     receiver.send_stdin(b"\x1b[112;7u");
     receiver.wait_until("palette opens", |grid| {
         grid.contains("Switch current project")
@@ -1334,6 +1334,10 @@ fn palette_pull(receiver: &TestSession, sender: &TestSession, command: &str, tar
         grid.contains(&format!("› {}", sender.session_name()))
     });
     receiver.send_stdin(&keys::ENTER);
+}
+
+fn palette_pull(receiver: &TestSession, sender: &TestSession, command: &str, target: &str) {
+    palette_warp_source(receiver, sender, command);
     receiver.send_stdin(target.as_bytes());
     receiver.wait_until("warp target discovered", |grid| {
         !grid.contains("Source session") && grid.contains(target) && !grid.contains("No matches")
@@ -1438,7 +1442,13 @@ fn palette_all_tabs_failure_retains_completed_and_unattempted_tabs() {
         panes.push(pane);
     }
     panes[0].fail_warp(WarpFailure::UnadoptableOnce);
-    palette_pull(&receiver, &sender, "Warp tab", "All tabs");
+    palette_warp_source(&receiver, &sender, "Warp tab");
+    // The receiver's session scan can still describe the source before its third tab existed.
+    receiver.wait_until("all three source tabs discovered", |grid| {
+        grid.contains("(tab 3)")
+    });
+    receiver.send_stdin(b"All tabs");
+    receiver.send_stdin(&keys::ENTER);
     let arrived = receiver.expect_adopted_pty();
     assert!(arrived
         .stdin_bytes()
@@ -1762,6 +1772,8 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
         }
     }
 
+    // Initialize isolation before resolving the lazy socket directory.
+    yinz_integration_tests::test_env::init();
     let name = format!("warp-disconnect-{}", std::process::id());
     std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
     let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
@@ -1772,31 +1784,32 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
         .unwrap();
     let (disconnect, wait_to_disconnect) = std::sync::mpsc::channel();
     let destination = std::thread::spawn(move || {
-        let probe = listener.accept().unwrap();
-        let mut reply: IpcSenderWithContext<ServerToClientMsg> = IpcSenderWithContext::new(probe);
-        let mut request: IpcReceiverWithContext<ClientToServerMsg> = reply.get_receiver().unwrap();
-        assert!(matches!(
-            request.recv_client_msg().msg(),
-            Some((ClientToServerMsg::ConnStatus, _))
-        ));
-        reply
-            .send_server_msg(ServerToClientMsg::Connected {
-                warp_companions: true,
-                warp_held_terminals: true,
-            })
-            .unwrap();
-        let mut adoption: IpcReceiverWithContext<ClientToServerMsg> =
-            IpcReceiverWithContext::new(listener.accept().unwrap());
-        assert!(matches!(
-            adoption.recv_client_msg().msg(),
-            Some((
-                ClientToServerMsg::Action {
-                    action: yinz_types::input::actions::Action::AdoptPane { .. },
-                    ..
+        // Session discovery may probe the listener before the warp client does.
+        let _adoption = loop {
+            let connection = listener.accept().unwrap();
+            let mut reply: IpcSenderWithContext<ServerToClientMsg> =
+                IpcSenderWithContext::new(connection);
+            let mut request: IpcReceiverWithContext<ClientToServerMsg> =
+                reply.get_receiver().unwrap();
+            match request.recv_client_msg().msg() {
+                Some((ClientToServerMsg::ConnStatus, _)) => {
+                    reply
+                        .send_server_msg(ServerToClientMsg::Connected {
+                            warp_companions: true,
+                            warp_held_terminals: true,
+                        })
+                        .unwrap();
                 },
-                _
-            ))
-        ));
+                Some((
+                    ClientToServerMsg::Action {
+                        action: yinz_types::input::actions::Action::AdoptPane { .. },
+                        ..
+                    },
+                    _,
+                )) => break request,
+                other => panic!("unexpected destination request: {other:?}"),
+            }
+        };
         wait_to_disconnect
             .recv_timeout(yinz_test_support::default_timeout())
             .unwrap();

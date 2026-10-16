@@ -2186,6 +2186,107 @@ pub fn send_cli_query_tab_names_action() {
 }
 
 #[test]
+fn queried_tab_names_can_be_used_for_navigation() {
+    let mut mock_screen = MockScreen::new(Size { cols: 80, rows: 10 });
+    mock_screen.config.options.pane_frame_style = Some(PaneFrameStyle::Titles);
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::SetCliEventSubscribersPresent(true))
+        .unwrap();
+    let client_id = mock_screen.main_client_id;
+    mock_screen.new_tab(TiledPaneLayout::default());
+    let session_metadata = mock_screen.clone_session_metadata();
+    let screen_thread = mock_screen.run(None, vec![]);
+    let received_server_instructions = Watched::new(vec![]);
+    let server_receiver = mock_screen.server_receiver.take().unwrap();
+    let server_thread = log_actions_in_thread!(
+        received_server_instructions,
+        ServerInstruction::KillSession,
+        server_receiver
+    );
+    let received_plugin_instructions = Watched::new(vec![]);
+    let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+    let plugin_thread = log_actions_in_thread!(
+        received_plugin_instructions,
+        PluginInstruction::Exit,
+        plugin_receiver
+    );
+    send_cli_action_to_server(
+        &session_metadata,
+        CliAction::RenameTab {
+            name: "work".into(),
+            tab_id: Some(TAB_0),
+        },
+        client_id,
+    );
+    send_cli_action_to_server(&session_metadata, CliAction::QueryTabNames, client_id);
+    let names = received_server_instructions.wait_until(
+        "the stored tab names from the CLI query",
+        yinz_test_support::default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    ServerInstruction::Log(names, _, _) => Some(names.clone()),
+                    _ => None,
+                })
+        },
+    );
+    assert_eq!(names, vec!["work", "Tab #2"]);
+    let wait_for_active_tab = |tab_id| {
+        received_plugin_instructions.wait_until(
+            "navigation to the requested tab without creating another tab",
+            yinz_test_support::default_timeout(),
+            |instructions| {
+                instructions.iter().rev().find_map(|instruction| {
+                    let PluginInstruction::Update(updates) = instruction else {
+                        return None;
+                    };
+                    updates.iter().find_map(|(_, _, event)| match event {
+                        Event::TabUpdate(tabs)
+                            if tabs.iter().any(|tab| tab.tab_id == tab_id && tab.active) =>
+                        {
+                            Some(tabs.len())
+                        },
+                        _ => None,
+                    })
+                })
+            },
+        )
+    };
+    send_cli_action_to_server(
+        &session_metadata,
+        CliAction::GoToTab {
+            index: TabNumber::new(1),
+        },
+        client_id,
+    );
+    assert_eq!(wait_for_active_tab(TAB_0), 2);
+    for create in [false, true] {
+        received_plugin_instructions.lock().clear();
+        send_cli_action_to_server(
+            &session_metadata,
+            CliAction::GoToTab {
+                index: TabNumber::new(2),
+            },
+            client_id,
+        );
+        assert_eq!(wait_for_active_tab(TabId::new(1)), 2);
+        received_plugin_instructions.lock().clear();
+        send_cli_action_to_server(
+            &session_metadata,
+            CliAction::GoToTabName {
+                name: names[0].clone(),
+                create,
+            },
+            client_id,
+        );
+        assert_eq!(wait_for_active_tab(TAB_0), 2);
+    }
+    mock_screen.teardown(vec![plugin_thread, server_thread, screen_thread]);
+}
+
+#[test]
 pub fn send_cli_launch_or_focus_plugin_action() {
     let size = Size {
         cols: 121,

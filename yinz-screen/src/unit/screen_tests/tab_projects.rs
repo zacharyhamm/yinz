@@ -11,7 +11,28 @@ fn set_projects(screen: &mut Screen, projects: &[(usize, &str)]) {
 }
 
 fn name_of(screen: &Screen, tab_id: TabId) -> String {
-    screen.plugin_tab_names().remove(&tab_id).expect("TEST")
+    let name = screen.plugin_tab_names().remove(&tab_id).expect("TEST");
+    let client = ClientId::new(1);
+    let tabs = screen.collect_tab_list(client).unwrap();
+    assert_eq!(
+        tabs.iter().find(|tab| tab.tab_id == tab_id).unwrap().name,
+        name
+    );
+    for pane in screen
+        .collect_pane_list(true)
+        .unwrap()
+        .iter()
+        .filter(|pane| pane.tab_id == tab_id)
+    {
+        assert_eq!(pane.tab_name, name);
+    }
+    if screen.active_tab_ids.get(&client) == Some(&tab_id) {
+        assert_eq!(
+            screen.get_current_tab_info(client).unwrap().unwrap().name,
+            name
+        );
+    }
+    name
 }
 
 #[test]
@@ -1727,4 +1748,33 @@ fn waiting_agent_bell_tracks_all_panes_and_moves_between_tabs() {
         .unwrap()
         .close_pane(pane(1), false, None);
     assert!(!name_of(&screen, destination).contains('🔔'));
+}
+
+#[test]
+fn session_snapshots_refresh_display_names_without_changing_layout_names() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_named_tab(&mut screen, 1, TabId::new(0), "editor");
+    new_named_tab(&mut screen, 2, TabId::new(1), "shell");
+    for project in [
+        "yinz:topic",
+        "a very long project and worktree label that needs shortening",
+    ] {
+        set_projects(&mut screen, &[(0, project), (1, project)]);
+        screen.log_and_report_session_state().unwrap();
+        let names = screen.plugin_tab_names();
+        let session = &screen.peer_sessions_cache[&screen.session_name];
+        for tab in &session.tabs {
+            assert_eq!(tab.name, names[&tab.tab_id]);
+            assert_eq!(tab.position, screen.tabs[&tab.tab_id].position);
+        }
+        let layout = screen.get_layout_metadata(None, None).to_layout_metadata();
+        assert_eq!(
+            layout
+                .tabs
+                .iter()
+                .map(|tab| tab.name.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("editor"), Some("shell")]
+        );
+    }
 }

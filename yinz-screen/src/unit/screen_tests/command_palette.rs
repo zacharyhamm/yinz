@@ -5371,3 +5371,29 @@ fn dynamic_palette_refresh_recovers_after_execution_error_and_stops_after_close(
         scope
     }));
 }
+
+#[test]
+fn palette_uses_displayed_tab_names_but_renames_the_stored_name() {
+    let mut screen = screen();
+    screen
+        .tab_projects
+        .insert(TabId::new(0), "yinz:topic".into());
+    screen.log_and_report_session_state().unwrap();
+    let renders = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+
+    palette_search(&mut screen, "Close tab");
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+    assert!(
+        frame.contains("Close yinz:topic (tab 1, 1 panes)?"),
+        "{frame}"
+    );
+    screen.close_command_palette(CLIENT);
+
+    palette_search(&mut screen, "Rename tab");
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+    assert!(frame.contains("Tab #1"), "{frame}");
+    assert!(!frame.contains("yinz:topic"), "{frame}");
+}
