@@ -306,6 +306,41 @@ fn horizontal_resize_reports_rounding_without_changing_geometry() {
 }
 
 #[test]
+fn undirected_resize_reports_rounding_without_changing_geometry() {
+    for rows in [dim_pct(100.0, 20), Dimension::fixed(20)] {
+        let specs = [
+            spec(1, 0, 0, dim_pct(53.0, 6), rows),
+            spec(2, 6, 0, dim_pct(47.0, 6), rows),
+        ];
+        let mut panes: HashMap<_, Box<dyn Pane>> = specs
+            .iter()
+            .map(|s| (s.id, Box::new(MockPane::from_spec(*s)) as Box<dyn Pane>))
+            .collect();
+        let viewport = Viewport {
+            x: 0,
+            y: 0,
+            cols: 12,
+            rows: 20,
+        };
+        let mut grid = TiledPaneGrid::new(&mut panes, &HashSet::new(), viewport, viewport);
+        let error = grid
+            .change_pane_size(
+                &specs[0].id,
+                &ResizeStrategy::new(Resize::Decrease, None),
+                (5.0, 5.0),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<YinzError>(),
+            Some(YinzError::PaneSizeUnchanged)
+        ));
+        for spec in specs {
+            assert_eq!(grid.get_pane_geom(&spec.id).unwrap(), spec.geom());
+        }
+    }
+}
+
+#[test]
 fn missing_geometry_is_ignored_by_resize_and_border_checks() {
     let mut panes = HashMap::new();
     let mut grid = TiledPaneGrid::new(

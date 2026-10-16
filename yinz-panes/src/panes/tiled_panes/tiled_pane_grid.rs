@@ -430,6 +430,7 @@ impl<'a> TiledPaneGrid<'a> {
                 (Dir::Up, None, None, 0),
             ];
 
+            let mut rounding_error = None;
             for (main_dir, sub_dir, adjust_dir, adjust_pane) in options {
                 if let Some(sub_dir) = sub_dir {
                     let main_strategy = ResizeStrategy {
@@ -452,32 +453,41 @@ impl<'a> TiledPaneGrid<'a> {
                             .can_change_pane_size(pane_id, &sub_strategy, change_by)
                             .unwrap_or(false)
                     {
-                        if !self
-                            .change_pane_size(pane_id, &main_strategy, change_by)
+                        match self.change_pane_size(pane_id, &main_strategy, change_by) {
+                            Ok(true) => {},
+                            Ok(false) => continue,
+                            Err(err) => match err.downcast_ref::<YinzError>() {
+                                Some(YinzError::PaneSizeUnchanged) => {
+                                    rounding_error.get_or_insert(err);
+                                    continue;
+                                },
+                                _ => return Err(err).with_context(err_context),
+                            },
+                        }
+                        if self
+                            .change_pane_size(pane_id, &sub_strategy, change_by)
                             .with_context(err_context)?
                         {
-                            continue;
-                        }
-                        let result = self
-                            .change_pane_size(pane_id, &sub_strategy, change_by)
-                            .and_then(|ret| {
-                                if let Some(aligned_pane) = aligned_panes[adjust_pane] {
-                                    Ok(ret
-                                        && self.change_pane_size(
-                                            &aligned_pane,
-                                            &ResizeStrategy {
-                                                direction: adjust_dir,
-                                                invert_on_boundaries: false,
-                                                resize: strategy.resize.invert(),
-                                            },
-                                            change_by,
-                                        )?)
-                                } else {
-                                    Ok(ret)
+                            if let Some(aligned_pane) = aligned_panes[adjust_pane] {
+                                match self.change_pane_size(
+                                    &aligned_pane,
+                                    &ResizeStrategy {
+                                        direction: adjust_dir,
+                                        invert_on_boundaries: false,
+                                        resize: strategy.resize.invert(),
+                                    },
+                                    change_by,
+                                ) {
+                                    Ok(_) => {},
+                                    Err(err) => match err.downcast_ref::<YinzError>() {
+                                        Some(YinzError::PaneSizeUnchanged) => {},
+                                        _ => return Err(err).with_context(err_context),
+                                    },
                                 }
-                            })
-                            .with_context(err_context)?;
-                        return Ok(result);
+                            }
+                        }
+                        // The main resize succeeded even if subsequent adjustments were blocked.
+                        return Ok(true);
                     }
                 } else {
                     let new_strategy = ResizeStrategy {
@@ -492,11 +502,17 @@ impl<'a> TiledPaneGrid<'a> {
                             Some(YinzError::CantResizeFixedPanes { pane_ids }) => {
                                 fixed_panes_blocking_resize.extend_from_slice(pane_ids);
                             },
-                            Some(YinzError::PaneSizeUnchanged) => {},
+                            Some(YinzError::PaneSizeUnchanged) => {
+                                rounding_error.get_or_insert(err);
+                            },
                             _ => return Err(err).with_context(err_context),
                         },
                     }
                 }
+            }
+            // A larger retry can succeed even when other directions have fixed-pane blockers.
+            if let Some(err) = rounding_error {
+                return Err(err).with_context(err_context);
             }
             if !fixed_panes_blocking_resize.is_empty() {
                 fixed_panes_blocking_resize.sort_unstable();
@@ -587,7 +603,7 @@ impl<'a> TiledPaneGrid<'a> {
         drop(panes);
         input.sort_by_key(|(id, _, _, _)| *id);
         if (packed || capped) && desired == current {
-            return Ok(false);
+            return Err(YinzError::PaneSizeUnchanged.into());
         }
         let mut resizer = PaneResizer::new(self.panes.clone());
         let mut preview = |amount: f64| -> Result<_> {
