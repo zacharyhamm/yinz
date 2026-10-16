@@ -2254,6 +2254,9 @@ fn queried_tab_names_can_be_used_for_navigation() {
             },
         )
     };
+    // Drain startup updates so the first navigation cannot match the one-tab state.
+    assert_eq!(wait_for_active_tab(TabId::new(1)), 2);
+    received_plugin_instructions.lock().clear();
     send_cli_action_to_server(
         &session_metadata,
         CliAction::GoToTab {

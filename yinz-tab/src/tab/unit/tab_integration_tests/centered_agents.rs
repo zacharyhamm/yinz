@@ -1620,6 +1620,204 @@ fn capped_agent_undirected_resize_still_grows_height() {
 }
 
 #[test]
+fn packed_undirected_resize_shrinks_height_when_width_rounds_to_zero() {
+    let mut tab = create_new_tab_with_layout(
+        Size { cols: 10, rows: 20 },
+        ModeInfo::default(),
+        r#"layout {
+            pane size="30%" split_direction="vertical" { pane focus=true; pane; }
+            pane split_direction="vertical" { pane; pane; }
+        }"#,
+    );
+    let agent = PaneId::Terminal(TerminalId::new(0));
+    tab.max_agent_width = 80;
+    mark_agent(&mut tab, agent);
+    draw(&mut tab);
+    let pane = tab.get_pane_with_id(agent).unwrap();
+    let before = pane.current_geom();
+    assert_eq!((before.x, before.y), (0, 0));
+    assert_eq!((before.cols.as_usize(), before.rows.as_usize()), (5, 6));
+    assert!(pane.render_width().is_some());
+
+    tab.resize_pane_with_id(ResizeStrategy::new(Resize::Decrease, None), agent)
+        .unwrap();
+    draw(&mut tab);
+
+    let pane = tab.get_pane_with_id(agent).unwrap();
+    assert_eq!(pane.current_geom().cols, before.cols);
+    for geom in [pane.current_geom(), pane.render_geom()] {
+        assert_eq!((geom.x, geom.y), (0, 0));
+        assert_eq!((geom.cols.as_usize(), geom.rows.as_usize()), (5, 5));
+    }
+}
+
+#[test]
+fn undirected_resize_retries_when_all_attempts_round_to_zero() {
+    for packed in [false, true] {
+        let mut tab = create_new_tab_with_layout(
+            Size { cols: 12, rows: 10 },
+            ModeInfo::default(),
+            r#"layout {
+                pane split_direction="vertical" { pane size="53%" focus=true; pane; }
+                pane split_direction="vertical" { pane size="53%"; pane; }
+            }"#,
+        );
+        let resizing = PaneId::Terminal(TerminalId::new(0));
+        if packed {
+            tab.max_agent_width = 80;
+            mark_agent(&mut tab, resizing);
+        }
+        draw(&mut tab);
+        let before = tab.get_pane_with_id(resizing).unwrap().current_geom();
+        assert_eq!((before.x, before.y), (0, 0));
+        assert_eq!((before.cols.as_usize(), before.rows.as_usize()), (6, 5));
+
+        assert!(tab
+            .tiled_panes
+            .resize_pane_with_id(ResizeStrategy::new(Resize::Decrease, None), resizing, None)
+            .unwrap());
+        draw(&mut tab);
+
+        let pane = tab.get_pane_with_id(resizing).unwrap();
+        for geom in [pane.current_geom(), pane.render_geom()] {
+            assert_eq!((geom.x, geom.y), (0, 0));
+            assert_eq!((geom.cols.as_usize(), geom.rows.as_usize()), (5, 5));
+        }
+    }
+}
+
+#[test]
+fn compound_resize_preserves_success_when_corner_agent_cannot_grow() {
+    for stacked in [false, true] {
+        let mut tab = create_new_tab_with_layout(
+            Size {
+                cols: 400,
+                rows: 40,
+            },
+            ModeInfo::default(),
+            r#"layout {
+                pane split_direction="vertical" { pane; pane; }
+                pane split_direction="vertical" { pane; pane; }
+            }"#,
+        );
+        let resizing = *tab
+            .tiled_panes
+            .get_panes()
+            .find(|(_, pane)| pane.current_geom().x == 0 && pane.current_geom().y == 0)
+            .unwrap()
+            .0;
+        let corner = *tab
+            .tiled_panes
+            .get_panes()
+            .find(|(_, pane)| pane.current_geom().x == 200 && pane.current_geom().y == 20)
+            .unwrap()
+            .0;
+        tab.max_agent_width = 80;
+        mark_agent(&mut tab, corner);
+        draw(&mut tab);
+        let before = tab.get_pane_with_id(resizing).unwrap().current_geom();
+        assert_eq!(before.rows.as_usize(), 20);
+        let strategy = ResizeStrategy::new(Resize::Decrease, None);
+        let changed = if stacked {
+            tab.tiled_panes
+                .stacked_resize_pane_with_id(resizing, &strategy, None)
+        } else {
+            tab.tiled_panes
+                .resize_pane_with_id(strategy, resizing, Some((30.0, 30.0)))
+        }
+        .unwrap();
+        assert!(changed);
+        draw(&mut tab);
+        let after = tab.get_pane_with_id(resizing).unwrap().current_geom();
+        assert_eq!(after.rows.as_usize(), 8);
+        assert!(after.cols.as_usize() < before.cols.as_usize());
+        assert_eq!(
+            tab.get_pane_with_id(corner).unwrap().get_content_columns(),
+            80
+        );
+    }
+}
+
+#[test]
+fn compound_resize_preserves_success_when_corner_adjustment_rounds_to_zero() {
+    let mut tab = create_new_tab_with_layout(
+        Size { cols: 18, rows: 40 },
+        ModeInfo::default(),
+        r#"layout split_direction="vertical" {
+            pane split_direction="horizontal" {
+                pane split_direction="vertical" { pane; pane; }
+                pane split_direction="vertical" { pane; pane; }
+            }
+            pane size=2
+        }"#,
+    );
+    let resizing = PaneId::Terminal(TerminalId::new(0));
+    let corner = PaneId::Terminal(TerminalId::new(4));
+    tab.set_pane_selectable(PaneId::Terminal(TerminalId::new(1)), false);
+    tab.max_agent_width = 80;
+    mark_agent(&mut tab, corner);
+    draw(&mut tab);
+    assert_eq!(tab.viewport.borrow().cols, 16);
+    let pane = tab.get_pane_with_id(corner).unwrap();
+    assert!(pane.render_width().is_none());
+    assert_eq!((pane.current_geom().x, pane.current_geom().y), (8, 20));
+    let before = tab.get_pane_with_id(resizing).unwrap().current_geom();
+    assert_eq!((before.x, before.y), (0, 0));
+    assert_eq!((before.cols.as_usize(), before.rows.as_usize()), (8, 20));
+
+    tab.resize_pane_with_id(ResizeStrategy::new(Resize::Decrease, None), resizing)
+        .unwrap();
+    draw(&mut tab);
+
+    let pane = tab.get_pane_with_id(resizing).unwrap();
+    assert_eq!(pane.current_geom().rows.as_usize(), 18);
+    assert_eq!(pane.render_geom().rows.as_usize(), 18);
+}
+
+#[test]
+fn packed_resize_retries_sub_column_keyboard_movement() {
+    for agent_id in [0, 1] {
+        for by_id in [false, true] {
+            let mut tab = create_new_tab_with_layout(
+                Size { cols: 12, rows: 20 },
+                ModeInfo::default(),
+                r#"layout split_direction="vertical" { pane size="53%" focus=true; pane; }"#,
+            );
+            let left = PaneId::Terminal(TerminalId::new(0));
+            let right = PaneId::Terminal(TerminalId::new(1));
+            tab.max_agent_width = 80;
+            mark_agent(&mut tab, PaneId::Terminal(TerminalId::new(agent_id)));
+            draw(&mut tab);
+            let before = [left, right].map(|id| tab.get_pane_with_id(id).unwrap().current_geom());
+            assert_eq!(before.map(|geom| geom.cols.as_usize()), [6, 6]);
+            assert!(tab.get_pane_with_id(left).unwrap().render_width().is_some());
+            let strategy = ResizeStrategy::new(Resize::Decrease, Some(Direction::Right));
+            // Mouse resizing ignores sub-column movement without applying the keyboard retry.
+            assert!(!tab
+                .tiled_panes
+                .resize_pane_with_strategies(left, &[strategy], (5.0, 0.0))
+                .unwrap());
+            for (id, geom) in [left, right].into_iter().zip(before) {
+                assert_eq!(tab.get_pane_with_id(id).unwrap().current_geom(), geom);
+            }
+            if by_id {
+                tab.resize_pane_with_id(strategy, left).unwrap();
+            } else {
+                tab.resize(ClientId::new(1), strategy).unwrap();
+            }
+            draw(&mut tab);
+            for (id, x, cols) in [(left, 0, 5), (right, 5, 7)] {
+                let pane = tab.get_pane_with_id(id).unwrap();
+                for geom in [pane.current_geom(), pane.render_geom()] {
+                    assert_eq!((geom.x, geom.cols.as_usize()), (x, cols));
+                    assert_eq!((geom.y, geom.rows.as_usize()), (0, 20));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn capped_agent_stacked_resize_falls_back_to_stacking() {
     let client = ClientId::new(1);
     for (agent_id, direction) in [(0, Direction::Right), (1, Direction::Left)] {
