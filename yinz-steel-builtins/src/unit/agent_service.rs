@@ -8,6 +8,127 @@ fn service_modules_compile_in_the_confined_graph() {
 }
 
 #[test]
+fn named_branch_repository_publishes_snapshots_and_supplies_summary_branch() {
+    assert_repository_snapshot_and_summary(Some("main"));
+}
+
+#[test]
+fn detached_repository_publishes_snapshots_and_supplies_null_summary_branch() {
+    assert_repository_snapshot_and_summary(Some("HEAD"));
+}
+
+#[test]
+fn ordinary_directory_publishes_snapshots_and_supplies_null_summary_branch() {
+    assert_repository_snapshot_and_summary(None);
+}
+
+fn assert_repository_snapshot_and_summary(head: Option<&str>) {
+    let source = format!(
+        "{}\n{}",
+        include_str!("../../assets/plugins/agent-service/summaries.scm"),
+        r#"
+        (require "./probes.scm")
+        (define (seed panes repository other)
+          (as-set! "panes" panes) (as-set! "subscribers" '(42 43))
+          (for-each (lambda (pane)
+              (define id (hash-ref pane "pane_id"))
+              (as-record-cwd! id (hash-ref pane "cwd"))
+              (as-map-set! "repositories" (as-location id) (if (= id 9) other repository))) panes))
+        (define (publish focused)
+          (as-set! "focused" focused) (as-publish! #t))
+        "#,
+    );
+    let (mut runtime, host) = plugin_with_source(
+        "agent-service/summaries",
+        &source,
+        json!({}),
+        BTreeMap::new(),
+        "",
+    );
+    let mut repository = |head: Option<&str>| {
+        if let Some(head) = head {
+            let metadata = format!("/repo\n/repo/.git\n/repo/.git\n{head}\n");
+            runtime
+                .invoke(
+                    "as-model",
+                    vec![
+                        json!("GitProbe"),
+                        json!(0),
+                        json!(metadata.as_bytes()),
+                        json!([]),
+                    ],
+                )
+                .unwrap()["Checkout"]
+                .clone()
+        } else {
+            runtime
+                .invoke(
+                    "as-model",
+                    vec![json!("RepositoryFolder"), json!("/repo"), json!(null)],
+                )
+                .unwrap()
+        }
+    };
+    let other = repository(Some("other"));
+    let repository = repository(head);
+    let branch = head.filter(|head| *head != "HEAD");
+    assert_eq!(
+        repository.get("branch"),
+        branch.map(|branch| json!(branch)).as_ref()
+    );
+    assert_eq!(repository.get("common_dir").is_some(), head.is_some());
+    let panes: Vec<_> = [7, 8, 9]
+        .into_iter()
+        .map(|id| {
+            json!({
+                "pane_id":id, "title":"Claude", "command":"claude", "status":"Running",
+                "cwd":if id == 9 { "/other" } else { "/repo" }, "tab":[1, "agents"], "agent":null,
+            })
+        })
+        .collect();
+    runtime
+        .invoke("seed", vec![json!(panes), repository.clone(), other])
+        .unwrap();
+    for focused in [9, 7] {
+        host.lock().unwrap().commands.clear();
+        runtime.invoke("publish", vec![json!(focused)]).unwrap();
+        let related = if focused == 7 && head.is_some() {
+            json!([8])
+        } else {
+            json!([])
+        };
+        assert_eq!(
+            runtime.invoke("as-get", vec![json!("related")]).unwrap(),
+            related
+        );
+        let commands = host.lock().unwrap().commands.clone();
+        let snapshots: Vec<_> = commands
+            .iter()
+            .filter_map(|command| command.get("MessageToPlugin"))
+            .collect();
+        assert_eq!(snapshots.len(), 2);
+        for (snapshot, subscriber) in snapshots.iter().zip([42, 43]) {
+            assert_eq!(snapshot["message_name"], "agent_snapshot");
+            assert_eq!(snapshot["destination_plugin_id"], subscriber);
+            let payload: serde_json::Value =
+                serde_json::from_str(snapshot["message_payload"].as_str().unwrap()).unwrap();
+            assert_eq!(payload["focused"], focused);
+            assert_eq!(payload["panes"].as_array().unwrap().len(), 3);
+            assert_eq!(payload["repositories"]["/repo"], repository);
+        }
+    }
+    assert_eq!(
+        runtime.invoke("branch", vec![json!(7)]).unwrap(),
+        json!(branch)
+    );
+    assert_eq!(runtime.invoke("branch", vec![json!(9)]).unwrap(), "other");
+    assert_eq!(
+        runtime.invoke("branch", vec![json!(99)]).unwrap(),
+        json!(null)
+    );
+}
+
+#[test]
 fn publishing_and_persistence_keep_long_histories_and_other_live_agents() {
     let (mut runtime, host) = plugin_with_source(
         "agent-service",
