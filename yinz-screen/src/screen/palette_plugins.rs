@@ -229,7 +229,7 @@ impl CommandPaletteState {
             revision: self.plugins.revision,
         };
         let context = wire::Context {
-            client_id: u32::from(client.get()),
+            client_id: client.get(),
             pane_id: self.context.pane_id,
             tab_id: self.context.tab_id.get() as u64,
             current_project: self.context.current_project.clone(),

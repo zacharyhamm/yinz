@@ -2347,6 +2347,7 @@ pub fn screen_thread_main(
                     // plugin threads' load while an agent worked.
                     let was_attached = screen.is_client_attached(client_id);
                     screen.remove_client(client_id).non_fatal();
+                    keybind_intercepts.remove(&client_id);
                     if !screen.accepts_plugin_output(client_id) {
                         pending.remove_client_plugin_output(client_id);
                     }

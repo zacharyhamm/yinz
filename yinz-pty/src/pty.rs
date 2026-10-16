@@ -759,6 +759,9 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             PtyInstruction::UpdateActivePane(pane_id, client_id) => {
                 pty.set_active_pane(pane_id, client_id);
             },
+            PtyInstruction::RemoveClient(client_id) => {
+                pty.remove_client(client_id);
+            },
             PtyInstruction::GoToTab(tab_index, client_id) => {
                 pty.bus
                     .senders
@@ -3391,6 +3394,11 @@ impl Pty {
         if let Some(pane_id) = pane_id {
             self.active_panes.insert(client_id, pane_id);
         }
+    }
+    /// A departed client is focused nowhere: its pane no longer gives new panes their cwd, and
+    /// it is no longer among the clients a cwd or command change concerns.
+    pub(crate) fn remove_client(&mut self, client_id: ClientId) {
+        self.active_panes.remove(&client_id);
     }
     pub(crate) fn rerun_command_in_pane(
         &mut self,

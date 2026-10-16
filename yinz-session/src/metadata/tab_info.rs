@@ -69,7 +69,7 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
             if let Some(entry_parsed) = entry.value().as_i64() {
                 other_focused_clients.push(
                     ClientId::try_from(entry_parsed)
-                        .map_err(|_| "client_id is outside u16 range")?,
+                        .map_err(|_| "client_id is outside u32 range")?,
                 );
             }
         }
@@ -102,6 +102,7 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         is_sync_panes_active,
         are_floating_panes_visible,
         other_focused_clients,
+        other_focused_client_slots: vec![],
         active_swap_layout_name,
         is_swap_layout_dirty,
         viewport_rows,

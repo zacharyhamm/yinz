@@ -37,7 +37,8 @@ fn detach_with_owned_pane(editor_open: bool, another_client: bool) {
         client
     });
     yinz.detach_main_client();
-    // A sole client reuses the old ID; an already attached client takes over with its own ID.
+    // A reattaching sole client gets a new ID and the departed client's focus; an already
+    // attached client takes over with its own ID.
     let client = other.unwrap_or_else(|| yinz.attach_client(TERMINAL_SIZE));
     client.wait_until("the owned pane survives its owner's detach", |grid| {
         grid.contains(marker)

@@ -1284,7 +1284,7 @@ fn palette_moves_sync_scroll_mode_to_the_moved_pane() {
             .get_pane_with_id_mut(scrolled)
             .unwrap();
         pane.handle_pty_bytes(b"scrollback\r\n".repeat(100));
-        pane.scroll_up(5, CLIENT);
+        pane.scroll_up(5, Some(CLIENT));
         let (before, after) = if moved_is_scrolled {
             (InputMode::Normal, InputMode::Scroll)
         } else {
@@ -2073,7 +2073,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_sou
     else {
         panic!()
     };
-    assert_eq!(context.client_id, u32::from(CLIENT.get()));
+    assert_eq!(context.client_id, CLIENT.get());
     // Repainting never requests discovery again.
     render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!requests.try_iter().any(|(request, _)| matches!(

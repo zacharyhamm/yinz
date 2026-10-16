@@ -4,7 +4,7 @@ use yinz_types::internal_ids::TabPosition;
 
 #[test]
 fn client_history_preserves_boundaries_and_rejects_narrowing() {
-    for value in [0, u16::MAX] {
+    for value in [0, 65_536, u32::MAX] {
         let session = SessionInfo {
             tab_history: BTreeMap::from([(
                 ClientId::new(value),
@@ -21,7 +21,7 @@ fn client_history_preserves_boundaries_and_rejects_narrowing() {
         .unwrap();
         assert_eq!(decoded.tab_history, session.tab_history);
         assert_eq!(decoded.pane_history, session.pane_history);
-        for invalid in [-1_i64, 65536, i64::MAX] {
+        for invalid in [-1_i64, 4_294_967_296, i64::MAX] {
             let invalid = encoded.replace(&format!("id {value}"), &format!("id {invalid}"));
             assert!(crate::metadata::session_info::from_string(
                 &invalid,
@@ -136,6 +136,7 @@ fn serialize_and_deserialize_session_info_with_data() {
                     yinz_types::data::ClientId::new(2),
                     yinz_types::data::ClientId::new(3),
                 ],
+                other_focused_client_slots: vec![],
                 active_swap_layout_name: Some("BASE".to_owned()),
                 is_swap_layout_dirty: true,
                 viewport_rows: yinz_types::position::RowCount::new(10),
@@ -160,6 +161,7 @@ fn serialize_and_deserialize_session_info_with_data() {
                     yinz_types::data::ClientId::new(2),
                     yinz_types::data::ClientId::new(3),
                 ],
+                other_focused_client_slots: vec![],
                 active_swap_layout_name: None,
                 is_swap_layout_dirty: false,
                 viewport_rows: yinz_types::position::RowCount::new(10),

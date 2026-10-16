@@ -2312,7 +2312,6 @@ pub struct OriginatingPlugin {
     pub generation: ::core::option::Option<u64>,
     #[prost(uint32, tag="1")]
     pub plugin_id: u32,
-    /// ClientId is u16, but using uint32 for protobuf compatibility
     #[prost(uint32, tag="2")]
     pub client_id: u32,
     /// Context is BTreeMap<String, String>

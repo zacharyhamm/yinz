@@ -435,11 +435,8 @@ fn a_client_disconnect_cancels_its_pending_escape() {
         .recv_timeout(Duration::from_secs(5))
         .expect("the route thread did not tell the server the client left");
     assert!(
-        matches!(
-            instruction,
-            ServerInstruction::ClientRouterFinished(CLIENT_1)
-        ),
-        "expected ClientRouterFinished, got {instruction:?}"
+        matches!(instruction, ServerInstruction::RemoveClient(CLIENT_1)),
+        "expected RemoveClient, got {instruction:?}"
     );
     // there is nobody left to write to: not even the unblock that follows a handled message
     let sent = os.server_to_client_messages.lock();

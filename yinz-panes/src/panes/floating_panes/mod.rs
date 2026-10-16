@@ -1,6 +1,7 @@
 pub mod floating_pane_grid;
 use yinz_types::data::PaneInfo;
 use yinz_types::geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy};
+use yinz_types::multiplayer::AttachedClients;
 use yinz_types::position::Position;
 
 use crate::pane::{pane_info_for_pane, Pane};
@@ -49,7 +50,7 @@ pub struct FloatingPanes {
     display_area: Rc<RefCell<Size>>,
     viewport: Rc<RefCell<Viewport>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
-    connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
+    connected_clients_in_app: Rc<RefCell<AttachedClients>>,
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     default_mode_info: ModeInfo,
@@ -79,7 +80,7 @@ impl FloatingPanes {
         display_area: Rc<RefCell<Size>>,
         viewport: Rc<RefCell<Viewport>>,
         connected_clients: Rc<RefCell<HashSet<ClientId>>>,
-        connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
+        connected_clients_in_app: Rc<RefCell<AttachedClients>>,
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         fullscreen_covers_ui: Rc<RefCell<bool>>,
@@ -457,6 +458,9 @@ impl FloatingPanes {
     pub fn active_panes_contain(&self, client_id: &ClientId) -> bool {
         self.active_panes.contains_key(client_id)
     }
+    pub fn forget_client(&mut self, client_id: ClientId) {
+        self.active_panes.forget_client(&client_id);
+    }
     pub fn panes_contain(&self, pane_id: &PaneId) -> bool {
         self.panes.contains_key(pane_id)
     }
@@ -735,8 +739,7 @@ impl FloatingPanes {
                 .position(|id| id == *kind)
                 .map(|index| index + 1);
             let mut active_panes = active_panes.clone();
-            let multiple_users_exist_in_session =
-                { self.connected_clients_in_app.borrow().len() > 1 };
+            let multiplayer = self.connected_clients_in_app.borrow().snapshot();
             active_panes.retain(|c_id, _| self.connected_clients.borrow().contains(c_id));
             let pane_is_selectable = pane.selectable();
             let show_help_text = active_panes.iter().any(|(client_id, pane_id)| {
@@ -755,7 +758,7 @@ impl FloatingPanes {
                 output,
                 self.style,
                 &active_panes,
-                multiple_users_exist_in_session,
+                multiplayer,
                 z_index,
                 false,
                 false,

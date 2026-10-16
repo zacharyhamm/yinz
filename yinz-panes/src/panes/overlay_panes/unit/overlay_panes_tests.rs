@@ -180,7 +180,7 @@ fn overlay_panes_with(
         display_area.clone(),
         viewport,
         Rc::new(RefCell::new(HashSet::new())),
-        Rc::new(RefCell::new(HashSet::new())),
+        Rc::new(RefCell::new(Default::default())),
         Rc::new(RefCell::new(HashMap::new())),
         Rc::new(RefCell::new(None)),
         false,

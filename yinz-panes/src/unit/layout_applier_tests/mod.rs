@@ -21,6 +21,7 @@ use yinz_runtime::{
 use yinz_types::input::options::PaneFrameStyle;
 use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::TerminalId;
+use yinz_types::multiplayer::AttachedClients;
 use yinz_types::pane_size::{Size, SizeInPixels, Viewport};
 use yinz_types::style::{Palette, Style};
 use {
@@ -143,7 +144,7 @@ fn create_layout_applier_fixtures(
     Rc<RefCell<Palette>>,
     Rc<RefCell<HashMap<usize, String>>>,
     Rc<RefCell<Option<SizeInPixels>>>,
-    Rc<RefCell<HashSet<ClientId>>>,
+    Rc<RefCell<AttachedClients>>,
     Style,
     Rc<RefCell<Size>>,
     TiledPanes,
@@ -174,7 +175,7 @@ fn create_layout_applier_fixtures(
     let character_cell_size = Rc::new(RefCell::new(None));
 
     let client_id = ClientId::new(1);
-    let mut connected_clients_map = HashSet::new();
+    let mut connected_clients_map = AttachedClients::default();
     connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));
 
@@ -271,7 +272,7 @@ fn create_layout_applier_fixtures_with_receivers(
     Rc<RefCell<Palette>>,
     Rc<RefCell<HashMap<usize, String>>>,
     Rc<RefCell<Option<SizeInPixels>>>,
-    Rc<RefCell<HashSet<ClientId>>>,
+    Rc<RefCell<AttachedClients>>,
     Style,
     Rc<RefCell<Size>>,
     TiledPanes,
@@ -310,7 +311,7 @@ fn create_layout_applier_fixtures_with_receivers(
     let character_cell_size = Rc::new(RefCell::new(None));
 
     let client_id = ClientId::new(1);
-    let mut connected_clients_map = HashSet::new();
+    let mut connected_clients_map = AttachedClients::default();
     connected_clients_map.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients_map));
 

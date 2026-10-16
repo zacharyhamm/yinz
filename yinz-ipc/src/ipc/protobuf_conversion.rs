@@ -124,10 +124,7 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             },
             ClientToServerMsg::DetachSession { client_ids } => {
                 client_to_server_msg::Message::DetachSession(DetachSessionMsg {
-                    client_ids: client_ids
-                        .into_iter()
-                        .map(|id| u32::from(id.get()))
-                        .collect(),
+                    client_ids: client_ids.into_iter().map(|id| id.get()).collect(),
                 })
             },
             ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } => {
@@ -178,7 +175,7 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             } => client_to_server_msg::Message::Action(ActionMsg {
                 action: Some(action.try_into()?),
                 terminal_id: terminal_id.map(|id| id.get()),
-                client_id: client_id.map(|id| u32::from(id.get())),
+                client_id: client_id.map(|id| id.get()),
                 is_cli_client,
             }),
             ClientToServerMsg::Paste(text) => client_to_server_msg::Message::Paste(text),
@@ -337,11 +334,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             },
             Some(client_to_server_msg::Message::DetachSession(detach)) => {
                 Ok(ClientToServerMsg::DetachSession {
-                    client_ids: detach
-                        .client_ids
-                        .into_iter()
-                        .map(ClientId::try_from)
-                        .collect::<std::result::Result<_, _>>()?,
+                    client_ids: detach.client_ids.into_iter().map(ClientId::new).collect(),
                 })
             },
             Some(client_to_server_msg::Message::TerminalPixelDimensions(pixel_dims)) => {
@@ -413,7 +406,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                 terminal_id: action
                     .terminal_id
                     .map(yinz_types::internal_ids::TerminalId::new),
-                client_id: action.client_id.map(ClientId::try_from).transpose()?,
+                client_id: action.client_id.map(ClientId::new),
                 is_cli_client: action.is_cli_client,
             }),
             Some(client_to_server_msg::Message::Paste(text)) => Ok(ClientToServerMsg::Paste(text)),
@@ -5080,7 +5073,7 @@ impl From<yinz_types::data::OriginatingPlugin>
         Self {
             generation: orig.generation,
             plugin_id: orig.plugin_id.get(),
-            client_id: u32::from(orig.client_id.get()),
+            client_id: orig.client_id.get(),
             context,
         }
     }
@@ -5101,7 +5094,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::OriginatingP
         Ok(Self {
             generation: orig.generation,
             plugin_id: yinz_types::internal_ids::PluginId::new(orig.plugin_id),
-            client_id: ClientId::try_from(orig.client_id)?,
+            client_id: ClientId::new(orig.client_id),
             context,
         })
     }

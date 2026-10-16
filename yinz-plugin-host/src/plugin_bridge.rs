@@ -262,6 +262,10 @@ impl LoadingContext {
         {
             let mut plugin_map = plugin_bridge.plugin_map.lock().unwrap();
             configuration_version = plugin_map.configuration_version;
+            plugin_map
+                .client_configurations
+                .entry(client_id)
+                .or_insert_with(|| (configuration_version, configuration.clone()));
             let previous = plugin_map.reload_metadata(plugin_id);
             data_owner = previous
                 .as_ref()
@@ -328,19 +332,7 @@ impl LoadingContext {
                 .get(&plugin_id)
                 .cloned()
                 .unwrap_or_default(),
-            client_cancel: {
-                let connected = plugin_bridge.client_is_connected(&client_id);
-                let mut cancellations = plugin_bridge.client_cancellations.lock().unwrap();
-                let cancel = cancellations.entry(client_id).or_default();
-                if !connected && cancel.load(Ordering::Acquire) {
-                    // A fresh CLI/headless load may reuse a detached UI's id. Its work
-                    // has its own lifetime; the old UI token must remain cancelled.
-                    Arc::default()
-                } else {
-                    // Startup loads precede AddClient and must share its attachment token.
-                    cancel.clone()
-                }
-            },
+            client_cancel: client_cancel_token(&plugin_bridge.client_cancellations, client_id),
             client_cancellations: plugin_bridge.client_cancellations.clone(),
         })
     }
@@ -492,6 +484,24 @@ fn close_plugin_instance(
     ));
     drop(running_plugin);
     drop(subscriptions);
+}
+
+/// The attachment token for work done for `client_id`. A client registered by
+/// [`PluginBridge::reserve_client`] shares its token, which its `RemoveClient` cancels. Any other
+/// id gets a token of its own that is never cancelled, and nothing is registered for it. This
+/// covers a departed client, a CLI connection, and [`ClientId::NONE`]. Registering it would
+/// leave an entry that no `RemoveClient` comes back for, and its work runs as a late
+/// `launch-plugin` must.
+pub(crate) fn client_cancel_token(
+    client_cancellations: &Mutex<HashMap<ClientId, Arc<AtomicBool>>>,
+    client_id: ClientId,
+) -> Arc<AtomicBool> {
+    client_cancellations
+        .lock()
+        .unwrap()
+        .get(&client_id)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn cleanup_disconnected_instances(
@@ -844,7 +854,7 @@ impl PluginBridge {
             cancel.store(true, Ordering::Relaxed);
         }
         let _ = self.senders.send_to_server(ServerInstruction::RebindKeys {
-            client_id: ClientId::new(0),
+            client_id: ClientId::NONE,
             keys_to_rebind: vec![],
             keys_to_unbind: vec![],
             write_config_to_disk: false,
@@ -1675,16 +1685,19 @@ impl PluginBridge {
             return Ok(());
         }
 
+        // Registered before the client is listed as connected; see `remove_client`.
+        let client_cancel = self.reserve_client(client_id);
+        // Its own keybinds and base mode from here on, starting from the session-wide ones it has
+        // been running with, so that another client's reconfigure moving those leaves it alone.
+        // A `Reconfigure` for it that came first has already set them.
+        self.keybinds
+            .entry(client_id)
+            .or_insert_with(|| self.default_keybinds.clone());
+        self.base_modes
+            .entry(client_id)
+            .or_insert(self.default_mode);
         self.connected_clients.lock().unwrap().push(client_id);
         let mut new_plugins = HashSet::new();
-        let client_cancel = {
-            let mut cancellations = self.client_cancellations.lock().unwrap();
-            let cancel = cancellations.entry(client_id).or_default();
-            if cancel.load(Ordering::Acquire) {
-                *cancel = Arc::default();
-            }
-            cancel.clone()
-        };
         log::info!(
             "attach trace: PluginBridge::add_client client_id={client_id} waiting for plugin_map lock"
         );
@@ -2784,19 +2797,47 @@ impl PluginBridge {
     }
     /// A shared plugin's single instance is keyed in the PluginMap under the client that loaded
     /// it. If that client is gone, hand the instance over to `new_owner` so that it keeps
-    /// receiving events.
+    /// receiving events, and runs with `new_owner`'s keybinds and base mode.
     fn rekey_shared_plugin_if_owner_gone(&mut self, plugin_id: PluginId, new_owner: ClientId) {
+        let (keybinds, default_mode) = self.keybinds_and_mode_of(new_owner);
+        let keybinds = keybinds.clone();
         self.plugin_executor.execute_for_plugin_tagged(
             plugin_id,
             "client_rekey",
             false,
-            move |_, plugin_map, connected_clients| {
+            move |senders, plugin_map, connected_clients| {
                 let mut plugin_map = plugin_map.lock().unwrap();
                 let connected_clients = connected_clients.lock().unwrap();
+                let mut rekeyed = false;
                 for owner in plugin_map.owner_client_ids_of_plugin_id(plugin_id) {
                     if !connected_clients.contains(&owner) {
-                        plugin_map.rekey_client(plugin_id, owner, new_owner);
+                        rekeyed |= plugin_map.rekey_client(plugin_id, owner, new_owner);
                     }
+                }
+                let Some((running_plugin, subscriptions)) = rekeyed
+                    .then(|| plugin_map.get_running_plugin_and_subscriptions(plugin_id, new_owner))
+                    .flatten()
+                else {
+                    return;
+                };
+                {
+                    let mut running_plugin = running_plugin.lock().unwrap();
+                    running_plugin.update_keybinds(keybinds.clone());
+                    running_plugin.update_default_mode(default_mode);
+                }
+                if subscriptions
+                    .lock()
+                    .unwrap()
+                    .contains(&EventType::InitialKeybinds)
+                {
+                    senders
+                        .send_to_plugin(PluginInstruction::Update(vec![(
+                            Some(plugin_id),
+                            Some(new_owner),
+                            Event::InitialKeybinds(keybinds.to_keybinds_vec()),
+                        )]))
+                        .context("failed to send a rekeyed plugin its new owner's keybinds")
+                        .non_fatal();
                 }
             },
         );
@@ -2968,18 +3009,22 @@ impl PluginBridge {
 
     pub fn remove_client(&mut self, client_id: ClientId) {
         self.cancel_client_picks(client_id);
-        self.client_cancellations
-            .lock()
-            .unwrap()
-            .entry(client_id)
-            .or_default()
-            .store(true, Ordering::Release);
+        // Out of the connected list before its token goes, so that an executor job copying the
+        // list cannot find the client there and then miss its token.
         let was_connected = {
             let mut clients = self.connected_clients.lock().unwrap();
             let previous_len = clients.len();
             clients.retain(|client| *client != client_id);
             clients.len() != previous_len
         };
+        // Client ids are never reused, so nothing that comes later needs this client's state. A
+        // load handled later for it gets a token of its own (`client_cancel_token`), and its
+        // plugins run with the session-wide keybinds and base mode.
+        if let Some(cancel) = self.client_cancellations.lock().unwrap().remove(&client_id) {
+            cancel.store(true, Ordering::Release);
+        }
+        self.base_modes.remove(&client_id);
+        self.keybinds.remove(&client_id);
         if self.cli_event_subscribers.remove(&client_id).is_some()
             && self.cli_event_subscribers.is_empty()
         {
@@ -2993,8 +3038,10 @@ impl PluginBridge {
             }
         }
 
-        // CLI connections never owned instances. Do not enqueue work for every plugin
-        // on each CLI disconnect (agent hooks and session probes are frequent).
+        // Only a connected client's departure can orphan instances that a connected client must
+        // replace. A CLI connection owns instances only while nobody is attached, and the next
+        // client to attach retires them. Do not enqueue work for every plugin on each CLI
+        // disconnect (agent hooks and session probes are frequent).
         if was_connected {
             let plugin_ids: Vec<_> = self.cancel_tokens.keys().copied().collect();
             for plugin_id in plugin_ids {
@@ -3119,10 +3166,7 @@ impl PluginBridge {
     pub fn send_initial_keybinds_to_plugin(&self, plugin_id: PluginId, client_id: ClientId) {
         // Use the same authoritative input as LoadingContext and reconfigure.
         // Reading a guest's copy here can deadlock its synchronous host request.
-        let keybinds = self
-            .keybinds
-            .get(&client_id)
-            .unwrap_or(&self.default_keybinds);
+        let (keybinds, _) = self.keybinds_and_mode_of(client_id);
         self.send_keybinds_payload_to_plugin(plugin_id, client_id, keybinds.to_keybinds_vec());
     }
 
@@ -3213,23 +3257,20 @@ impl PluginBridge {
     }
 
     fn plugin_configuration(&self, client_id: ClientId) -> PluginConfiguration {
+        let (keybinds, default_mode) = self.keybinds_and_mode_of(client_id);
         PluginConfiguration {
-            keybinds: self
-                .keybinds
-                .get(&client_id)
-                .unwrap_or(&self.default_keybinds)
-                .clone(),
-            default_mode: self
-                .base_modes
-                .get(&client_id)
-                .copied()
-                .unwrap_or(self.default_mode),
+            keybinds: keybinds.clone(),
+            default_mode,
             default_shell: self.default_shell.clone(),
             layout_dir: self.layout_dir.clone(),
             user_plugin_dir: self.user_plugin_dir.clone(),
         }
     }
 
+    /// Reconfigure `client_id`'s plugins, or with [`ClientId::NONE`] the session's. The keybinds
+    /// and base mode also become the session-wide ones, as the screen's `default_mode_info` does:
+    /// a plugin whose owner has none of its own runs with those, so its instances are
+    /// reconfigured as well.
     pub fn reconfigure(
         &mut self,
         client_id: ClientId,
@@ -3239,67 +3280,75 @@ impl PluginBridge {
         layout_dir: Option<PathBuf>,
         user_plugin_dir: Option<PathBuf>,
     ) -> Result<()> {
-        if let Some(default_mode) = default_mode.as_ref() {
-            self.base_modes.insert(client_id, *default_mode);
+        // The client's own instances, and those whose owner has no keybinds of its own.
+        let plugins_to_reconfigure: Vec<RunningPluginEntry> = self
+            .plugin_map
+            .lock()
+            .unwrap()
+            .running_plugins_and_subscriptions()
+            .into_iter()
+            .filter(|(_, owner, _, _)| *owner == client_id || !self.keybinds.contains_key(owner))
+            .collect();
+        if let Some(default_mode) = default_mode {
+            self.default_mode = default_mode;
+            if client_id != ClientId::NONE {
+                self.base_modes.insert(client_id, default_mode);
+            }
         }
         if let Some(keybinds) = keybinds.as_ref() {
-            self.keybinds.insert(client_id, keybinds.clone());
+            self.default_keybinds = keybinds.clone();
+            if client_id != ClientId::NONE {
+                self.keybinds.insert(client_id, keybinds.clone());
+            }
         }
         self.default_shell = default_shell.clone();
         self.layout_dir = layout_dir.clone();
         self.user_plugin_dir = user_plugin_dir.clone();
         let configuration = self.plugin_configuration(client_id);
-        let plugins_to_reconfigure: Vec<_> = {
+        {
             let mut map = self.plugin_map.lock().unwrap();
             // Publication takes this lock too, so every initializer sees the latest settings.
             map.configuration_version += 1;
             let version = map.configuration_version;
+            for (owner, cached) in &mut map.client_configurations {
+                if *owner == client_id || !self.keybinds.contains_key(owner) {
+                    *cached = (version, self.plugin_configuration(*owner));
+                }
+            }
             map.client_configurations
                 .insert(client_id, (version, configuration.clone()));
-            map.running_plugins()
-                .into_iter()
-                .filter_map(|(plugin_id, c_id, running_plugin)| {
-                    (c_id == client_id).then_some((plugin_id, running_plugin))
-                })
-                .collect()
-        };
-        // Collect plugins subscribed to InitialKeybinds for post-reconfigure notification
-        let plugins_subscribed_to_initial_keybinds: Vec<PluginId> = if keybinds.is_some() {
-            self.plugin_map
-                .lock()
-                .unwrap()
-                .running_plugins_and_subscriptions()
-                .iter()
-                .filter(|(_, cid, _, subs)| {
-                    *cid == client_id && subs.lock().unwrap().contains(&EventType::InitialKeybinds)
-                })
-                .map(|(pid, _, _, _)| *pid)
-                .collect()
-        } else {
-            vec![]
-        };
+        }
+        // Plugins subscribed to InitialKeybinds hear the new ones after reconfiguration, each
+        // addressed by its owner: a plugin that is not shared is routed by owner.
+        let plugins_subscribed_to_initial_keybinds: Vec<(PluginId, ClientId)> =
+            if keybinds.is_some() {
+                plugins_to_reconfigure
+                    .iter()
+                    .filter(|(_, _, _, subs)| {
+                        subs.lock().unwrap().contains(&EventType::InitialKeybinds)
+                    })
+                    .map(|(plugin_id, owner, _, _)| (*plugin_id, *owner))
+                    .collect()
+            } else {
+                vec![]
+            };
 
-        for (plugin_id, running_plugin) in plugins_to_reconfigure {
+        for (plugin_id, owner, running_plugin, _) in plugins_to_reconfigure {
             self.plugin_executor
                 .execute_for_plugin_tagged(plugin_id, "reconfigure", false, {
-                    let configuration = configuration.clone();
+                    let configuration = self.plugin_configuration(owner);
                     move |_senders, _plugin_map, _connected_clients| {
                         configuration.apply_to(&mut running_plugin.lock().unwrap());
                     }
                 });
         }
-        // Send InitialKeybinds to subscribed plugins after reconfiguration. The payload is built
-        // from the reconfigure request rather than read back from each plugin's env: the env is
-        // updated on the executor above, asynchronously, so reading it here could still see the
-        // old keybinds.
+        // The payload is built from the reconfigure request rather than read back from each
+        // plugin's env: the env is updated on the executor above, asynchronously, so reading it
+        // here could still see the old keybinds.
         if let Some(keybinds) = keybinds.as_ref() {
             let keybinds_payload = keybinds.to_keybinds_vec();
-            for plugin_id in plugins_subscribed_to_initial_keybinds {
-                self.send_keybinds_payload_to_plugin(
-                    plugin_id,
-                    client_id,
-                    keybinds_payload.clone(),
-                );
+            for (plugin_id, owner) in plugins_subscribed_to_initial_keybinds {
+                self.send_keybinds_payload_to_plugin(plugin_id, owner, keybinds_payload.clone());
             }
         }
         Ok(())
@@ -4012,6 +4061,31 @@ impl PluginBridge {
     pub fn client_is_connected(&self, client_id: &ClientId) -> bool {
         self.connected_clients.lock().unwrap().contains(client_id)
     }
+    /// Register `client_id`'s attachment token, which its `RemoveClient` cancels and forgets,
+    /// before anything can be loaded for it: the session's first client at startup, and each
+    /// later one from `ReserveClient`. Returns the token.
+    pub fn reserve_client(&self, client_id: ClientId) -> Arc<AtomicBool> {
+        self.client_cancellations
+            .lock()
+            .unwrap()
+            .entry(client_id)
+            .or_default()
+            .clone()
+    }
+    /// The keybinds and base mode of a plugin owned by `client_id`: the client's own while it
+    /// has them, otherwise the session-wide ones, which every reconfigure moves. A departed
+    /// client, a CLI connection in a headless session and [`ClientId::NONE`] have none.
+    fn keybinds_and_mode_of(&self, client_id: ClientId) -> (&Keybinds, InputMode) {
+        (
+            self.keybinds
+                .get(&client_id)
+                .unwrap_or(&self.default_keybinds),
+            self.base_modes
+                .get(&client_id)
+                .copied()
+                .unwrap_or(self.default_mode),
+        )
+    }
     pub fn get_first_client_id(&self) -> Option<ClientId> {
         self.connected_clients
             .lock()
@@ -4245,7 +4319,6 @@ pub(crate) fn check_event_permission(
         | EventType::Timer
         | EventType::Visible
         | EventType::CellPixelSizeChanged
-        | EventType::ClientGridReset
         | EventType::BeforeClose
         | EventType::CustomMessage
         | EventType::PermissionRequestResult

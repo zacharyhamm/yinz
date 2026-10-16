@@ -76,9 +76,9 @@ pub fn scrolling_inside_a_pane() {
         writeln!(&mut text_to_fill_pane, "\rline {}", i + 1).unwrap();
     }
     terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
-    terminal_pane.scroll_up(10, fake_client_id);
+    terminal_pane.scroll_up(10, Some(fake_client_id));
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
-    terminal_pane.scroll_down(3, fake_client_id);
+    terminal_pane.scroll_down(3, Some(fake_client_id));
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
     terminal_pane.clear_scroll();
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
@@ -282,9 +282,9 @@ pub fn scrolling_through_a_sixel_image() {
     let pane_sixel_content = read_fixture("sixel-image-500px.six");
     terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
     terminal_pane.handle_pty_bytes(pane_sixel_content);
-    terminal_pane.scroll_up(10, fake_client_id);
+    terminal_pane.scroll_up(10, Some(fake_client_id));
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
-    terminal_pane.scroll_down(3, fake_client_id);
+    terminal_pane.scroll_down(3, Some(fake_client_id));
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
     terminal_pane.clear_scroll();
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
@@ -341,7 +341,7 @@ pub fn multiple_sixel_images_in_pane() {
     terminal_pane.handle_pty_bytes(pane_sixel_content.clone()); // one image above text
     terminal_pane.handle_pty_bytes(text_to_fill_pane.into_bytes());
     terminal_pane.handle_pty_bytes(pane_sixel_content); // one image below text
-    terminal_pane.scroll_up(20, fake_client_id); // scroll up to see both images
+    terminal_pane.scroll_up(20, Some(fake_client_id)); // scroll up to see both images
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
 }
 
@@ -401,7 +401,7 @@ pub fn resizing_pane_with_sixel_images() {
     new_win_size.cols.set_inner(100);
     new_win_size.rows.set_inner(20);
     terminal_pane.set_geom(new_win_size);
-    terminal_pane.scroll_up(20, fake_client_id); // scroll up to see both images
+    terminal_pane.scroll_up(20, Some(fake_client_id)); // scroll up to see both images
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
 }
 
@@ -466,7 +466,7 @@ pub fn changing_character_cell_size_with_sixel_images() {
         height: 18,
     });
     terminal_pane.set_geom(new_win_size);
-    terminal_pane.scroll_up(10, fake_client_id); // scroll up to see both images
+    terminal_pane.scroll_up(10, Some(fake_client_id)); // scroll up to see both images
     assert_snapshot!(format!("{:?}", terminal_pane.grid));
 }
 

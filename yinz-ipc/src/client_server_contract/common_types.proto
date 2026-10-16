@@ -1429,7 +1429,7 @@ message PluginTag {
 message OriginatingPlugin {
   optional uint64 generation = 4;
   uint32 plugin_id = 1;
-  uint32 client_id = 2;  // ClientId is u16, but using uint32 for protobuf compatibility
+  uint32 client_id = 2;
   map<string, string> context = 3;  // Context is BTreeMap<String, String>
 }
 

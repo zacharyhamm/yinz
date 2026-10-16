@@ -4,6 +4,7 @@ mod tiled_pane_grid;
 
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::ui::damage::CellRect;
+use yinz_types::multiplayer::AttachedClients;
 
 #[cfg(test)]
 #[path = "./unit/mock_pane.rs"]
@@ -115,7 +116,7 @@ pub struct TiledPanes {
     display_area: Rc<RefCell<Size>>,
     viewport: Rc<RefCell<Viewport>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
-    connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
+    connected_clients_in_app: Rc<RefCell<AttachedClients>>,
     mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     stacked_resize: Rc<RefCell<bool>>,
@@ -145,7 +146,7 @@ impl TiledPanes {
         display_area: Rc<RefCell<Size>>,
         viewport: Rc<RefCell<Viewport>>,
         connected_clients: Rc<RefCell<HashSet<ClientId>>>,
-        connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
+        connected_clients_in_app: Rc<RefCell<AttachedClients>>,
         mode_info: Rc<RefCell<HashMap<ClientId, ModeInfo>>>,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         stacked_resize: Rc<RefCell<bool>>,
@@ -1400,7 +1401,7 @@ impl TiledPanes {
         }
 
         let connected_clients: Vec<ClientId> = connected_clients.into_iter().collect();
-        let multiple_users_exist_in_session = { self.connected_clients_in_app.borrow().len() > 1 };
+        let multiplayer = self.connected_clients_in_app.borrow().snapshot();
         let boundary_viewport = self.boundary_viewport();
         let mut client_id_to_boundaries: HashMap<ClientId, Boundaries> = HashMap::new();
         let active_panes = if floating_panes_are_visible {
@@ -1492,7 +1493,7 @@ impl TiledPanes {
                     output,
                     self.style,
                     &active_panes,
-                    multiple_users_exist_in_session,
+                    multiplayer,
                     None,
                     pane_is_stacked_under,
                     pane_is_stacked_over,
@@ -3101,6 +3102,9 @@ impl TiledPanes {
     }
     pub fn set_active_panes(&mut self, active_panes: ActivePanes) {
         self.active_panes = active_panes;
+    }
+    pub fn forget_client(&mut self, client_id: ClientId) {
+        self.active_panes.forget_client(&client_id);
     }
     pub fn move_client_focus_to_existing_panes(&mut self) {
         let existing_pane_ids: Vec<PaneId> = self.panes.keys().copied().collect();

@@ -1,13 +1,8 @@
-use super::tests::{
-    frame_params, image_frame, kitty_chunks, test_plugin_pane,
-    test_plugin_pane_and_plugin_receiver, tiny_png,
-};
+use super::tests::{frame_params, test_plugin_pane};
 use crate::pane::Pane;
-use crate::plugins::PluginInstruction;
-use yinz_tile::ui_components::image_row;
-use yinz_types::data::{Event, InputMode};
-use yinz_types::internal_ids::{ClientId, PluginId};
-use yinz_types::pane_size::{Offset, SizeInPixels};
+use yinz_types::data::InputMode;
+use yinz_types::internal_ids::ClientId;
+use yinz_types::pane_size::Offset;
 
 #[test]
 fn removing_a_client_only_clears_its_own_frame_override() {
@@ -176,94 +171,6 @@ fn runs_and_reconstructed_prefixes_preserve_plugin_output() {
         assert_eq!(grid.kitty_commands_handled(), 1);
         assert!(grid.pending_messages_to_pty.is_empty());
         assert!(grid.pending_forwarded_queries.is_empty());
-    }
-}
-
-#[test]
-fn client_grid_reset_only_follows_recreation_including_delayed_frames() {
-    let (mut pane, rx) = test_plugin_pane_and_plugin_receiver(
-        10,
-        10,
-        Offset::default(),
-        Some(SizeInPixels {
-            width: 8,
-            height: 16,
-        }),
-    );
-    let first = ClientId::new(1);
-    let other = ClientId::new(2);
-    pane = super::PluginPane::new(
-        pane.pid,
-        pane.geom,
-        pane.send_plugin_instructions.clone(),
-        pane.pane_title.clone(),
-        pane.pane_name.clone(),
-        pane.sixel_image_store.clone(),
-        pane.kitty_image_store.clone(),
-        pane.terminal_emulator_colors.clone(),
-        pane.terminal_emulator_color_codes.clone(),
-        pane.link_handler.clone(),
-        pane.character_cell_size.clone(),
-        vec![first],
-        pane.style,
-        None,
-        false,
-        false,
-        false,
-    );
-    assert!(pane.grids.contains_key(&first));
-    assert!(rx.is_empty(), "construction does not reset grids");
-    let reset = |client| {
-        let (PluginInstruction::Update(events), _) = rx.try_recv().expect("grid reset") else {
-            panic!("expected an update");
-        };
-        assert_eq!(
-            events,
-            vec![(
-                Some(PluginId::new(1)),
-                Some(client),
-                Event::ClientGridReset(client)
-            )]
-        );
-        assert!(rx.is_empty(), "one notification per recreation");
-    };
-    for client in [first, other] {
-        if client == other {
-            pane.remove_client(client);
-        }
-        pane.add_client(client);
-        assert!(rx.is_empty(), "first attachment already renders");
-        pane.add_client(client);
-        assert!(rx.is_empty(), "repeated attachment preserves the grid");
-        pane.handle_plugin_bytes(client, image_frame(42, 2, &tiny_png()));
-        assert_eq!(kitty_chunks(&mut pane, client).len(), 1);
-    }
-    let placeholders = || image_row(42, 0, 2).into_bytes();
-    pane.handle_plugin_bytes(first, placeholders());
-    assert_eq!(kitty_chunks(&mut pane, first).len(), 1);
-    assert!(rx.is_empty(), "ordinary frames preserve the namespace");
-
-    for delayed in [false, true] {
-        pane.remove_client(first);
-        pane.remove_client(first);
-        assert!(rx.is_empty(), "deletion alone is not a new namespace");
-        if delayed {
-            // A frame queued before disconnect can create the grid before attachment.
-            pane.handle_plugin_bytes(first, placeholders());
-            assert!(kitty_chunks(&mut pane, first).is_empty());
-            reset(first);
-            pane.add_client(first);
-            assert!(rx.is_empty());
-        } else {
-            pane.add_client(first);
-            reset(first);
-        }
-        // A subscribed plugin responds to the reset by transmitting its pixels again.
-        pane.handle_plugin_bytes(first, image_frame(42, 2, &tiny_png()));
-        assert_eq!(kitty_chunks(&mut pane, first).len(), 1);
-        pane.handle_plugin_bytes(other, placeholders());
-        assert_eq!(kitty_chunks(&mut pane, other).len(), 1);
-        assert!(rx.is_empty());
     }
 }
 

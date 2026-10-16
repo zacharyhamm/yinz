@@ -43,6 +43,10 @@ impl PaneGroups {
             p.clear()
         }
     }
+    /// Forget a client that has gone, group and all.
+    pub fn remove_client(&mut self, client_id: &ClientId) {
+        self.panes_in_group.remove(client_id);
+    }
     pub fn toggle_pane_id_in_group(
         &mut self,
         pane_id: PaneId,
@@ -456,7 +460,7 @@ mod tests {
     /// same ids keep coming back.
     #[hegel::composite]
     fn any_client_id(tc: &hegel::TestCase) -> ClientId {
-        ClientId::new(tc.draw(generators::integers::<u16>().max_value(3)))
+        ClientId::new(tc.draw(generators::integers::<u32>().max_value(3)))
     }
 
     #[hegel::composite]

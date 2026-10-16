@@ -230,12 +230,14 @@ fn individual_messages_client(
     action: Action,
     pane_id: Option<yinz_types::internal_ids::TerminalId>,
 ) -> Option<i32> {
-    // Every blocking pane waits for its own `Exit`, condition or no condition. The server
-    // broadcasts `UnblockInputThread` to every client whenever any pane closes anywhere in the
-    // session, so a plain `--blocking` that returned on it would report success the moment an
-    // unrelated pane went away.
+    // Every blocking pane waits for its own `Exit`, condition or no condition. A session running
+    // an older server broadcasts `UnblockInputThread` to every connection whenever any pane
+    // closes anywhere in the session, so a plain `--blocking` that returned on it would report
+    // success the moment an unrelated pane went away. This server unblocks interactive clients
+    // only.
     let is_blocking = matches!(&action, Action::NewBlockingPane { .. });
-    // Warp placement and rollback also broadcast input unblocks before their result arrives.
+    // An older server's warp placement and rollback also broadcast input unblocks before their
+    // result arrives.
     let wait_for_result = is_blocking
         || matches!(
             &action,

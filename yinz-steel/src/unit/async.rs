@@ -15,7 +15,7 @@ fn runtime(source: &str) -> (Runtime, Arc<Mutex<Vec<Value>>>) {
     (runtime, commands)
 }
 
-fn cursor_command(client: u16, cursor: Value) -> Value {
+fn cursor_command(client: u32, cursor: Value) -> Value {
     json!({"__yinz_runtime": {
         "client": client, "command": {"ShowCursor": cursor}, "permission_id": null
     }})

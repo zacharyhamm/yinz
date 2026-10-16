@@ -49,6 +49,7 @@ use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabPosition;
 use yinz_types::internal_ids::TerminalId;
+use yinz_types::multiplayer::AttachedClients;
 use yinz_types::units::ElapsedSeconds;
 
 use crate::route::NotificationEnd;
@@ -642,7 +643,8 @@ pub(crate) struct Screen {
     client_kitty_host_state: Rc<RefCell<HashMap<ClientId, HostKittyState>>>,
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
-    connected_clients: Rc<RefCell<HashSet<ClientId>>>,
+    /// The attached clients and the multiplayer color each holds. Shared with every tab.
+    connected_clients: Rc<RefCell<AttachedClients>>,
     /// The indices of this [`Screen`]'s active [`Tab`]s.
     active_tab_ids: BTreeMap<ClientId, TabId>,
     client_sizes: HashMap<ClientId, Size>,
@@ -760,6 +762,10 @@ pub(crate) struct Screen {
     pending_pane_groups: HashMap<TabId, (ParkedPaneWarp, PreparedTabWarp, std::time::Instant)>,
     pending_group_placements: HashMap<TabId, PendingGroupPlacement>,
     pending_warp_relationships: HashMap<TabId, yinz_types::data::WarpRelationships>,
+    /// Connections that left before attaching while a tab's layout was still on its way. A
+    /// layout applied with nobody attached registers the client it was opened for, and one of
+    /// these would never leave: its id is never handed out again. Emptied once no tab is pending.
+    departed_before_layout: HashSet<ClientId>,
     pending_tab_warps: HashMap<
         TabId,
         (
@@ -1368,7 +1374,7 @@ impl Screen {
             synchronized_output_capabilities: Rc::new(RefCell::new(HashMap::new())),
             client_kitty_host_state: Rc::new(RefCell::new(HashMap::new())),
             style: client_attributes.style,
-            connected_clients: Rc::new(RefCell::new(HashSet::new())),
+            connected_clients: Rc::new(RefCell::new(AttachedClients::default())),
             active_tab_ids: BTreeMap::new(),
             client_sizes: HashMap::new(),
             last_surface_size: client_attributes.size,
@@ -1438,6 +1444,7 @@ impl Screen {
             pending_warps: HashMap::new(),
             pending_tab_warps: HashMap::new(),
             pending_warp_relationships: HashMap::new(),
+            departed_before_layout: HashSet::new(),
             pending_pane_groups: HashMap::new(),
             pending_group_placements: HashMap::new(),
             styled_underlines,
@@ -2057,10 +2064,11 @@ impl Screen {
                     .with_context(err_context)?;
             }
 
-            let mut transition =
-                should_change_client_focus.then(|| self.begin_tab_transition(client_id, tab_id));
+            let client_departed = self.departed_before_layout.contains(&client_id);
+            let mut transition = (should_change_client_focus && !client_departed)
+                .then(|| self.begin_tab_transition(client_id, tab_id));
 
-            if !self.active_tab_ids.contains_key(&client_id) {
+            if !client_departed && !self.active_tab_ids.contains_key(&client_id) {
                 self.connected_clients.borrow_mut().insert(client_id);
             }
 
@@ -2108,8 +2116,14 @@ impl Screen {
                     .non_fatal();
                 tab.set_force_render();
             }
+            if client_departed {
+                if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                    tab.remove_client_pane_state(client_id);
+                    tab.remove_client(client_id);
+                }
+            }
             let mut retired_source = None;
-            if !self.active_tab_ids.contains_key(&client_id) {
+            if !client_departed && !self.active_tab_ids.contains_key(&client_id) {
                 // Capture the departed source before the layout provisionally connects this id.
                 self.register_client_transaction(client_id, departed, None, false)
                     .map(|source| retired_source = source)
@@ -2144,6 +2158,9 @@ impl Screen {
                 .non_fatal();
             Ok(retired_source)
         })();
+        if !self.has_pending_tabs() {
+            self.departed_before_layout.clear();
+        }
         if let Err(error) = &applied {
             if let Some((_, completion)) = blocking_terminal.as_mut() {
                 completion.set_exit_status(1);
@@ -2348,6 +2365,9 @@ impl Screen {
 
     pub fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
         let was_attached = self.is_client_attached(client_id);
+        if !was_attached && self.has_pending_tabs() {
+            self.departed_before_layout.insert(client_id);
+        }
         self.remove_client_inner(client_id, was_attached)
     }
 
@@ -2424,6 +2444,7 @@ impl Screen {
             // Watchers still following this client keep seeing its pane state.
             let still_followed = self.followed_client_id == Some(client_id);
             for tab in self.tabs.values_mut() {
+                tab.remember_departing_focus(client_id);
                 if !still_followed {
                     tab.remove_client_pane_state(client_id);
                 }
@@ -2439,9 +2460,17 @@ impl Screen {
             self.global_last_active_tab_id = prev_tab_id;
             self.active_tab_ids.remove(&client_id);
         }
-        if self.tab_history.contains_key(&client_id) {
-            self.tab_history.remove(&client_id);
-        }
+        self.tab_history.remove(&client_id);
+        self.pane_history.remove(&client_id);
+        self.permission_mouse_captures.remove(&client_id);
+        self.current_pane_group
+            .borrow_mut()
+            .remove_client(&client_id);
+        self.currently_marking_pane_group
+            .borrow_mut()
+            .remove(&client_id);
+        // Plugin subscriptions stay: they belong to a plugin instance, which can outlive the
+        // connection that owns it, and go when it is disposed or moves to another owner.
         self.connected_clients.borrow_mut().remove(&client_id);
         self.client_kitty_host_state.borrow_mut().remove(&client_id);
         self.kitty_probe_answers.remove(&client_id);
@@ -2453,9 +2482,7 @@ impl Screen {
         if removed_kitty_capability {
             self.push_kitty_host_support_to_tabs();
         }
-        // No aggregate to push: this one is read per client at render time. Dropped here rather
-        // than left, because client ids are recycled and the next terminal to hold this one says
-        // for itself what it can do.
+        // No aggregate to push: this one is read per client at render time.
         self.synchronized_output_capabilities
             .borrow_mut()
             .remove(&client_id);
@@ -2477,15 +2504,10 @@ impl Screen {
         self.client_notification_protocols.remove(&client_id);
         self.client_host_terminal_env.remove(&client_id);
         self.last_forwarded_osc7.remove(&client_id);
-        // Client ids are recycled, and this entry describes the terminal on the other end, not the
-        // id: its probed `capabilities.kitty_graphics`, its theme, its keybinds. Left behind, the
-        // next holder of the id inherits them - `change_mode` clones whatever is here, and the
-        // `ChangeMode` the server enqueues right after `AddClient` fans it straight out to the
-        // plugins - so a mosh client would be told it can show images by a kitty terminal that
-        // has already gone. Every reader falls back to `default_mode_info` when the entry is
-        // absent, which is exactly how a never-seen id is treated. This also stops a departed
-        // client from becoming a phantom in every tab created afterwards, since `new_tab` copies
-        // this whole map into each new one.
+        // This entry describes the terminal on the other end: its probed
+        // `capabilities.kitty_graphics`, its theme, its keybinds. Left behind, a departed client
+        // becomes a phantom in every tab created afterwards, since `new_tab` copies this whole map
+        // into each new one.
         self.mode_info.remove(&client_id);
         if let Some(prev_tab_id) = previously_active_tab_id {
             result = result.and(
@@ -2507,6 +2529,12 @@ impl Screen {
         // connection cost the session two extra full-manifest broadcasts.
         if clean_panes {
             self.pane_subscriber_snapshots_dirty = true;
+            // After the tabs' last `UpdateActivePane` for this client, on the same channel.
+            self.bus
+                .senders
+                .send_to_pty(PtyInstruction::RemoveClient(client_id))
+                .with_context(err_context)
+                .non_fatal();
         }
         self.resume_deferred_render();
         result
@@ -5207,6 +5235,18 @@ impl Screen {
         None
     }
 
+    /// Each client's multiplayer color slot, for `TabInfo::other_focused_client_slots`.
+    pub(crate) fn color_slots(
+        &self,
+        clients: &[ClientId],
+    ) -> Vec<Option<yinz_types::multiplayer::ColorSlot>> {
+        let attached = self.connected_clients.borrow();
+        clients
+            .iter()
+            .map(|client| attached.color_slot(client))
+            .collect()
+    }
+
     fn get_tab_info(&self, tab_id: TabId, tab_names: &HashMap<TabId, String>) -> Option<TabInfo> {
         // Look up tab by its stable ID
         self.tabs.get(&tab_id).map(|tab| {
@@ -5231,7 +5271,8 @@ impl Screen {
                 is_fullscreen_active: tab.is_fullscreen_active(),
                 is_sync_panes_active: tab.is_sync_panes_active(),
                 are_floating_panes_visible: tab.are_floating_panes_visible(),
-                other_focused_clients: all_focused_clients.into_iter().collect(),
+                other_focused_client_slots: self.color_slots(&all_focused_clients),
+                other_focused_clients: all_focused_clients,
                 active_swap_layout_name,
                 is_swap_layout_dirty,
                 viewport_rows: yinz_types::position::RowCount::new(tab_viewport.rows),

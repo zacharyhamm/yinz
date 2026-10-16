@@ -326,3 +326,151 @@ fn suppressed_plugins_receive_tab_mode_updates_once() {
         matches!(&updates[0], (Some(pid), Some(cid), Event::ModeUpdate(_)) if *pid == plugin && *cid == client)
     );
 }
+
+#[test]
+fn removing_a_clients_pane_state_forgets_where_it_was_focused() {
+    let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, false);
+    let (departed, staying) = (ClientId::new(1), ClientId::new(2));
+    tab.add_client(staying, None).unwrap();
+    let pane_id = tab.get_active_pane_id(departed).unwrap();
+    assert_eq!(tab.get_active_pane_id(staying), Some(pane_id));
+    tab.remove_client(departed);
+    tab.remove_client_pane_state(departed);
+    assert!(!tab.tiled_panes.active_panes().contains_key(&departed));
+    assert!(tab.tiled_panes.active_panes().contains_key(&staying));
+}
+
+#[test]
+fn a_client_joining_an_empty_tab_lands_where_the_last_one_left() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        false,
+    );
+    let (departed, joining) = (ClientId::new(1), ClientId::new(2));
+    let second = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.new_pane(
+        second,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(departed),
+        None,
+    )
+    .unwrap();
+    tab.focus_pane_with_id(second, false, false, departed)
+        .unwrap();
+    assert_eq!(tab.get_active_pane_id(departed), Some(second));
+    tab.remember_departing_focus(departed);
+    tab.remove_client_pane_state(departed);
+    tab.remove_client(departed);
+
+    tab.add_client(joining, None).unwrap();
+
+    assert_eq!(tab.get_active_pane_id(joining), Some(second));
+}
+
+/// The screen offers every tab a disconnecting client's focus. A tab it was not in is already
+/// empty, and must keep the place its own last client left.
+#[test]
+fn another_clients_departure_keeps_an_empty_tabs_remembered_focus() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        false,
+    );
+    let (departed, elsewhere, joining) = (ClientId::new(1), ClientId::new(2), ClientId::new(3));
+    let second = PaneId::Terminal(crate::TerminalId::new(2));
+    tab.new_pane(
+        second,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(departed),
+        None,
+    )
+    .unwrap();
+    tab.focus_pane_with_id(second, false, false, departed)
+        .unwrap();
+    tab.remember_departing_focus(departed);
+    tab.remove_client_pane_state(departed);
+    tab.remove_client(departed);
+
+    tab.remember_departing_focus(elsewhere);
+    tab.add_client(joining, None).unwrap();
+
+    assert_eq!(tab.get_active_pane_id(joining), Some(second));
+}
+
+/// A client coming back from another tab resumes its own floating focus, not the one the tab's
+/// last client left behind.
+#[test]
+fn a_returning_client_keeps_its_own_floating_focus() {
+    let mut tab = create_tab_with_two_floating_panes();
+    let (departed, returning) = (ClientId::new(1), ClientId::new(2));
+    let (remembered, own) = (
+        PaneId::Terminal(TerminalId::new(2)),
+        PaneId::Terminal(TerminalId::new(3)),
+    );
+    tab.floating_panes.focus_pane(remembered, departed);
+    tab.remember_departing_focus(departed);
+    tab.remove_client_pane_state(departed);
+    tab.remove_client(departed);
+    tab.add_client(returning, None).unwrap();
+    assert_eq!(
+        tab.floating_panes.active_pane_id(returning),
+        Some(remembered)
+    );
+    tab.floating_panes.focus_pane(own, returning);
+
+    tab.remove_client(returning);
+    tab.add_client(returning, None).unwrap();
+
+    assert_eq!(tab.floating_panes.active_pane_id(returning), Some(own));
+}
+
+/// A client that dismissed the overlay the tab's last client left focused is not put back on
+/// it each time it returns from another tab.
+#[test]
+fn a_returning_client_is_not_refocused_on_an_overlay_it_dismissed() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        false,
+    );
+    let (departed, returning) = (ClientId::new(1), ClientId::new(2));
+    let overlay = PaneId::Terminal(TerminalId::new(2));
+    tab.new_pane(
+        overlay,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+        Some(departed),
+        None,
+    )
+    .unwrap();
+    assert_eq!(tab.overlay_panes.active_pane_id(departed), Some(overlay));
+    tab.remember_departing_focus(departed);
+    tab.remove_client_pane_state(departed);
+    tab.remove_client(departed);
+    tab.add_client(returning, None).unwrap();
+    assert_eq!(tab.overlay_panes.active_pane_id(returning), Some(overlay));
+    assert!(tab.overlay_panes.defocus_pane_if_dismissible(returning));
+
+    tab.remove_client(returning);
+    tab.add_client(returning, None).unwrap();
+
+    assert_eq!(tab.overlay_panes.active_pane_id(returning), None);
+}

@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 use yinz_steel::Runtime;
 use yinz_types::{
     data::{Event, ModeInfo, TabInfo},
-    internal_ids::TabPosition,
+    internal_ids::{ClientId, TabPosition},
+    multiplayer::ColorSlot,
 };
 
 use crate::tests::{plugin_with_replies, rendered_text, Host};
@@ -226,6 +227,36 @@ fn tab_bar_fits_active_tab_unicode_flags_and_collapsed_neighbors() {
     for cols in [0, 1, 8, 20, 200] {
         runtime.render(1, cols).unwrap();
     }
+}
+
+#[test]
+fn tab_bar_colors_other_clients_by_their_slot_or_by_id_from_an_older_host() {
+    let (mut runtime, _) = plugin();
+    let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
+    for (player, rgb) in [("player_3", [3, 3, 3]), ("player_10", [10, 10, 10])] {
+        mode["style"]["colors"]["multiplayer_user_colors"][player] = json!({ "Rgb": rgb });
+    }
+    wire(&mut runtime, json!({ "ModeUpdate": mode }));
+    let cursor = |n: u8| format!("48;2;{n};{n};{n}m");
+    let mut focused = tab(0, "main", true);
+    focused.other_focused_clients = [40, 41, 42].into_iter().map(ClientId::new).collect();
+    focused.other_focused_client_slots = vec![ColorSlot::new(3), None, ColorSlot::new(10)];
+    event(&mut runtime, Event::TabUpdate(vec![focused.clone()]));
+    let frame = runtime.render(1, 80).unwrap();
+    assert!(
+        frame.contains(&cursor(3)) && frame.contains(&cursor(10)),
+        "{frame:?}"
+    );
+
+    focused.other_focused_clients = [3, 40].into_iter().map(ClientId::new).collect();
+    focused.other_focused_client_slots = vec![];
+    event(&mut runtime, Event::TabUpdate(vec![focused]));
+    let frame = runtime.render(1, 80).unwrap();
+    assert!(
+        frame.contains(&cursor(3)),
+        "an older host's id is the slot: {frame:?}"
+    );
+    assert!(!frame.contains(&cursor(10)), "{frame:?}");
 }
 
 #[test]

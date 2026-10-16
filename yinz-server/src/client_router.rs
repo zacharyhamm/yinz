@@ -347,7 +347,6 @@ pub(crate) fn route_thread_main(
                         })
                         .non_fatal();
                         // The route-loop cleanup removes this connection exactly once.
-                        // A second queued removal could close a newer connection reusing its ID.
                         return Ok(true);
                     }
 
@@ -656,18 +655,12 @@ pub(crate) fn route_thread_main(
                         } => {
                             let cli_client_id = client_id;
                             let client_id = if is_cli_client {
-                                // for cli clients, we want to default to the last active client
-                                // (i.e. the last client to have issued a keystroke) this is to
-                                // interpret actions that require a client_id (such as move focus,
-                                // detach, etc.) for which using the cli client id will not be
-                                // doing the right thing - using the last_active_client is almost
-                                // certainly correct in almost all cases
+                                // A CLI connection has no focus, mode or tab of its own: actions
+                                // such as move focus or switch mode act for an attached client.
                                 session_state
                                     .read()
                                     .unwrap()
-                                    .get_last_active_client()
-                                    .or(maybe_client_id)
-                                    .unwrap_or(client_id)
+                                    .cli_action_target(client_id, maybe_client_id)
                             } else {
                                 maybe_client_id.unwrap_or(client_id)
                             };
@@ -1168,8 +1161,7 @@ pub(crate) fn route_thread_main(
         // connected user)
         let _ = os_input.send_to_client(client_id, ServerToClientMsg::UnblockInputThread);
     }
-    // One removal per route. Duplicate removals can close a newer connection after the
-    // listener reuses this client ID, including an unrelated agent report.
+    // One removal per route, queued after everything the route sent.
     if let Some(session) = session_data
         .write()
         .to_anyhow()
@@ -1178,7 +1170,7 @@ pub(crate) fn route_thread_main(
     {
         session.locked_escapes.remove(&client_id);
     }
-    let _ = to_server.send(ServerInstruction::ClientRouterFinished(client_id));
+    let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
     Ok(())
 }
 

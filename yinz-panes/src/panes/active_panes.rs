@@ -61,6 +61,12 @@ impl ActivePanes {
     pub fn set_last_pane(&mut self, client_id: ClientId, pane_id: PaneId) {
         self.last_panes.insert(client_id, pane_id);
     }
+    /// Forget a client that has gone. Its pane is not told it lost focus: another client may
+    /// still be focused there.
+    pub fn forget_client(&mut self, client_id: &ClientId) {
+        self.active_panes.remove(client_id);
+        self.last_panes.remove(client_id);
+    }
     pub fn clear(&mut self, panes: &impl PaneLookup) {
         for pane_id in self.active_panes.values() {
             self.unfocus_pane(*pane_id, panes);

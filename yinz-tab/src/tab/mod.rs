@@ -35,6 +35,7 @@ use yinz_types::internal_ids::TabPosition;
 use yinz_types::internal_ids::TerminalId;
 use yinz_types::keys::KeyWithModifier;
 use yinz_types::mouse::MouseEvent;
+use yinz_types::multiplayer::AttachedClients;
 use yinz_types::position::Position;
 use yinz_types::style::Style;
 use yinz_types::text::clean_string_from_control_and_linebreak;
@@ -266,6 +267,14 @@ enum PaneMove {
     Toward(Direction),
 }
 
+/// Where a tab's last client was focused in each layer when it left.
+#[derive(Debug, Clone, Copy, Default)]
+struct DepartedFocus {
+    overlay: Option<PaneId>,
+    floating: Option<PaneId>,
+    tiled: Option<PaneId>,
+}
+
 pub struct Tab {
     /// Only this tab owns the strong reference; delayed launches hold weak references.
     pub agent_tab_lifetime: std::sync::Arc<()>,
@@ -331,6 +340,10 @@ pub struct Tab {
     /// empty tab lands. A property of the layout, not of any client: it survives
     /// clients detaching, and is only checked against the panes still in the tab.
     focus_pane_id: Option<PaneId>,
+    /// Where the tab's last client was focused when it left. A client joining the empty tab
+    /// lands there, before the layout's choice: a client that reattaches gets a new id, and
+    /// would otherwise lose its place.
+    departed_focus: DepartedFocus,
     copy_on_select: bool,
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
@@ -380,7 +393,7 @@ pub struct Tab {
     osc133_command_selection: bool,
     word_separators: String,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
-    connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
+    connected_clients_in_app: Rc<RefCell<AttachedClients>>,
     pub panes_with_pending_bell: HashSet<PaneId>,
     pub tab_has_pending_bell: bool,
     pub tab_bell_flash: bool, // currently in mid-notification-flash
@@ -454,7 +467,7 @@ impl Tab {
         default_mode_info: ModeInfo,
         pane_frame_style: PaneFrameStyle,
         auto_layout: bool,
-        connected_clients_in_app: Rc<RefCell<HashSet<ClientId>>>,
+        connected_clients_in_app: Rc<RefCell<AttachedClients>>,
         session_is_mirrored: bool,
         client_id: Option<ClientId>,
         copy_options: CopyOptions,
@@ -598,6 +611,7 @@ impl Tab {
             link_handler: Rc::new(RefCell::new(LinkHandler::new())),
             clipboard_provider,
             focus_pane_id: None,
+            departed_focus: DepartedFocus::default(),
             copy_on_select: copy_options.copy_on_select,
             terminal_emulator_colors,
             terminal_emulator_color_codes,
@@ -1350,7 +1364,7 @@ impl Tab {
         if connected_clients.is_empty() {
             return Ok(());
         }
-        let multiple_users_exist_in_session = { self.connected_clients_in_app.borrow().len() > 1 };
+        let multiplayer = self.connected_clients_in_app.borrow().snapshot();
         let should_draw_pane_frames = self.pane_frame_style.draws_full_frames();
         let session_is_mirrored = self.stack_list_session_is_mirrored;
         let current_pane_group: HashMap<ClientId, Vec<PaneId>> =
@@ -1447,7 +1461,7 @@ impl Tab {
                     output,
                     self.style,
                     &active_panes,
-                    multiple_users_exist_in_session,
+                    multiplayer,
                     z_index,
                     false,
                     false,
@@ -2305,10 +2319,20 @@ impl Tab {
     }
     pub fn add_client(&mut self, client_id: ClientId, mode_info: Option<ModeInfo>) -> Result<()> {
         self.agent_tab_cleanup_allowed = false;
-        // Client ids are recycled, and a client arriving in a tab that already has clients does
-        // not go through `visible(true)`. Whatever the id's previous holder was told about its
-        // cursor says nothing about this one's terminal, so start it from scratch.
+        // A client arriving in a tab that already has clients does not go through
+        // `visible(true)`, so start its cursor state from scratch.
         self.forget_host_cursor_state(client_id);
+        // The departed client's place is for a client with none of its own here. One coming back
+        // from another tab keeps its own focus in every layer, including an overlay it dismissed.
+        // Read before the overlay below can give it one.
+        let has_own_place = self.tiled_panes.get_active_pane_id(client_id).is_some()
+            || self.floating_panes.active_pane_id(client_id).is_some()
+            || self.overlay_panes.active_pane_id(client_id).is_some();
+        let departed = if self.connected_clients.borrow().is_empty() && !has_own_place {
+            self.departed_focus
+        } else {
+            DepartedFocus::default()
+        };
         // an overlay is drawn for every client, so a client that joins while one is open must be
         // focused on it - otherwise it sees the dialog and types into the pane behind it. A modal
         // first: it is the one pane that must own the keyboard and cannot learn that it doesn't.
@@ -2319,6 +2343,9 @@ impl Tab {
             .overlay_panes
             .topmost_modal_pane_id()
             .or_else(|| self.overlay_panes.first_active_pane_id())
+            .or(departed
+                .overlay
+                .filter(|pane_id| self.overlay_panes.panes_contain(pane_id)))
         {
             self.overlay_panes
                 .focus_pane_for_joining_client(overlay_to_focus, client_id);
@@ -2336,9 +2363,10 @@ impl Tab {
             }
         } else {
             let pane_ids: Vec<PaneId> = self.tiled_panes.pane_ids().copied().collect();
-            let focus_pane_id = self
-                .focus_pane_id
-                .filter(|focus_pane_id| {
+            let focus_pane_id = [departed.tiled, self.focus_pane_id]
+                .into_iter()
+                .flatten()
+                .find(|focus_pane_id| {
                     pane_ids.contains(focus_pane_id)
                         && !self.tiled_panes.panes_to_hide_contains(*focus_pane_id)
                 })
@@ -2359,7 +2387,13 @@ impl Tab {
                     .focus_pane_if_client_not_focused(focus_pane_id, client_id);
             }
         }
-        self.floating_panes.focus_pane_for_joining_client(client_id);
+        match departed
+            .floating
+            .filter(|pane_id| self.floating_panes.panes_contain(pane_id))
+        {
+            Some(pane_id) => self.floating_panes.focus_pane(pane_id, client_id),
+            None => self.floating_panes.focus_pane_for_joining_client(client_id),
+        }
         // Unconditional. A tab with no tiled panes is an ordinary state here - floating panes, an
         // overlay, a pane suppressed behind a hook plugin, a tab still applying its layout - and
         // this used to return `Ok(())` for one without registering the client at all. Callers
@@ -4313,7 +4347,25 @@ impl Tab {
             false
         }
     }
+    /// Note where a leaving client was, if it is the last client here, for the next to join.
+    /// Every tab is asked, so one the client is not in keeps what it has.
+    pub fn remember_departing_focus(&mut self, client_id: ClientId) {
+        let last_here = {
+            let clients = self.connected_clients.borrow();
+            clients.len() == 1 && clients.contains(&client_id)
+        };
+        if last_here {
+            self.departed_focus = DepartedFocus {
+                overlay: self.overlay_panes.active_pane_id(client_id),
+                floating: self.floating_panes.get_active_pane_id(client_id),
+                tiled: self.tiled_panes.get_active_pane_id(client_id),
+            };
+        }
+    }
     pub fn remove_client_pane_state(&mut self, client_id: ClientId) {
+        self.tiled_panes.forget_client(client_id);
+        self.floating_panes.forget_client(client_id);
+        self.overlay_panes.forget_client(client_id);
         self.forget_host_cursor_state(client_id);
         self.invalidate_boundaries(client_id);
         if let Some(pane_id) = self.mouse_hover_pane_id.remove(&client_id) {
@@ -5752,8 +5804,11 @@ impl Tab {
                                     .borrow()
                                     .len()
                                     > 1,
+                                color_slot: self
+                                    .connected_clients_in_app
+                                    .borrow()
+                                    .color_slot(&client_id),
                             },
-                            client_id,
                             mode,
                             self.stack_list_session_is_mirrored,
                         );
@@ -8483,14 +8538,13 @@ impl Tab {
     }
     pub fn scroll_active_terminal_up(&mut self, client_id: ClientId) {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.scroll_up(1, client_id);
+            active_pane.scroll_up(1, Some(client_id));
         }
     }
 
     pub fn scroll_terminal_up(&mut self, terminal_pane_id: TerminalId) -> Result<()> {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll up pane {pane_id:?}");
-        let fictitious_client_id = ClientId::new(1);
         let synthetic_position = Position::new(0, 0);
         let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
             Some(pane) => (
@@ -8506,7 +8560,7 @@ impl Tab {
             self.write_to_pane_id(&None, b"\x1b[A".to_vec(), false, pane_id, None, None)
                 .with_context(err_context)?;
         } else if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.scroll_up(1, fictitious_client_id);
+            pane.scroll_up(1, None);
         }
         Ok(())
     }
@@ -8515,7 +8569,7 @@ impl Tab {
         let err_context = || format!("failed to scroll down active pane for client {client_id}");
 
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
-            active_pane.scroll_down(1, client_id);
+            active_pane.scroll_down(1, Some(client_id));
             if !active_pane.is_scrolled() {
                 if let PaneId::Terminal(raw_fd) = active_pane.pid() {
                     self.process_pending_vte_events(raw_fd)
@@ -8529,7 +8583,6 @@ impl Tab {
     pub fn scroll_terminal_down(&mut self, terminal_pane_id: TerminalId) -> Result<()> {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         let err_context = || format!("failed to scroll down pane {pane_id:?}");
-        let fictitious_client_id = ClientId::new(1);
         let synthetic_position = Position::new(0, 0);
         let (mouse_sgr, is_alt) = match self.get_pane_with_id(pane_id) {
             Some(pane) => (
@@ -8546,7 +8599,7 @@ impl Tab {
                 .with_context(err_context)?;
         } else {
             let needs_flush = if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                pane.scroll_down(1, fictitious_client_id);
+                pane.scroll_down(1, None);
                 !pane.is_scrolled()
             } else {
                 false
@@ -8563,17 +8616,16 @@ impl Tab {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             // prevent overflow when row == 0
             let scroll_rows = active_pane.rows().max(1).saturating_sub(1);
-            active_pane.scroll_up(scroll_rows, client_id);
+            active_pane.scroll_up(scroll_rows, Some(client_id));
         }
     }
 
     pub fn scroll_terminal_page_up(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
             // Terminal panes ignore the client ID required by the shared Pane interface.
-            let fictitious_client_id = ClientId::new(1);
             // prevent overflow when row == 0
             let scroll_rows = terminal_pane.rows().max(1).saturating_sub(1);
-            terminal_pane.scroll_up(scroll_rows, fictitious_client_id);
+            terminal_pane.scroll_up(scroll_rows, None);
         }
     }
 
@@ -8583,7 +8635,7 @@ impl Tab {
 
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             let scroll_rows = active_pane.get_content_rows();
-            active_pane.scroll_down(scroll_rows, client_id);
+            active_pane.scroll_down(scroll_rows, Some(client_id));
             if !active_pane.is_scrolled() {
                 if let PaneId::Terminal(raw_fd) = active_pane.pid() {
                     self.process_pending_vte_events(raw_fd)
@@ -8597,9 +8649,8 @@ impl Tab {
     pub fn scroll_terminal_page_down(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
             // Terminal panes ignore the client ID required by the shared Pane interface.
-            let fictitious_client_id = ClientId::new(1);
             let scroll_rows = terminal_pane.get_content_rows();
-            terminal_pane.scroll_down(scroll_rows, fictitious_client_id);
+            terminal_pane.scroll_down(scroll_rows, None);
             if !terminal_pane.is_scrolled() {
                 if let PaneId::Terminal(raw_fd) = terminal_pane.pid() {
                     self.process_pending_vte_events(raw_fd).non_fatal()
@@ -8612,7 +8663,7 @@ impl Tab {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             // prevent overflow when row == 0
             let scroll_rows = (active_pane.rows().max(1).saturating_sub(1)) / 2;
-            active_pane.scroll_up(scroll_rows, client_id);
+            active_pane.scroll_up(scroll_rows, Some(client_id));
         }
     }
 
@@ -8622,7 +8673,7 @@ impl Tab {
 
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             let scroll_rows = (active_pane.rows().max(1) - 1) / 2;
-            active_pane.scroll_down(scroll_rows, client_id);
+            active_pane.scroll_down(scroll_rows, Some(client_id));
             if !active_pane.is_scrolled() {
                 if let PaneId::Terminal(raw_fd) = active_pane.pid() {
                     self.process_pending_vte_events(raw_fd)
@@ -8751,7 +8802,7 @@ impl Tab {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             active_pane.clear_scroll();
             if let Some(size) = active_pane.get_line_number() {
-                active_pane.scroll_up(size, client_id);
+                active_pane.scroll_up(size, Some(client_id));
             }
         }
         Ok(())
@@ -8762,8 +8813,7 @@ impl Tab {
             terminal_pane.clear_scroll();
             if let Some(size) = terminal_pane.get_line_number() {
                 // Terminal panes ignore the client ID required by the shared Pane interface.
-                let fictitious_client_id = ClientId::new(1);
-                terminal_pane.scroll_up(size, fictitious_client_id);
+                terminal_pane.scroll_up(size, None);
             }
         }
     }
@@ -10820,15 +10870,13 @@ impl Tab {
     }
     // --- Pane-targeting CLI methods ---
     pub fn scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.scroll_up(1, fictitious_client_id);
+            pane.scroll_up(1, None);
         }
     }
     pub fn scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-            pane.scroll_down(1, fictitious_client_id);
+            pane.scroll_down(1, None);
             if !pane.is_scrolled() {
                 if let PaneId::Terminal(raw_fd) = pane.pid() {
                     self.process_pending_vte_events(raw_fd)?;
@@ -10838,11 +10886,10 @@ impl Tab {
         Ok(())
     }
     pub fn scroll_to_top_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_scroll();
             if let Some(size) = pane.get_line_number() {
-                pane.scroll_up(size, fictitious_client_id);
+                pane.scroll_up(size, None);
             }
         }
         Ok(())
@@ -10859,17 +10906,15 @@ impl Tab {
         Ok(())
     }
     pub fn page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.rows().max(1).saturating_sub(1);
-            pane.scroll_up(scroll_rows, fictitious_client_id);
+            pane.scroll_up(scroll_rows, None);
         }
     }
     pub fn page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.get_content_rows();
-            pane.scroll_down(scroll_rows, fictitious_client_id);
+            pane.scroll_down(scroll_rows, None);
             if !pane.is_scrolled() {
                 if let PaneId::Terminal(raw_fd) = pane.pid() {
                     self.process_pending_vte_events(raw_fd)?;
@@ -10879,17 +10924,15 @@ impl Tab {
         Ok(())
     }
     pub fn half_page_scroll_up_by_pane_id(&mut self, pane_id: PaneId) {
-        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
-            pane.scroll_up(scroll_rows, fictitious_client_id);
+            pane.scroll_up(scroll_rows, None);
         }
     }
     pub fn half_page_scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
-        let fictitious_client_id = ClientId::new(1);
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
-            pane.scroll_down(scroll_rows, fictitious_client_id);
+            pane.scroll_down(scroll_rows, None);
             if !pane.is_scrolled() {
                 if let PaneId::Terminal(raw_fd) = pane.pid() {
                     self.process_pending_vte_events(raw_fd)?;

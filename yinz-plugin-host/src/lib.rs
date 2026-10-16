@@ -145,6 +145,9 @@ pub fn plugin_thread_main(
         plugin_aliases.clone(),
         server_session.clone(),
     )?;
+    // The background plugins below and the first layout's plugins are loaded for the first
+    // client before its `AddClient`, and must share its attachment token.
+    plugin_bridge.reserve_client(initiating_client_id);
 
     let host_required: Vec<_> = background_plugins
         .iter()
@@ -522,6 +525,9 @@ pub fn plugin_thread_main(
             },
             PluginInstruction::Resize(pid, new_columns, new_rows) => {
                 plugin_bridge.resize_plugin(pid, new_columns, new_rows, shutdown_send.clone())?;
+            },
+            PluginInstruction::ReserveClient(client_id) => {
+                plugin_bridge.reserve_client(client_id);
             },
             PluginInstruction::AddClient(client_id) => {
                 let started_at = std::time::Instant::now();

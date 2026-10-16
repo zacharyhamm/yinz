@@ -13,6 +13,7 @@ use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabPosition;
 use yinz_types::internal_ids::TerminalId;
+use yinz_types::multiplayer::AttachedClients;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -225,7 +226,7 @@ fn create_new_tab(size: Size, default_mode: ModeInfo) -> Tab {
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -319,7 +320,7 @@ fn create_new_tab_with_stacked_pane_list(
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -412,7 +413,7 @@ fn create_new_tab_without_pane_frames(size: Size, default_mode: ModeInfo) -> Tab
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -517,7 +518,7 @@ fn create_new_tab_with_swap_layouts(
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -619,7 +620,7 @@ fn create_new_tab_with_os_api(size: Size, default_mode: ModeInfo, os_api: &FakeI
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -705,7 +706,7 @@ fn create_new_tab_with_layout(size: Size, default_mode: ModeInfo, layout: &str) 
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -810,7 +811,7 @@ fn create_new_tab_with_mock_pty_writer(
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -901,7 +902,7 @@ fn create_new_tab_with_sixel_support(
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_size = Rc::new(RefCell::new(Some(SizeInPixels {
@@ -1203,7 +1204,7 @@ fn create_new_tab_with_plugin_receiver_and_os(
     let auto_layout = true;
     let client_id = ClientId::new(1);
     let session_is_mirrored = true;
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));
@@ -1300,7 +1301,7 @@ fn create_new_tab_with_screen_receiver(
 
     let max_panes = None;
     let client_id = ClientId::new(1);
-    let mut connected_clients = HashSet::new();
+    let mut connected_clients = AttachedClients::default();
     connected_clients.insert(client_id);
     let connected_clients = Rc::new(RefCell::new(connected_clients));
     let character_cell_info = Rc::new(RefCell::new(None));

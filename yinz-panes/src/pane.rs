@@ -264,8 +264,10 @@ pub trait Pane {
     fn dump_screen_with_ansi(&self, _full: bool, _client_id: Option<ClientId>) -> String {
         "".to_owned()
     }
-    fn scroll_up(&mut self, count: usize, client_id: ClientId);
-    fn scroll_down(&mut self, count: usize, client_id: ClientId);
+    /// `client_id` is the client scrolling, or `None` for a request no client made, which a
+    /// plugin pane passes to every instance of its plugin.
+    fn scroll_up(&mut self, count: usize, client_id: Option<ClientId>);
+    fn scroll_down(&mut self, count: usize, client_id: Option<ClientId>);
     fn scroll_left(&mut self, _count: usize, _client_id: ClientId) {}
     fn scroll_right(&mut self, _count: usize, _client_id: ClientId) {}
     fn scroll_to_previous_prompt(&mut self, _client_id: ClientId) {}

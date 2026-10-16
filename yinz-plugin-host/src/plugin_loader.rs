@@ -410,13 +410,10 @@ impl PluginLoader {
                     continue;
                 }
                 self.client_id = client_id;
-                self.client_cancel = self
-                    .client_cancellations
-                    .lock()
-                    .unwrap()
-                    .entry(client_id)
-                    .or_default()
-                    .clone();
+                self.client_cancel = crate::plugin_bridge::client_cancel_token(
+                    &self.client_cancellations,
+                    client_id,
+                );
                 self.start_plugin()?;
             }
         }

@@ -3,15 +3,6 @@ use yinz_types::data::{PaneContents, PaneId};
 use yinz_types::internal_ids::{PluginId, TerminalId};
 
 #[test]
-fn client_grid_reset_carries_the_client_id() {
-    let event = Event::ClientGridReset(yinz_types::data::ClientId::new(42));
-    assert_eq!(
-        event_to_json(&event).unwrap(),
-        json!({"ClientGridReset": 42})
-    );
-}
-
-#[test]
 fn render_report_uses_cli_pane_keys_and_preserves_contents_and_event_tag() {
     let terminal = PaneContents {
         viewport: vec!["terminal output".into()],

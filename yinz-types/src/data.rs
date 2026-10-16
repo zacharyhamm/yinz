@@ -22,7 +22,6 @@ use crate::position::{CellCoordinates, Column, ColumnCount, Row, RowCount};
 use crate::units::{ElapsedMillis, FractionalSeconds, SignedUnixMillis, UnixMillis, UnixSeconds};
 // The data store's types are part of the plugin API, so they belong in the prelude alongside
 // everything else here. Their module contains portable values without database implementation details.
-use crate::colors::default_colors;
 pub use crate::plugin_data::*;
 use crate::position::Position;
 use serde::{Deserialize, Serialize};
@@ -69,27 +68,6 @@ pub enum CommandOrPlugin {
 impl CommandOrPlugin {
     pub fn new_command(command: Vec<String>) -> Self {
         CommandOrPlugin::Command(RunCommandAction::new(command))
-    }
-}
-
-pub fn client_id_to_colors(
-    client_id: ClientId,
-    colors: MultiplayerColors,
-) -> Option<(PaletteColor, PaletteColor)> {
-    // (primary color, secondary color)
-    let black = PaletteColor::EightBit(default_colors::BLACK);
-    match client_id.get() {
-        1 => Some((colors.player_1, black)),
-        2 => Some((colors.player_2, black)),
-        3 => Some((colors.player_3, black)),
-        4 => Some((colors.player_4, black)),
-        5 => Some((colors.player_5, black)),
-        6 => Some((colors.player_6, black)),
-        7 => Some((colors.player_7, black)),
-        8 => Some((colors.player_8, black)),
-        9 => Some((colors.player_9, black)),
-        10 => Some((colors.player_10, black)),
-        _ => None,
     }
 }
 
@@ -276,8 +254,6 @@ pub enum Event {
     PastedText(String),
     ConfigWasWrittenToDisk,
     BeforeClose,
-    /// This client's plugin grid has a fresh image namespace. Retransmit cached images.
-    ClientGridReset(ClientId),
     /// The acting client's terminal cell geometry, or unknown before a valid report.
     CellPixelSizeChanged(Option<crate::pane_size::SizeInPixels>),
     InterceptedKeyPress(KeyWithModifier),
@@ -1241,6 +1217,11 @@ pub struct TabInfo {
     pub is_sync_panes_active: bool,
     pub are_floating_panes_visible: bool,
     pub other_focused_clients: Vec<ClientId>,
+    /// The multiplayer color slot of each of `other_focused_clients`, in the same order: `None`
+    /// for a client past the tenth. Client ids grow without bound, so a plugin colors a client by
+    /// its slot (`player_<slot>`), not its id. Empty from a host that does not send it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_focused_client_slots: Vec<Option<crate::multiplayer::ColorSlot>>,
     pub active_swap_layout_name: Option<String>,
     /// Whether the user manually changed the layout, moving out of the swap layout scheme
     pub is_swap_layout_dirty: bool,

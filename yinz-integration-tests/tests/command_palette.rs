@@ -1914,8 +1914,15 @@ fn session_palette_disconnect_targets_preserve_watchers() {
     let client = host.attach_client(TERMINAL_SIZE);
     client.wait_until("ordinary client connected", |s| s.contains("$"));
     palette_query(&host, "Disconnect other clients");
+    // Client ids are never reused, so the ordinary client's id depends on how many
+    // connections came before it. Only it is a target: one id, not the watcher's too.
     host.wait_until("exact ordinary target", |s| {
-        s.contains("Disconnect clients 3?") && s.contains("Cancel")
+        s.contains("Cancel")
+            && s.lines().iter().any(|line| {
+                line.split_once("Disconnect clients ")
+                    .and_then(|(_, rest)| rest.split_once('?'))
+                    .is_some_and(|(targets, _)| targets.trim().parse::<u32>().is_ok())
+            })
     });
     host.send_stdin(b"\x1b[B\r");
     host.wait_until("disconnect completed", |s| {
