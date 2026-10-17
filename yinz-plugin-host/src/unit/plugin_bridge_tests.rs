@@ -3547,6 +3547,8 @@ fn attach_whose_plugin_data_cannot_be_prepared_still_attaches() {
                 .unwrap();
         }
     }
+    // add_client walks plugins in map order, so only the set of finished loads is fixed.
+    finished.sort();
     assert_eq!(finished, vec![PluginId::new(1), PluginId::new(2)]);
     assert!(test.bridge.loading_plugins.is_empty());
     for (id, original) in [1, 2].into_iter().zip(originals) {
