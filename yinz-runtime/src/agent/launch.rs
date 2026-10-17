@@ -852,9 +852,9 @@ pub fn resume_command(
     // command that starts with one of them (`translate_plugin_path`, in
     // yinz-plugin-host/src/yinz_exports.rs), and a run's cwd is a real host path taken
     // from the agent's hook rather than a plugin path: a run recorded in `/tmp/scratch` would
-    // resume in `$YINZ_TMP_DIR/scratch`, which is the wrong folder rather than a refusal.
-    // A remote cwd is the far machine's and is passed through as it stands, so this is the
-    // local case only - and the list has to stay in step with the one over there.
+    // resume in `$YINZ_TMP_DIR/plugin-tmp/scratch`, which is the wrong folder rather than a
+    // refusal. A remote cwd is the far machine's and is passed through as it stands, so this is
+    // the local case only - and the list has to stay in step with the one over there.
     if !target.is_remote() {
         if let Some(mount) = cwd.as_ref().and_then(|cwd| {
             ["/host", "/data", "/cache", "/tmp"]
@@ -1690,7 +1690,8 @@ mod tests {
 
     /// The host reads a local command's cwd through the plugin mounts, so a run recorded in
     /// one of the four folders they claim would open its pane somewhere else entirely - in
-    /// `$YINZ_TMP_DIR` rather than `/tmp`. A refusal says so; the silent version does not.
+    /// `$YINZ_TMP_DIR/plugin-tmp` rather than `/tmp`. A refusal says so; the silent version
+    /// does not.
     #[test]
     fn a_local_folder_the_plugin_mounts_claim_is_refused() {
         for cwd in ["/tmp/scratch-repo", "/host/w", "/data/w", "/cache/w"] {
