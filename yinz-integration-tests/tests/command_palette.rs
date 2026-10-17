@@ -387,8 +387,9 @@ fn command_palette_closed_paste_reaches_normal_locked_and_synchronized_terminals
 
 fn palette_query(yinz: &yinz_integration_tests::TestSession, query: &str) {
     yinz.send_stdin(DO);
+    // A repeated query must not match the previous opening's results before input is processed.
     yinz.wait_until("palette opened", |snapshot| {
-        snapshot.contains("Do · Project:")
+        snapshot.contains("Do · Project:") && snapshot.contains("│> █")
     });
     yinz.send_stdin(query.as_bytes());
     yinz.wait_until("palette query rendered", |snapshot| {
