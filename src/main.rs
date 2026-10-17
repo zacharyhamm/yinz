@@ -21,6 +21,7 @@ use {
 };
 
 fn main() {
+    let process_started = std::time::Instant::now();
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(yinz_steel::worker::ARG))
     {
         if let Err(error) = yinz_steel::worker::run_worker() {
@@ -80,7 +81,6 @@ fn main() {
         yinz_server::start_server_impl(Box::new(os), socket, true);
         return;
     }
-    let process_started = std::time::Instant::now();
     // A pty-host supervisor is spawned once per pane, so it branches before the
     // logger, the cache-folder setup and the clap builder — none of which it
     // needs, and all of which it would otherwise pay for on every pane. It must
@@ -163,8 +163,37 @@ fn main() {
             },
         }
     }
+    let startup_kind = if opts.server.is_some() {
+        Some("server")
+    } else {
+        match &opts.command {
+            None | Some(Command::Options(_)) => Some("new"),
+            Some(Command::Setup(setup)) if setup.clean => Some("new"),
+            Some(Command::Sessions(Sessions::Attach { .. })) => Some("attach"),
+            Some(Command::Sessions(Sessions::Watch { .. })) => Some("watch"),
+            _ => None,
+        }
+    };
+    let logger_started = std::time::Instant::now();
     configure_logger();
-    create_config_and_cache_folders();
+    if let Some(kind) = startup_kind {
+        use std::io::IsTerminal;
+        log::info!(
+            "startup trace: process kind={kind} ppid={} exe={:?} version={} debug={} term={:?} stdin_tty={} stdout_tty={} pre_logger_us={} logger_us={}",
+            nix::unistd::getppid(),
+            std::env::current_exe().ok(),
+            yinz_runtime::consts::VERSION,
+            cfg!(debug_assertions),
+            std::env::var_os("TERM"),
+            std::io::stdin().is_terminal(),
+            std::io::stdout().is_terminal(),
+            logger_started.duration_since(process_started).as_micros(),
+            logger_started.elapsed().as_micros(),
+        );
+        startup_stage("cli.create_directories", create_config_and_cache_folders);
+    } else {
+        create_config_and_cache_folders();
+    }
 
     if let Some(Command::Agent(command)) = opts.command.clone() {
         match agent::run(command, &opts) {
@@ -229,7 +258,12 @@ fn main() {
     }
 
     {
-        let config = yinz_cli::setup::load_config(&opts).ok();
+        let config = if startup_kind.is_some() {
+            startup_stage("cli.initial_config", || yinz_cli::setup::load_config(&opts))
+        } else {
+            yinz_cli::setup::load_config(&opts)
+        }
+        .ok();
         if let Some(Command::Action(cli_action)) = opts.command {
             commands::send_action_to_session(*cli_action, opts.session, config);
             std::process::exit(0);

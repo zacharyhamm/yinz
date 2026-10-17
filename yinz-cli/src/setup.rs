@@ -4,6 +4,7 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use std::{fmt::Write as FmtWrite, fs, io::Write, path::PathBuf, process};
 use yinz_config::assets::*;
+use yinz_runtime::logging::startup_stage;
 #[allow(unused_imports)]
 use {
     crate::args::CliArgs, crate::args::Command, crate::args::SessionCommand, crate::args::Sessions,
@@ -154,7 +155,7 @@ impl Setup {
     ) -> Result<(Config, Option<LayoutInfo>, Options, Config, Options), ConfigError> {
         // note that this can potentially exit the process
         Setup::handle_setup_commands(cli_args);
-        let config = load_config(cli_args)?;
+        let config = startup_stage("cli.config", || load_config(cli_args))?;
         let cli_config_options: Option<Options> =
             if let Some(Command::Options(options)) = cli_args.command.clone() {
                 Some((*options).into())
@@ -167,26 +168,32 @@ impl Setup {
         let cli_config_options = merge_attach_command_options(cli_config_options, cli_args);
 
         let mut config_without_layout = config.clone();
-        let (layout_info, mut config) = yinz_config::config::load_layout_and_config(
-            cli_config_options.as_ref(),
-            config,
-            cli_args.config_dir.clone(),
-            cli_args.config.as_deref(),
-            cli_args.layout_string.as_deref(),
-            cli_args.layout.as_deref(),
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        )?;
+        let (layout_info, mut config) = startup_stage("cli.layout", || {
+            yinz_config::config::load_layout_and_config(
+                cli_config_options.as_ref(),
+                config,
+                cli_args.config_dir.clone(),
+                cli_args.config.as_deref(),
+                cli_args.layout_string.as_deref(),
+                cli_args.layout.as_deref(),
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            )
+        })?;
 
-        let config_options = yinz_config::config::apply_themes(
-            &mut config,
-            cli_config_options.clone(),
-            cli_args.config_dir.clone(),
-        )?;
-        let config_options_without_layout = yinz_config::config::apply_themes(
-            &mut config_without_layout,
-            cli_config_options,
-            cli_args.config_dir.clone(),
-        )?;
+        let config_options = startup_stage("cli.themes", || {
+            yinz_config::config::apply_themes(
+                &mut config,
+                cli_config_options.clone(),
+                cli_args.config_dir.clone(),
+            )
+        })?;
+        let config_options_without_layout = startup_stage("cli.themes_without_layout", || {
+            yinz_config::config::apply_themes(
+                &mut config_without_layout,
+                cli_config_options,
+                cli_args.config_dir.clone(),
+            )
+        })?;
 
         if let Some(Command::Setup(ref setup)) = &cli_args.command {
             setup

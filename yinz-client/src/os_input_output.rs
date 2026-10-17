@@ -408,18 +408,22 @@ impl ServerConnection for ClientOsInputOutput {
     }
 
     fn send_to_server(&self, msg: ClientToServerMsg) {
-        let tracing_attach = matches!(&msg, ClientToServerMsg::AttachClient { .. });
+        let startup_message = match &msg {
+            ClientToServerMsg::AttachClient { .. } => Some("AttachClient"),
+            ClientToServerMsg::FirstClientConnected { .. } => Some("FirstClientConnected"),
+            _ => None,
+        };
         let started_at = std::time::Instant::now();
-        if tracing_attach {
+        if let Some(kind) = startup_message {
             log::info!(
-                "attach trace: client pid={} waiting for IPC sender lock",
+                "startup trace: client pid={} message={kind} waiting for IPC sender lock",
                 std::process::id()
             );
         }
         let mut sender = self.send_instructions_to_server.lock().unwrap();
-        if tracing_attach {
+        if let Some(kind) = startup_message {
             log::info!(
-                "attach trace: client pid={} acquired IPC sender lock after {:?}",
+                "startup trace: client pid={} message={kind} acquired IPC sender lock after {:?}",
                 std::process::id(),
                 started_at.elapsed()
             );
@@ -427,9 +431,9 @@ impl ServerConnection for ClientOsInputOutput {
         match sender.as_mut() {
             Some(sender) => {
                 let result = sender.send_client_msg(msg);
-                if tracing_attach {
+                if let Some(kind) = startup_message {
                     log::info!(
-                        "attach trace: client pid={} IPC AttachClient write finished after {:?} ({})",
+                        "startup trace: client pid={} IPC {kind} write finished after {:?} ({})",
                         std::process::id(),
                         started_at.elapsed(),
                         if result.is_ok() { "ok" } else { "error" }
