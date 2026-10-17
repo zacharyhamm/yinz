@@ -2,6 +2,7 @@
 use super::*;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::path::Path;
 use yinz_types::data::PluginCommand;
 
 struct Roots {
@@ -30,6 +31,15 @@ fn run(
     grants: HashSet<PermissionType>,
     commands: &[Value],
 ) -> Result<Value, String> {
+    run_in(roots.host.path(), roots, grants, commands)
+}
+/// `run` with the plugin's `/host` folder somewhere other than its own temporary one.
+fn run_in(
+    host: &Path,
+    roots: &Roots,
+    grants: HashSet<PermissionType>,
+    commands: &[Value],
+) -> Result<Value, String> {
     // Validate every fixture against the actual command type before the Scheme transport sees it.
     let expressions = commands
         .iter()
@@ -52,7 +62,7 @@ fn run(
     "#
     );
     let mut env = crate::test_env::test_env();
-    env.plugin_cwd = roots.host.path().to_owned();
+    env.plugin_cwd = host.to_owned();
     env.plugin_own_data_dir = roots.data.path().to_owned();
     env.plugin_own_cache_dir = roots.cache.path().to_owned();
     env.user_plugin_dir = Some(roots.plugins.path().to_owned());
@@ -86,6 +96,8 @@ fn steel_filesystem_roots_are_distinct_and_relative_paths_use_host() {
     let roots = Roots::new();
     let temporary = format!("steel-where-{}.txt", std::process::id());
     let tmp = format!("/tmp/{temporary}");
+    // The plugin loader creates this folder; this test has no loader.
+    std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_PLUGIN_TMP_DIR).unwrap();
     let result = run(
         &roots,
         permissions(),
@@ -108,7 +120,7 @@ fn steel_filesystem_roots_are_distinct_and_relative_paths_use_host() {
             expected
         );
     }
-    let path = yinz_runtime::consts::YINZ_TMP_DIR.join(temporary);
+    let path = yinz_runtime::consts::YINZ_PLUGIN_TMP_DIR.join(temporary);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "tmp");
     std::fs::remove_file(path).unwrap();
     std::fs::write(roots.host.path().join("relative"), "found").unwrap();
@@ -139,6 +151,115 @@ fn steel_filesystem_rejects_parent_traversal_from_every_root() {
         .unwrap()
         .join("escaped.txt")
         .exists());
+}
+
+/// A file placed in the server's log folder for one test, removed when it is dropped.
+struct LogSentinel(PathBuf);
+impl LogSentinel {
+    fn new(name: &str) -> Self {
+        let log_dir = &*yinz_runtime::consts::YINZ_TMP_LOG_DIR;
+        std::fs::create_dir_all(log_dir).unwrap();
+        let path = log_dir.join(format!("steel-{name}-{}.log", std::process::id()));
+        std::fs::write(&path, "server log").unwrap();
+        Self(path)
+    }
+    fn name(&self) -> String {
+        self.0.file_name().unwrap().to_str().unwrap().to_owned()
+    }
+}
+impl Drop for LogSentinel {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn steel_filesystem_tmp_does_not_reach_the_yinz_temp_folder() {
+    let roots = Roots::new();
+    let sentinel = LogSentinel::new("tmp-mount");
+    let name = sentinel.name();
+    let plugin_tmp = &*yinz_runtime::consts::YINZ_PLUGIN_TMP_DIR;
+    std::fs::create_dir_all(plugin_tmp).unwrap();
+    let link = plugin_tmp.join(format!("steel-log-link-{}", std::process::id()));
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&*yinz_runtime::consts::YINZ_TMP_LOG_DIR, &link).unwrap();
+    let link_name = link.file_name().unwrap().to_str().unwrap().to_owned();
+    // Even the permission that reads the log by name does not reach it through `/tmp`.
+    let mut grants = permissions();
+    grants.insert(PermissionType::AuthorPlugins);
+    for command in [
+        read(format!("/tmp/yinz-log/{name}")),
+        read(format!("/tmp/../yinz-log/{name}")),
+        read(format!("/tmp/{link_name}/{name}")),
+        json!({"FsList":{"path":"/tmp/.."}}),
+    ] {
+        let error = run(&roots, grants.clone(), std::slice::from_ref(&command)).unwrap_err();
+        assert!(
+            error.contains("No such file") || error.contains("outside the plugin's own folders"),
+            "{command}: {error}"
+        );
+    }
+    std::fs::remove_file(link).unwrap();
+    assert!(sentinel.0.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn steel_filesystem_log_folder_needs_author_permission() {
+    let roots = Roots::new();
+    let sentinel = LogSentinel::new("log-guard");
+    let name = sentinel.name();
+    // A plugin whose host folder holds yinz's own temp folder reaches the log through `/host`.
+    let host = yinz_runtime::consts::YINZ_TMP_DIR.as_path();
+    for command in [
+        read(format!("/host/yinz-log/{name}")),
+        write(format!("/host/yinz-log/{name}"), "forged", false),
+        remove(format!("/host/yinz-log/{name}"), false),
+        // Removing the non-empty folder fails anyway; the refusal has to come first.
+        remove("/host/yinz-log", false),
+    ] {
+        let error =
+            run_in(host, &roots, permissions(), std::slice::from_ref(&command)).unwrap_err();
+        assert!(error.contains("AuthorPlugins"), "{command}: {error}");
+    }
+    assert_eq!(std::fs::read_to_string(&sentinel.0).unwrap(), "server log");
+    let mut grants = permissions();
+    grants.insert(PermissionType::AuthorPlugins);
+    let read_log = read(format!("/host/yinz-log/{name}"));
+    assert_eq!(
+        text(run_in(host, &roots, grants, &[read_log]).unwrap()),
+        "server log"
+    );
+}
+
+#[test]
+fn steel_filesystem_roots_cannot_be_removed_or_replaced() {
+    let roots = Roots::new();
+    std::fs::create_dir(roots.host.path().join("sub")).unwrap();
+    std::fs::create_dir(roots.host.path().join("empty")).unwrap();
+    std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_PLUGIN_TMP_DIR).unwrap();
+    for command in [
+        remove("/data", true),
+        remove("/host/sub/..", true),
+        // Not recursive: a regression must not empty the folder other tests share.
+        remove("/tmp", false),
+        rename("/cache", "/host/moved"),
+        // Renaming a folder onto an empty one replaces it.
+        rename("/host/empty", "/data"),
+    ] {
+        let error = run(&roots, permissions(), std::slice::from_ref(&command)).unwrap_err();
+        assert!(
+            error.contains("cannot be removed or replaced"),
+            "{command}: {error}"
+        );
+    }
+    for root in [roots.host.path(), roots.data.path(), roots.cache.path()] {
+        assert!(root.is_dir(), "{root:?}");
+    }
+    assert!(roots.host.path().join("empty").is_dir());
+    assert!(!roots.host.path().join("moved").exists());
+    assert!(yinz_runtime::consts::YINZ_PLUGIN_TMP_DIR.is_dir());
 }
 
 #[cfg(unix)]

@@ -157,6 +157,9 @@ mod unix_only {
         pub static ref YINZ_TMP_DIR: PathBuf = temp_dir().join(format!("yinz-{}", *UID));
         pub static ref YINZ_TMP_LOG_DIR: PathBuf = YINZ_TMP_DIR.join("yinz-log");
         pub static ref YINZ_TMP_LOG_FILE: PathBuf = YINZ_TMP_LOG_DIR.join("yinz.log");
+        /// The folder plugins see as `/tmp`. A child of `YINZ_TMP_DIR` rather than that folder
+        /// itself, which also holds the server log, pane dumps and agent markers.
+        pub static ref YINZ_PLUGIN_TMP_DIR: PathBuf = YINZ_TMP_DIR.join("plugin-tmp");
         pub static ref YINZ_SOCK_DIR: PathBuf = {
             let mut ipc_dir = envs::get_socket_dir().map_or_else(
                 |_| {
@@ -200,6 +203,9 @@ mod not_unix {
         };
         pub static ref YINZ_TMP_LOG_DIR: PathBuf = YINZ_TMP_DIR.join("yinz-log");
         pub static ref YINZ_TMP_LOG_FILE: PathBuf = YINZ_TMP_LOG_DIR.join("yinz.log");
+        /// The folder plugins see as `/tmp`. A child of `YINZ_TMP_DIR` rather than that folder
+        /// itself, which also holds the server log, pane dumps and agent markers.
+        pub static ref YINZ_PLUGIN_TMP_DIR: PathBuf = YINZ_TMP_DIR.join("plugin-tmp");
         pub static ref YINZ_SOCK_DIR: PathBuf = {
             let mut ipc_dir = canonicalize_path(envs::get_socket_dir().map_or_else(
                 |_| {

@@ -235,15 +235,16 @@ use {
     yinz_plugin_api::plugin_command::ProtobufWarpPaneResponse,
     yinz_plugin_api::plugin_ids::ProtobufPluginIds,
     yinz_plugin_api::plugin_ids::ProtobufYinzVersion, yinz_runtime::consts::VERSION,
-    yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR, yinz_runtime::consts::YINZ_SOCK_DIR,
-    yinz_runtime::consts::YINZ_TMP_DIR, yinz_types::data::CommandOrPlugin,
-    yinz_types::data::EventType, yinz_types::data::FileToOpen, yinz_types::data::InputMode,
-    yinz_types::data::PluginCommand, yinz_types::data::PluginIds, yinz_types::data::PluginMessage,
-    yinz_types::input::actions::Action, yinz_types::input::command::OpenFilePayload,
-    yinz_types::input::command::RunCommand, yinz_types::input::command::RunCommandAction,
-    yinz_types::input::command::TerminalAction, yinz_types::input::keybinds::Keybinds,
-    yinz_types::input::layout::Layout, yinz_types::input::layout::Run,
-    yinz_types::input::layout::TabLayoutInfo, yinz_types::input::options::Options,
+    yinz_runtime::consts::YINZ_PLUGIN_TMP_DIR, yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR,
+    yinz_runtime::consts::YINZ_SOCK_DIR, yinz_runtime::consts::YINZ_TMP_LOG_DIR,
+    yinz_types::data::CommandOrPlugin, yinz_types::data::EventType, yinz_types::data::FileToOpen,
+    yinz_types::data::InputMode, yinz_types::data::PluginCommand, yinz_types::data::PluginIds,
+    yinz_types::data::PluginMessage, yinz_types::input::actions::Action,
+    yinz_types::input::command::OpenFilePayload, yinz_types::input::command::RunCommand,
+    yinz_types::input::command::RunCommandAction, yinz_types::input::command::TerminalAction,
+    yinz_types::input::keybinds::Keybinds, yinz_types::input::layout::Layout,
+    yinz_types::input::layout::Run, yinz_types::input::layout::TabLayoutInfo,
+    yinz_types::input::options::Options,
 };
 
 macro_rules! apply_action {
@@ -278,7 +279,7 @@ fn translate_plugin_path(env: &PluginEnv, path: PathBuf) -> PathBuf {
     } else if let Ok(stripped) = path.strip_prefix("/cache") {
         env.plugin_own_cache_dir.join(stripped)
     } else if let Ok(stripped) = path.strip_prefix("/tmp") {
-        YINZ_TMP_DIR.join(stripped)
+        YINZ_PLUGIN_TMP_DIR.join(stripped)
     } else if path.is_relative() {
         env.plugin_cwd.join(path)
     } else {
@@ -6985,9 +6986,9 @@ struct ResolvedPath {
 ///
 /// This is deliberately *not* [`translate_plugin_path`], which the pane-opening commands use.
 /// That one maps the four prefixes and stops: `/host/../../etc/passwd` resolves straight out of
-/// `/host`, and any genuine absolute path beginning `/tmp` is silently rewritten into yinz's
-/// own temp dir. Both are tolerable when the result is handed to an editor the user is watching,
-/// and neither is tolerable when the result is read or written on the plugin's say-so.
+/// `/host`, and any genuine absolute path beginning `/tmp` is silently rewritten into the
+/// plugins' temp dir. Both are tolerable when the result is handed to an editor the user is
+/// watching, and neither is tolerable when the result is read or written on the plugin's say-so.
 ///
 /// So this follows [`scan_host_folder`] instead: canonicalize the root and the target (or its
 /// parent for operations on the directory entry), and refuse anything that does not land inside.
@@ -7006,7 +7007,7 @@ fn fs_roots(env: &PluginEnv) -> Vec<(&'static str, PathBuf)> {
         ("/host", env.plugin_cwd.clone()),
         ("/data", env.plugin_own_data_dir.clone()),
         ("/cache", env.plugin_own_cache_dir.clone()),
-        ("/tmp", YINZ_TMP_DIR.to_path_buf()),
+        ("/tmp", YINZ_PLUGIN_TMP_DIR.to_path_buf()),
     ];
     if let Some(user_plugin_dir) = env.user_plugin_dir.as_ref() {
         roots.push((PLUGINS_FS_ROOT, user_plugin_dir.clone()));
@@ -7176,6 +7177,35 @@ fn resolve_fs_path_with_permission(
                 "'{}' changes the plugin folder, which needs the 'AuthorPlugins' permission",
                 path.display()
             ));
+        }
+    }
+    // The server log and `--debug` pane dumps are what `ReadPluginLog` guards with
+    // `AuthorPlugins`. No root maps onto them, but `/host` or an absolute path can still reach.
+    if !has_permission(env, PermissionType::AuthorPlugins) {
+        let log_dir =
+            resolve_fs_ancestors(&YINZ_TMP_LOG_DIR).unwrap_or_else(|_| YINZ_TMP_LOG_DIR.clone());
+        if resolved.real.starts_with(&log_dir)
+            || (intent == FsIntent::Write
+                && resolution == FsPathResolution::PreserveEntry
+                && log_dir.starts_with(&resolved.real))
+        {
+            return Err(anyhow!(
+                "'{}' reaches the yinz log folder, which needs the 'AuthorPlugins' permission",
+                path.display()
+            ));
+        }
+    }
+    // Removing or renaming a root would take every later command's folder with it, and
+    // renaming onto an empty root would replace it.
+    if intent == FsIntent::Write && resolution == FsPathResolution::PreserveEntry {
+        for (prefix, root) in fs_roots(env) {
+            if resolve_fs_ancestors(&root).is_ok_and(|root| root == resolved.real) {
+                return Err(anyhow!(
+                    "'{}' is the plugin's {prefix} folder itself, which cannot be removed or \
+                     replaced",
+                    path.display()
+                ));
+            }
         }
     }
     Ok(resolved.real)

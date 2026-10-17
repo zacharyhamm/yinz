@@ -5,6 +5,7 @@ use crate::{ClientId, PluginId};
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -16,7 +17,7 @@ use yinz_runtime::errors::prelude::*;
 use yinz_storage::data_access::DataAccess;
 use yinz_types::{internal_ids::TabId, pane_size::Size};
 use {
-    yinz_config::plugins::PluginConfig, yinz_runtime::consts::YINZ_TMP_DIR,
+    yinz_config::plugins::PluginConfig, yinz_runtime::consts::YINZ_PLUGIN_TMP_DIR,
     yinz_types::data::InputMode, yinz_types::input::command::TerminalAction,
     yinz_types::input::keybinds::Keybinds, yinz_types::input::layout::RunPluginLocation,
     yinz_types::input::plugins::PluginAliases,
@@ -31,9 +32,13 @@ fn create_plugin_fs_entries(plugin_own_data_dir: &PathBuf, plugin_own_cache_dir:
     if let Err(e) = fs::create_dir_all(plugin_own_cache_dir) {
         log::error!("Failed to create plugin cache dir: {}", e);
     }
-    if let Err(e) = fs::create_dir_all(YINZ_TMP_DIR.as_path()) {
-        log::error!("Failed to create plugin tmp dir: {}", e);
-    }
+    // `/tmp` is shared by every plugin of this user, and by no one else.
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(YINZ_PLUGIN_TMP_DIR.as_path())
+        .context("failed to create plugin tmp dir")
+        .non_fatal();
 }
 
 fn script_source(
