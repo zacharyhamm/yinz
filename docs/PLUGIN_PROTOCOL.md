@@ -32,6 +32,13 @@ the reporting client, so a resize alone cannot reinterpret stale pixel data.
 Shared plugins receive each report in the reporting client's context.
 No default dimensions are invented.
 
+`SaveLayout` and `RenameLayout` write the layout directory, whose `default.kdl`
+the next plain `yinz` start loads without a prompt. Besides
+`ChangeApplicationState`, they require `OpenFiles`, `RunCommands`, and
+`OpenTerminalsOrPlugins`, the permissions that applying a layout file through
+`OverrideLayout` or `SwitchSession` requires. `DeleteLayout` requires only
+`ChangeApplicationState`.
+
 ```text
 type Permission =
   | "ReadApplicationState" | "ChangeApplicationState" | "OpenFiles" | "RunCommands"
