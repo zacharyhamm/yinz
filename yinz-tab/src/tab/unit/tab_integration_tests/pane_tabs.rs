@@ -299,12 +299,22 @@ fn pane_tabs_bar_keeps_active_label_reachable_at_every_width() {
             })
             .collect(),
     };
-    for width in 1..30 {
+    for width in 0..30 {
         let cells = yinz_panes::pane_tabs::bar_cells(&info, Default::default(), false, width);
-        assert!(cells.len() <= width);
-        assert!(cells
-            .iter()
-            .any(|cell| cell.target == yinz_types::tab_bar::TabTarget::Tab(1)));
+        assert!(cells.iter().map(|cell| cell.width).sum::<usize>() <= width);
+        if width > 0 {
+            assert!(cells
+                .iter()
+                .any(|cell| cell.target == yinz_types::tab_bar::TabTarget::Tab(1)));
+        }
+        let rendered = yinz_panes::pane_tabs::render_bar(
+            &info,
+            Default::default(),
+            false,
+            width,
+            &Style::default(),
+        );
+        assert_eq!(rendered.iter().map(|ch| ch.width()).sum::<usize>(), width);
     }
 }
 
@@ -790,6 +800,7 @@ fn pane_tabs_mouse_uses_render_geometry_and_overflow_does_not_activate() {
 #[test]
 fn pane_tabs_render_active_inactive_and_independent_keyboard_highlight() {
     use yinz_panes::panes::terminal_character::AnsiCode;
+    use yinz_types::colors::PaletteColor;
     let (mut tab, _) =
         create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
     let client = ClientId::new(1);
@@ -811,51 +822,84 @@ fn pane_tabs_render_active_inactive_and_independent_keyboard_highlight() {
     tab.handle_plugin_bytes(plugin, client, b"content".to_vec())
         .unwrap();
     let info = tab.mount_pane_tabs(pane, layout(), 0, client).unwrap();
-    for focused in [false, true] {
-        if focused {
+    for highlight in [None, Some(0), Some(1)] {
+        if let Some(highlight) = highlight {
             tab.focus_pane_tabs(info.id, true, client).unwrap();
-            tab.pane_tabs_input(
-                pane,
-                &Some(KeyWithModifier::new(BareKey::Right)),
-                Some(client),
-            )
-            .unwrap();
+            if highlight == 1 {
+                tab.pane_tabs_input(
+                    pane,
+                    &Some(KeyWithModifier::new(BareKey::Right)),
+                    Some(client),
+                )
+                .unwrap();
+            }
         }
-        let pane = tab.get_pane_with_id_mut(pane).unwrap();
-        let y = pane.get_content_y() - 1;
-        let rendered = pane.render(Some(client)).unwrap().unwrap();
-        let bar = rendered.0.iter().find(|chunk| chunk.y == y).unwrap();
-        assert!(bar
-            .terminal_characters
-            .iter()
-            .map(|ch| ch.character)
-            .collect::<String>()
-            .starts_with(" First │ Second │"));
-        let active = &bar.terminal_characters[1].styles;
-        let inactive = &bar.terminal_characters[9].styles;
-        assert_eq!(active.bold, Some(AnsiCode::On));
-        assert_eq!(
-            active.foreground,
-            Some(AnsiCode::from(
-                Style::default().colors.text_unselected.emphasis_2
-            ))
-        );
-        assert_eq!(inactive.bold, Some(AnsiCode::Reset));
-        assert_eq!(
-            inactive.dim,
-            Some(if focused {
-                AnsiCode::Reset
-            } else {
-                AnsiCode::On
-            })
-        );
-        if focused {
-            assert_eq!(
-                inactive.background,
-                Some(AnsiCode::from(
-                    Style::default().colors.text_selected.background
-                ))
-            );
+        for [base, background, emphasis_2, selected_base, selected_background] in [
+            [
+                (30, 31, 32),
+                (240, 241, 242),
+                (10, 70, 80),
+                (250, 251, 252),
+                (50, 60, 70),
+            ],
+            [
+                (220, 221, 222),
+                (20, 21, 22),
+                (100, 200, 210),
+                (10, 11, 12),
+                (150, 160, 170),
+            ],
+        ] {
+            let mut theme = Style::default().colors;
+            theme.text_unselected.base = PaletteColor::Rgb(base);
+            theme.text_unselected.background = PaletteColor::Rgb(background);
+            theme.text_unselected.emphasis_2 = PaletteColor::Rgb(emphasis_2);
+            theme.text_selected.base = PaletteColor::Rgb(selected_base);
+            theme.text_selected.background = PaletteColor::Rgb(selected_background);
+            tab.update_theme(theme);
+
+            let pane = tab.get_pane_with_id_mut(pane).unwrap();
+            let y = pane.get_content_y() - 1;
+            let rendered = pane.render(Some(client)).unwrap().unwrap();
+            let bar = rendered.0.iter().find(|chunk| chunk.y == y).unwrap();
+            let text: String = bar
+                .terminal_characters
+                .iter()
+                .map(|ch| ch.character)
+                .collect();
+            assert!(text.starts_with(" First │ Second │"));
+            assert_eq!(bar.terminal_characters.len(), pane.get_content_columns());
+            assert!(bar.terminal_characters[17..]
+                .iter()
+                .all(|ch| ch.character == ' '));
+
+            for (range, index, foreground, bold) in [
+                (0..8, Some(0), emphasis_2, AnsiCode::On),
+                (8..17, Some(1), base, AnsiCode::Reset),
+                (17..pane.get_content_columns(), None, base, AnsiCode::Reset),
+            ] {
+                let focused = index.is_some() && index == highlight;
+                for ch in &bar.terminal_characters[range] {
+                    assert_eq!(
+                        ch.styles.foreground,
+                        Some(AnsiCode::RgbCode(if focused {
+                            selected_base
+                        } else {
+                            foreground
+                        }))
+                    );
+                    assert_eq!(
+                        ch.styles.background,
+                        Some(AnsiCode::RgbCode(if focused {
+                            selected_background
+                        } else {
+                            background
+                        }))
+                    );
+                    assert_eq!(ch.styles.bold, Some(bold));
+                    assert_eq!(ch.styles.dim, Some(AnsiCode::Reset));
+                }
+            }
         }
     }
 }
