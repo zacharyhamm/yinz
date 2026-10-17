@@ -7095,6 +7095,13 @@ fn a_rekeyed_shared_plugin_takes_its_new_owners_keybinds() {
         remaining,
         &keybinds
     ));
+    assert!(!test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .client_configurations
+        .contains_key(&departing));
     test.bridge.unload_plugin(plugin).unwrap();
 }
 

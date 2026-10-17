@@ -816,6 +816,93 @@ fn a_saved_config_reaches_the_threads_with_no_client_attached() {
     assert!(unchanged.is_empty(), "an unchanged config is no change");
 }
 
+#[test]
+fn saved_reload_does_not_use_the_last_departing_client_as_thread_state() {
+    for saved_shell in ["/bin/sh", "/bin/zsh"] {
+        let (screen_tx, screen_rx) = channels::unbounded();
+        let (plugin_tx, plugin_rx) = channels::unbounded();
+        let (pty_tx, pty_rx) = channels::unbounded();
+        let mut session = session_with(
+            SenderWithContext::new(screen_tx),
+            SenderWithContext::new(plugin_tx),
+        );
+        session.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        let mut saved = Config::default();
+        saved.options.default_shell = Some(saved_shell.into());
+        session.session_configuration.set_saved_configuration(saved);
+        for (id, shell) in [(1, "/bin/zsh"), (2, "/bin/bash")] {
+            let client = ClientId::new(id);
+            let mut runtime = Config::default();
+            runtime.options.default_shell = Some(shell.into());
+            session
+                .session_configuration
+                .set_client_runtime_configuration(client, runtime.clone());
+            session.propagate_configuration_changes(vec![(client, runtime)], false);
+        }
+        for id in [2, 1] {
+            session
+                .session_configuration
+                .remove_client(ClientId::new(id));
+        }
+        assert!(matches!(
+            &session.default_shell,
+            Some(TerminalAction::RunCommand(shell)) if shell.command == Path::new("/bin/bash")
+        ));
+        while screen_rx.try_recv().is_ok() {}
+        while plugin_rx.try_recv().is_ok() {}
+        while pty_rx.try_recv().is_ok() {}
+
+        let mut reloaded = Config::default();
+        reloaded.options.default_shell = Some("/bin/zsh".into());
+        let changes = session
+            .session_configuration
+            .change_saved_config(reloaded.clone());
+        assert_eq!(changes, vec![(ClientId::NONE, reloaded.clone())]);
+        assert!(session
+            .session_configuration
+            .detached_runtime_config
+            .is_none());
+        session.propagate_configuration_changes(changes, true);
+
+        let screen: Vec<_> = screen_rx.try_iter().map(|(message, _)| message).collect();
+        assert!(matches!(
+            screen.as_slice(),
+            [ScreenInstruction::Reconfigure {
+                client_id: ClientId::NONE,
+                ..
+            }]
+        ));
+        let plugin: Vec<_> = plugin_rx.try_iter().map(|(message, _)| message).collect();
+        assert!(plugin.iter().any(|message| matches!(
+            message,
+            PluginInstruction::Reconfigure {
+                client_id: ClientId::NONE,
+                default_shell: Some(TerminalAction::RunCommand(shell)),
+                ..
+            } if shell.command == Path::new("/bin/zsh")
+        )));
+        let pty: Vec<_> = pty_rx.try_iter().map(|(message, _)| message).collect();
+        assert!(matches!(
+            pty.as_slice(),
+            [PtyInstruction::Reconfigure {
+                client_id: ClientId::NONE,
+                ..
+            }]
+        ));
+        assert!(matches!(
+            &session.default_shell,
+            Some(TerminalAction::RunCommand(shell)) if shell.command == Path::new("/bin/zsh")
+        ));
+
+        let unchanged = session.session_configuration.change_saved_config(reloaded);
+        assert!(unchanged.is_empty());
+        session.propagate_configuration_changes(unchanged, true);
+        assert!(screen_rx.try_recv().is_err());
+        assert!(plugin_rx.try_recv().is_err());
+        assert!(pty_rx.try_recv().is_err());
+    }
+}
+
 /// A connection can pick up per-client state before it identifies itself as a watcher.
 #[test]
 fn removing_a_watcher_forgets_its_state() {

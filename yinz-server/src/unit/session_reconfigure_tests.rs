@@ -677,3 +677,87 @@ fn theme_save_rejects_stale_names_and_write_failure_without_mutation() {
     .is_err());
     assert_eq!(configuration.get_client_configuration(&CLIENT), config);
 }
+
+#[test]
+fn detached_runtime_changes_accumulate_without_client_entries() {
+    let mut configuration = SessionConfiguration::default();
+    configuration
+        .reconfigure_runtime_config(&ClientId::NONE, "mouse_mode false".into(), None, None)
+        .unwrap();
+    for key in ["Ctrl g", "Ctrl h"] {
+        let (_, changed) = configuration.rebind_keys(
+            &ClientId::NONE,
+            vec![(InputMode::Normal, key.parse().unwrap(), vec![Action::NoOp])],
+            vec![],
+        );
+        assert!(changed);
+    }
+    let (config, changed) = configuration
+        .reconfigure_runtime_config(&ClientId::NONE, "pane_frames false".into(), None, None)
+        .unwrap();
+    assert!(changed);
+    let config = config.unwrap();
+    assert_eq!(config.options.mouse_mode, Some(false));
+    assert_eq!(config.options.pane_frames, Some(false));
+    assert_eq!(
+        config.keybinds,
+        normal_mode_keybinds(&[("Ctrl g", Action::NoOp), ("Ctrl h", Action::NoOp)])
+    );
+    assert_eq!(
+        configuration.get_client_keybinds(&ClientId::NONE),
+        &config.keybinds
+    );
+    assert!(configuration.runtime_config.is_empty());
+    assert!(configuration.editor_effective.is_empty());
+    assert!(configuration.effective_keybinds.is_empty());
+    assert_eq!(
+        configuration.get_client_configuration(&CLIENT),
+        Config::default()
+    );
+}
+
+#[test]
+fn saved_configuration_resets_detached_overrides_even_if_disk_is_unchanged() {
+    for disk_changed in [false, true] {
+        let mut configuration = SessionConfiguration::default();
+        configuration
+            .reconfigure_runtime_config(&ClientId::NONE, "mouse_mode false".into(), None, None)
+            .unwrap();
+        let mut saved = Config::default();
+        if disk_changed {
+            saved.options.pane_frames = Some(false);
+        }
+        let changes = configuration.change_saved_config(saved.clone());
+        assert_eq!(changes, vec![(ClientId::NONE, saved.clone())]);
+        assert_eq!(
+            configuration.get_client_configuration(&ClientId::NONE),
+            saved
+        );
+        assert!(configuration.detached_runtime_config.is_none());
+        assert!(configuration.change_saved_config(saved).is_empty());
+    }
+}
+
+#[test]
+fn the_last_client_leaves_a_baseline_without_leaving_its_identity() {
+    let mut configuration = SessionConfiguration::default();
+    let mut runtime = Config::default();
+    runtime.options.mouse_mode = Some(false);
+    configuration.set_client_runtime_configuration(CLIENT, runtime.clone());
+    configuration.remove_client(CLIENT);
+    assert!(configuration.runtime_config.is_empty());
+    assert_eq!(
+        configuration.get_client_configuration(&ClientId::NONE),
+        runtime
+    );
+    assert_eq!(
+        configuration.get_client_configuration(&CLIENT),
+        Config::default()
+    );
+    configuration.set_client_runtime_configuration(ClientId::new(2), Config::default());
+    configuration.remove_client(ClientId::new(2));
+    assert_eq!(
+        configuration.get_client_configuration(&ClientId::NONE),
+        Config::default()
+    );
+}

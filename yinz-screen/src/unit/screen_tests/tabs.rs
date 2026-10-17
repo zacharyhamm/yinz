@@ -1519,3 +1519,40 @@ fn rename_session_reclaims_stale_destination_despite_cached_live_entry() {
     assert!(SessionOwnership::acquire(&target_socket).unwrap().is_none());
     std::fs::remove_dir_all(session_info_folder_for_session(&target)).unwrap();
 }
+
+#[test]
+fn reconnect_preserves_focus_in_an_inactive_tab() {
+    let first = crate::ClientId::new(1);
+    let returning = crate::ClientId::new(3);
+    let pane = PaneId::Terminal(crate::TerminalId::new(2));
+    for mirrored in [false, true] {
+        let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+        screen.session_is_mirrored = mirrored;
+        new_tab(&mut screen, 1, TabId::new(0));
+        add_pane_to_tab(&mut screen, TabId::new(0), pane, false);
+        if mirrored {
+            screen.add_client(crate::ClientId::new(2)).unwrap();
+        }
+        let clients = if mirrored {
+            vec![first, crate::ClientId::new(2)]
+        } else {
+            vec![first]
+        };
+        for client in &clients {
+            screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .focus_pane_with_id(pane, false, false, *client)
+                .unwrap();
+        }
+        new_tab(&mut screen, 3, TabId::new(1));
+        assert!(screen.tabs[&TabId::new(0)].has_no_connected_clients());
+        for client in clients {
+            screen.remove_client(client).unwrap();
+        }
+        screen.add_client(returning).unwrap();
+        screen.go_to_tab(TabNumber::new(1), returning).unwrap();
+        assert_eq!(screen.get_active_pane_id(&returning), Some(pane));
+    }
+}

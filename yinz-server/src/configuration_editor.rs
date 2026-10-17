@@ -10,6 +10,7 @@ impl SessionConfiguration {
         format!("{:?}", self.saved_config).hash(&mut hash);
         let clients: BTreeMap<_, _> = self.runtime_config.iter().collect();
         format!("{clients:?}").hash(&mut hash);
+        format!("{:?}", self.detached_runtime_config).hash(&mut hash);
         format!("{:?}", self.editor_overrides).hash(&mut hash);
         format!("{:016x}", hash.finish())
     }
@@ -166,7 +167,11 @@ impl SessionMetaData {
             }
             staged.pending_editor_reload = Some(saved.clone());
             staged.saved_config = saved;
-            for config in staged.runtime_config.values_mut() {
+            for config in staged
+                .runtime_config
+                .values_mut()
+                .chain(staged.detached_runtime_config.iter_mut())
+            {
                 *config = editor::apply(config, &saved_patches)?;
             }
             notice = "Saved permanently".into();
@@ -191,7 +196,12 @@ impl SessionMetaData {
             None
         };
         let mut changes = vec![];
-        for client in staged.runtime_config.keys() {
+        for client in staged.runtime_config.keys().chain(
+            staged
+                .detached_runtime_config
+                .as_ref()
+                .map(|_| &ClientId::NONE),
+        ) {
             let base = staged.base_client_configuration(client);
             let effective = editor::apply(&base, &staged.editor_overrides)?
                 .resolve_plugin_repositories(
