@@ -2889,22 +2889,14 @@ fn temporary_data_lasts_through_before_close_and_cache_survives_shutdown() {
 #[test]
 fn reload_retains_temporary_data_and_old_users_cannot_remove_it() {
     let mut test = TestBridge::new();
-    test.bridge
-        .connected_clients
-        .lock()
-        .unwrap()
-        .push(ClientId::new(1));
+    test.connect(&[ClientId::new(1)]);
     let context = test.context(1, 1, SCRATCH_PLUGIN);
     let path = context.plugin_own_data_dir.clone();
     let events = FileEvents::new(path.parent().unwrap());
     std::fs::write(path.join("value"), "reload state").unwrap();
     test.load(context).unwrap();
     test.grant_files(1, 1);
-    test.bridge
-        .connected_clients
-        .lock()
-        .unwrap()
-        .push(ClientId::new(2));
+    test.connect(&[ClientId::new(1), ClientId::new(2)]);
     let secondary = test.context(1, 2, SCRATCH_PLUGIN);
     let secondary_path = secondary.plugin_own_data_dir.clone();
     std::fs::write(secondary_path.join("value"), "other client").unwrap();
@@ -3546,11 +3538,7 @@ fn steel_workers_release_their_shared_temporary_data_after_unload() {
 
 fn assert_unload_cancels_queued_reload(failed: bool) {
     let mut test = TestBridge::new();
-    test.bridge
-        .connected_clients
-        .lock()
-        .unwrap()
-        .push(ClientId::new(1));
+    test.connect(&[ClientId::new(1)]);
     let context = test.context(1, 1, "(void)");
     let path = context.plugin_own_data_dir.clone();
     let events = FileEvents::new(path.parent().unwrap());
@@ -6569,11 +6557,7 @@ fn picker_lifecycle_retires_owned_panes_before_replying_to_surviving_callers() {
                 .insert("shared", "true");
             test.bridge.shared_plugin_ids.insert(caller);
             if cause == "shared disconnect" {
-                test.bridge
-                    .connected_clients
-                    .lock()
-                    .unwrap()
-                    .push(ClientId::new(2));
+                test.connect(&[client, ClientId::new(2)]);
             }
         }
         test.load(context).unwrap();

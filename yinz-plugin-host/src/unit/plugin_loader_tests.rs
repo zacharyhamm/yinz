@@ -15,6 +15,16 @@ struct HeldLoad {
 
 impl HeldLoad {
     fn start(test: &TestBridge, context: LoadingContext) -> Self {
+        Self::start_with_hook(test, context, |loader, hook| {
+            loader.before_register = Some(hook);
+        })
+    }
+
+    fn start_with_hook(
+        test: &TestBridge,
+        context: LoadingContext,
+        install: fn(&mut PluginLoader, Box<dyn FnOnce() + Send>),
+    ) -> Self {
         let (entered, started) = mpsc::sync_channel(1);
         let (release, gate) = mpsc::sync_channel(1);
         let (done, completion) = mpsc::channel();
@@ -24,11 +34,14 @@ impl HeldLoad {
             false,
             move |senders, map, clients| {
                 let mut loader = PluginLoader::new(context, senders, map, clients);
-                loader.before_register = Some(Box::new(move || {
-                    entered.send(()).unwrap();
-                    gate.recv_timeout(yinz_test_support::default_timeout())
-                        .unwrap();
-                }));
+                install(
+                    &mut loader,
+                    Box::new(move || {
+                        entered.send(()).unwrap();
+                        gate.recv_timeout(yinz_test_support::default_timeout())
+                            .unwrap();
+                    }),
+                );
                 let result = loader.start_plugin();
                 drop(loader);
                 done.send((result, crate::steel::runtime_count())).unwrap();
@@ -45,6 +58,10 @@ impl HeldLoad {
 
     fn finish(self) -> (Result<()>, usize) {
         self.release.send(()).unwrap();
+        self.wait()
+    }
+
+    fn wait(self) -> (Result<()>, usize) {
         self.done
             .recv_timeout(yinz_test_support::default_timeout())
             .unwrap()
@@ -280,12 +297,68 @@ fn configured_keybinds(mode: InputMode) -> Keybinds {
 }
 
 #[test]
+fn reconfigure_snapshot_and_publication_exclude_instance_registration() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    let running = test.context(1, 1, SOURCE);
+    test.load(running).unwrap();
+    let pending = test.context(2, 1, SOURCE);
+    let held = HeldLoad::start(&test, pending);
+    let map = test.bridge.plugin_map.clone();
+    let release = held.release.clone();
+    test.bridge.after_reconfigure_snapshot = Some(Box::new(move || {
+        assert!(
+            matches!(map.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
+            "registration can slip between the snapshot and configuration publication"
+        );
+        release.send(()).unwrap();
+    }));
+    test.bridge
+        .reconfigure(
+            client,
+            Some(configured_keybinds(InputMode::Locked)),
+            Some(InputMode::Locked),
+            Some(TerminalAction::RunCommand(
+                yinz_types::input::command::RunCommand {
+                    command: PathBuf::from("/usr/bin/true"),
+                    ..Default::default()
+                },
+            )),
+            Some("updated-layouts".into()),
+            Some("updated-plugins".into()),
+        )
+        .unwrap();
+    held.wait().0.unwrap();
+
+    // The first instance registered before publication; the second registers after it.
+    for id in [PluginId::new(1), PluginId::new(2)] {
+        test.settle(id);
+        let plugin = test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin(id, Some(client))
+            .unwrap();
+        let plugin = plugin.lock().unwrap();
+        let env = plugin.env();
+        assert_eq!(env.keybinds, configured_keybinds(InputMode::Locked));
+        assert_eq!(env.default_mode, InputMode::Locked);
+        assert!(
+            matches!(&env.default_shell, Some(TerminalAction::RunCommand(command)) if command.command == std::path::Path::new("/usr/bin/true"))
+        );
+        assert_eq!(env.layout_dir, Some("updated-layouts".into()));
+        assert_eq!(env.user_plugin_dir, Some("updated-plugins".into()));
+    }
+}
+
+#[test]
 fn reconfigure_during_initialization_reaches_each_client() {
     let mut test = TestBridge::new();
     let id = PluginId::new(1);
     let first = ClientId::new(1);
     let second = ClientId::new(2);
-    *test.bridge.connected_clients.lock().unwrap() = vec![first, second];
+    test.connect(&[first, second]);
     let context = test.context(
         1,
         1,
@@ -450,7 +523,7 @@ fn initial_load_after_owner_attachment_initializes_missing_peers_once() {
     let id = PluginId::new(1);
     let owner = ClientId::new(1);
     let peer = ClientId::new(2);
-    *test.bridge.connected_clients.lock().unwrap() = vec![owner, peer];
+    test.connect(&[owner, peer]);
     let initial = test.context(1, 1, SOURCE);
     let attachment = test.context(1, 1, SOURCE);
     test.load(attachment).unwrap();
@@ -569,6 +642,44 @@ fn disconnect_during_initialization_keeps_only_the_connected_clients_instance() 
 }
 
 #[test]
+fn peer_cloning_skips_clients_disconnected_after_its_snapshot() {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(1);
+    let owner = ClientId::new(1);
+    let departed = ClientId::new(2);
+    let remaining = ClientId::new(3);
+    test.connect(&[owner, departed, remaining]);
+    let context = test.context(1, 1, SUBSCRIBES_TO_INITIAL_KEYBINDS);
+    let held = HeldLoad::start_with_hook(&test, context, |loader, hook| {
+        loader.after_peer_snapshot = Some(hook);
+    });
+    test.bridge.remove_client(departed);
+    let (loaded, runtimes) = held.finish();
+    loaded.unwrap();
+    assert_eq!(runtimes, 2, "the departed peer retained a runtime");
+    test.settle(id);
+
+    let mut instances = test.bridge.all_plugin_ids();
+    instances.sort();
+    assert_eq!(instances, [(id, owner), (id, remaining)]);
+    let mut subscribed = Vec::new();
+    for (instruction, _) in test.receiver::<PluginInstruction>().try_iter() {
+        if let PluginInstruction::PluginSubscribedToEvents(plugin, client, events, _) = instruction
+        {
+            if plugin == id && events.contains(&EventType::InitialKeybinds) {
+                subscribed.push(client);
+            }
+        }
+    }
+    subscribed.sort();
+    assert_eq!(
+        subscribed,
+        [owner, remaining],
+        "only connected clients may issue the load hook's Subscribe command"
+    );
+}
+
+#[test]
 fn metadata_lookup_does_not_wait_for_a_running_guest() {
     let mut test = TestBridge::new();
     let context = test.context(1, 1, SOURCE);
@@ -680,7 +791,7 @@ fn permission_answer_keeps_events_cached_until_every_client_is_initialized() {
     let id = PluginId::new(1);
     let first = ClientId::new(1);
     let second = ClientId::new(2);
-    *test.bridge.connected_clients.lock().unwrap() = vec![first, second];
+    test.connect(&[first, second]);
     let context = test.context(1, 1, SOURCE);
     test.load(context).unwrap();
     let context = test.context(1, 2, SOURCE);

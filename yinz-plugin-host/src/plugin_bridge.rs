@@ -436,6 +436,8 @@ pub struct PluginBridge {
     /// is answered with what the user just wrote rather than with what was on disk at
     /// server start.
     pub plugin_aliases: Arc<Mutex<PluginAliases>>,
+    #[cfg(test)]
+    after_reconfigure_snapshot: Option<Box<dyn FnOnce() + Send>>,
 }
 
 fn close_plugin_instance(
@@ -632,6 +634,8 @@ impl PluginBridge {
             last_host_terminal_theme_mode: None,
             last_session_save_time: Arc::new(Mutex::new(None)),
             plugin_aliases: Arc::new(Mutex::new(plugin_aliases)),
+            #[cfg(test)]
+            after_reconfigure_snapshot: None,
         })
     }
     pub fn load_plugin(
@@ -3020,8 +3024,7 @@ impl PluginBridge {
 
     pub fn remove_client(&mut self, client_id: ClientId) {
         self.cancel_client_picks(client_id);
-        // Out of the connected list before its token goes, so that an executor job copying the
-        // list cannot find the client there and then miss its token.
+        // Remove the client before its token; loaders with an older snapshot skip missing tokens.
         let was_connected = {
             let mut clients = self.connected_clients.lock().unwrap();
             let previous_len = clients.len();
@@ -3295,15 +3298,6 @@ impl PluginBridge {
         layout_dir: Option<PathBuf>,
         user_plugin_dir: Option<PathBuf>,
     ) -> Result<()> {
-        // The client's own instances, and those whose owner has no keybinds of its own.
-        let plugins_to_reconfigure: Vec<RunningPluginEntry> = self
-            .plugin_map
-            .lock()
-            .unwrap()
-            .running_plugins_and_subscriptions()
-            .into_iter()
-            .filter(|(_, owner, _, _)| *owner == client_id || !self.keybinds.contains_key(owner))
-            .collect();
         if let Some(default_mode) = default_mode {
             self.default_mode = default_mode;
             if client_id != ClientId::NONE {
@@ -3320,9 +3314,20 @@ impl PluginBridge {
         self.layout_dir = layout_dir.clone();
         self.user_plugin_dir = user_plugin_dir.clone();
         let configuration = self.plugin_configuration(client_id);
-        {
+        let plugins_to_reconfigure: Vec<RunningPluginEntry> = {
             let mut map = self.plugin_map.lock().unwrap();
-            // Publication takes this lock too, so every initializer sees the latest settings.
+            // Snapshot and publication share the lock so no initializer can miss both updates.
+            let plugins = map
+                .running_plugins_and_subscriptions()
+                .into_iter()
+                .filter(|(_, owner, _, _)| {
+                    *owner == client_id || !self.keybinds.contains_key(owner)
+                })
+                .collect();
+            #[cfg(test)]
+            if let Some(after_snapshot) = self.after_reconfigure_snapshot.take() {
+                after_snapshot();
+            }
             map.configuration_version += 1;
             let version = map.configuration_version;
             for (owner, cached) in &mut map.client_configurations {
@@ -3334,7 +3339,8 @@ impl PluginBridge {
                 map.client_configurations
                     .insert(client_id, (version, configuration.clone()));
             }
-        }
+            plugins
+        };
         // Plugins subscribed to InitialKeybinds hear the new ones after reconfiguration, each
         // addressed by its owner: a plugin that is not shared is routed by owner.
         let plugins_subscribed_to_initial_keybinds: Vec<(PluginId, ClientId)> =

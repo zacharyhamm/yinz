@@ -92,6 +92,8 @@ pub struct PluginLoader {
     connected_clients: Option<Arc<Mutex<Vec<ClientId>>>>,
     #[cfg(test)]
     pub(crate) before_register: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(test)]
+    pub(crate) after_peer_snapshot: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl PluginLoader {
@@ -145,6 +147,8 @@ impl PluginLoader {
             loading_indication,
             #[cfg(test)]
             before_register: None,
+            #[cfg(test)]
+            after_peer_snapshot: None,
         }
     }
 
@@ -404,6 +408,10 @@ impl PluginLoader {
         };
         let connected_clients: Vec<ClientId> =
             connected_clients.lock().unwrap().iter().copied().collect();
+        #[cfg(test)]
+        if let Some(after_snapshot) = self.after_peer_snapshot.take() {
+            after_snapshot();
+        }
         if !connected_clients.is_empty() {
             self.connected_clients = None; // so we don't have infinite loops
             for client_id in connected_clients {
@@ -411,11 +419,17 @@ impl PluginLoader {
                     // don't reload the plugin once more for ourselves
                     continue;
                 }
+                let client_cancel = self
+                    .client_cancellations
+                    .lock()
+                    .unwrap()
+                    .get(&client_id)
+                    .cloned();
+                let Some(client_cancel) = client_cancel else {
+                    continue;
+                };
                 self.client_id = client_id;
-                self.client_cancel = crate::plugin_bridge::client_cancel_token(
-                    &self.client_cancellations,
-                    client_id,
-                );
+                self.client_cancel = client_cancel;
                 self.start_plugin()?;
             }
         }
