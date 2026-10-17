@@ -234,14 +234,17 @@ impl WorkerRuntime {
     fn exchange(
         &mut self,
         frame: Vec<u8>,
-        deadline: Instant,
+        mut deadline: Instant,
     ) -> Result<std::result::Result<Output, String>> {
         self.send_frame(&frame, deadline)?;
         loop {
             match self.receive(deadline)? {
                 Response::Finished(result) => return Ok(result),
                 Response::HostCall(command) => {
+                    let started = Instant::now();
                     let reply = (self.host)(command).map_err(|error| format!("{error:#}"));
+                    // The worker is waiting on host I/O, not spending its execution budget.
+                    deadline += started.elapsed();
                     let frame = protocol::encode(&Request::HostReply(reply)).or_else(|error| {
                         protocol::encode(&Request::HostReply(Err(format!(
                             "host reply exceeds worker transport limit: {error:#}"

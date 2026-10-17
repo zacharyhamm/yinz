@@ -8,7 +8,7 @@
 //! made it onto the bar. Only a real session with a real grid says that.
 
 use yinz_cli::args::CliAction;
-use yinz_integration_tests::test_env::write_git_repository;
+use yinz_integration_tests::test_env::{write_git_repository, write_git_worktree};
 use yinz_integration_tests::{keys, LayoutInfo, TestRunner, TestSession, TERMINAL_SIZE};
 
 /// agent, the daemon that finds the agents, and the store that turns the
@@ -153,6 +153,100 @@ fn ordinary_checkout_panes_follow_program_osc_and_manual_titles() {
     );
     shell.output(b"\x1b]2;changed OSC\x07");
     wait_for_tab(&yinz, "my tab", &["changed OSC"]);
+}
+
+#[test]
+fn agent_names_follow_moves_to_existing_and_new_tabs() {
+    use yinz_types::input::actions::{hook_report_actions, Action};
+
+    let repository = write_git_repository("moves", "main")
+        .canonicalize()
+        .unwrap();
+    let worktree = write_git_worktree(&repository, "topic", "topic");
+    let other = write_git_repository("other", "main");
+    let layout = format!(
+        r#"layout {{
+        default_tab_template {{
+            pane size=1 borderless=true {{ plugin location="yinz:tab-bar"; }}
+            children
+        }}
+        tab focus=true {{
+            pane command="/bin/zsh" cwd="{root}"
+            pane command="/bin/zsh" cwd="{root}" focus=true
+        }}
+        tab {{ pane command="/bin/zsh" cwd="{other}"; }}
+    }}"#,
+        root = repository.display(),
+        other = other.display(),
+    );
+    let yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(AGENT_PROJECT_CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    let source = yinz.expect_pty_spawn();
+    let agent = yinz.expect_pty_spawn();
+    let destination = yinz.expect_pty_spawn();
+    source.output(b"SOURCE");
+    agent.run_foreground(&["codex"]);
+    agent.output(b"MOVING_AGENT");
+    destination.output(b"DESTINATION");
+    mutate_store(
+        &yinz,
+        "project_remember",
+        serde_json::json!({"name": "moves", "root": repository}),
+    );
+    let pane_id = yinz_types::data::PaneId::Terminal(agent.terminal_id());
+    let report = |prompt: &str| {
+        // The agent's worktree differs from its shell CWD, as it does after a checkout change.
+        let raw = serde_json::json!({
+            "hook_event_name": "UserPromptSubmit", "session_id": "moving-agent",
+            "cwd": worktree, "prompt": prompt,
+        })
+        .to_string();
+        let hook = serde_json::from_str(&raw).unwrap();
+        let (code, output) =
+            yinz.run_actions_reporting(hook_report_actions("codex", pane_id, &hook, raw));
+        assert_eq!(code, 0, "{output}");
+    };
+    report("Before move");
+    wait_for_tab(&yinz, "moves:main + topic", &[]);
+    yinz.wait_until(
+        "the agent event names the pane from its worktree",
+        |screen| screen.contains("moves:topic: Before move"),
+    );
+
+    let (code, output) = yinz.run_actions_reporting(vec![Action::BreakPaneRight]);
+    assert_eq!(code, 0, "{output}");
+    wait_for_tab(&yinz, "moves:topic + other:main", &["main + topic"]);
+    yinz.wait_until("the existing tab contains both panes", |screen| {
+        screen.contains("MOVING_AGENT") && screen.contains("DESTINATION")
+    });
+    report("After existing move");
+    yinz.wait_until("later events still name the moved pane", |screen| {
+        screen.contains("moves:topic: After existing move")
+    });
+
+    let (code, output) = yinz.run_actions_reporting(vec![Action::BreakPane]);
+    assert_eq!(code, 0, "{output}");
+    wait_for_tab(
+        &yinz,
+        "moves:topic: After existing move",
+        &["moves:topic + other:main"],
+    );
+    report("After new move");
+    wait_for_tab(
+        &yinz,
+        "moves:topic: After new move",
+        &["After existing move"],
+    );
+    let screen = yinz.wait_until("the new tab retains the moved terminal", |screen| {
+        screen.contains("MOVING_AGENT") && !screen.contains("DESTINATION")
+    });
+    let bar = &screen.lines()[0];
+    assert!(
+        bar.contains("moves:main") && bar.contains("other:main"),
+        "{bar}"
+    );
 }
 
 #[test]

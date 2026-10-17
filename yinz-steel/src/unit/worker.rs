@@ -232,6 +232,63 @@ fn worker_cancellation_kills_infinite_bytecode_and_reaps_process() {
 }
 
 #[test]
+fn slow_host_callbacks_do_not_retire_a_waiting_worker() {
+    use serde_json::json;
+    use std::time::{Duration, Instant};
+
+    let (send_deadline, deadlines) = std::sync::mpsc::channel::<Instant>();
+    let mut worker = super::WorkerRuntime::new(&binary(), move |command| {
+        if command == "spin" {
+            return Ok(command);
+        }
+        // Timing is the behavior: finish the host call after the original guest deadline.
+        let deadline = deadlines.recv().unwrap();
+        std::thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(50),
+        );
+        if command == "fail" {
+            anyhow::bail!("host operation failed");
+        }
+        Ok(command)
+    })
+    .unwrap();
+    worker
+        .eval("(define events 0) (define (update event) (yinz-command event) (set! events (+ events 1)) #f)")
+        .unwrap();
+    for command in [json!({"DataApply": {}}), json!("fail")] {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        send_deadline.send(deadline).unwrap();
+        let result = worker.call_before(Operation::Update(command.clone()), deadline);
+        if command == "fail" {
+            let error = result.err().unwrap();
+            assert!(
+                error.to_string().contains("host operation failed"),
+                "{error:#}"
+            );
+        } else {
+            assert!(matches!(
+                result.unwrap(),
+                super::protocol::Output::Changed(false)
+            ));
+        }
+        assert_eq!(worker.value("events").unwrap(), 1);
+    }
+    assert_eq!(worker.eval("(+ events 1)").unwrap().values, ["2"]);
+    let error = worker
+        .call_before(
+            Operation::Eval {
+                source: "(let loop () (yinz-command \"spin\") (loop))".into(),
+                path: None,
+                origin: None,
+            },
+            Instant::now() + Duration::from_millis(100),
+        )
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("deadline"), "{error:#}");
+}
+
+#[test]
 fn worker_deadline_bounds_recursive_macro_expansion() {
     use std::time::{Duration, Instant};
     let mut worker = super::WorkerRuntime::new(&binary(), Ok).unwrap();
