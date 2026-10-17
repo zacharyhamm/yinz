@@ -755,9 +755,8 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
                         Some(foreground.into()),
                         "{text}: {cell:?}"
                     );
-                    if text == "codex" || text == "Enter focus" {
-                        assert_eq!(cell.styles.dim, Some(AnsiCode::On), "{text}: {cell:?}");
-                    }
+                    assert_ne!(cell.styles.dim, Some(AnsiCode::On), "{text}: {cell:?}");
+                    assert_ne!(cell.styles.bold, Some(AnsiCode::On), "{text}: {cell:?}");
                 }
                 if text == "claude" {
                     assert!(line.iter().all(|cell| cell.styles.background
@@ -1590,3 +1589,6 @@ fn agents_history_search_refresh_uses_the_latest_complete_header() {
     h.snapshot(5, &runs);
     assert!(h.requests().is_empty());
 }
+
+#[path = "agents_render.rs"]
+mod render_tests;
