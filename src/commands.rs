@@ -4,6 +4,7 @@ use std::{
     process,
     time::Duration,
 };
+use yinz_runtime::logging::startup_stage;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TerminalId;
 
@@ -316,7 +317,9 @@ fn get_os_input<OsInputOutput>(
 pub(crate) fn start_server(path: PathBuf, debug: bool, termios: Option<String>) {
     // Set instance-wide debug mode
     yinz_runtime::consts::DEBUG_MODE.set(debug).unwrap();
-    let os_input = get_os_input(|| get_server_os_input_from_termios_arg(termios.as_deref()));
+    let os_input = startup_stage("server.os_backend", || {
+        get_os_input(|| get_server_os_input_from_termios_arg(termios.as_deref()))
+    });
     start_server_impl(Box::new(os_input), path);
 }
 
@@ -697,9 +700,10 @@ pub(crate) fn start_client(opts: CliArgs) {
         config_options,
         mut config_without_layout,
         mut config_options_without_layout,
-    ) = match Setup::from_cli_args(&opts) {
+    ) = match startup_stage("cli.setup", || Setup::from_cli_args(&opts)) {
         Ok(results) => results,
         Err(e) => {
+            log::error!("startup trace: client configuration failed");
             if let ConfigError::KdlError(error) = e {
                 let report: Report = error.into();
                 eprintln!("{:?}", report);
@@ -711,7 +715,7 @@ pub(crate) fn start_client(opts: CliArgs) {
     };
 
     let mut reconnect_to_session: Option<SessionConnection> = None;
-    let os_input = get_os_input(get_client_os_input);
+    let os_input = startup_stage("cli.open_terminal", || get_os_input(get_client_os_input));
     loop {
         let os_input = os_input.clone();
         let mut config = config.clone();
@@ -762,7 +766,9 @@ pub(crate) fn start_client(opts: CliArgs) {
         }
 
         let start_client_plan = |session_name: SessionName| {
-            assert_session_ne(session_name.as_str());
+            startup_stage("cli.validate_session_name", || {
+                assert_session_ne(session_name.as_str());
+            });
         };
 
         if let Some(Command::Sessions(Sessions::Attach {

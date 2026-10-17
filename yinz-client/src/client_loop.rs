@@ -52,6 +52,7 @@ pub(crate) struct ClientLoop<'a> {
     pub synchronised_output: Option<SyncOutput>,
     /// Released as each frame reaches the terminal, so the router reads the next.
     pub render_budget: &'a RenderBudget,
+    pub startup_started: Instant,
 }
 
 impl ClientLoop<'_> {
@@ -94,23 +95,35 @@ impl ClientLoop<'_> {
             };
             if let Some(bytes) = first_render_bytes {
                 log::info!(
-                    "attach trace: client pid={} client loop received first Render bytes={bytes} after {:?}; terminal write begin",
+                    "startup trace: client pid={} client loop received first Render bytes={bytes} after {:?}; terminal write begin",
                     std::process::id(),
                     started_at.elapsed()
                 );
             }
             let should_exit = self.handle(client_instruction, &mut outcome, &mut slow_warnings);
             if first_render_bytes.is_some() {
+                let result = if outcome.exit_status != 0 {
+                    "error"
+                } else if stalled_output_abandoned() {
+                    "abandoned"
+                } else {
+                    "ok"
+                };
                 log::info!(
-                    "attach trace: client pid={} first Render terminal write complete after {:?}",
+                    "startup trace: client pid={} first Render terminal write finished outcome={result} client_startup_us={} loop_elapsed_us={}",
                     std::process::id(),
-                    started_at.elapsed()
+                    self.startup_started.elapsed().as_micros(),
+                    started_at.elapsed().as_micros()
                 );
                 waiting_for_first_render = false;
             }
             if should_exit {
                 break;
             }
+        }
+
+        if waiting_for_first_render {
+            log::warn!("startup trace: client exited before first render exit_status={} client_startup_us={}", outcome.exit_status, self.startup_started.elapsed().as_micros());
         }
 
         if let Some((suppressed, max_suppressed)) = slow_warnings.finish() {

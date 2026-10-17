@@ -1286,11 +1286,13 @@ pub fn start_server(os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
     // preserve the current umask: read current value by setting to another mode, and then restoring it
     let current_umask = umask(Mode::all());
     umask(current_umask);
-    daemonize::Daemonize::new()
-        .working_directory(std::env::current_dir().unwrap())
-        .umask(current_umask.bits() as u32)
-        .start()
-        .expect("could not daemonize the server process");
+    yinz_runtime::logging::startup_stage("server.daemonize", || {
+        daemonize::Daemonize::new()
+            .working_directory(std::env::current_dir().unwrap())
+            .umask(current_umask.bits() as u32)
+            .start()
+    })
+    .expect("could not daemonize the server process");
 
     start_server_impl(os_input, socket_path, true);
 }
@@ -1300,6 +1302,7 @@ pub fn start_server_impl(
     socket_path: PathBuf,
     install_panic_hook: bool,
 ) {
+    use yinz_runtime::logging::startup_stage;
     envs::set_yinz("0".to_string());
     // Here rather than in `start_server`, so every way in - daemonized or not - says it once,
     // and a debug install, whose own code runs unoptimized, is one grep away when a session
@@ -1313,19 +1316,24 @@ pub fn start_server_impl(
             "release"
         }
     );
+    log::info!(
+        "startup trace: server ppid={} socket={socket_path:?}",
+        nix::unistd::getppid()
+    );
 
-    let ownership =
-        match yinz_ipc::session_ownership::SessionOwnership::acquire_for_startup(&socket_path)
-            .context("acquire server session ownership")
-        {
-            Ok(Some(ownership)) => Arc::new(ownership),
-            Ok(None) => return,
-            Err(error) => {
-                Err::<(), _>(error).non_fatal();
-                return;
-            },
-        };
-    let listener = match ownership.bind() {
+    let ownership = match startup_stage("server.session_ownership", || {
+        yinz_ipc::session_ownership::SessionOwnership::acquire_for_startup(&socket_path)
+    })
+    .context("acquire server session ownership")
+    {
+        Ok(Some(ownership)) => Arc::new(ownership),
+        Ok(None) => return,
+        Err(error) => {
+            Err::<(), _>(error).non_fatal();
+            return;
+        },
+    };
+    let listener = match startup_stage("server.bind_socket", || ownership.bind()) {
         Ok(listener) => listener,
         Err(error) => {
             Err::<(), _>(error)
@@ -1344,7 +1352,7 @@ pub fn start_server_impl(
     let to_server = shutdown.sender(to_server);
     let session_data: Arc<RwLock<Option<SessionMetaData>>> = Arc::new(RwLock::new(None));
     let session_state = Arc::new(RwLock::new(SessionState::new()));
-    let mut attach_traces_waiting_for_first_render: HashMap<ClientId, std::time::Instant> =
+    let mut startup_traces_waiting_for_first_render: HashMap<ClientId, std::time::Instant> =
         HashMap::new();
 
     if install_panic_hook {
@@ -1500,6 +1508,7 @@ pub fn start_server_impl(
     // up every so often. Once there is a session the loop waits without a
     // deadline as before: a detached session is meant to outlive its clients.
     let first_client_deadline = std::time::Instant::now() + FIRST_CLIENT_TIMEOUT;
+    log::info!("startup trace: server listening socket={socket_path:?}; waiting for first client");
     loop {
         flush_pending_mouse_updates(&mut os_input, &session_state, &session_data).non_fatal();
         let recv = if session_data.read().unwrap().is_none() {
@@ -1535,41 +1544,50 @@ pub fn start_server_impl(
         }
         match instruction {
             ServerInstruction::FirstClientConnected(cli_assets, client_id) => {
+                let startup_started = std::time::Instant::now();
+                startup_traces_waiting_for_first_render.insert(client_id, startup_started);
+                log::info!(
+                    "startup trace: server received FirstClientConnected client_id={client_id}"
+                );
                 let host_terminal_env = cli_assets.host_terminal_env.clone();
-                let (config, layout) =
-                    match yinz_config::cli_assets::load_config_and_layout(&cli_assets) {
-                        Ok(config_and_layout) => config_and_layout,
-                        Err(error) => {
-                            let _ = os_input.send_to_client(
-                                client_id,
-                                ServerToClientMsg::Exit {
-                                    exit_reason: ExitReason::Error(format!(
-                                        "failed to load session checkpoint: {error:#}"
-                                    )),
-                                },
-                            );
-                            Err::<(), _>(error)
-                                .context("failed to load session checkpoint")
-                                .non_fatal();
-                            remove_client!(client_id, os_input, session_state, session_data);
-                            exit_reason = "failed to load session checkpoint";
-                            break;
-                        },
-                    };
-                // A default config that cannot be written faithfully is not written at all -
-                // and then there is nothing for the setup wizard to edit.
-                let successfully_written_config = match config.to_string(true) {
-                    Ok(text) => Config::write_config_to_disk_if_it_does_not_exist(
-                        text,
-                        &cli_assets.config_file_path,
-                    ),
-                    Err(e) => {
-                        Err::<(), _>(anyhow!("{e}"))
-                            .context("not writing the initial config")
+                let (config, layout) = match startup_stage("server.config_and_layout", || {
+                    yinz_config::cli_assets::load_config_and_layout(&cli_assets)
+                }) {
+                    Ok(config_and_layout) => config_and_layout,
+                    Err(error) => {
+                        let _ = os_input.send_to_client(
+                            client_id,
+                            ServerToClientMsg::Exit {
+                                exit_reason: ExitReason::Error(format!(
+                                    "failed to load session checkpoint: {error:#}"
+                                )),
+                            },
+                        );
+                        Err::<(), _>(error)
+                            .context("failed to load session checkpoint")
                             .non_fatal();
-                        false
+                        remove_client!(client_id, os_input, session_state, session_data);
+                        exit_reason = "failed to load session checkpoint";
+                        break;
                     },
                 };
+                // A default config that cannot be written faithfully is not written at all -
+                // and then there is nothing for the setup wizard to edit.
+                let successfully_written_config =
+                    startup_stage("server.write_initial_config", || {
+                        match config.to_string(true) {
+                            Ok(text) => Config::write_config_to_disk_if_it_does_not_exist(
+                                text,
+                                &cli_assets.config_file_path,
+                            ),
+                            Err(e) => {
+                                Err::<(), _>(anyhow!("{e}"))
+                                    .context("not writing the initial config")
+                                    .non_fatal();
+                                false
+                            },
+                        }
+                    });
                 // if we successfully wrote the config to disk, it means two things:
                 // 1. It did not exist beforehand
                 // 2. The config folder is writeable
@@ -1601,21 +1619,22 @@ pub fn start_server_impl(
                     },
                 };
 
-                let startup_started = std::time::Instant::now();
                 info!("FirstClientConnected: client={client_id} initializing session");
-                let mut session = init_session(
-                    os_input.clone(),
-                    to_server.clone(),
-                    shutdown.clone(),
-                    ownership.clone(),
-                    client_attributes.clone(),
-                    runtime_config_options.clone(),
-                    layout.clone(),
-                    cli_assets.clone(),
-                    config.clone(),
-                    config.plugins.clone(),
-                    client_id,
-                );
+                let mut session = startup_stage("server.init_session", || {
+                    init_session(
+                        os_input.clone(),
+                        to_server.clone(),
+                        shutdown.clone(),
+                        ownership.clone(),
+                        client_attributes.clone(),
+                        runtime_config_options.clone(),
+                        layout.clone(),
+                        cli_assets.clone(),
+                        config.clone(),
+                        config.plugins.clone(),
+                        client_id,
+                    )
+                });
                 info!("FirstClientConnected: client={client_id} session initialized after {:?}, spawning tabs", startup_started.elapsed());
                 let mut runtime_configuration = config.clone();
                 runtime_configuration.options = runtime_config_options.clone();
@@ -1736,6 +1755,7 @@ pub fn start_server_impl(
                         .context("recording the first client's host terminal")
                         .non_fatal();
                 });
+                log::info!("startup trace: server first client dispatch complete client_id={client_id} elapsed_us={}; waiting for first render", startup_started.elapsed().as_micros());
             },
             ServerInstruction::AttachClient(
                 cli_assets,
@@ -1744,7 +1764,7 @@ pub fn start_server_impl(
                 client_id,
             ) => {
                 let attach_started_at = std::time::Instant::now();
-                attach_traces_waiting_for_first_render.insert(client_id, attach_started_at);
+                startup_traces_waiting_for_first_render.insert(client_id, attach_started_at);
                 log::info!(
                     "attach trace: server main client_id={client_id} waiting for session_data write lock"
                 );
@@ -1769,7 +1789,7 @@ pub fn start_server_impl(
                         },
                     );
                     remove_client!(client_id, os_input, session_state, session_data);
-                    attach_traces_waiting_for_first_render.remove(&client_id);
+                    startup_traces_waiting_for_first_render.remove(&client_id);
                     continue;
                 };
                 let config = session_data.session_configuration.saved_config.clone();
@@ -1974,7 +1994,7 @@ pub fn start_server_impl(
                 );
             },
             ServerInstruction::ClientExit(client_id, completion_tx) => {
-                attach_traces_waiting_for_first_render.remove(&client_id);
+                startup_traces_waiting_for_first_render.remove(&client_id);
                 let _ = os_input.send_to_client(
                     client_id,
                     ServerToClientMsg::Exit {
@@ -2023,7 +2043,7 @@ pub fn start_server_impl(
                 }
             },
             ServerInstruction::RemoveClient(client_id) => {
-                attach_traces_waiting_for_first_render.remove(&client_id);
+                startup_traces_waiting_for_first_render.remove(&client_id);
                 // Check if this is a watcher
                 let is_watcher = session_state.read().unwrap().is_watcher(&client_id);
                 if is_watcher {
@@ -2089,12 +2109,12 @@ pub fn start_server_impl(
                 // If `None`- Send an exit instruction. This is the case when a user closes the last Tab/Pane.
                 if let Some(output) = &serialized_output {
                     for (client_id, client_render_instruction) in output.iter() {
-                        let attach_started_at = attach_traces_waiting_for_first_render
+                        let attach_started_at = startup_traces_waiting_for_first_render
                             .get(client_id)
                             .copied();
                         if let Some(started_at) = attach_started_at {
                             log::info!(
-                                "attach trace: server main client_id={client_id} received first Render bytes={} after {:?}; client queue begin",
+                                "startup trace: server main client_id={client_id} received first Render bytes={} after {:?}; client queue begin",
                                 client_render_instruction.len(),
                                 started_at.elapsed()
                             );
@@ -2110,10 +2130,10 @@ pub fn start_server_impl(
                         );
                         if let Some(started_at) = attach_started_at {
                             log::info!(
-                                "attach trace: server main client_id={client_id} first Render queued after {:?}",
+                                "startup trace: server main client_id={client_id} first Render queued after {:?}",
                                 started_at.elapsed()
                             );
-                            attach_traces_waiting_for_first_render.remove(client_id);
+                            startup_traces_waiting_for_first_render.remove(client_id);
                         }
                     }
                 } else {
@@ -2786,6 +2806,7 @@ fn init_session(
     plugin_aliases: PluginAliases,
     client_id: ClientId,
 ) -> SessionMetaData {
+    use yinz_runtime::logging::startup_stage;
     config.options = config.options.merge(config_options.clone());
 
     let _ = SCROLL_BUFFER_SIZE.set(
@@ -2821,12 +2842,16 @@ fn init_session(
     // Before anything can write to the plugin data store: this is the one place that holds both
     // the data dir and the options the id is resolved from, and every later reader takes what is
     // cached here. See `yinz_runtime::host_identity`.
-    yinz_runtime::host_identity::init_host_id(&data_dir, config.options.host_id.as_ref());
+    startup_stage("server.host_identity", || {
+        yinz_runtime::host_identity::init_host_id(&data_dir, config.options.host_id.as_ref())
+    });
     log::info!(
         "startup: host identity initialized at {:?}",
         startup_started.elapsed()
     );
-    let data_access = Arc::new(DataAccess::sqlite(&data_dir));
+    let data_access = Arc::new(startup_stage("server.data_access", || {
+        DataAccess::sqlite(&data_dir)
+    }));
 
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);
@@ -2959,10 +2984,13 @@ fn init_session(
         .default_layout
         .as_ref()
         .map(|layout| layout.display().to_string());
-    let (available_layouts, available_layout_errors) = yinz_config::layout::list_available_layouts(
-        config_options.layout_dir.clone(),
-        &default_layout_name,
-    );
+    let (available_layouts, available_layout_errors) =
+        startup_stage("server.available_layouts", || {
+            yinz_config::layout::list_available_layouts(
+                config_options.layout_dir.clone(),
+                &default_layout_name,
+            )
+        });
 
     log::info!(
         "startup: spawning plugin thread at {:?}",
@@ -3094,11 +3122,13 @@ fn init_session(
         })
         .unwrap();
     if let Some(config_file_path) = cli_assets.config_file_path.clone() {
-        report_changes_in_config_file(
-            config_file_path,
-            cli_assets.config_dir.as_deref(),
-            to_server.clone(),
-        );
+        startup_stage("server.watch_config", || {
+            report_changes_in_config_file(
+                config_file_path,
+                cli_assets.config_dir.as_deref(),
+                to_server.clone(),
+            )
+        });
     }
 
     log::info!(

@@ -4,6 +4,7 @@ use std::{
     fs,
     io::{self, prelude::*},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use log::LevelFilter;
@@ -37,7 +38,7 @@ pub fn configure_logger() {
 
     // {n} means platform dependent newline
     // module is padded to exactly 25 bytes and thread is padded to be between 10 and 15 bytes.
-    let file_pattern = "{highlight({level:<6})} |{module:<25.25}| {date(%Y-%m-%d %H:%M:%S.%3f)} [{thread:<10.15}] {file}:{line}: {message} {n}";
+    let file_pattern = "{highlight({level:<6})} |{module:<25.25}| {date(%Y-%m-%d %H:%M:%S.%3f)} [pid={pid}] [{thread:<10.15}] {file}:{line}: {message} {n}";
 
     // default yinz appender, should be used across most of the codebase.
     let log_file = RollingFileAppender::builder()
@@ -60,6 +61,19 @@ pub fn configure_logger() {
         .unwrap();
 
     let _ = log4rs::init_config(config).unwrap();
+}
+
+/// Record potentially blocking startup work without logging its inputs or result.
+/// An end event means the call returned, including when it returned an error.
+pub fn startup_stage<T>(stage: &'static str, operation: impl FnOnce() -> T) -> T {
+    log::info!("startup trace: stage={stage} event=begin");
+    let started = Instant::now();
+    let result = operation();
+    log::info!(
+        "startup trace: stage={stage} event=end elapsed_us={}",
+        started.elapsed().as_micros()
+    );
+    result
 }
 
 pub fn atomic_create_file(file_name: &Path) -> io::Result<()> {

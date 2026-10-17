@@ -47,6 +47,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use yinz_runtime::errors::{FatalError, LoggableError};
+use yinz_runtime::logging::startup_stage;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TabNumber;
 
@@ -194,6 +195,11 @@ impl ErrorInstruction for ClientInstruction {
 fn install_early_terminal_panic_guard(teardown: ClientTeardown) {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        log::error!(
+            "startup trace: client panic location={:?}\n{}",
+            info.location(),
+            std::backtrace::Backtrace::force_capture()
+        );
         teardown.restore_startup(None);
         previous_hook(info);
     }));
@@ -322,11 +328,19 @@ fn spawn_server_with_termios(
     debug: bool,
     termios: Option<&Option<yinz_runtime::termios::WireTermios>>,
 ) -> io::Result<()> {
-    let mut cmd = server_command(socket_path, debug, termios)?;
+    let mut cmd = startup_stage("client.server_command", || {
+        server_command(socket_path, debug, termios)
+    })?;
     let status = {
         let _output_processing = OutputProcessingRestored::around_a_child();
-        cmd.status()?
+        let mut child = startup_stage("client.server_spawn", || cmd.spawn())?;
+        log::info!(
+            "startup trace: server launcher_pid={} socket={socket_path:?}",
+            child.id()
+        );
+        startup_stage("client.server_wait", || child.wait())?
     };
+    log::info!("startup trace: server launcher status={status}");
     if status.success() {
         Ok(())
     } else {
@@ -424,6 +438,15 @@ pub fn start_client(
     is_a_reconnect: bool,
     start_detached_and_exit: bool,
 ) -> ClientOutcome {
+    let startup_started = std::time::Instant::now();
+    let own_session_name = info.get_session_name().to_owned();
+    let kind = match &info {
+        ClientInfo::New(..) => "new",
+        ClientInfo::Attach(..) => "attach",
+        ClientInfo::Resurrect(..) => "resurrect",
+        ClientInfo::Watch(..) => "watch",
+    };
+    log::info!("startup trace: client session={own_session_name:?} kind={kind} detached={start_detached_and_exit} reconnect={is_a_reconnect}");
     if start_detached_and_exit {
         start_server_detached(os_input, cli_args, config, config_options, info);
         return ClientOutcome {
@@ -433,15 +456,6 @@ pub fn start_client(
         };
     }
     info!("Starting Yinz client!");
-
-    let own_session_name = info.get_session_name().to_owned();
-    let tracing_attach = matches!(&info, ClientInfo::Attach(..));
-    if tracing_attach {
-        log::info!(
-            "attach trace: client pid={} session={own_session_name:?} startup begin",
-            std::process::id()
-        );
-    }
 
     let explicitly_disable_kitty_keyboard_protocol = config_options
         .support_kitty_keyboard_protocol
@@ -458,12 +472,6 @@ pub fn start_client(
     let support_kitty_graphics_protocol = config_options
         .support_kitty_graphics_protocol
         .unwrap_or_else(|| !host_transport::host_swallows_kitty_graphics());
-    if tracing_attach {
-        log::info!(
-            "attach trace: client pid={} terminal preparation begin",
-            std::process::id()
-        );
-    }
     let terminal_teardown = ClientTeardown::at_startup(!explicitly_disable_kitty_keyboard_protocol);
     // Both of these cover the same stretch: the terminal is claimed before the server is spawned
     // and the socket connected, while the real panic hook (which needs channels that do not exist
@@ -474,22 +482,19 @@ pub fn start_client(
         install_early_terminal_panic_guard(terminal_teardown);
         startup_signal_guard = StartupSignalGuard::arm(terminal_teardown);
     }
-    claim_terminal(
-        &mut *os_input,
-        !explicitly_disable_kitty_keyboard_protocol,
-        report_modifier_keys,
-        is_a_reconnect,
-    );
-    if tracing_attach {
-        log::info!(
-            "attach trace: client pid={} terminal preparation complete",
-            std::process::id()
-        );
-    }
+    startup_stage("client.claim_terminal", || {
+        claim_terminal(
+            &mut *os_input,
+            !explicitly_disable_kitty_keyboard_protocol,
+            report_modifier_keys,
+            is_a_reconnect,
+        )
+    });
     envs::set_yinz("0".to_string());
     yinz_runtime::envs::set_vars(&config.env);
 
-    let full_screen_ws = os_input.get_terminal_size();
+    let full_screen_ws = startup_stage("client.terminal_size", || os_input.get_terminal_size());
+    log::info!("startup trace: terminal rows={} cols={} kitty_keyboard={} kitty_graphics={support_kitty_graphics_protocol}", full_screen_ws.rows, full_screen_ws.cols, !explicitly_disable_kitty_keyboard_protocol);
 
     let startup = crate::startup::StartupContext::attached(
         &cli_args,
@@ -497,66 +502,46 @@ pub fn start_client(
         full_screen_ws,
         terminal_teardown,
     );
-    if tracing_attach {
-        log::info!(
-            "attach trace: client pid={} preparing AttachClient message",
-            std::process::id()
-        );
-    }
-    let (first_msg, ipc_pipe) = startup.first_message(
-        &mut os_input,
-        info,
-        crate::startup::AttachFocus {
-            tab_number: tab_number_to_focus,
-            pane: pane_id_to_focus,
-        },
-    );
+    let (first_msg, ipc_pipe) = startup_stage("client.first_message", || {
+        startup.first_message(
+            &mut os_input,
+            info,
+            crate::startup::AttachFocus {
+                tab_number: tab_number_to_focus,
+                pane: pane_id_to_focus,
+            },
+        )
+    });
 
-    let connect_started_at = std::time::Instant::now();
-    if tracing_attach {
-        log::info!(
-            "attach trace: client pid={} socket connect begin path={}",
-            std::process::id(),
-            ipc_pipe.display()
-        );
-    }
-    if let Err(e) = os_input.connect_to_server(&ipc_pipe) {
+    if let Err(e) = startup_stage("client.connect", || os_input.connect_to_server(&ipc_pipe)) {
         // The terminal is already on the alternate screen with the kitty
         // keyboard protocol pushed; a bare `exit` here would leave the shell
         // there, with the message gone along with the screen it was printed on.
         ClientTeardown::exit_after_startup_error(startup.teardown, e.to_string());
     }
-    if tracing_attach {
-        log::info!(
-            "attach trace: client pid={} socket connected after {:?}; AttachClient send begin",
-            std::process::id(),
-            connect_started_at.elapsed()
-        );
-    }
-    os_input.send_to_server(first_msg);
-    if tracing_attach {
-        log::info!(
-            "attach trace: client pid={} AttachClient send call complete after {:?}",
-            std::process::id(),
-            connect_started_at.elapsed()
-        );
-    }
+    startup_stage("client.send_first_message", || {
+        os_input.send_to_server(first_msg)
+    });
 
     let mut command_is_executing = CommandIsExecuting::new();
 
     // The socket is up and we are about to start reading the keyboard, so take the signal keys
     // too: from here on Ctrl-C is a keystroke to forward to a pane, not a way out of a stuck
     // startup. `claim_terminal` left them working for exactly that window.
-    os_input.set_raw_mode();
-    write_seqs(
-        &*os_input,
-        &[ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING],
-    );
+    startup_stage("client.raw_mode", || os_input.set_raw_mode());
+    startup_stage("client.enable_terminal_events", || {
+        write_seqs(
+            &*os_input,
+            &[ENABLE_BRACKETED_PASTE, ENABLE_FOCUS_REPORTING],
+        )
+    });
     // Announce unconditionally: whether there is a Yinz host on the other
     // side of the terminal is learnt from it answering, not from the
     // environment (which a remote pane, for one, does not carry over). The
     // reannounce thread gives up after a few unanswered tries.
-    announce_nested(&*os_input, &own_session_name);
+    startup_stage("client.announce_nested", || {
+        announce_nested(&*os_input, &own_session_name)
+    });
     let nested_reannounce = crate::nested_reannounce::NestedReannounce::spawn(
         os_input.clone(),
         own_session_name.clone(),
@@ -594,6 +579,8 @@ pub fn start_client(
     let on_force_close = config_options.on_force_close.unwrap_or_default();
     let stdin_ansi_parser = Arc::new(Mutex::new(StdinAnsiParser::new()));
 
+    log::info!("startup trace: stage=client.workers event=begin");
+    let workers_started = std::time::Instant::now();
     let _stdin_thread = thread::Builder::new()
         .name("stdin_handler".to_string())
         .spawn({
@@ -718,6 +705,10 @@ pub fn start_client(
         _ => None,
     };
 
+    log::info!(
+        "startup trace: stage=client.workers event=end elapsed_us={}; waiting for first render",
+        workers_started.elapsed().as_micros()
+    );
     let outcome = crate::client_loop::ClientLoop {
         os_input: &*os_input,
         command_is_executing: &mut command_is_executing,
@@ -727,6 +718,7 @@ pub fn start_client(
         teardown,
         synchronised_output,
         render_budget: &render_budget,
+        startup_started,
     }
     .run(&receive_client_instructions);
     // The router may be waiting for frames to drain that nobody will now write,
@@ -772,14 +764,18 @@ pub fn start_server_detached(
     }
 
     let startup = crate::startup::StartupContext::detached(&cli_args, &config_options);
-    let (first_msg, ipc_pipe) = startup.first_message(&mut os_input, info, Default::default());
+    let (first_msg, ipc_pipe) = startup_stage("client.first_message", || {
+        startup.first_message(&mut os_input, info, Default::default())
+    });
 
-    if let Err(e) = os_input.connect_to_server(&ipc_pipe) {
+    if let Err(e) = startup_stage("client.connect", || os_input.connect_to_server(&ipc_pipe)) {
         // No terminal was claimed on this path (`teardown` is `None`), so this
         // is a plain message on stderr.
         ClientTeardown::exit_after_startup_error(startup.teardown, e.to_string());
     }
-    os_input.send_to_server(first_msg);
+    startup_stage("client.send_first_message", || {
+        os_input.send_to_server(first_msg)
+    });
 }
 
 #[cfg(test)]

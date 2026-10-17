@@ -562,13 +562,14 @@ pub fn read_live_session_states_default_dirs(
 }
 
 pub fn generate_unique_session_name() -> Result<Option<SessionName>, io::ErrorKind> {
-    let sessions = get_sessions().map(|sessions| {
+    use yinz_runtime::logging::startup_stage;
+    let sessions = startup_stage("session.probe_existing", get_sessions).map(|sessions| {
         sessions
             .iter()
             .map(|s| s.0.clone())
             .collect::<Vec<SessionName>>()
     });
-    let dead_sessions = get_resurrectable_session_names();
+    let dead_sessions = startup_stage("session.read_checkpoints", get_resurrectable_session_names);
     let sessions = sessions?;
 
     let name = get_name_generator()

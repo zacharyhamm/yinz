@@ -163,6 +163,77 @@ impl Drop for Session {
     }
 }
 
+#[test]
+fn startup_traces_identify_processes_and_stages_without_config_values() {
+    let session = Session::new();
+    fs::write(
+        session.0.path().join("config.kdl"),
+        "detachable_panes false\nload_plugins clear-defaults=true\nenv { STARTUP_PRIVATE \"startup-config-secret\"; }\n",
+    )
+    .unwrap();
+    session.success(&[
+        "--layout-string",
+        "layout { pane; } // startup-argument-secret",
+        "attach",
+        "--create-background",
+        NAME,
+    ]);
+    session.wait_for_panes(false);
+    let log = fs::read_to_string(session.0.path().join(format!(
+        "tmp/yinz-{}/yinz-log/yinz.log",
+        nix::unistd::Uid::current()
+    )))
+    .unwrap();
+    for stage in [
+        "cli.create_directories",
+        "cli.initial_config",
+        "cli.config",
+        "cli.layout",
+        "cli.themes",
+        "client.server_spawn",
+        "client.server_wait",
+        "client.send_first_message",
+        "server.session_ownership",
+        "server.bind_socket",
+        "server.config_and_layout",
+        "server.host_identity",
+        "server.init_session",
+    ] {
+        assert!(
+            log.contains(&format!("stage={stage} event=begin")),
+            "{stage}: {log}"
+        );
+        assert!(
+            log.contains(&format!("stage={stage} event=end elapsed_us=")),
+            "{stage}: {log}"
+        );
+    }
+    for marker in [
+        "process kind=attach ppid=",
+        "process kind=server ppid=",
+        "exe=Some(",
+        "pre_logger_us=",
+        "logger_us=",
+        "kind=new detached=true",
+        "IPC FirstClientConnected write finished",
+        "first client dispatch complete",
+    ] {
+        assert!(log.contains(marker), "missing {marker}: {log}");
+    }
+    for line in log.lines().filter(|line| line.contains("startup trace:")) {
+        let (_, pid) = line.split_once("[pid=").expect("startup line has a PID");
+        assert!(pid.split_once(']').unwrap().0.parse::<u32>().unwrap() > 0);
+    }
+    assert!(
+        !log.contains("startup-config-secret"),
+        "config leaked: {log}"
+    );
+    assert!(
+        !log.contains("startup-argument-secret"),
+        "arguments leaked: {log}"
+    );
+}
+
 #[cfg(target_os = "linux")]
 fn server_pid(session: &Session) -> Option<i32> {
     use nix::libc;

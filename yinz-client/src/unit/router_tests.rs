@@ -231,6 +231,7 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
                 teardown: ClientTeardown::new(24, false),
                 synchronised_output: None,
                 render_budget: &budget,
+                startup_started: std::time::Instant::now(),
             }
             .run(&receiver);
             // Mirror start_client's shutdown: neither a reservation nor a send may
