@@ -231,7 +231,8 @@ const GUARD_PLUGIN: &str = r#"
   (yinz-then (yinz-wait-for-permissions '("ChangeApplicationState"))
     (lambda (_)
       (yinz-command (hash "SetQuitNotice"
-        (hash "notice" "the fixture is still working" "guard" #t))))))
+        (hash "notice" "the fixture is still working" "guard" #t)))
+      (yinz-command (hash "RenameTabWithId" (list 0 "Guard ready"))))))
 (define (update event) #f)
 (define (render rows columns) "")
 "#;
@@ -270,6 +271,11 @@ fn expect_replacement_shell(yinz: &TestSession, what: &str) {
     });
 }
 
+fn wait_for_guard(yinz: &TestSession) {
+    // The fixture renames the tab after installing the guard on the screen thread.
+    yinz.wait_until("the quit guard is installed", |s| s.contains("Guard ready"));
+}
+
 #[test]
 fn a_guarded_session_replaces_its_last_tab_and_asks_before_quitting() {
     let url = write_guard_plugin("last-pane-guard");
@@ -279,6 +285,7 @@ fn a_guarded_session_replaces_its_last_tab_and_asks_before_quitting() {
         ))
         .start();
     let terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
+    wait_for_guard(&yinz);
 
     terminal.exit(Some(0));
 
@@ -320,6 +327,7 @@ fn a_guarded_session_with_nobody_attached_waits_for_a_client() {
         ))
         .start();
     let terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
+    wait_for_guard(&yinz);
 
     yinz.detach_main_client();
     terminal.exit(Some(0));
@@ -346,6 +354,7 @@ fn replacement_exit_is_held(exit_before_render: bool) {
         ))
         .start();
     let terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
+    wait_for_guard(&yinz);
     terminal.exit(Some(0));
     let shell = yinz.expect_pty_spawn();
     if !exit_before_render {
