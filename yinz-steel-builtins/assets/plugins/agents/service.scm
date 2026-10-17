@@ -1,5 +1,6 @@
 (require "./state.scm")
 (require "./overlay.scm")
+(require "../shared/agent-service.scm")
 (provide a-broadcast! a-discover-service! a-receive-snapshot! a-refresh-strip! a-load-history!
   a-load-more! a-request-summary! a-expire-summary! a-resume-run! a-load-run!
   a-stored-header a-active-header a-fetch a-entity a-receive-history! a-expire-history!)
@@ -10,14 +11,7 @@
         "plugin_config" (hash) "message_name" name "message_payload" (a-none payload)
         "message_args" (hash) "new_plugin_args" 'json-null "floating_pane_coordinates" 'json-null)) #f))
 (define (a-discover-service! sessions)
-  (define ids '())
-  (for-each (lambda (session)
-      (when (hash-ref session "is_current_session")
-        (define plugins (hash-ref session "plugins"))
-        (for-each (lambda (key)
-            (when (equal? (hash-ref (hash-ref plugins key) "location") "yinz:agent-service")
-              (set! ids (cons (string->number key) ids)))) (hash-keys->list plugins)))) sessions)
-  (define id (and (= (length ids) 1) (car ids)))
+  (define id (agent-service-id sessions))
   (unless (equal? id (a-get "service_id"))
     (a-set! "service_id" id) (a-set! "service_seq" 0) (a-broadcast! "agent_subscribe" #f)))
 (define (run-before? a b)
@@ -38,12 +32,8 @@
     (when sessions (a-discover-service! (hash-ref sessions "live_sessions"))))
   (define trusted (and (a-get "service_id")
       (equal? (hash-ref message "source") (hash "Plugin" (a-get "service_id")))))
-  (define raw-seq (a-field (hash-ref message "args") "seq" "0"))
-  (define digits (if (starts-with? raw-seq "+") (substring raw-seq 1 (string-length raw-seq)) raw-seq))
-  (define seq (and (> (string-length digits) 0)
-      (foldl (lambda (ch okay) (and okay (char<=? #\0 ch) (char<=? ch #\9))) #t (string->list digits))
-      (string->number digits)))
-  (if (or (not trusted) (not seq) (not (integer? seq)) (<= seq (a-get "service_seq")) (> seq 18446744073709551615)) #f
+  (define seq (agent-service-seq (hash-ref message "args")))
+  (if (or (not trusted) (not seq) (<= seq (a-get "service_seq"))) #f
     (let ((snapshot (with-handler (lambda (e) #f)
             (a-field (a-model "PollReplyParse" (list (hash-ref message "payload"))) "Ok" #f))))
       (if (not snapshot) #f

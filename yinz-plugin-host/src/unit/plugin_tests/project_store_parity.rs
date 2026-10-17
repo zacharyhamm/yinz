@@ -12,8 +12,32 @@ use std::{
 };
 use yinz_plugin_api::plugin_command::*;
 use yinz_types::data::*;
-use yinz_types::internal_ids::HostId;
+use yinz_types::internal_ids::{HostId, PluginId};
 
+const AGENT_SERVICE: u32 = 9;
+
+fn session_list(agent_service: bool) -> Vec<u8> {
+    let mut session = SessionInfo::new("main".into());
+    session.is_current_session = true;
+    let mut plugins = vec![(7, "yinz:agents"), (8, "file:/untrusted.scm")];
+    if agent_service {
+        plugins.push((AGENT_SERVICE, "yinz:agent-service"));
+    }
+    for (id, location) in plugins {
+        session.plugins.insert(
+            PluginId::new(id),
+            PluginInfo {
+                location: location.into(),
+                configuration: BTreeMap::new(),
+            },
+        );
+    }
+    ProtobufGetSessionListResponse::from(GetSessionListResponse::Ok(SessionListSnapshot {
+        live_sessions: vec![session],
+        resurrectable_sessions: vec![],
+    }))
+    .encode_to_vec()
+}
 fn host(data: &Arc<DataHost>, root: &Path) -> Responder {
     let root = root.to_owned();
     data.responder(Arc::new(move |command| match command {
@@ -23,33 +47,8 @@ fn host(data: &Arc<DataHost>, root: &Path) -> Responder {
             }
             .encode_to_vec(),
         ),
-        PluginCommand::GetSessionList => {
-            let mut session = SessionInfo::new("main".into());
-            session.is_current_session = true;
-            session.plugins.insert(
-                yinz_types::internal_ids::PluginId::new(7),
-                PluginInfo {
-                    location: "yinz:agents".into(),
-                    configuration: BTreeMap::new(),
-                },
-            );
-            session.plugins.insert(
-                yinz_types::internal_ids::PluginId::new(8),
-                PluginInfo {
-                    location: "file:/untrusted.scm".into(),
-                    configuration: BTreeMap::new(),
-                },
-            );
-            Some(
-                ProtobufGetSessionListResponse::from(GetSessionListResponse::Ok(
-                    SessionListSnapshot {
-                        live_sessions: vec![session],
-                        resurrectable_sessions: vec![],
-                    },
-                ))
-                .encode_to_vec(),
-            )
-        },
+        // The recorded original replies list no agent service; see `with_agent_service`.
+        PluginCommand::GetSessionList => Some(session_list(false)),
         PluginCommand::FsRead {
             path,
             offset,
@@ -74,10 +73,35 @@ fn host(data: &Arc<DataHost>, root: &Path) -> Responder {
         _ => default_reply(command),
     }))
 }
+/// Scheme accepts snapshots only from the session's agent service, so its host lists one.
+fn with_agent_service(responder: Responder) -> Responder {
+    Arc::new(move |command| match command {
+        PluginCommand::GetSessionList => Some(session_list(true)),
+        _ => responder(command),
+    })
+}
+fn message(
+    source: PipeSource,
+    name: &str,
+    payload: Option<String>,
+    seq: Option<u64>,
+) -> PipeMessage {
+    PipeMessage {
+        source,
+        name: name.into(),
+        payload,
+        args: seq
+            .map(|seq| BTreeMap::from([("seq".into(), seq.to_string())]))
+            .unwrap_or_default(),
+        is_private: false,
+        pane_id: None,
+    }
+}
 struct Pair {
     wasm: WasmReference,
     steel: SteelReference,
     databases: [Arc<DataHost>; 2],
+    seq: u64,
     _root: tempfile::TempDir,
 }
 impl Pair {
@@ -110,16 +134,21 @@ impl Pair {
                 "project-store",
                 BTreeMap::new(),
                 root.path(),
-                make_host(&databases[1], root.path()),
+                with_agent_service(make_host(&databases[1], root.path())),
                 Some(clock),
             ),
             databases,
+            seq: 0,
             _root: root,
         };
         pair.commands();
         pair
     }
     fn commands(&mut self) -> Vec<Value> {
+        self.commands_with(|_| false)
+    }
+    /// Compares commands after dropping those only Scheme sends.
+    fn commands_with(&mut self, steel_only: fn(&Value) -> bool) -> Vec<Value> {
         // The original reads through WASI; Scheme uses the permission-checked FS command.
         let app = |commands: Vec<Value>| {
             commands
@@ -148,8 +177,10 @@ impl Pair {
             }
             commands
         };
+        let mut actual = app(self.steel.take_commands());
+        actual.retain(|command| !steel_only(command));
         assert_eq!(
-            normalize(app(self.steel.take_commands())),
+            normalize(actual),
             normalize(expected.clone()),
             "project-store runtime command mismatch"
         );
@@ -159,16 +190,29 @@ impl Pair {
         self.send(PipeSource::Cli("request".into()), name, payload)
     }
     fn send(&mut self, source: PipeSource, name: &str, payload: Option<String>) -> Vec<Value> {
-        let message = PipeMessage {
-            source,
-            name: name.into(),
-            payload,
-            args: BTreeMap::new(),
-            is_private: false,
-            pane_id: None,
-        };
+        let message = message(source, name, payload, None);
         assert_eq!(self.steel.pipe(&message), self.wasm.pipe(&message));
         self.commands()
+    }
+    /// Intended divergence: the recorded original trusted snapshots from any sender.
+    /// Scheme receives them from the agent service with an increasing sequence number.
+    fn snapshot(&mut self, name: &str, payload: Option<String>) -> Vec<Value> {
+        self.seq += 1;
+        let original = message(
+            PipeSource::Cli("request".into()),
+            name,
+            payload.clone(),
+            None,
+        );
+        let trusted = message(
+            PipeSource::Plugin(PluginId::new(AGENT_SERVICE)),
+            name,
+            payload,
+            Some(self.seq),
+        );
+        assert_eq!(self.steel.pipe(&trusted), self.wasm.pipe(&original));
+        // Scheme resolves the service id before trusting it.
+        self.commands_with(|command| command == "GetSessionList")
     }
     fn op(&mut self, name: &str, op: &str, args: Value) -> Value {
         let commands = self.request(
@@ -225,7 +269,7 @@ impl Pair {
             "project-store",
             BTreeMap::new(),
             self._root.path(),
-            host(&self.databases[1], self._root.path()),
+            with_agent_service(host(&self.databases[1], self._root.path())),
             Some(clock),
         );
         self.commands();
@@ -517,24 +561,24 @@ fn project_store_actual_runtimes_match_discovery_context_arrangement_and_rpc_aut
             "/work":{"root":"/work","common_dir":"/work/.git","remote":"https://example.com/repo.git","branch":"main","worktree_status":"primary"},
             "/work/tree":{"root":"/work/tree","common_dir":"/work/.git","remote":"git@example.com:repo","branch":"feature","worktree_status":"linked"}}});
     pair.request("agent_hello", None);
-    pair.request("agent_snapshot", Some("bad".into()));
-    pair.request("agent_snapshot", Some(snapshot.to_string()));
+    pair.snapshot("agent_snapshot", Some("bad".into()));
+    pair.snapshot("agent_snapshot", Some(snapshot.to_string()));
     pair.watches();
     pair.query("project_list", json!({}));
-    pair.request("agent_snapshot", Some(snapshot.to_string()));
-    pair.request("arrange_projects_snapshot", Some(snapshot.to_string()));
+    pair.snapshot("agent_snapshot", Some(snapshot.to_string()));
+    pair.snapshot("arrange_projects_snapshot", Some(snapshot.to_string()));
     pair.request("arrange_panes_by_project", None);
     assert!(pair.request("arrange_panes_by_project", None).is_empty());
-    pair.request("arrange_projects_snapshot", Some(snapshot.to_string()));
+    pair.snapshot("arrange_projects_snapshot", Some(snapshot.to_string()));
     pair.request("arrange_panes_by_project", None);
-    pair.request("arrange_projects_snapshot", Some("bad".into()));
+    pair.snapshot("arrange_projects_snapshot", Some("bad".into()));
     snapshot["panes"] = json!([]);
-    pair.request("agent_snapshot", Some(snapshot.to_string()));
+    pair.snapshot("agent_snapshot", Some(snapshot.to_string()));
     let payload = json!({"op":"project_list","structured_reply":true,"request_id":"correlated-1"})
         .to_string();
     for id in [8, 7] {
         pair.send(
-            PipeSource::Plugin(yinz_types::internal_ids::PluginId::new(id)),
+            PipeSource::Plugin(PluginId::new(id)),
             "store_query",
             Some(payload.clone()),
         );
@@ -614,7 +658,7 @@ fn project_store_actual_runtimes_retry_failed_discovery_without_clearing_context
     pair.watches();
     let snapshot = json!({"panes":[{"pane_id":1,"title":"shell","cwd":"/work","status":"Running","tab":[1,"old"]}],"activity":{}});
     fail.store(true, Ordering::SeqCst);
-    let commands = pair.request("agent_snapshot", Some(snapshot.to_string()));
+    let commands = pair.snapshot("agent_snapshot", Some(snapshot.to_string()));
     assert_eq!(
         commands.len(),
         1,
@@ -632,4 +676,129 @@ fn project_store_actual_runtimes_retry_failed_discovery_without_clearing_context
         "successful retry stops rereading unchanged snapshots"
     );
     pair.rows();
+}
+
+#[test]
+fn project_store_accepts_snapshots_only_from_the_agent_service_in_order() {
+    let root = tempfile::tempdir().unwrap();
+    let data = DataHost::new("project-store");
+    let mut steel = SteelReference::new(
+        "project-store",
+        BTreeMap::new(),
+        root.path(),
+        with_agent_service(host(&data, root.path())),
+    );
+    let snapshot = |repository: &str| {
+        json!({"panes":[{"pane_id":2,"title":"agent","command":"claude","cwd":repository,"status":"Running","tab":[1,"old"]}],
+            "activity":{},"manual_kinds":{"2":"claude"},"yinz_session_name":"main","repositories":{repository:{"root":repository,
+                "common_dir":format!("{repository}/.git"),"remote":format!("https://example.com{repository}.git"),
+                "branch":"main","worktree_status":"primary"}}})
+        .to_string()
+    };
+    // Effects a forged snapshot could cause: shared data writes, tab labels, context, and pane moves.
+    let mut send = |source: PipeSource, name: &str, payload: Option<String>, seq: Option<u64>| {
+        steel.pipe(&message(source, name, payload, seq));
+        steel
+            .take_commands()
+            .into_iter()
+            .filter(|command| {
+                [
+                    "DataApply",
+                    "SetTabProjects",
+                    "SetProjectContext",
+                    "ArrangeProjectPanes",
+                ]
+                .iter()
+                .any(|name| command.get(name).is_some())
+            })
+            .collect::<Vec<_>>()
+    };
+    let service = || PipeSource::Plugin(PluginId::new(AGENT_SERVICE));
+    let foreign = || PipeSource::Plugin(PluginId::new(8));
+    let cli = || PipeSource::Cli("forged".into());
+    let projects = || {
+        data.fetch(&FetchRequest::entity("project").in_namespace(store::SHARED))
+            .len()
+    };
+    send(cli(), "agent_hello", None, None);
+    // Plugin 7 is the trusted store client, which is still not the agent service.
+    for (source, seq) in [
+        (foreign(), Some(1)),
+        (PipeSource::Plugin(PluginId::new(7)), Some(1)),
+        (cli(), Some(1)),
+        (service(), None),
+    ] {
+        let effects = send(
+            source.clone(),
+            "agent_snapshot",
+            Some(snapshot("/forged")),
+            seq,
+        );
+        assert!(effects.is_empty(), "{source:?}: {effects:?}");
+    }
+    assert_eq!(projects(), 0, "rejected snapshots must not write projects");
+    assert!(!send(
+        service(),
+        "agent_snapshot",
+        Some(snapshot("/work")),
+        Some(2)
+    )
+    .is_empty());
+    assert_eq!(projects(), 1);
+    for seq in [2, 1] {
+        let effects = send(
+            service(),
+            "agent_snapshot",
+            Some(snapshot("/stale")),
+            Some(seq),
+        );
+        assert!(effects.is_empty(), "seq {seq}: {effects:?}");
+    }
+    send(foreign(), "agent_hello", None, None);
+    let effects = send(
+        service(),
+        "agent_snapshot",
+        Some(snapshot("/stale")),
+        Some(1),
+    );
+    assert!(
+        effects.is_empty(),
+        "a foreign hello must keep the sequence: {effects:?}"
+    );
+    assert_eq!(projects(), 1);
+    send(service(), "agent_hello", None, None);
+    let effects = send(
+        service(),
+        "agent_snapshot",
+        Some(snapshot("/restarted")),
+        Some(1),
+    );
+    assert!(
+        !effects.is_empty(),
+        "the service's hello restarts its sequence"
+    );
+    assert_eq!(projects(), 2);
+
+    send(cli(), "arrange_panes_by_project", None, None);
+    for source in [foreign(), cli()] {
+        let effects = send(
+            source,
+            "arrange_projects_snapshot",
+            Some(snapshot("/work")),
+            None,
+        );
+        assert!(effects.is_empty(), "{effects:?}");
+    }
+    let arranged = send(
+        service(),
+        "arrange_projects_snapshot",
+        Some(snapshot("/work")),
+        None,
+    );
+    assert!(
+        arranged
+            .iter()
+            .any(|command| command.get("ArrangeProjectPanes").is_some()),
+        "rejected snapshots must not cancel the pending arrangement: {arranged:?}"
+    );
 }
