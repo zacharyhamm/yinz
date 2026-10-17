@@ -3449,6 +3449,103 @@ fn failed_loads_and_cancelled_loading_contexts_release_temporary_data() {
     assert!(!path.exists());
 }
 
+/// Moves the bridge's temporary root aside, so preparing a plugin's /data fails as it does when
+/// the cache directory is removed or the disk is full. Dropping it puts the root back.
+struct HiddenTemporaryRoot {
+    root: PathBuf,
+    hidden: PathBuf,
+}
+
+impl HiddenTemporaryRoot {
+    fn new(test: &TestBridge) -> Self {
+        let root = test.bridge.temporary_root.path().to_path_buf();
+        let hidden = root.with_extension("hidden");
+        std::fs::rename(&root, &hidden).unwrap();
+        HiddenTemporaryRoot { root, hidden }
+    }
+}
+
+impl Drop for HiddenTemporaryRoot {
+    fn drop(&mut self) {
+        std::fs::rename(&self.hidden, &self.root).unwrap();
+    }
+}
+
+fn assert_failed_to_prepare(test: &TestBridge, plugin: PluginId) {
+    assert!(
+        !test
+            .bridge
+            .loading_plugins
+            .iter()
+            .any(|(id, _)| *id == plugin),
+        "plugin {plugin} is not left loading"
+    );
+    assert!(
+        test.bridge.latest_plugin_errors[&plugin].contains("failed to create plugin /data"),
+        "plugin {plugin} reports why it did not load"
+    );
+}
+
+#[test]
+fn reload_whose_data_cannot_be_prepared_fails_the_load_and_can_be_retried() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let client = ClientId::new(1);
+    test.connect(&[client]);
+    let context = test.context(1, 1, "(void)");
+    test.load(context).unwrap();
+    let original = test.instance_id(plugin, client);
+
+    let hidden = HiddenTemporaryRoot::new(&test);
+    test.bridge.reload_plugin_with_id(plugin).unwrap();
+    assert_failed_to_prepare(&test, plugin);
+    assert!(!test
+        .bridge
+        .cached_events_for_pending_plugins
+        .contains_key(&plugin));
+
+    drop(hidden);
+    test.bridge.reload_plugin_with_id(plugin).unwrap();
+    test.finish_reload(plugin);
+    assert!(test.bridge.loading_plugins.is_empty());
+    assert!(!test.bridge.latest_plugin_errors.contains_key(&plugin));
+    assert_ne!(test.instance_id(plugin, client), original);
+}
+
+#[test]
+fn attach_whose_plugin_data_cannot_be_prepared_still_attaches() {
+    let mut test = TestBridge::new();
+    test.connect(&[ClientId::new(1)]);
+    for id in [1, 2] {
+        let context = test.context(id, 1, "(void)");
+        test.load(context).unwrap();
+    }
+    let _hidden = HiddenTemporaryRoot::new(&test);
+    test.bridge.add_client(ClientId::new(2)).unwrap();
+    assert!(test.bridge.client_is_connected(&ClientId::new(2)));
+    // Every plugin is tried for the new client, not only the first.
+    for id in [1, 2] {
+        assert_failed_to_prepare(&test, PluginId::new(id));
+    }
+}
+
+#[test]
+fn deferred_reload_whose_data_cannot_be_prepared_does_not_fail_the_replay() {
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    test.connect(&[ClientId::new(1)]);
+    let context = test.context(1, 1, "(void)");
+    test.load(context).unwrap();
+    test.bridge.pending_plugin_id_reloads.insert(plugin);
+    let _hidden = HiddenTemporaryRoot::new(&test);
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .apply_cached_events(vec![plugin], false, shutdown)
+        .unwrap();
+    assert!(test.bridge.pending_plugin_id_reloads.is_empty());
+    assert_failed_to_prepare(&test, plugin);
+}
+
 #[test]
 fn departing_client_releases_its_data_while_another_client_stays() {
     let mut test = TestBridge::new();

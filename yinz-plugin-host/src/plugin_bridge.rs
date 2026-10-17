@@ -1187,11 +1187,17 @@ impl PluginBridge {
                 self.plugin_ids_waiting_for_permission_request
                     .remove(&plugin_id);
                 if self.pending_plugin_id_reloads.remove(&plugin_id) {
-                    self.reload_plugin_with_id(plugin_id)?;
+                    self.reload_plugin_with_id(plugin_id)
+                        .with_context(|| format!("run deferred reload of plugin {plugin_id}"))
+                        .non_fatal();
                 }
                 if let Some(run_plugin) = run_plugin {
                     if self.pending_plugin_reloads.remove(&run_plugin) {
-                        self.reload_plugin(&run_plugin)?;
+                        self.reload_plugin(&run_plugin)
+                            .with_context(|| {
+                                format!("run deferred reload of {}", run_plugin.location)
+                            })
+                            .non_fatal();
                     }
                 }
             }
@@ -1472,7 +1478,7 @@ impl PluginBridge {
         let cwd = self.cwd_of_plugin_id(plugin_id);
 
         let load_id = self.begin_plugin_load(plugin_id);
-        let loading_context = LoadingContext::new(
+        let loading_context = match LoadingContext::new(
             self,
             cwd,
             plugin_config,
@@ -1480,7 +1486,23 @@ impl PluginBridge {
             first_client_id,
             tab_index,
             size,
-        )?;
+        ) {
+            Ok(loading_context) => loading_context,
+            Err(error) => {
+                // The old instances are already retired: fail this load as a rejected one
+                // would, so the plugin leaves `loading_plugins` and shows why.
+                self.pending_pipes
+                    .retire_plugin(plugin_id, "Plugin replacement could not be prepared");
+                return self.queue_plugin_failed(
+                    plugin_id,
+                    Some(load_id),
+                    None,
+                    None,
+                    format!("{error:#}"),
+                    true,
+                );
+            },
+        };
         self.plugin_map
             .lock()
             .unwrap()
@@ -1677,10 +1699,18 @@ impl PluginBridge {
 
         let plugin_ids = self
             .all_plugin_ids_for_plugin_location(&run_plugin.location, &run_plugin.configuration)?;
+        // One instance that fails to reload must not leave the others on the old code.
+        let mut result = Ok(());
         for plugin_id in &plugin_ids {
-            self.reload_plugin_with_id(*plugin_id)?;
+            if let Err(error) = self.reload_plugin_with_id(*plugin_id) {
+                if result.is_ok() {
+                    result = Err(error);
+                } else {
+                    Err::<(), _>(error).non_fatal();
+                }
+            }
         }
-        Ok(())
+        result
     }
     pub fn add_client(&mut self, client_id: ClientId) -> Result<()> {
         let started_at = std::time::Instant::now();
@@ -1751,7 +1781,7 @@ impl PluginBridge {
             }
             let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
                 log::error!("Failed to find plugin with id: {}", plugin_id);
-                return Ok(());
+                continue;
             };
 
             let (rows, columns) = self.size_of_plugin_id(plugin_id).unwrap_or((0, 0));
@@ -1774,7 +1804,7 @@ impl PluginBridge {
 
             let Some(plugin_config) = self.plugin_config_of_plugin_id(plugin_id) else {
                 log::error!("Could not find running plugin with id: {}", plugin_id);
-                return Ok(());
+                continue;
             };
             let tab_index = self.tab_index_of_plugin_id(plugin_id);
             let Some(size) = self.size_of_plugin_id(plugin_id) else {
@@ -1782,7 +1812,7 @@ impl PluginBridge {
                     "Could not find size of running plugin with id: {}",
                     plugin_id
                 );
-                return Ok(());
+                continue;
             };
             let size = Size {
                 rows: size.0,
@@ -1795,7 +1825,7 @@ impl PluginBridge {
             // sets; a no-op when the plugin is registered, as it normally is here.
             self.cancel_token(plugin_id);
             let load_id = self.begin_plugin_load(plugin_id);
-            let mut loading_context = LoadingContext::new(
+            let mut loading_context = match LoadingContext::new(
                 self,
                 cwd,
                 plugin_config,
@@ -1803,7 +1833,23 @@ impl PluginBridge {
                 client_id,
                 tab_index,
                 size,
-            )?;
+            ) {
+                Ok(loading_context) => loading_context,
+                Err(error) => {
+                    // One plugin that cannot load for this client must not fail the attach.
+                    self.queue_plugin_failed(
+                        plugin_id,
+                        Some(load_id),
+                        None,
+                        None,
+                        format!("{error:#}"),
+                        true,
+                    )
+                    .with_context(|| format!("fail plugin {plugin_id} for client {client_id}"))
+                    .non_fatal();
+                    continue;
+                },
+            };
             // This attachment is not connected yet, but must share the token remove_client sets.
             loading_context.client_cancel = client_cancel.clone();
 
@@ -1871,7 +1917,9 @@ impl PluginBridge {
                     None,
                     "Plugin executor rejected loading".into(),
                     true,
-                )?;
+                )
+                .with_context(|| format!("fail plugin {plugin_id} for client {client_id}"))
+                .non_fatal();
             }
             log::info!(
                 "attach trace: PluginBridge::add_client client_id={client_id} plugin_id={plugin_id} executor enqueue complete after {:?}",
@@ -2796,16 +2844,24 @@ impl PluginBridge {
             }
             self.plugin_ids_waiting_for_permission_request
                 .remove(&plugin_id);
-            self.apply_cached_events_and_resizes_for_plugin(plugin_id, shutdown_sender.clone())?;
+            // Each plugin's replay and deferred reload stand alone: one failure must not
+            // strand the plugins after it, or end the plugin thread.
+            self.apply_cached_events_and_resizes_for_plugin(plugin_id, shutdown_sender.clone())
+                .with_context(|| format!("replay cached events for plugin {plugin_id}"))
+                .non_fatal();
         }
         for plugin_id in plugin_ids {
             if self.pending_plugin_id_reloads.remove(&plugin_id) {
-                self.reload_plugin_with_id(plugin_id)?;
+                self.reload_plugin_with_id(plugin_id)
+                    .with_context(|| format!("run deferred reload of plugin {plugin_id}"))
+                    .non_fatal();
             }
         }
         for run_plugin in applied_plugin_paths.drain() {
             if self.pending_plugin_reloads.remove(&run_plugin) {
-                let _ = self.reload_plugin(&run_plugin);
+                self.reload_plugin(&run_plugin)
+                    .with_context(|| format!("run deferred reload of {}", run_plugin.location))
+                    .non_fatal();
             }
         }
         Ok(())
