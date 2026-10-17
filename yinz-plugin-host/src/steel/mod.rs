@@ -625,7 +625,15 @@ fn dispatch_command(
         bail!("'{command_type}' requires '{permission}'; request it with RequestPluginPermissions");
     }
     let previous_sink = env.response_sink.take();
+    let started = Instant::now();
     let result = run_plugin_command(env, command);
+    let elapsed = started.elapsed();
+    if elapsed >= Duration::from_secs(1) {
+        log::warn!(
+            "{} Steel host command {command_type} took {elapsed:?}",
+            env.log_identity()
+        );
+    }
     let captured = env.response_sink.take();
     env.response_sink = previous_sink;
     result.context("yinz command failed")?;
