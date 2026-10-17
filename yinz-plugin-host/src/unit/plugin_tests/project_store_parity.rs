@@ -16,14 +16,10 @@ use yinz_types::internal_ids::{HostId, PluginId};
 
 const AGENT_SERVICE: u32 = 9;
 
-fn session_list(agent_service: bool) -> Vec<u8> {
+fn session_list() -> Vec<u8> {
     let mut session = SessionInfo::new("main".into());
     session.is_current_session = true;
-    let mut plugins = vec![(7, "yinz:agents"), (8, "file:/untrusted.scm")];
-    if agent_service {
-        plugins.push((AGENT_SERVICE, "yinz:agent-service"));
-    }
-    for (id, location) in plugins {
+    for (id, location) in [(7, "yinz:agents"), (8, "file:/untrusted.scm")] {
         session.plugins.insert(
             PluginId::new(id),
             PluginInfo {
@@ -47,8 +43,7 @@ fn host(data: &Arc<DataHost>, root: &Path) -> Responder {
             }
             .encode_to_vec(),
         ),
-        // The recorded original replies list no agent service; see `with_agent_service`.
-        PluginCommand::GetSessionList => Some(session_list(false)),
+        PluginCommand::GetSessionList => Some(session_list()),
         PluginCommand::FsRead {
             path,
             offset,
@@ -73,10 +68,16 @@ fn host(data: &Arc<DataHost>, root: &Path) -> Responder {
         _ => default_reply(command),
     }))
 }
-/// Scheme accepts snapshots only from the session's agent service, so its host lists one.
+/// Scheme accepts snapshots only from the session's agent service, so its host runs one.
 fn with_agent_service(responder: Responder) -> Responder {
     Arc::new(move |command| match command {
-        PluginCommand::GetSessionList => Some(session_list(true)),
+        PluginCommand::GetPluginIdsForUrl(url) if url == "yinz:agent-service" => Some(
+            ProtobufGetPluginIdsForUrlResponse {
+                plugin_ids: vec![AGENT_SERVICE],
+                error: None,
+            }
+            .encode_to_vec(),
+        ),
         _ => responder(command),
     })
 }
@@ -212,7 +213,7 @@ impl Pair {
         );
         assert_eq!(self.steel.pipe(&trusted), self.wasm.pipe(&original));
         // Scheme resolves the service id before trusting it.
-        self.commands_with(|command| command == "GetSessionList")
+        self.commands_with(|command| command.get("GetPluginIdsForUrl").is_some())
     }
     fn op(&mut self, name: &str, op: &str, args: Value) -> Value {
         let commands = self.request(
