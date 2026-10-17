@@ -950,7 +950,12 @@ impl Tab {
         self.set_force_render();
         self.set_should_clear_display_before_rendering();
     }
-    fn move_focus_within_stack_list(&mut self, client_id: ClientId, down: bool) -> bool {
+    fn move_focus_within_stack_list(
+        &mut self,
+        client_id: ClientId,
+        down: bool,
+        wrap: bool,
+    ) -> bool {
         let active_pane_id = match if self.floating_panes.panes_are_visible() {
             self.floating_panes.active_pane_id(client_id)
         } else {
@@ -976,9 +981,16 @@ impl Tab {
                 None => return false,
             };
             let target_rank = if down {
-                rank + 1
+                if wrap && rank + 1 == list.members.len() {
+                    0
+                } else {
+                    rank + 1
+                }
             } else if rank == 0 {
-                return false;
+                if !wrap {
+                    return false;
+                }
+                list.members.len() - 1
             } else {
                 rank - 1
             };
@@ -7410,29 +7422,33 @@ impl Tab {
             return Ok(false);
         }
         if self.floating_panes.panes_are_visible()
-            && self.move_focus_within_stack_list(client_id, true)
+            && self.move_focus_within_stack_list(client_id, true, false)
         {
             self.release_overlay_focus_to_lower_layer(client_id);
             return Ok(true);
         }
         let moved = if self.floating_panes.panes_are_visible() {
-            self.floating_panes
+            let moved = self
+                .floating_panes
                 .move_focus(
                     client_id,
                     &self.connected_clients.borrow().iter().copied().collect(),
                     &Direction::Down,
                 )
-                .with_context(err_context)
+                .with_context(err_context)?;
+            Ok(moved || self.move_focus_within_stack_list(client_id, true, true))
         } else if !self.has_selectable_panes() {
             Ok(false)
         } else if self.tiled_panes.fullscreen_is_active() {
             Ok(self.focus_pane_down_fullscreen(client_id))
         } else if self.stacked_pane_list_is_active()
-            && self.move_focus_within_stack_list(client_id, true)
+            && self.move_focus_within_stack_list(client_id, true, false)
         {
             Ok(true)
         } else {
-            Ok(self.tiled_panes.move_focus_down(client_id))
+            Ok(self.tiled_panes.move_focus_down(client_id)
+                || (self.stacked_pane_list_is_active()
+                    && self.move_focus_within_stack_list(client_id, true, true)))
         };
         // only now, and only if it happened: a move that found nothing in the direction asked for
         // has changed nothing, and dismissing a popup on it would let a dead keypress close the
@@ -7452,29 +7468,33 @@ impl Tab {
             return Ok(false);
         }
         if self.floating_panes.panes_are_visible()
-            && self.move_focus_within_stack_list(client_id, false)
+            && self.move_focus_within_stack_list(client_id, false, false)
         {
             self.release_overlay_focus_to_lower_layer(client_id);
             return Ok(true);
         }
         let moved = if self.floating_panes.panes_are_visible() {
-            self.floating_panes
+            let moved = self
+                .floating_panes
                 .move_focus(
                     client_id,
                     &self.connected_clients.borrow().iter().copied().collect(),
                     &Direction::Up,
                 )
-                .with_context(err_context)
+                .with_context(err_context)?;
+            Ok(moved || self.move_focus_within_stack_list(client_id, false, true))
         } else if !self.has_selectable_panes() {
             Ok(false)
         } else if self.tiled_panes.fullscreen_is_active() {
             Ok(self.focus_pane_up_fullscreen(client_id))
         } else if self.stacked_pane_list_is_active()
-            && self.move_focus_within_stack_list(client_id, false)
+            && self.move_focus_within_stack_list(client_id, false, false)
         {
             Ok(true)
         } else {
-            Ok(self.tiled_panes.move_focus_up(client_id))
+            Ok(self.tiled_panes.move_focus_up(client_id)
+                || (self.stacked_pane_list_is_active()
+                    && self.move_focus_within_stack_list(client_id, false, true)))
         };
         // only now, and only if it happened: a move that found nothing in the direction asked for
         // has changed nothing, and dismissing a popup on it would let a dead keypress close the
