@@ -40,7 +40,7 @@ fn panel_tabs_open_and_dismiss_without_chat() {
     });
     yinz.send_stdin(&keys::ctrl('b'));
     let initial = yinz.wait_until("the agents panel receives the service snapshot", |s| {
-        s.contains("Agents") && s.contains("Todos") && s.contains("claude")
+        s.contains("Agents") && s.contains("Todos") && s.contains("CLA")
     });
     assert!(!initial.contains("Hocus"));
     assert_eq!(panel(&yinz).pane_info.pane_tabs.unwrap().tabs.len(), 2);
@@ -77,7 +77,7 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
     yinz.send_stdin(&keys::ctrl('e'));
     yinz.send_stdin(b"a");
     yinz.wait_until("the agents panel receives the service snapshot", |s| {
-        s.contains("Agents") && s.contains("Todos") && s.contains("claude")
+        s.contains("Agents") && s.contains("Todos") && s.contains("CLA")
     });
     let pane = panel(&yinz).pane_info;
     let x = pane.pane_content_x.get();
@@ -94,18 +94,24 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
         let colors = themes.get_theme(name).unwrap().palette;
         yinz.wait_until(&format!("the whole agents panel uses {name}"), |s| {
             let lines = s.lines();
-            let Some(selected) = (y..y + rows).find(|&row| {
-                lines[row].chars().nth(x) == Some('>') && lines[row].contains("claude")
-            }) else {
+            let Some(selected) = (y..y + rows)
+                .find(|&row| lines[row].chars().nth(x) == Some('>') && lines[row].contains("CLA"))
+            else {
                 return false;
             };
+            let list_columns = lines[selected]
+                .chars()
+                .skip(x)
+                .take(columns)
+                .position(|ch| ch == '│')
+                .unwrap_or(columns);
             (y..y + rows).all(|row| {
-                let expected = if row == selected {
-                    colors.text_selected
-                } else {
-                    colors.text_unselected
-                };
                 (x..x + columns).all(|col| {
+                    let expected = if row == selected && col < x + list_columns {
+                        colors.text_selected
+                    } else {
+                        colors.text_unselected
+                    };
                     s.cell_style(col, row).background == Some(expected.background.into())
                 })
             }) && s.cell_foreground(x, selected) == Some(colors.text_selected.base.into())
@@ -240,7 +246,7 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     });
     yinz.send_stdin(&keys::ctrl('b'));
     yinz.wait_until("the project panel is placed", |s| {
-        s.contains("Agents") && s.contains("claude")
+        s.contains("Agents") && s.contains("CLA")
     });
     let first = panel(&yinz).pane_info;
     assert_eq!(
@@ -289,7 +295,7 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     yinz.send_stdin(&keys::ctrl('b'));
     yinz.wait_until(
         "the panel reopens after the hidden reposition message",
-        |s| s.contains("Agents") && s.contains("claude"),
+        |s| s.contains("Agents") && s.contains("CLA"),
     );
     let reopened = panel(&yinz).pane_info;
     assert_eq!(

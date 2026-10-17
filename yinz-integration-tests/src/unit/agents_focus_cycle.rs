@@ -38,8 +38,7 @@ fn wait_for_bar(yinz: &TestSession, unfocused_bar: CellStyle) {
     });
 }
 
-fn cycle(history_visible: bool) {
-    let height = if history_visible { 20 } else { 8 };
+fn cycle(width: usize, height: usize, history_visible: bool) {
     let mut yinz = TestRunner::new(Size { rows: 40, cols: 120 })
         .with_config(&format!(
             r#"
@@ -49,7 +48,7 @@ keybinds {{
   }}
 }}
 plugins {{
-  agents location="yinz:agents" {{ shared true; width "100"; height "{height}"; }}
+  agents location="yinz:agents" {{ shared true; width "{width}"; height "{height}"; }}
   agent-service location="yinz:agent-service" {{ shared true; summaries false; }}
 }}
 load_plugins clear-defaults=true {{ "agent-service"; }}
@@ -70,14 +69,14 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
     let initial = yinz.wait_until("both agents appear in the panel", |frame| {
         frame.contains("Agents")
             && frame.contains("Todos")
-            && frame.contains("claude")
-            && frame.contains("codex")
+            && frame.contains("CLA")
+            && frame.contains("CDX")
             && frame.contains("Enter focus")
     });
     assert_eq!(initial.contains("nothing to show yet"), history_visible);
     let unfocused_bar = bar_style(&initial);
     yinz.send_stdin(b"\x1b[A");
-    yinz.wait_until("first agent selected", |frame| selected(frame, "claude"));
+    yinz.wait_until("first agent selected", |frame| selected(frame, "CLA"));
 
     for _ in 0..2 {
         yinz.send_stdin(&keys::TAB);
@@ -91,11 +90,11 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
         yinz.send_stdin(b"\x1b[B");
         yinz.wait_until(
             "Down moves through the list after leaving the bar",
-            |frame| selected(frame, "codex"),
+            |frame| selected(frame, "CDX"),
         );
         yinz.send_stdin(b"\x1b[A");
         yinz.wait_until("Up returns to the first agent", |frame| {
-            selected(frame, "claude")
+            selected(frame, "CLA")
         });
     }
 
@@ -114,10 +113,15 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
 
 #[test]
 fn agents_tab_cycle_with_history() {
-    cycle(true);
+    cycle(100, 20, true);
 }
 
 #[test]
 fn agents_tab_cycle_without_history() {
-    cycle(false);
+    cycle(50, 8, false);
+}
+
+#[test]
+fn agents_short_wide_panel_keeps_history_in_the_focus_cycle() {
+    cycle(100, 8, true);
 }

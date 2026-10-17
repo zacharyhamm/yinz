@@ -867,14 +867,22 @@ pub fn switch_session_with_layout_and_cwd_plugin_command() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_render_containing(&received_screen_instructions, "Rows: 20, Cols: 121");
 
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('9')).with_ctrl_modifier()), // this triggers the enent in the fixture plugin
     )]));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    received_server_instruction.wait_until(
+        "the session switch to reach the server before teardown",
+        default_timeout(),
+        |log| {
+            log.iter()
+                .any(|event| matches!(event, ServerInstruction::SwitchSession(..)))
+                .then_some(())
+        },
+    );
     teardown();
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let switch_session_event = received_server_instruction

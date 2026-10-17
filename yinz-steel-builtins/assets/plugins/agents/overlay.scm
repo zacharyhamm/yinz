@@ -96,7 +96,7 @@
 (define (a-end-visit!)
   (a-invalidate-history!) (a-set! "history_hidden" #t)
   (a-set! "tabs_focused" #f) (a-set! "bar_focused" '()) (a-set! "focus" "list")
-  (a-set! "click_press" #f) (a-set! "confirming_resume" #f) (a-set! "key_sheet_scroll" #f))
+  (a-set! "divider_drag" #f) (a-set! "click_press" #f) (a-set! "confirming_resume" #f) (a-set! "key_sheet_scroll" #f))
 (define (a-hide!)
   (a-end-visit!) (a-set! "pane_shown" #f)
   (a-call (hash "HidePaneWithId" (or (a-get "panel_pane") (hash "Plugin" (a-get "own_plugin_id")))) #f))
