@@ -13,7 +13,7 @@
     (set! levels (append levels (map (lambda (_) '()) (range (max 0 (- 6 (length levels)))))))
     (set! text (hash-insert text "levels" (map (lambda (i)
             (cond ((= i 4) '()) ((= i 5) (append dim (list-ref levels i))) (else (list-ref levels i)))) (range (length levels))))))
-  (display (yinz-ui-text text (hash "x" 0 "y" row "width" cols "height" (if (null? height) 'json-null (car height))))))
+  (display (yinz-ui-text (hash-insert text "opaque" #t) (hash "x" 0 "y" row "width" cols "height" (if (null? height) 'json-null (car height))))))
 (define (prefix line text cursor)
   (define levels (a-field line "levels" '()))
   (define shifted (map (lambda (indices) (map (lambda (i) (+ i (string-length text))) indices)) levels))
@@ -145,6 +145,8 @@
   (cond ((or (= rows 0) (= cols 0))
       (for-each (lambda (key) (a-set! key 0)) '("last_window_start" "last_list_rows" "last_history_rows" "last_history_body_rows" "last_history_max_scroll" "last_reader_rows" "last_reader_max_scroll")))
     (else
+      ; Empty rows need the semantic background too, including after a theme change.
+      (for-each (lambda (row) (paint (styled "" #f) row cols)) (range rows))
       (when footer (a-set! "last_footer_row" (- rows 1)) (paint (styled footer 1) (- rows 1) cols 1))
       (when (> body-rows 0)
         (cond ((a-get "key_sheet_scroll") (draw-sheet body-rows cols))

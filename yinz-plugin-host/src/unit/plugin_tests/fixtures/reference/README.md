@@ -28,7 +28,8 @@ this intentional change; the original source fingerprint, host snapshots, config
 and completion remain intact. These changed display expectations were not captured from Steel.
 
 The Agents fixtures adapt the original render streams for the pane readability change.
-Their `adaptation` metadata identifies this change. Only text style levels changed.
+Their `adaptation` metadata identifies this change. Text style levels changed, and
+opaque text plus empty rows now apply the semantic theme background across the viewport.
 The original text, coordinates, selection markers, lifecycle inputs, host calls, replies, and source fingerprints remain intact.
 Independent style transformations produced these expectations. The current renderer was checked against them.
 

@@ -2,7 +2,7 @@
 
 use yinz_cli::args::CliAction;
 use yinz_integration_tests::{keys, LayoutInfo, Size, TestRunner, TestSession, TERMINAL_SIZE};
-use yinz_types::data::PaneListEntry;
+use yinz_types::{data::PaneListEntry, input::actions::Action};
 
 const CONFIG: &str = r#"
 mouse_mode true
@@ -56,6 +56,61 @@ fn panel_tabs_open_and_dismiss_without_chat() {
     yinz.wait_until("the panel is dismissed", |s| {
         !s.contains("Agents") && !s.contains("Todos")
     });
+    yinz.quit();
+}
+
+#[test]
+fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!(
+            "{CONFIG}\npane_animations false\ntheme \"gruvbox-light\""
+        ))
+        .with_layout(LayoutInfo::Stringified(
+            "layout { pane command=\"claude\"; }".into(),
+        ))
+        .start();
+    let agent = yinz.expect_pty_spawn();
+    agent.output(b"AGENT READY\r\n");
+    yinz.wait_until("the initial terminal is rendered", |s| {
+        s.contains("AGENT READY")
+    });
+    yinz.send_stdin(&keys::ctrl('e'));
+    yinz.send_stdin(b"a");
+    yinz.wait_until("the agents panel receives the service snapshot", |s| {
+        s.contains("Agents") && s.contains("Todos") && s.contains("claude")
+    });
+    let pane = panel(&yinz).pane_info;
+    let x = pane.pane_content_x.get();
+    let y = pane.pane_content_y.get();
+    let columns = pane.pane_content_columns.get();
+    let rows = pane.pane_content_rows.get();
+    let themes = yinz_config::assets::get_default_themes();
+    for name in ["gruvbox-light", "gruvbox-dark", "dracula", "gruvbox-light"] {
+        let (code, error) = yinz.run_actions_reporting(vec![Action::Reconfigure {
+            config: format!("theme \"{name}\""),
+            write_to_disk: false,
+        }]);
+        assert_eq!(code, 0, "{error}");
+        let colors = themes.get_theme(name).unwrap().palette;
+        yinz.wait_until(&format!("the whole agents panel uses {name}"), |s| {
+            let lines = s.lines();
+            let Some(selected) = (y..y + rows).find(|&row| {
+                lines[row].chars().nth(x) == Some('>') && lines[row].contains("claude")
+            }) else {
+                return false;
+            };
+            (y..y + rows).all(|row| {
+                let expected = if row == selected {
+                    colors.text_selected
+                } else {
+                    colors.text_unselected
+                };
+                (x..x + columns).all(|col| {
+                    s.cell_style(col, row).background == Some(expected.background.into())
+                })
+            }) && s.cell_foreground(x, selected) == Some(colors.text_selected.base.into())
+        });
+    }
     yinz.quit();
 }
 
