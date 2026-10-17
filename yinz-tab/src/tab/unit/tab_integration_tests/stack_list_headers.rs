@@ -5,6 +5,93 @@ use yinz_types::style::TerminalTheme;
 const CLIENT: ClientId = ClientId::new(1);
 
 #[test]
+fn stack_list_focus_cycles_in_both_directions_without_neighbors() {
+    for floating in [false, true] {
+        let mut tab = stack_tab(Size { cols: 80, rows: 24 }, floating, PaneFrameStyle::Full);
+        let members = tab.stack_lists.values().next().unwrap().members.clone();
+        tab.focus_pane_with_id(members[0], false, false, CLIENT)
+            .unwrap();
+        for expected in [members[2], members[1], members[0], members[2]] {
+            assert!(tab.move_focus_up(CLIENT).unwrap());
+            assert_eq!(tab.get_active_pane_id(CLIENT), Some(expected));
+            assert_eq!(tab.stack_lists.values().next().unwrap().visible, expected);
+        }
+        for expected in [members[0], members[1], members[2], members[0]] {
+            assert!(tab.move_focus_down(CLIENT).unwrap());
+            assert_eq!(tab.get_active_pane_id(CLIENT), Some(expected));
+            assert_eq!(tab.stack_lists.values().next().unwrap().visible, expected);
+        }
+    }
+}
+
+#[test]
+fn stack_list_focus_prefers_neighbors_above_and_below_over_wrapping() {
+    for floating in [false, true] {
+        let layout = r#"
+            layout {
+                pane
+                pane stacked=true {
+                    pane
+                    pane
+                    pane
+                }
+                pane
+            }
+        "#;
+        let (layout, _) = yinz_config::kdl::layout::from_kdl(layout, None, None, None)
+            .unwrap()
+            .template
+            .unwrap();
+        let ids = (1..=5).map(|id| (TerminalId::new(id), None)).collect();
+        let mut tab = create_new_tab_with_stacked_pane_list(
+            Size { cols: 80, rows: 60 },
+            ModeInfo::default(),
+            true,
+            Some((layout, ids)),
+        );
+        tab.sync_stacked_pane_list_mode();
+        let list = tab.stack_lists.values().next().unwrap();
+        let members = list.members.clone();
+        let above = PaneId::Terminal(TerminalId::new(1));
+        let below = PaneId::Terminal(TerminalId::new(3));
+        if floating {
+            for id in [above, list.visible, below] {
+                let pane = tab.tiled_panes.extract_pane(id).unwrap();
+                let geom = pane.position_and_size();
+                tab.add_floating_pane(
+                    pane,
+                    id,
+                    Some(FloatingPaneCoordinates {
+                        x: Some(PercentOrFixed::Fixed(geom.x)),
+                        y: Some(PercentOrFixed::Fixed(geom.y)),
+                        width: Some(PercentOrFixed::Fixed(geom.cols.as_usize())),
+                        height: Some(PercentOrFixed::Fixed(geom.rows.as_usize())),
+                        ..Default::default()
+                    }),
+                    true,
+                    Some(CLIENT),
+                )
+                .unwrap();
+            }
+            tab.toggle_floating_panes(Some(CLIENT), None, None).unwrap();
+        }
+        tab.focus_pane_with_id(members[1], false, false, CLIENT)
+            .unwrap();
+        assert!(tab.move_focus_up(CLIENT).unwrap());
+        assert_eq!(tab.get_active_pane_id(CLIENT), Some(members[0]));
+        assert!(tab.move_focus_up(CLIENT).unwrap());
+        assert_eq!(tab.get_active_pane_id(CLIENT), Some(above));
+
+        tab.focus_pane_with_id(members[1], false, false, CLIENT)
+            .unwrap();
+        assert!(tab.move_focus_down(CLIENT).unwrap());
+        assert_eq!(tab.get_active_pane_id(CLIENT), Some(members[2]));
+        assert!(tab.move_focus_down(CLIENT).unwrap());
+        assert_eq!(tab.get_active_pane_id(CLIENT), Some(below));
+    }
+}
+
+#[test]
 fn same_worktree_stack_labels_follow_focus_in_tiled_and_floating_lists() {
     let size = Size { cols: 80, rows: 24 };
     for floating in [false, true] {

@@ -250,6 +250,20 @@ fn up_and_down_move_the_selection_through_the_list() {
         has_selected_entry(grid_snapshot, "Pane #1") && grid_snapshot.contains("first-member")
     });
 
+    yinz.send_stdin(&keys::alt('k'));
+    yinz.wait_until("selection wrapped to the last member", |grid_snapshot| {
+        has_selected_entry(grid_snapshot, "Pane #3")
+            && grid_snapshot.contains("third-member")
+            && tab_bar_names_the_selected_member(grid_snapshot, "Pane #3")
+    });
+
+    yinz.send_stdin(&keys::alt('j'));
+    yinz.wait_until("selection wrapped to the first member", |grid_snapshot| {
+        has_selected_entry(grid_snapshot, "Pane #1")
+            && grid_snapshot.contains("first-member")
+            && tab_bar_names_the_selected_member(grid_snapshot, "Pane #1")
+    });
+
     yinz.send_stdin(&keys::alt('j'));
     yinz.wait_until("selection moved back down", |grid_snapshot| {
         has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.contains("second-member")
