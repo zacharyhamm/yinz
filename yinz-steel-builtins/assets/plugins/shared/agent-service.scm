@@ -1,0 +1,20 @@
+(provide agent-service-id agent-service-seq)
+
+;; The current session's only agent service, or #f when it is absent or ambiguous.
+(define (agent-service-id sessions)
+  (define ids '())
+  (for-each (lambda (session)
+      (when (hash-ref session "is_current_session")
+        (define plugins (hash-ref session "plugins"))
+        (for-each (lambda (key)
+            (when (equal? (hash-ref (hash-ref plugins key) "location") "yinz:agent-service")
+              (set! ids (cons (string->number key) ids)))) (hash-keys->list plugins)))) sessions)
+  (and (= (length ids) 1) (car ids)))
+;; A snapshot's decimal u64 `seq` argument, or #f when it is missing or malformed.
+(define (agent-service-seq args)
+  (define raw (if (and (hash? args) (hash-contains? args "seq")) (hash-ref args "seq") ""))
+  (define digits (if (and (string? raw) (starts-with? raw "+")) (substring raw 1 (string-length raw)) raw))
+  (define seq (and (string? digits) (> (string-length digits) 0)
+      (foldl (lambda (ch okay) (and okay (char<=? #\0 ch) (char<=? ch #\9))) #t (string->list digits))
+      (string->number digits)))
+  (and seq (integer? seq) (<= seq 18446744073709551615) seq))
