@@ -748,8 +748,17 @@ impl Screen {
             })
             && self.agent_process_matches(pane, &input.kind)
         {
-            self.warped_agent_inputs
-                .insert(pane, (input, self.agent_input_revision(pane)));
+            let revision = self.agent_input_revision(pane);
+            // Adopted panes start at revision zero; a parent hook can beat this restoration.
+            if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|lifecycle| {
+                lifecycle.kind == input.kind && lifecycle.conversation == input.conversation
+            }) {
+                if revision == 0 {
+                    lifecycle.input_revision = input.consumed.then_some(0);
+                }
+            } else {
+                self.warped_agent_inputs.insert(pane, (input, 0));
+            }
         }
     }
 
