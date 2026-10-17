@@ -1784,7 +1784,26 @@ impl PluginBridge {
                 continue;
             };
 
-            let (rows, columns) = self.size_of_plugin_id(plugin_id).unwrap_or((0, 0));
+            // Looked up before the plugin is marked as loading, so a plugin that cannot be
+            // found is skipped without being left loading.
+            let Some(plugin_config) = self.plugin_config_of_plugin_id(plugin_id) else {
+                log::error!("Could not find running plugin with id: {}", plugin_id);
+                continue;
+            };
+            let tab_index = self.tab_index_of_plugin_id(plugin_id);
+            let Some((rows, columns)) = self.size_of_plugin_id(plugin_id) else {
+                log::error!(
+                    "Could not find size of running plugin with id: {}",
+                    plugin_id
+                );
+                continue;
+            };
+            let size = Size {
+                rows,
+                cols: columns,
+            };
+            let cwd = self.cwd_of_plugin_id(plugin_id);
+
             // Started, not reset: a plugin that is already pending - still loading for its
             // first client, or waiting on its permission prompt - has events cached that are
             // owed to it, and a client attaching in that window used to wipe them, so a
@@ -1802,25 +1821,6 @@ impl PluginBridge {
 
             let plugin_executor = self.plugin_executor.clone();
 
-            let Some(plugin_config) = self.plugin_config_of_plugin_id(plugin_id) else {
-                log::error!("Could not find running plugin with id: {}", plugin_id);
-                continue;
-            };
-            let tab_index = self.tab_index_of_plugin_id(plugin_id);
-            let Some(size) = self.size_of_plugin_id(plugin_id) else {
-                log::error!(
-                    "Could not find size of running plugin with id: {}",
-                    plugin_id
-                );
-                continue;
-            };
-            let size = Size {
-                rows: size.0,
-                cols: size.1,
-            };
-
-            let cwd = self.cwd_of_plugin_id(plugin_id);
-
             // So the context below shares the plugin's token rather than getting one nobody
             // sets; a no-op when the plugin is registered, as it normally is here.
             self.cancel_token(plugin_id);
@@ -1836,17 +1836,26 @@ impl PluginBridge {
             ) {
                 Ok(loading_context) => loading_context,
                 Err(error) => {
-                    // One plugin that cannot load for this client must not fail the attach.
-                    self.queue_plugin_failed(
-                        plugin_id,
-                        Some(load_id),
-                        None,
-                        None,
-                        format!("{error:#}"),
-                        true,
-                    )
-                    .with_context(|| format!("fail plugin {plugin_id} for client {client_id}"))
-                    .non_fatal();
+                    // One plugin that cannot load for this client must not fail the attach,
+                    // nor the plugin itself: it is still running for the other clients. So this
+                    // ends like a load that failed on the executor for a new client, which
+                    // replays the cached events to the instances that exist, rather than
+                    // through `queue_plugin_failed`, which fails the plugin session-wide.
+                    Err::<(), _>(error)
+                        .with_context(|| {
+                            format!("prepare plugin {plugin_id} for new client {client_id}")
+                        })
+                        .non_fatal();
+                    let _ = self.senders.send_to_background_jobs(
+                        BackgroundJob::StopPluginLoadingAnimation(plugin_id),
+                    );
+                    let _ = self
+                        .senders
+                        .send_to_plugin(PluginInstruction::ApplyCachedEvents {
+                            load_id,
+                            plugin_ids: vec![plugin_id],
+                            done_receiving_permissions: false,
+                        });
                     continue;
                 },
             };
