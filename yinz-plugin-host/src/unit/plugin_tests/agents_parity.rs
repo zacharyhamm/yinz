@@ -732,7 +732,7 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
             let frame = h.panel.render(24, 90);
             vte::Parser::new().advance(&mut grid, frame.as_bytes());
             let lines = grid.as_character_lines();
-            for text in ["claude", "codex", "Themed history", "Enter focus"] {
+            for text in ["CLA", "CDX", "Themed history", "Enter focus"] {
                 let line = lines
                     .iter()
                     .find(|line| {
@@ -742,7 +742,12 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
                             .contains(text)
                     })
                     .unwrap_or_else(|| panic!("missing {text}: {}", grid.dump_screen(false)));
-                for cell in line.iter().filter(|cell| !cell.character.is_whitespace()) {
+                let region = if matches!(text, "CLA" | "CDX") {
+                    &line[..30]
+                } else {
+                    &line[..]
+                };
+                for cell in region.iter().filter(|cell| !cell.character.is_whitespace()) {
                     let selected = cell.styles.background
                         == Some(style.colors.text_selected.background.into());
                     let foreground = if selected {
@@ -758,8 +763,8 @@ fn agents_follow_the_theme_on_startup_and_mode_updates() {
                     assert_ne!(cell.styles.dim, Some(AnsiCode::On), "{text}: {cell:?}");
                     assert_ne!(cell.styles.bold, Some(AnsiCode::On), "{text}: {cell:?}");
                 }
-                if text == "claude" {
-                    assert!(line.iter().all(|cell| cell.styles.background
+                if text == "CLA" {
+                    assert!(region.iter().all(|cell| cell.styles.background
                         == Some(style.colors.text_selected.background.into())));
                 }
             }

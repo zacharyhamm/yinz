@@ -3297,25 +3297,11 @@ fn awaiting_confirmation(
     idle && fresh
 }
 
-/// What marks an agent whose state is *reported* rather than inferred.
-///
-/// Every other row on the strip is a guess made by reading a screen. A row carrying
-/// this one is being told, by the agent itself, over its own hooks — so its `busy`,
-/// its `waiting` and its summary mean something the others do not, and the difference
-/// is worth one column. It rides on the kind, where `@host` already rides, because
-/// what it qualifies is *which agent this is*: a claude with a feed, not a claude.
-///
-/// Deliberately not a character the `!` search in the agents pane could confuse for a
-/// marker of its own — see `render_summary` there.
+/// Marks reported state in agent details and notifications.
+/// Compact list rows omit this marker.
 pub const HOOK_MARKER: &str = "◆";
 
-/// The kind column of one agent row: what the agent is, marked with what is known
-/// about it and where it runs.
-///
-/// One formatter, because the strip's rows and the summary box's header both name the
-/// same agent and a user comparing the two must not find them spelled differently.
-/// Order is `claude◆@remote`: the marker qualifies the kind, and the host stays the
-/// outermost suffix so it reads the way a host is written everywhere else.
+/// Full provider name, with its reported-state marker and optional remote host.
 pub fn kind_cell(kind: &str, host: Option<&str>, hooked: bool) -> String {
     let mut cell = kind.to_owned();
     if hooked {
@@ -3326,6 +3312,25 @@ pub fn kind_cell(kind: &str, host: Option<&str>, hooked: bool) -> String {
         cell.push_str(host);
     }
     cell
+}
+
+fn compact_kind(kind: &str) -> String {
+    match kind {
+        "codex" => "CDX".into(),
+        "claude" => "CLA".into(),
+        "opencode" => "OPC".into(),
+        "gemini" => "GEM".into(),
+        "cursor" => "CUR".into(),
+        "qwen" => "QWN".into(),
+        "aider" => "AID".into(),
+        "cline" => "CLI".into(),
+        "pi" => "PIA".into(),
+        "muse" => "MUS".into(),
+        _ => format!(
+            "{:<3}",
+            kind.chars().take(3).collect::<String>().to_uppercase()
+        ),
+    }
 }
 
 /// What a header stands in for when there is nothing to name.
@@ -3350,9 +3355,8 @@ pub enum StripRow {
     Branch(String),
     /// One agent: the pane it names, the line as drawn, and what kind of agent it is.
     ///
-    /// `kind` is not in `text` - the line already spells it, with the host appended - but the
-    /// summary box's header wants it on its own, and classification is agent's job. Carrying it
-    /// is cheaper than a second classifier in the pane that draws the box.
+    /// `text` abbreviates the provider and appends the host. `kind` retains the full
+    /// provider name and reported-state marker for the details header.
     Agent {
         pane_id: u32,
         text: String,
@@ -3422,8 +3426,7 @@ pub struct Strip {
 /// header.
 ///
 /// One formatter for the agent picker and anything else that shows an agent as
-/// a line, so they can never disagree. The tab name goes last and is clipped by
-/// the renderer, not here.
+/// a line, so they can never disagree. Only identity and state belong in the list.
 ///
 /// `owners` gives the project of a pane and `branches` its checkout's branch.
 /// Neither is repeated on the agent's own line: the headers carry them, so an
@@ -3445,36 +3448,26 @@ pub fn strip_rows(
         .iter()
         .filter_map(|pane| {
             let (kind, _) = classify(pane, manual)?;
-            // The host rides on the kind rather than in a column of its own:
-            // it is absent for nearly every agent, and a column that is usually
-            // blank costs width in a sidebar that has none to spare. `@host`
-            // also reads the way a host is written everywhere else. The hook
-            // marker rides there too — see `kind_cell`.
             let hooked = hooks.contains_key(&pane.pane_id);
-            let cell = kind_cell(&kind, pane.host.as_deref(), hooked);
+            let cell = kind_cell(&compact_kind(&kind), pane.host.as_deref(), false);
             let waiting =
                 awaiting_confirmation(summaries, activity, hooks, pane.status, pane.pane_id);
-            // A hooked pane that is waiting already says so through its feed. One without hooks
-            // is only known to be waiting from its summary, and its status cell would read
-            // `idle` beside the `!` - true of the screen, but not what the row is claiming.
-            // Only here: `status_cell` is also the model's `state`, which stays what it was.
-            let status = match waiting && !hooked {
-                true => "waiting".to_owned(),
-                false => status_cell(
-                    pane.status,
-                    activity.get(&pane.pane_id),
-                    hooks.get(&pane.pane_id),
-                ),
+            let symbol = match pane.status {
+                AgentStatus::Held => '■',
+                AgentStatus::Exited => '×',
+                AgentStatus::Running if waiting => '!',
+                AgentStatus::Running => match hooks.get(&pane.pane_id).map(|feed| feed.phase) {
+                    Some(HookPhase::Busy) => '●',
+                    Some(HookPhase::Idle) => '○',
+                    Some(HookPhase::Waiting) => '!',
+                    None => match activity.get(&pane.pane_id) {
+                        Some((_, 0)) => '●',
+                        Some(_) => '○',
+                        None => '?',
+                    },
+                },
             };
-            let mut row = format!(
-                "{}{:>3}  {cell}  {status}",
-                if waiting { "! " } else { "  " },
-                pane.pane_id,
-            );
-            if let Some((_, name)) = &pane.tab {
-                row.push_str("  ");
-                row.push_str(name);
-            }
+            let row = format!("{} {cell} {symbol}", pane.pane_id);
             Some((
                 owners.get(&pane.pane_id).map(String::as_str),
                 branches.get(&pane.pane_id).map(String::as_str),
@@ -3967,31 +3960,22 @@ mod tests {
         StripRow::Branch(format!("  {name}"))
     }
 
-    /// An agent row with nothing waiting on the user - the blank marker column every row
-    /// carries, spelled once here rather than as two leading spaces in every expectation.
-    fn agent(pane_id: u32, text: &str) -> StripRow {
+    /// Full provider identity stays separate from compact list text.
+    fn agent(pane_id: u32, kind: &str, text: &str) -> StripRow {
         StripRow::Agent {
             pane_id,
-            kind: kind_in(text),
-            text: format!("  {text}"),
+            kind: kind.into(),
+            text: text.into(),
             waiting: false,
         }
     }
 
-    /// The kind `strip_rows` would have put on the row, read back off the line it drew.
-    /// The line spells it as the second field, with `@host` appended for a remote pane;
-    /// the field carries the bare kind.
-    fn kind_in(text: &str) -> String {
-        let kind = text.split_whitespace().nth(1).unwrap_or_default();
-        kind.split('@').next().unwrap_or_default().to_owned()
-    }
-
     /// An agent row the model said is blocked on a confirmation.
-    fn waiting(pane_id: u32, text: &str) -> StripRow {
+    fn waiting(pane_id: u32, kind: &str, text: &str) -> StripRow {
         StripRow::Agent {
             pane_id,
-            kind: kind_in(text),
-            text: format!("! {text}"),
+            kind: kind.into(),
+            text: text.into(),
             waiting: true,
         }
     }
@@ -6251,8 +6235,77 @@ mod tests {
         );
     }
 
-    /// The marker column is always there, so the list does not shift sideways as agents
-    /// start and stop waiting - only what is *in* it changes.
+    #[test]
+    fn compact_provider_names() {
+        for (kind, expected) in [
+            ("codex", "CDX"),
+            ("claude", "CLA"),
+            ("opencode", "OPC"),
+            ("gemini", "GEM"),
+            ("cursor", "CUR"),
+            ("qwen", "QWN"),
+            ("aider", "AID"),
+            ("cline", "CLI"),
+            ("pi", "PIA"),
+            ("muse", "MUS"),
+            ("reviewer", "REV"),
+            ("xy", "XY "),
+            ("é", "É  "),
+            ("", "   "),
+        ] {
+            assert_eq!(compact_kind(kind), expected);
+        }
+    }
+
+    #[test]
+    fn compact_rows_only_change_with_identity_or_state() {
+        let mut pane = pane(12, "first title", Some("codex"));
+        pane.host = Some("box".into());
+        let mut hooks = feeds(&[(12, HookPhase::Busy)]);
+        let render = |pane: &AgentPane, hooks: &HookFeeds, activity: &Activity| {
+            strip_rows(
+                std::slice::from_ref(pane),
+                &manual(&[]),
+                activity,
+                &owners(&[]),
+                &branches(&[]),
+                &Summaries::new(),
+                hooks,
+            )[2]
+            .clone()
+        };
+        let before = render(&pane, &hooks, &Activity::new());
+        assert_eq!(before, agent(12, "codex◆", "12 CDX@box ●"));
+        pane.title = "a new title".into();
+        pane.tab = Some((TabId::new(9), "another tab".into()));
+        hooks.get_mut(&12).unwrap().detail = Some("Bash cargo test".into());
+        assert_eq!(render(&pane, &hooks, &Activity::new()), before);
+        for (status, activity, phase, expected) in [
+            (AgentStatus::Running, None, None, '?'),
+            (AgentStatus::Running, Some((1, 0)), None, '●'),
+            (AgentStatus::Running, Some((1, 1)), None, '○'),
+            (
+                AgentStatus::Running,
+                Some((1, 99)),
+                Some(HookPhase::Idle),
+                '○',
+            ),
+            (AgentStatus::Running, None, Some(HookPhase::Waiting), '!'),
+            (AgentStatus::Held, None, Some(HookPhase::Waiting), '■'),
+            (AgentStatus::Exited, None, Some(HookPhase::Busy), '×'),
+        ] {
+            pane.status = status;
+            let hooks = phase.map(|phase| feeds(&[(12, phase)])).unwrap_or_default();
+            let activity = activity
+                .map(|value| Activity::from([(12, value)]))
+                .unwrap_or_default();
+            let StripRow::Agent { text, .. } = render(&pane, &hooks, &activity) else {
+                panic!("agent row")
+            };
+            assert_eq!(text, format!("12 CDX@box {expected}"));
+        }
+    }
+
     #[test]
     fn strip_rows_flag_only_the_agents_waiting_on_an_answer() {
         let panes = vec![
@@ -6278,20 +6331,16 @@ mod tests {
             vec![
                 project("no project"),
                 branch("no branch"),
-                agent(3, "  3  codex  idle"),
+                agent(3, "codex", "3 CDX ○"),
                 // `waiting` rather than the `idle` its screen is: the row says one thing.
-                waiting(4, "  4  claude  waiting"),
-                agent(5, "  5  aider  idle"),
+                waiting(4, "claude", "4 CLA !"),
+                agent(5, "aider", "5 AID ○"),
             ],
         );
     }
 
-    /// A pane whose state is reported rather than inferred says so, in the one column
-    /// that already qualifies the kind. Everything about that pane's row means something
-    /// different from the rows around it — its `busy` is a fact and theirs is a guess —
-    /// and there is no other way for a user to tell which they are looking at.
     #[test]
-    fn a_pane_that_reports_for_itself_is_marked_as_such() {
+    fn hook_markers_stay_in_details_but_not_compact_rows() {
         let mut remote = pane(5, "claude", Some("claude"));
         remote.host = Some("box".to_owned());
         let panes = vec![
@@ -6315,16 +6364,13 @@ mod tests {
             vec![
                 project("no project"),
                 branch("no branch"),
-                agent(3, "  3  codex  idle"),
-                agent(4, "  4  claude◆  idle"),
-                // The marker qualifies the kind; the host stays the outermost suffix, so
-                // it reads the way a host is written everywhere else.
-                agent(5, "  5  claude◆@box  busy"),
+                agent(3, "codex", "3 CDX ○"),
+                agent(4, "claude◆", "4 CLA ○"),
+                agent(5, "claude◆", "5 CLA@box ●"),
             ],
         );
 
-        // The summary box heads its pane the same way the row names it, minus the host:
-        // the box is drawn beside a row that already says which machine.
+        // Details retain the full name and reported-state marker.
         assert_eq!(
             rows.iter()
                 .filter_map(|row| match row {
@@ -6371,7 +6417,7 @@ mod tests {
             vec![
                 project("no project"),
                 branch("no branch"),
-                agent(4, "  4  claude  idle")
+                agent(4, "claude", "4 CLA ○")
             ],
         );
     }
@@ -6944,7 +6990,7 @@ mod tests {
             &feeds(&[(3, HookPhase::Waiting)]),
         );
         assert!(
-            matches!(&rows[2], StripRow::Agent { text, .. } if text.starts_with("! ")),
+            matches!(&rows[2], StripRow::Agent { text, .. } if text.ends_with(" !")),
             "{rows:?}"
         );
 
@@ -6959,7 +7005,7 @@ mod tests {
             &feeds(&[(3, HookPhase::Busy)]),
         );
         assert!(
-            matches!(&rows[2], StripRow::Agent { text, .. } if text.starts_with("  ")),
+            matches!(&rows[2], StripRow::Agent { text, .. } if !text.ends_with(" !")),
             "a feed outranks the summary beside it: {rows:?}"
         );
     }
@@ -7042,7 +7088,7 @@ mod tests {
             &Summaries::new(),
             &hooks,
         );
-        assert!(matches!(&rows[2], StripRow::Agent { text, .. } if text.starts_with("  ")));
+        assert!(matches!(&rows[2], StripRow::Agent { text, .. } if !text.ends_with(" !")));
 
         let json = list_json(
             &panes,
@@ -7113,7 +7159,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_rows_name_the_pane_and_end_with_its_tab_when_it_has_one() {
+    fn strip_rows_omit_tab_titles() {
         let tabbed = AgentPane {
             tab: Some((TabId::new(9), "work".to_owned())),
             ..pane(3, "codex", Some("codex"))
@@ -7135,8 +7181,8 @@ mod tests {
             vec![
                 project("no project"),
                 branch("no branch"),
-                agent(3, "  3  codex  running  work"),
-                agent(5, "  5  aider  running"),
+                agent(3, "codex", "3 CDX ?"),
+                agent(5, "aider", "5 AID ?"),
             ],
         );
     }
@@ -7251,13 +7297,13 @@ mod tests {
             vec![
                 project("agent"),
                 branch("main"),
-                agent(5, "  5  codex  running  tab 2"),
+                agent(5, "codex", "5 CDX ?"),
                 project("pocus"),
                 branch("main"),
-                agent(3, "  3  codex  running  tab 1"),
+                agent(3, "codex", "3 CDX ?"),
                 project("no project"),
                 branch("no branch"),
-                agent(4, "  4  aider  running  tab 1"),
+                agent(4, "aider", "4 AID ?"),
             ],
         );
     }
@@ -7286,10 +7332,10 @@ mod tests {
             vec![
                 project("agent"),
                 branch("main"),
-                agent(3, "  3  codex  running  tab 1"),
-                agent(5, "  5  aider  running  tab 1"),
+                agent(3, "codex", "3 CDX ?"),
+                agent(5, "aider", "5 AID ?"),
                 branch("topic"),
-                agent(4, "  4  claude  running  tab 2"),
+                agent(4, "claude", "4 CLA ?"),
             ],
         );
     }
@@ -7318,8 +7364,8 @@ mod tests {
             vec![
                 project("no project"),
                 branch("no branch"),
-                agent(3, "  3  claude@build-box  running"),
-                agent(4, "  4  claude  running"),
+                agent(3, "claude", "3 CLA@build-box ?"),
+                agent(4, "claude", "4 CLA ?"),
             ],
         );
     }
@@ -7347,9 +7393,9 @@ mod tests {
             vec![
                 project("no project"),
                 branch("main"),
-                agent(3, "  3  codex  running  tab 1"),
+                agent(3, "codex", "3 CDX ?"),
                 branch("topic"),
-                agent(4, "  4  codex  running  tab 2"),
+                agent(4, "codex", "4 CDX ?"),
             ],
         );
     }
@@ -7387,9 +7433,9 @@ mod tests {
             vec![
                 project("agent"),
                 branch("main"),
-                agent(3, "  3  codex  running  tab 1"),
+                agent(3, "codex", "3 CDX ?"),
                 branch("no branch"),
-                agent(4, "  4  claude  running  tab 2"),
+                agent(4, "claude", "4 CLA ?"),
             ],
         );
     }

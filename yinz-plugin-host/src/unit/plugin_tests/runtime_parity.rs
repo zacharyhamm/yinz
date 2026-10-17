@@ -438,6 +438,11 @@ impl Pair {
         let expected = self.wasm.render(rows, cols);
         let actual = self.steel.render(rows, cols);
         self.commands();
+        // Agents now uses a draggable column layout; agents_render checks its cells and mouse geometry.
+        // Keep replaying these recordings for the host-command contract.
+        if self.history_worker.is_some() {
+            return;
+        }
         let cells = |text: &str| {
             let mut grid = Grid::new(
                 rows.max(1),
