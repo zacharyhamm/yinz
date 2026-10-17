@@ -1761,14 +1761,13 @@ fn remembered_project_survives_empty_startup_and_explicit_switching() {
     palette_search(&mut first, "Switch current project");
     palette_key(&mut first, BareKey::Enter);
     palette_key(&mut first, BareKey::Enter);
-    assert_eq!(
-        LastProject::load(dir.path().into()).name().unwrap(),
-        "alpha"
-    );
+    assert_eq!(first.last_project.name().unwrap(), "alpha");
+    let projects = first.projects.clone();
+    drop(first);
 
     let mut restarted = screen();
     restarted.last_project = LastProject::load(dir.path().into());
-    restarted.projects = first.projects.clone();
+    restarted.projects = projects.clone();
     restarted.reconcile_project_contexts();
     assert_eq!(
         restarted.client_projects[&CLIENT].current.as_deref(),
@@ -1778,6 +1777,8 @@ fn remembered_project_survives_empty_startup_and_explicit_switching() {
     palette_search(&mut restarted, "Switch current project");
     palette_key(&mut restarted, BareKey::Enter);
     palette_key(&mut restarted, BareKey::Enter);
+    assert_eq!(restarted.last_project.name().unwrap(), "alpha");
+    drop(restarted);
     assert_eq!(
         LastProject::load(dir.path().into()).name().unwrap(),
         "alpha"
@@ -1785,7 +1786,7 @@ fn remembered_project_survives_empty_startup_and_explicit_switching() {
 
     let mut known_folder = screen();
     known_folder.last_project = LastProject::load(dir.path().into());
-    known_folder.projects = restarted.projects.clone();
+    known_folder.projects = projects;
     known_folder
         .pane_projects
         .insert(PaneId::Terminal(TerminalId::new(1)), "beta".into());
@@ -1794,6 +1795,7 @@ fn remembered_project_survives_empty_startup_and_explicit_switching() {
         known_folder.client_projects[&CLIENT].current.as_deref(),
         Some("beta")
     );
+    drop(known_folder);
     assert_eq!(LastProject::load(dir.path().into()).name().unwrap(), "beta");
 }
 
@@ -1826,10 +1828,7 @@ fn remembered_project_yields_to_focus_and_late_discovery_without_repeated_writes
         screen.client_projects[&CLIENT].current.as_deref(),
         Some("gamma")
     );
-    assert_eq!(
-        LastProject::load(dir.path().into()).name().unwrap(),
-        "gamma"
-    );
+    assert_eq!(screen.last_project.name().unwrap(), "gamma");
 
     let second = ClientId::new(2);
     screen.add_client(second).unwrap();
@@ -1846,6 +1845,9 @@ fn remembered_project_yields_to_focus_and_late_discovery_without_repeated_writes
         screen.client_projects[&second].current.as_deref(),
         Some("gamma")
     );
+    assert_eq!(screen.last_project.name().unwrap(), "alpha");
+    drop(std::mem::take(&mut screen.last_project));
+    screen.last_project = LastProject::load(dir.path().into());
     assert_eq!(
         LastProject::load(dir.path().into()).name().unwrap(),
         "alpha"
