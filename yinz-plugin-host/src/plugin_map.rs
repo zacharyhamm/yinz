@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, PoisonError,
+        Arc, Mutex, PoisonError, Weak,
     },
 };
 use yinz_types::internal_ids::TabId;
@@ -37,6 +37,8 @@ pub struct PluginMap {
     pub(crate) reload_data_dirs: HashMap<PluginId, Option<Arc<yinz_runtime::owned_dir::OwnedDir>>>,
     pub(crate) configuration_version: u64,
     pub(crate) client_configurations: HashMap<ClientId, (u64, PluginConfiguration)>,
+    pub(crate) connected_clients: Arc<Mutex<Vec<ClientId>>>,
+    pending_configuration_clients: HashMap<ClientId, usize>,
     plugin_assets: HashMap<(PluginId, ClientId), PluginAssets>,
     instance_ids: HashMap<(PluginId, ClientId), PluginInstanceId>,
     instance_cwds: HashMap<(PluginId, ClientId), PathBuf>,
@@ -46,6 +48,28 @@ pub struct PluginMap {
     resize_slots: HashMap<(PluginId, ClientId), Arc<ResizeSlot>>,
     client_cancellations: HashMap<(PluginId, ClientId), (Option<u64>, Arc<AtomicBool>)>,
     workers: HashMap<(PluginId, ClientId), Arc<crate::background_worker::Workers>>,
+}
+
+/// Cloned loading contexts share one registration until their last loader is dropped.
+#[derive(Debug)]
+pub(crate) struct PendingConfiguration {
+    map: Weak<Mutex<PluginMap>>,
+    client: ClientId,
+}
+
+impl Drop for PendingConfiguration {
+    fn drop(&mut self) {
+        if let Some(map) = self.map.upgrade() {
+            let mut map = map.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(count) = map.pending_configuration_clients.get_mut(&self.client) {
+                *count -= 1;
+                if *count == 0 {
+                    map.pending_configuration_clients.remove(&self.client);
+                }
+            }
+            map.prune_client_configuration(self.client);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -151,6 +175,36 @@ fn configuration_matches_for_reload(
 }
 
 impl PluginMap {
+    pub(crate) fn pending_configuration(
+        &mut self,
+        map: &Arc<Mutex<Self>>,
+        client: ClientId,
+    ) -> Arc<PendingConfiguration> {
+        *self
+            .pending_configuration_clients
+            .entry(client)
+            .or_default() += 1;
+        Arc::new(PendingConfiguration {
+            map: Arc::downgrade(map),
+            client,
+        })
+    }
+
+    pub(crate) fn needs_client_configuration(&self, client: ClientId) -> bool {
+        // Connected clients may still be cloned by another client's loader.
+        self.connected_clients.lock().unwrap().contains(&client)
+            || self.pending_configuration_clients.contains_key(&client)
+            || self.availability.iter().any(|((_, owner), unavailable)| {
+                *owner == client && !unavailable.load(Ordering::Acquire)
+            })
+    }
+
+    pub(crate) fn prune_client_configuration(&mut self, client: ClientId) {
+        if !self.needs_client_configuration(client) {
+            self.client_configurations.remove(&client);
+        }
+    }
+
     pub(crate) fn set_load_token(&mut self, plugin: PluginId, cancel: Arc<AtomicBool>) {
         self.load_tokens.insert(plugin, cancel);
     }
@@ -270,6 +324,9 @@ impl PluginMap {
                 }
             }
         }
+        for (_, client) in removed.keys() {
+            self.prune_client_configuration(*client);
+        }
         removed
     }
     pub fn remove_instance(
@@ -290,6 +347,7 @@ impl PluginMap {
             plugin_id,
             PluginMetadata::from_running(&assets.0.lock().unwrap()),
         );
+        self.prune_client_configuration(client_id);
         Some(assets)
     }
 
@@ -617,6 +675,7 @@ impl PluginMap {
                     }
                 }
                 self.plugin_assets.insert((plugin_id, to), plugin_asset);
+                self.prune_client_configuration(from);
                 true
             },
             None => false,

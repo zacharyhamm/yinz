@@ -217,6 +217,7 @@ pub(crate) struct SessionConfiguration {
     editor_overrides: Vec<yinz_types::configuration::Patch>,
     editor_effective: HashMap<ClientId, Config>,
     runtime_config: HashMap<ClientId, Config>, // if present, overrides the saved_config
+    detached_runtime_config: Option<Config>,
     effective_keybinds: HashMap<ClientId, Keybinds>,
     plugin_default_keybinds: BTreeMap<PluginId, Keybinds>,
     background_plugins: Option<BackgroundPluginConfiguration>,
@@ -237,6 +238,7 @@ impl SessionConfiguration {
         ));
         let previous_saved_config =
             std::mem::replace(&mut self.saved_config, new_saved_config.clone());
+        let had_detached_runtime = self.detached_runtime_config.take().is_some();
 
         let mut config_changes = vec![];
         let client_ids: Vec<_> = self.runtime_config.keys().copied().collect();
@@ -250,9 +252,10 @@ impl SessionConfiguration {
                 ))
             }
         }
-        // Every attached client has a runtime configuration. With none attached, the threads'
-        // session-wide state still follows the saved config.
-        if self.runtime_config.is_empty() && previous_saved_config != new_saved_config {
+        // The last departing client's baseline may differ from the threads' current state.
+        if self.runtime_config.is_empty()
+            && (had_detached_runtime || previous_saved_config != new_saved_config)
+        {
             config_changes.push((
                 ClientId::NONE,
                 self.apply_editor_overrides(new_saved_config),
@@ -264,16 +267,20 @@ impl SessionConfiguration {
     pub fn set_saved_configuration(&mut self, config: Config) {
         self.background_plugins = Some(BackgroundPluginConfiguration::from_config(&config));
         self.saved_config = config;
+        self.detached_runtime_config = None;
         self.recompute_effective_keybinds();
     }
     pub fn set_client_runtime_configuration(&mut self, client_id: ClientId, client_config: Config) {
+        self.detached_runtime_config = None;
         self.runtime_config.insert(client_id, client_config);
         self.recompute_effective_keybinds();
     }
-    /// Forget a departed client's configuration. No other client's effective configuration
-    /// depends on it.
+    /// Retain the last client's runtime baseline as session state, without its client identity.
     pub fn remove_client(&mut self, client_id: ClientId) {
-        self.runtime_config.remove(&client_id);
+        let departed = self.runtime_config.remove(&client_id);
+        if self.runtime_config.is_empty() && departed.is_some() {
+            self.detached_runtime_config = departed;
+        }
         self.editor_effective.remove(&client_id);
         self.effective_keybinds.remove(&client_id);
     }
@@ -281,6 +288,12 @@ impl SessionConfiguration {
         self.runtime_config
             .get(client_id)
             .and_then(|_| self.effective_keybinds.get(client_id))
+            .or_else(|| {
+                self.detached_runtime_config
+                    .as_ref()
+                    .filter(|_| *client_id == ClientId::NONE)
+                    .map(|config| &config.keybinds)
+            })
             .unwrap_or(&self.saved_config.keybinds)
     }
     pub fn get_client_default_input_mode(&self, client_id: &ClientId) -> InputMode {
@@ -319,6 +332,11 @@ impl SessionConfiguration {
         let mut config = self
             .runtime_config
             .get(client_id)
+            .or_else(|| {
+                self.detached_runtime_config
+                    .as_ref()
+                    .filter(|_| *client_id == ClientId::NONE)
+            })
             .unwrap_or(&self.saved_config)
             .clone();
         if let Some(background) = &self.background_plugins {
@@ -359,8 +377,8 @@ impl SessionConfiguration {
         let mut config_changed = false;
 
         if !self.runtime_config.contains_key(client_id) {
-            self.runtime_config
-                .insert(*client_id, self.saved_config.clone());
+            let base = self.base_client_configuration(client_id);
+            self.runtime_config.insert(*client_id, base);
         }
         match self.runtime_config.get_mut(client_id) {
             Some(config) => {
@@ -401,11 +419,10 @@ impl SessionConfiguration {
 
         (full_reconfigured_config, config_changed)
     }
-    /// A change for [`ClientId::NONE`] is computed like any client's, then forgotten: no client
-    /// carries it, and a runtime entry left for `NONE` would stop [`Self::change_saved_config`]
-    /// from reporting saved-config changes while nobody is attached.
+    /// Keep detached changes as session state without retaining a synthetic client entry.
     fn forget_transient(&mut self, client_id: &ClientId) {
         if *client_id == ClientId::NONE {
+            self.detached_runtime_config = self.runtime_config.remove(client_id);
             self.remove_client(ClientId::NONE);
         }
     }
@@ -3558,7 +3575,7 @@ mod session_state_tests {
     }
 
     #[test]
-    fn a_change_for_no_client_leaves_no_runtime_configuration() {
+    fn a_change_for_no_client_leaves_no_client_configuration() {
         let mut configuration = SessionConfiguration::default();
         let (config, changed) = configuration
             .reconfigure_runtime_config(&ClientId::NONE, "mouse_mode false".to_owned(), None, None)

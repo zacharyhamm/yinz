@@ -810,3 +810,43 @@ fn bundled_theme_edits_survive_startup_loading_and_directory_precedence() {
         PaletteColor::EightBit(9)
     );
 }
+
+#[test]
+fn detached_configuration_participates_in_editor_revisions_and_permanent_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut session, screen_rx) = session(dir.path());
+    let disk = Disk::read(None, Some(dir.path())).unwrap();
+    let revision = session.session_configuration.editor_revision(&disk);
+    session
+        .session_configuration
+        .reconfigure_runtime_config(
+            &ClientId::NONE,
+            "mouse_mode false\npane_frames false".into(),
+            None,
+            None,
+        )
+        .unwrap();
+    assert_ne!(
+        revision,
+        session.session_configuration.editor_revision(&disk)
+    );
+    submit(
+        &mut session,
+        Destination::Permanent,
+        vec![mouse(true)],
+        vec![],
+    )
+    .unwrap();
+    let detached = session
+        .session_configuration
+        .get_client_configuration(&ClientId::NONE);
+    assert_eq!(detached.options.mouse_mode, Some(true));
+    assert_eq!(detached.options.pane_frames, Some(false));
+    assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ScreenInstruction::Reconfigure {
+            client_id: ClientId::NONE,
+            ..
+        }
+    )));
+}

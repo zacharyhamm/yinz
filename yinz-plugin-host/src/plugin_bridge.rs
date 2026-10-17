@@ -128,6 +128,7 @@ pub struct LoadingContext {
     pub default_mode: InputMode,
     pub keybinds: Keybinds,
     pub(crate) configuration_version: u64,
+    pub(crate) pending_configuration: Arc<crate::plugin_map::PendingConfiguration>,
     pub yinz_data_dir: PathBuf,
     pub data_access: Arc<DataAccess>,
     pub watch_generations: super::plugin_map::WatchGenerations,
@@ -259,9 +260,12 @@ impl LoadingContext {
         let plugin_cwd = cwd.unwrap_or_else(|| plugin_bridge.yinz_cwd.clone());
         let data_owner;
         let configuration_version;
+        let pending_configuration;
         {
             let mut plugin_map = plugin_bridge.plugin_map.lock().unwrap();
             configuration_version = plugin_map.configuration_version;
+            pending_configuration =
+                plugin_map.pending_configuration(&plugin_bridge.plugin_map, client_id);
             plugin_map
                 .client_configurations
                 .entry(client_id)
@@ -314,6 +318,7 @@ impl LoadingContext {
             keybinds: configuration.keybinds,
             default_mode: configuration.default_mode,
             configuration_version,
+            pending_configuration,
             plugin_own_data_dir,
             temporary_data_dir,
             plugin_own_cache_dir,
@@ -514,7 +519,7 @@ fn cleanup_disconnected_instances(
         // Match the loader's lock order. Registration happens before instance lookup,
         // so a reconnect either keeps its instance or sees it removed and loads one.
         let mut plugin_map = plugin_map.lock().unwrap();
-        let connected = connected_clients.lock().unwrap();
+        let connected = connected_clients.lock().unwrap().clone();
         plugin_map.remove_disconnected_instances(plugin_id, &connected)
     };
     for (client_id, (plugin, subscriptions)) in removed {
@@ -565,7 +570,7 @@ impl PluginBridge {
                 .context("failed to observe plugin host cleanup")?,
         );
         let plugin_map = Arc::new(Mutex::new(PluginMap::default()));
-        let connected_clients: Arc<Mutex<Vec<ClientId>>> = Arc::new(Mutex::new(vec![]));
+        let connected_clients = plugin_map.lock().unwrap().connected_clients.clone();
         let max_threads = num_cpus::get().clamp(4, 16);
         let plugin_executor = Arc::new(PinnedExecutor::new(
             max_threads,
@@ -1697,6 +1702,12 @@ impl PluginBridge {
             .entry(client_id)
             .or_insert(self.default_mode);
         self.connected_clients.lock().unwrap().push(client_id);
+        {
+            let mut map = self.plugin_map.lock().unwrap();
+            let version = map.configuration_version;
+            map.client_configurations
+                .insert(client_id, (version, self.plugin_configuration(client_id)));
+        }
         let mut new_plugins = HashSet::new();
         log::info!(
             "attach trace: PluginBridge::add_client client_id={client_id} waiting for plugin_map lock"
@@ -2807,7 +2818,7 @@ impl PluginBridge {
             false,
             move |senders, plugin_map, connected_clients| {
                 let mut plugin_map = plugin_map.lock().unwrap();
-                let connected_clients = connected_clients.lock().unwrap();
+                let connected_clients = connected_clients.lock().unwrap().clone();
                 let mut rekeyed = false;
                 for owner in plugin_map.owner_client_ids_of_plugin_id(plugin_id) {
                     if !connected_clients.contains(&owner) {
@@ -3025,6 +3036,10 @@ impl PluginBridge {
         }
         self.base_modes.remove(&client_id);
         self.keybinds.remove(&client_id);
+        {
+            let mut map = self.plugin_map.lock().unwrap();
+            map.prune_client_configuration(client_id);
+        }
         if self.cli_event_subscribers.remove(&client_id).is_some()
             && self.cli_event_subscribers.is_empty()
         {
@@ -3315,8 +3330,10 @@ impl PluginBridge {
                     *cached = (version, self.plugin_configuration(*owner));
                 }
             }
-            map.client_configurations
-                .insert(client_id, (version, configuration.clone()));
+            if map.needs_client_configuration(client_id) {
+                map.client_configurations
+                    .insert(client_id, (version, configuration.clone()));
+            }
         }
         // Plugins subscribed to InitialKeybinds hear the new ones after reconfiguration, each
         // addressed by its owner: a plugin that is not shared is routed by owner.
@@ -4029,6 +4046,12 @@ impl PluginBridge {
         plugin: PluginId,
         instance: PluginInstanceId,
     ) -> PipeOutcomes {
+        {
+            let mut map = self.plugin_map.lock().unwrap();
+            for client in map.owner_client_ids_of_plugin_id(plugin) {
+                map.prune_client_configuration(client);
+            }
+        }
         self.pending_pipes.retire(
             plugin,
             instance,

@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 
 const SOURCE: &str = r#"
 (define state "ready")
-(define (load config) (yinz-command (hash "Subscribe" '("ClientGridReset"))))
+(define (load config) (yinz-command (hash "Subscribe" '("ConfigWasWrittenToDisk"))))
 (define (update event) (set! state "updated") #t)
 (define (render rows columns) (string-append "size " state ";"))
 "#;
@@ -94,7 +94,7 @@ fn initialization_does_not_block_another_plugins_event_render_or_load() {
             vec![(
                 Some(PluginId::new(1)),
                 Some(ClientId::new(1)),
-                Event::ClientGridReset(ClientId::new(1)),
+                Event::ConfigWasWrittenToDisk,
             )],
             shutdown,
         )
@@ -535,6 +535,13 @@ fn disconnect_during_initialization_keeps_only_the_connected_clients_instance() 
     let held = HeldLoad::start(&test, context);
     test.bridge.add_client(ClientId::new(2)).unwrap();
     test.bridge.remove_client(ClientId::new(1));
+    assert!(test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .client_configurations
+        .contains_key(&ClientId::new(1)));
     let (loaded, runtimes) = held.finish();
     loaded.unwrap();
     assert_eq!(
@@ -542,6 +549,13 @@ fn disconnect_during_initialization_keeps_only_the_connected_clients_instance() 
         "the disconnected client's worker survived initialization"
     );
     test.settle(PluginId::new(1));
+    assert!(!test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .client_configurations
+        .contains_key(&ClientId::new(1)));
     assert_eq!(
         test.bridge.all_plugin_ids(),
         [(PluginId::new(1), ClientId::new(2))]
@@ -590,7 +604,7 @@ fn reload_of_busy_plugin_keeps_the_changed_host_folder() {
     std::fs::write(moved.path().join("marker"), "moved").unwrap();
     let source = r#"
 (define state "ready")
-(define (load config) (yinz-command (hash "Subscribe" '("ClientGridReset"))))
+(define (load config) (yinz-command (hash "Subscribe" '("ConfigWasWrittenToDisk"))))
 (define (update event)
   (set! state (yinz-decode-utf8 (yinz-command
     (hash "FsRead" (hash "path" "/host/marker" "max_bytes" json-null "offset" json-null))))) #t)
@@ -620,7 +634,7 @@ fn reload_of_busy_plugin_keeps_the_changed_host_folder() {
     let (shutdown, _) = tokio::sync::mpsc::channel(1);
     test.bridge
         .update_plugins(
-            vec![(Some(id), Some(client), Event::ClientGridReset(client))],
+            vec![(Some(id), Some(client), Event::ConfigWasWrittenToDisk)],
             shutdown,
         )
         .unwrap();
@@ -645,6 +659,13 @@ fn failed_load_disposes_workers_and_keeps_only_retry_metadata() {
     let held = HeldLoad::start(&test, context);
     let (loaded, runtimes) = held.finish();
     assert!(format!("{:#}", loaded.unwrap_err()).contains("fixture load failure"));
+    assert!(test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .client_configurations
+        .is_empty());
     assert_eq!(runtimes, 0);
     assert!(test.bridge.all_plugin_ids().is_empty());
     assert_eq!(
@@ -678,7 +699,7 @@ fn permission_answer_keeps_events_cached_until_every_client_is_initialized() {
         .unwrap();
     test.bridge
         .update_plugins(
-            vec![(Some(id), None, Event::ClientGridReset(second))],
+            vec![(Some(id), None, Event::ConfigWasWrittenToDisk)],
             shutdown.clone(),
         )
         .unwrap();
@@ -735,5 +756,200 @@ fn permission_answer_keeps_events_cached_until_every_client_is_initialized() {
             rendered.contains(&(client, "size updated".into())),
             "{rendered:?}"
         );
+    }
+}
+
+#[test]
+fn configuration_cache_retires_departed_and_headless_owners() {
+    for attached in [false, true] {
+        let mut test = TestBridge::new();
+        for id in 1..=4 {
+            let client = ClientId::new(id);
+            let plugin = PluginId::new(id);
+            if attached {
+                test.bridge.add_client(client).unwrap();
+            }
+            let context = test.context(id, id, "(void)");
+            test.load(context).unwrap();
+            test.bridge.remove_client(client);
+            test.settle(plugin);
+            if attached {
+                assert!(test
+                    .bridge
+                    .plugin_map
+                    .lock()
+                    .unwrap()
+                    .client_configurations
+                    .is_empty());
+            } else {
+                assert!(test
+                    .bridge
+                    .plugin_map
+                    .lock()
+                    .unwrap()
+                    .client_configurations
+                    .contains_key(&client));
+            }
+            test.bridge.unload_plugin(plugin).unwrap();
+            assert!(test
+                .bridge
+                .plugin_map
+                .lock()
+                .unwrap()
+                .client_configurations
+                .is_empty());
+        }
+        test.bridge
+            .reconfigure(ClientId::NONE, None, None, None, None, None)
+            .unwrap();
+        assert!(test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .client_configurations
+            .is_empty());
+    }
+}
+
+#[test]
+fn unused_loading_context_clones_release_their_configuration() {
+    let mut test = TestBridge::new();
+    let context = test.context(1, 1, "(void)");
+    let cloned = context.clone();
+    let overlapping = test.context(2, 1, "(void)");
+    drop(context);
+    drop(overlapping);
+    assert!(test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .client_configurations
+        .contains_key(&ClientId::new(1)));
+    drop(cloned);
+    assert!(test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .client_configurations
+        .is_empty());
+}
+
+#[test]
+fn disconnected_shared_initializer_keeps_configuration_until_unloaded() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(1);
+    let id = PluginId::new(1);
+    test.bridge.add_client(client).unwrap();
+    let mut context = test.context(1, 1, SOURCE);
+    context
+        .plugin_config
+        .initial_userspace_configuration
+        .insert("shared", "true");
+    test.bridge.shared_plugin_ids.insert(id);
+    let held = HeldLoad::start(&test, context);
+    test.bridge.remove_client(client);
+    test.bridge
+        .reconfigure(
+            ClientId::NONE,
+            Some(configured_keybinds(InputMode::Locked)),
+            Some(InputMode::Locked),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    held.finish().0.unwrap();
+    let plugin = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, Some(client))
+        .unwrap();
+    assert_eq!(
+        plugin.lock().unwrap().env().keybinds,
+        configured_keybinds(InputMode::Locked)
+    );
+    test.bridge.unload_plugin(id).unwrap();
+    assert!(test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .client_configurations
+        .is_empty());
+}
+
+#[test]
+fn disposed_instances_keep_retry_metadata_without_retaining_configuration() {
+    let mut test = TestBridge::new();
+    let client = ClientId::new(5);
+    for id in [1, 2] {
+        let context = test.context(id, client.get(), "(void)");
+        test.load(context).unwrap();
+    }
+    for id in [1, 2] {
+        let plugin = PluginId::new(id);
+        let instance = test.instance_id(plugin, client);
+        test.bridge
+            .queue_plugin_failed(
+                plugin,
+                None,
+                None,
+                Some(instance),
+                "fixture failure".into(),
+                false,
+            )
+            .unwrap();
+        test.settle(plugin);
+        test.pipe_outcomes();
+        assert_eq!(
+            test.bridge
+                .plugin_map
+                .lock()
+                .unwrap()
+                .client_configurations
+                .contains_key(&client),
+            id == 1,
+            "a healthy peer still needs the configuration"
+        );
+    }
+    assert_eq!(
+        test.bridge.plugin_map.lock().unwrap().plugin_ids(),
+        vec![PluginId::new(1), PluginId::new(2)]
+    );
+    test.bridge
+        .reconfigure(
+            ClientId::NONE,
+            None,
+            Some(InputMode::Locked),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .client_configurations
+        .is_empty());
+    test.bridge.reload_plugin_with_id(PluginId::new(1)).unwrap();
+    test.finish_reload(PluginId::new(1));
+    let plugin = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(PluginId::new(1), Some(client))
+        .unwrap();
+    assert!(!plugin.lock().unwrap().is_disposed());
+    assert_eq!(plugin.lock().unwrap().env().default_mode, InputMode::Locked);
+    for id in [1, 2] {
+        test.bridge.unload_plugin(PluginId::new(id)).unwrap();
     }
 }

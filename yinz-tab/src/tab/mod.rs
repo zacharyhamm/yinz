@@ -2530,13 +2530,14 @@ impl Tab {
         // None => all clients
         let mut client_ids_to_mode_infos = vec![];
         let clients_to_drain = clients_to_drain
-            .unwrap_or_else(|| self.connected_clients.borrow_mut().drain().collect());
+            .unwrap_or_else(|| self.connected_clients.borrow().iter().copied().collect());
         for client_id in clients_to_drain {
             client_ids_to_mode_infos.push(self.drain_single_client(client_id));
         }
         client_ids_to_mode_infos
     }
     pub fn drain_single_client(&mut self, client_id: ClientId) -> (ClientId, ModeInfo) {
+        self.remember_departing_focus(client_id);
         let client_mode_info = self
             .mode_info
             .borrow_mut()
