@@ -351,3 +351,127 @@ fn key_names_use_bare_key_wire_shapes() {
         assert!(runtime.invoke("yinz-key-name", vec![key]).is_err());
     }
 }
+
+/// Stands in for the host's uncancellable `SetTimeout` tasks: each command becomes one `Timer`
+/// event, delivered when the whole-millisecond clock first reads at or past its deadline.
+struct HostTimers {
+    seen: usize,
+    due: Vec<u64>,
+    armed: usize,
+}
+impl HostTimers {
+    fn new(commands: &Commands) -> Self {
+        let mut host = Self {
+            seen: 0,
+            due: Vec::new(),
+            armed: 0,
+        };
+        host.collect(commands, 0);
+        host
+    }
+    fn collect(&mut self, commands: &Commands, now: u64) {
+        let commands = commands.lock().unwrap();
+        for command in &commands[self.seen..] {
+            if let Some(seconds) = command
+                .pointer("/__yinz_runtime/command/SetTimeout")
+                .and_then(Value::as_f64)
+            {
+                self.due
+                    .push((now as f64 + seconds * 1000.0 + 1e-6).floor() as u64);
+                self.armed += 1;
+            }
+        }
+        self.seen = commands.len();
+    }
+    fn deliver(&mut self, runtime: &mut Runtime, commands: &Commands, now: &AtomicU64, at: u64) {
+        now.store(at, Ordering::SeqCst);
+        runtime.update(json!({"Timer":0.0})).unwrap();
+        runtime.invoke("yinz-async-poll", vec![]).unwrap();
+        self.collect(commands, at);
+    }
+    fn fire_next(&mut self, runtime: &mut Runtime, commands: &Commands, now: &AtomicU64) -> u64 {
+        let (index, &at) = self
+            .due
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, at)| **at)
+            .expect("a host timer should be in flight");
+        self.due.swap_remove(index);
+        self.deliver(runtime, commands, now, at);
+        at
+    }
+}
+const TICK_BESIDE_SLEEP: &str = r#"
+  (define ticks 0) (define slept #f)
+  (define (load config)
+    (yinz-every 16 (lambda () (set! ticks (+ ticks 1)) #f))
+    (yinz-then (yinz-sleep 1000) (lambda (ignored) (set! slept #t))))
+"#;
+
+#[test]
+fn recurring_timers_beside_one_shot_timers_arm_one_host_timer_per_tick() {
+    let (mut runtime, commands, now) = runtime(TICK_BESIDE_SLEEP);
+    runtime.load(json!({})).unwrap();
+    let mut host = HostTimers::new(&commands);
+    assert_eq!(host.armed, 1, "the sleep waits behind the earlier tick");
+    assert_eq!(host.fire_next(&mut runtime, &commands, &now), 16);
+    assert_eq!(
+        host.armed, 3,
+        "the first tick arms the sleep and the next tick"
+    );
+    let mut last = 16;
+    while last < 1600 {
+        let armed = host.armed;
+        last = host.fire_next(&mut runtime, &commands, &now);
+        assert!(
+            host.armed <= armed + 1,
+            "the wakeup at {last} ms over-armed"
+        );
+        assert!(
+            host.due.len() <= 2,
+            "host timers piled up by {last} ms: {:?}",
+            host.due
+        );
+    }
+    assert_eq!(runtime.value("ticks").unwrap(), 100);
+    assert_eq!(runtime.value("slept").unwrap(), true);
+    // One host timer per tick plus one for the sleep; stale wakeups arm nothing.
+    assert_eq!(host.armed, 102);
+}
+
+#[test]
+fn early_timer_events_keep_the_armed_host_timer() {
+    let (mut runtime, commands, now) = runtime(TICK_BESIDE_SLEEP);
+    runtime.load(json!({})).unwrap();
+    let mut host = HostTimers::new(&commands);
+    // The plugin's own raw `SetTimeout`, or a superseded SDK timer, wakes it before the tick.
+    for at in [5, 15] {
+        host.deliver(&mut runtime, &commands, &now, at);
+    }
+    assert_eq!(runtime.value("ticks").unwrap(), 0);
+    assert_eq!(host.armed, 1);
+    while runtime.value("slept").unwrap() != true {
+        host.fire_next(&mut runtime, &commands, &now);
+    }
+    let armed = host.armed;
+    for _ in 0..10 {
+        host.fire_next(&mut runtime, &commands, &now);
+    }
+    assert_eq!(host.armed, armed + 10);
+    assert_eq!(host.due.len(), 1);
+}
+
+#[test]
+fn fractional_timer_deadlines_arm_the_whole_millisecond_they_resolve_at() {
+    let (mut runtime, commands, now) = runtime(
+        r#"
+      (define slept #f)
+      (define (load config) (yinz-then (yinz-sleep 16.5) (lambda (ignored) (set! slept #t))))
+    "#,
+    );
+    runtime.load(json!({})).unwrap();
+    let mut host = HostTimers::new(&commands);
+    assert_eq!(host.fire_next(&mut runtime, &commands, &now), 17);
+    assert_eq!(runtime.value("slept").unwrap(), true);
+    assert_eq!(host.armed, 1);
+}
