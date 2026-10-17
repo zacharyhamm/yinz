@@ -428,73 +428,82 @@ pub fn plugin_thread_main(
                 size,
                 completion_tx,
             ) => {
-                let completion_tx = NotificationEnd::join(
+                let mut completion_tx = NotificationEnd::join(
                     completion_tx,
                     std::mem::take(&mut collapsed_reload_completions),
                 );
                 run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
-                match run_plugin_or_alias.get_run_plugin() {
-                    Some(run_plugin) => {
-                        match plugin_bridge.reload_plugin(&run_plugin) {
-                            Ok(_) => {
-                                let _ = bus
-                                    .senders
-                                    .send_to_server(ServerInstruction::UnblockInputThread);
-                            },
-                            Err(err) => match err.downcast_ref::<YinzError>() {
-                                Some(YinzError::PluginDoesNotExist) => {
-                                    log::warn!(
-                                        "Plugin {} not found, starting it instead",
-                                        run_plugin.location
-                                    );
-                                    // we intentionally do not provide the client_id here because it belongs to
-                                    // the cli who spawned the command and is not an existing client_id
-                                    let skip_cache = true; // when reloading we always skip cache
-                                    let start_suppressed = false;
-                                    match plugin_bridge.load_plugin(
-                                        &Some(run_plugin),
+                // Every waiter, collapsed ones included, hears why nothing was reloaded: a
+                // dropped handle reports success.
+                let failure = match run_plugin_or_alias.get_run_plugin() {
+                    Some(run_plugin) => match plugin_bridge.reload_plugin(&run_plugin) {
+                        Ok(_) => {
+                            let _ = bus
+                                .senders
+                                .send_to_server(ServerInstruction::UnblockInputThread);
+                            None
+                        },
+                        Err(err)
+                            if matches!(
+                                err.downcast_ref::<YinzError>(),
+                                Some(YinzError::PluginDoesNotExist)
+                            ) =>
+                        {
+                            log::warn!(
+                                "Plugin {} not found, starting it instead",
+                                run_plugin.location
+                            );
+                            let location = run_plugin.location.clone();
+                            // we intentionally do not provide the client_id here because it belongs to
+                            // the cli who spawned the command and is not an existing client_id
+                            let skip_cache = true; // when reloading we always skip cache
+                            let start_suppressed = false;
+                            match plugin_bridge.load_plugin(
+                                &Some(run_plugin),
+                                Some(tab_index),
+                                size,
+                                None,
+                                skip_cache,
+                                None,
+                            ) {
+                                Ok((plugin_id, _client_id)) => {
+                                    let should_be_open_in_place = false;
+                                    drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
+                                        should_float,
+                                        should_be_open_in_place,
+                                        false, // close_replaced_pane
+                                        run_plugin_or_alias,
+                                        pane_title,
                                         Some(tab_index),
-                                        size,
+                                        plugin_id,
                                         None,
-                                        skip_cache,
                                         None,
-                                    ) {
-                                        Ok((plugin_id, _client_id)) => {
-                                            let should_be_open_in_place = false;
-                                            drop(bus.senders.send_to_screen(
-                                                ScreenInstruction::AddPlugin(
-                                                    should_float,
-                                                    should_be_open_in_place,
-                                                    false, // close_replaced_pane
-                                                    run_plugin_or_alias,
-                                                    pane_title,
-                                                    Some(tab_index),
-                                                    plugin_id,
-                                                    None,
-                                                    None,
-                                                    start_suppressed,
-                                                    None,
-                                                    None,
-                                                    None,
-                                                    completion_tx,
-                                                    None,
-                                                ),
-                                            ));
-                                        },
-                                        Err(e) => {
-                                            log::error!("Failed to load plugin: {e}");
-                                        },
-                                    };
+                                        start_suppressed,
+                                        None,
+                                        None,
+                                        None,
+                                        completion_tx.take(),
+                                        None,
+                                    )));
+                                    None
                                 },
-                                _ => {
-                                    return Err(err);
-                                },
-                            },
-                        }
+                                Err(e) => Some(e.context(format!("failed to start {location}"))),
+                            }
+                        },
+                        Err(err) => {
+                            Some(err.context(format!("failed to reload {}", run_plugin.location)))
+                        },
                     },
-                    None => {
-                        log::error!("Failed to find plugin info for: {:?}", run_plugin_or_alias);
-                    },
+                    None => Some(anyhow!(
+                        "unknown plugin or alias: {}",
+                        run_plugin_or_alias.location_string()
+                    )),
+                };
+                if let Some(error) = failure {
+                    if let Some(completion_tx) = completion_tx.as_mut() {
+                        completion_tx.set_error_message(format!("{error:#}"));
+                    }
+                    Err::<(), _>(error).non_fatal();
                 }
             },
             PluginInstruction::ReloadPluginWithId(plugin_id) => {
@@ -538,7 +547,10 @@ pub fn plugin_thread_main(
                     started_at.elapsed(),
                     if result.is_ok() { "ok" } else { "error" }
                 );
-                result?;
+                // The client is attached either way; its session start still runs.
+                result
+                    .with_context(|| format!("add client {client_id} to plugins"))
+                    .non_fatal();
                 if !session_started {
                     if hooks.get(HookPoint::Notification).is_some() {
                         notification_policy = load_notification_policy(

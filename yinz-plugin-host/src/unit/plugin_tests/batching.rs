@@ -953,6 +953,58 @@ pub fn collapsed_reloads_of_an_unloaded_plugin_are_answered_by_the_add_plugin() 
     teardown();
 }
 
+/// A reload that names nothing, or cannot start what it names, tells every waiter why -
+/// collapsed ones included - rather than dropping their handles, which reports success.
+#[test]
+#[serial(plugin_tests)]
+pub fn failed_reloads_answer_every_waiter_with_their_error() {
+    use yinz_bus::route::{ActionCompletionResult, NotificationEnd};
+    let reload = |url: &str, tx| {
+        PluginInstruction::Reload(
+            Some(false),
+            None,
+            yinz_runtime::plugin_location::run_plugin_or_alias_from_url(url, &None, None, None)
+                .unwrap(),
+            TabId::new(1),
+            Size { rows: 20, cols: 80 },
+            Some(NotificationEnd::new(tx)),
+        )
+    };
+    let answer = |rx: tokio::sync::oneshot::Receiver<ActionCompletionResult>| {
+        yinz_bus::global_async_runtime::get_tokio_runtime()
+            .block_on(async { tokio::time::timeout(WAIT, rx).await })
+            .expect("the reload answers its waiter")
+            .expect("the handle sends its result")
+    };
+    let temp_folder = tempdir().unwrap();
+    let (plugin_thread_sender, _screen_receiver, teardown) =
+        create_plugin_thread(Some(PathBuf::from(temp_folder.path())), None);
+
+    // No client is attached, so a plugin that is not running has nobody to start for.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = plugin_thread_sender.send(reload(&format!("file:{}", *SCRIPT_PLUGIN_FIXTURE), tx));
+    let result = answer(rx);
+    let error = result.error_message.expect("a failed start is an error");
+    assert!(error.contains("failed to start"), "{error}");
+
+    let (tx_first, rx_first) = tokio::sync::oneshot::channel();
+    let (tx_second, rx_second) = tokio::sync::oneshot::channel();
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(crate::ClientId::new(1)));
+    for tx in [tx_first, tx_second] {
+        let _ = plugin_thread_sender.send(reload("no-such-alias", tx));
+    }
+    for rx in [rx_first, rx_second] {
+        let error = answer(rx)
+            .error_message
+            .expect("an unknown alias is an error");
+        assert!(
+            error.contains("unknown plugin or alias: no-such-alias"),
+            "{error}"
+        );
+    }
+    teardown();
+}
+
 #[test]
 pub fn coalescing_hovers_keeps_positions_before_wheel_events() {
     let hover =
