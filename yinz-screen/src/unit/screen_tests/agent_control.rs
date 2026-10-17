@@ -7929,6 +7929,45 @@ fn clear_draft_pi_draft_rules_cannot_hide_earlier_input() {
 mod events;
 
 #[test]
+fn warped_codex_consumption_handles_parent_reports_and_input_before_restoration() {
+    for consumed in [false, true] {
+        for newer_input in [false, true] {
+            for parent_hook in [None, Some("Stop"), Some("SessionStart")] {
+                let (mut destination, _, _) = setup("codex");
+                let HookOutcome::Reported(agent) = hook_outcome("codex", &hook("UserPromptSubmit"))
+                else {
+                    panic!("prompt submission reports a busy agent");
+                };
+                crate::screen::apply_pane_agent_report(&mut destination, PANE, Some(agent))
+                    .unwrap();
+                if newer_input {
+                    destination.agent_write_for_test();
+                }
+                if let Some(parent_hook) = parent_hook {
+                    report(&mut destination, hook(parent_hook));
+                }
+                destination.restore_warped_agent_input(
+                    PANE,
+                    yinz_types::data::WarpedAgentInput {
+                        kind: "codex".into(),
+                        conversation: "conversation".into(),
+                        consumed,
+                    },
+                );
+                if parent_hook.is_none() {
+                    report(&mut destination, hook("Stop"));
+                }
+                assert_eq!(
+                    destination.agent_status_for_test().ready,
+                    consumed && !newer_input,
+                    "consumed={consumed}, newer_input={newer_input}, parent_hook={parent_hook:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn warped_codex_consumption_waits_for_parent_and_rejects_new_input() {
     for whole_tab in [false, true] {
         for rewarp in [false, true] {
