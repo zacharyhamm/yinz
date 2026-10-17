@@ -5024,18 +5024,20 @@ fn validate_plugin_layout_path(layout_name: &str, layout_dir: Option<&PathBuf>) 
     Ok(())
 }
 
+/// What a layout file may do once loaded. A file is trusted without inspecting it - it can change
+/// after any check, and its templates and swap layouts apply later - so applying or writing one
+/// needs every permission a layout's panes can use.
+const LAYOUT_FILE_PERMISSIONS: [PermissionType; 3] = [
+    PermissionType::OpenFiles,
+    PermissionType::RunCommands,
+    PermissionType::OpenTerminalsOrPlugins,
+];
+
 fn ensure_layout_info_permissions(env: &PluginEnv, layout_info: &LayoutInfo) -> Result<()> {
     match layout_info {
         LayoutInfo::File(layout_name, _) => {
             validate_plugin_layout_path(layout_name, env.layout_dir.as_ref())?;
-            ensure_plugin_permissions(
-                env,
-                [
-                    PermissionType::OpenFiles,
-                    PermissionType::RunCommands,
-                    PermissionType::OpenTerminalsOrPlugins,
-                ],
-            )
+            ensure_plugin_permissions(env, LAYOUT_FILE_PERMISSIONS)
         },
         LayoutInfo::BuiltIn(_) | LayoutInfo::Stringified(_) => {
             let layout =
@@ -8971,6 +8973,20 @@ pub(crate) fn check_command_permission(
             Some(PermissionType::OpenTerminalsOrPlugins),
         );
     }
+    // A saved or renamed layout file runs as a `LayoutInfo::File` when it is next loaded - as
+    // `default.kdl`, by the next plain `yinz` start, with no plugin involved - so writing one
+    // needs what applying one does, on top of `ChangeApplicationState` below.
+    if matches!(
+        command,
+        PluginCommand::SaveLayout { .. } | PluginCommand::RenameLayout { .. }
+    ) {
+        if let Some(permission) = LAYOUT_FILE_PERMISSIONS
+            .into_iter()
+            .find(|permission| !has_permission(plugin_env, *permission))
+        {
+            return (PermissionStatus::Denied, Some(permission));
+        }
+    }
     let children: &[yinz_types::multipane::MultipaneChild] = match command {
         PluginCommand::CreateMultipane(request) => &request.children,
         PluginCommand::ReplaceMultipaneChild(request) => std::slice::from_ref(&request.child),
@@ -9898,6 +9914,71 @@ mod permission_tests {
                     PermissionStatus::Denied,
                     Some(PermissionType::ChangeApplicationState)
                 )
+            );
+        }
+    }
+
+    #[test]
+    fn writing_a_layout_file_requires_the_permissions_applying_one_does() {
+        let mut env = crate::test_env::test_env();
+        let save = PluginCommand::SaveLayout {
+            layout_name: "default".into(),
+            layout_kdl: "layout { pane; }".into(),
+            overwrite: true,
+        };
+        let rename = PluginCommand::RenameLayout {
+            old_layout_name: "mine".into(),
+            new_layout_name: "default".into(),
+        };
+        let delete = PluginCommand::DeleteLayout {
+            layout_name: "default".into(),
+        };
+        let everything = [PermissionType::ChangeApplicationState]
+            .into_iter()
+            .chain(LAYOUT_FILE_PERMISSIONS);
+        for (permissions, expected) in [
+            (
+                vec![PermissionType::ChangeApplicationState],
+                (PermissionStatus::Denied, Some(PermissionType::OpenFiles)),
+            ),
+            (
+                vec![
+                    PermissionType::ChangeApplicationState,
+                    PermissionType::OpenFiles,
+                    PermissionType::OpenTerminalsOrPlugins,
+                ],
+                (PermissionStatus::Denied, Some(PermissionType::RunCommands)),
+            ),
+            (
+                LAYOUT_FILE_PERMISSIONS.to_vec(),
+                (
+                    PermissionStatus::Denied,
+                    Some(PermissionType::ChangeApplicationState),
+                ),
+            ),
+            (everything.collect(), (PermissionStatus::Granted, None)),
+        ] {
+            *env.permissions.lock().unwrap() = Some(permissions.into_iter().collect());
+            for command in [&save, &rename] {
+                assert_eq!(check_command_permission(&env, command), expected);
+            }
+        }
+        // Deleting a layout cannot make anything run, so it stays a state change.
+        *env.permissions.lock().unwrap() =
+            Some(HashSet::from([PermissionType::ChangeApplicationState]));
+        assert_eq!(
+            check_command_permission(&env, &delete),
+            (PermissionStatus::Granted, None)
+        );
+        // Built-in plugins, such as the layout manager, keep saving and renaming without asking.
+        env.plugin_config.location = yinz_types::input::layout::RunPluginLocation::Yinz(
+            yinz_types::data::PluginTag::new("layout-manager"),
+        );
+        *env.permissions.lock().unwrap() = None;
+        for command in [&save, &rename] {
+            assert_eq!(
+                check_command_permission(&env, command),
+                (PermissionStatus::Granted, None)
             );
         }
     }

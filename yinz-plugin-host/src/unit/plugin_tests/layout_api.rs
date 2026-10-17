@@ -2025,3 +2025,146 @@ pub fn override_layout_plugin_command() {
     screen_thread.join().unwrap();
     assert_snapshot!(format!("{:#?}", override_layout_instruction));
 }
+
+/// The text after `label` on the line of `frame` that carries it.
+fn rendered_after<'a>(frame: &'a str, label: &str) -> &'a str {
+    frame
+        .split_once(label)
+        .and_then(|(_, rest)| rest.lines().next())
+        .unwrap_or_default()
+        .trim()
+}
+
+#[test]
+#[serial(plugin_tests)]
+pub fn layout_writes_need_the_permissions_a_layout_file_can_use() {
+    // The next plain `yinz` start loads `default.kdl` without asking anyone, so a plugin holding
+    // only `ChangeApplicationState` must not be able to plant one whose panes run commands.
+    let temp_folder = tempdir().unwrap();
+    let plugin_host_folder = PathBuf::from(temp_folder.path());
+    let cache_path = plugin_host_folder.join("permissions_test.kdl");
+    let (plugin_thread_sender, screen_receiver, teardown) =
+        create_plugin_thread(Some(plugin_host_folder), None);
+
+    let received_screen_instructions = Watched::new(vec![]);
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
+        screen_receiver,
+        cache_path,
+        plugin_thread_sender.clone(),
+        crate::ClientId::new(1),
+        PermissionStatus::Granted,
+    );
+
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/unit/plugin_tests/fixtures/fixture_layout_files.scm");
+    let run_plugin = RunPluginOrAlias::RunPlugin(RunPlugin {
+        _allow_exec_host_cmd: false,
+        location: RunPluginLocation::File(fixture),
+        configuration: Default::default(),
+        ..Default::default()
+    });
+    let client_id = ClientId::new(1);
+    let _ = plugin_thread_sender.send(PluginInstruction::AddClient(client_id));
+    let _ = plugin_thread_sender.send(PluginInstruction::Load(
+        Some(false),
+        false,
+        false, // close_replaced_pane
+        Some("layout_files_fixture".to_owned()),
+        run_plugin,
+        Some(TabId::new(1)),
+        None,
+        client_id,
+        Size {
+            cols: 200,
+            rows: 20,
+        },
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+    ));
+
+    let frame = wait_for_render_containing(&received_screen_instructions, "layout dir: ");
+    let layout_dir = PathBuf::from(rendered_after(&frame, "layout dir: "));
+    std::fs::create_dir_all(&layout_dir).unwrap();
+    // A command layout the user saved under another name, which a rename would promote.
+    std::fs::write(
+        layout_dir.join("planted.kdl"),
+        "layout { pane command=\"sh\"; }",
+    )
+    .unwrap();
+    let press = |key| {
+        let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
+            None,
+            Some(client_id),
+            Event::Key(KeyWithModifier::new(BareKey::Char(key))),
+        )]));
+    };
+
+    // 'r' renames the planted command layout to `default` (first, while that name is free); 'c'
+    // saves a command pane as `default`; 't' hides one in the `new_tab_template` of a layout that
+    // has tabs, which inspecting the layout's tabs alone would miss.
+    let mut outcomes = vec![];
+    for (key, label) in [
+        ('r', "rename "),
+        ('c', "command layout "),
+        ('t', "template layout "),
+    ] {
+        press(key);
+        let frame = wait_for_render_containing(&received_screen_instructions, label);
+        outcomes.push((label, rendered_after(&frame, label).to_owned()));
+    }
+    teardown();
+    screen_thread.join().unwrap();
+
+    let default_written = layout_dir.join("default.kdl").exists();
+    let planted_kept = layout_dir.join("planted.kdl").exists();
+    let _ = std::fs::remove_dir_all(&layout_dir);
+    for (label, outcome) in &outcomes {
+        assert!(
+            outcome.starts_with("refused: ") && outcome.contains("requires 'OpenFiles'"),
+            "{label}should be refused for want of the layout file permissions, got {outcome:?}"
+        );
+    }
+    assert!(
+        !default_written,
+        "no default layout should have been written"
+    );
+    assert!(planted_kept, "the refused rename should leave its source");
+}
+
+#[test]
+pub fn builtin_plugins_still_save_and_rename_layouts_that_run_commands() {
+    use yinz_types::data::PluginCommand;
+    let layout_dir = tempdir().unwrap();
+    let mut env = crate::test_env::test_env();
+    env.plugin_config.location =
+        RunPluginLocation::Yinz(yinz_types::data::PluginTag::new("layout-manager"));
+    env.layout_dir = Some(layout_dir.path().to_path_buf());
+
+    crate::yinz_exports::run_plugin_command(
+        &mut env,
+        PluginCommand::SaveLayout {
+            layout_name: "commands".into(),
+            layout_kdl: "layout { pane command=\"sh\"; }".into(),
+            overwrite: false,
+        },
+    )
+    .unwrap();
+    crate::yinz_exports::run_plugin_command(
+        &mut env,
+        PluginCommand::RenameLayout {
+            old_layout_name: "commands".into(),
+            new_layout_name: "default".into(),
+        },
+    )
+    .unwrap();
+
+    assert!(!layout_dir.path().join("commands.kdl").exists());
+    let saved = std::fs::read_to_string(layout_dir.path().join("default.kdl")).unwrap();
+    assert!(saved.contains("command=\"sh\""), "saved layout: {saved}");
+}
