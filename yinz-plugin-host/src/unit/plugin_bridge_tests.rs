@@ -3520,12 +3520,50 @@ fn attach_whose_plugin_data_cannot_be_prepared_still_attaches() {
         let context = test.context(id, 1, "(void)");
         test.load(context).unwrap();
     }
+    let originals = [1, 2].map(|id| test.instance_id(PluginId::new(id), ClientId::new(1)));
+    let _ = test.receiver::<PluginInstruction>().try_iter().count();
     let _hidden = HiddenTemporaryRoot::new(&test);
     test.bridge.add_client(ClientId::new(2)).unwrap();
     assert!(test.bridge.client_is_connected(&ClientId::new(2)));
-    // Every plugin is tried for the new client, not only the first.
-    for id in [1, 2] {
-        assert_failed_to_prepare(&test, PluginId::new(id));
+    // Like a load that fails on the executor for a new client, each failure finishes that
+    // client's load. Every plugin is tried for the new client, not only the first.
+    let mut finished = vec![];
+    for (instruction, _) in test.receiver::<PluginInstruction>().try_iter() {
+        if let PluginInstruction::ApplyCachedEvents {
+            load_id,
+            plugin_ids,
+            done_receiving_permissions,
+        } = instruction
+        {
+            finished.extend(plugin_ids.iter().copied());
+            let (shutdown, _) = tokio::sync::mpsc::channel(1);
+            test.bridge
+                .apply_cached_events_for_load(
+                    load_id,
+                    plugin_ids,
+                    done_receiving_permissions,
+                    shutdown,
+                )
+                .unwrap();
+        }
+    }
+    assert_eq!(finished, vec![PluginId::new(1), PluginId::new(2)]);
+    assert!(test.bridge.loading_plugins.is_empty());
+    for (id, original) in [1, 2].into_iter().zip(originals) {
+        let plugin = PluginId::new(id);
+        // The plugin still runs for the client that had it, and is not failed for it.
+        assert_eq!(test.instance_id(plugin, ClientId::new(1)), original);
+        assert!(!test.bridge.latest_plugin_errors.contains_key(&plugin));
+        assert!(!test
+            .bridge
+            .cached_events_for_pending_plugins
+            .contains_key(&plugin));
+        assert!(!test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .contains(plugin, ClientId::new(2)));
     }
 }
 
