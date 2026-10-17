@@ -27,6 +27,11 @@ from main's TypeScript implementation and SDK at `539b78afe`. Its `adaptation` m
 this intentional change; the original source fingerprint, host snapshots, configuration write,
 and completion remain intact. These changed display expectations were not captured from Steel.
 
+The Agents fixtures adapt the original render streams for the pane readability change.
+Their `adaptation` metadata identifies this change. Only text style levels changed.
+The original text, coordinates, selection markers, lifecycle inputs, host calls, replies, and source fingerprints remain intact.
+Independent style transformations produced these expectations. The current renderer was checked against them.
+
 Each fixture records its original source SHA-256, engine, plugin, configuration, and ordered lifecycle steps.
 The Wasm fingerprint covers the original artifact bytes.
 The Deno fingerprint covers the embedded source tree and SDK.

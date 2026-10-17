@@ -3072,13 +3072,13 @@ const LABEL_STYLE: MdStyle = MdStyle {
 /// place whether its entry knows when it was made or not.
 pub const AGE_WIDTH: usize = 4;
 
-/// How an age is painted: undimmed and in the accent colour, because it is the one piece of
+/// How an age is painted: undimmed and in the navigation colour, because it is the one piece of
 /// furniture on the row that is meant to be read down the column rather than through the
 /// sentence.
 const AGE_STYLE: MdStyle = MdStyle {
     bold: false,
     dim: false,
-    color: Some(2),
+    color: Some(1),
     error: false,
     strike: false,
 };
@@ -8408,7 +8408,7 @@ mod tests {
     }
 
     /// The age is painted to be read as a column rather than as more label: undimmed and in
-    /// the accent colour, against a dim `prompt: `.
+    /// the navigation colour, against a dim `prompt: ` (normalized by the Agents renderer).
     #[test]
     fn the_age_is_the_undimmed_part_of_the_furniture() {
         let mut run = a_pane_run();
@@ -8427,7 +8427,7 @@ mod tests {
         assert!(
             row.styles[..AGE_WIDTH]
                 .iter()
-                .all(|style| !style.dim && style.color == Some(2)),
+                .all(|style| !style.dim && style.color == Some(1)),
             "the age"
         );
         assert!(
