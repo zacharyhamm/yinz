@@ -68,6 +68,18 @@ fn render(plugin: &mut SteelReference, style: Style) -> Vec<Vec<TerminalCharacte
     );
     vte::Parser::new().advance(&mut grid, plugin.render(40, 100).as_bytes());
     let lines = grid.as_character_lines();
+    for cell in lines.iter().flatten() {
+        assert!(
+            [
+                Some(style.colors.text_unselected.background.into()),
+                Some(style.colors.text_selected.background.into()),
+            ]
+            .contains(&cell.styles.background),
+            "unthemed background {:?} for {:?}",
+            cell.styles.background,
+            cell.character,
+        );
+    }
     for cell in lines
         .iter()
         .flatten()

@@ -1911,6 +1911,10 @@ fn session_palette_disconnect_targets_preserve_watchers() {
         s.contains("No other clients are connected")
     });
     host.send_stdin(&keys::ESC);
+    // The next identical query must not match the palette's outgoing animation.
+    host.wait_until("the first palette is dismissed", |s| {
+        !s.contains("Do · Project:")
+    });
     let client = host.attach_client(TERMINAL_SIZE);
     client.wait_until("ordinary client connected", |s| s.contains("$"));
     palette_query(&host, "Disconnect other clients");
