@@ -2047,16 +2047,18 @@ fn run_hook(
         return;
     };
     if let Some(plugin_id) = plugin_bridge.pane_hook_instance(point, pane_id) {
-        let client_id = if plugin_bridge.client_is_connected(&client_id) {
-            client_id
+        let client_id = if !plugin_bridge.plugin_is_shared(&plugin_id) {
+            None
+        } else if plugin_bridge.client_is_connected(&client_id) {
+            Some(client_id)
         } else {
-            plugin_bridge.get_first_client_id().unwrap_or(client_id)
+            Some(plugin_bridge.get_first_client_id().unwrap_or(client_id))
         };
         plugin_bridge
             .update_plugins(
                 vec![(
                     Some(plugin_id),
-                    Some(client_id),
+                    client_id,
                     Event::Hook {
                         point,
                         payload: HookPayload::AgentExit(payload),

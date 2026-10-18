@@ -1018,23 +1018,41 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
 
 #[test]
 #[serial(plugin_tests)]
-fn agent_exit_reentry_delivers_changed_and_identical_payloads_to_the_loaded_instance() {
-    agent_exit_reentry(true, false);
+fn agent_exit_reentry_delivers_changed_and_identical_payloads_to_both_clients() {
+    agent_exit_reentry(true, false, false);
 }
 
 #[test]
 #[serial(plugin_tests)]
-fn agent_exit_reentry_queues_firings_during_loading() {
-    agent_exit_reentry(false, false);
+fn agent_exit_reentry_queues_firings_for_both_clients_during_loading() {
+    agent_exit_reentry(false, false, false);
 }
 
 #[test]
 #[serial(plugin_tests)]
 fn agent_exit_reentry_reaches_remaining_client_after_origin_disconnects() {
-    agent_exit_reentry(true, true);
+    agent_exit_reentry(true, true, false);
 }
 
-fn agent_exit_reentry(wait_for_load: bool, disconnect_origin: bool) {
+#[test]
+#[serial(plugin_tests)]
+fn agent_exit_reentry_delivers_once_to_a_shared_instance() {
+    agent_exit_reentry(true, false, true);
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn agent_exit_reentry_queues_firings_once_for_a_shared_instance_during_loading() {
+    agent_exit_reentry(false, false, true);
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn agent_exit_reentry_reaches_a_shared_instance_after_origin_disconnects() {
+    agent_exit_reentry(true, true, true);
+}
+
+fn agent_exit_reentry(wait_for_load: bool, disconnect_origin: bool, shared: bool) {
     let root = tempdir().unwrap();
     let source = root.path().join("reentry.scm");
     std::fs::write(
@@ -1043,6 +1061,7 @@ fn agent_exit_reentry(wait_for_load: bool, disconnect_origin: bool) {
         (define text "loaded")
         (define count 0)
         (define (load config)
+          (define payload-config (hash-remove config "shared"))
           (yinz-on-event "Hook"
             (lambda (event)
               (define payload (hash-ref event "payload"))
@@ -1050,17 +1069,20 @@ fn agent_exit_reentry(wait_for_load: bool, disconnect_origin: bool) {
               (set! count (+ count 1))
               (set! text (string-append
                 (hash-ref event "point") ":" (number->string count) ":" code ":"
-                (if (equal? payload (hash-insert config "agent_exit_code" code))
+                (if (equal? payload (hash-insert payload-config "agent_exit_code" code))
                     "payload-ok" "payload-mismatch")))
               #t)))
         (define (render rows cols) text)
         "#,
     )
     .unwrap();
-    let hook = RunPluginOrAlias::RunPlugin(
+    let mut hook =
         yinz_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", source.display()))
-            .unwrap(),
-    );
+            .unwrap();
+    if shared {
+        hook = hook.with_configuration(BTreeMap::from([("shared".into(), "true".into())]));
+    }
+    let hook = RunPluginOrAlias::RunPlugin(hook);
     let (sender, receiver, teardown) = create_plugin_thread_with_hooks(
         Some(root.path().into()),
         None,
@@ -1073,6 +1095,25 @@ fn agent_exit_reentry(wait_for_load: bool, disconnect_origin: bool) {
     sender
         .send(PluginInstruction::AddClient(client_id))
         .unwrap();
+    let other_client = ClientId::new(2);
+    if !disconnect_origin {
+        sender
+            .send(PluginInstruction::AddClient(other_client))
+            .unwrap();
+    }
+    let wait_for_clients = |clients: &[ClientId], text: &str| {
+        instructions.wait_until(text, default_timeout(), |log| {
+            let assets = rendered_assets(log);
+            clients
+                .iter()
+                .all(|expected| {
+                    assets
+                        .iter()
+                        .any(|(client, frame)| client == expected && frame.contains(text))
+                })
+                .then_some(())
+        });
+    };
     let fire = |code: &str| {
         let mut payload = agent_exit_payload();
         payload.insert("agent_exit_code".into(), code.into());
@@ -1099,38 +1140,34 @@ fn agent_exit_reentry(wait_for_load: bool, disconnect_origin: bool) {
     if wait_for_load {
         wait_for_render_containing(&instructions, "loaded");
         if disconnect_origin {
-            let remaining_client = ClientId::new(2);
             sender
-                .send(PluginInstruction::AddClient(remaining_client))
+                .send(PluginInstruction::AddClient(other_client))
                 .unwrap();
-            instructions.wait_until("the remaining client's hook", default_timeout(), |log| {
-                rendered_assets(log)
-                    .iter()
-                    .any(|(client, frame)| *client == remaining_client && frame.contains("loaded"))
-                    .then_some(())
-            });
+            if !shared {
+                // Shared plugins reuse the loaded instance without rendering on attachment.
+                wait_for_clients(&[other_client], "loaded");
+            }
             sender
                 .send(PluginInstruction::RemoveClient(client_id))
                 .unwrap();
+        } else {
+            wait_for_clients(&[client_id, other_client], "loaded");
         }
         fire("0");
     }
-    wait_for_render_containing(&instructions, "agent_exit:1:0:payload-ok");
+    let recipients = if disconnect_origin {
+        vec![other_client]
+    } else {
+        vec![client_id, other_client]
+    };
+    wait_for_clients(&recipients, "agent_exit:1:0:payload-ok");
     fire("17");
-    wait_for_render_containing(&instructions, "agent_exit:2:17:payload-ok");
+    wait_for_clients(&recipients, "agent_exit:2:17:payload-ok");
     fire("17");
-    wait_for_render_containing(&instructions, "agent_exit:3:17:payload-ok");
+    wait_for_clients(&recipients, "agent_exit:3:17:payload-ok");
     teardown();
     logger.join().unwrap();
     let instructions = instructions.lock();
-    let recipient = if disconnect_origin {
-        ClientId::new(2)
-    } else {
-        client_id
-    };
-    assert!(rendered_assets(&instructions).iter().any(
-        |(client, frame)| *client == recipient && frame.contains("agent_exit:3:17:payload-ok")
-    ));
     let opened = hook_panes_opened(&instructions);
     assert_eq!(opened.len(), 1, "{instructions:?}");
     assert_eq!(opened[0].1, PaneId::Terminal(TERMINAL_7));
