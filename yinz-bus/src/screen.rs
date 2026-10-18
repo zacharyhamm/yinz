@@ -660,6 +660,7 @@ pub enum ScreenInstruction {
     /// The pty thread has taken a tab's supervisors over and this session now
     /// owns their terminal ids. All that is left is to build the tab around them.
     AdoptedTabReady {
+        is_rollback: bool,
         response_channel: Option<crossbeam::channel::Sender<Result<()>>>,
         hold: Option<crate::warp::PaneWarpHold>,
         placement: Option<yinz_types::data::WarpPlacement>,

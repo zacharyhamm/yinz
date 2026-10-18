@@ -3265,6 +3265,7 @@ pub fn screen_thread_main(
                     screen.render()?;
                 },
                 ScreenInstruction::AdoptedTabReady {
+                    is_rollback,
                     response_channel,
                     hold,
                     placement,
@@ -3276,6 +3277,7 @@ pub fn screen_thread_main(
                         *payload,
                         *adopted,
                         client_id,
+                        is_rollback,
                         placement,
                         response_channel.clone(),
                         hold,

@@ -429,6 +429,7 @@ fn adopt_tab(screen: &mut Screen, name: &str, user_named: bool) -> TabId {
                 floating: vec![],
             },
             crate::ClientId::new(1),
+            false,
             None,
             None,
             None,

@@ -260,6 +260,205 @@ fn grouped_screen() -> Screen {
 }
 
 #[test]
+fn warped_tabs_carry_their_groups_displayed_name() {
+    for project in [None, Some("工程")] {
+        let mut screen = grouped_screen();
+        if let Some(project) = project {
+            screen
+                .pane_projects
+                .insert(PaneId::Terminal(TerminalId::new(1)), project.to_owned());
+        }
+        let (_, _, prepared) = screen
+            .check_tab_can_be_warped(Some(TabId::new(0)), CLIENT)
+            .unwrap();
+        assert_eq!(
+            prepared.tiled_layout.tab_group,
+            Some(TabGroupInfo {
+                id: 0,
+                name: project.unwrap_or("Group 0").to_owned(),
+            })
+        );
+        assert!(!prepared.tiled_layout.group_focused);
+    }
+}
+
+#[test]
+fn adopted_tabs_match_group_labels_using_destination_ids() {
+    for (name, project, duplicate, expected_group) in [
+        (Some("Group 1"), false, false, 1),
+        (Some("Incoming"), false, false, 2),
+        (Some("工程"), true, false, 1),
+        (Some("Group 1"), false, true, 0),
+        (Some("group 1"), false, false, 2),
+        (Some("Default"), false, false, 0),
+        (None, false, false, 1),
+    ] {
+        let mut screen = grouped_screen();
+        screen.tab_groups.get_mut(&0).unwrap().name = if duplicate {
+            "Group 1".into()
+        } else {
+            "Default".into()
+        };
+        if project {
+            screen
+                .pane_projects
+                .insert(PaneId::Terminal(TerminalId::new(2)), "工程".into());
+        }
+        let saved_name = screen
+            .tab_groups
+            .get(&expected_group)
+            .map(|g| g.name.clone());
+        let preferred = screen
+            .tab_groups
+            .get(&expected_group)
+            .and_then(|g| g.preferred);
+        let (to_plugin, receiver) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        let tab = screen.get_new_tab_id();
+        screen
+            .place_adopted_tab(
+                yinz_types::data::WarpedTab {
+                    tiled_layout: TiledPaneLayout {
+                        tab_group: name.map(|name| TabGroupInfo {
+                            id: 0,
+                            name: name.to_owned(),
+                        }),
+                        group_focused: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                crate::pty::AdoptedTabPanes {
+                    tiled: vec![],
+                    floating: vec![],
+                },
+                CLIENT,
+                false,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(screen.tab_group_ids[&tab], expected_group, "{name:?}");
+        assert_eq!(
+            screen.tab_groups[&expected_group].name,
+            saved_name.unwrap_or_else(|| name.unwrap().to_owned()),
+        );
+        assert_eq!(screen.tab_groups[&expected_group].preferred, preferred);
+        let layout = receiver
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::NewTab(_, _, layout, _, _, _, _, _, _, _) => layout,
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            layout.tab_group.as_ref().map(|g| g.id),
+            name.map(|_| expected_group)
+        );
+        assert!(!layout.group_focused);
+        assert_eq!(
+            screen.next_tab_group_id,
+            if expected_group == 2 { 3 } else { 2 }
+        );
+    }
+}
+
+#[test]
+fn rolled_back_tabs_restore_group_identity_and_existing_names() {
+    for (duplicate, project, pruned) in [
+        (true, false, false),
+        (false, true, false),
+        (true, false, true),
+        (false, true, true),
+    ] {
+        let mut screen = grouped_screen();
+        if duplicate {
+            screen.tab_groups.get_mut(&0).unwrap().name = "Group 1".into();
+        }
+        if project {
+            for (terminal, name) in [(2, "departing"), (4, "remaining")] {
+                screen
+                    .pane_projects
+                    .insert(PaneId::Terminal(TerminalId::new(terminal)), name.to_owned());
+            }
+        }
+        if pruned {
+            screen.close_tab_by_id(TabId::new(3)).unwrap();
+        }
+        let (_, _, prepared) = screen
+            .check_tab_can_be_warped(Some(TabId::new(1)), CLIENT)
+            .unwrap();
+        let group = prepared.tiled_layout.tab_group.clone().unwrap();
+        assert_eq!(group.id, 1);
+        assert_eq!(
+            group.name,
+            if project && pruned {
+                "departing"
+            } else if project {
+                "departing + remaining"
+            } else {
+                "Group 1"
+            }
+        );
+        screen.empty_and_close_tab(TabId::new(1));
+        assert_eq!(screen.tab_groups.contains_key(&1), !pruned);
+        if project && !pruned {
+            assert_eq!(screen.tab_group_name(1).as_deref(), Some("remaining"));
+        }
+        let preferred = screen.tab_groups.get(&1).and_then(|group| group.preferred);
+        let (to_plugin, receiver) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        let restored = screen.get_new_tab_id();
+        screen
+            .place_adopted_tab(
+                yinz_types::data::WarpedTab {
+                    tiled_layout: prepared.tiled_layout,
+                    ..Default::default()
+                },
+                crate::pty::AdoptedTabPanes {
+                    tiled: vec![],
+                    floating: vec![],
+                },
+                CLIENT,
+                true,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(screen.tab_group_ids[&restored], group.id);
+        let expected_name = if pruned {
+            group.name.as_str()
+        } else {
+            "Group 1"
+        };
+        assert_eq!(screen.tab_groups[&1].name, expected_name);
+        assert_eq!(screen.tab_groups[&1].preferred, preferred);
+        assert_eq!(screen.tab_group_ids[&TabId::new(0)], 0);
+        if !pruned {
+            assert_eq!(screen.tab_group_ids[&TabId::new(3)], group.id);
+        }
+        assert_eq!(screen.next_tab_group_id, 2);
+        let layout = receiver
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::NewTab(_, _, layout, _, _, _, _, _, _, _) => layout,
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            layout.tab_group,
+            Some(TabGroupInfo {
+                id: 1,
+                name: expected_name.into()
+            })
+        );
+        assert!(!layout.group_focused);
+    }
+}
+
+#[test]
 fn group_names_follow_distinct_projects_in_tab_order() {
     let mut screen = grouped_screen();
     screen.pane_projects = [(1, "x"), (3, "y"), (2, "z"), (4, "z")]

@@ -649,7 +649,7 @@ pub fn warp_tab_to_session(
         Err(e) => {
             // Take it back. As with a pane, adopting is the same operation from
             // this side, so the rollback is the feature's own primitive.
-            let rollback = adopt_tab_here(senders, client_id, payload, timeout);
+            let rollback = adopt_tab_here(senders, client_id, payload, true, timeout);
             Err(match rollback {
                 Ok(_) => format!(
                     "Could not move the tab to '{to_session}' ({e:#}); it is back in this session"
@@ -671,6 +671,7 @@ pub fn adopt_tab_here(
     senders: &ThreadSenders,
     client_id: ClientId,
     payload: Box<WarpedTab>,
+    is_rollback: bool,
     timeout: Duration,
 ) -> std::result::Result<String, String> {
     let started_at = std::time::Instant::now();
@@ -679,6 +680,7 @@ pub fn adopt_tab_here(
         .send_to_pty(PtyInstruction::AdoptTab {
             payload,
             client_id,
+            is_rollback,
             response_channel: response_sender,
         })
         .map_err(|e| format!("{e:#}"))?;
