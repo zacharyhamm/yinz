@@ -115,8 +115,8 @@ fn main() {
     }
 
     let opts = CliArgs::parse();
-    if let Some(Command::Repl { eval, connect }) = &opts.command {
-        if let Err(error) = repl::run(&opts, eval.as_deref(), *connect) {
+    if let Some(Command::Repl { eval }) = &opts.command {
+        if let Err(error) = repl::run(&opts, eval.as_deref()) {
             eprintln!("Error: {error:#}");
             std::process::exit(1);
         }

@@ -311,6 +311,93 @@ impl Drop for Session {
 }
 
 #[test]
+fn repl_connects_automatically_and_preserves_input_and_output_behavior() {
+    let session = Session::with_setup(|dir| {
+        let config = dir.join("config.kdl");
+        let source = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            config,
+            source.replace("detachable_panes false", "detachable_panes true"),
+        )
+        .unwrap();
+    });
+    let expression = r#"(define id (hash-ref (yinz-command "GetPluginIds") "plugin_id")) (if (number? id) (+ 20 22) (error "missing plugin ID"))"#;
+    let output = command(session.0.path())
+        .args(["repl", "--eval", expression])
+        .output()
+        .unwrap();
+    assert_eq!(success(output), json!(42));
+    assert_eq!(
+        success(session.run(&["repl"], Some("(define answer 6)\n(* answer 7)\n"))),
+        json!(42)
+    );
+    for input in [None, Some("(display \"before\") (error \"failed\")")] {
+        let args = if input.is_some() {
+            vec!["repl"]
+        } else {
+            vec!["repl", "--eval", "(display \"before\") (error \"failed\")"]
+        };
+        let output = session.run(&args, input);
+        assert!(!output.status.success());
+        assert_eq!(output.stdout, b"before");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("failed"));
+    }
+
+    // A real pane supplies session metadata and a terminal for interactive input.
+    let output = session.run(
+        &[
+            "action",
+            "new-pane",
+            "--",
+            env!("CARGO_BIN_EXE_yinz"),
+            "repl",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pane = String::from_utf8(output.stdout).unwrap();
+    let pane = pane.trim();
+    success(session.run(
+        &[
+            "action",
+            "pane-wait",
+            pane,
+            "--contains",
+            "Connected to Yinz session portable-test.",
+        ],
+        None,
+    ));
+    let terminal = pane.strip_prefix("terminal_").unwrap();
+    let output = session.run(
+        &[
+            "action",
+            "write-chars",
+            "--pane-id",
+            terminal,
+            "(define answer\n  42)\nmissing-name\n(display \"answer=\") (+ answer 1)\n",
+        ],
+        None,
+    );
+    assert!(output.status.success());
+    success(session.run(
+        &["action", "pane-wait", pane, "--contains", "answer=43"],
+        None,
+    ));
+    success(session.run(&["action", "pane-wait", pane, "--contains", "Error:"], None));
+    assert!(session
+        .run(
+            &["action", "write-chars", "--pane-id", terminal, ":quit\n"],
+            None,
+        )
+        .status
+        .success());
+}
+
+#[test]
 fn background_operations_data_revisions_and_waits_work_without_chat() {
     let session = Session::new();
     let pane = session.1.as_str();

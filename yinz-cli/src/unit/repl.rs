@@ -16,23 +16,25 @@ fn check_repl_arguments() {
     for flag in ["--eval", "-e"] {
         let args = CliArgs::try_parse_from(["yinz", "repl", flag, "(+ 1 2)"]).unwrap();
         assert!(
-            matches!(args.command, Some(Command::Repl { eval: Some(source), connect: false }) if source == "(+ 1 2)")
+            matches!(args.command, Some(Command::Repl { eval: Some(source) }) if source == "(+ 1 2)")
         );
     }
     let args = CliArgs::try_parse_from(["yinz", "repl"]).unwrap();
-    assert!(matches!(
-        args.command,
-        Some(Command::Repl {
-            eval: None,
-            connect: false
-        })
-    ));
-    let args = CliArgs::try_parse_from(["yinz", "repl", "--connect"]).unwrap();
-    assert!(matches!(
-        args.command,
-        Some(Command::Repl {
-            eval: None,
-            connect: true
-        })
-    ));
+    assert!(matches!(args.command, Some(Command::Repl { eval: None })));
+    for tail in [vec![], vec!["--eval", "(+ 1 2)"], vec!["-e", "(+ 1 2)"]] {
+        let args = CliArgs::try_parse_from(
+            ["yinz", "--session", "work", "repl"]
+                .into_iter()
+                .chain(tail),
+        )
+        .unwrap();
+        assert_eq!(args.session.as_deref(), Some("work"));
+        assert!(matches!(args.command, Some(Command::Repl { .. })));
+    }
+    assert_eq!(
+        CliArgs::try_parse_from(["yinz", "repl", "--connect"])
+            .unwrap_err()
+            .kind(),
+        clap::error::ErrorKind::UnknownArgument
+    );
 }

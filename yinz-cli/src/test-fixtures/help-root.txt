@@ -3,7 +3,8 @@ A terminal workspace with batteries included
 Usage: yinz [OPTIONS] [COMMAND]
 
 Commands:
-  repl                 Evaluate Steel Scheme interactively, from stdin, or with --eval
+  repl                 Evaluate Steel Scheme in a running session, interactively, from stdin, or
+                       with --eval
   bubblewrap           Prepare a persistent project Bubblewrap environment (Linux)
   agent                Find, launch and control agents in explicit terminal panes
   skills               Inspect and install portable coding-agent skills

@@ -190,6 +190,45 @@ fn command(root: &Path) -> Command {
 }
 
 #[test]
+fn repl_requires_an_unambiguous_running_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = || {
+        let mut cmd = command(dir.path());
+        for key in ["YINZ", "YINZ_PANE_REF", "YINZ_PANE_ID", "YINZ_SESSION_NAME"] {
+            cmd.env_remove(key);
+        }
+        cmd
+    };
+    for args in [vec!["repl"], vec!["repl", "--eval", "(+ 1 2)"]] {
+        let output = outside().args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("There is no active session"));
+    }
+    let _one = Session::new(dir.path(), "one");
+    let _two = Session::new(dir.path(), "two");
+    let output = outside().args(["repl", "-e", "(+ 1 2)"]).output().unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("Please specify the session name to connect the REPL to"),
+        "{error}"
+    );
+    let sessions = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        sessions.contains("one") && sessions.contains("two"),
+        "{sessions}"
+    );
+    let output = outside()
+        .args(["--session", "missing", "repl", "-e", "(+ 1 2)"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Session 'missing' not found"));
+}
+
+#[test]
 fn actions_reports_and_store_requests_use_the_current_owner() {
     let dir = tempfile::tempdir().unwrap();
     let owner = Session::new(dir.path(), "owner");

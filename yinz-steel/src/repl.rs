@@ -1,5 +1,5 @@
 use crate::{source_complete, Runtime};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 
 const MAX_INPUT_BYTES: usize = crate::MAX_SOURCE_BYTES;
@@ -22,15 +22,6 @@ impl Evaluator for Runtime {
     fn take_logs(&mut self) -> Result<String> {
         Runtime::take_logs(self)
     }
-}
-
-pub fn run(expression: Option<&str>) -> Result<()> {
-    let mut runtime = Runtime::new(|_| {
-        Err(anyhow!(
-            "host commands require session access; use yinz repl --connect or yinz --session NAME repl"
-        ))
-    })?;
-    run_with_evaluator(&mut runtime, expression)
 }
 
 pub fn run_with_evaluator(runtime: &mut impl Evaluator, expression: Option<&str>) -> Result<()> {
