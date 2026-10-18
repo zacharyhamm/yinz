@@ -9,7 +9,7 @@ const LAST_LINE: &str = "line40";
 
 fn tab_line_shows_scroll(grid_snapshot: &GridSnapshot) -> bool {
     grid_snapshot
-        .tab_bar_line()
+        .project_bar_line()
         .is_some_and(|tab_bar| tab_bar.contains("SCROLL"))
 }
 

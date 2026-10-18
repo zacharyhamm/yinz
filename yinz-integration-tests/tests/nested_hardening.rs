@@ -18,7 +18,7 @@ fn last_line_contains(grid_snapshot: &GridSnapshot, needle: &str) -> bool {
 }
 
 fn has_breadcrumb(grid: &GridSnapshot) -> bool {
-    grid.tab_bar_line().is_some_and(|l| l.contains('▸'))
+    grid.project_bar_line().is_some_and(|l| l.contains('▸'))
 }
 
 fn normal_mode_bar_settled(grid_snapshot: &GridSnapshot) -> bool {

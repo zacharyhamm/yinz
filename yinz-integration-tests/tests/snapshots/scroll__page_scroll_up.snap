@@ -2,8 +2,8 @@
 source: yinz-integration-tests/tests/scroll.rs
 expression: normalized(&grid_snapshot)
 ---
- Default 
- Yinz (test)  [0] Tab #1  +                                                                      [ SCROLL 20/20 ]
+ Yinz (test)  Default                                                                              [ SCROLL 20/20 ]
+ [0] Tab #1  + 
 $ line01
 line02
 line03

@@ -337,10 +337,18 @@ fn group_row_filters_tabs_and_mouse_targets_keep_global_addresses() {
     );
     wire(&mut runtime, json!({"Mouse":{"Hover":[1,col]}}));
     assert_eq!(runtime.value("hovered-tab").unwrap(), json!(2));
-    wire(&mut runtime, json!({"Mouse":{"Hover":[0,1]}}));
+    let group_parts = runtime.value("group-parts").unwrap();
+    let group_col: u64 = group_parts
+        .as_array()
+        .unwrap()
+        .iter()
+        .take_while(|part| part["tab"] != 0)
+        .map(|part| part["len"].as_u64().unwrap())
+        .sum();
+    wire(&mut runtime, json!({"Mouse":{"Hover":[0,group_col]}}));
     assert_eq!(runtime.value("hovered-tab").unwrap(), json!(false));
     assert_eq!(runtime.value("hovered-group").unwrap(), json!(0));
-    wire(&mut runtime, json!({"Mouse":{"LeftClick":[0,1]}}));
+    wire(&mut runtime, json!({"Mouse":{"LeftClick":[0,group_col]}}));
     assert_eq!(
         host.lock().unwrap().commands.last(),
         Some(&json!({"RunAction":[{"SwitchTabGroup":{"id":0}},{}]}))

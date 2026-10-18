@@ -38,7 +38,12 @@ fn tab_groups_keyboard_mouse_and_last_pane_lifecycle() {
     yinz.wait_until("closing one tab retains group", |grid| {
         grid.contains("GROUP_FIRST") && grid.contains("Group 1")
     });
-    yinz.send_stdin(b"\x1b[<0;2;1M\x1b[<0;2;1m");
+    let project_row = yinz.snapshot().lines().remove(0);
+    let default_column = project_row[..project_row.find("Default").unwrap()]
+        .chars()
+        .count()
+        + 1;
+    yinz.send_stdin(format!("\x1b[<0;{default_column};1M\x1b[<0;{default_column};1m").as_bytes());
     yinz.wait_until("click selects default group", |grid| {
         grid.contains("DEFAULT_CONTENT")
     });

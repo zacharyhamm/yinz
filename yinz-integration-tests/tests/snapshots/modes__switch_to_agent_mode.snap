@@ -2,7 +2,7 @@
 source: yinz-integration-tests/tests/modes.rs
 expression: normalized(&grid_snapshot)
 ---
- Default 
- Yinz (test)  [0] Tab #1  + 
+ Yinz (test)  Default 
+ [0] Tab #1  + 
 $ █
  Ctrl + <e> AGENT   n  New  d  Duplicate  f  Fork  a  Agents  o  Move  ENTER  Select 

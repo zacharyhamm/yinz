@@ -2,12 +2,12 @@
 source: yinz-integration-tests/tests/nested_sessions.rs
 expression: normalized(&outer_after_inner_ascend)
 ---
- Default 
- Yinz (test)  [0] Yinz:test-2 | Yinz:test-2  + 
- Default 
- Yinz (test)  [0] Yinz:test-2  + 
- Default 
- Yinz (test)  [0] Tab #1  + 
+ Yinz (test)  Default 
+ [0] Yinz:test-2 | Yinz:test-2  + 
+ Yinz (test)  Default 
+ [0] Yinz:test-2  + 
+ Yinz (test)  Default 
+ [0] Tab #1  + 
 █
  Descend: Ctrl + <o> + <[>
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

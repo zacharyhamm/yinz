@@ -2,7 +2,7 @@
 source: yinz-integration-tests/tests/panes.rs
 expression: normalized(&grid_snapshot)
 ---
-[0] Tab…
- 
+ [0] Ta
+b… 
 $ done█
  Ctrl +

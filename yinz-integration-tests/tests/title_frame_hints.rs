@@ -33,7 +33,7 @@ fn sgr_motion(column: usize, line: usize) -> Vec<u8> {
 
 fn tab_bar_line(grid_snapshot: &GridSnapshot) -> String {
     grid_snapshot
-        .tab_bar_line()
+        .project_bar_line()
         .map(str::to_owned)
         .unwrap_or_default()
 }

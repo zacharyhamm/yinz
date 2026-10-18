@@ -2,8 +2,8 @@
 source: yinz-integration-tests/tests/search.rs
 expression: normalized(&grid_snapshot)
 ---
- Default 
- Yinz (test)  [0] Tab #1  +                                                                      [ SCROLL 16/20 ]
+ Yinz (test)  Default                                                                              [ SCROLL 16/20 ]
+ [0] Tab #1  + 
 line05 NEEDLE upper
 line06
 line07

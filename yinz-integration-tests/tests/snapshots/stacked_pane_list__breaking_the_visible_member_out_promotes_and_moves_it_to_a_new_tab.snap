@@ -2,8 +2,8 @@
 source: yinz-integration-tests/tests/stacked_pane_list.rs
 expression: normalized(&grid_snapshot)
 ---
- Default 
- Yinz (test)  [1] Tab #1  [2] Tab #2  + 
+ Yinz (test)  Default 
+ [1] Tab #1  [2] Tab #2  + 
                                                      │ [0] Pane #1 │
                                                    > │ [1] Pane #2 │
 $ second-member

@@ -310,10 +310,20 @@ impl GridSnapshot {
     pub fn status_bar_appears(&self) -> bool {
         self.text.contains("Ctrl +") && self.text.contains("LOCK")
     }
-    pub fn tab_bar_line(&self) -> Option<&str> {
+    pub fn project_bar_line(&self) -> Option<&str> {
         self.text
             .lines()
             .find(|line| line.trim_start().starts_with("Yinz "))
+    }
+    pub fn tab_bar_line(&self) -> Option<&str> {
+        let mut lines = self.text.lines();
+        let project = lines.find(|line| line.trim_start().starts_with("Yinz "))?;
+        Some(
+            lines
+                .next()
+                .filter(|line| line.trim_start().starts_with(''))
+                .unwrap_or(project),
+        )
     }
     pub fn tab_bar_appears(&self) -> bool {
         self.text
