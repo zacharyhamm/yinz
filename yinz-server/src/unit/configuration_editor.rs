@@ -496,12 +496,23 @@ fn submit(
     reset: Vec<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let snapshot = session.configuration_editor(None)?;
-    session.configuration_editor(Some(Edit {
+    let result = session.configuration_editor(Some(Edit {
         revision: snapshot["revision"].as_str().unwrap().into(),
         destination,
         patches,
         reset,
-    }))
+    }));
+    if result.is_ok() {
+        assert_effective_configuration_matches_recompute(&session.session_configuration);
+    }
+    result
+}
+
+fn assert_effective_configuration_matches_recompute(state: &SessionConfiguration) {
+    let mut recomputed = state.clone();
+    recomputed.recompute_effective_keybinds();
+    assert_eq!(state.editor_effective, recomputed.editor_effective);
+    assert_eq!(state.effective_keybinds, recomputed.effective_keybinds);
 }
 
 #[test]
@@ -849,4 +860,378 @@ fn detached_configuration_participates_in_editor_revisions_and_permanent_edits()
             ..
         }
     )));
+}
+
+fn loaded_theme_config(dir: &Path) -> Config {
+    yinz_config::cli_assets::load_config_and_layout(&yinz_types::input::cli_assets::CliAssets {
+        config_file_path: Some(dir.join("config.kdl")),
+        config_dir: Some(dir.into()),
+        ..Default::default()
+    })
+    .unwrap()
+    .0
+}
+
+#[test]
+fn palette_theme_transaction_preserves_overrides_variants_and_future_clients() {
+    for permanent in [false, true] {
+        for variants in ["", "theme_dark \"nightfox\"\ntheme_light \"dayfox\"\n"] {
+            let dir = tempfile::tempdir().unwrap();
+            let original = format!("theme \"default\"\nmouse_mode true\n{variants}");
+            std::fs::write(dir.path().join("config.kdl"), &original).unwrap();
+            let base = loaded_theme_config(dir.path());
+            let (mut session, screen_rx) = session(dir.path());
+            session
+                .session_configuration
+                .set_saved_configuration(base.clone());
+            let plugin_bindings = Config::from_kdl(
+                r#"keybinds clear-defaults=true { normal { bind "Ctrl Alt F12" { Quit; }; }; }"#,
+                None,
+            )
+            .unwrap()
+            .keybinds;
+            let plugin_key = plugin_bindings.0[&InputMode::Normal]
+                .keys()
+                .next()
+                .unwrap()
+                .clone();
+            session
+                .session_configuration
+                .register_plugin_default_keybinds(PluginId::new(1), plugin_bindings);
+            for id in [1, 2] {
+                let mut client = base.clone();
+                client.options.scroll_buffer_size = Some(1000 * id as usize);
+                if id == 1 {
+                    client
+                        .keybinds
+                        .0
+                        .entry(InputMode::Normal)
+                        .or_default()
+                        .insert(plugin_key.clone(), vec![Action::Copy]);
+                }
+                session
+                    .session_configuration
+                    .set_client_runtime_configuration(ClientId::new(id), client);
+            }
+            session
+                .session_configuration
+                .editor_overrides
+                .push(mouse(false));
+            let request = uuid::Uuid::new_v4();
+            session
+                .apply_palette_theme(
+                    ClientId::new(1),
+                    request,
+                    "dracula",
+                    permanent,
+                    &Default::default(),
+                )
+                .unwrap();
+            assert_effective_configuration_matches_recompute(&session.session_configuration);
+            for id in [1, 2] {
+                assert_eq!(
+                    session
+                        .session_configuration
+                        .get_client_keybinds(&ClientId::new(id))
+                        .get_actions_for_key_in_mode(&InputMode::Normal, &plugin_key),
+                    Some(&vec![if id == 1 { Action::Copy } else { Action::Quit }]),
+                );
+            }
+            let instructions: Vec<_> = screen_rx
+                .try_iter()
+                .map(|(instruction, _)| instruction)
+                .collect();
+            assert!(
+                matches!(instructions.first(), Some(ScreenInstruction::PaletteThemeSaved { client, request: actual, result: Ok(()) }) if *client == ClientId::new(1) && *actual == request)
+            );
+            assert_eq!(
+                instructions
+                    .iter()
+                    .filter(|i| matches!(i, ScreenInstruction::Reconfigure { .. }))
+                    .count(),
+                2
+            );
+            for id in [1, 2] {
+                let config = session
+                    .session_configuration
+                    .get_client_configuration(&ClientId::new(id));
+                assert_eq!(config.options.theme.as_deref(), Some("dracula"));
+                assert_eq!(
+                    config.options.theme_dark.as_deref(),
+                    (!variants.is_empty()).then_some("dracula")
+                );
+                assert_eq!(
+                    config.options.theme_light.as_deref(),
+                    (!variants.is_empty()).then_some("dracula")
+                );
+                assert_eq!(config.options.mouse_mode, Some(false));
+                assert_eq!(config.options.scroll_buffer_size, Some(1000 * id as usize));
+            }
+            if !permanent {
+                session
+                    .apply_palette_theme(
+                        ClientId::new(1),
+                        uuid::Uuid::new_v4(),
+                        "dracula",
+                        false,
+                        &Default::default(),
+                    )
+                    .unwrap();
+                assert_effective_configuration_matches_recompute(&session.session_configuration);
+                assert!(!screen_rx.try_iter().any(|(instruction, _)| matches!(
+                    instruction,
+                    ScreenInstruction::Reconfigure { .. }
+                )));
+            }
+            let saved = loaded_theme_config(dir.path());
+            assert_eq!(
+                saved.options.theme.as_deref(),
+                Some(if permanent { "dracula" } else { "default" })
+            );
+            assert_eq!(saved.options.mouse_mode, Some(true));
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("config.kdl")).unwrap(),
+                original
+            );
+            assert_eq!(
+                dir.path().join("config.d/yinz-managed.kdl").exists(),
+                permanent
+            );
+            session
+                .session_configuration
+                .change_saved_config(saved.clone());
+            session
+                .session_configuration
+                .set_client_runtime_configuration(ClientId::new(3), saved);
+            let future = session
+                .session_configuration
+                .get_client_configuration(&ClientId::new(3));
+            assert_eq!(future.options.theme.as_deref(), Some("dracula"));
+            assert_eq!(future.options.mouse_mode, Some(false));
+        }
+    }
+}
+
+#[test]
+fn palette_theme_transaction_cancellation_and_failed_write_leave_state_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.kdl"), "theme \"default\"\n").unwrap();
+    let base = loaded_theme_config(dir.path());
+    let (mut session, screen_rx) = session(dir.path());
+    session
+        .session_configuration
+        .set_saved_configuration(base.clone());
+    session
+        .session_configuration
+        .set_client_runtime_configuration(ClientId::new(1), base.clone());
+    let disk = Disk::read(None, Some(dir.path())).unwrap();
+    let revision = session.session_configuration.editor_revision(&disk);
+    for permanent in [false, true] {
+        let error = session
+            .apply_palette_theme(
+                ClientId::new(1),
+                uuid::Uuid::new_v4(),
+                "dracula",
+                permanent,
+                &std::sync::atomic::AtomicBool::new(true),
+            )
+            .unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        assert_eq!(
+            session.session_configuration.editor_revision(&disk),
+            revision
+        );
+        assert!(!dir.path().join("config.d").exists());
+        assert!(screen_rx.try_recv().is_err());
+    }
+    let overlay = dir.path().join("config.d");
+    std::fs::create_dir(&overlay).unwrap();
+    let lock = std::fs::File::create(overlay.join(".yinz-managed.kdl.lock")).unwrap();
+    lock.lock().unwrap();
+    let error = session
+        .apply_palette_theme(
+            ClientId::new(1),
+            uuid::Uuid::new_v4(),
+            "dracula",
+            true,
+            &Default::default(),
+        )
+        .unwrap_err();
+    assert!(error.contains("busy"), "{error}");
+    assert_eq!(
+        session.session_configuration.editor_revision(&disk),
+        revision
+    );
+    assert_eq!(loaded_theme_config(dir.path()), base);
+    assert!(!overlay.join("yinz-managed.kdl").exists());
+    assert!(screen_rx.try_recv().is_err());
+    drop(lock);
+    session
+        .apply_palette_theme(
+            ClientId::new(1),
+            uuid::Uuid::new_v4(),
+            "dracula",
+            true,
+            &Default::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        Config::load(None, Some(dir.path()), false)
+            .unwrap()
+            .options
+            .theme
+            .as_deref(),
+        Some("dracula")
+    );
+}
+
+#[test]
+fn palette_theme_permanent_save_respects_later_layers_and_clears_theme_override() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.kdl"), "theme \"default\"\n").unwrap();
+    std::fs::create_dir(dir.path().join("config.d")).unwrap();
+    std::fs::write(
+        dir.path().join("config.d/zz-theme.kdl"),
+        "theme \"nightfox\"\n",
+    )
+    .unwrap();
+    let base = loaded_theme_config(dir.path());
+    let (mut session, _screen_rx) = session(dir.path());
+    session
+        .session_configuration
+        .set_saved_configuration(base.clone());
+    session
+        .session_configuration
+        .set_client_runtime_configuration(ClientId::new(1), base);
+    session
+        .apply_palette_theme(
+            ClientId::new(1),
+            uuid::Uuid::new_v4(),
+            "dracula",
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        session
+            .session_configuration
+            .get_client_configuration(&ClientId::new(1))
+            .options
+            .theme
+            .as_deref(),
+        Some("dracula")
+    );
+    session
+        .apply_palette_theme(
+            ClientId::new(1),
+            uuid::Uuid::new_v4(),
+            "dayfox",
+            true,
+            &Default::default(),
+        )
+        .unwrap();
+    let saved = loaded_theme_config(dir.path());
+    assert_eq!(saved.options.theme.as_deref(), Some("nightfox"));
+    assert_eq!(
+        session
+            .session_configuration
+            .get_client_configuration(&ClientId::new(1))
+            .options
+            .theme,
+        saved.options.theme
+    );
+    assert!(session.session_configuration.editor_overrides.is_empty());
+    std::fs::remove_file(dir.path().join("config.d/zz-theme.kdl")).unwrap();
+    assert_eq!(
+        Config::load(None, Some(dir.path()), false)
+            .unwrap()
+            .options
+            .theme
+            .as_deref(),
+        Some("dayfox")
+    );
+}
+
+#[test]
+fn configuration_transaction_rechecks_disk_before_writing_without_a_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.kdl");
+    std::fs::write(&path, "mouse_mode true\n").unwrap();
+    let (mut session, screen_rx) = session(dir.path());
+    let base = Config::load(None, Some(dir.path()), false).unwrap();
+    session
+        .session_configuration
+        .set_saved_configuration(base.clone());
+    session
+        .session_configuration
+        .set_client_runtime_configuration(ClientId::new(1), base);
+    let disk = Disk::read(None, Some(dir.path())).unwrap();
+    let revision = session.session_configuration.editor_revision(&disk);
+    let changed = "mouse_mode true\n// external change\n";
+    std::fs::write(&path, changed).unwrap();
+    let error = session
+        .apply_configuration_edit(
+            &disk,
+            Edit {
+                revision: revision.clone(),
+                destination: Destination::Permanent,
+                patches: vec![mouse(false)],
+                reset: vec![],
+            },
+            None,
+            Some((ClientId::new(1), uuid::Uuid::new_v4())),
+        )
+        .unwrap_err();
+    assert!(error.contains("changed on disk"), "{error}");
+    assert_eq!(
+        session.session_configuration.editor_revision(&disk),
+        revision
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), changed);
+    assert!(!dir.path().join("config.d/yinz-managed.kdl").exists());
+    assert!(screen_rx.try_recv().is_err());
+}
+
+#[test]
+fn editor_rejects_stale_draft_after_theme_confirmation() {
+    for destination in [Destination::Session, Destination::Permanent] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.kdl"), "theme \"default\"\n").unwrap();
+        let (mut session, screen_rx) = session(dir.path());
+        let base = loaded_theme_config(dir.path());
+        session
+            .session_configuration
+            .set_saved_configuration(base.clone());
+        session
+            .session_configuration
+            .set_client_runtime_configuration(ClientId::new(1), base);
+        let disk = Disk::read(None, Some(dir.path())).unwrap();
+        let revision = session.session_configuration.editor_revision(&disk);
+        session
+            .apply_palette_theme(
+                ClientId::new(1),
+                uuid::Uuid::new_v4(),
+                "dracula",
+                false,
+                &Default::default(),
+            )
+            .unwrap();
+        screen_rx.try_iter().for_each(drop);
+        let committed = session.session_configuration.editor_revision(&disk);
+        let error = session
+            .configuration_editor(Some(Edit {
+                revision,
+                destination,
+                patches: vec![mouse(false)],
+                reset: vec![],
+            }))
+            .unwrap_err();
+        assert!(error.contains("Reload"), "{error}");
+        assert_eq!(
+            session.session_configuration.editor_revision(&disk),
+            committed
+        );
+        assert!(screen_rx.try_recv().is_err());
+        assert!(!dir.path().join("config.d/yinz-managed.kdl").exists());
+    }
 }

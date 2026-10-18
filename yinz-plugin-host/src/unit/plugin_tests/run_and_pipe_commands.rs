@@ -660,15 +660,13 @@ pub fn switch_session_plugin_command() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
-        received_screen_instructions,
-        ScreenInstruction::Exit,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        1,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
     let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread!(
@@ -714,6 +712,7 @@ pub fn switch_session_plugin_command() {
         },
     );
     teardown();
+    screen_thread.join().unwrap();
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let switch_session_event = received_server_instruction
         .lock()
@@ -1034,15 +1033,13 @@ pub fn reconfigure_plugin_command() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
-        received_screen_instructions,
-        ScreenInstruction::Exit,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        1,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
     let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread_struct!(
@@ -1071,15 +1068,24 @@ pub fn reconfigure_plugin_command() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
 
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('0')).with_ctrl_modifier()), // this triggers the enent in the fixture plugin
     )]));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    received_server_instruction.wait_until(
+        "the configuration change to reach the server before teardown",
+        default_timeout(),
+        |log| {
+            log.iter()
+                .any(|event| matches!(event, ServerInstruction::Reconfigure { .. }))
+                .then_some(())
+        },
+    );
     teardown();
+    screen_thread.join().unwrap();
     server_thread.join().unwrap(); // this might take a while if the cache is cold
     let reconfigure_event = received_server_instruction
         .lock()

@@ -55,6 +55,42 @@ impl SessionConfiguration {
 }
 
 impl SessionMetaData {
+    pub(super) fn apply_palette_theme(
+        &mut self,
+        client: ClientId,
+        request: uuid::Uuid,
+        name: &str,
+        permanent: bool,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), String> {
+        let disk = Disk::read(self.config_file_path.as_deref(), self.config_dir.as_deref())?;
+        let current = self.session_configuration.get_client_configuration(&client);
+        let fragment = theme_fragment(&current, name).map_err(|e| e.to_string())?;
+        let options = Config::from_kdl(&fragment, None).map_err(|e| e.to_string())?;
+        let patches = editor::document(&options)?
+            .into_iter()
+            .filter(|n| matches!(n.name.as_str(), "theme" | "theme_dark" | "theme_light"))
+            .map(|node| Patch {
+                reset: false,
+                path: vec![node.name.clone()],
+                node: Some(node),
+            })
+            .collect();
+        let edit = Edit {
+            // This edit is created and applied in one server turn; only editor drafts need revisions.
+            revision: String::new(),
+            destination: if permanent {
+                Destination::Permanent
+            } else {
+                Destination::Session
+            },
+            patches,
+            reset: vec![],
+        };
+        self.apply_configuration_edit(&disk, edit, Some(cancelled), Some((client, request)))?;
+        Ok(())
+    }
+
     pub(super) fn inspect_configuration(
         &self,
         theme: Option<&str>,
@@ -67,24 +103,28 @@ impl SessionMetaData {
         &mut self,
         edit: Option<Edit>,
     ) -> Result<serde_json::Value, String> {
-        self.configuration_editor_guarded(edit, None, None)
-    }
-
-    pub(super) fn configuration_editor_guarded(
-        &mut self,
-        edit: Option<Edit>,
-        cancelled: Option<&std::sync::atomic::AtomicBool>,
-        theme_reply: Option<(ClientId, uuid::Uuid)>,
-    ) -> Result<serde_json::Value, String> {
-        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-            return Err("Theme selection was cancelled".into());
-        }
         let disk = Disk::read(self.config_file_path.as_deref(), self.config_dir.as_deref())?;
-        let Some(mut edit) = edit else {
+        let Some(edit) = edit else {
             return self.session_configuration.editor_snapshot(&disk, "", None);
         };
         if edit.revision != self.session_configuration.editor_revision(&disk) {
             return Err("Configuration changed. Reload before applying your draft.".into());
+        }
+        let notice = self.apply_configuration_edit(&disk, edit, None, None)?;
+        let disk = Disk::read(self.config_file_path.as_deref(), self.config_dir.as_deref())?;
+        self.session_configuration
+            .editor_snapshot(&disk, &notice, None)
+    }
+
+    fn apply_configuration_edit(
+        &mut self,
+        disk: &Disk,
+        mut edit: Edit,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+        theme_reply: Option<(ClientId, uuid::Uuid)>,
+    ) -> Result<String, String> {
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err("Theme selection was cancelled".into());
         }
         if edit.patches.len() + edit.reset.len() > 1024 {
             return Err("Too many configuration edits".into());
@@ -175,27 +215,29 @@ impl SessionMetaData {
                 *config = editor::apply(config, &saved_patches)?;
             }
             notice = "Saved permanently".into();
-            let (_, previous_saved, _) = disk.preview(&[], &[])?;
-            let expected_nodes = editor::document(&editor::apply(&previous_saved, &edit.patches)?)?;
-            if edit
-                .patches
-                .iter()
-                .any(|p| find_node(&saved_nodes, &p.path) != find_node(&expected_nodes, &p.path))
-            {
-                notice.push_str("; another configuration layer overrides part of this change");
-            }
-            if touched.iter().any(|path| {
-                catalog
-                    .iter()
-                    .any(|s| path.first() == Some(&s.name) && s.timing == "On next session start")
-            }) {
-                notice.push_str("; startup settings take effect on next session start");
+            if theme_reply.is_none() {
+                let (_, previous_saved, _) = disk.preview(&[], &[])?;
+                let expected_nodes =
+                    editor::document(&editor::apply(&previous_saved, &edit.patches)?)?;
+                if edit.patches.iter().any(|p| {
+                    find_node(&saved_nodes, &p.path) != find_node(&expected_nodes, &p.path)
+                }) {
+                    notice.push_str("; another configuration layer overrides part of this change");
+                }
+                if touched.iter().any(|path| {
+                    catalog.iter().any(|s| {
+                        path.first() == Some(&s.name) && s.timing == "On next session start"
+                    })
+                }) {
+                    notice.push_str("; startup settings take effect on next session start");
+                }
             }
             Some((fragment, underlay))
         } else {
             None
         };
         let mut changes = vec![];
+        staged.editor_effective.clear();
         for client in staged.runtime_config.keys().chain(
             staged
                 .detached_runtime_config
@@ -203,7 +245,11 @@ impl SessionMetaData {
                 .map(|_| &ClientId::NONE),
         ) {
             let base = staged.base_client_configuration(client);
-            let effective = editor::apply(&base, &staged.editor_overrides)?
+            let effective = editor::apply(&base, &staged.editor_overrides)?;
+            if staged.runtime_config.contains_key(client) {
+                staged.editor_effective.insert(*client, effective.clone());
+            }
+            let effective = effective
                 .resolve_plugin_repositories(
                     self.config_file_path.as_deref(),
                     self.config_dir.as_deref(),
@@ -225,15 +271,16 @@ impl SessionMetaData {
                     return Err("Theme selection was cancelled".into());
                 }
                 let now = Disk::read(self.config_file_path.as_deref(), self.config_dir.as_deref())?;
-                if now != disk {
+                if now != *disk {
                     Err("Configuration changed on disk. Reload before saving.".into())
                 } else {
                     Ok(())
                 }
             })?;
         }
-        staged.recompute_effective_keybinds();
+        staged.refresh_effective_keybinds();
         self.session_configuration = staged;
+        // Close the preview before reconfiguration can restore its original theme.
         if let Some((client, request)) = theme_reply {
             self.senders
                 .send_to_screen(ScreenInstruction::PaletteThemeSaved {
@@ -245,9 +292,7 @@ impl SessionMetaData {
                 .non_fatal();
         }
         self.propagate_configuration_changes(changes, edit.destination == Destination::Permanent);
-        let disk = Disk::read(self.config_file_path.as_deref(), self.config_dir.as_deref())?;
-        self.session_configuration
-            .editor_snapshot(&disk, &notice, None)
+        Ok(notice)
     }
 }
 

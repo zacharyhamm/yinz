@@ -466,6 +466,10 @@ impl SessionConfiguration {
             .keys()
             .map(|id| (*id, self.get_client_configuration(id)))
             .collect();
+        self.refresh_effective_keybinds();
+    }
+
+    fn refresh_effective_keybinds(&mut self) {
         self.effective_keybinds = self
             .editor_effective
             .iter()
@@ -2338,46 +2342,8 @@ pub fn start_server_impl(
                 permanent,
             } => {
                 with_session_mut(&session_data, |session| {
-                    let result = (|| -> Result<(), String> {
-                        let snapshot = session.configuration_editor(None)?;
-                        let current = session
-                            .session_configuration
-                            .get_client_configuration(&client);
-                        let fragment =
-                            theme_fragment(&current, &name).map_err(|e| e.to_string())?;
-                        let options =
-                            Config::from_kdl(&fragment, None).map_err(|e| e.to_string())?;
-                        let patches = yinz_config::editor::document(&options)?
-                            .into_iter()
-                            .filter(|n| {
-                                matches!(n.name.as_str(), "theme" | "theme_dark" | "theme_light")
-                            })
-                            .map(|node| yinz_types::configuration::Patch {
-                                reset: false,
-                                path: vec![node.name.clone()],
-                                node: Some(node),
-                            })
-                            .collect();
-                        let edit = yinz_types::configuration::Edit {
-                            revision: snapshot["revision"]
-                                .as_str()
-                                .ok_or("Missing configuration revision")?
-                                .into(),
-                            destination: if permanent {
-                                yinz_types::configuration::Destination::Permanent
-                            } else {
-                                yinz_types::configuration::Destination::Session
-                            },
-                            patches,
-                            reset: vec![],
-                        };
-                        session.configuration_editor_guarded(
-                            Some(edit),
-                            Some(&cancelled),
-                            Some((client, request)),
-                        )?;
-                        Ok(())
-                    })();
+                    let result =
+                        session.apply_palette_theme(client, request, &name, permanent, &cancelled);
                     if let Err(error) = result {
                         session
                             .senders
