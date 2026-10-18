@@ -8,6 +8,14 @@ use yinz_types::{
     tab_bar::TabGroupInfo,
 };
 
+#[derive(serde::Serialize)]
+struct TabGroupRecord {
+    id: u32,
+    name: String,
+    active: bool,
+    tab_ids: Vec<TabId>,
+}
+
 pub(super) struct TabGroup {
     pub name: String,
     pub preferred: Option<TabId>,
@@ -211,12 +219,114 @@ impl Screen {
         &mut self,
         action: Action,
         client: ClientId,
-        completion: Option<NotificationEnd>,
+        mut completion: Option<NotificationEnd>,
+        tab_switches: &mut HashSet<(TabId, ClientId)>,
+    ) -> Result<()> {
+        let result = self.tab_group_action_inner(action, client, &mut completion, tab_switches);
+        if let Err(error) = &result {
+            if let Some(completion) = completion.as_mut() {
+                completion.set_error_message(format!("{error:#}"));
+            }
+        }
+        result
+    }
+
+    fn tab_group_action_inner(
+        &mut self,
+        action: Action,
+        client: ClientId,
+        completion: &mut Option<NotificationEnd>,
         tab_switches: &mut HashSet<(TabId, ClientId)>,
     ) -> Result<()> {
         let client = self.client_id(client).unwrap_or(client);
+        let action = match action {
+            Action::RenameCurrentTabGroup { name } => Action::RenameTabGroup {
+                id: self.group_for_client(Some(client)),
+                name,
+            },
+            Action::CloseCurrentTabGroup => Action::CloseTabGroup {
+                id: self.group_for_client(Some(client)),
+            },
+            Action::GoToTabGroupName { name, create } => {
+                let id = self
+                    .tab_groups
+                    .keys()
+                    .copied()
+                    .find(|id| self.tab_group_name(*id).as_deref() == Some(name.as_str()));
+                if let Some(id) = id {
+                    Action::SwitchTabGroup { id }
+                } else if create {
+                    Action::NewNamedTabGroup { name: Some(name) }
+                } else {
+                    return Err(anyhow!("tab group not found: {name}"));
+                }
+            },
+            action => action,
+        };
         match action {
-            Action::NewTabGroup => {
+            Action::ListTabGroups { output_json } | Action::CurrentTabGroupInfo { output_json } => {
+                let current_only = matches!(action, Action::CurrentTabGroupInfo { .. });
+                let active = self.group_for_client(Some(client));
+                let groups: Vec<_> = self
+                    .tab_groups
+                    .keys()
+                    .copied()
+                    .filter(|id| !current_only || *id == active)
+                    .map(|id| {
+                        Ok(TabGroupRecord {
+                            id,
+                            name: self.tab_group_name(id).context("tab group missing")?,
+                            active: id == active,
+                            tab_ids: self.group_tabs(id),
+                        })
+                    })
+                    .collect::<Result<_>>()?;
+                let output = if current_only {
+                    let group = groups.first().context("no current tab group")?;
+                    if output_json {
+                        serde_json::to_string_pretty(group)
+                            .context("serialize current tab group")?
+                    } else {
+                        format!("name: {}\nid: {}", group.name, group.id)
+                    }
+                } else if output_json {
+                    serde_json::to_string_pretty(&groups).context("serialize tab groups")?
+                } else {
+                    let mut table = vec![vec![
+                        "ID".into(),
+                        "NAME".into(),
+                        "ACTIVE".into(),
+                        "TAB_IDS".into(),
+                    ]];
+                    for group in groups {
+                        table.push(vec![
+                            group.id.to_string(),
+                            group.name,
+                            group.active.to_string(),
+                            group
+                                .tab_ids
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        ]);
+                    }
+                    table
+                        .iter()
+                        .map(|row| row.join("  "))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                if let Some(completion) = completion.as_mut() {
+                    completion.set_stdout_message(output);
+                }
+                return Ok(());
+            },
+            Action::NewTabGroup | Action::NewNamedTabGroup { .. } => {
+                let (name, report_id) = match action {
+                    Action::NewNamedTabGroup { name } => (name, true),
+                    _ => (None, false),
+                };
                 let id =
                     u32::try_from(self.next_tab_group_id).context("tab group IDs exhausted")?;
                 self.next_tab_group_id += 1;
@@ -242,13 +352,23 @@ impl Screen {
                 self.tab_groups.insert(
                     id,
                     TabGroup {
-                        name: format!("Group {number}"),
+                        name: name
+                            .map(|name| {
+                                yinz_types::text::clean_string_from_control_and_linebreak(&name)
+                            })
+                            .unwrap_or_else(|| format!("Group {number}")),
                         preferred: Some(tab),
                         restored_preferred: None,
                     },
                 );
                 self.tab_group_ids.insert(tab, id);
                 self.prune_tab_groups();
+                if let Some(completion) = completion.as_mut() {
+                    completion.wait_for_placement();
+                    if report_id {
+                        completion.set_stdout_message(id.to_string());
+                    }
+                }
                 if let Err(error) = self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
                     None,
                     self.default_shell_action.clone(),
@@ -259,7 +379,7 @@ impl Screen {
                     false,
                     true,
                     client,
-                    completion,
+                    completion.take(),
                 )) {
                     self.close_tab_by_id(tab)
                         .context("remove undispatched group tab")
@@ -284,7 +404,7 @@ impl Screen {
                         && tab.has_selectable_panes()
                 });
                 if !has_destination && self.quit_is_guarded() {
-                    self.confirm_quit(client, true, completion)
+                    self.confirm_quit(client, true, completion.take())
                         .context("confirm closing last tab group")?;
                     return Ok(());
                 }

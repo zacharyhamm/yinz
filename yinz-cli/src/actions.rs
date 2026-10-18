@@ -814,6 +814,30 @@ pub fn actions_from_cli(
             },
             None => Ok(vec![Action::UndoRenamePane]),
         },
+        CliAction::NewTabGroup { name } => Ok(vec![Action::NewNamedTabGroup { name }]),
+        CliAction::ListTabGroups { json } => Ok(vec![Action::ListTabGroups { output_json: json }]),
+        CliAction::CurrentTabGroupInfo { json } => {
+            Ok(vec![Action::CurrentTabGroupInfo { output_json: json }])
+        },
+        CliAction::GoToTabGroupById { id } => Ok(vec![Action::SwitchTabGroup { id }]),
+        CliAction::GoToTabGroupName { name, create } => {
+            Ok(vec![Action::GoToTabGroupName { name, create }])
+        },
+        CliAction::RenameTabGroup { name, group_id } => Ok(vec![match group_id {
+            Some(id) => Action::RenameTabGroup { id, name },
+            None => Action::RenameCurrentTabGroup { name },
+        }]),
+        CliAction::CloseTabGroup { group_id } => Ok(vec![match group_id {
+            Some(id) => Action::CloseTabGroup { id },
+            None => Action::CloseCurrentTabGroup,
+        }]),
+        CliAction::RenameTabGroupById { id, name } => Ok(vec![Action::RenameTabGroup { id, name }]),
+        CliAction::CloseTabGroupById { id } => Ok(vec![Action::CloseTabGroup { id }]),
+        CliAction::GoToNextTabGroup => Ok(vec![Action::GoToNextTabGroup]),
+        CliAction::GoToPreviousTabGroup => Ok(vec![Action::GoToPreviousTabGroup]),
+        CliAction::GoToTabInGroup { index } => Ok(vec![Action::GoToTabInGroup { index }]),
+        CliAction::MovePaneToNextTabGroup => Ok(vec![Action::MovePaneToNextTabGroup]),
+        CliAction::MovePaneToPreviousTabGroup => Ok(vec![Action::MovePaneToPreviousTabGroup]),
         CliAction::GoToNextTab => Ok(vec![Action::GoToNextTab]),
         CliAction::GoToPreviousTab => Ok(vec![Action::GoToPreviousTab]),
         CliAction::CloseTab { tab_id } => match tab_id {

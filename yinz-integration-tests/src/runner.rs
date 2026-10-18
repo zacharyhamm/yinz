@@ -1200,3 +1200,7 @@ mod agents_focus_cycle;
 #[cfg(test)]
 #[path = "unit/tab_groups.rs"]
 mod tab_groups;
+
+#[cfg(test)]
+#[path = "unit/tab_groups_cli.rs"]
+mod tab_groups_cli;

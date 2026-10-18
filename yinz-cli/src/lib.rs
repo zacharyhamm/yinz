@@ -44,3 +44,7 @@ pub mod operations;
 #[cfg(test)]
 #[path = "unit/plugin_configuration.rs"]
 mod plugin_configuration;
+
+#[cfg(test)]
+#[path = "unit/tab_groups.rs"]
+mod tab_groups;

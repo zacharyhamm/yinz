@@ -190,6 +190,10 @@ pub fn route_action(
     // allowing the client to produce another action without risking races
     let (completion_tx, completion_rx) = oneshot::channel();
 
+    let creates_group = matches!(
+        action,
+        Action::NewNamedTabGroup { .. } | Action::GoToTabGroupName { create: true, .. }
+    );
     let creates_pane = matches!(
         action,
         Action::NewPane { .. }
@@ -204,7 +208,7 @@ pub fn route_action(
     );
     // Creation completes when its pane is placed, however long startup takes.
     // Blocking panes retain their separate command-exit/unblock-condition wait.
-    let mut wait_forever = creates_pane;
+    let mut wait_forever = creates_pane || creates_group;
 
     match action {
         Action::ToggleTab => {
@@ -1148,6 +1152,12 @@ pub fn route_action(
                 .with_context(err_context)?;
         },
         action @ (Action::NewTabGroup
+        | Action::NewNamedTabGroup { .. }
+        | Action::GoToTabGroupName { .. }
+        | Action::RenameCurrentTabGroup { .. }
+        | Action::CloseCurrentTabGroup
+        | Action::ListTabGroups { .. }
+        | Action::CurrentTabGroupInfo { .. }
         | Action::GoToNextTabGroup
         | Action::MovePaneToNextTabGroup
         | Action::MovePaneToPreviousTabGroup
@@ -2429,6 +2439,11 @@ pub fn route_action(
                 );
             }
         }
+    }
+    // A group's first tab also produces tab/pane IDs; group commands return only the group ID.
+    if creates_group {
+        result.affected_tab_id = None;
+        result.affected_pane_id = None;
     }
     // Return tab ID to CLI clients as plain text
     if let Some(tab_id) = result.affected_tab_id {

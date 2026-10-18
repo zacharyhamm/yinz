@@ -102,6 +102,25 @@ Commands:
   close-pane                        Close the focused pane
   rename-pane                       Renames the focused pane
   undo-rename-pane                  Remove a previously set pane name
+  new-tab-group                     Create and focus a group with a fresh tab. Prints the new group
+                                    ID
+  list-tab-groups                   List groups with their IDs, displayed names, active state, and
+                                    tab IDs
+  current-tab-group-info            Print the current group's name and ID, or its full record as
+                                    JSON
+  go-to-tab-group-by-id             Focus the remembered tab in a group by stable ID
+  go-to-tab-group-name              Focus a group by exact displayed name; duplicate names select
+                                    the lowest ID
+  rename-tab-group                  Rename the current group or a group by ID. Project names can
+                                    override this name
+  close-tab-group                   Close every tab in the current group or a group by ID
+  rename-tab-group-by-id            Rename a group by stable ID
+  close-tab-group-by-id             Close every tab in a group by stable ID
+  go-to-next-tab-group              Focus the next group, wrapping at the end
+  go-to-previous-tab-group          Focus the previous group, wrapping at the start
+  go-to-tab-in-group                Focus a tab by its one-based index within the current group
+  move-pane-to-next-tab-group       Move the focused pane to the next group and follow it
+  move-pane-to-previous-tab-group   Move the focused pane to the previous group and follow it
   go-to-next-tab                    Go to the next tab
   go-to-previous-tab                Go to the previous tab
   close-tab                         Close the current tab
