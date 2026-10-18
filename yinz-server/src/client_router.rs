@@ -427,7 +427,7 @@ pub(crate) fn route_thread_main(
                     match instruction {
                         ClientToServerMsg::AgentControl(request) => {
                             use yinz_types::agent::control::{AgentOutcome, AgentResponse};
-                            if matches!(&request, yinz_types::agent::control::AgentRequest::Spawn { .. } | yinz_types::agent::control::AgentRequest::List { project: Some(_) }) {
+                            if matches!(&request, yinz_types::agent::control::AgentRequest::Spawn { .. } | yinz_types::agent::control::AgentRequest::SpawnNewProject { .. } | yinz_types::agent::control::AgentRequest::List { project: Some(_) }) {
                             let assets = session_data.read().to_anyhow().context("read session for agent control")?.as_ref().map(|session| {
                                 (session.senders.clone(), session.data_access.clone())
                             });

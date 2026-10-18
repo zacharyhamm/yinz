@@ -1102,6 +1102,12 @@ pub fn plugin_thread_main(
                         .map_err(|error| format!("{error:#}")),
                 );
             },
+            PluginInstruction::RefreshDataWatches {
+                namespace,
+                entities,
+            } => {
+                plugin_bridge.notify_data_watchers(&namespace, &entities);
+            },
             PluginInstruction::LogLayoutToHd(mut session_layout_metadata) => {
                 populate_session_layout_metadata(
                     &mut session_layout_metadata,

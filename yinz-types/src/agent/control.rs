@@ -100,6 +100,14 @@ pub enum AgentRequest {
         project: Option<String>,
         remote_host: Option<String>,
     },
+    /// Distinct wire variant so older servers cannot silently launch in another checkout.
+    SpawnNewProject {
+        name: String,
+        destination: PathBuf,
+        spec: AgentSpawnSpec,
+        #[serde(default)]
+        placement: AgentPlacement,
+    },
     Prompt {
         pane_id: PaneId,
         expected_session_id: Option<String>,

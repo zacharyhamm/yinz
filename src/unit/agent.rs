@@ -864,3 +864,148 @@ fn spawn_defaults_cwd_only_when_a_host_checkout_is_needed() {
         "/explicit"
     );
 }
+
+#[test]
+fn new_project_spawn_merges_json_and_resolves_relative_destinations() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Agent,
+    }
+    for flags in [
+        vec![],
+        vec![
+            "--new-project",
+            "from-flags",
+            "--destination",
+            "flag-root",
+            "--kind",
+            "claude",
+        ],
+    ] {
+        let cli = Cli::try_parse_from(
+            ["agent", "spawn", "--file", "-", "--json"]
+                .into_iter()
+                .chain(flags.iter().copied()),
+        )
+        .unwrap();
+        let input = json!({"kind":"codex","new_project":"from-json","destination":"json-root","new_tab":"worker","model":"test-model","env":{"TEST":"value"}});
+        let (request, json, timeout) =
+            request(cli.command, &mut input.to_string().as_bytes()).unwrap();
+        assert!(json);
+        assert_eq!(timeout, Duration::from_secs(120));
+        let AgentRequest::SpawnNewProject {
+            name,
+            destination,
+            spec,
+            placement,
+        } = request
+        else {
+            panic!("expected new project request")
+        };
+        assert_eq!(
+            name,
+            if flags.is_empty() {
+                "from-json"
+            } else {
+                "from-flags"
+            }
+        );
+        assert_eq!(
+            destination,
+            std::env::current_dir().unwrap().join(if flags.is_empty() {
+                "json-root"
+            } else {
+                "flag-root"
+            })
+        );
+        assert_eq!(
+            spec.kind.as_deref(),
+            Some(if flags.is_empty() { "codex" } else { "claude" })
+        );
+        assert_eq!(spec.model.as_deref(), Some("test-model"));
+        assert_eq!(spec.env["TEST"], "value");
+        assert_eq!(
+            placement,
+            yinz_types::agent::control::AgentPlacement::NewTab(Some("worker".into()))
+        );
+        let encoded = serde_json::to_value(&AgentRequest::SpawnNewProject {
+            name,
+            destination,
+            spec,
+            placement,
+        })
+        .unwrap();
+        assert!(encoded.get("SpawnNewProject").is_some());
+        assert!(encoded.get("Spawn").is_none());
+        serde_json::from_value::<AgentRequest>(encoded).unwrap();
+    }
+}
+
+#[test]
+fn new_project_spawn_requires_a_pair_and_rejects_json_and_flag_conflicts() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Agent,
+    }
+    for input in [
+        json!({"new_project":"work"}),
+        json!({"destination":"/tmp/work"}),
+    ] {
+        let cli = Cli::try_parse_from(["agent", "spawn", "--file", "-"]).unwrap();
+        assert!(request(cli.command, &mut input.to_string().as_bytes())
+            .unwrap_err()
+            .to_string()
+            .contains("required together"));
+    }
+    for (field, flag, value) in [
+        ("project", "--project", json!("old")),
+        ("cwd", "--cwd", json!("/tmp")),
+        ("remote_host", "--remote-host", json!("host")),
+        ("branch", "--branch", json!("topic")),
+        ("base", "--base", json!("main")),
+        ("worktree", "--worktree", json!(false)),
+        ("worktree_dir", "--worktree-dir", json!("worktrees")),
+        ("reuse", "--reuse", json!(false)),
+        ("resume", "--resume", json!("last")),
+    ] {
+        let mut input = json!({"new_project":"work","destination":"/tmp/work","kind":"codex"});
+        input[field] = value.clone();
+        let cli = Cli::try_parse_from(["agent", "spawn", "--file", "-"]).unwrap();
+        let error = request(cli.command, &mut input.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(field), "{error}");
+        let mut flags = vec![
+            "agent".to_owned(),
+            "spawn".to_owned(),
+            "--new-project".to_owned(),
+            "work".to_owned(),
+            "--destination".to_owned(),
+            "/tmp/work".to_owned(),
+            flag.to_owned(),
+        ];
+        if flag != "--reuse" {
+            flags.push(
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| value.to_string()),
+            );
+        }
+        assert!(Cli::try_parse_from(flags).is_err());
+    }
+    // A single flag can supply the other half of a JSON pair.
+    let cli =
+        Cli::try_parse_from(["agent", "spawn", "--file", "-", "--destination", "work"]).unwrap();
+    let input = json!({"new_project":"work","kind":"claude"});
+    assert!(matches!(
+        request(cli.command, &mut input.to_string().as_bytes())
+            .unwrap()
+            .0,
+        AgentRequest::SpawnNewProject { .. }
+    ));
+}

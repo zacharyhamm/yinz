@@ -3773,15 +3773,23 @@ impl PluginBridge {
             self.data_access.plugin_data(),
             request,
             |namespace, entities| {
-                crate::yinz_exports::notify_data_watchers(
-                    self.data_access.plugin_data(),
-                    &self.watch_generations,
-                    &self.senders,
-                    namespace,
-                    entities,
-                );
+                self.notify_data_watchers(namespace, entities);
             },
         )
+    }
+
+    pub(crate) fn notify_data_watchers(
+        &self,
+        namespace: &str,
+        entities: &std::collections::BTreeSet<String>,
+    ) {
+        crate::yinz_exports::notify_data_watchers(
+            self.data_access.plugin_data(),
+            &self.watch_generations,
+            &self.senders,
+            namespace,
+            entities,
+        );
     }
 
     pub fn builtin_service_instance(&self, name: &str) -> Result<(PluginId, ClientId), String> {

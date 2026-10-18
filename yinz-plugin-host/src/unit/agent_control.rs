@@ -1404,3 +1404,355 @@ fn project_provider_snapshot_drives_native_filter_and_membership_events() {
     );
     assert_eq!(memberships["work"], Ok(None));
 }
+
+fn new_project_data(directory: &std::path::Path) -> DataAccess {
+    let data = DataAccess::sqlite(&directory.join("data"));
+    for def in project_data::store::shared_defs() {
+        data.plugin_data()
+            .define_entity(project_data::store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    data
+}
+
+fn new_project_request(destination: PathBuf) -> AgentRequest {
+    AgentRequest::SpawnNewProject {
+        name: "new-app".into(),
+        destination,
+        spec: AgentSpawnSpec {
+            kind: Some("codex".into()),
+            ..Default::default()
+        },
+        placement: Default::default(),
+    }
+}
+
+#[test]
+fn new_project_spawn_creates_unborn_main_remembers_root_and_launches_there() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap().join("new-app");
+    let data = new_project_data(temp.path());
+    let (to_pty, pty_rx) = yinz_runtime::channels::unbounded();
+    let (to_screen, screen_rx) = yinz_runtime::channels::unbounded();
+    let (to_plugin, plugin_rx) = yinz_runtime::channels::unbounded();
+    let senders = ThreadSenders {
+        to_pty: Some(yinz_runtime::channels::SenderWithContext::new(to_pty)),
+        to_screen: Some(yinz_runtime::channels::SenderWithContext::new(to_screen)),
+        to_plugin: Some(yinz_runtime::channels::SenderWithContext::new(to_plugin)),
+        ..Default::default()
+    };
+    let expected_root = root.clone();
+    let worker = thread::spawn(move || {
+        let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        let PtyInstruction::SpawnTerminal(
+            Some(TerminalAction::RunCommand(command)),
+            _,
+            _,
+            _,
+            target,
+            Some(mut completion),
+            _,
+        ) = instruction
+        else {
+            panic!("expected agent launch");
+        };
+        assert_eq!(command.cwd, Some(expected_root));
+        assert!(matches!(target, ClientTabIndexOrPaneId::ClientIdNoFocus(_)));
+        completion.set_affected_tab_id(TabId::new(0));
+        completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
+    });
+    let response = control_agent(
+        new_project_request(root.clone()),
+        crate::ClientId::new(1),
+        &senders,
+        &data,
+    );
+    worker.join().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+    assert_eq!(response.spawned.unwrap().cwd, Some(root.clone()));
+    let (notification, _) = plugin_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(
+        matches!(notification, PluginInstruction::RefreshDataWatches { namespace, entities }
+        if namespace == project_data::store::SHARED && entities.contains("project"))
+    );
+    assert!(matches!(
+        screen_rx.recv_timeout(Duration::from_secs(30)).unwrap().0,
+        ScreenInstruction::AgentSpawned(_)
+    ));
+    let projects = project_data::projects::from_rows(&projects(&data).unwrap());
+    assert_eq!(projects["new-app"].root, root.to_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(root.join(".git/HEAD")).unwrap(),
+        "ref: refs/heads/main\n"
+    );
+    assert!(!root.join(".git/refs/heads/main").exists());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+}
+
+#[test]
+fn new_project_spawn_rejects_existing_paths_names_roots_and_unavailable_registry() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap().join("new-app");
+    let data = new_project_data(temp.path());
+    let spawn = |data: &DataAccess| {
+        control_agent(
+            new_project_request(root.clone()),
+            crate::ClientId::new(1),
+            &ThreadSenders::default(),
+            data,
+        )
+    };
+    let missing_parent = control_agent(
+        new_project_request(root.join("child")),
+        crate::ClientId::new(1),
+        &ThreadSenders::default(),
+        &data,
+    );
+    assert_eq!(missing_parent.outcome, AgentOutcome::Rejected);
+    assert!(!root.exists());
+    std::fs::create_dir(&root).unwrap();
+    assert_eq!(spawn(&data).outcome, AgentOutcome::Rejected);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    std::fs::remove_dir(&root).unwrap();
+    std::fs::write(&root, "keep this file").unwrap();
+    assert_eq!(spawn(&data).outcome, AgentOutcome::Rejected);
+    assert_eq!(std::fs::read_to_string(&root).unwrap(), "keep this file");
+    std::fs::remove_file(&root).unwrap();
+    std::os::unix::fs::symlink(temp.path().join("missing"), &root).unwrap();
+    assert_eq!(spawn(&data).outcome, AgentOutcome::Rejected);
+    assert!(std::fs::symlink_metadata(&root)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    std::fs::remove_file(&root).unwrap();
+    let uninitialized = DataAccess::sqlite(&temp.path().join("uninitialized"));
+    assert_eq!(spawn(&uninitialized).outcome, AgentOutcome::Rejected);
+    assert!(!root.exists());
+    for (name, registered_root) in [("new-app", "/elsewhere"), ("other", root.to_str().unwrap())] {
+        let project = project_data::projects::validate(name, registered_root).unwrap();
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &[project_data::projects::to_mutation(&project)],
+            )
+            .unwrap();
+        let response = spawn(&data);
+        assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+        assert!(!root.exists());
+        assert_eq!(
+            project_data::projects::from_rows(&projects(&data).unwrap())[name].root,
+            registered_root
+        );
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &[project_data::projects::delete_mutation(name)],
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn new_project_spawn_validates_before_creation_and_retains_failed_launches() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap().join("new-app");
+    let data = new_project_data(temp.path());
+    for spec in [
+        AgentSpawnSpec::default(),
+        AgentSpawnSpec {
+            kind: Some("codex".into()),
+            branch: Some("topic".into()),
+            ..Default::default()
+        },
+        AgentSpawnSpec {
+            kind: Some("codex".into()),
+            resume: Some("last".into()),
+            ..Default::default()
+        },
+        AgentSpawnSpec {
+            kind: Some("codex".into()),
+            reuse: Some(false),
+            ..Default::default()
+        },
+        AgentSpawnSpec {
+            kind: Some("codex".into()),
+            prompt: Some("work".into()),
+            ..Default::default()
+        },
+    ] {
+        let mut request = new_project_request(root.clone());
+        if let AgentRequest::SpawnNewProject { spec: launch, .. } = &mut request {
+            *launch = spec;
+        }
+        let response = control_agent(
+            request,
+            crate::ClientId::new(1),
+            &ThreadSenders::default(),
+            &data,
+        );
+        assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+        assert!(!root.exists());
+    }
+    let mut request = new_project_request(root.clone());
+    for invalid_name in [false, true] {
+        if let AgentRequest::SpawnNewProject {
+            placement, name, ..
+        } = &mut request
+        {
+            if invalid_name {
+                *placement = Default::default();
+                *name = " ".into();
+            } else {
+                *placement = yinz_types::agent::control::AgentPlacement::NewTab(Some("\n".into()));
+            }
+        }
+        assert_eq!(
+            control_agent(
+                request.clone(),
+                crate::ClientId::new(1),
+                &ThreadSenders::default(),
+                &data
+            )
+            .outcome,
+            AgentOutcome::Rejected
+        );
+    }
+    assert!(!root.exists());
+    let response = control_agent(
+        new_project_request(root.clone()),
+        crate::ClientId::new(1),
+        &ThreadSenders::default(),
+        &data,
+    );
+    assert_eq!(response.outcome, AgentOutcome::Failed, "{response:?}");
+    let message = response.message.unwrap();
+    assert!(message.contains(root.to_str().unwrap()), "{message}");
+    assert!(message.contains("registration succeeded"), "{message}");
+    assert!(message.contains("--allow-outside-worktree"), "{message}");
+    assert_eq!(response.launch_resources.unwrap().cwd, Some(root.clone()));
+    assert!(root.join(".git").is_dir());
+    assert!(project_data::projects::from_rows(&projects(&data).unwrap()).contains_key("new-app"));
+}
+
+#[test]
+fn new_project_spawn_git_failure_retains_directory_without_registration() {
+    // Use a child process so Git's deliberately invalid environment cannot affect other tests.
+    if std::env::var_os("YINZ_NEW_PROJECT_GIT_FAILURE").is_none() {
+        let output = process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", thread::current().name().unwrap(), "--nocapture"])
+            .env("YINZ_NEW_PROJECT_GIT_FAILURE", "1")
+            .env("GIT_CONFIG_COUNT", "invalid")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap().join("new-app");
+    let data = new_project_data(temp.path());
+    let response = control_agent(
+        new_project_request(root.clone()),
+        crate::ClientId::new(1),
+        &ThreadSenders::default(),
+        &data,
+    );
+    assert_eq!(response.outcome, AgentOutcome::Failed, "{response:?}");
+    let message = response.message.unwrap();
+    assert!(
+        message.contains("initialize project repository"),
+        "{message}"
+    );
+    assert!(
+        message.contains("registration did not succeed"),
+        "{message}"
+    );
+    assert!(root.is_dir());
+    assert!(projects(&data).unwrap().rows.is_empty());
+}
+
+#[test]
+fn new_project_spawn_never_overwrites_a_concurrent_name_or_root_registration() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use yinz_storage::{
+        data_access::PluginDataBackend, plugin_data_store::SqlitePluginDataBackend,
+    };
+    use yinz_types::plugin_data::*;
+
+    struct RegisterDuringFetch {
+        inner: SqlitePluginDataBackend,
+        project: project_data::projects::Project,
+        injected: AtomicBool,
+    }
+    impl PluginDataBackend for RegisterDuringFetch {
+        fn define_entity(
+            &self,
+            namespace: &str,
+            owner: &str,
+            def: &EntityDef,
+            destructive: bool,
+        ) -> Result<DataSchemaInfo, DataError> {
+            self.inner.define_entity(namespace, owner, def, destructive)
+        }
+        fn catalog(&self, namespace: Option<&str>) -> Result<Vec<DataEntityInfo>, DataError> {
+            self.inner.catalog(namespace)
+        }
+        fn fetch(&self, namespace: &str, request: &FetchRequest) -> Result<DataRows, DataError> {
+            let rows = self.inner.fetch(namespace, request)?;
+            // Another writer commits after our snapshot, before creation's guarded batch.
+            if !self.injected.swap(true, Ordering::SeqCst) {
+                self.inner.apply(
+                    namespace,
+                    &[project_data::projects::to_mutation(&self.project)],
+                )?;
+            }
+            Ok(rows)
+        }
+        fn count(&self, namespace: &str, request: &FetchRequest) -> Result<u64, DataError> {
+            self.inner.count(namespace, request)
+        }
+        fn apply(&self, namespace: &str, mutations: &[Mutation]) -> Result<ApplyReport, DataError> {
+            self.inner.apply(namespace, mutations)
+        }
+    }
+    for same_name in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap().join("new-app");
+        let other = project_data::projects::validate(
+            if same_name { "new-app" } else { "other" },
+            if same_name {
+                "/other"
+            } else {
+                root.to_str().unwrap()
+            },
+        )
+        .unwrap();
+        let data = DataAccess::from_backend(Arc::new(RegisterDuringFetch {
+            inner: SqlitePluginDataBackend::new(temp.path()),
+            project: other.clone(),
+            injected: AtomicBool::new(false),
+        }));
+        for def in project_data::store::shared_defs() {
+            data.plugin_data()
+                .define_entity(project_data::store::SHARED, "test", &def, false)
+                .unwrap();
+        }
+        let response = control_agent(
+            new_project_request(root.clone()),
+            crate::ClientId::new(1),
+            &ThreadSenders::default(),
+            &data,
+        );
+        assert_eq!(response.outcome, AgentOutcome::Failed, "{response:?}");
+        assert!(response
+            .message
+            .unwrap()
+            .contains("registration did not succeed"));
+        assert!(root.join(".git").is_dir());
+        let registry = project_data::projects::from_rows(&projects(&data).unwrap());
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry[&other.name].root, other.root);
+    }
+}
