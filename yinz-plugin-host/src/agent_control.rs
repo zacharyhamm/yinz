@@ -21,37 +21,46 @@ pub fn control_agent(
         _ => None,
     };
     let result = (|| -> Result<AgentResponse, String> {
-        if let AgentRequest::Spawn {
-            spec,
-            cwd,
-            project,
-            remote_host,
-
-            placement,
-        } = request
-        {
-            let mut spawned = match spawn_agent_for_control(
-                placement,
+        let request = match request {
+            AgentRequest::Spawn {
                 spec,
                 cwd,
                 project,
                 remote_host,
-                client,
-                senders,
-                data,
-            ) {
-                Ok(spawned) => spawned,
-                Err(error) => return Ok(error.into_response()),
-            };
-            if spawned.reused {
-                spawned.occupied_by = occupants(senders, &spawned);
-            }
-            let mut response = register_spawned_agent(senders, spawned);
-            if response.message.is_none() {
-                response.message = response.spawned.as_ref().and_then(spawn_notes);
-            }
-            return Ok(response);
-        }
+                placement,
+            } => {
+                return Ok(finish_spawn(
+                    spawn_agent_for_control(
+                        placement,
+                        spec,
+                        cwd,
+                        project,
+                        remote_host,
+                        client,
+                        senders,
+                        data,
+                    ),
+                    senders,
+                ));
+            },
+            AgentRequest::SpawnNewProject {
+                name,
+                destination,
+                spec,
+                placement,
+            } => {
+                return Ok(spawn_new_project(
+                    name,
+                    destination,
+                    spec,
+                    placement,
+                    client,
+                    senders,
+                    data,
+                ));
+            },
+            request => request,
+        };
         let timeout = match &request {
             AgentRequest::Prompt { timeout_ms, .. }
             | AgentRequest::Wait { timeout_ms, .. }
@@ -173,6 +182,166 @@ pub(super) fn projects(data: &DataAccess) -> Result<yinz_types::data::DataRows, 
         })
 }
 
+fn finish_spawn(
+    result: Result<SpawnedAgent, AgentSpawnError>,
+    senders: &ThreadSenders,
+) -> AgentResponse {
+    let mut spawned = match result {
+        Ok(spawned) => spawned,
+        Err(error) => return error.into_response(),
+    };
+    if spawned.reused {
+        spawned.occupied_by = occupants(senders, &spawned);
+    }
+    let mut response = register_spawned_agent(senders, spawned);
+    if response.message.is_none() {
+        response.message = response.spawned.as_ref().and_then(spawn_notes);
+    }
+    response
+}
+
+fn spawn_new_project(
+    name: String,
+    destination: PathBuf,
+    spec: AgentSpawnSpec,
+    placement: yinz_types::agent::control::AgentPlacement,
+    client: crate::ClientId,
+    senders: &ThreadSenders,
+    data: &DataAccess,
+) -> AgentResponse {
+    let mut retained = None;
+    let mut registered = false;
+    let result = spawn_agent_prepared(placement, spec, client, senders, |spec| {
+        if spec.branch.is_some()
+            || spec.base.is_some()
+            || spec.worktree.is_some()
+            || spec.worktree_dir.is_some()
+            || spec.reuse.is_some()
+            || spec.resume.is_some()
+        {
+            return Err(
+                "new project cannot use branch, base, worktree, reuse or resume options".into(),
+            );
+        }
+        validate_automation_spec(spec)?;
+        if !destination.is_absolute() {
+            return Err("new project destination must be absolute".into());
+        }
+        let parent = destination
+            .parent()
+            .ok_or("destination must have a parent")?
+            .canonicalize()
+            .map_err(|error| format!("resolve destination parent: {error}"))?;
+        let root = parent.join(
+            destination
+                .file_name()
+                .ok_or("destination must name a new directory")?,
+        );
+        let root_text = root.to_str().ok_or("project destination must be UTF-8")?;
+        let project = project_data::projects::validate(&name, root_text)?;
+        if spec.bubblewrap {
+            let environment = yinz_config::project_config::bubblewrap::Environment::at_root(&root);
+            environment
+                .preflight()
+                .map_err(|error| format!("{error:#}"))?;
+            environment
+                .validate_spawn_env(&spec.env)
+                .map_err(|error| format!("{error:#}"))?;
+        }
+        // Unlike listing, creation requires an available, complete registry before touching disk.
+        let rows = data
+            .plugin_data()
+            .fetch(
+                project_data::store::SHARED,
+                &FetchRequest::entity("project").limit(project_data::store::LIST_FETCH_LIMIT),
+            )
+            .map_err(|error| format!("project registry unavailable: {error}"))?;
+        if rows
+            .rows
+            .iter()
+            .any(|row| rows.get(row, "name") == Some(&DataValue::Text(project.name.clone())))
+        {
+            return Err(format!("project {} already exists", project.name).into());
+        }
+        if rows
+            .rows
+            .iter()
+            .any(|row| rows.get(row, "root") == Some(&DataValue::Text(project.root.clone())))
+        {
+            return Err("project root is already registered".into());
+        }
+        let (_, mutations) =
+            project_data::projects::plan_remember(&rows, &project.name, Some(&project.root), None)?;
+        match std::fs::symlink_metadata(&root) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Ok(_) => return Err("project destination already exists".into()),
+            Err(error) => return Err(format!("inspect project destination: {error}").into()),
+        }
+        std::fs::create_dir(&root).map_err(|error| format!("create project directory: {error}"))?;
+        retained = Some(root.clone());
+        let output = process::Command::new("git")
+            .args(["init", "--initial-branch=main", "--template=", "--"])
+            .arg(&root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .output()
+            .map_err(|error| format!("initialize project repository: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "initialize project repository: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+            .into());
+        }
+        let outcome = data
+            .plugin_data()
+            .apply(project_data::store::SHARED, &mutations)
+            .map_err(|error| format!("register new project: {error}"))?;
+        registered = true;
+        senders
+            .send_to_plugin(PluginInstruction::RefreshDataWatches {
+                namespace: project_data::store::SHARED.into(),
+                entities: outcome.touched_entities,
+            })
+            .non_fatal();
+        // Creating a new project explicitly selects its main checkout.
+        spec.allow_outside_worktree = Some(true);
+        prepare_automation_agent(spec, Some(root), None, None, data)
+    });
+    let mut response = finish_spawn(result, senders);
+    if response.outcome != AgentOutcome::Ok {
+        if let Some(root) = retained {
+            response.outcome = AgentOutcome::Failed;
+            if response.spawned.is_none() {
+                response
+                    .launch_resources
+                    .get_or_insert_with(Default::default)
+                    .cwd = Some(root.clone());
+            }
+            let registration = if registered {
+                "succeeded"
+            } else {
+                "did not succeed"
+            };
+            let retry = if registered {
+                format!(
+                    "; retry with --project '{}' --allow-outside-worktree",
+                    name.trim().replace('\'', "'\\''")
+                )
+            } else {
+                String::new()
+            };
+            response.message = Some(format!(
+                "{}; retained project directory {}; registration {registration}{retry}",
+                response.message.as_deref().unwrap_or("agent launch failed"),
+                root.display()
+            ));
+        }
+    }
+    response
+}
+
 // Returns whether any required local or remote probe is still pending.
 fn filter_project(
     response: &mut AgentResponse,
@@ -276,16 +445,7 @@ fn filter_project(
     Ok(pending)
 }
 
-pub(super) fn prepare_automation_agent(
-    spec: &mut AgentSpawnSpec,
-    cwd: Option<PathBuf>,
-    project: Option<String>,
-    remote_host: Option<String>,
-    data: &DataAccess,
-) -> Result<PreparedAgent, AgentSpawnError> {
-    if spec.bubblewrap && remote_host.is_some() {
-        return Err("Bubblewrap cannot be combined with SSH".into());
-    }
+fn validate_automation_spec(spec: &mut AgentSpawnSpec) -> Result<(), AgentSpawnError> {
     let guidance = || {
         let kinds = yinz_types::agent::KINDS
             .iter()
@@ -304,7 +464,7 @@ pub(super) fn prepare_automation_agent(
     {
         return Err(format!("agent spawn requires a kind or command. {}", guidance()).into());
     }
-    let (mut command, _) = yinz_runtime::agent::launch::plan(spec)?;
+    let (command, _) = yinz_runtime::agent::launch::plan(spec)?;
     if yinz_types::agent::kind_from_program_and_args(&command.path, &command.args).is_none() {
         return Err(format!(
             "agent spawn requires a recognized agent command. {}",
@@ -314,6 +474,20 @@ pub(super) fn prepare_automation_agent(
     }
     spec.env
         .insert(yinz_types::agent::AGENT_PANE_ENV.into(), "1".into());
+    Ok(())
+}
+
+pub(super) fn prepare_automation_agent(
+    spec: &mut AgentSpawnSpec,
+    cwd: Option<PathBuf>,
+    project: Option<String>,
+    remote_host: Option<String>,
+    data: &DataAccess,
+) -> Result<PreparedAgent, AgentSpawnError> {
+    if spec.bubblewrap && remote_host.is_some() {
+        return Err("Bubblewrap cannot be combined with SSH".into());
+    }
+    validate_automation_spec(spec)?;
     if let Some(host) = remote_host {
         if project.is_some()
             || spec.branch.is_some()
@@ -329,7 +503,7 @@ pub(super) fn prepare_automation_agent(
         let cwd = cwd
             .filter(|cwd| cwd.is_absolute())
             .ok_or("SSH cwd must be absolute")?;
-        command = yinz_runtime::agent::launch::plan(spec)?.0;
+        let mut command = yinz_runtime::agent::launch::plan(spec)?.0;
         // SSH uses the remote installation, never the local extension placeholder.
         yinz_runtime::agent::pi::strip_extension(&mut command.args);
         command.target = yinz_types::command::PaneTarget::ssh(&host)?;

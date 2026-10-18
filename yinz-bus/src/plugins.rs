@@ -96,6 +96,10 @@ pub enum PluginInstruction {
         request: yinz_types::cli::DataRequest,
         reply: std::sync::mpsc::Sender<Result<String, String>>,
     },
+    RefreshDataWatches {
+        namespace: String,
+        entities: std::collections::BTreeSet<String>,
+    },
     LoadPaneTab {
         skip_cache: bool,
         id: yinz_types::pane_tabs::PaneTabsId,
@@ -454,7 +458,8 @@ impl From<&PluginInstruction> for PluginContext {
         // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
         // a variant is added without either a matching `PluginContext` or an arm here.
         match plugin_instruction {
-            PluginInstruction::DataRequest { .. } => PluginContext::Update,
+            PluginInstruction::DataRequest { .. }
+            | PluginInstruction::RefreshDataWatches { .. } => PluginContext::Update,
             PluginInstruction::InputBarrier(..) => PluginContext::Update,
             PluginInstruction::PaletteNote(..)
             | PluginInstruction::PaletteAgent(..)

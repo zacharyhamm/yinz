@@ -5554,6 +5554,14 @@ fn global_background_opacity_wire_range_and_roundtrip() {
 fn agent_spawn_placement_and_failure_resources_roundtrip() {
     use yinz_types::agent::control::{AgentOutcome, AgentPlacement, AgentRequest, AgentResponse};
     use yinz_types::internal_ids::TabId;
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::SpawnNewProject {
+            name: "new-app".into(),
+            destination: "/projects/new-app".into(),
+            spec: Default::default(),
+            placement: AgentPlacement::Automatic,
+        }
+    ));
     for placement in [
         AgentPlacement::Automatic,
         AgentPlacement::Tab(TabId::new(0)),

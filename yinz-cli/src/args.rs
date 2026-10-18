@@ -682,6 +682,14 @@ pub enum Agent {
         /// Select a registered project's checkout; --cwd overrides its directory.
         #[clap(long)]
         project: Option<String>,
+        /// Create and remember an empty Git repository on main; requires --destination.
+        /// Rejects project, cwd, SSH, branch, base, worktree, reuse and resume options.
+        #[clap(long, value_name = "NAME", conflicts_with_all = ["project", "cwd", "remote_host", "branch", "base", "worktree", "worktree_dir", "reuse", "resume"])]
+        new_project: Option<String>,
+        /// Exact new repository root; its parent must exist and the destination must be absent.
+        /// Requires --new-project. Failed launches retain the repository and registration.
+        #[clap(long, value_name = "PATH")]
+        destination: Option<PathBuf>,
         /// Run over SSH in an existing absolute --cwd; requires --allow-outside-worktree.
         #[clap(long)]
         remote_host: Option<String>,

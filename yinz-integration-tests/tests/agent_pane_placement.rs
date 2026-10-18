@@ -266,3 +266,88 @@ fn a_shell_is_not_an_agent_and_splits_the_tab_it_was_asked_for() {
     );
     yinz.quit();
 }
+
+#[test]
+fn cli_new_project_spawn_creates_an_agent_at_the_root_and_preserves_focus() {
+    use agent_proto::{projects, store};
+    use yinz_storage::data_access::DataAccess;
+    use yinz_types::plugin_data::FetchRequest;
+
+    let data = DataAccess::sqlite(&yinz_integration_tests::test_env::init().join("data"));
+    for def in store::shared_defs() {
+        data.plugin_data()
+            .define_entity(store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\nagent_pane_min_columns 0")
+        .start();
+    let original = yinz.expect_pty_spawn();
+    original.output(b"originalprompt$ ");
+    yinz.wait_until("original pane is ready", |snapshot| {
+        snapshot.contains("originalprompt$")
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap().join("new-app");
+    let socket = yinz_ipc::consts::ipc_connect(
+        &yinz_runtime::consts::YINZ_SOCK_DIR.join(yinz.session_name()),
+    )
+    .unwrap();
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
+    let mut receiver = sender.get_receiver::<ServerToClientMsg>().unwrap();
+    receiver
+        .set_recv_timeout(Some(std::time::Duration::from_secs(30)))
+        .unwrap();
+    sender
+        .send_client_msg(ClientToServerMsg::AgentControl(
+            AgentRequest::SpawnNewProject {
+                name: "new-app".into(),
+                destination: root.clone(),
+                spec: AgentSpawnSpec {
+                    kind: Some("claude".into()),
+                    ..Default::default()
+                },
+                placement: AgentPlacement::NewTab(Some("new-app".into())),
+            },
+        ))
+        .unwrap();
+    let response = loop {
+        match receiver.recv_server_msg() {
+            IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _) => break response,
+            IpcRecv::Msg(_, _) => continue,
+            _ => panic!("agent reply disconnected or timed out"),
+        }
+    };
+    assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+    let spawned = response.spawned.unwrap();
+    assert!(spawned.created_tab_id.is_some());
+    assert_eq!(spawned.cwd, Some(root.clone()));
+    let agent = yinz.expect_pty_spawn();
+    assert_eq!(agent.run_command().cwd, Some(root.clone()));
+    agent.output(b"workerprompt$ ");
+    let probe = b"originalkeyboard";
+    yinz.send_stdin(probe);
+    original.wait_for_stdin("new project launch preserves keyboard focus", |bytes| {
+        bytes.windows(probe.len()).any(|part| part == probe)
+    });
+    assert!(!agent
+        .stdin_bytes()
+        .windows(probe.len())
+        .any(|part| part == probe));
+    let rows = data
+        .plugin_data()
+        .fetch(store::SHARED, &FetchRequest::entity("project"))
+        .unwrap();
+    assert_eq!(
+        projects::from_rows(&rows)["new-app"].root,
+        root.to_str().unwrap()
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".git/HEAD")).unwrap(),
+        "ref: refs/heads/main\n"
+    );
+    assert!(!root.join(".git/refs/heads/main").exists());
+    drop(sender);
+    drop(receiver);
+    yinz.quit();
+}

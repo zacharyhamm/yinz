@@ -178,6 +178,8 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             kind,
             file,
             project,
+            new_project,
+            destination,
             remote_host,
 
             worktree,
@@ -215,7 +217,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             if fields.contains_key("prompt") || fields.contains_key("reuse_prompt") {
                 bail!("spawn does not accept prompt or reuse_prompt; spawn, wait, then prompt");
             }
-            let overrides = serde_json::json!({"kind":kind,"project":project,"remote_host":remote_host,
+            let overrides = serde_json::json!({"kind":kind,"project":project,"new_project":new_project,"destination":destination,"remote_host":remote_host,
                 "worktree":worktree,
                 "cwd":cwd,"branch":branch,"base":base,"worktree_dir":worktree_dir,"model":model,
                 "effort":effort,"permission_mode":permission_mode,"resume":resume});
@@ -247,7 +249,15 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                 }
             }
             let mut spec_fields = fields.clone();
-            for field in ["tab", "new_tab", "project", "remote_host", "cwd"] {
+            for field in [
+                "tab",
+                "new_tab",
+                "project",
+                "remote_host",
+                "cwd",
+                "new_project",
+                "destination",
+            ] {
                 spec_fields.remove(field);
             }
             let placement = yinz_types::agent::control::AgentPlacement::from_launch_fields(
@@ -266,6 +276,43 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                 serde_json::from_value(input["remote_host"].clone()).context("parse SSH host")?;
             let mut cwd: Option<std::path::PathBuf> =
                 serde_json::from_value(input["cwd"].clone()).context("parse cwd")?;
+            let name: Option<String> = serde_json::from_value(input["new_project"].clone())
+                .context("parse new project name")?;
+            let destination: Option<std::path::PathBuf> =
+                serde_json::from_value(input["destination"].clone())
+                    .context("parse new project destination")?;
+            timeout = Duration::from_secs(120);
+            if name.is_some() || destination.is_some() {
+                let (Some(name), Some(destination)) = (name, destination) else {
+                    bail!("new_project and destination are required together (--new-project NAME --destination PATH)");
+                };
+                for field in [
+                    "project",
+                    "cwd",
+                    "remote_host",
+                    "branch",
+                    "base",
+                    "worktree",
+                    "worktree_dir",
+                    "reuse",
+                    "resume",
+                ] {
+                    if input.get(field).is_some_and(|value| !value.is_null()) {
+                        bail!("new_project cannot be combined with {field}");
+                    }
+                }
+                return Ok((
+                    AgentRequest::SpawnNewProject {
+                        name,
+                        destination: std::path::absolute(destination)
+                            .context("resolve destination")?,
+                        spec,
+                        placement,
+                    },
+                    json,
+                    timeout,
+                ));
+            }
             if remote_host.is_none() {
                 if let Some(path) = cwd {
                     cwd = Some(std::path::absolute(path).context("resolve cwd")?);
@@ -273,7 +320,6 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                     cwd = Some(std::env::current_dir().context("read cwd")?);
                 }
             }
-            timeout = Duration::from_secs(120);
             (
                 AgentRequest::Spawn {
                     placement,

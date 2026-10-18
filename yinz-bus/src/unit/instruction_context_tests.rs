@@ -371,9 +371,13 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["DataRequest", "PostMessagesToPluginWorker", "PluginTick", "PluginPalette", "PaletteNote", "PaletteAgent", "PluginEvent", "PluginReply", "PluginDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
+    special: ["DataRequest", "RefreshDataWatches", "PostMessagesToPluginWorker", "PluginTick", "PluginPalette", "PaletteNote", "PaletteAgent", "PluginEvent", "PluginReply", "PluginDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
     only_special: ["PostMessageToPluginWorker", "UnblockCliPipes"];
     targets: [(
+        "RefreshDataWatches",
+        PluginInstruction::RefreshDataWatches { namespace: "shared:agents".into(), entities: Default::default() },
+        "Update"
+    ), (
         "DataRequest",
         PluginInstruction::DataRequest { request: yinz_types::cli::DataRequest::Catalog { namespace: None }, reply: std::sync::mpsc::channel().0 },
         "Update"

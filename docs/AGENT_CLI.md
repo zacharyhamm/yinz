@@ -101,6 +101,31 @@ printf '%s\n' '{"command":"/opt/bin/claude","args":[],"branch":"review"}' \
 `--project` selects a registered project. `--cwd` selects a directory within that
 project, or a local directory when no project is specified.
 Without either option, local launches use the current directory.
+
+To create a project and launch its first agent:
+
+```sh
+yinz agent spawn --kind codex \
+  --new-project my-app --destination ~/projects/my-app --json
+```
+
+Supply both `--new-project NAME` and `--destination PATH`, or the JSON fields
+`new_project` and `destination`. Flags override JSON fields. The destination is
+the exact repository root; relative paths resolve against the CLI's current directory.
+Its parent must already exist. The destination must be absent, including symlinks,
+and neither the project name nor root may already be registered.
+Yinz initializes an empty Git repository on `main`, remembers the project, and
+launches the agent in its main checkout. It creates no initial commit or remote.
+Placement and keyboard focus follow the same rules as other spawns.
+
+New project launches reject `project`, `cwd`, `remote_host`, `branch`, `base`,
+`worktree`, `worktree_dir`, `reuse` and `resume`, including values in JSON.
+Agent, model, effort, permissions, environment and placement options still apply.
+Failures after directory creation retain the directory and report its path and
+whether registration succeeded. A launch failure keeps the repository and project.
+Inspect them, then retry with `--project NAME --allow-outside-worktree` and the
+desired agent options. Yinz does not delete resources automatically.
+
 `--branch` creates a separate worktree by default, based on `main` under `.worktrees/`.
 Use `--base` and `--worktree-dir` to override those defaults.
 Choose the baseline deliberately when delegating from a feature checkout:

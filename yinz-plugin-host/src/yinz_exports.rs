@@ -546,6 +546,15 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::AgentControl { id, request } => {
                 let mut request: yinz_types::agent::control::AgentRequest =
                     serde_json::from_str(&request).context("decode agent request")?;
+                if let yinz_types::agent::control::AgentRequest::SpawnNewProject {
+                    destination,
+                    ..
+                } = &mut request
+                {
+                    if destination.is_relative() {
+                        *destination = translate_plugin_path(env, destination.clone());
+                    }
+                }
                 if let yinz_types::agent::control::AgentRequest::Spawn {
                     cwd,
                     project,
