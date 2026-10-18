@@ -224,7 +224,7 @@ fn disabling_stacked_pane_list_restores_the_classic_stack() {
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
             && !has_selected_entry(grid_snapshot, "Pane #2")
-            && grid_snapshot.cursor_is_at(col(2).row(4))
+            && grid_snapshot.cursor_is_at(col(2).row(3))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -290,12 +290,12 @@ fn navigating_past_the_top_entry_leaves_the_stack() {
 
     yinz.send_stdin(&keys::alt('k'));
     yinz.wait_until("focus left the stack to the pane above", |grid_snapshot| {
-        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(3))
+        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(2))
     });
 
     yinz.send_stdin(&keys::alt('j'));
     yinz.wait_until("focus re-entered the stack", |grid_snapshot| {
-        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(17))
+        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(16))
     });
     yinz.quit();
 }
@@ -743,7 +743,7 @@ fn splitting_a_new_pane_reforms_the_list_around_it() {
             && grid_snapshot.contains("Pane #2")
             && has_selected_entry(grid_snapshot, "Pane #3")
             && grid_snapshot.contains("Pane #4")
-            && grid_snapshot.cursor_is_at(col(2).row(14))
+            && grid_snapshot.cursor_is_at(col(2).row(13))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -838,7 +838,7 @@ fn a_stack_list_survives_session_resurrection() {
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
             && has_selected_entry(grid_snapshot, "Pane #3")
-            && grid_snapshot.cursor_is_at(col(2).row(6))
+            && grid_snapshot.cursor_is_at(col(2).row(5))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();

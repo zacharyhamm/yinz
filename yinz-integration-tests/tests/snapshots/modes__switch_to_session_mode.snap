@@ -2,7 +2,6 @@
 source: yinz-integration-tests/tests/modes.rs
 expression: normalized(&grid_snapshot)
 ---
- Yinz (test)  Default  + 
- [0] Tab #1  + 
+ Yinz (test)  [0] Tab #1  + 
 $ █
  Ctrl + <o> SESS   d  Detach  w  Manager  c  Config  l  Layouts  p  Plugins  n  Notif  ENTER  Select 

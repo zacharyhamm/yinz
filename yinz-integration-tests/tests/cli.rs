@@ -315,7 +315,7 @@ fn send_blocking_command_through_the_cli() {
     assert_eq!(blocking_command.wait_for_exit(), 42);
 
     let grid_snapshot = yinz.wait_until("floating pane closed on exit", |grid_snapshot| {
-        !grid_snapshot.contains("PIN") && grid_snapshot.cursor_is_at(col(2).row(2))
+        !grid_snapshot.contains("PIN") && grid_snapshot.cursor_is_at(col(2).row(1))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();

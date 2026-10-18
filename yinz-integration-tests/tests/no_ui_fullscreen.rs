@@ -44,7 +44,7 @@ fn no_ui_fullscreen_toggle_off_restores_ui_and_layout() {
     let before = yinz.wait_until("two panes settled with chrome", |grid_snapshot| {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(62).row(3))
+            && grid_snapshot.cursor_is_at(col(62).row(2))
     });
 
     toggle_no_ui_fullscreen_via_keybinding(&yinz);
@@ -57,7 +57,7 @@ fn no_ui_fullscreen_toggle_off_restores_ui_and_layout() {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.status_bar_appears()
             && !grid_snapshot.contains("(FULLSCREEN)")
-            && grid_snapshot.cursor_is_at(col(62).row(3))
+            && grid_snapshot.cursor_is_at(col(62).row(2))
     });
 
     assert_same_rendered_grid(
@@ -89,7 +89,7 @@ fn no_ui_fullscreen_works_with_single_pane() {
     yinz.wait_until("chrome restored for single pane", |grid_snapshot| {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(2).row(2))
+            && grid_snapshot.cursor_is_at(col(2).row(1))
     });
     yinz.quit();
 }
@@ -129,7 +129,7 @@ fn resize_terminal_while_no_ui_fullscreen_tracks_display() {
     yinz.wait_until("chrome restored at the new size", |grid_snapshot| {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.contains("Ctrl +")
-            && grid_snapshot.cursor_is_at(col(52).row(3))
+            && grid_snapshot.cursor_is_at(col(52).row(2))
     });
     yinz.quit();
 }
@@ -267,7 +267,7 @@ fn regular_fullscreen_switches_to_no_ui_fullscreen() {
     yinz.wait_until("regular fullscreen keeps the chrome", |grid_snapshot| {
         grid_snapshot.contains("(FULLSCREEN)")
             && grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(2).row(3))
+            && grid_snapshot.cursor_is_at(col(2).row(2))
     });
 
     toggle_no_ui_fullscreen_via_keybinding(&yinz);
@@ -285,7 +285,7 @@ fn regular_fullscreen_switches_to_no_ui_fullscreen() {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.status_bar_appears()
             && !grid_snapshot.contains("(FULLSCREEN)")
-            && grid_snapshot.cursor_is_at(col(62).row(3))
+            && grid_snapshot.cursor_is_at(col(62).row(2))
     });
     yinz.quit();
 }
@@ -341,7 +341,7 @@ fn new_pane_while_no_ui_fullscreen_breaks_out_and_restores_chrome() {
                 && grid_snapshot.contains("Pane #1")
                 && grid_snapshot.contains("Pane #2")
                 && grid_snapshot.contains("Pane #3")
-                && grid_snapshot.cursor_is_at(col(62).row(14))
+                && grid_snapshot.cursor_is_at(col(62).row(13))
         },
     );
     assert_snapshot!(normalized(&grid_snapshot));
@@ -354,7 +354,7 @@ fn closing_the_no_ui_fullscreen_pane_restores_the_remaining_layout() {
     claim_first_terminal_and_wait_for_prompt(&yinz);
     split_right_and_wait_for_prompt(&yinz);
     let two_pane_state = yinz.wait_until("two panes settled", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(3))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(2))
     });
 
     yinz.send_stdin(&keys::ctrl('p'));
@@ -362,7 +362,7 @@ fn closing_the_no_ui_fullscreen_pane_restores_the_remaining_layout() {
     let third_terminal = yinz.expect_pty_spawn();
     third_terminal.output(PROMPT);
     yinz.wait_until("third pane split below the right pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(14))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(13))
     });
 
     toggle_no_ui_fullscreen_via_keybinding(&yinz);
@@ -378,7 +378,7 @@ fn closing_the_no_ui_fullscreen_pane_restores_the_remaining_layout() {
             grid_snapshot.tab_bar_appears()
                 && grid_snapshot.status_bar_appears()
                 && !grid_snapshot.contains("(FULLSCREEN)")
-                && grid_snapshot.cursor_is_at(col(62).row(3))
+                && grid_snapshot.cursor_is_at(col(62).row(2))
         },
     );
 
@@ -407,7 +407,7 @@ fn no_ui_fullscreen_through_the_cli() {
     yinz.wait_until("cli action restored the chrome", |grid_snapshot| {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(62).row(3))
+            && grid_snapshot.cursor_is_at(col(62).row(2))
     });
     yinz.quit();
 }

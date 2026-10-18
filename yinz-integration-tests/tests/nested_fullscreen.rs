@@ -151,7 +151,7 @@ fn guest_fullscreen_fills_the_host_display_and_hides_chrome() {
                 && host_grid
                     .project_bar_line()
                     .is_some_and(|first_line| first_line.contains(&expected_breadcrumb))
-                && host_grid.cursor_is_at(col(0).row(2))
+                && host_grid.cursor_is_at(col(0).row(1))
         },
     );
     assert!(
@@ -477,7 +477,7 @@ fn innermost_fullscreen_fills_the_whole_outer_terminal_and_zooms_the_chain() {
                 && outer_grid
                     .project_bar_line()
                     .is_some_and(|first_line| first_line.contains(&expected_breadcrumb))
-                && outer_grid.cursor_is_at(col(0).row(2))
+                && outer_grid.cursor_is_at(col(0).row(1))
         },
     );
     assert_snapshot!(
@@ -652,7 +652,7 @@ fn fullscreen_from_inner_while_middle_already_fullscreen_does_not_cancel() {
             outer_grid.contains(&inner_breadcrumb)
                 && !host_own_name_present(outer_grid, &outer_session_name)
                 && !host_own_name_present(outer_grid, &middle_session_name)
-                && outer_grid.cursor_is_at(col(0).row(2))
+                && outer_grid.cursor_is_at(col(0).row(1))
         },
     );
 
@@ -1069,7 +1069,7 @@ fn guest_killed_while_fullscreened_unzooms_the_host_after_liveness_timeout() {
         |host_grid| {
             host_grid.contains(&expected_breadcrumb)
                 && !host_own_name_present(host_grid, &host_session_name)
-                && host_grid.cursor_is_at(col(0).row(2))
+                && host_grid.cursor_is_at(col(0).row(1))
         },
     );
 

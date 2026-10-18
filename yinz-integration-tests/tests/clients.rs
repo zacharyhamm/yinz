@@ -21,7 +21,7 @@ fn mirrored_sessions() {
     second_client.wait_until("second client loaded on the first tab", |grid_snapshot| {
         grid_snapshot.tab_bar_appears()
             && grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(2).row(2))
+            && grid_snapshot.cursor_is_at(col(2).row(1))
     });
 
     second_client.send_stdin(&keys::ctrl('p'));
@@ -35,7 +35,7 @@ fn mirrored_sessions() {
             && session_name_rendered(grid_snapshot)
             && grid_snapshot.status_bar_appears()
             && grid_snapshot.contains("Pane #2")
-            && grid_snapshot.cursor_is_at(col(62).row(3))
+            && grid_snapshot.cursor_is_at(col(62).row(2))
     };
     let main_grid = yinz.wait_until(
         "main client follows the second client's focus into the split it never asked for",
@@ -76,7 +76,7 @@ fn multiple_users_in_same_pane_and_tab() {
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("MY FOCUS")
-                && grid_snapshot.cursor_is_at(col(3).row(3))
+                && grid_snapshot.cursor_is_at(col(3).row(2))
         });
     let main_grid = yinz.wait_until(
         "main client shows the shared-focus indicator",
@@ -86,7 +86,7 @@ fn multiple_users_in_same_pane_and_tab() {
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("MY FOCUS")
-                && grid_snapshot.cursor_is_at(col(3).row(3))
+                && grid_snapshot.cursor_is_at(col(3).row(2))
         },
     );
     assert_snapshot!(normalized(&main_grid));
@@ -102,7 +102,7 @@ fn multiple_users_in_different_panes_and_same_tab() {
 
     let second_client = yinz.attach_client(TERMINAL_SIZE);
     second_client.wait_until("second client loaded on the first tab", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(1))
     });
 
     second_client.send_stdin(&keys::ctrl('p'));
@@ -118,7 +118,7 @@ fn multiple_users_in_different_panes_and_same_tab() {
                 && grid_snapshot.contains("Tab #1 [ ]")
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(62).row(3))
+                && grid_snapshot.cursor_is_at(col(62).row(2))
         },
     );
     let main_grid = yinz.wait_until(
@@ -130,7 +130,7 @@ fn multiple_users_in_different_panes_and_same_tab() {
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.contains("Pane #2")
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(3))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
         },
     );
     assert_snapshot!(normalized(&main_grid));
@@ -156,7 +156,7 @@ fn multiple_users_in_different_tabs() {
 
     let second_client = yinz.attach_client(TERMINAL_SIZE);
     second_client.wait_until("second client loaded on the first tab", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(1))
     });
 
     second_client.send_stdin(&keys::ctrl('t'));
@@ -170,7 +170,7 @@ fn multiple_users_in_different_tabs() {
                 && session_name_rendered(grid_snapshot)
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("[1] Tab #2")
-                && grid_snapshot.cursor_is_at(col(2).row(2))
+                && grid_snapshot.cursor_is_at(col(2).row(1))
         });
     let main_grid = yinz.wait_until(
         "main client sees the new tab while staying on the first tab",
@@ -181,7 +181,7 @@ fn multiple_users_in_different_tabs() {
                 // The second client's `[1]` marker arrives in a later tab-bar frame than the
                 // tab itself; the snapshot below asserts it, so wait for it.
                 && grid_snapshot.contains("[1] Tab #2")
-                && grid_snapshot.cursor_is_at(col(2).row(2))
+                && grid_snapshot.cursor_is_at(col(2).row(1))
         },
     );
     assert_snapshot!(normalized(&main_grid));
@@ -211,7 +211,7 @@ fn detach_and_attach_session() {
     right_terminal.output(PROMPT);
     yinz.wait_until("right terminal prompt rendered", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(62).row(3))
+            && grid_snapshot.cursor_is_at(col(62).row(2))
             && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
 
@@ -237,7 +237,7 @@ fn detach_and_attach_session() {
                 && grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("Pane #2")
                 && grid_snapshot.contains("I am some text")
-                && grid_snapshot.cursor_is_at(col(76).row(3))
+                && grid_snapshot.cursor_is_at(col(76).row(2))
         },
     );
     assert_snapshot!(normalized(&grid_snapshot));

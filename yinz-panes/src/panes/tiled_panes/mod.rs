@@ -34,7 +34,7 @@ use yinz_runtime::errors::prelude::*;
 use yinz_types::style::{Style, Styling};
 use yinz_types::{
     geometry::{Direction, Resize, ResizeStrategy, SplitDirection},
-    pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
+    pane_size::{Constraint, Offset, PaneGeom, Size, SizeInPixels, Viewport},
 };
 use {
     yinz_types::data::ModeInfo, yinz_types::data::PaneInfo, yinz_types::input::command::RunCommand,
@@ -134,6 +134,7 @@ pub struct TiledPanes {
     client_id_to_boundaries: HashMap<ClientId, Boundaries>,
     tombstones_before_increase: Option<(PaneId, Vec<HashMap<PaneId, PaneGeom>>)>,
     tombstones_before_decrease: Option<(PaneId, Vec<HashMap<PaneId, PaneGeom>>)>,
+    failed_tab_bar_resize: Option<(usize, Vec<(PaneId, PaneGeom)>)>,
     dimmed_clients: HashSet<ClientId>,
     agent_width_input: Vec<(PaneId, PaneGeom, usize, usize)>,
     agent_width_ui: Vec<PaneGeom>,
@@ -182,6 +183,7 @@ impl TiledPanes {
             client_id_to_boundaries: HashMap::new(),
             tombstones_before_increase: None,
             tombstones_before_decrease: None,
+            failed_tab_bar_resize: None,
             dimmed_clients: HashSet::new(),
             agent_width_input: Vec::new(),
             agent_width_ui: Vec::new(),
@@ -1689,6 +1691,73 @@ impl TiledPanes {
     pub fn force_resize(&mut self) {
         let display_area = *self.display_area.borrow();
         self.resize(display_area);
+    }
+
+    fn tab_bar_resizes(&self, group_count: usize) -> impl Iterator<Item = (PaneId, PaneGeom)> + '_ {
+        let rows = if group_count > 1 { 2 } else { 1 };
+        self.panes.iter().filter_map(move |(id, pane)| {
+            let mut geom = pane.position_and_size();
+            let resize = pane.is_builtin_tab_bar()
+                && pane.configured_rows().constraint == Constraint::Fixed(2)
+                && !geom.is_stacked()
+                && geom.rows.constraint != Constraint::Fixed(rows);
+            geom.rows.constraint = Constraint::Fixed(rows);
+            resize.then_some((*id, geom))
+        })
+    }
+
+    pub fn tab_bar_needs_resize(&self, group_count: usize) -> bool {
+        // A refused layout must not trigger another plugin resize on every render.
+        if self
+            .failed_tab_bar_resize
+            .as_ref()
+            .is_some_and(|(count, geoms)| {
+                *count == group_count
+                    && geoms.len() == self.panes.len()
+                    && geoms.iter().all(|(id, geom)| {
+                        self.panes
+                            .get(id)
+                            .is_some_and(|pane| pane.position_and_size() == *geom)
+                    })
+            })
+        {
+            return false;
+        }
+        self.tab_bar_resizes(group_count).next().is_some()
+    }
+
+    pub fn resize_tab_bar(&mut self, group_count: usize) -> Result<()> {
+        self.failed_tab_bar_resize = None;
+        let changes: Vec<_> = self.tab_bar_resizes(group_count).collect();
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let previous: Vec<_> = self
+            .panes
+            .iter()
+            .map(|(id, pane)| (*id, pane.position_and_size()))
+            .collect();
+        for (id, geom) in changes {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                pane.set_geom(geom);
+            }
+        }
+        let result = TiledPaneGrid::new(
+            &mut self.panes,
+            &self.panes_to_hide,
+            display_area_viewport(&self.display_area),
+            *self.viewport.borrow(),
+        )
+        .layout(SplitDirection::Vertical, self.display_area.borrow().rows);
+        if result.is_err() {
+            for (id, geom) in &previous {
+                if let Some(pane) = self.panes.get_mut(id) {
+                    pane.set_geom(*geom);
+                }
+            }
+            self.failed_tab_bar_resize = Some((group_count, previous));
+        }
+        result.context("resize tab bar for tab groups")
     }
 
     pub fn resize(&mut self, new_screen_size: Size) {

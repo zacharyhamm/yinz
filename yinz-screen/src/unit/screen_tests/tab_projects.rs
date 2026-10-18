@@ -1073,6 +1073,7 @@ fn arrangement_loads_new_tab_chrome_without_spawning_template_terminals() {
                 .unwrap();
             let geom = terminal.position_and_size();
             assert_eq!(geom.cols.as_usize(), if id == 1 { 60 } else { 120 });
+            let top = if top == 2 { 1 } else { top };
             assert_eq!(geom.y, top);
             assert_eq!(geom.rows.as_usize(), 40 - top - bottom);
             assert_eq!(tab.tiled_and_floating_pane_ids(), tab.get_tiled_pane_ids());

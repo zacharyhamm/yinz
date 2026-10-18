@@ -303,7 +303,6 @@ pub struct Tab {
     prev_user_named: bool,
     pub size: Size,
     tiled_panes: TiledPanes,
-    collapsed_tab_bars: HashSet<PaneId>,
     floating_panes: FloatingPanes,
     // panes drawn over the whole session surface, above this tab's own panes and chrome - a
     // sibling of the two above rather than a special case of the floating layer, so that "the
@@ -333,6 +332,7 @@ pub struct Tab {
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
     pane_frame_style: PaneFrameStyle,
     auto_layout: bool,
+    tab_group_count: usize,
     pending_vte_events: HashMap<TerminalId, Vec<VteBytes>>,
     pub selecting_with_mouse_in_pane: Option<PaneId>, // this is only pub for the tests
     pane_being_resized_with_mouse: Option<PaneResizeState>,
@@ -603,10 +603,10 @@ impl Tab {
             should_clear_display_before_rendering: false,
             style,
             mode_info,
-            collapsed_tab_bars: HashSet::new(),
             default_mode_info,
             pane_frame_style,
             auto_layout,
+            tab_group_count: 1,
             pending_vte_events: HashMap::new(),
             connected_clients,
             selecting_with_mouse_in_pane: None,
@@ -1668,7 +1668,6 @@ impl Tab {
             }
             return Err(error);
         }
-        self.restore_tab_bar_height()?;
         let should_show_floating_panes = self
             .layout_applier(blocking_terminal)
             .apply_layout(
@@ -1738,7 +1737,6 @@ impl Tab {
             }
             return Err(error);
         }
-        self.restore_tab_bar_height()?;
         let should_show_floating_panes = self
             .layout_applier(blocking_terminal)
             .override_layout(
@@ -1807,8 +1805,8 @@ impl Tab {
         }
         self.set_force_render();
         self.senders
-            .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)
-            .with_context(|| "failed to apply cached resizes".to_string())?;
+            .send_to_pty_writer(PtyWriteInstruction::StartCachingResizes)
+            .context("keep pane resizes batched until the screen event ends")?;
         Ok(())
     }
     /// Boundary UI panes occupy the area outside the terminal viewport.
@@ -1916,7 +1914,8 @@ impl Tab {
         self.set_should_clear_display_before_rendering();
         self.set_force_render();
         self.senders
-            .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)?;
+            .send_to_pty_writer(PtyWriteInstruction::StartCachingResizes)
+            .context("keep pane resizes batched until the screen event ends")?;
         Ok(())
     }
 
@@ -1925,7 +1924,6 @@ impl Tab {
             self.tiled_panes.unset_fullscreen();
         }
         self.dissolve_stack_lists_for_classic_mutation();
-        self.restore_tab_bar_height()?;
         if let Some(layout_candidate) = self
             .swap_layouts
             .swap_tiled_panes(&self.tiled_panes, search_backwards)
@@ -1944,12 +1942,11 @@ impl Tab {
         let display_area = *self.display_area.borrow();
         // we do this so that the new swap layout has a chance to pass through the constraint system
         self.tiled_panes.resize(display_area);
-        self.sync_tab_bar_height()?;
         self.refresh_overlay_expansion();
         self.set_should_clear_display_before_rendering();
         self.senders
-            .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)
-            .with_context(|| "failed to apply cached resizes".to_string())?;
+            .send_to_pty_writer(PtyWriteInstruction::StartCachingResizes)
+            .context("keep pane resizes batched until the screen event ends")?;
         Ok(())
     }
     pub fn previous_swap_layout(&mut self) -> Result<()> {
@@ -1959,7 +1956,7 @@ impl Tab {
         } else {
             self.relayout_tiled_panes(search_backwards)?;
         }
-        Ok(())
+        self.sync_tab_bar_height()
     }
     pub fn next_swap_layout(&mut self) -> Result<()> {
         let search_backwards = false;
@@ -1968,7 +1965,7 @@ impl Tab {
         } else {
             self.relayout_tiled_panes(search_backwards)?;
         }
-        Ok(())
+        self.sync_tab_bar_height()
     }
     pub fn request_pane_redraw(&mut self, terminal_id: TerminalId) -> Result<()> {
         if self.is_pending {
@@ -6995,6 +6992,10 @@ impl Tab {
     pub fn resize_whole_tab(&mut self, new_screen_size: Size) -> Result<()> {
         self.resize_whole_tab_to(new_screen_size)
     }
+    pub fn set_tab_group_count(&mut self, count: usize) -> Result<()> {
+        self.tab_group_count = count;
+        self.sync_tab_bar_height()
+    }
     pub fn resize_whole_tab_to(&mut self, display_area: Size) -> Result<()> {
         // a floating pane outside the tab's viewport (over the tab bar, say) is not laid out by
         // the solver at all - it is taken out and put back once the tab has been resized
@@ -7047,10 +7048,13 @@ impl Tab {
             self.swap_layouts.set_is_tiled_damaged();
             let _ = self.relayout_tiled_panes(false);
         }
+        // The screen's ResizeCache flushes once chrome and pane geometry have both settled.
+        let group_count = self.visible_tab_group_count();
+        self.tiled_panes.resize_tab_bar(group_count).non_fatal();
         self.set_should_clear_display_before_rendering();
         self.senders
-            .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)
-            .with_context(|| "failed to update plugins with mode info".to_string())?;
+            .send_to_pty_writer(PtyWriteInstruction::StartCachingResizes)
+            .context("keep pane resizes batched until the screen event ends")?;
         LayoutApplier::offset_viewport(
             self.viewport.clone(),
             self.display_area.clone(),

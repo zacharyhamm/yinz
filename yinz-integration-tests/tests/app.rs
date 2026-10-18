@@ -77,7 +77,7 @@ fn resize_terminal_window() {
             grid_snapshot.contains("Ctrl +")
                 && !grid_snapshot.contains("PANE")
                 && grid_snapshot.tab_bar_appears()
-                && grid_snapshot.cursor_is_at(col(52).row(3))
+                && grid_snapshot.cursor_is_at(col(52).row(2))
         });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -122,7 +122,7 @@ fn status_bar_loads_custom_keybindings() {
     let grid_snapshot = yinz.wait_until(
         "status bar reflects the custom keybindings",
         |grid_snapshot| {
-            grid_snapshot.cursor_is_at(col(2).row(2))
+            grid_snapshot.cursor_is_at(col(2).row(1))
                 && grid_snapshot.contains("LOCK")
                 && grid_snapshot.contains("[0] Tab #1")
         },

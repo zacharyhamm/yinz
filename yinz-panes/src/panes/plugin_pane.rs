@@ -82,6 +82,7 @@ pub struct PluginPane {
     pub should_render: HashMap<ClientId, bool>,
     pub selectable: bool,
     pub geom: PaneGeom,
+    configured_rows: yinz_types::pane_size::Dimension,
     pub geom_override: Option<PaneGeom>,
     pub content_offset: Offset,
     max_content_width: usize,
@@ -165,6 +166,7 @@ impl PluginPane {
             should_render: HashMap::new(),
             selectable: true,
             geom: position_and_size,
+            configured_rows: position_and_size.rows,
             geom_override: None,
             send_plugin_instructions,
             active_at: Instant::now(),
@@ -1078,6 +1080,12 @@ impl Pane for PluginPane {
     }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with
+    }
+    fn configured_rows(&self) -> yinz_types::pane_size::Dimension {
+        self.configured_rows
+    }
+    fn set_configured_rows(&mut self, rows: yinz_types::pane_size::Dimension) {
+        self.configured_rows = rows;
     }
     fn set_title(&mut self, title: String) {
         if self.pane_title != title {

@@ -205,7 +205,7 @@ fn focus_left_pane(yinz: &TestSession) {
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('h'));
     yinz.wait_until("focus moved to the left pane", |grid_snapshot| {
-        grid_snapshot.cursor_is_at(col(2).row(3))
+        grid_snapshot.cursor_is_at(col(2).row(2))
     });
 }
 
@@ -213,7 +213,7 @@ fn focus_upper_pane(yinz: &TestSession) {
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('k'));
     yinz.wait_until("focus moved to the upper pane", |grid_snapshot| {
-        grid_snapshot.cursor_is_at(col(2).row(3))
+        grid_snapshot.cursor_is_at(col(2).row(2))
     });
 }
 

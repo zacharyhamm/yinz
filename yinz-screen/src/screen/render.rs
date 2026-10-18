@@ -38,6 +38,7 @@ impl Screen {
     }
 
     pub(super) fn schedule_render(&mut self) -> Result<()> {
+        self.sync_tab_bar_rows()?;
         // here we schedule the RenderToClients background job which debounces renders every 10ms
         // rather than actually rendering
         //
