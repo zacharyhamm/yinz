@@ -452,7 +452,10 @@ pub(crate) fn resolve_session_for_command(
             eprintln!(
                 "Please specify the session name to {purpose}. The following sessions are active:"
             );
-            list_sessions(false, false, true, false);
+            match yinz_cli::sessions::collect_sessions(false) {
+                Ok(sessions) => print_sessions(sessions, false, false, true, None),
+                Err(error) => eprintln!("Error occurred: {error:?}"),
+            }
             std::process::exit(1);
         },
     };

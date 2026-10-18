@@ -426,14 +426,15 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
-    /// Evaluate Steel Scheme interactively, from stdin, or with --eval.
+    /// Evaluate Steel Scheme in a running session, interactively, from stdin, or with --eval.
+    ///
+    /// Use --session NAME to select a session. Otherwise, use the current session,
+    /// or the sole running session when outside Yinz. Outside Yinz, no or multiple
+    /// running sessions is an error.
     Repl {
         /// Evaluate one expression or program and exit.
         #[clap(short = 'e', long)]
         eval: Option<String>,
-        /// Connect to the selected or current session and enable Yinz host commands.
-        #[clap(long)]
-        connect: bool,
     },
     /// Prepare a persistent project Bubblewrap environment (Linux).
     #[clap(subcommand)]

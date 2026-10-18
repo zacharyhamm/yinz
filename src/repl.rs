@@ -2,22 +2,19 @@ use yinz_cli::args::CliArgs;
 use yinz_runtime::errors::prelude::*;
 use yinz_steel::{repl::Evaluator, EvalOutput};
 
-pub(crate) fn run(options: &CliArgs, expression: Option<&str>, connect: bool) -> Result<()> {
+pub(crate) fn run(options: &CliArgs, expression: Option<&str>) -> Result<()> {
     use std::io::IsTerminal;
-    if !connect && options.session.is_none() {
-        return yinz_steel::repl::run(expression);
-    }
     let (session, caller) = crate::commands::resolve_session_for_command(
         options.session.clone(),
         "connect the REPL to",
     );
-    if expression.is_none() && std::io::stdin().is_terminal() {
-        eprintln!("Connected to Yinz session {session}.");
-    }
     let mut runtime = SessionEvaluator {
         client: yinz_client::repl::Client::connect(&session, caller)?,
         output: String::new(),
     };
+    if expression.is_none() && std::io::stdin().is_terminal() {
+        eprintln!("Connected to Yinz session {session}.");
+    }
     let result = yinz_steel::repl::run_with_evaluator(&mut runtime, expression);
     let close = runtime.client.close();
     result.and(close)

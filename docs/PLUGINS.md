@@ -102,7 +102,7 @@ Use an explicit Scheme extension with `plugins write`. Checked writes keep a bac
 replacing a file. Formatting parses only the named file, without loading its imports.
 It adjusts indentation and preserves comments, strings, and line breaks.
 
-Start a local Scheme REPL:
+Start a Scheme REPL connected to a running Yinz session:
 
 ```sh
 yinz repl
@@ -113,16 +113,17 @@ printf '(define answer 42)\nanswer\n' | yinz repl
 The interactive REPL keeps definitions between expressions and accepts multiline input.
 Use `:quit` or Ctrl-D to exit. Interactive errors leave the REPL open.
 With `--eval` or piped input, an evaluation error produces a nonzero exit status.
-Local evaluation does not execute Yinz host commands. Connect to the current session with
-`--connect`, or select a session explicitly:
+All input modes require a running session and support Yinz host commands.
+Inside Yinz, the REPL selects the current session. Outside Yinz, it selects the sole running session.
+If no sessions are running, or several are running outside Yinz, the command fails.
+Use `--session NAME` to override automatic selection:
 
 ```sh
-yinz repl --connect
 yinz --session work repl
 yinz --session work repl --eval '(yinz-command "GetPluginIds")'
 ```
 
-A connected REPL keeps its own Scheme definitions and uses the session's host command dispatcher.
+The REPL keeps its own Scheme definitions and uses the session's host command dispatcher.
 Each REPL has a separate plugin instance. Exiting with `:quit` or Ctrl-D closes that instance.
 
 Put unit tests in an adjacent `hello.test.scm` file:
