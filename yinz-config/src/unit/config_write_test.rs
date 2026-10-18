@@ -3,6 +3,59 @@ use std::fs;
 use std::io::Read;
 
 #[test]
+fn managed_overlay_tab_plugins_replace_persisted_lists_and_root_edits() {
+    let initial_list =
+        r#"overlay_tab_plugins { "yinz:agents" label="Agents"; "yinz:todos" label="Todos"; }"#;
+    for initial in [
+        initial_list.to_owned(),
+        format!("configuration_edits {{ set \"overlay_tab_plugins\" {{ {initial_list}; }}; }}"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let overlay_dir = dir.path().join(super::CONFIG_OVERLAY_DIR_NAME);
+        Config::write_managed_fragment(
+            &overlay_dir,
+            "mouse_mode false\nconfiguration_edits { set \"pane_frames\" { pane_frames false; }; }",
+        )
+        .unwrap();
+
+        for (fragment, expected_list) in [
+            (initial.as_str(), initial_list),
+            (
+                r#"overlay_tab_plugins { "yinz:todos" label="Tasks"; }"#,
+                r#"overlay_tab_plugins { "yinz:todos" label="Tasks"; }"#,
+            ),
+            (
+                "scroll_buffer_size 1234",
+                r#"overlay_tab_plugins { "yinz:todos" label="Tasks"; }"#,
+            ),
+            ("overlay_tab_plugins {}", "overlay_tab_plugins {}"),
+        ] {
+            let path = Config::write_managed_fragment(&overlay_dir, fragment).unwrap();
+            let loaded = Config::load(None, Some(dir.path()), false).unwrap();
+            assert_eq!(
+                loaded.overlay_tab_plugins,
+                Config::from_kdl(expected_list, None)
+                    .unwrap()
+                    .overlay_tab_plugins,
+                "initial: {initial}, fragment: {fragment}"
+            );
+            assert_eq!(loaded.options.mouse_mode, Some(false));
+            assert_eq!(loaded.options.pane_frames, Some(false));
+            if fragment.starts_with("overlay_tab_plugins") {
+                let persisted: kdl::KdlDocument =
+                    fs::read_to_string(path).unwrap().parse().unwrap();
+                let edits = crate::editor::patches_from_kdl(
+                    persisted.get(crate::editor::EDITS_BLOCK).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(edits.len(), 1);
+                assert_eq!(edits[0].path, vec!["pane_frames"]);
+            }
+        }
+    }
+}
+
+#[test]
 fn managed_fragment_guard_runs_under_lock_and_rejection_preserves_the_file() {
     for original in [None, Some("// keep this comment\nmouse_mode false\n")] {
         let dir = tempfile::tempdir().unwrap();

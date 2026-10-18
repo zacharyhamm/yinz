@@ -390,7 +390,7 @@ fn new_agent_actual_runtimes_hide_agents_panel_and_focus_created_pane() {
         "new_agent_actual_runtimes_hide_agents_panel_and_focus_created_pane",
     );
     let mut pair = pair(BTreeMap::new());
-    pair.event(Event::PaneUpdate(PaneManifest {
+    let mut event = Event::PaneUpdate(PaneManifest {
         panes: std::collections::HashMap::from([(
             TabPosition::new(0),
             vec![
@@ -405,7 +405,19 @@ fn new_agent_actual_runtimes_hide_agents_panel_and_focus_created_pane() {
                 },
             ],
         )]),
-    }));
+    });
+    pair.wasm.update(&event);
+    // The recorded panel used Agents identity; the current host supplies container identity.
+    if let Event::PaneUpdate(manifest) = &mut event {
+        let pane = &mut manifest.panes.get_mut(&TabPosition::new(0)).unwrap()[1];
+        pane.plugin_url = Some("file:/custom.scm".into());
+        pane.pane_tabs = Some(serde_json::from_value(json!({
+            "id":7, "pane_id":{"Plugin":20}, "active":0, "bar_focused":[], "overlay_group":true,
+            "tabs":[{"descriptor":{"label":"Custom","location":"file:/custom.scm"},"plugin_id":20,"state":"Ready"}]
+        })).unwrap());
+    }
+    pair.steel.update(&event);
+    pair.commands();
     tabs(&mut pair, 6);
     pair.key("Enter");
     tabs(&mut pair, 6);

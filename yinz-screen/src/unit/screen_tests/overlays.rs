@@ -7731,3 +7731,918 @@ fn suppressed_plugins_are_active_tab_broadcast_targets_without_duplicates() {
         .targeted_plugin_ids(client, EventType::InputReceived)
         .contains(&plugin));
 }
+
+#[expect(
+    clippy::type_complexity,
+    reason = "fixture returns the screen and its plugin and pty instruction receivers"
+)]
+fn configured_overlay_screen() -> (
+    Screen,
+    channels::Receiver<(PluginInstruction, ErrorContext)>,
+    channels::Receiver<(PtyInstruction, ErrorContext)>,
+) {
+    let (mut screen, plugins) = screen_with_plugin_sender(Size {
+        cols: 120,
+        rows: 40,
+    });
+    let (tx, ptys) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+    (screen, plugins, ptys)
+}
+
+fn configured_overlay_run(location: &str) -> RunPluginOrAlias {
+    yinz_runtime::plugin_location::run_plugin_or_alias_from_url(location, &None, None, None)
+        .unwrap()
+}
+
+fn launch_configured_overlay(screen: &mut Screen, location: &str, client: ClientId) {
+    screen
+        .launch_or_focus_plugin(
+            configured_overlay_run(location),
+            false,
+            false,
+            false,
+            false,
+            None,
+            false,
+            client,
+            None,
+            None,
+        )
+        .unwrap();
+}
+
+fn next_overlay_load(
+    screen: &mut Screen,
+    ptys: &channels::Receiver<(PtyInstruction, ErrorContext)>,
+    events: &channels::Receiver<(PluginInstruction, ErrorContext)>,
+) -> (
+    yinz_types::pane_tabs::PaneTabsId,
+    usize,
+    u64,
+    yinz_types::pane_tabs::PaneTabDescriptor,
+) {
+    for (event, _) in ptys.try_iter() {
+        if let PtyInstruction::ResolveOverlayTabCwd { id, cwd, .. } = event {
+            screen
+                .overlay_tab_cwd(
+                    id,
+                    cwd.or_else(|| Some(std::path::PathBuf::from("/focused"))),
+                    Some(std::path::PathBuf::from("/focused")),
+                    Some(yinz_types::internal_ids::TerminalId::new(7)),
+                )
+                .unwrap();
+        }
+    }
+    events
+        .try_iter()
+        .find_map(|(event, _)| match event {
+            PluginInstruction::LoadPaneTab {
+                id,
+                index,
+                generation,
+                descriptor,
+                ..
+            } => Some((id, index, generation, descriptor)),
+            _ => None,
+        })
+        .expect("a plugin tab load")
+}
+
+#[test]
+fn configured_overlay_coalesces_launches_selects_unloaded_tabs_and_survives_reload() {
+    let (mut screen, events, ptys) = configured_overlay_screen();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let config = Config::from_kdl(
+        r#"
+        plugins { custom location="file:overlay-custom.scm" { option "value"; cwd "sub"; }; }
+        overlay_tab_plugins { custom label="First"; "file:overlay-second.scm" label="Second"; }
+    "#,
+        None,
+    )
+    .unwrap();
+    screen
+        .reconfigure(
+            ScreenConfig::from_config(&config),
+            Keybinds::default(),
+            CLIENT_1,
+        )
+        .unwrap();
+    let absolute_custom = configured_overlay_run("file:overlay-custom.scm")
+        .get_run_plugin()
+        .unwrap()
+        .location
+        .display();
+    let absolute_second = configured_overlay_run("file:overlay-second.scm")
+        .get_run_plugin()
+        .unwrap()
+        .location
+        .display();
+    launch_configured_overlay(&mut screen, &absolute_custom, CLIENT_1);
+    launch_configured_overlay(&mut screen, "custom", CLIENT_1);
+    let (id, first, generation, descriptor) = next_overlay_load(&mut screen, &ptys, &events);
+    assert_eq!(descriptor.configuration["caller_cwd"], "/focused");
+    assert_eq!(descriptor.configuration["caller_terminal_pane_id"], "7");
+    assert_eq!(
+        descriptor.initial_cwd.as_deref(),
+        Some(std::path::Path::new("/focused/sub"))
+    );
+    assert_eq!(
+        descriptor.configuration.get("option").map(String::as_str),
+        Some("value")
+    );
+    launch_configured_overlay(&mut screen, &absolute_second, CLIENT_1);
+    launch_configured_overlay(&mut screen, "file:overlay-second.scm", CLIENT_1);
+    assert!(!events
+        .try_iter()
+        .any(|(event, _)| matches!(event, PluginInstruction::LoadPaneTab { .. })));
+    screen
+        .pane_tab_loaded(
+            id,
+            first,
+            generation,
+            Ok((
+                PluginId::new(100),
+                configured_overlay_run("file:overlay-custom.scm"),
+            )),
+        )
+        .unwrap();
+    let (id, second, generation, descriptor) = next_overlay_load(&mut screen, &ptys, &events);
+    assert_eq!(
+        descriptor.initial_cwd.as_deref(),
+        Some(std::path::Path::new("/focused"))
+    );
+    let info = screen.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap();
+    assert!(info.overlay_group);
+    assert_eq!(info.active, 1);
+    screen
+        .pane_tab_loaded(
+            id,
+            second,
+            generation,
+            Ok((
+                PluginId::new(101),
+                configured_overlay_run("file:overlay-second.scm"),
+            )),
+        )
+        .unwrap();
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .close_pane_tab_child(id, 0)
+        .unwrap();
+    launch_configured_overlay(&mut screen, &absolute_custom, CLIENT_1);
+    let (retry_id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+    assert_eq!((retry_id, index), (id, 0));
+    screen
+        .pane_tab_loaded(
+            id,
+            index,
+            generation,
+            Ok((
+                PluginId::new(102),
+                configured_overlay_run("file:overlay-custom.scm"),
+            )),
+        )
+        .unwrap();
+    launch_configured_overlay(&mut screen, &absolute_second, CLIENT_1);
+    assert_eq!(
+        screen.tabs[&TabId::new(0)]
+            .pane_tabs_info(id)
+            .unwrap()
+            .active,
+        1
+    );
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .hide_overlay_pane(PaneId::Plugin(PluginId::new(101)));
+    let empty = Config::from_kdl("overlay_tab_plugins {}", None).unwrap();
+    screen
+        .reconfigure(
+            ScreenConfig::from_config(&empty),
+            Keybinds::default(),
+            CLIENT_1,
+        )
+        .unwrap();
+    launch_configured_overlay(&mut screen, "file:overlay-custom.scm", CLIENT_1);
+    let tab = &screen.tabs[&TabId::new(0)];
+    let info = tab.pane_tabs_info(id).unwrap();
+    assert_eq!(info.active, 0);
+    assert_eq!(info.tabs[0].descriptor.label, "First");
+    assert!(!tab.get_pane_info(info.pane_id).unwrap().is_suppressed);
+    assert_eq!(tab.pane_tabs_infos().count(), 1);
+    assert!(!events
+        .try_iter()
+        .any(|(event, _)| matches!(event, PluginInstruction::LoadPaneTab { .. })));
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .close_pane_tabs(id)
+        .unwrap();
+    launch_configured_overlay(&mut screen, "file:overlay-custom.scm", CLIENT_1);
+    assert!(screen.pending_overlay_tabs.is_none());
+}
+
+#[test]
+fn configured_overlay_load_failure_releases_pending_launch_and_retry_reuses_slots() {
+    let (mut screen, events, ptys) = configured_overlay_screen();
+    new_tab(&mut screen, 1, TabId::new(0));
+    launch_configured_overlay(&mut screen, "yinz:todos", CLIENT_1);
+    let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+    screen
+        .pane_tab_loaded(id, index, generation, Err("load failed".into()))
+        .unwrap();
+    assert!(screen.pending_overlay_tabs.is_none());
+    launch_configured_overlay(&mut screen, "yinz:todos", CLIENT_1);
+    let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+    screen
+        .pane_tab_loaded(
+            id,
+            index,
+            generation,
+            Ok((PluginId::new(100), configured_overlay_run("yinz:todos"))),
+        )
+        .unwrap();
+    launch_configured_overlay(&mut screen, "yinz:agents", CLIENT_1);
+    let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+    screen
+        .pane_tab_loaded(id, index, generation, Err("permission denied".into()))
+        .unwrap();
+    assert!(matches!(
+        screen.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap().tabs[index].state,
+        yinz_types::pane_tabs::PaneTabLoadState::Failed(_)
+    ));
+    launch_configured_overlay(&mut screen, "yinz:agents", CLIENT_1);
+    let (retry_id, retry_index, retry_generation, _) =
+        next_overlay_load(&mut screen, &ptys, &events);
+    assert_eq!((retry_id, retry_index), (id, index));
+    assert!(retry_generation > generation);
+}
+
+#[test]
+fn configured_overlay_follows_tabs_without_agents_and_preserves_geometry() {
+    for mirrored in [false, true] {
+        let (mut screen, events, ptys) = configured_overlay_screen();
+        screen.session_is_mirrored = mirrored;
+        new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
+        let other = ClientId::new(2);
+        screen.add_client(other).unwrap();
+        screen.overlay_tab_plugins =
+            Config::from_kdl("overlay_tab_plugins { \"file:/custom.scm\"; }", None)
+                .unwrap()
+                .resolved_overlay_tab_plugins()
+                .unwrap();
+        launch_configured_overlay(&mut screen, "file:/custom.scm", CLIENT_1);
+        let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+        screen
+            .pane_tab_loaded(
+                id,
+                index,
+                generation,
+                Ok((
+                    PluginId::new(100),
+                    configured_overlay_run("file:/custom.scm"),
+                )),
+            )
+            .unwrap();
+        let pane = PaneId::Plugin(PluginId::new(100));
+        screen.change_overlay_coordinates(vec![(pane, popup_coordinates())], true);
+        let source = *screen.active_tab_ids.get(&CLIENT_1).unwrap();
+        let target = if source == TabId::new(0) {
+            TabId::new(1)
+        } else {
+            TabId::new(0)
+        };
+        let destination_focus = screen.tabs[&target].get_active_pane_id(CLIENT_1);
+        assert!(matches!(destination_focus, Some(PaneId::Terminal(_))));
+        assert_eq!(screen.get_active_pane_id(&CLIENT_1), Some(pane));
+        let placement = screen.tabs[&source].overlay_placement_for(pane);
+        screen
+            .switch_active_tab(screen.tabs[&target].position, None, true, CLIENT_1)
+            .unwrap();
+        assert!(screen.tabs[&target].pane_is_overlay(pane));
+        assert_eq!(screen.tabs[&target].overlay_placement_for(pane), placement);
+        assert!(!screen.tabs[&source].pane_is_overlay(pane));
+        assert_eq!(screen.get_active_pane_id(&CLIENT_1), destination_focus);
+        if mirrored {
+            assert_eq!(screen.active_tab_ids[&other], target);
+            assert_eq!(screen.get_active_pane_id(&other), destination_focus);
+        } else {
+            assert_eq!(screen.active_tab_ids[&other], source);
+        }
+        launch_configured_overlay(&mut screen, "file:/custom.scm", CLIENT_1);
+        assert_eq!(screen.get_active_pane_id(&CLIENT_1), Some(pane));
+    }
+}
+
+#[test]
+fn configured_overlay_skips_explicit_placement_and_background_launches() {
+    let (mut screen, events, _ptys) = configured_overlay_screen();
+    new_tab(&mut screen, 1, TabId::new(0));
+    for (in_place, replacement, explicit_tab, no_focus) in [
+        (
+            true,
+            Some(PaneId::Terminal(crate::TerminalId::new(1))),
+            None,
+            false,
+        ),
+        (false, None, Some(TabId::new(0)), false),
+        (false, None, None, true),
+    ] {
+        screen
+            .launch_plugin(
+                configured_overlay_run("yinz:agents"),
+                false,
+                in_place,
+                false,
+                replacement,
+                false,
+                None,
+                CLIENT_1,
+                None,
+                explicit_tab,
+                no_focus,
+                None,
+            )
+            .unwrap();
+        assert!(screen.pending_overlay_tabs.is_none());
+    }
+    assert!(!events
+        .try_iter()
+        .any(|(event, _)| matches!(event, PluginInstruction::LoadPaneTab { .. })));
+}
+
+#[test]
+fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_reloaded_list() {
+    let (mut screen, events, ptys) = configured_overlay_screen();
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    screen
+        .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, CLIENT_1)
+        .unwrap();
+    launch_configured_overlay(&mut screen, "yinz:todos", other);
+    let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+    screen
+        .pane_tab_loaded(
+            id,
+            index,
+            generation,
+            Ok((PluginId::new(100), configured_overlay_run("yinz:todos"))),
+        )
+        .unwrap();
+    let pane = PaneId::Plugin(PluginId::new(100));
+    screen
+        .tabs
+        .get_mut(&TabId::new(1))
+        .unwrap()
+        .hide_overlay_pane(pane);
+    // Plugin actions carry their source pane even when they are not replacing it.
+    screen
+        .launch_plugin(
+            configured_overlay_run("yinz:todos"),
+            false,
+            false,
+            false,
+            Some(PaneId::Plugin(PluginId::new(200))),
+            false,
+            None,
+            CLIENT_1,
+            None,
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+    assert!(screen.tabs[&TabId::new(0)].pane_is_overlay(pane));
+    assert_eq!(screen.active_tab_ids[&other], TabId::new(1));
+    assert_eq!(screen.get_active_pane_id(&CLIENT_1), Some(pane));
+    let info = screen.tabs[&TabId::new(0)]
+        .pane_tabs_infos()
+        .next()
+        .unwrap();
+    let config = Config::from_kdl(
+        "overlay_tab_plugins { \"yinz:todos\" label=\"Only\"; }",
+        None,
+    )
+    .unwrap();
+    screen
+        .reconfigure(
+            ScreenConfig::from_config(&config),
+            Keybinds::default(),
+            CLIENT_1,
+        )
+        .unwrap();
+    assert_eq!(
+        screen.tabs[&TabId::new(0)]
+            .pane_tabs_info(info.id)
+            .unwrap()
+            .tabs
+            .len(),
+        2
+    );
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .close_pane_tabs(info.id)
+        .unwrap();
+    screen
+        .new_floating_plugin_pane(
+            configured_overlay_run("yinz:todos"),
+            None,
+            false,
+            None,
+            NewPanePlacement::Floating(None),
+            CLIENT_1,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+    let (id, index, generation, descriptor) = next_overlay_load(&mut screen, &ptys, &events);
+    assert_eq!(descriptor.label, "Only");
+    screen
+        .pane_tab_loaded(
+            id,
+            index,
+            generation,
+            Ok((PluginId::new(101), configured_overlay_run("yinz:todos"))),
+        )
+        .unwrap();
+    assert_eq!(
+        screen.tabs[&TabId::new(0)]
+            .pane_tabs_infos()
+            .next()
+            .unwrap()
+            .tabs
+            .len(),
+        1
+    );
+}
+
+fn launch_overlay_with_completion(
+    screen: &mut Screen,
+    location: &str,
+) -> tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    screen
+        .launch_or_focus_plugin(
+            configured_overlay_run(location),
+            false,
+            false,
+            false,
+            false,
+            None,
+            false,
+            CLIENT_1,
+            Some(crate::NotificationEnd::new(tx)),
+            None,
+        )
+        .unwrap();
+    rx
+}
+
+#[test]
+fn configured_overlay_lazy_launch_completion_follows_requested_slot() {
+    let (mut screen, events, ptys) = configured_overlay_screen();
+    new_tab(&mut screen, 1, TabId::new(0));
+    let mut first = launch_overlay_with_completion(&mut screen, "yinz:agents");
+    let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+    assert!(first.try_recv().is_err());
+    screen
+        .pane_tab_loaded(
+            id,
+            index,
+            generation,
+            Ok((PluginId::new(100), configured_overlay_run("yinz:agents"))),
+        )
+        .unwrap();
+    assert_eq!(
+        first.try_recv().unwrap().affected_pane_id,
+        Some(PaneId::Plugin(PluginId::new(100)))
+    );
+
+    let (tx, mut second) = tokio::sync::oneshot::channel();
+    screen
+        .launch_plugin(
+            configured_overlay_run("yinz:todos"),
+            false,
+            false,
+            false,
+            None,
+            false,
+            None,
+            CLIENT_1,
+            Some(crate::NotificationEnd::new(tx)),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+    let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+    assert!(second.try_recv().is_err());
+    let mut duplicate = launch_overlay_with_completion(&mut screen, "yinz:todos");
+    let mut loaded = launch_overlay_with_completion(&mut screen, "yinz:agents");
+    assert_eq!(
+        loaded.try_recv().unwrap().affected_pane_id,
+        Some(PaneId::Plugin(PluginId::new(100)))
+    );
+    screen
+        .pane_tab_loaded(
+            id,
+            index,
+            generation - 1,
+            Ok((PluginId::new(101), configured_overlay_run("yinz:todos"))),
+        )
+        .unwrap();
+    assert!(second.try_recv().is_err());
+    assert!(duplicate.try_recv().is_err());
+    screen
+        .pane_tab_loaded(
+            id,
+            index,
+            generation,
+            Ok((PluginId::new(102), configured_overlay_run("yinz:todos"))),
+        )
+        .unwrap();
+    for completion in [&mut second, &mut duplicate] {
+        assert_eq!(
+            completion.try_recv().unwrap().affected_pane_id,
+            Some(PaneId::Plugin(PluginId::new(102)))
+        );
+    }
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(PaneId::Plugin(PluginId::new(100)))
+    );
+}
+
+#[test]
+fn configured_overlay_coalesced_completions_load_each_requested_slot() {
+    let (mut screen, events, ptys) = configured_overlay_screen();
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen
+        .overlay_tab_plugins
+        .push(yinz_types::pane_tabs::PaneTabDescriptor {
+            label: "Third".into(),
+            location: "yinz:about".into(),
+            configuration: Default::default(),
+            initial_cwd: None,
+        });
+    let mut first = launch_overlay_with_completion(&mut screen, "yinz:agents");
+    let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+    let mut second = launch_overlay_with_completion(&mut screen, "yinz:todos");
+    let mut third = launch_overlay_with_completion(&mut screen, "yinz:about");
+    screen
+        .pane_tab_loaded(
+            id,
+            index,
+            generation,
+            Ok((PluginId::new(100), configured_overlay_run("yinz:agents"))),
+        )
+        .unwrap();
+    assert_eq!(
+        first.try_recv().unwrap().affected_pane_id,
+        Some(PaneId::Plugin(PluginId::new(100)))
+    );
+    assert!(second.try_recv().is_err());
+    assert!(third.try_recv().is_err());
+    let id = screen.tabs[&TabId::new(0)]
+        .pane_tabs_infos()
+        .next()
+        .unwrap()
+        .id;
+    let loads: Vec<_> = events
+        .try_iter()
+        .filter_map(|(event, _)| match event {
+            PluginInstruction::LoadPaneTab {
+                index,
+                generation,
+                descriptor,
+                ..
+            } => Some((index, generation, descriptor)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(loads.len(), 2);
+    for (index, generation, descriptor) in loads {
+        screen
+            .pane_tab_loaded(
+                id,
+                index,
+                generation,
+                Ok((
+                    PluginId::new(100 + index as u32),
+                    configured_overlay_run(&descriptor.location),
+                )),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        second.try_recv().unwrap().affected_pane_id,
+        Some(PaneId::Plugin(PluginId::new(101)))
+    );
+    assert_eq!(
+        third.try_recv().unwrap().affected_pane_id,
+        Some(PaneId::Plugin(PluginId::new(102)))
+    );
+    assert_eq!(
+        screen.tabs[&TabId::new(0)]
+            .pane_tabs_info(id)
+            .unwrap()
+            .active,
+        2
+    );
+}
+
+#[test]
+fn configured_overlay_launch_completion_reports_failure_and_closure() {
+    for close in [false, true] {
+        let (mut screen, events, ptys) = configured_overlay_screen();
+        new_tab(&mut screen, 1, TabId::new(0));
+        launch_configured_overlay(&mut screen, "yinz:agents", CLIENT_1);
+        let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+        screen
+            .pane_tab_loaded(
+                id,
+                index,
+                generation,
+                Ok((PluginId::new(100), configured_overlay_run("yinz:agents"))),
+            )
+            .unwrap();
+        let mut completion = launch_overlay_with_completion(&mut screen, "yinz:todos");
+        let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
+        if close {
+            screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .close_pane_tabs(id)
+                .unwrap();
+            screen.render().unwrap();
+        } else {
+            screen
+                .pane_tab_loaded(id, index, generation, Err("load failed".into()))
+                .unwrap();
+        }
+        let result = completion.try_recv().unwrap();
+        assert_eq!(result.exit_status, Some(1));
+        assert!(result.error_message.is_some());
+        assert_eq!(result.affected_pane_id, None);
+    }
+}
+
+#[test]
+fn configured_overlay_initial_configuration_and_caller_metadata_survive_loading() {
+    for location in ["custom", "file:overlay-custom.scm"] {
+        let (mut screen, events, ptys) = configured_overlay_screen();
+        new_tab(&mut screen, 1, TabId::new(0));
+        let config = Config::from_kdl(r#"
+            plugins { custom location="file:overlay-custom.scm" { width "50%"; unchanged "yes"; cwd "/plugin"; }; }
+            overlay_tab_plugins { custom; "yinz:todos"; }
+        "#, None).unwrap();
+        screen
+            .reconfigure(
+                ScreenConfig::from_config(&config),
+                Keybinds::default(),
+                CLIENT_1,
+            )
+            .unwrap();
+        let configuration = std::collections::BTreeMap::from([
+            ("width".into(), "80%".into()),
+            ("caller_cwd".into(), "/explicit-caller".into()),
+            ("caller_terminal_pane_id".into(), "42".into()),
+        ]);
+        let request = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            location,
+            &Some(configuration),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(screen
+            .launch_overlay_tab(&request, None, false, CLIENT_1, &mut None)
+            .unwrap());
+        let (id, index, generation, descriptor) = next_overlay_load(&mut screen, &ptys, &events);
+        assert_eq!(descriptor.configuration["width"], "80%");
+        assert_eq!(descriptor.configuration["unchanged"], "yes");
+        assert_eq!(descriptor.configuration["caller_cwd"], "/explicit-caller");
+        assert_eq!(descriptor.configuration["caller_terminal_pane_id"], "42");
+        assert_eq!(descriptor.initial_cwd, Some("/plugin".into()));
+        screen
+            .pane_tab_loaded(id, index, generation, Ok((PluginId::new(100), request)))
+            .unwrap();
+        launch_configured_overlay(&mut screen, "custom", CLIENT_1);
+        let id = screen.tabs[&TabId::new(0)]
+            .pane_tabs_infos()
+            .next()
+            .unwrap()
+            .id;
+        assert_eq!(
+            screen.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap().tabs[index].descriptor,
+            descriptor
+        );
+        launch_configured_overlay(&mut screen, "yinz:todos", CLIENT_1);
+        let (_, _, _, companion) = next_overlay_load(&mut screen, &ptys, &events);
+        assert_eq!(companion.configuration["caller_cwd"], "/focused");
+        assert_eq!(companion.configuration["caller_terminal_pane_id"], "7");
+        assert!(!companion.configuration.contains_key("width"));
+    }
+}
+
+#[test]
+fn configured_overlay_explicit_cwd_overrides_alias_default() {
+    for location in ["custom", "file:overlay-custom.scm"] {
+        for (cwd, expected) in [
+            (None, "/plugin"),
+            (Some("/override"), "/override"),
+            (Some("relative"), "/focused/relative"),
+        ] {
+            let (mut screen, events, ptys) = configured_overlay_screen();
+            new_tab(&mut screen, 1, TabId::new(0));
+            let config = Config::from_kdl(
+                r#"
+                plugins { custom location="file:overlay-custom.scm" { cwd "/plugin"; }; }
+                overlay_tab_plugins { custom; "yinz:todos"; }
+                "#,
+                None,
+            )
+            .unwrap();
+            screen
+                .reconfigure(
+                    ScreenConfig::from_config(&config),
+                    Keybinds::default(),
+                    CLIENT_1,
+                )
+                .unwrap();
+            let request = configured_overlay_run(location).with_initial_cwd(cwd.map(Into::into));
+            screen
+                .launch_or_focus_plugin(
+                    request.clone(),
+                    false,
+                    false,
+                    false,
+                    false,
+                    None,
+                    false,
+                    CLIENT_1,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let (id, index, generation, descriptor) =
+                next_overlay_load(&mut screen, &ptys, &events);
+            assert_eq!(descriptor.initial_cwd, Some(expected.into()));
+            assert_eq!(descriptor.configuration["caller_cwd"], "/focused");
+            screen
+                .pane_tab_loaded(id, index, generation, Ok((PluginId::new(100), request)))
+                .unwrap();
+            launch_configured_overlay(&mut screen, "yinz:todos", CLIENT_1);
+            let (_, _, _, sibling) = next_overlay_load(&mut screen, &ptys, &events);
+            assert_eq!(sibling.initial_cwd, Some("/focused".into()));
+        }
+    }
+}
+
+#[test]
+fn configured_overlay_coalesced_loads_keep_originating_clients() {
+    for with_completions in [false, true] {
+        for queue_before_cwd in [false, true] {
+            let (mut screen, events, ptys) = configured_overlay_screen();
+            new_tab(&mut screen, 1, TabId::new(0));
+            new_tab(&mut screen, 2, TabId::new(1));
+            let other = ClientId::new(2);
+            screen.add_client(other).unwrap();
+            screen
+                .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, CLIENT_1)
+                .unwrap();
+            screen
+                .overlay_tab_plugins
+                .push(yinz_types::pane_tabs::PaneTabDescriptor {
+                    label: "Third".into(),
+                    location: "yinz:about".into(),
+                    configuration: Default::default(),
+                    initial_cwd: None,
+                });
+            let mut completions = vec![];
+            let mut pending_id = None;
+            for (index, location, client) in [
+                (0, "yinz:agents", CLIENT_1),
+                (1, "yinz:todos", other),
+                (2, "yinz:about", CLIENT_1),
+                (2, "yinz:about", other),
+            ] {
+                let mut completion = if with_completions {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    completions.push((index, rx));
+                    Some(crate::NotificationEnd::new(tx))
+                } else {
+                    None
+                };
+                assert!(screen
+                    .launch_overlay_tab(
+                        &configured_overlay_run(location),
+                        None,
+                        false,
+                        client,
+                        &mut completion
+                    )
+                    .unwrap());
+                if index == 0 {
+                    let (id, client_id) = ptys
+                        .try_iter()
+                        .find_map(|(event, _)| match event {
+                            PtyInstruction::ResolveOverlayTabCwd { id, client_id, .. } => {
+                                Some((id, client_id))
+                            },
+                            _ => None,
+                        })
+                        .unwrap();
+                    assert_eq!(client_id, CLIENT_1);
+                    pending_id = Some(id);
+                    if !queue_before_cwd {
+                        screen
+                            .overlay_tab_cwd(
+                                id,
+                                Some("/client-a".into()),
+                                Some("/client-a".into()),
+                                Some(TerminalId::new(7)),
+                            )
+                            .unwrap();
+                    }
+                }
+            }
+            if queue_before_cwd {
+                screen
+                    .overlay_tab_cwd(
+                        pending_id.unwrap(),
+                        Some("/client-a".into()),
+                        Some("/client-a".into()),
+                        Some(TerminalId::new(7)),
+                    )
+                    .unwrap();
+            }
+            for expected in [vec![(0, CLIENT_1)], vec![(1, other), (2, CLIENT_1)]] {
+                let loads: Vec<_> = events
+                    .try_iter()
+                    .filter_map(|(event, _)| match event {
+                        PluginInstruction::LoadPaneTab {
+                            id,
+                            index,
+                            generation,
+                            descriptor,
+                            client_id,
+                            ..
+                        } => Some((id, index, generation, descriptor, client_id)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    loads
+                        .iter()
+                        .map(|(_, index, _, _, client)| (*index, *client))
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+                for (id, index, generation, descriptor, _) in loads {
+                    assert_eq!(descriptor.configuration["caller_cwd"], "/client-a");
+                    assert_eq!(descriptor.configuration["caller_terminal_pane_id"], "7");
+                    screen
+                        .pane_tab_loaded(
+                            id,
+                            index,
+                            generation,
+                            Ok((
+                                PluginId::new(100 + index as u32),
+                                configured_overlay_run(&descriptor.location),
+                            )),
+                        )
+                        .unwrap();
+                }
+            }
+            let tab = &screen.tabs[&TabId::new(1)];
+            let info = tab
+                .pane_tabs_infos()
+                .find(|info| info.overlay_group)
+                .unwrap();
+            assert_eq!(info.active, 2);
+            assert_eq!(tab.get_active_pane_id(other), Some(info.pane_id));
+            assert!(!screen.tabs[&TabId::new(0)]
+                .pane_tabs_infos()
+                .any(|info| info.overlay_group));
+            for (index, mut completion) in completions {
+                assert_eq!(
+                    completion.try_recv().unwrap().affected_pane_id,
+                    Some(PaneId::Plugin(PluginId::new(100 + index)))
+                );
+            }
+        }
+    }
+}

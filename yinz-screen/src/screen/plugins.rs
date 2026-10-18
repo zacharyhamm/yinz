@@ -9,6 +9,7 @@ use super::{
 };
 use crate::panes::PaneId;
 use crate::plugins::PluginId;
+use crate::plugins::PluginInstruction;
 use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction};
 use crate::route::NotificationEnd;
 use crate::tab::Tab;
@@ -18,6 +19,18 @@ use yinz_types::data::{NewPanePlacement, OverlayPlacement};
 use yinz_types::geometry::FloatingPaneCoordinates;
 use yinz_types::input::layout::{Run, RunPluginOrAlias};
 use yinz_types::pane_size::Size;
+use yinz_types::pane_tabs::{PaneTabsId, PaneTabsLayout};
+
+pub(super) struct PendingOverlayTabs {
+    id: PaneTabsId,
+    layout: PaneTabsLayout,
+    first: usize,
+    skip_cache: bool,
+    first_client: ClientId,
+    focus_client: ClientId,
+    tab: TabId,
+    launches: Vec<(usize, ClientId, Option<NotificationEnd>)>,
+}
 
 impl Screen {
     /// The tab a plugin launched by id, rather than for a client, goes into: the one named,
@@ -81,7 +94,7 @@ impl Screen {
         skip_cache: bool,
         cwd: Option<PathBuf>,
         client_id: ClientId,
-        completion_tx: Option<NotificationEnd>,
+        mut completion_tx: Option<NotificationEnd>,
         explicit_tab_id: Option<TabId>,
         no_focus: bool,
         overlay_placement: Option<OverlayPlacement>,
@@ -104,6 +117,19 @@ impl Screen {
                 },
             }
         };
+        if !should_open_in_place
+            && explicit_tab_id.is_none()
+            && !no_focus
+            && self.launch_overlay_tab(
+                &run_plugin,
+                cwd.clone(),
+                skip_cache,
+                client_id,
+                &mut completion_tx,
+            )?
+        {
+            return Ok(());
+        }
         self.fill_plugin_cwd(
             should_float,
             should_open_in_place,
@@ -165,6 +191,18 @@ impl Screen {
                     .non_fatal();
                     return Ok(());
                 };
+                if !should_open_in_place
+                    && explicit_tab_id.is_none()
+                    && self.launch_overlay_tab(
+                        &run_plugin,
+                        None,
+                        skip_cache,
+                        client_id,
+                        &mut completion_tx,
+                    )?
+                {
+                    return Ok(());
+                }
                 let found_plugin = match self.focus_plugin_pane(
                     &run_plugin,
                     should_float,
@@ -387,10 +425,22 @@ impl Screen {
         cwd: Option<PathBuf>,
         placement: NewPanePlacement,
         client_id: ClientId,
-        completion_tx: Option<NotificationEnd>,
+        mut completion_tx: Option<NotificationEnd>,
         explicit_tab_id: Option<TabId>,
         no_focus: bool,
     ) -> Result<()> {
+        if explicit_tab_id.is_none()
+            && !no_focus
+            && self.launch_overlay_tab(
+                &run_plugin,
+                cwd.clone(),
+                skip_cache,
+                client_id,
+                &mut completion_tx,
+            )?
+        {
+            return Ok(());
+        }
         let Some(tab_index) = self.tab_for_plugin_launch(explicit_tab_id) else {
             return Ok(());
         };
@@ -420,5 +470,276 @@ impl Screen {
             overlay_placement,
         ))?;
         Ok(())
+    }
+}
+
+impl Screen {
+    pub(super) fn launch_overlay_tab(
+        &mut self,
+        requested: &RunPluginOrAlias,
+        cwd: Option<PathBuf>,
+        skip_cache: bool,
+        client: ClientId,
+        completion: &mut Option<NotificationEnd>,
+    ) -> Result<bool> {
+        let configuration = match requested {
+            RunPluginOrAlias::RunPlugin(run) => Some(run.configuration.inner().clone()),
+            RunPluginOrAlias::Alias(alias) => {
+                alias.configuration.as_ref().map(|c| c.inner().clone())
+            },
+        };
+        let explicit_cwd = match requested {
+            RunPluginOrAlias::RunPlugin(run) => run.initial_cwd.clone(),
+            RunPluginOrAlias::Alias(alias) => alias.initial_cwd.clone(),
+        };
+        let mut requested = requested.clone();
+        requested.populate_run_plugin_if_needed(&self.plugin_aliases);
+        let Some(run) = requested.get_run_plugin() else {
+            return Ok(false);
+        };
+        let matches_location = |location: &str| {
+            yinz_runtime::plugin_location::parse_plugin_location(location, None)
+                .is_ok_and(|location| location == run.location)
+        };
+        let existing = self.tabs.iter().find_map(|(tab, value)| {
+            value
+                .pane_tabs_infos()
+                .find(|info| info.overlay_group)
+                .map(|info| (*tab, info))
+        });
+        if let Some((source, info)) = existing {
+            let Some(index) = info
+                .tabs
+                .iter()
+                .position(|slot| matches_location(&slot.descriptor.location))
+            else {
+                // A reload cannot change the descriptors of a running group.
+                return Ok(false);
+            };
+            let Some((destination, client)) = self.resolve_tab_and_client(client, None) else {
+                return Ok(false);
+            };
+            if source != destination {
+                self.break_multiple_panes_to_tab_with_id(
+                    vec![info.pane_id],
+                    destination,
+                    false,
+                    client,
+                )?;
+            }
+            let tab = self
+                .tabs
+                .get_mut(&destination)
+                .context("overlay destination disappeared")?;
+            tab.select_pane_tab(info.id, index, client)?;
+            tab.focus_pane_tabs(info.id, false, client)?;
+            if let Some(mut completion) = completion.take() {
+                if let Some(plugin) = tab
+                    .pane_tabs_info(info.id)
+                    .context("overlay disappeared")?
+                    .tabs[index]
+                    .plugin_id
+                {
+                    completion.set_affected_pane_id(PaneId::Plugin(plugin));
+                } else {
+                    self.overlay_tab_completions
+                        .push((info.id, index, completion));
+                }
+            }
+            self.log_and_report_session_state()?;
+            self.render()?;
+            return Ok(true);
+        }
+        if let Some(pending) = self.pending_overlay_tabs.as_mut() {
+            let Some(index) = pending
+                .layout
+                .tabs
+                .iter()
+                .position(|tab| matches_location(&tab.location))
+            else {
+                return Ok(false);
+            };
+            pending.layout.active = index;
+            pending.focus_client = client;
+            pending.launches.push((index, client, completion.take()));
+            return Ok(true);
+        }
+        let Some(index) = self
+            .overlay_tab_plugins
+            .iter()
+            .position(|tab| matches_location(&tab.location))
+        else {
+            return Ok(false);
+        };
+        let Some((tab, client)) = self.resolve_tab_and_client(client, None) else {
+            return Ok(false);
+        };
+        let mut tabs = self.overlay_tab_plugins.clone();
+        if let Some(configuration) = configuration {
+            tabs[index].configuration.extend(configuration);
+        }
+        if explicit_cwd.is_some() {
+            tabs[index].initial_cwd = explicit_cwd;
+        }
+        let cwd = cwd.or_else(|| {
+            tabs[index]
+                .initial_cwd
+                .is_none()
+                .then(|| requested.get_initial_cwd())
+                .flatten()
+        });
+        let id = Tab::reserve_pane_tabs_id();
+        self.bus
+            .senders
+            .send_to_pty(PtyInstruction::ResolveOverlayTabCwd {
+                id,
+                client_id: client,
+                cwd,
+            })
+            .context("failed to resolve overlay tab working directory")?;
+        self.pending_overlay_tabs = Some(PendingOverlayTabs {
+            id,
+            layout: PaneTabsLayout {
+                tabs,
+                active: index,
+            },
+            first: index,
+            skip_cache,
+            first_client: client,
+            focus_client: client,
+            tab,
+            launches: vec![(index, client, completion.take())],
+        });
+        Ok(true)
+    }
+
+    pub(super) fn overlay_tab_cwd(
+        &mut self,
+        id: PaneTabsId,
+        cwd: Option<PathBuf>,
+        caller_cwd: Option<PathBuf>,
+        caller_terminal_pane_id: Option<yinz_types::internal_ids::TerminalId>,
+    ) -> Result<()> {
+        let Some(pending) = self
+            .pending_overlay_tabs
+            .as_mut()
+            .filter(|pending| pending.id == id)
+        else {
+            return Ok(());
+        };
+        for descriptor in &mut pending.layout.tabs {
+            if let Some(cwd) = &cwd {
+                descriptor.add_cwd(cwd);
+            }
+            if let Some(caller_cwd) = &caller_cwd {
+                descriptor
+                    .configuration
+                    .entry("caller_cwd".into())
+                    .or_insert_with(|| caller_cwd.display().to_string());
+            }
+            if let Some(pane_id) = caller_terminal_pane_id {
+                descriptor
+                    .configuration
+                    .entry("caller_terminal_pane_id".into())
+                    .or_insert_with(|| pane_id.to_string());
+            }
+        }
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::LoadPaneTab {
+                id,
+                index: pending.first,
+                generation: 0,
+                descriptor: pending.layout.tabs[pending.first].clone(),
+                client_id: pending.first_client,
+                tab_id: pending.tab,
+                size: Size::default(),
+                skip_cache: pending.skip_cache,
+            })
+            .context("failed to launch overlay tab group")
+    }
+
+    pub(super) fn pending_overlay_tab_loaded(
+        &mut self,
+        id: PaneTabsId,
+        result: &std::result::Result<(PluginId, RunPluginOrAlias), String>,
+    ) -> Result<bool> {
+        if !self
+            .pending_overlay_tabs
+            .as_ref()
+            .is_some_and(|pending| pending.id == id)
+        {
+            return Ok(false);
+        }
+        let mut pending = self
+            .pending_overlay_tabs
+            .take()
+            .context("pending overlay disappeared")?;
+        let (plugin, run) = match result {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                for completion in pending
+                    .launches
+                    .iter_mut()
+                    .filter_map(|(_, _, c)| c.as_mut())
+                {
+                    completion.set_exit_status(1);
+                    completion.set_error_message(error.clone());
+                }
+                log::error!("Failed to load overlay tab: {error}");
+                return Ok(true);
+            },
+        };
+        let destination = self
+            .active_tab_ids
+            .get(&pending.focus_client)
+            .copied()
+            .filter(|tab| self.tabs.contains_key(tab))
+            .or_else(|| self.tabs.contains_key(&pending.tab).then_some(pending.tab));
+        let Some(tab) = destination.and_then(|id| self.tabs.get_mut(&id)) else {
+            self.bus
+                .senders
+                .send_to_plugin(PluginInstruction::Unload(*plugin))
+                .context("failed to unload abandoned overlay")?;
+            for completion in pending
+                .launches
+                .iter_mut()
+                .filter_map(|(_, _, c)| c.as_mut())
+            {
+                completion.set_exit_status(1);
+                completion.set_error_message("Overlay destination closed".into());
+            }
+            return Ok(true);
+        };
+        let pane = PaneId::Plugin(*plugin);
+        tab.new_pane(
+            pane,
+            Some(pending.layout.tabs[pending.first].label.clone()),
+            Some(Run::Plugin(run.clone())),
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+            Some(pending.focus_client),
+            None,
+        )?;
+        let active = pending.layout.active;
+        // Replay launches before selecting the final slot so each load keeps its client.
+        pending.layout.active = pending.first;
+        let info =
+            tab.mount_pane_tabs(pane, pending.layout, pending.first, pending.focus_client)?;
+        tab.mark_overlay_tab_group(info.id)?;
+        // Each queued launch must load its slot even if a later launch selected another.
+        for (index, client, completion) in pending.launches {
+            tab.select_pane_tab(info.id, index, client)?;
+            if let Some(completion) = completion {
+                self.overlay_tab_completions
+                    .push((info.id, index, completion));
+            }
+        }
+        tab.select_pane_tab(info.id, active, pending.focus_client)?;
+        tab.focus_pane_tabs(info.id, false, pending.focus_client)?;
+        self.report_pane_tabs()?;
+        self.log_and_report_session_state()?;
+        Ok(true)
     }
 }

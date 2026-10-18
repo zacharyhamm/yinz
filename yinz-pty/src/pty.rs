@@ -1231,6 +1231,9 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     ))
                     .context("forward plugin reload after queued pane closures")?;
             },
+            PtyInstruction::ResolveOverlayTabCwd { id, client_id, cwd } => {
+                pty.resolve_overlay_tab_cwd(id, client_id, cwd)?;
+            },
             PtyInstruction::FillPluginCwd(
                 should_float,
                 should_be_open_in_place,
@@ -3545,6 +3548,51 @@ impl Pty {
         session_layout_metadata.update_default_editor(&self.default_editor);
         session_layout_metadata.detect_editor_panes();
     }
+    fn focused_plugin_launch_cwd(&self, client_id: ClientId) -> Option<PathBuf> {
+        self.active_panes
+            .get(&client_id)
+            .and_then(|pane| match pane {
+                PaneId::Plugin(plugin_id) => self.plugin_cwds.get(plugin_id).cloned(),
+                PaneId::Terminal(id) => {
+                    // Try to get CWD from OS, fall back to cached value
+                    self.id_to_child_pid
+                        .get(id)
+                        .and_then(|&pid| {
+                            self.bus
+                                .os_input
+                                .as_ref()
+                                .and_then(|input| input.get_cwd(pid))
+                        })
+                        .or_else(|| self.terminal_cwds.get(id).cloned())
+                },
+            })
+    }
+
+    fn focused_terminal_pane_id(&self, client_id: ClientId) -> Option<TerminalId> {
+        match self.active_panes.get(&client_id) {
+            Some(PaneId::Terminal(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    fn resolve_overlay_tab_cwd(
+        &self,
+        id: yinz_types::pane_tabs::PaneTabsId,
+        client_id: ClientId,
+        cwd: Option<PathBuf>,
+    ) -> Result<()> {
+        let caller_cwd = self.focused_plugin_launch_cwd(client_id);
+        self.bus
+            .senders
+            .send_to_screen(ScreenInstruction::OverlayTabCwd {
+                id,
+                cwd: cwd.or_else(|| caller_cwd.clone()),
+                caller_cwd,
+                caller_terminal_pane_id: self.focused_terminal_pane_id(client_id),
+            })
+            .context("failed to resolve overlay tab cwd")
+    }
+
     pub(crate) fn fill_plugin_cwd(
         &self,
         should_float: Option<bool>,
@@ -3563,27 +3611,7 @@ impl Pty {
         completion_tx: Option<NotificationEnd>,
         overlay_placement: Option<OverlayPlacement>,
     ) -> Result<()> {
-        let get_focused_cwd = || {
-            self.active_panes
-                .get(&client_id)
-                .and_then(|pane| match pane {
-                    PaneId::Plugin(plugin_id) => self.plugin_cwds.get(plugin_id).cloned(),
-                    PaneId::Terminal(id) => {
-                        // Try to get CWD from OS, fall back to cached value
-                        self.id_to_child_pid
-                            .get(id)
-                            .and_then(|&pid| {
-                                self.bus
-                                    .os_input
-                                    .as_ref()
-                                    .and_then(|input| input.get_cwd(pid))
-                            })
-                            .or_else(|| self.terminal_cwds.get(id).cloned())
-                    },
-                })
-        };
-
-        let cwd = cwd.or_else(get_focused_cwd);
+        let cwd = cwd.or_else(|| self.focused_plugin_launch_cwd(client_id));
         let focused_plugin_id = self
             .active_panes
             .get(&client_id)
@@ -3593,15 +3621,9 @@ impl Pty {
             });
 
         if let RunPluginOrAlias::Alias(alias) = &mut run {
-            let cwd = get_focused_cwd();
+            let cwd = self.focused_plugin_launch_cwd(client_id);
             alias.set_caller_cwd_if_not_set(cwd);
-            let pane_id = self
-                .active_panes
-                .get(&client_id)
-                .and_then(|pane| match pane {
-                    PaneId::Terminal(id) => Some(*id),
-                    PaneId::Plugin(_) => None,
-                });
+            let pane_id = self.focused_terminal_pane_id(client_id);
             alias.set_caller_terminal_pane_id_if_not_set(pane_id);
         }
         self.bus.senders.send_to_plugin(PluginInstruction::Load(

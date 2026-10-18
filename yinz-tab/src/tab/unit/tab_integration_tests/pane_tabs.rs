@@ -284,6 +284,7 @@ fn pane_tabs_overlay_moves_hidden_children_and_closes_during_loading() {
 #[test]
 fn pane_tabs_bar_keeps_active_label_reachable_at_every_width() {
     let info = PaneTabsInfo {
+        overlay_group: false,
         id: PaneTabsId(1),
         pane_id: PaneId::Plugin(PluginId::new(1)),
         active: 1,
@@ -1126,7 +1127,8 @@ fn panel_dismissal_finishes_in_the_focus_transition_before_reveal() {
             .unwrap();
             let mut panel_layout = layout();
             panel_layout.tabs[usize::from(companion_active)].location = "yinz:agents".into();
-            tab.mount_pane_tabs(panel, panel_layout, 0, client).unwrap();
+            let info = tab.mount_pane_tabs(panel, panel_layout, 0, client).unwrap();
+            tab.mark_overlay_tab_group(info.id).unwrap();
             assert_eq!(tab.get_active_pane_id(client), Some(panel));
             if focus_path >= 3 {
                 let floating = PaneId::Terminal(TerminalId::new(3));
@@ -1462,10 +1464,11 @@ fn add_agents_panel(tab: &mut Tab, companion_active: bool, client: ClientId) -> 
         None,
     )
     .unwrap();
-    if companion_active {
+    {
         let mut panel_layout = layout();
         panel_layout.tabs[1].location = "yinz:agents".into();
-        tab.mount_pane_tabs(panel, panel_layout, 0, client).unwrap();
+        let info = tab.mount_pane_tabs(panel, panel_layout, 0, client).unwrap();
+        tab.mark_overlay_tab_group(info.id).unwrap();
     }
     panel
 }
@@ -1498,6 +1501,8 @@ fn panel_dismissal_preserves_modal_focus_and_unrelated_overlays() {
             None,
         )
         .unwrap();
+        let info = tab.mount_pane_tabs(panel, layout(), 0, client).unwrap();
+        tab.mark_overlay_tab_group(info.id).unwrap();
         tab.new_floating_pane(floating, None, None, false, false, None, None)
             .unwrap();
         tab.focus_pane_with_id(floating, false, false, client)

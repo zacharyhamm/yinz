@@ -1126,6 +1126,7 @@ fn removal_finishes_after_follow_render_visibility_or_resize_failure() {
                 screen
                     .reported_pane_tabs
                     .push(yinz_types::pane_tabs::PaneTabsInfo {
+                        overlay_group: false,
                         id: yinz_types::pane_tabs::PaneTabsId(1),
                         pane_id: PaneId::Terminal(TerminalId::new(1)),
                         tabs: vec![],

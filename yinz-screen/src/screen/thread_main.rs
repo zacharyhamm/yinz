@@ -2602,10 +2602,22 @@ pub fn screen_thread_main(
                     skip_cache,
                     cwd,
                     client_id,
-                    completion_tx,
+                    mut completion_tx,
                     explicit_tab_id,
                     no_focus,
                 ) => {
+                    if explicit_tab_id.is_none()
+                        && !no_focus
+                        && screen.launch_overlay_tab(
+                            &run_plugin,
+                            cwd.clone(),
+                            skip_cache,
+                            client_id,
+                            &mut completion_tx,
+                        )?
+                    {
+                        break 'instruction;
+                    }
                     let tab_index = explicit_tab_id.unwrap_or_else(|| {
                         *screen
                             .active_tab_ids
@@ -3895,6 +3907,14 @@ pub fn screen_thread_main(
                         .map_err(|error| error.to_string());
                     let _ = response.send(result);
                     screen.render()?;
+                },
+                ScreenInstruction::OverlayTabCwd {
+                    id,
+                    cwd,
+                    caller_cwd,
+                    caller_terminal_pane_id,
+                } => {
+                    screen.overlay_tab_cwd(id, cwd, caller_cwd, caller_terminal_pane_id)?;
                 },
                 ScreenInstruction::PaneTabLoaded {
                     id,

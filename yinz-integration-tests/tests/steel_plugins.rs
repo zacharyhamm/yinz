@@ -1273,3 +1273,119 @@ fn steel_forms_and_markdown_render_beside_builtins() {
         yinz.quit();
     }
 }
+
+#[test]
+fn configured_overlay_tabs_launch_from_plugins_and_keep_permission_failures_in_their_slot() {
+    let directory = tempfile::tempdir().unwrap();
+    let launcher = directory.path().join("launcher.scm");
+    let content = directory.path().join("content.scm");
+    let denied = directory.path().join("denied.scm");
+    fs::write(
+        &launcher,
+        r#"
+(define ready #f)
+(define (load configuration)
+  (yinz-then (yinz-wait-for-permissions '("ReadApplicationState" "OpenTerminalsOrPlugins"))
+    (lambda (_) (yinz-command (hash "Subscribe" '("Key"))) (set! ready #t) (yinz-request-render))))
+(define (update event)
+  (when (and (hash? event) (hash-contains? event "Key"))
+    (yinz-command (hash "OpenPluginPaneFloating" (hash "plugin_url" "content" "configuration" (hash)
+      "floating_pane_coordinates" 'json-null "context" (hash))))) #f)
+(define (render rows columns) (if ready "OVERLAY LAUNCHER READY" "waiting"))
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &content,
+        r#"(define (render rows columns) "OVERLAY CONTENT READY")"#,
+    )
+    .unwrap();
+    fs::write(
+        &denied,
+        r#"
+(define state "waiting")
+(define (load configuration)
+  (yinz-catch (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
+      (lambda (_) (set! state "GRANTED") (yinz-request-render)))
+    (lambda (_) (set! state "OVERLAY DENIED") (yinz-request-render))))
+(define (render rows columns) state)
+"#,
+    )
+    .unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config(&format!(
+            r#"
+load_plugins clear-defaults=true {{}}
+plugins {{
+    launcher location="file:{}"
+    content location="file:{}"
+    denied location="file:{}"
+}}
+overlay_tab_plugins {{ launcher label="Launch"; content label="Content"; denied label="Denied"; }}
+"#,
+            launcher.display(),
+            content.display(),
+            denied.display()
+        ))
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let terminal = yinz.expect_pty_spawn();
+    terminal.output(b"TERMINAL READY\r\n");
+    yinz.wait_until("terminal ready", |grid| grid.contains("TERMINAL READY"));
+    let launch = |alias: &str| CliAction::LaunchOrFocusPlugin {
+        floating: false,
+        in_place: false,
+        close_replaced_pane: false,
+        move_to_focused_tab: false,
+        url: alias.into(),
+        configuration: None,
+        configuration_json: None,
+        skip_plugin_cache: false,
+        tab_id: None,
+    };
+    let (code, original) = yinz.run_cli_action_reporting(launch("content"));
+    assert_eq!(code, 0, "{original}");
+    yinz.wait_until("cold launch selects the second custom tab", |grid| {
+        grid.contains("OVERLAY CONTENT READY")
+            && grid.contains("Launch")
+            && grid.contains("Content")
+    });
+    let (code, lazy) = yinz.run_cli_action_reporting(launch("launcher"));
+    assert_eq!(code, 0, "{lazy}");
+    assert_ne!(
+        original.trim(),
+        lazy.trim(),
+        "lazy launch returns its own plugin ID"
+    );
+    yinz.wait_until("each tab requests its own permissions", |grid| {
+        grid.contains("Plugin permissions")
+    });
+    yinz.send_stdin(b"\t\r");
+    yinz.wait_until("launcher is ready", |grid| {
+        grid.contains("OVERLAY LAUNCHER READY")
+    });
+    let (code, focused_launcher) = yinz.run_cli_action_reporting(launch("launcher"));
+    assert_eq!(code, 0, "{focused_launcher}");
+    assert_eq!(lazy.trim(), focused_launcher.trim());
+    yinz.send_stdin(b"x");
+    yinz.wait_until("a plugin launch selects its sibling", |grid| {
+        grid.contains("OVERLAY CONTENT READY")
+    });
+    let (code, focused) = yinz.run_cli_action_reporting(launch("content"));
+    assert_eq!(code, 0, "{focused}");
+    assert_eq!(original.trim(), focused.trim());
+    yinz.run_cli_action(launch("denied"));
+    yinz.wait_until("third tab requests permissions", |grid| {
+        grid.contains("Plugin permissions")
+    });
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("permission denial stays inside the group", |grid| {
+        grid.contains("OVERLAY DENIED") && grid.contains("Content")
+    });
+    yinz.run_cli_action(launch("content"));
+    yinz.wait_until("denial leaves other tabs usable", |grid| {
+        grid.contains("OVERLAY CONTENT READY")
+    });
+    yinz.quit();
+}

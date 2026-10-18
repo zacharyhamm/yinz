@@ -437,6 +437,11 @@ pub enum PtyInstruction {
         session_layout_metadata: SessionLayoutMetadata,
         completion_tx: Option<NotificationEnd>,
     },
+    ResolveOverlayTabCwd {
+        id: yinz_types::pane_tabs::PaneTabsId,
+        client_id: ClientId,
+        cwd: Option<PathBuf>,
+    },
     FillPluginCwd(
         Option<bool>,   // should float
         bool,           // should be opened in place

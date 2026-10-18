@@ -26,6 +26,19 @@ pub(super) fn take_carry(pane: &mut Box<dyn Pane>) -> Option<PaneTabsCarry> {
 }
 
 impl Tab {
+    pub fn reserve_pane_tabs_id() -> PaneTabsId {
+        PaneTabsId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn mark_overlay_tab_group(&mut self, id: PaneTabsId) -> Result<()> {
+        self.pane_tabs
+            .get_mut(&id)
+            .context("unknown overlay pane tabs")?
+            .info
+            .overlay_group = true;
+        self.refresh_pane_tabs(id)
+    }
+
     pub(super) fn retain_pane_tabs_transfer(&mut self, pane: &mut Box<dyn Pane>) {
         if let Some(transfer) = take_carry(pane) {
             self.pane_tabs.insert(transfer.tabs.info.id, transfer.tabs);
@@ -56,6 +69,12 @@ impl Tab {
         let Some(id) = self.pane_tabs_of(pane) else {
             return Ok(());
         };
+        if self
+            .pane_tabs_info(id)
+            .is_some_and(|info| info.overlay_group)
+        {
+            return Ok(());
+        }
         let title = self
             .get_pane_with_id(pane)
             .context("pane tab disappeared")?
@@ -121,8 +140,9 @@ impl Tab {
             )
             .map_err(|error| anyhow!(error))?;
         }
-        let id = PaneTabsId(NEXT_ID.fetch_add(1, Ordering::Relaxed));
+        let id = Self::reserve_pane_tabs_id();
         let info = PaneTabsInfo {
+            overlay_group: false,
             id,
             pane_id: pane,
             active: existing,
@@ -218,6 +238,7 @@ impl Tab {
             .unwrap_or(Size { rows: 1, cols: 1 });
         self.senders
             .send_to_plugin(PluginInstruction::LoadPaneTab {
+                skip_cache: false,
                 id,
                 index,
                 generation,

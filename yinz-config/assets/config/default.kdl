@@ -204,7 +204,7 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        // Open the four-tab project panel with focus in its current view.
+        // Open the overlay and select Agents.
         bind "a" {
             LaunchOrFocusPlugin "agents" {
                 floating true
@@ -406,7 +406,7 @@ plugins {
     // `fzf_args` adds flags to fzf, and `x`/`y`/`width`/`height` size the overlay.
     // `file_command` and `fzf_args` are spliced into a shell script as written.
     file-finder location="yinz:file-finder"
-    // The four-tab project panel. Cell counts and percentages are accepted.
+    // The Agents overlay tab. Cell counts and percentages are accepted.
     agents location="yinz:agents" {
         shared true
         // width "60%"
@@ -454,6 +454,12 @@ plugins {
 // Plugins to load in the background when a new session starts
 // This block adds to the built-in defaults; `load_plugins clear-defaults=true`
 // replaces them instead
+// Ordered plugin tabs. An explicit block replaces the defaults; an empty block disables grouping.
+// overlay_tab_plugins {
+//     agents label="Agents"
+//     todos label="Todos"
+// }
+
 load_plugins {
     // Watches for coding agents from session start, rather than only while a
     // panel is open. Named by alias, not by "yinz:agent-service", so the

@@ -567,6 +567,16 @@ impl Screen {
         } else {
             vec![client]
         };
+        let overlay = source
+            .and_then(|source| self.tabs.get(&source))
+            .and_then(|tab| {
+                tab.pane_tabs_infos().find(|info| {
+                    info.overlay_group
+                        && tab
+                            .get_pane_info(info.pane_id)
+                            .is_some_and(|pane| !pane.is_suppressed)
+                })
+            });
         let old_focus = affected
             .iter()
             .map(|id| (*id, self.get_active_pane_id(id)))
@@ -586,6 +596,19 @@ impl Screen {
                 }
                 clients
             });
+        // Detach clients first so a following overlay does not carry their keyboard focus.
+        if let Some(info) =
+            overlay.filter(|_| source != Some(destination) && self.tabs.contains_key(&destination))
+        {
+            self.break_multiple_panes_to_tab_with_id(
+                vec![info.pane_id],
+                destination,
+                false,
+                client,
+            )
+            .context("failed to move overlay tab group")
+            .non_fatal();
+        }
         if clients.is_some() || self.session_is_mirrored {
             for id in affected {
                 self.update_client_tab_focus(id, destination);

@@ -739,6 +739,7 @@ fn pane_tabs_lazy_children_subscribe_as_foreground_plugins() {
         .unwrap();
     sender
         .send(PluginInstruction::LoadPaneTab {
+            skip_cache: false,
             id: PaneTabsId(7),
             index: 1,
             generation: 1,

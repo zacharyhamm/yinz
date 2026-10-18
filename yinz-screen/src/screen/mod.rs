@@ -587,6 +587,10 @@ pub(crate) struct Screen {
     agent_clear_inputs: HashMap<PaneId, agent_control::ClearInput>,
     agent_worker_waits: HashMap<PaneId, agent_control::WorkerWaits>,
     claude_permission_waits: HashMap<PaneId, agent_control::PermissionWait>,
+    overlay_tab_plugins: Vec<yinz_types::pane_tabs::PaneTabDescriptor>,
+    plugin_aliases: yinz_types::input::plugins::PluginAliases,
+    pending_overlay_tabs: Option<plugins::PendingOverlayTabs>,
+    overlay_tab_completions: Vec<(yinz_types::pane_tabs::PaneTabsId, usize, NotificationEnd)>,
     reported_pane_tabs: Vec<yinz_types::pane_tabs::PaneTabsInfo>,
     /// A Bus for sending and receiving messages with the other threads.
     pub bus: Bus<ScreenInstruction>,
@@ -1262,6 +1266,8 @@ impl Screen {
     ) -> Self {
         // No `..`: a field added to `ScreenConfig` has to say here what startup does with it.
         let ScreenConfig {
+            overlay_tab_plugins,
+            plugin_aliases,
             // Painted from `client_attributes.style`, which the first client resolved against its
             // command line as well as the config; see the field's doc. Same for the two chrome
             // flags.
@@ -1361,6 +1367,10 @@ impl Screen {
             agent_clear_inputs: HashMap::new(),
             agent_worker_waits: HashMap::new(),
             claude_permission_waits: HashMap::new(),
+            overlay_tab_plugins,
+            plugin_aliases,
+            pending_overlay_tabs: None,
+            overlay_tab_completions: vec![],
             reported_pane_tabs: vec![],
             bus,
             max_panes,
@@ -4001,6 +4011,8 @@ impl Screen {
             }
         }
         let ScreenConfig {
+            overlay_tab_plugins,
+            plugin_aliases,
             agent_theme_mapping,
             terminal_theme,
             terminal_themes,
@@ -4078,6 +4090,8 @@ impl Screen {
         self.host_theme_light_styling = host_theme_light;
         self.arrow_fonts = should_support_arrow_fonts;
 
+        self.overlay_tab_plugins = overlay_tab_plugins;
+        self.plugin_aliases = plugin_aliases;
         // global configuration
         self.style.colors = theme;
         self.default_mode_info.update_theme(theme);
@@ -5596,6 +5610,14 @@ fn replay_pending_plugin_events(
                     .map_err(|error| error.to_string());
                 let _ = response.send(result);
                 screen.render()?;
+            },
+            ScreenInstruction::OverlayTabCwd {
+                id,
+                cwd,
+                caller_cwd,
+                caller_terminal_pane_id,
+            } => {
+                screen.overlay_tab_cwd(id, cwd, caller_cwd, caller_terminal_pane_id)?;
             },
             ScreenInstruction::PaneTabLoaded {
                 id,

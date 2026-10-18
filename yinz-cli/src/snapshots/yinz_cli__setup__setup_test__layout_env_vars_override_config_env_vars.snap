@@ -8657,6 +8657,7 @@ Config {
         ),
     },
     background_plugins_cleared: false,
+    overlay_tab_plugins: None,
     hooks: Hooks {
         hooks: {
             AgentExit: RunPlugin(

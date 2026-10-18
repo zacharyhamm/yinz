@@ -1,4 +1,5 @@
 mod kdl_layout_parser;
+mod overlay_tab_plugins;
 use kdl_layout_parser::KdlLayoutParser;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use strum::IntoEnumIterator;
@@ -1128,6 +1129,9 @@ impl Config {
             let config_plugins = crate::kdl::plugin_aliases::from_kdl(kdl_plugin_aliases)?;
             config.plugins.merge(config_plugins);
         }
+        if let Some(block) = single_top_level_block(&kdl_config, "overlay_tab_plugins")? {
+            config.overlay_tab_plugins = Some(overlay_tab_plugins::from_kdl(block)?);
+        }
         if let Some(kdl_load_plugins) = single_top_level_block(&kdl_config, "load_plugins")? {
             // Additive, like every other block here: a config written before a
             // default background plugin existed must still get it, otherwise the
@@ -1163,6 +1167,13 @@ impl Config {
                 ConfigError::new_kdl_error(error, edits.span().offset(), edits.span().len())
             })?;
         }
+        config.resolved_overlay_tab_plugins().map_err(|error| {
+            let span = kdl_config
+                .get("overlay_tab_plugins")
+                .map(|node| node.span())
+                .unwrap_or_else(|| kdl_config.span());
+            ConfigError::new_kdl_error(error, span.offset(), span.len())
+        })?;
         Ok(config)
     }
     /// The whole configuration as KDL text. `Err` when a keybinding or context menu item holds
@@ -1191,6 +1202,9 @@ impl Config {
             add_comments,
         );
         document.nodes_mut().push(load_plugins);
+        if let Some(tabs) = &self.overlay_tab_plugins {
+            document.nodes_mut().push(overlay_tab_plugins::to_kdl(tabs));
+        }
 
         document.nodes_mut().push(hooks_to_kdl(&self.hooks));
         document
