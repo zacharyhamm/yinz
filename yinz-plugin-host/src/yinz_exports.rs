@@ -6444,6 +6444,26 @@ pub(crate) fn notify_data_watchers(
             return;
         },
     };
+    deliver_data_watch_changes(changed, &generations, senders);
+}
+
+pub(crate) fn poll_data_watchers(
+    store: &yinz_storage::plugin_data_store::PluginDataStore,
+    watch_generations: &super::plugin_map::WatchGenerations,
+    senders: &yinz_bus::thread_bus::ThreadSenders,
+) {
+    let generations = watch_generations.lock().unwrap();
+    match store.poll_external_watches() {
+        Ok(changed) => deliver_data_watch_changes(changed, &generations, senders),
+        Err(e) => log::error!("failed to poll data store watches: {e}"),
+    }
+}
+
+fn deliver_data_watch_changes(
+    changed: Vec<yinz_storage::plugin_data_store::WatchChange>,
+    generations: &std::collections::HashMap<DataWatchId, u64>,
+    senders: &yinz_bus::thread_bus::ThreadSenders,
+) {
     for change in changed {
         let event = Event::PluginDataChanged {
             watch_id: change.watch_id,

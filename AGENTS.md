@@ -212,8 +212,12 @@ One SQLite `plugin-data.db` serves all local servers using the same data directo
   Conflicts return `DataError::Conflict` and roll back the batch. Include `rev`
   in selected columns and carry it through `todo_edit` and `note_edit`, including
   tags-only edits. Reuse `store::guarded_rev`. Setting a flag alone does not need a guard.
-- Watches react only to writes from their own server process. Another server's
-  database write does not wake them.
+- Watches see commits from every local server using the same database. The host
+  checks SQLite's `data_version` every 250 ms while watches exist, then compares
+  their query results. Allow additional time for queries and event delivery.
+  Updates can coalesce into the latest result per watch, as with local refreshes.
+  Local commits do not cause duplicate polling events. No database polling runs
+  after the last watch is removed.
 
 ## Plugins, hooks, and skills
 

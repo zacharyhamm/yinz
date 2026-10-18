@@ -3542,6 +3542,19 @@ impl PluginBridge {
         );
     }
 
+    pub(crate) fn start_data_watch_polling(
+        &self,
+    ) -> Result<yinz_storage::plugin_data_store::DataWatchPoller> {
+        let generations = self.watch_generations.clone();
+        let senders = self.senders.clone();
+        self.data_access
+            .plugin_data()
+            .start_watch_polling(move |store| {
+                crate::yinz_exports::poll_data_watchers(store, &generations, &senders);
+            })
+            .context("start cross-process data watches")
+    }
+
     pub fn builtin_service_instance(&self, name: &str) -> Result<(PluginId, ClientId), String> {
         let instances: std::collections::BTreeMap<_, _> = self
             .plugin_map

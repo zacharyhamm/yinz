@@ -757,6 +757,29 @@ the existing instance, or use a distinct configuration. The reply is the new
 plugin pane's id after the pane is placed. `context` is reserved; plugin panes do
 not echo it.
 
+## Data watch delivery
+
+`DataWatch` returns the initial query result and registers for `PluginDataChanged`
+events. Watches include commits from every local server using the same
+`plugin-data.db`. Namespace permissions and query filters also apply to these
+external changes. No plugin command or event format changes are required.
+
+The host checks SQLite's connection-local `data_version` every 250 ms while at
+least one watch exists. A changed version triggers query evaluation and comparison
+with the last delivered results. Query execution and event delivery can add
+latency. Polling stops when the last watch is removed or its plugin unloads.
+
+Events contain complete query results, including selection, ordering, limits,
+and truncation. Several writes can coalesce into one event per watch. Intermediate
+states, including a change followed by its reversal, can be omitted. `Ids` watches
+only report changes to their selected IDs and result metadata. Unchanged results
+produce no event. Local and external refreshes share the same comparison state,
+so the poller does not duplicate a local notification.
+
+Events for each watch follow refresh order. There is no global transaction order
+across watches or servers. These events are query updates, not a durable change
+log. A plugin that reloads must register its watches again.
+
 ## Restart an exited agent
 
 `RestartAgentPane` requires `RunCommands`. The target must be an exited, held

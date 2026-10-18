@@ -20,6 +20,7 @@ mod dialect;
 mod engine;
 mod executor;
 mod migrate;
+mod poll;
 mod predicate;
 mod query;
 mod registry;
@@ -48,6 +49,7 @@ use yinz_types::plugin_data::{
 
 use self::watch::{apply_watch_mode, WatchRegistry};
 
+pub use self::poll::{DataWatchPoller, DATA_WATCH_POLL_INTERVAL};
 pub use self::sqlite::SqlitePluginDataBackend;
 pub use self::watch::WatchChange;
 
@@ -83,9 +85,10 @@ pub(crate) fn is_shared_namespace(namespace: &str) -> bool {
 pub struct PluginDataStore {
     backend: Arc<dyn PluginDataBackend>,
     /// Serializes registration with writes so a watch cannot miss the update between its initial
-    /// fetch and insertion into the registry.
-    operation: Mutex<()>,
+    /// fetch and insertion into the registry. Holds the last external version checked by watches.
+    operation: Mutex<Option<u64>>,
     watches: WatchRegistry,
+    activity: Arc<poll::WatchActivity>,
 }
 
 impl std::fmt::Debug for PluginDataStore {
@@ -103,12 +106,13 @@ impl PluginDataStore {
     pub fn from_backend(backend: Arc<dyn PluginDataBackend>) -> Self {
         Self {
             backend,
-            operation: Mutex::new(()),
+            operation: Mutex::new(None),
             watches: WatchRegistry::new(),
+            activity: Default::default(),
         }
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, DataError> {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Option<u64>>, DataError> {
         self.operation.lock().map_err(|_| {
             DataError::Storage("the plugin data store operation lock is poisoned".to_owned())
         })
@@ -181,10 +185,17 @@ impl PluginDataStore {
     ) -> Result<DataWatchHandle, DataError> {
         request.validate()?;
         let request = apply_watch_mode(request, mode);
-        let _guard = self.lock()?;
+        let mut version = self.lock()?;
+        if self.watches.count() == 0 {
+            // Sample before fetching: a remote commit during registration must be seen next poll.
+            *version = self.backend.external_version()?;
+        }
         let rows = self.backend.fetch(namespace, &request)?;
-        self.watches
-            .register(namespace, plugin_id, client_id, request, rows)
+        let handle = self
+            .watches
+            .register(namespace, plugin_id, client_id, request, rows)?;
+        self.activity.set_active(true);
+        Ok(handle)
     }
 
     /// Cancel a watch. A plugin may only cancel its own.
@@ -193,12 +204,17 @@ impl PluginDataStore {
         plugin_id: PluginId,
         watch_id: DataWatchId,
     ) -> Result<(), DataError> {
-        self.watches.unregister(plugin_id, watch_id)
+        let _guard = self.lock()?;
+        self.watches.unregister(plugin_id, watch_id)?;
+        self.activity.set_active(self.watches.count() != 0);
+        Ok(())
     }
 
     /// Drop every watch belonging to a plugin, for when it unloads.
     pub fn drop_watches_for_plugin(&self, plugin_id: PluginId) {
-        self.watches.drop_for_plugin(plugin_id)
+        let Ok(_guard) = self.lock() else { return };
+        self.watches.drop_for_plugin(plugin_id);
+        self.activity.set_active(self.watches.count() != 0);
     }
 
     /// Re-run every watch a write to these entities could have affected, and report the ones whose
@@ -218,9 +234,33 @@ impl PluginDataStore {
         }
         let _guard = self.lock()?;
         self.watches
-            .refresh(namespace, touched_entities, |namespace, request| {
+            .refresh(Some((namespace, touched_entities)), |namespace, request| {
                 self.backend.fetch(namespace, request)
             })
+    }
+
+    /// Refresh standing queries after another connection commits. Local and remote refreshes
+    /// share digests, so either can observe a change first without delivering it twice.
+    pub fn poll_external_watches(&self) -> Result<Vec<WatchChange>, DataError> {
+        let mut version = self.lock()?;
+        if self.watches.count() == 0 {
+            return Ok(Vec::new());
+        }
+        let current = self.backend.external_version()?;
+        if current == *version {
+            return Ok(Vec::new());
+        }
+        let mut complete = true;
+        let changes = self.watches.refresh(None, |namespace, request| {
+            let result = self.backend.fetch(namespace, request);
+            complete &= !matches!(&result, Err(DataError::Storage(_)));
+            result
+        })?;
+        // Retry storage failures; keep the pre-fetch version for commits made during the fetch.
+        if complete {
+            *version = current;
+        }
+        Ok(changes)
     }
 
     /// How many watches are registered.

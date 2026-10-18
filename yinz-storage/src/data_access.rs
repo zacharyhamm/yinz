@@ -13,6 +13,12 @@ use yinz_types::plugin_data::{
 
 /// Persistence operations used by the plugin-data façade.
 pub trait PluginDataBackend: Send + Sync {
+    /// A connection-local token that changes after another connection commits.
+    /// Backends without external change detection retain local-only watches.
+    fn external_version(&self) -> Result<Option<u64>, DataError> {
+        Ok(None)
+    }
+
     fn define_entity(
         &self,
         namespace: &str,

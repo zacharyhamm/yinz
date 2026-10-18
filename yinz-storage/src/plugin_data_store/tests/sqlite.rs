@@ -46,6 +46,8 @@ fn defined() -> (PluginDataStore, Guard) {
 
 #[path = "concurrency.rs"]
 mod concurrency;
+#[path = "../unit/cross_process.rs"]
+mod cross_process;
 #[path = "model.rs"]
 mod model;
 #[path = "oracle.rs"]
