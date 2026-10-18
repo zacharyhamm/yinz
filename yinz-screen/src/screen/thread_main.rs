@@ -3076,6 +3076,7 @@ pub fn screen_thread_main(
                         .filter(|(_, project)| screen.projects.contains(project))
                         .collect();
                     screen.reconcile_project_contexts();
+                    screen.log_and_report_session_state()?;
                     screen.render()?;
                 },
                 ScreenInstruction::SetTabProjects(tab_projects) => {

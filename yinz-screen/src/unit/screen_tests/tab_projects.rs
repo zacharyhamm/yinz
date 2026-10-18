@@ -36,6 +36,61 @@ fn name_of(screen: &Screen, tab_id: TabId) -> String {
 }
 
 #[test]
+fn project_changes_publish_group_names_for_manually_named_tabs() {
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    let screen_thread = mock.run(None, vec![]);
+    let instructions = Watched::new(vec![]);
+    let receiver = mock.plugin_receiver.take().unwrap();
+    let plugin_thread = log_actions_in_thread!(instructions, PluginInstruction::Exit, receiver);
+    mock.to_screen
+        .send(ScreenInstruction::SetCliEventSubscribersPresent(true))
+        .unwrap();
+    mock.to_screen
+        .send(ScreenInstruction::RenameTabWithId(
+            TabId::new(0),
+            b"notes".to_vec(),
+            None,
+        ))
+        .unwrap();
+    for project in ["x", "y"] {
+        mock.to_screen
+            .send(ScreenInstruction::SetProjectContext(
+                vec![project.to_owned()],
+                [(PaneId::Terminal(TerminalId::new(0)), project.to_owned())]
+                    .into_iter()
+                    .collect(),
+            ))
+            .unwrap();
+        instructions.wait_until(
+            "project change publishes the group even with an explicit tab title",
+            yinz_test_support::default_timeout(),
+            |log| {
+                log.iter()
+                    .any(|instruction| {
+                        let PluginInstruction::Update(events) = instruction else {
+                            return false;
+                        };
+                        events.iter().any(|(_, _, event)| {
+                            let Event::TabUpdate(tabs) = event else {
+                                return false;
+                            };
+                            tabs.iter().any(|tab| {
+                                tab.name == "notes"
+                                    && tab
+                                        .group
+                                        .as_ref()
+                                        .is_some_and(|group| group.name == project)
+                            })
+                        })
+                    })
+                    .then_some(())
+            },
+        );
+    }
+    mock.teardown(vec![plugin_thread, screen_thread]);
+}
+
+#[test]
 fn program_and_checkout_updates_wait_for_pane_creation_in_order() {
     let size = Size {
         cols: 100,

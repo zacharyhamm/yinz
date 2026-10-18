@@ -751,11 +751,11 @@ impl Screen {
                 Builtin::Picker(kind),
             ));
         }
-        for (id, group) in &self.tab_groups {
+        for id in self.tab_groups.keys() {
             entries.push((
                 Entry {
                     id: format!("tab-group:{id}"),
-                    label: group.name.clone(),
+                    label: self.tab_group_name(*id).unwrap_or_default(),
                     description: if self.tab_group_ids.get(&tab_id) == Some(id) {
                         "Current".into()
                     } else {
@@ -1415,7 +1415,7 @@ impl Screen {
                 false,
             ),
             FormKind::CloseTabGroup(id) => {
-                let group = self.tab_groups.get(&id).ok_or("Group no longer exists")?;
+                let name = self.tab_group_name(id).ok_or("Group no longer exists")?;
                 let tabs = self.group_tabs(id);
                 let panes: usize = tabs
                     .iter()
@@ -1423,7 +1423,7 @@ impl Screen {
                     .map(|tab| tab.pane_infos().len())
                     .sum();
                 (
-                    format!("Close {} ({} tabs, {panes} panes)?", group.name, tabs.len()),
+                    format!("Close {name} ({} tabs, {panes} panes)?", tabs.len()),
                     vec![],
                     "Close group",
                     true,
