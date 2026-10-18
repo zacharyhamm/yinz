@@ -139,14 +139,46 @@ pub struct LoadingContext {
     pub client_cancellations: Arc<Mutex<HashMap<ClientId, Arc<AtomicBool>>>>,
 }
 
+/// How a prepared load that cannot be queued is reported.
+#[derive(Debug, Clone, Copy)]
+enum LoadFailure {
+    /// The plugin failed to load, for every client.
+    Plugin,
+    /// Only a new client's instance failed: the plugin still runs for the others.
+    Attach,
+}
+
+impl LoadFailure {
+    fn report(
+        self,
+        senders: &ThreadSenders,
+        load_id: u64,
+        plugin_id: PluginId,
+        error: impl std::fmt::Debug,
+        client_id: Option<ClientId>,
+    ) {
+        match self {
+            Self::Plugin => {
+                handle_plugin_loading_failure(senders, Some(load_id), plugin_id, error, client_id)
+            },
+            Self::Attach => {
+                log::error!("{:?}", error);
+                finish_failed_attach(senders, load_id, plugin_id);
+            },
+        }
+    }
+}
+
 impl LoadingContext {
     /// Git runs outside both the executor and plugin map. The queued context pins the revision.
+    /// Every failure to queue the load is reported as `failure` says.
     fn execute_prepared<F>(
         mut self,
         executor: Arc<PinnedExecutor>,
         senders: ThreadSenders,
         load_id: u64,
         register: bool,
+        failure: LoadFailure,
         job: F,
     ) -> bool
     where
@@ -160,6 +192,7 @@ impl LoadingContext {
         }
         let needs_repository = matches!(self.plugin_config.location, RunPluginLocation::Git(_))
             && self.plugin_config.repository_root.is_none();
+        let spawn_senders = senders.clone();
         let enqueue = move || {
             if let RunPluginLocation::Git(source) = &self.plugin_config.location {
                 if self.plugin_config.repository_root.is_none() {
@@ -191,9 +224,9 @@ impl LoadingContext {
                             self.plugin_config.installed_commit = installed.commit;
                         },
                         Err(error) => {
-                            handle_plugin_loading_failure(
+                            failure.report(
                                 &senders,
-                                Some(load_id),
+                                load_id,
                                 plugin_id,
                                 error.context(
                                     crate::plugin_authoring::LogIdentity::repository(source)
@@ -209,9 +242,9 @@ impl LoadingContext {
             let work = move |senders, map, clients| job(self, senders, map, clients);
             let accepted = executor.execute_for_plugin_tagged(plugin_id, "load", false, work);
             if !accepted {
-                handle_plugin_loading_failure(
+                failure.report(
                     &senders,
-                    Some(load_id),
+                    load_id,
                     plugin_id,
                     "Plugin executor rejected loading",
                     None,
@@ -220,10 +253,19 @@ impl LoadingContext {
             accepted
         };
         if needs_repository {
-            std::thread::Builder::new()
+            let spawned = std::thread::Builder::new()
                 .name(format!("plugin-repository-{plugin_id}"))
-                .spawn(enqueue)
-                .is_ok()
+                .spawn(enqueue);
+            if let Err(error) = &spawned {
+                failure.report(
+                    &spawn_senders,
+                    load_id,
+                    plugin_id,
+                    format!("Could not start plugin repository thread: {error}"),
+                    None,
+                );
+            }
+            spawned.is_ok()
         } else {
             enqueue()
         }
@@ -744,6 +786,7 @@ impl PluginBridge {
                     senders.clone(),
                     load_id,
                     true,
+                    LoadFailure::Plugin,
                     move |loading_context, senders, plugin_map, connected_clients| {
                         if load_was_cancelled(
                             &unloaded_while_loading,
@@ -1377,6 +1420,46 @@ impl PluginBridge {
         if picker {
             return Ok(());
         }
+        // Looked up before the old instances are retired or the plugin is marked as loading,
+        // so a plugin that cannot be found keeps running rather than being left retired, or
+        // loading with its events cached forever.
+        let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
+            log::error!("Failed to find plugin with id: {}", plugin_id);
+            return Ok(());
+        };
+        let Some(first_client_id) = self.get_first_client_id().or_else(|| {
+            self.plugin_map
+                .lock()
+                .unwrap()
+                .reload_metadata(plugin_id)
+                .map(|metadata| metadata.owner_client_id)
+        }) else {
+            log::error!("No instance owner, cannot reload plugin.");
+            return Ok(());
+        };
+        let Some(mut plugin_config) = self.plugin_config_of_plugin_id(plugin_id) else {
+            log::error!("Could not find running plugin with id: {}", plugin_id);
+            return Ok(());
+        };
+        if let RunPluginLocation::Git(source) = &plugin_config.location {
+            plugin_config.path = source.entrypoint.clone();
+            plugin_config.repository_root = None;
+            plugin_config.installed_commit = None;
+        }
+        let tab_index = self.tab_index_of_plugin_id(plugin_id);
+        let Some((rows, columns)) = self.size_of_plugin_id(plugin_id) else {
+            log::error!(
+                "Could not find size of running plugin with id: {}",
+                plugin_id
+            );
+            return Ok(());
+        };
+        let size = Size {
+            rows,
+            cols: columns,
+        };
+        let cwd = self.cwd_of_plugin_id(plugin_id);
+
         // Retire queued callbacks before the reload notification can release an active host call.
         let cancel = self.cancel_token(plugin_id);
         {
@@ -1412,10 +1495,6 @@ impl PluginBridge {
                 .collect();
             Some(arm_reload_watchdog(plugin_id, cancel, instances))
         };
-        let Some(run_plugin) = self.run_plugin_of_plugin_id(plugin_id) else {
-            log::error!("Failed to find plugin with id: {}", plugin_id);
-            return Ok(());
-        };
 
         // A failure already queued by the old generation must not finish a queue job or
         // paint over this reload, even before the executor installs the replacement.
@@ -1430,7 +1509,6 @@ impl PluginBridge {
             .reject_cached(plugin_id, None, "Plugin reloaded before pipe delivery");
         self.cached_events_for_pending_plugins.remove(&plugin_id);
         self.finish_pipe_requests();
-        let (rows, columns) = self.size_of_plugin_id(plugin_id).unwrap_or((0, 0));
         self.cached_events_for_pending_plugins
             .entry(plugin_id)
             .or_default();
@@ -1442,40 +1520,6 @@ impl PluginBridge {
         self.loading_plugins.insert((plugin_id, run_plugin.clone()));
 
         let plugin_executor = self.plugin_executor.clone();
-
-        let Some(first_client_id) = self.get_first_client_id().or_else(|| {
-            self.plugin_map
-                .lock()
-                .unwrap()
-                .reload_metadata(plugin_id)
-                .map(|metadata| metadata.owner_client_id)
-        }) else {
-            log::error!("No instance owner, cannot reload plugin.");
-            return Ok(());
-        };
-        let Some(mut plugin_config) = self.plugin_config_of_plugin_id(plugin_id) else {
-            log::error!("Could not find running plugin with id: {}", plugin_id);
-            return Ok(());
-        };
-        if let RunPluginLocation::Git(source) = &plugin_config.location {
-            plugin_config.path = source.entrypoint.clone();
-            plugin_config.repository_root = None;
-            plugin_config.installed_commit = None;
-        }
-        let tab_index = self.tab_index_of_plugin_id(plugin_id);
-        let Some(size) = self.size_of_plugin_id(plugin_id) else {
-            log::error!(
-                "Could not find size of running plugin with id: {}",
-                plugin_id
-            );
-            return Ok(());
-        };
-        let size = Size {
-            rows: size.0,
-            cols: size.1,
-        };
-
-        let cwd = self.cwd_of_plugin_id(plugin_id);
 
         let load_id = self.begin_plugin_load(plugin_id);
         let loading_context = match LoadingContext::new(
@@ -1491,15 +1535,11 @@ impl PluginBridge {
             Err(error) => {
                 // The old instances are already retired: fail this load as a rejected one
                 // would, so the plugin leaves `loading_plugins` and shows why.
-                self.pending_pipes
-                    .retire_plugin(plugin_id, "Plugin replacement could not be prepared");
-                return self.queue_plugin_failed(
+                return self.fail_replacement(
                     plugin_id,
-                    Some(load_id),
-                    None,
-                    None,
+                    load_id,
+                    "Plugin replacement could not be prepared",
                     format!("{error:#}"),
-                    true,
                 );
             },
         };
@@ -1515,6 +1555,7 @@ impl PluginBridge {
             self.senders.clone(),
             load_id,
             false,
+            LoadFailure::Plugin,
             move |mut loading_context,
                   senders,
                   plugin_map,
@@ -1673,18 +1714,26 @@ impl PluginBridge {
             },
         );
         if !accepted {
-            self.pending_pipes
-                .retire_plugin(plugin_id, "Plugin executor rejected replacement");
-            self.queue_plugin_failed(
+            self.fail_replacement(
                 plugin_id,
-                Some(load_id),
-                None,
-                None,
+                load_id,
+                "Plugin executor rejected replacement",
                 "Plugin executor rejected loading".into(),
-                true,
             )?;
         }
         Ok(())
+    }
+    /// Fail a reload whose old instances are already retired: pipes waiting on the plugin
+    /// hear `pipe_reason`, and the plugin leaves `loading_plugins` showing `message`.
+    fn fail_replacement(
+        &mut self,
+        plugin_id: PluginId,
+        load_id: u64,
+        pipe_reason: &str,
+        message: String,
+    ) -> Result<()> {
+        self.pending_pipes.retire_plugin(plugin_id, pipe_reason);
+        self.queue_plugin_failed(plugin_id, Some(load_id), None, None, message, true)
     }
     pub fn reload_plugin(&mut self, run_plugin: &RunPlugin) -> Result<()> {
         self.remember_plugin_location(run_plugin);
@@ -1702,7 +1751,10 @@ impl PluginBridge {
         // One instance that fails to reload must not leave the others on the old code.
         let mut result = Ok(());
         for plugin_id in &plugin_ids {
-            if let Err(error) = self.reload_plugin_with_id(*plugin_id) {
+            if let Err(error) = self
+                .reload_plugin_with_id(*plugin_id)
+                .with_context(|| format!("reload plugin {plugin_id}"))
+            {
                 if result.is_ok() {
                     result = Err(error);
                 } else {
@@ -1846,16 +1898,7 @@ impl PluginBridge {
                             format!("prepare plugin {plugin_id} for new client {client_id}")
                         })
                         .non_fatal();
-                    let _ = self.senders.send_to_background_jobs(
-                        BackgroundJob::StopPluginLoadingAnimation(plugin_id),
-                    );
-                    let _ = self
-                        .senders
-                        .send_to_plugin(PluginInstruction::ApplyCachedEvents {
-                            load_id,
-                            plugin_ids: vec![plugin_id],
-                            done_receiving_permissions: false,
-                        });
+                    finish_failed_attach(&self.senders, load_id, plugin_id);
                     continue;
                 },
             };
@@ -1866,7 +1909,7 @@ impl PluginBridge {
                 "attach trace: PluginBridge::add_client client_id={client_id} plugin_id={plugin_id} executor enqueue begin"
             );
             let accepted = loading_context.execute_prepared(
-                plugin_executor, self.senders.clone(), load_id, false,
+                plugin_executor, self.senders.clone(), load_id, false, LoadFailure::Attach,
                 move |loading_context, senders, plugin_map, connected_clients| {
                     let load_started_at = std::time::Instant::now();
                     log::info!(
@@ -1908,30 +1951,17 @@ impl PluginBridge {
                                 load_started_at.elapsed()
                             );
                             log::error!("Failed to load plugin for new client: {}", e);
-                            let _ = senders.send_to_plugin(PluginInstruction::ApplyCachedEvents {
-                                        load_id,
-                                plugin_ids: vec![plugin_id], done_receiving_permissions: false,
-                            });
+                            finish_failed_attach(&senders, load_id, plugin_id);
                         },
                     }
                     cleanup_disconnected_instances(plugin_id, &connected_clients, &plugin_map, senders);
 
                 },
             );
-            if !accepted {
-                self.queue_plugin_failed(
-                    plugin_id,
-                    Some(load_id),
-                    None,
-                    None,
-                    "Plugin executor rejected loading".into(),
-                    true,
-                )
-                .with_context(|| format!("fail plugin {plugin_id} for client {client_id}"))
-                .non_fatal();
-            }
+            // A rejection was already reported, as ending only this client's load: the plugin is
+            // still running for the other clients, so it is not failed session-wide.
             log::info!(
-                "attach trace: PluginBridge::add_client client_id={client_id} plugin_id={plugin_id} executor enqueue complete after {:?}",
+                "attach trace: PluginBridge::add_client client_id={client_id} plugin_id={plugin_id} executor enqueue accepted={accepted} complete after {:?}",
                 started_at.elapsed()
             );
         }
@@ -4329,6 +4359,17 @@ fn summarize_batch_for_stats<'a>(events: impl IntoIterator<Item = &'a Event>) ->
         .collect::<Vec<_>>()
         .join(",");
     (label, has_input)
+}
+
+/// End a new client's load of a plugin that still runs for the other clients: the loading
+/// animation stops and the cached events replay to the instances that exist.
+fn finish_failed_attach(senders: &ThreadSenders, load_id: u64, plugin_id: PluginId) {
+    let _ = senders.send_to_background_jobs(BackgroundJob::StopPluginLoadingAnimation(plugin_id));
+    let _ = senders.send_to_plugin(PluginInstruction::ApplyCachedEvents {
+        load_id,
+        plugin_ids: vec![plugin_id],
+        done_receiving_permissions: false,
+    });
 }
 
 fn handle_plugin_loading_failure(
