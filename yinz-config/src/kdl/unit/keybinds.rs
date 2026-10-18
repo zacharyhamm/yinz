@@ -1167,9 +1167,6 @@ fn tab_group_actions_round_trip_kdl_and_default_bindings() {
     assert!(tab
         .values()
         .any(|actions| actions.contains(&Action::NewTabGroup)));
-    assert!(tab
-        .values()
-        .any(|actions| actions.contains(&Action::GoToNextTabGroup)));
     for (key, action) in [
         ('{', Action::MovePaneToPreviousTabGroup),
         ('}', Action::MovePaneToNextTabGroup),
@@ -1184,7 +1181,30 @@ fn tab_group_actions_round_trip_kdl_and_default_bindings() {
             ])
         );
     }
-    assert!(tab
-        .values()
-        .any(|actions| actions.contains(&Action::GoToPreviousTabGroup)));
+    let saved = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
+    assert_eq!(config.keybinds, saved.keybinds);
+    for config in [&config, &saved] {
+        for (shortcut, action) in [
+            ("Alt Shift h", Action::GoToPreviousTabGroup),
+            ("Alt Shift l", Action::GoToNextTabGroup),
+        ] {
+            let key: KeyWithModifier = shortcut.parse().unwrap();
+            for (mode, bindings) in &config.keybinds.0 {
+                let expected = if matches!(mode, InputMode::Locked | InputMode::Select) {
+                    None
+                } else {
+                    Some(vec![action.clone()])
+                };
+                assert_eq!(
+                    bindings.get(&key),
+                    expected.as_ref(),
+                    "{mode:?}: {shortcut}"
+                );
+            }
+        }
+        for shortcut in ["H", "L"] {
+            assert!(!config.keybinds.0[&InputMode::Tab]
+                .contains_key(&shortcut.parse::<KeyWithModifier>().unwrap()));
+        }
+    }
 }

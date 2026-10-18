@@ -72,8 +72,6 @@ keybinds {
         bind "l" "Right" "Down" "j" { GoToNextTab; }
         bind "n" { NewTab; SwitchToMode "Normal"; }
         bind "g" { NewTabGroup; SwitchToMode "Normal"; }
-        bind "H" { GoToPreviousTabGroup; }
-        bind "L" { GoToNextTabGroup; }
         bind "x" { CloseTab; SwitchToMode "Normal"; }
         bind "s" { ToggleActiveSyncTab; SwitchToMode "Normal"; }
         bind "b" { BreakPane; SwitchToMode "Normal"; }
@@ -280,6 +278,8 @@ keybinds {
         }
         bind "Alt i" { MoveTab "Left"; }
         bind "Alt o" { MoveTab "Right"; }
+        bind "Alt Shift h" { GoToPreviousTabGroup; }
+        bind "Alt Shift l" { GoToNextTabGroup; }
         bind "Alt h" "Alt Left" { MoveFocusOrTab "Left"; }
         bind "Alt l" "Alt Right" { MoveFocusOrTab "Right"; }
         bind "Alt j" "Alt Down" { MoveFocus "Down"; }

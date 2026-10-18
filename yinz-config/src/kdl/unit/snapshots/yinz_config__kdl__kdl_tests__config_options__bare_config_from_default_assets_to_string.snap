@@ -45,8 +45,6 @@ keybinds clear-defaults=true {
         bind "7" { GoToTabInGroup 7; SwitchToMode "normal"; }
         bind "8" { GoToTabInGroup 8; SwitchToMode "normal"; }
         bind "9" { GoToTabInGroup 9; SwitchToMode "normal"; }
-        bind "H" { GoToPreviousTabGroup; }
-        bind "L" { GoToNextTabGroup; }
         bind "[" { BreakPaneLeft; SwitchToMode "normal"; }
         bind "]" { BreakPaneRight; SwitchToMode "normal"; }
         bind "a" { ArrangePanesByProject; SwitchToMode "normal"; }
@@ -222,10 +220,12 @@ keybinds clear-defaults=true {
         bind "Alt f" { ToggleFloatingPanes; }
         bind "Ctrl g" { SwitchToMode "locked"; }
         bind "Alt h" { MoveFocusOrTab "left"; }
+        bind "Alt Shift h" { GoToPreviousTabGroup; }
         bind "Alt i" { MoveTab "left"; }
         bind "Alt j" { MoveFocus "down"; }
         bind "Alt k" { MoveFocus "up"; }
         bind "Alt l" { MoveFocusOrTab "right"; }
+        bind "Alt Shift l" { GoToNextTabGroup; }
         bind "Alt n" { NewPane; }
         bind "Alt o" { MoveTab "right"; }
         bind "Alt p" { TogglePaneInGroup; }

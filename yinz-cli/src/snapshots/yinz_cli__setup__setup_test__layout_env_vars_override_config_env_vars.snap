@@ -217,6 +217,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -262,6 +273,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -772,6 +794,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -856,6 +889,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -1332,6 +1376,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {},
@@ -1418,6 +1473,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -1905,22 +1971,6 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
-                    'H',
-                ),
-                key_modifiers: {},
-            }: [
-                GoToPreviousTabGroup,
-            ],
-            KeyWithModifier {
-                bare_key: Char(
-                    'L',
-                ),
-                key_modifiers: {},
-            }: [
-                GoToNextTabGroup,
-            ],
-            KeyWithModifier {
-                bare_key: Char(
                     '[',
                 ),
                 key_modifiers: {},
@@ -2115,6 +2165,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -2184,6 +2245,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -2743,6 +2815,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -2812,6 +2895,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3214,6 +3308,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -3259,6 +3364,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3717,6 +3833,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -3786,6 +3913,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -4213,6 +4351,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -4258,6 +4407,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -4630,6 +4790,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -4675,6 +4846,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -5106,6 +5288,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -5185,6 +5378,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -5666,6 +5870,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -5747,6 +5962,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6132,6 +6358,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -6177,6 +6414,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6692,6 +6940,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -6776,6 +7035,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -7286,6 +7556,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -7331,6 +7612,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -7993,6 +8285,17 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'h',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToPreviousTabGroup,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'i',
                 ),
                 key_modifiers: {
@@ -8058,6 +8361,17 @@ Config {
                 MoveFocusOrTab {
                     direction: Right,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'l',
+                ),
+                key_modifiers: {
+                    Alt,
+                    Shift,
+                },
+            }: [
+                GoToNextTabGroup,
             ],
             KeyWithModifier {
                 bare_key: Char(

@@ -38,11 +38,11 @@ fn tab_groups_keyboard_mouse_and_last_pane_lifecycle() {
     yinz.wait_until("new tab in group ready", |grid| {
         grid.contains("GROUP_SECOND") && !grid.contains("Group 2")
     });
-    yinz.send_stdin(b"\x14H\x1b");
+    yinz.send_stdin(b"\x1bH");
     yinz.wait_until("previous group focused", |grid| {
         grid.contains("DEFAULT_CONTENT") && !grid.contains("GROUP_SECOND")
     });
-    yinz.send_stdin(b"\x14L\x1b");
+    yinz.send_stdin(b"\x1bL");
     yinz.wait_until("group restores last focused tab", |grid| {
         grid.contains("GROUP_SECOND") && !grid.contains("DEFAULT_CONTENT")
     });
@@ -59,7 +59,7 @@ fn tab_groups_keyboard_mouse_and_last_pane_lifecycle() {
     yinz.wait_until("click selects default group", |grid| {
         grid.contains("DEFAULT_CONTENT")
     });
-    yinz.send_stdin(b"\x14L\x1b");
+    yinz.send_stdin(b"\x1bL");
     yinz.wait_until("last group pane focused", |grid| {
         grid.contains("GROUP_FIRST")
     });
