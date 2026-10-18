@@ -346,3 +346,38 @@ fn replacing_with_an_existing_pane_refuses_a_target_without_a_slot_and_moves_not
     );
     assert_eq!(closed_by_pty(&captured), vec![GATE]);
 }
+
+#[test]
+fn a_new_in_place_pane_whose_target_holds_no_slot_is_refused_without_stopping_the_screen() {
+    let mut mock_screen = MockScreen::new(Size {
+        cols: 121,
+        rows: 20,
+    });
+    let screen_thread = mock_screen.run(None, vec![]);
+    let (done, answer) = completion();
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::NewPane(
+            PaneId::Terminal(TerminalId::new(5)),
+            None,
+            None,
+            None,
+            NewPanePlacement::InPlace {
+                pane_id_to_replace: Some(PaneId::Terminal(TerminalId::new(99))),
+                close_replaced_pane: false,
+                borderless: None,
+            },
+            false,
+            // As `new-pane --in-place --tab-id`: the client path already logs and carries on.
+            ClientTabIndexOrPaneId::TabIndex(TAB),
+            done,
+            false,
+        ))
+        .unwrap();
+    let answer = answer
+        .blocking_recv()
+        .expect("the screen answers the refused placement");
+    assert!(answer.error_message.is_some(), "{answer:?}");
+    // A screen thread that returned the refusal as an error panics here.
+    mock_screen.teardown(vec![screen_thread]);
+}

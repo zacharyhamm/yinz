@@ -3244,7 +3244,10 @@ fn ctrl_c_on_a_held_command_in_a_lent_slot_restores_the_hook_over_its_agent() {
     // What the screen does with `CloseFocusWithPaneId`.
     assert_eq!(tab.close_pane_explicitly(closing, completion), vec![gate]);
     assert!(!tab.has_pane_with_pid(&gate));
-    assert!(tab.pane_holds_a_slot(hook), "the hook is back in its slot");
+    assert!(
+        tab.has_non_suppressed_pane_with_pid(&hook),
+        "the hook is back in its slot"
+    );
     assert_eq!(tab.get_active_pane_id(client), Some(hook));
     let behind = tab.suppressed_panes[&agent].restored_by.unwrap();
     assert_eq!(
@@ -3296,7 +3299,7 @@ fn explicit_close_keeps_the_hook_cascade_and_closes_a_whole_stack_from_its_botto
             );
         }
         if let Some(survivor) = survivor {
-            assert!(tab.pane_holds_a_slot(id(survivor)));
+            assert!(tab.has_non_suppressed_pane_with_pid(&id(survivor)));
         }
         tab.assert_invariants();
     }
@@ -3349,7 +3352,10 @@ fn a_lent_slot_comes_back_on_every_kind_of_close() {
         } else {
             tab.close_pane(cover, false, None);
         }
-        assert!(tab.pane_holds_a_slot(agent), "explicit={explicit}");
+        assert!(
+            tab.has_non_suppressed_pane_with_pid(&agent),
+            "explicit={explicit}"
+        );
         assert!(!tab.has_pane_with_pid(&cover));
         tab.assert_invariants();
     }
@@ -3456,4 +3462,40 @@ fn moving_a_pane_into_a_pane_without_a_slot_parks_it_rather_than_dropping_it() {
         assert!(tab.suppressed_panes[&moving].restored_by.is_none());
         tab.assert_invariants();
     }
+}
+
+#[test]
+fn a_plugin_opened_in_place_that_closes_the_replaced_pane_closes_its_process() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        true,
+    );
+    let (sender, _receiver) = unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+    let (pty_sender, pty_receiver) = unbounded();
+    tab.senders
+        .replace_to_pty(SenderWithContext::new(pty_sender));
+    let source = PaneId::Terminal(TerminalId::new(1));
+    let plugin = PaneId::Plugin(crate::PluginId::new(2));
+    tab.suppress_pane_and_replace_with_pid(source, plugin, ReplacedPane::Close, None, None, None)
+        .unwrap();
+    assert!(!tab.has_pane_with_pid(&source));
+    assert!(tab.has_non_suppressed_pane_with_pid(&plugin));
+    let closed: Vec<_> = pty_receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyInstruction::ClosePane(id, _) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        closed,
+        vec![source],
+        "the replaced terminal's process is closed"
+    );
+    tab.assert_invariants();
 }

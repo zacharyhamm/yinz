@@ -3442,7 +3442,7 @@ impl Tab {
         // the pane with the given pane_id_to_replace is then suppressed (hidden and not rendered) until the current
         // created pane is closed, in which case it will be replaced back by it
         let err_context = || "failed to suppress pane".to_string();
-        if !self.pane_holds_a_slot(pane_id_to_replace) {
+        if !self.has_non_suppressed_pane_with_pid(&pane_id_to_replace) {
             return Err(self.no_slot_error(pane_id_to_replace));
         }
 
@@ -3509,7 +3509,7 @@ impl Tab {
         // the active pane is then suppressed (hidden and not rendered) until the current
         // created pane is closed, in which case it will be replaced back by it
         let err_context = || "failed to suppress active pane".to_string();
-        if !self.pane_holds_a_slot(old_pane_id) {
+        if !self.has_non_suppressed_pane_with_pid(&old_pane_id) {
             return Err(self.no_slot_error(old_pane_id));
         }
         let close_replaced_pane = replaced.closes();
@@ -3657,6 +3657,10 @@ impl Tab {
                         if self.pane_tabs_of(pid).is_some() {
                             self.park_pane(replaced_pane);
                             self.close_pane_explicitly(pid, None);
+                        } else {
+                            self.senders
+                                .send_to_pty(PtyInstruction::ClosePane(pid, None))
+                                .with_context(err_context)?;
                         }
                     }
                 } else {
@@ -3745,7 +3749,7 @@ impl Tab {
         pane_id_to_replace: PaneId,
         pane: Box<dyn Pane>,
     ) -> Option<Box<dyn Pane>> {
-        if self.pane_holds_a_slot(pane_id_to_replace) {
+        if self.has_non_suppressed_pane_with_pid(&pane_id_to_replace) {
             return Some(pane);
         }
         log::error!(
@@ -9904,15 +9908,9 @@ impl Tab {
             SuppressedPane::behind(pane, stand_in, is_scrollback_editor, lent),
         );
     }
-    /// Whether `pane_id` is in the layout - tiled, floating or an overlay - rather than
-    /// suppressed or absent. Only a pane on screen has a slot that a pane opened in its place
-    /// can take: asking a collection to replace any other pane drops the replacement.
-    pub fn pane_holds_a_slot(&self, pane_id: PaneId) -> bool {
-        self.tiled_panes.panes_contain(&pane_id)
-            || self.floating_panes.panes_contain(&pane_id)
-            || self.overlay_panes.panes_contain(&pane_id)
-    }
-    /// Why nothing can open in `pane_id`'s place, for a pane `pane_holds_a_slot` refused.
+    /// Why nothing can open in `pane_id`'s place, for a pane that holds no slot: only a pane
+    /// in the layout (`has_non_suppressed_pane_with_pid`) has one that a pane opened in its
+    /// place can take, and asking a collection to replace any other pane drops the replacement.
     pub fn no_slot_error(&self, pane_id: PaneId) -> anyError {
         if self.suppressed_panes.contains_key(&pane_id) {
             anyhow!("pane {pane_id:?} is suppressed, so it has no slot to open a pane in place of")

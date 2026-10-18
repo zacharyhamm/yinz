@@ -8973,10 +8973,7 @@ fn replace_pane_with_existing_pane(
         ));
     let result =
         wait_for_action_completion(completion_rx, "replace_pane_with_existing_pane", false);
-    match result.error_message {
-        Some(error) => Err(anyhow!(error)),
-        None => Ok(()),
-    }
+    in_place_pane_id(result).map(|_| ())
 }
 
 fn override_layout(
