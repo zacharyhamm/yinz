@@ -637,6 +637,8 @@ fn a_pane_re_run_with_its_own_command_is_still_an_agent_pane() {
         ],
         "got: {fired:?}"
     );
+    assert_eq!(config(&fired[2].2)["agent_session_id"], "s1");
+    assert!(!config(&fired[5].2).contains_key("agent_session_id"));
 }
 
 #[test]
@@ -1390,7 +1392,7 @@ fn agent_double_escape_screen_resets_and_menu_dismissal() {
 
 #[test]
 fn a_replacement_agent_starts_a_fresh_record_in_the_same_pane() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi", "muse", "agy"] {
         let original = RunCommand {
             command: "claude".into(),
             hold_on_close: true,
@@ -1670,4 +1672,139 @@ fn agent_control_fresh_restart_without_a_prompt_forgets_the_previous_session() {
         screen.get_pane_info(pane).unwrap().last_agent_session_id,
         None
     );
+}
+
+#[test]
+fn provider_session_ids_survive_exit_and_follow_conversation_changes() {
+    use crate::screen::thread_main::apply_queued_agent_report;
+    use yinz_types::agent::control::AgentRestartSession;
+    use yinz_types::agent::report::{AgentReport, AgentReportState};
+    use yinz_types::agent::{hook_outcome, AgentEvent, HookEvent, HookOutcome};
+
+    let pane = PaneId::Terminal(TERMINAL_2);
+    for kind in ["claude", "codex", "pi", "muse", "agy"] {
+        for transition in ["unchanged", "clear", "new", "fresh"] {
+            for (session_end, status) in [
+                (true, Some(0)),
+                (false, Some(0)),
+                (false, Some(1)),
+                (false, None),
+            ] {
+                let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
+                let (to_plugin, plugins) = channels::unbounded();
+                screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+                let (to_pty, _pty) = channels::unbounded();
+                screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+                new_tab(&mut screen, 2, TabId::new(0));
+                let command = RunCommand {
+                    command: kind.into(),
+                    hold_on_close: true,
+                    ..Default::default()
+                };
+                let deliver =
+                    |screen: &mut Screen, name: &str, session: &str, source: Option<&str>| {
+                        let hook = HookEvent {
+                            hook_event_name: name.into(),
+                            session_id: session.into(),
+                            source: source.map(str::to_owned),
+                            ..Default::default()
+                        };
+                        let state = match hook_outcome(kind, &hook) {
+                            HookOutcome::Reported(agent) => AgentReportState::Set(agent),
+                            HookOutcome::Ended => AgentReportState::Clear,
+                            HookOutcome::Nothing => panic!("{kind}: {name} must update the record"),
+                        };
+                        apply_queued_agent_report(
+                            screen,
+                            &AgentReport {
+                                report_id: "00000000-0000-4000-8000-000000000001".into(),
+                                pane_id: pane,
+                                state,
+                                event: Some(AgentEvent::from_hook(
+                                    kind,
+                                    TERMINAL_2,
+                                    &hook,
+                                    serde_json::to_string(&hook).unwrap(),
+                                )),
+                                trace: false,
+                                process_id: ProcessId::new(42),
+                                kind: kind.into(),
+                            },
+                            std::time::Instant::now(),
+                        )
+                        .unwrap();
+                    };
+                deliver(&mut screen, "UserPromptSubmit", "old-session", None);
+                if transition == "clear" {
+                    deliver(&mut screen, "SessionEnd", "old-session", None);
+                    let info = screen.get_pane_info(pane).unwrap();
+                    assert!(info.agent.is_none());
+                    assert_eq!(info.last_agent_session_id.as_deref(), Some("old-session"));
+                }
+                if transition == "fresh" {
+                    super::super::replay_pending_plugin_events(
+                        &mut screen,
+                        vec![hold(2, command.clone())],
+                    )
+                    .unwrap();
+                    screen
+                        .restart_agent_pane(pane, None, AgentRestartSession::Fresh, None)
+                        .unwrap();
+                    assert_eq!(
+                        screen.get_pane_info(pane).unwrap().last_agent_session_id,
+                        None
+                    );
+                }
+                let session = if transition == "unchanged" {
+                    "old-session"
+                } else {
+                    "new-session"
+                };
+                if transition != "unchanged" {
+                    // A new session can follow SessionEnd or replace the live record directly.
+                    deliver(&mut screen, "SessionStart", session, Some("clear"));
+                }
+                // A report without an id must not erase a known id in the same run.
+                deliver(&mut screen, "UserPromptSubmit", "", None);
+                if session_end {
+                    deliver(&mut screen, "SessionEnd", session, None);
+                    assert!(screen.get_pane_info(pane).unwrap().agent.is_none());
+                }
+                super::super::replay_pending_plugin_events(
+                    &mut screen,
+                    vec![ScreenInstruction::HoldPane(pane, status, command)],
+                )
+                .unwrap();
+                let info = screen.get_pane_info(pane).unwrap();
+                assert_eq!(
+                    info.last_agent_session_id.as_deref(),
+                    Some(session),
+                    "{kind}/{transition}/{status:?}"
+                );
+                assert_eq!(
+                    serde_json::to_value(&info).unwrap()["last_agent_session_id"],
+                    session
+                );
+                let exits: Vec<_> = plugins
+                    .try_iter()
+                    .filter_map(|(instruction, _)| match instruction {
+                        PluginInstruction::RunHook {
+                            point: HookPoint::AgentExit,
+                            payload,
+                            ..
+                        } => Some(config(&payload).clone()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(exits.len(), if transition == "fresh" { 2 } else { 1 });
+                let payload = exits.last().unwrap();
+                assert_eq!(payload["agent_session_id"], session);
+                assert_eq!(payload["agent_kind"], kind);
+                assert_eq!(
+                    payload.get("agent_exit_code"),
+                    status.map(|code| code.to_string()).as_ref()
+                );
+            }
+        }
+    }
 }
