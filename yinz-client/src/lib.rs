@@ -32,6 +32,7 @@ mod keyboard_parser;
 mod nested_reannounce;
 mod render_budget;
 mod router;
+mod splash;
 mod startup;
 mod startup_signals;
 mod stdin_ansi_parser;
@@ -494,6 +495,13 @@ pub fn start_client(
     yinz_runtime::envs::set_vars(&config.env);
 
     let full_screen_ws = startup_stage("client.terminal_size", || os_input.get_terminal_size());
+    let splash_deadline = if is_a_reconnect {
+        None
+    } else {
+        crate::splash::show(&*os_input, full_screen_ws, &config, &config_options).unwrap_or_else(
+            |e| ClientTeardown::exit_after_startup_error(Some(terminal_teardown), e.to_string()),
+        )
+    };
     log::info!("startup trace: terminal rows={} cols={} kitty_keyboard={} kitty_graphics={support_kitty_graphics_protocol}", full_screen_ws.rows, full_screen_ws.cols, !explicitly_disable_kitty_keyboard_protocol);
 
     let startup = crate::startup::StartupContext::attached(
@@ -719,6 +727,7 @@ pub fn start_client(
         synchronised_output,
         render_budget: &render_budget,
         startup_started,
+        splash_deadline,
     }
     .run(&receive_client_instructions);
     // The router may be waiting for frames to drain that nobody will now write,

@@ -14,6 +14,7 @@ use crate::{
     command_is_executing::CommandIsExecuting, nested_reannounce::NestedReannounce,
     stdin_ansi_parser, ClientInstruction, InputInstruction,
 };
+use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -53,6 +54,7 @@ pub(crate) struct ClientLoop<'a> {
     /// Released as each frame reaches the terminal, so the router reads the next.
     pub render_budget: &'a RenderBudget,
     pub startup_started: Instant,
+    pub splash_deadline: Option<Instant>,
 }
 
 impl ClientLoop<'_> {
@@ -72,13 +74,31 @@ impl ClientLoop<'_> {
         let started_at = Instant::now();
         let mut waiting_for_first_render = true;
         let mut slow_warnings = SlowWarnings::default();
+        let mut deferred = VecDeque::new();
 
         self.announce_synchronised_output();
 
         loop {
-            let (client_instruction, mut err_ctx) = receive_client_instructions
-                .recv()
-                .expect("failed to receive app instruction on channel");
+            let waiting_for_splash = self.splash_deadline.filter(|end| *end > Instant::now());
+            let next = if let Some(deadline) = waiting_for_splash {
+                match receive_client_instructions.recv_deadline(deadline) {
+                    Ok(instruction) => instruction,
+                    Err(yinz_runtime::channels::RecvTimeoutError::Timeout) => continue,
+                    Err(e) => panic!("failed to receive app instruction on channel: {e}"),
+                }
+            } else if let Some(instruction) = deferred.pop_front() {
+                instruction
+            } else {
+                receive_client_instructions
+                    .recv()
+                    .expect("failed to receive app instruction on channel")
+            };
+            if waiting_for_splash.is_some() && matches!(next.0, ClientInstruction::Render(_)) {
+                // Frames may be incremental; keep every frame and its budget reservation.
+                deferred.push_back(next);
+                continue;
+            }
+            let (client_instruction, mut err_ctx) = next;
 
             yinz_runtime::errors::add_call(
                 &mut err_ctx,
@@ -119,6 +139,12 @@ impl ClientLoop<'_> {
             }
             if should_exit {
                 break;
+            }
+        }
+
+        for (instruction, _) in deferred {
+            if let ClientInstruction::Render(output) = instruction {
+                self.render_budget.release(output.len()).non_fatal();
             }
         }
 
@@ -172,8 +198,11 @@ impl ClientLoop<'_> {
                 return true;
             },
             ClientInstruction::Error(backtrace) => self.fail(backtrace),
-            ClientInstruction::Render(output) => {
+            ClientInstruction::Render(mut output) => {
                 let render_bytes = output.len();
+                if self.splash_deadline.take().is_some() {
+                    output.insert_str(0, crate::splash::CLEAR);
+                }
                 let started = Instant::now();
                 let mut stdout = self.os_input.get_stdout_writer();
                 let written =

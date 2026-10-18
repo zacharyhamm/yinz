@@ -51,7 +51,7 @@ fn check_outcome(error: Option<ErrorKind>, reconnect: Option<SessionConnection>)
             ClientInfo::Attach("client-outcome-test".into(), Default::default()),
             None,
             None,
-            false,
+            true, // Reconnects write immediately, so the queued exit cannot bypass the frame.
             false,
         );
         done.send(outcome).unwrap();
@@ -60,6 +60,9 @@ fn check_outcome(error: Option<ErrorKind>, reconnect: Option<SessionConnection>)
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("start_client must finish cleanup and return");
     worker.join().unwrap();
+    assert!(!String::from_utf8(observed.stdout_bytes())
+        .unwrap()
+        .contains("░██░"));
     assert_eq!(outcome.exit_status, i32::from(error.is_some()));
     assert_eq!(outcome.reconnect_to_session, reconnect);
     assert_eq!(observed.raw_mode(), reconnect.is_some());
@@ -79,4 +82,54 @@ fn check_outcome(error: Option<ErrorKind>, reconnect: Option<SessionConnection>)
             .unwrap()
             .contains(&outcome.exit_msg));
     }
+}
+
+#[test]
+fn interactive_startup_shows_the_splash_and_detached_startup_does_not() {
+    for info in [
+        ClientInfo::New("splash-new".into(), None, None),
+        ClientInfo::Resurrect("splash-resurrect".into(), Default::default(), false, None),
+        ClientInfo::Attach("splash-attach".into(), Default::default()),
+        ClientInfo::Watch("splash-watch".into(), Default::default()),
+    ] {
+        let os = FakeClientOsApi::new().capturing_stdout();
+        os.queue_from_server(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        });
+        let outcome = start_client(
+            Box::new(os.clone()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            info,
+            None,
+            None,
+            false,
+            false,
+        );
+        assert_eq!(outcome.exit_status, 0);
+        assert!(String::from_utf8(os.stdout_bytes())
+            .unwrap()
+            .contains("░██░"));
+        assert!(!os.raw_mode());
+    }
+    let os = FakeClientOsApi::new().capturing_stdout();
+    let outcome = start_client(
+        Box::new(os.clone()),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        ClientInfo::New("splash-detached".into(), None, None),
+        None,
+        None,
+        false,
+        true,
+    );
+    assert_eq!(outcome.exit_status, 0);
+    assert!(os.stdout_bytes().is_empty());
+    assert!(!os.raw_mode());
+    assert!(os
+        .sent_messages()
+        .iter()
+        .any(|msg| matches!(msg, ClientToServerMsg::FirstClientConnected { .. })));
 }
