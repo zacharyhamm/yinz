@@ -1,6 +1,14 @@
 ;; Preset KDL preserved from the configuration plugin, including Agent and Notifications modes.
 (provide configuration-default-keybinds configuration-unlock-first-keybinds)
 
+(define (group-navigation-keybinds secondary-modifier)
+  (if (or (equal? secondary-modifier "")
+      (member "Shift" (split-whitespace secondary-modifier)))
+    ""
+    (string-append "        bind \"" secondary-modifier " Shift h\" { GoToPreviousTabGroup; }
+        bind \"" secondary-modifier " Shift l\" { GoToNextTabGroup; }
+")))
+
 (define (agent-keybinds entry-key exit-mode plain-entry)
   (define excluded-modes
     (if plain-entry
@@ -176,9 +184,13 @@ keybinds clear-defaults=true {
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Locked\"; }
         bind \"g\" { NewTabGroup; SwitchToMode \"Locked\"; }
-        bind \"H\" { GoToPreviousTabGroup; }
+"
+    (if (equal? secondary-modifier "")
+      "        bind \"H\" { GoToPreviousTabGroup; }
         bind \"L\" { GoToNextTabGroup; }
-        bind \"x\" { CloseTab; SwitchToMode \"Locked\"; }
+"
+      "")
+    "        bind \"x\" { CloseTab; SwitchToMode \"Locked\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Locked\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Locked\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Locked\"; }
@@ -319,7 +331,9 @@ keybinds clear-defaults=true {
     " l\" \""
     secondary-modifier
     " Right\" { MoveFocusOrTab \"Right\"; }
-        bind \""
+"
+    (group-navigation-keybinds secondary-modifier)
+    "        bind \""
     secondary-modifier
     " j\" \""
     secondary-modifier
@@ -460,8 +474,6 @@ keybinds clear-defaults=true {
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Normal\"; }
         bind \"g\" { NewTabGroup; SwitchToMode \"Normal\"; }
-        bind \"H\" { GoToPreviousTabGroup; }
-        bind \"L\" { GoToNextTabGroup; }
         bind \"x\" { CloseTab; SwitchToMode \"Normal\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Normal\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
@@ -649,7 +661,9 @@ keybinds clear-defaults=true {
     " l\" \""
     secondary-modifier
     " Right\" { MoveFocusOrTab \"Right\"; }
-        bind \""
+"
+    (group-navigation-keybinds secondary-modifier)
+    "        bind \""
     secondary-modifier
     " j\" \""
     secondary-modifier
@@ -792,8 +806,6 @@ keybinds clear-defaults=true {
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Normal\"; }
         bind \"g\" { NewTabGroup; SwitchToMode \"Normal\"; }
-        bind \"H\" { GoToPreviousTabGroup; }
-        bind \"L\" { GoToNextTabGroup; }
         bind \"x\" { CloseTab; SwitchToMode \"Normal\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Normal\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
@@ -957,7 +969,9 @@ keybinds clear-defaults=true {
     " l\" \""
     secondary-modifier
     " Right\" { MoveFocusOrTab \"Right\"; }
-        bind \""
+"
+    (group-navigation-keybinds secondary-modifier)
+    "        bind \""
     secondary-modifier
     " j\" \""
     secondary-modifier
@@ -1353,8 +1367,6 @@ keybinds clear-defaults=true {
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Normal\"; }
         bind \"g\" { NewTabGroup; SwitchToMode \"Normal\"; }
-        bind \"H\" { GoToPreviousTabGroup; }
-        bind \"L\" { GoToNextTabGroup; }
         bind \"x\" { CloseTab; SwitchToMode \"Normal\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Normal\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
@@ -1542,7 +1554,9 @@ keybinds clear-defaults=true {
     " l\" \""
     secondary-modifier
     " Right\" { MoveFocusOrTab \"Right\"; }
-        bind \""
+"
+    (group-navigation-keybinds secondary-modifier)
+    "        bind \""
     secondary-modifier
     " j\" \""
     secondary-modifier

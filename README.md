@@ -29,9 +29,10 @@ Use `cargo x run --quick-run` for `target/dev-data`. `cargo x build` does not in
 
 The upper tab-bar row selects a group. The lower row shows that group's tabs.
 Startup tabs belong to **Default**. Press **Ctrl+t**, then **g** to create a group
-with a fresh terminal tab. In Tab mode, **Shift+h** and **Shift+l** switch groups;
-**1–9** and the usual tab navigation keys select tabs within the current group.
-Switching groups restores the last tab you used there.
+with a fresh terminal tab. **Alt+Shift+h** and **Alt+Shift+l** switch to the previous
+or next group without changing modes, except in Locked and Select modes. In Tab
+mode, **1–9** and the usual tab navigation keys select tabs within the current
+group. Switching groups restores the last tab you used there.
 Press **Ctrl+t**, then **{** or **}** to move the focused pane to the previous or next group.
 The pane moves to that group's last-used tab, and focus follows it in Normal mode.
 These shortcuts wrap around and skip groups without a loaded tab.

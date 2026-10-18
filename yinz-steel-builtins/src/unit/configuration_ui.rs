@@ -8,6 +8,7 @@ use yinz_config::config::Config;
 use yinz_steel::Runtime;
 use yinz_types::{
     data::{Event, InputMode, KeyWithModifier, ModeInfo},
+    geometry::{Direction, Resize},
     input::actions::Action,
 };
 
@@ -183,14 +184,6 @@ fn every_preset_matches_templates_and_parses_with_agent_selection_and_notificati
                 config.keybinds.0[&InputMode::Tab][&key("g")][0],
                 Action::NewTabGroup
             );
-            assert_eq!(
-                config.keybinds.0[&InputMode::Tab][&key("H")],
-                vec![Action::GoToPreviousTabGroup]
-            );
-            assert_eq!(
-                config.keybinds.0[&InputMode::Tab][&key("L")],
-                vec![Action::GoToNextTabGroup]
-            );
             assert!(matches!(
                 config.keybinds.0[&InputMode::Tab][&key("1")][0],
                 Action::GoToTabInGroup { .. }
@@ -207,6 +200,92 @@ fn every_preset_matches_templates_and_parses_with_agent_selection_and_notificati
             );
             assert!(config.keybinds.0[&InputMode::Agent].contains_key(&key("n")));
             assert!(config.keybinds.0[&InputMode::Select].contains_key(&key("Enter")));
+        }
+    }
+}
+
+#[test]
+fn group_shortcuts_follow_secondary_navigation_and_round_trip() {
+    let mut plugin = Configuration::new(false);
+    for (primary, secondary) in [
+        ("Ctrl", "Alt"),
+        ("", "Alt"),
+        ("Ctrl", "Ctrl"),
+        ("Ctrl Shift", "Alt Super"),
+        ("Ctrl", "Alt Shift"),
+        ("Ctrl", "Shift"),
+        ("", "Alt Shift"),
+        ("Alt Shift", "Alt Shift"),
+        ("Ctrl", ""),
+        ("", ""),
+    ] {
+        for locked in [false, true] {
+            let source = plugin
+                .runtime
+                .invoke(
+                    if locked {
+                        "configuration-unlock-first-keybinds"
+                    } else {
+                        "configuration-default-keybinds"
+                    },
+                    vec![json!(primary), json!(secondary)],
+                )
+                .unwrap();
+            let config = Config::from_kdl(source.as_str().unwrap(), None).unwrap();
+            let saved = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
+            for config in [&config, &saved] {
+                for (letter, direction, action) in [
+                    ("h", Direction::Left, Action::GoToPreviousTabGroup),
+                    ("l", Direction::Right, Action::GoToNextTabGroup),
+                ] {
+                    let shortcut: KeyWithModifier =
+                        format!("{secondary} Shift {letter}").parse().unwrap();
+                    for (mode, bindings) in &config.keybinds.0 {
+                        let navigation_available = if locked {
+                            matches!(mode, InputMode::Normal | InputMode::Locked)
+                        } else {
+                            !matches!(mode, InputMode::Locked | InputMode::Select)
+                        };
+                        let available = if secondary.is_empty() {
+                            *mode == InputMode::Tab
+                        } else {
+                            navigation_available
+                                && !secondary.split_whitespace().any(|m| m == "Shift")
+                        };
+                        if !secondary.is_empty() && navigation_available {
+                            let navigation: KeyWithModifier =
+                                format!("{secondary} {letter}").parse().unwrap();
+                            let expected = if secondary == "Shift" && *mode == InputMode::Resize {
+                                Action::Resize {
+                                    resize: Resize::Decrease,
+                                    direction: Some(direction),
+                                }
+                            } else {
+                                Action::MoveFocusOrTab { direction }
+                            };
+                            assert_eq!(
+                                bindings.get(&navigation).and_then(|actions| actions.first()),
+                                Some(&expected),
+                                "primary={primary:?}, secondary={secondary:?}, locked={locked}, mode={mode:?}",
+                            );
+                        }
+                        let group_bindings: Vec<_> = bindings
+                            .iter()
+                            .filter(|(_, actions)| actions.contains(&action))
+                            .collect();
+                        let expected = vec![action.clone()];
+                        assert_eq!(
+                            group_bindings,
+                            if available { vec![(&shortcut, &expected)] } else { vec![] },
+                            "primary={primary:?}, secondary={secondary:?}, locked={locked}, mode={mode:?}",
+                        );
+                    }
+                    if !secondary.is_empty() && secondary != "Shift" {
+                        let old: KeyWithModifier = letter.to_uppercase().parse().unwrap();
+                        assert!(!config.keybinds.0[&InputMode::Tab].contains_key(&old));
+                    }
+                }
+            }
         }
     }
 }

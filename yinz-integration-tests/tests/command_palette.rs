@@ -432,7 +432,7 @@ fn tab_group_palette_and_resurrection_preserve_names_membership_and_focus() {
     yinz.wait_until("second group tab ready", |grid| {
         grid.contains("SECOND_GROUP_TAB")
     });
-    yinz.send_stdin(b"\x14H\x1b");
+    yinz.send_stdin(b"\x1bH");
     yinz.wait_until("default focused before saving", |grid| {
         grid.contains("DEFAULT_GROUP_CONTENT") && !grid.contains("SECOND_GROUP_TAB")
     });
