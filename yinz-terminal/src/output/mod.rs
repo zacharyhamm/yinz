@@ -780,10 +780,8 @@ pub struct Output {
     // what the session's toasts paint over this frame. they are not panes and so are not in
     // `floating_panes_stack`, but they are drawn above everything and must occlude the cursor the
     // same way a floating pane does
-    notification_rects: Vec<CellRect>,
-    // what each client's own context menu paints over this frame. per client rather than
-    // session-wide like the toasts above, because a menu is drawn only for the client that opened
-    // it - one client's menu must not blank another client's cursor
+    notification_rects: HashMap<ClientId, Vec<CellRect>>,
+    // What each client's own context menu paints over this frame.
     context_menu_rects: HashMap<ClientId, Vec<CellRect>>,
     // A native input overlay owns the cursor even outside its painted rectangle.
     input_overlay_clients: HashSet<ClientId>,
@@ -1445,18 +1443,25 @@ impl Output {
         self.cursor_coordinates
             .insert(client_id, (cursor_x, cursor_y));
     }
-    /// Where the session's toasts paint this frame, in absolute session coordinates.
+    /// Where each client's notifications paint this frame, in absolute session coordinates.
     ///
     /// Set once for the whole frame, before anything renders, so both the real cursor and the fake
     /// cursors standing in for other clients are tested against the same geometry - and so a fake
     /// cursor, which is a post-VTE instruction and would otherwise be drawn *after* the toast's
     /// own cells, is not painted on top of the box.
-    pub fn set_notification_rects(&mut self, notification_rects: Vec<CellRect>) {
+    pub fn set_notification_rects(&mut self, notification_rects: HashMap<ClientId, Vec<CellRect>>) {
         self.notification_rects = notification_rects;
     }
-    pub fn cursor_is_covered_by_notification(&self, x: usize, y: usize) -> bool {
+    pub fn cursor_is_covered_by_notification(
+        &self,
+        x: usize,
+        y: usize,
+        client_id: ClientId,
+    ) -> bool {
         self.notification_rects
-            .iter()
+            .get(&client_id)
+            .into_iter()
+            .flatten()
             .any(|rect| rect.contains(x, y))
     }
     /// Where each client's context menu paints this frame, in absolute session coordinates.
@@ -1480,7 +1485,7 @@ impl Output {
         if self.input_overlay_clients.contains(&client_id) {
             return false;
         }
-        if self.cursor_is_covered_by_notification(cursor_x, cursor_y) {
+        if self.cursor_is_covered_by_notification(cursor_x, cursor_y, client_id) {
             return false;
         }
         if self

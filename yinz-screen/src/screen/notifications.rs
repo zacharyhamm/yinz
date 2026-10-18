@@ -17,11 +17,51 @@ use crate::ui::notification::{
 };
 use crate::ClientId;
 use yinz_types::animation::scaled_duration;
+use yinz_types::input::actions::Action;
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::{Size, Viewport};
 use yinz_types::position::Position;
 
 impl Screen {
+    fn notification_activation_hint(&self, client_id: ClientId) -> Option<String> {
+        let mode_info = self
+            .mode_info
+            .get(&client_id)
+            .unwrap_or(&self.default_mode_info);
+        let (_, bindings) = mode_info
+            .keybinds
+            .iter()
+            .find(|(mode, _)| *mode == mode_info.mode)?;
+        let key = bindings
+            .iter()
+            .filter(|(_, actions)| actions.contains(&Action::ActivateLastNotification))
+            .map(|(key, _)| key)
+            .min()?;
+        let shortcut = key
+            .key_modifiers
+            .iter()
+            .map(ToString::to_string)
+            .chain(std::iter::once(key.bare_key.to_string()))
+            .collect::<Vec<_>>()
+            .join("+");
+        Some(format!("{shortcut} to activate"))
+    }
+
+    fn notification_stack_width(&self, cols: usize, footer: Option<&str>) -> Option<usize> {
+        self.notifications
+            .iter()
+            .flat_map(|notification| {
+                let footer = footer.filter(|_| {
+                    self.notification_history
+                        .last()
+                        .is_some_and(|record| record.info.id == notification.id)
+                });
+                std::iter::once(notification.text.as_str()).chain(footer)
+            })
+            .filter_map(|text| notification_width(text, cols))
+            .max()
+    }
+
     /// Lay out live notifications once for both rendering and mouse hit-testing.
     ///
     /// Called once every frame while any notification is live, rather than diffed like
@@ -44,23 +84,29 @@ impl Screen {
         &self,
         viewport: Viewport,
         now: Instant,
+        client_id: ClientId,
     ) -> Vec<NotificationLayout<'_>> {
-        let Some(width) = self
-            .notifications
-            .iter()
-            .filter_map(|notification| notification_width(&notification.text, viewport.cols))
-            .max()
-        else {
+        let hint = self.notification_activation_hint(client_id);
+        let target = self
+            .notification_history
+            .last()
+            .map(|record| record.info.id);
+        let Some(width) = self.notification_stack_width(viewport.cols, hint.as_deref()) else {
             return vec![];
         };
-        let wrapped: Vec<Vec<String>> = self
+        let wrapped: Vec<(Vec<String>, Option<String>)> = self
             .notifications
             .iter()
-            .map(|notification| notification_lines(&notification.text, width))
+            .map(|notification| {
+                (
+                    notification_lines(&notification.text, width),
+                    hint.clone().filter(|_| Some(notification.id) == target),
+                )
+            })
             .collect();
         let heights: Vec<usize> = wrapped
             .iter()
-            .map(|lines| notification_height(lines.len()))
+            .map(|(lines, footer)| notification_height(lines.len() + usize::from(footer.is_some())))
             .collect();
         let origins = notification_origins(viewport, self.notification_position, &heights, width);
 
@@ -68,7 +114,7 @@ impl Screen {
             .iter()
             .zip(wrapped)
             .zip(origins)
-            .map(|((notification, lines), (x, y))| {
+            .map(|((notification, (lines, footer)), (x, y))| {
                 // the displacement is signed and can point off the top of the viewport for a row
                 // or two mid-glide; clamp rather than wrap, or a `usize` underflow would paint the
                 // toast at the bottom of the screen
@@ -81,6 +127,7 @@ impl Screen {
                 NotificationLayout {
                     notification,
                     lines,
+                    footer,
                     x,
                     y,
                     width,
@@ -97,16 +144,21 @@ impl Screen {
     /// Used only to work out how far a stack change moved each toast (`settled_row_delta`), which
     /// is why one canonical width is enough: the displacement it feeds is a transient, and every
     /// client's *settled* position is computed against that client's own viewport regardless. A
-    /// client whose tab centre is narrower than the session surface can therefore be a row out
-    /// mid-glide, and is never out at rest.
+    /// client with a narrower viewport or a different binding can therefore differ mid-glide,
+    /// and is never out at rest. The widest active hint supplies the canonical footer geometry.
     fn canonical_stack_heights(&self) -> Vec<(NotificationId, usize)> {
         let cols = self.surface_size().cols;
-        let Some(width) = self
-            .notifications
+        let hint = self
+            .connected_clients
+            .borrow()
             .iter()
-            .filter_map(|notification| notification_width(&notification.text, cols))
-            .max()
-        else {
+            .filter_map(|client| self.notification_activation_hint(*client))
+            .max_by_key(|hint| notification_width(hint, cols));
+        let target = self
+            .notification_history
+            .last()
+            .map(|record| record.info.id);
+        let Some(width) = self.notification_stack_width(cols, hint.as_deref()) else {
             return vec![];
         };
         self.notifications
@@ -114,7 +166,10 @@ impl Screen {
             .map(|notification| {
                 (
                     notification.id,
-                    notification_height(notification_lines(&notification.text, width).len()),
+                    notification_height(
+                        notification_lines(&notification.text, width).len()
+                            + usize::from(hint.is_some() && Some(notification.id) == target),
+                    ),
                 )
             })
             .collect()
@@ -183,14 +238,15 @@ impl Screen {
         &self,
         viewport: Viewport,
         now: Instant,
+        client_id: ClientId,
     ) -> Vec<CellRect> {
-        self.notification_layout(viewport, now)
+        self.notification_layout(viewport, now, client_id)
             .iter()
             .map(|layout| CellRect {
                 x: layout.revealed_x,
                 y: layout.y,
                 cols: layout.visible_cols,
-                rows: notification_height(layout.lines.len()),
+                rows: layout.height(),
             })
             .collect()
     }
@@ -251,12 +307,6 @@ impl Screen {
                 cols: tab_size.cols,
                 rows: tab_size.rows,
             };
-            let toast_rects = if self.notifications.is_empty() {
-                vec![]
-            } else {
-                self.notification_cell_rects(viewport, now)
-            };
-
             let mut damage: Vec<CellRect> = vec![];
             for client_id in &client_ids {
                 // a browsing client is shown its browser instead of the toasts, so that is what
@@ -264,7 +314,7 @@ impl Screen {
                 let painted = if self.notification_browser_is_visible(*client_id) {
                     self.notification_browser_rects(*client_id, viewport)
                 } else {
-                    toast_rects.clone()
+                    self.notification_cell_rects(viewport, now, *client_id)
                 };
                 // remove rather than insert an empty vec when nothing is painted, so the map
                 // empties out again once the last toast is gone and the early-out above can fire
@@ -298,25 +348,18 @@ impl Screen {
         damage_by_tab
     }
 
-    /// Every cell a toast or an open browser paints this frame, for the cursor occlusion in
-    /// `Output`. One set for the whole session, so a browser hides the cursor for every client
-    /// under it - a cell or two too cautious for the clients that are not browsing, never too few.
+    /// The overlay cells visible to this client, shared by real and fake cursor occlusion.
     pub(super) fn notification_occlusion_rects(
         &self,
         viewport: Viewport,
         now: Instant,
+        client_id: ClientId,
     ) -> Vec<CellRect> {
-        let mut rects = if self.notifications.is_empty() {
-            vec![]
+        if self.notification_browser_is_visible(client_id) {
+            self.notification_browser_rects(client_id, viewport)
         } else {
-            self.notification_cell_rects(viewport, now)
-        };
-        for client_id in self.notification_browsers.keys() {
-            if self.notification_browser_is_visible(*client_id) {
-                rects.extend(self.notification_browser_rects(*client_id, viewport));
-            }
+            self.notification_cell_rects(viewport, now, client_id)
         }
-        rects
     }
 
     pub(super) fn render_notifications(
@@ -331,42 +374,36 @@ impl Screen {
         {
             return Ok(());
         }
-        let (browsing_clients, toast_clients): (Vec<ClientId>, Vec<ClientId>) = client_ids
-            .iter()
-            .copied()
-            .partition(|client_id| self.notification_browser_is_visible(*client_id));
-        let layouts = if toast_clients.is_empty() {
-            vec![]
-        } else {
-            self.notification_layout(viewport, now)
-        };
-
         let previous_stack = output.set_floating_panes_stack(None);
         let result = (|| -> Result<()> {
-            for client_id in &browsing_clients {
-                self.render_notification_browser(output, viewport, *client_id)?;
-            }
-            for layout in layouts {
-                let chunks = notification_chunks(
-                    &layout.lines,
-                    layout.x,
-                    layout.y,
-                    layout.width,
-                    &self.style,
-                    layout.reveal,
-                );
-                let (chunks, _) = notification_reveal(
-                    &chunks,
-                    layout.x,
-                    layout.width,
-                    self.notification_position,
-                    layout.reveal,
-                );
-                output.add_character_chunks_to_multiple_clients(
-                    chunks,
-                    toast_clients.iter().copied(),
-                    None,
-                )?;
+            for client_id in client_ids.iter().copied() {
+                if self.notification_browser_is_visible(client_id) {
+                    self.render_notification_browser(output, viewport, client_id)?;
+                    continue;
+                }
+                for layout in self.notification_layout(viewport, now, client_id) {
+                    let chunks = notification_chunks(
+                        &layout.lines,
+                        layout.footer.as_deref(),
+                        layout.x,
+                        layout.y,
+                        layout.width,
+                        &self.style,
+                        layout.reveal,
+                    );
+                    let (chunks, _) = notification_reveal(
+                        &chunks,
+                        layout.x,
+                        layout.width,
+                        self.notification_position,
+                        layout.reveal,
+                    );
+                    output.add_character_chunks_to_multiple_clients(
+                        chunks,
+                        std::iter::once(client_id),
+                        None,
+                    )?;
+                }
             }
             Ok(())
         })();
@@ -385,17 +422,17 @@ impl Screen {
         viewport: Viewport,
         position: Position,
         now: Instant,
+        client_id: ClientId,
     ) -> Option<(NotificationId, Option<PaneId>, Option<NotificationClick>)> {
         let line = usize::try_from(position.line()).ok()?;
-        self.notification_layout(viewport, now)
+        self.notification_layout(viewport, now, client_id)
             .into_iter()
             .rev()
             .find(|layout| {
                 layout.visible_cols > 0
                     && (layout.revealed_x..layout.revealed_x + layout.visible_cols)
                         .contains(&position.column())
-                    && (layout.y..layout.y + notification_height(layout.lines.len()))
-                        .contains(&line)
+                    && (layout.y..layout.y + layout.height()).contains(&line)
             })
             .map(|layout| layout.notification)
             .filter(|notification| {
@@ -451,7 +488,7 @@ impl Screen {
             return false;
         }
         let Some((notification_id, pane_id, on_click)) =
-            self.notification_at(viewport, event.position, now)
+            self.notification_at(viewport, event.position, now, client_id)
         else {
             return false;
         };

@@ -157,6 +157,14 @@ fn notifications_stack_downwards_from_a_top_corner() {
     let snapshot = yinz.wait_until("both messages visible", |grid_snapshot| {
         grid_snapshot.contains("first") && grid_snapshot.contains("second")
     });
+    assert_eq!(
+        snapshot
+            .lines()
+            .iter()
+            .filter(|line| line.contains("Alt+a to activate"))
+            .count(),
+        1
+    );
     let newest_row = snapshot
         .lines()
         .iter()
@@ -577,7 +585,12 @@ fn multi_line_notification_text_wraps_into_a_taller_box() {
         "one taller box, not one box per line, got {}",
         snapshot
     );
-    assert_eq!(bottom - top, 3, "two text rows between the borders");
+    assert_eq!(
+        bottom - top,
+        4,
+        "two message rows and the activation footer"
+    );
+    assert!(lines[top + 3].contains("Alt+a to activate"));
     assert!(lines[top + 1].contains("agent needs confirmation"));
     assert!(
         lines[top + 2].contains("  pane_id: 3"),
@@ -603,8 +616,8 @@ fn a_taller_toast_pushes_the_next_one_further_from_the_corner() {
     assert_eq!(both[0], first[0], "the newest toast takes the corner");
     assert_eq!(
         both[1] - both[0],
-        5,
-        "the older toast starts below all five rows of the tall one, got {:?}",
+        6,
+        "the older toast starts below the message and footer, got {:?}",
         both
     );
 
@@ -636,8 +649,8 @@ fn a_tall_toast_at_a_bottom_corner_still_ends_on_the_last_viewport_row() {
     );
     assert_eq!(
         newest_bottom - tops[1],
-        4,
-        "and it is five rows tall, got tops {:?} bottoms {:?}",
+        5,
+        "the three message rows and footer fit inside the borders, got tops {:?} bottoms {:?}",
         tops,
         bottoms
     );

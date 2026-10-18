@@ -554,7 +554,7 @@ fn a_toast_with_a_missing_pane_can_be_activated_again_from_history() {
     screen.close_notification_browser(client_id);
     let viewport = screen.notification_browser_viewport(client_id).unwrap();
     let now = Instant::now();
-    let rect = screen.notification_cell_rects(viewport, now)[0];
+    let rect = screen.notification_cell_rects(viewport, now, ClientId::new(1))[0];
     assert!(screen.handle_pane_notification_click(
         &MouseEvent::new_left_press_event(Position::new((rect.y + 1) as i32, rect.x as u16)),
         viewport,
@@ -796,8 +796,8 @@ fn a_browsing_client_is_shown_the_list_instead_of_its_toasts() {
 
     let browser_rects = screen.notification_browser_rects(client_id, viewport);
     assert_eq!(browser_rects.len(), 2);
-    // the cursor is kept off both the toast a non-browsing client would see and the list
-    let occluded = screen.notification_occlusion_rects(viewport, now);
+    // The browsing client's cursor is kept off the list.
+    let occluded = screen.notification_occlusion_rects(viewport, now, ClientId::new(1));
     for rect in &browser_rects {
         assert!(occluded.contains(rect), "{rect:?} not in {occluded:?}");
     }
@@ -855,7 +855,7 @@ fn palette_suspends_history_and_restores_its_selection_and_cells() {
     let toast = render_frame_into(&mut screen, &receiver, client, &mut grid);
     assert!(toast.contains("live toast"), "{toast}");
     assert!(!toast.contains("history entry"), "{toast}");
-    let toast_rect = screen.notification_cell_rects(viewport, Instant::now())[0];
+    let toast_rect = screen.notification_cell_rects(viewport, Instant::now(), ClientId::new(1))[0];
     let toast_position = Position::new((toast_rect.y + 1) as i32, (toast_rect.x + 2) as u16);
     screen.handle_mouse_event(MouseEvent::new_left_press_event(toast_position), client);
     screen.handle_mouse_event(MouseEvent::new_left_release_event(toast_position), client);
@@ -910,13 +910,19 @@ fn palette_history_damage_and_cursor_occlusion_follow_each_clients_visibility() 
     assert!(!other_frame.contains("Do · Project:"), "{other_frame}");
     assert!(!screen.last_notification_fill.contains_key(&client));
     assert_eq!(screen.last_notification_fill[&other], rects);
-    assert_eq!(screen.notification_occlusion_rects(viewport, now), rects);
+    assert_eq!(
+        screen.notification_occlusion_rects(viewport, now, other),
+        rects
+    );
     screen.toggle_command_palette(other);
     assert!(screen
-        .notification_occlusion_rects(viewport, now)
+        .notification_occlusion_rects(viewport, now, ClientId::new(1))
         .is_empty());
     screen.close_command_palette(client);
     screen.prepare_notification_damage(now, size);
     assert_eq!(screen.last_notification_fill[&client], rects);
-    assert_eq!(screen.notification_occlusion_rects(viewport, now), rects);
+    assert_eq!(
+        screen.notification_occlusion_rects(viewport, now, ClientId::new(1)),
+        rects
+    );
 }

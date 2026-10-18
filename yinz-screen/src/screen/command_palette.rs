@@ -471,7 +471,7 @@ impl Screen {
             if let Some((x, y)) = state
                 .widget
                 .cursor(&layout)
-                .filter(|(x, y)| !output.cursor_is_covered_by_notification(*x, *y))
+                .filter(|(x, y)| !output.cursor_is_covered_by_notification(*x, *y, client))
             {
                 output.add_post_vte_instruction_to_client(
                     client,

@@ -210,6 +210,7 @@ impl Screen {
             };
             let chunks = notification_box_chunks(
                 &entry.lines,
+                None,
                 entry.x,
                 entry.y,
                 frame.layout.width,

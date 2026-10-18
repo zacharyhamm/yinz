@@ -553,7 +553,7 @@ fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
             cols: SIZE.cols,
             rows: SIZE.rows,
         };
-        let y = screen.notification_layout(surface, now)[0].y;
+        let y = screen.notification_layout(surface, now, ClientId::new(1))[0].y;
         screen.notifications[0].y_offset = Tween::settled(7.0 - y as f32);
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert_eq!(grid.as_character_lines()[7][60].character, '─');
@@ -594,7 +594,7 @@ fn palette_backing_keeps_watcher_notifications_separate() {
         cols: SIZE.cols,
         rows: SIZE.rows,
     };
-    let y = screen.notification_layout(surface, now)[0].y;
+    let y = screen.notification_layout(surface, now, ClientId::new(1))[0].y;
     screen.notifications[0].y_offset = Tween::settled(7.0 - y as f32);
     screen.toggle_command_palette(CLIENT);
     let mut grids = [
@@ -4983,10 +4983,10 @@ fn palette_cursor_hides_under_toasts_and_returns_when_uncovered() {
                 cols: SIZE.cols,
                 rows: SIZE.rows,
             };
-            let toast_y = screen.notification_layout(surface, now)[0].y;
+            let toast_y = screen.notification_layout(surface, now, ClientId::new(1))[0].y;
             screen.notifications[0].y_offset = Tween::settled(y as f32 - toast_y as f32);
             assert!(screen
-                .notification_cell_rects(surface, now)
+                .notification_cell_rects(surface, now, ClientId::new(1))
                 .iter()
                 .any(|rect| rect.contains(x, y)));
             let (covered_cursor, _) =

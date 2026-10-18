@@ -921,3 +921,46 @@ fn osc99_rewriting_keeps_non_text_chunks() {
     assert!(!output.contains("p=icon:e=1:d=1"));
     assert!(output.contains("p=title:d=0:e=0") && output.contains(";new\x1b\\"));
 }
+
+#[test]
+fn a_new_suppressed_or_desktop_only_target_removes_the_older_toasts_hint() {
+    for decision in [
+        NotificationDecision::Suppress,
+        NotificationDecision::Replace {
+            title: None,
+            body: None,
+            delivery: Some(NotificationDelivery::Desktop),
+        },
+    ] {
+        let (mut screen, _, _, instance) = policy_screen();
+        let client = ClientId::new(1);
+        let mode = screen
+            .mode_info
+            .entry(client)
+            .or_insert_with(|| screen.default_mode_info.clone());
+        mode.keybinds = Config::from_default_assets()
+            .unwrap()
+            .keybinds
+            .to_keybinds_vec();
+        screen
+            .receive_toast("older".into(), None, None, None, None)
+            .unwrap();
+        decide(&mut screen, 0, instance, NotificationDecision::Pass);
+        let viewport = screen.notification_browser_viewport(client).unwrap();
+        let now = Instant::now() + Duration::from_secs(1);
+        assert!(screen.notification_layout(viewport, now, client)[0]
+            .footer
+            .is_some());
+        screen
+            .receive_toast("new target".into(), None, None, None, None)
+            .unwrap();
+        decide(&mut screen, 1, instance, decision);
+        assert_eq!(
+            screen.notification_history.last().unwrap().info.id,
+            NotificationId::new(1)
+        );
+        let layouts = screen.notification_layout(viewport, now, client);
+        assert_eq!(layouts.len(), 1);
+        assert!(layouts[0].footer.is_none());
+    }
+}
