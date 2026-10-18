@@ -3570,6 +3570,67 @@ fn attach_whose_plugin_data_cannot_be_prepared_still_attaches() {
 }
 
 #[test]
+fn attach_rejected_by_the_executor_fails_only_the_new_clients_load() {
+    let mut test = TestBridge::new();
+    let rejected = PluginId::new(1);
+    let loaded = PluginId::new(2);
+    test.connect(&[ClientId::new(1)]);
+    for id in [1, 2] {
+        let context = test.context(id, 1, "(void)");
+        test.load(context).unwrap();
+    }
+    let original = test.instance_id(rejected, ClientId::new(1));
+    let _ = test.receiver::<PluginInstruction>().try_iter().count();
+    test.bridge.plugin_executor.unregister_plugin(rejected);
+    test.bridge.add_client(ClientId::new(2)).unwrap();
+    assert!(test.bridge.client_is_connected(&ClientId::new(2)));
+    test.wait_for_executor(loaded);
+    let mut finished = vec![];
+    for (instruction, _) in test.receiver::<PluginInstruction>().try_iter() {
+        match instruction {
+            PluginInstruction::PluginFailed { plugin_id, .. } => {
+                panic!("plugin {plugin_id} failed session-wide")
+            },
+            PluginInstruction::ApplyCachedEvents {
+                load_id,
+                plugin_ids,
+                done_receiving_permissions,
+            } => {
+                finished.extend(plugin_ids.iter().copied());
+                let (shutdown, _) = tokio::sync::mpsc::channel(1);
+                test.bridge
+                    .apply_cached_events_for_load(
+                        load_id,
+                        plugin_ids,
+                        done_receiving_permissions,
+                        shutdown,
+                    )
+                    .unwrap();
+            },
+            _ => {},
+        }
+    }
+    // add_client walks plugins in map order, so only the set of finished loads is fixed.
+    finished.sort();
+    assert_eq!(finished, vec![rejected, loaded]);
+    assert!(test.bridge.loading_plugins.is_empty());
+    // The rejected plugin still runs for the client that had it, and is not failed for it.
+    assert_eq!(test.instance_id(rejected, ClientId::new(1)), original);
+    let map = test.bridge.plugin_map.lock().unwrap();
+    assert!(!map.contains(rejected, ClientId::new(2)));
+    // A rejection for one plugin does not stop the others loading for the new client.
+    assert!(map.contains(loaded, ClientId::new(2)));
+    drop(map);
+    for plugin in [rejected, loaded] {
+        assert!(!test.bridge.latest_plugin_errors.contains_key(&plugin));
+        assert!(!test
+            .bridge
+            .cached_events_for_pending_plugins
+            .contains_key(&plugin));
+    }
+}
+
+#[test]
 fn deferred_reload_whose_data_cannot_be_prepared_does_not_fail_the_replay() {
     let mut test = TestBridge::new();
     let plugin = PluginId::new(1);
