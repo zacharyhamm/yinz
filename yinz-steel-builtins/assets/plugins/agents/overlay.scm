@@ -1,5 +1,5 @@
 (require "./state.scm")
-(provide a-mount! a-end-visit! a-hide! a-own-pane a-panel-pane a-panel-panes! a-panel-tabs!
+(provide a-end-visit! a-hide! a-own-pane a-panel-pane a-panel-panes! a-panel-tabs!
   a-place-panel! a-reposition! a-own-pane-changed! a-take-ring! a-keys-to-list! a-focus-bar!)
 (define (uint text)
   (define chars (string->list text))
@@ -81,18 +81,11 @@
     (define old (a-field (a-get "panel_client_tabs") client #f))
     (define position (hash-ref active "position"))
     (a-set! "panel_client_tabs" (hash-insert (a-get "panel_client_tabs") client position))
-    (when (and (a-get "pane_shown") (equal? old (a-get "panel_tab")) (not (equal? (a-get "panel_tab") position)))
+    (when (and (not (a-get "pane_tabs")) (a-get "pane_shown") (equal? old (a-get "panel_tab")) (not (equal? (a-get "panel_tab") position)))
       (a-call (hash "BreakPanesToTabWithIndex" (list (list (or (a-get "panel_pane") (hash "Plugin" (a-get "own_plugin_id")))) position #f)) #f))
     (define surface (list (hash-ref active "display_area_rows") (hash-ref active "display_area_columns")))
     (unless (equal? surface (a-get "panel_surface"))
       (a-set! "panel_surface" surface) (a-place-panel! #f))))
-(define (a-mount!)
-  (define result (a-call (hash "PaneTabs" (hash "Mount"
-          (hash "pane_id" (hash "Plugin" (a-get "own_plugin_id")) "existing" 0
-            "layout" (hash "active" 0 "tabs"
-              (list (hash "label" "Agents" "location" "yinz:agents" "initial_cwd" (a-get "initial_cwd") "configuration" (hash "view" "agents"))
-                (hash "label" "Todos" "location" "yinz:todos" "initial_cwd" (a-get "initial_cwd") "configuration" (hash))))))) #f))
-  (a-set! "pane_tabs" (a-field result "id" #f)) (a-set! "mount_pending" (not (a-get "pane_tabs"))))
 (define (a-end-visit!)
   (a-invalidate-history!) (a-set! "history_hidden" #t)
   (a-set! "tabs_focused" #f) (a-set! "bar_focused" '()) (a-set! "focus" "list")

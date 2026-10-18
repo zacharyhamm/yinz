@@ -8,6 +8,7 @@ fn pane_tabs_metadata_roundtrip_omits_terminal_backed_wrappers() {
         for active in 0..2 {
             for floating in [false, true] {
                 let tabs = PaneTabsInfo {
+                    overlay_group: false,
                     id: PaneTabsId(1),
                     pane_id: if terminal_member && active == 0 {
                         PaneId::Terminal(TerminalId::new(1))

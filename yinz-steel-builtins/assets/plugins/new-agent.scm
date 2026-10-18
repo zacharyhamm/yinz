@@ -257,8 +257,7 @@
   (define tab (find (lambda (key) (find (lambda (pane) (equal? (pane-id pane) own)) (hash-ref groups key))) (hash-keys->list groups)))
   (when tab
     (define panel (find (lambda (pane)
-          (or (equal? (at pane "plugin_url" #f) "yinz:agents")
-            (find (lambda (slot) (equal? (hash-ref (hash-ref slot "descriptor") "location") "yinz:agents")) (at (at pane "pane_tabs" #f) "tabs" '())))) (hash-ref groups tab)))
+          (at (at pane "pane_tabs" #f) "overlay_group" #f)) (hash-ref groups tab)))
     (put "panel" (and panel (at (at panel "pane_tabs" #f) "pane_id" (pane-id panel))))) #f)
 (define (update event)
   (define name (car (hash-keys->list event))) (define value (hash-ref event name))

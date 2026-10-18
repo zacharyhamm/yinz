@@ -367,6 +367,12 @@ impl Pair {
                 .into_iter()
                 // History I/O now belongs to a worker and unchanged snapshots omit it entirely.
                 // Dedicated archive tests assert requests, ordering and failures separately.
+                // The screen now creates and moves the overlay container.
+                .filter(|command| {
+                    !agents
+                        || (command.pointer("/PaneTabs/Mount").is_none()
+                            && command.get("BreakPanesToTabWithIndex").is_none())
+                })
                 .filter(|command| {
                     !agents
                         || !(command.get("PostMessageTo").is_some()

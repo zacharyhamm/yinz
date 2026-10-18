@@ -60,6 +60,7 @@
       "env" "Set environment variables for panes. Changes take effect when the next session starts."
       "plugins" "Define plugin aliases and their default configuration."
       "load_plugins" "Choose plugins to load in the background when a session starts."
+      "overlay_tab_plugins" "Choose and order the plugin tabs in the shared overlay."
       "hooks" "Run commands when session events occur, such as a pane opening or closing."
       "context_menu" "Choose and order the actions shown in the pane context menu."
       "ui" "Customize pane frame corners and whether frames show the session name.") root ""))
@@ -109,7 +110,7 @@
     ((or (not before) (not after)
         (not (equal? (node-arguments before) (node-arguments after)))
         (not (equal? (node-properties before) (node-properties after)))
-        (equal? (car path) "context_menu") (equal? (node-name before) "bind")
+        (member (car path) '("context_menu" "overlay_tab_plugins")) (equal? (node-name before) "bind")
         (not (= (length (unique (map node-key (node-children before)))) (length (node-children before))))
         (not (= (length (unique (map node-key (node-children after)))) (length (node-children after)))))
       (list (hash "path" path "node" (write-node after))))
@@ -239,7 +240,7 @@
                                   (define conflicts (filter (lambda (other) (and (not (eq? other child))
                                           (equal? (node-key other) (node-key child))))
                                       (node-children parent)))
-                                  (define ordered? (or (equal? (car path) "context_menu") (equal? (node-name parent) "bind")))
+                                  (define ordered? (or (member (car path) '("context_menu" "overlay_tab_plugins")) (equal? (node-name parent) "bind")))
                                   (define (append-child)
                                     (unless ordered? (vector-set! parent 3 (filter (lambda (other) (not (equal? (node-key other) (node-key child))))
                                           (node-children parent))))

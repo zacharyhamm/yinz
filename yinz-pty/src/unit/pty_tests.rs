@@ -4427,3 +4427,54 @@ fn a_departed_client_is_focused_on_no_pane() {
     assert_eq!(pty.focused_clients(pane), vec![attached]);
     assert!(!pty.active_panes.contains_key(&departed));
 }
+
+#[test]
+fn overlay_launch_resolves_caller_metadata_separately_from_plugin_cwd() {
+    let (mut pty, _, screen) = make_pty_with_screen_receiver(MockOsApi::new());
+    pty.active_panes
+        .insert(CLIENT_1, PaneId::Terminal(TERMINAL_41));
+    pty.terminal_cwds
+        .insert(TERMINAL_41, PathBuf::from("/caller"));
+    for explicit_cwd in [None, Some(PathBuf::from("/plugin"))] {
+        pty.resolve_overlay_tab_cwd(
+            yinz_types::pane_tabs::PaneTabsId(1),
+            CLIENT_1,
+            explicit_cwd.clone(),
+        )
+        .unwrap();
+        let (
+            ScreenInstruction::OverlayTabCwd {
+                cwd,
+                caller_cwd,
+                caller_terminal_pane_id,
+                ..
+            },
+            _,
+        ) = screen.try_recv().unwrap()
+        else {
+            panic!("expected overlay launch context");
+        };
+        assert_eq!(cwd, explicit_cwd.or_else(|| Some(PathBuf::from("/caller"))));
+        assert_eq!(caller_cwd, Some(PathBuf::from("/caller")));
+        assert_eq!(caller_terminal_pane_id, Some(TERMINAL_41));
+    }
+    let plugin = yinz_types::internal_ids::PluginId::new(8);
+    pty.active_panes.insert(CLIENT_1, PaneId::Plugin(plugin));
+    pty.plugin_cwds
+        .insert(plugin, PathBuf::from("/caller-plugin"));
+    pty.resolve_overlay_tab_cwd(yinz_types::pane_tabs::PaneTabsId(1), CLIENT_1, None)
+        .unwrap();
+    let (
+        ScreenInstruction::OverlayTabCwd {
+            caller_cwd,
+            caller_terminal_pane_id,
+            ..
+        },
+        _,
+    ) = screen.try_recv().unwrap()
+    else {
+        panic!("expected overlay launch context");
+    };
+    assert_eq!(caller_cwd, Some(PathBuf::from("/caller-plugin")));
+    assert_eq!(caller_terminal_pane_id, None);
+}

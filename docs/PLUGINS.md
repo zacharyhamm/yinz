@@ -1,5 +1,38 @@
 # Plugin lifecycle and permissions
 
+## Overlay plugin tabs
+
+The overlay contains Agents followed by Todos by default. Set `overlay_tab_plugins`
+in `config.kdl` to replace the list:
+
+```kdl
+overlay_tab_plugins {
+    agents label="Agents"
+    todos label="Todos"
+    "file:/path/to/plugin.scm" label="Custom"
+}
+```
+
+Entries follow the configured order. Each entry names a plugin alias or location.
+Aliases provide plugin configuration and the working directory. An omitted label
+uses the entry name. Duplicate resolved locations and invalid entries are configuration errors.
+Use `overlay_tab_plugins {}` to disable grouping.
+
+`LaunchPlugin` and `LaunchOrFocusPlugin` open the group and select the requested
+plugin. These actions also work when sent by another plugin. Plugin commands such
+as `OpenPluginPaneFloating` use the same launch handling. Unloaded tabs load when
+selected and use the normal permission checks. No separate overlay command is required.
+Explicit layout panes, explicit destination tabs, background loads, and pane
+replacements keep their requested placement. Plugins outside the list launch normally.
+
+The first launch merges explicit plugin configuration into the requested tab. Later
+launches select tabs without changing the group's configuration. Caller cwd and
+terminal metadata are captured when the group is created and retained for lazy tabs.
+
+Reloading configuration leaves an existing group's descriptors and running plugins
+unchanged. Hiding and revealing the group preserves it. Close the group and launch
+it again, or restart the session, to apply a changed list.
+
 ## Steel Scheme
 
 Scheme sources use `.scm`, `.ss`, or `.sld`. All builtin plugins use Steel.

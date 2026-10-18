@@ -45,6 +45,9 @@ pub struct Config {
     /// Whether the config opted out of the built-in background plugins, so that
     /// serializing and re-parsing doesn't silently restore them.
     pub background_plugins_cleared: bool,
+    /// None uses the builtin group; Some replaces it, including an empty list.
+    #[serde(default)]
+    pub overlay_tab_plugins: Option<Vec<yinz_types::pane_tabs::PaneTabDescriptor>>,
     /// The plugin bound to each hook point. Defaults to the shipped `agent_exit` screen; see
     /// `input::hooks`.
     pub hooks: Hooks,
@@ -348,8 +351,9 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
                     *block = reconciled;
                 }
             } else {
-                let replace_root =
-                    node.children().is_none() || clears_defaults(node) || name == "context_menu";
+                let replace_root = node.children().is_none()
+                    || clears_defaults(node)
+                    || matches!(name, "context_menu" | "overlay_tab_plugins");
                 let entries: Vec<_> = node
                     .children()
                     .into_iter()
@@ -392,7 +396,7 @@ pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDoc
                 if node.children().is_some()
                     && target.children().is_some()
                     && !clears_defaults(node)
-                    && name != "context_menu" =>
+                    && !matches!(name, "context_menu" | "overlay_tab_plugins") =>
             {
                 let target_children = target.ensure_children().nodes_mut();
                 for child in node.children().map(|c| c.nodes()).unwrap_or_default() {

@@ -108,6 +108,8 @@ fn every_option_set() -> Config {
 fn defaults_match_the_documented_fallbacks() {
     // No `..`: a field added to `ScreenConfig` has to say what its default is here.
     let ScreenConfig {
+        overlay_tab_plugins: _,
+        plugin_aliases: _,
         agent_theme_mapping: _,
         theme,
         terminal_theme: _,
@@ -233,6 +235,8 @@ fn defaults_match_the_documented_fallbacks() {
 fn every_option_reaches_its_field() {
     let config = every_option_set();
     let ScreenConfig {
+        overlay_tab_plugins: _,
+        plugin_aliases: _,
         agent_theme_mapping: _,
         theme,
         terminal_theme: _,

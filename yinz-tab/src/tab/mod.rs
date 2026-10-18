@@ -7228,17 +7228,7 @@ impl Tab {
                 let is_panel = self
                     .pane_tabs_of(pane)
                     .and_then(|id| self.pane_tabs.get(&id))
-                    .is_some_and(|tabs| {
-                        tabs.info
-                            .tabs
-                            .iter()
-                            .any(|slot| slot.descriptor.location == "yinz:agents")
-                    })
-                    || self
-                        .get_pane_with_id(pane)
-                        .and_then(|pane| pane.invoked_with().as_ref())
-                        .and_then(|run| run.get_run_plugin())
-                        .is_some_and(|run| run.location.display() == "yinz:agents");
+                    .is_some_and(|tabs| tabs.info.overlay_group);
                 if is_panel && !self.overlay_panes.has_focused_member(&pane) {
                     // A plugin reacting to an older manifest could hide a subsequent reveal.
                     self.hide_overlay_pane(pane);

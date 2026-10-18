@@ -19,6 +19,8 @@ fn styling(shade: u8) -> Styling {
 /// Every field of `ScreenConfig` set to something other than what `test_screen_config` holds.
 fn every_field_changed() -> ScreenConfig {
     ScreenConfig {
+        overlay_tab_plugins: vec![],
+        plugin_aliases: Default::default(),
         agent_theme_mapping: yinz_types::agent::theme::AgentThemeMapping::Off,
         terminal_theme: None,
         terminal_themes: Default::default(),
@@ -119,6 +121,8 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         .unwrap();
 
     let ScreenConfig {
+        overlay_tab_plugins,
+        plugin_aliases,
         agent_theme_mapping,
         terminal_theme,
         terminal_themes,
@@ -176,6 +180,8 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         notification_position,
         notification_timeout_secs,
     } = applied;
+    assert_eq!(screen.overlay_tab_plugins, overlay_tab_plugins);
+    assert_eq!(screen.plugin_aliases, plugin_aliases);
 
     // an explicit light hue paints the pair's light theme over `theme`; the test below covers
     // `theme` on its own

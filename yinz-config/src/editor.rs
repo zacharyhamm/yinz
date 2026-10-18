@@ -352,6 +352,7 @@ pub fn catalog() -> Vec<Setting> {
 
 pub fn document(config: &Config) -> Result<Vec<Node>, String> {
     let mut config = config.clone();
+    config.overlay_tab_plugins = Some(config.overlay_tab_plugin_declarations());
     config.themes = crate::theme::Themes::from_data(
         config
             .themes
@@ -600,6 +601,7 @@ fn to_kdl(node: &Node, depth: usize, parent: Option<&str>) -> Result<KdlNode, St
                 | "themes"
                 | "plugins"
                 | "load_plugins"
+                | "overlay_tab_plugins"
                 | "hooks"
                 | "keybinds"
                 | "bind"
@@ -782,9 +784,12 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
         .iter()
         .map(|p| p.path.first().cloned().ok_or("Missing edit target"))
         .collect::<Result<_, _>>()?;
+    let mut roots: Vec<_> = roots.into_iter().collect();
+    roots.sort_by_key(|root| root != "plugins");
     for root in roots {
         let mut section = Config {
             options: result.options.clone(),
+            plugins: result.plugins.clone(),
             ..Default::default()
         };
         match root.as_str() {
@@ -794,6 +799,9 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
             "load_plugins" => {
                 section.background_plugins = config.background_plugins.clone();
                 section.background_plugins_cleared = config.background_plugins_cleared;
+            },
+            "overlay_tab_plugins" => {
+                section.overlay_tab_plugins = config.overlay_tab_plugins.clone()
             },
             "hooks" => section.hooks = config.hooks.clone(),
             "context_menu" => section.context_menu = config.context_menu.clone(),
@@ -841,9 +849,17 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
         }
         let mut document = KdlDocument::new();
         for node in &nodes {
+            if root != "overlay_tab_plugins" && node.name == "overlay_tab_plugins" {
+                continue;
+            }
             document.nodes_mut().push(to_kdl(node, 0, None)?);
         }
-        let parsed = Config::from_kdl(&document.to_string(), None).map_err(validation_error)?;
+        // Validate overlay aliases against the completed batch, after all sections have applied.
+        let base = (root != "overlay_tab_plugins").then(|| Config {
+            overlay_tab_plugins: Some(vec![]),
+            ..Default::default()
+        });
+        let parsed = Config::from_kdl(&document.to_string(), base).map_err(validation_error)?;
         match root.as_str() {
             "themes" => {
                 if patches.iter().any(|p| p.path == [root.clone()]) {
@@ -867,6 +883,7 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
                 result.background_plugins = parsed.background_plugins;
                 result.background_plugins_cleared = parsed.background_plugins_cleared;
             },
+            "overlay_tab_plugins" => result.overlay_tab_plugins = parsed.overlay_tab_plugins,
             "hooks" => result.hooks = parsed.hooks,
             "context_menu" => result.context_menu = parsed.context_menu,
             "env" => result.env = parsed.env,
@@ -874,6 +891,7 @@ pub fn apply(config: &Config, patches: &[Patch]) -> Result<Config, String> {
             _ => result.options = parsed.options,
         }
     }
+    result.resolved_overlay_tab_plugins()?;
     Ok(result)
 }
 
@@ -1431,6 +1449,7 @@ pub const SECTIONS: &[&str] = &[
     "env",
     "plugins",
     "load_plugins",
+    "overlay_tab_plugins",
     "hooks",
     "context_menu",
     "ui",
@@ -1459,6 +1478,18 @@ pub fn templates(config: &Config) -> Result<std::collections::BTreeMap<String, V
     );
     result.insert(
         "load_plugins".into(),
+        std::iter::once(node("file:/path/to/plugin.scm", vec![], vec![]))
+            .chain(
+                config
+                    .plugins
+                    .aliases
+                    .keys()
+                    .map(|name| node(name, vec![], vec![])),
+            )
+            .collect(),
+    );
+    result.insert(
+        "overlay_tab_plugins".into(),
         std::iter::once(node("file:/path/to/plugin.scm", vec![], vec![]))
             .chain(
                 config

@@ -840,6 +840,12 @@ pub enum ScreenInstruction {
         client_id: ClientId,
         response: crossbeam::channel::Sender<yinz_types::pane_tabs::PaneTabsResponse>,
     },
+    OverlayTabCwd {
+        id: yinz_types::pane_tabs::PaneTabsId,
+        cwd: Option<PathBuf>,
+        caller_cwd: Option<PathBuf>,
+        caller_terminal_pane_id: Option<TerminalId>,
+    },
     PaneTabLoaded {
         id: yinz_types::pane_tabs::PaneTabsId,
         index: usize,

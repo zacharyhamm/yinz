@@ -24,22 +24,16 @@ pub struct PaneTabDescriptor {
 }
 
 impl PaneTabDescriptor {
-    /// Resolve panel aliases before identifying companions; custom plugins keep their descriptors.
+    /// Resolve aliases before identifying or loading companion plugins.
     pub fn populate_plugin_alias(&mut self, aliases: &crate::input::plugins::PluginAliases) {
         if let Some(plugin) = aliases.aliases.get(&self.location) {
-            if !matches!(
-                plugin.location.display().as_str(),
-                "yinz:agents" | "yinz:todos"
-            ) {
-                return;
-            }
             let mut plugin = plugin
                 .clone()
                 .merge_configuration(&Some(self.configuration.clone()));
             if self.initial_cwd.is_some() {
                 plugin.initial_cwd = self.initial_cwd.clone();
             }
-            self.location = plugin.location.display();
+            self.location = plugin.location_for_serialization();
             self.configuration = plugin.configuration.inner().clone();
             self.initial_cwd = plugin.initial_cwd;
         }
@@ -82,6 +76,9 @@ impl PaneTabInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PaneTabsInfo {
+    /// This container is the session's configured overlay group.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overlay_group: bool,
     pub id: PaneTabsId,
     pub pane_id: PaneId,
     pub tabs: Vec<PaneTabInfo>,

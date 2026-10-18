@@ -203,6 +203,7 @@ pub fn plugin_thread_main(
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::Plugin((&event).into()));
         match event {
             PluginInstruction::LoadPaneTab {
+                skip_cache,
                 id,
                 index,
                 generation,
@@ -230,7 +231,7 @@ pub fn plugin_thread_main(
                         Some(tab_id),
                         size,
                         cwd.clone(),
-                        false,
+                        skip_cache,
                         Some(client_id),
                     )?;
                     bus.senders.send_to_pty(PtyInstruction::ReportPluginCwd(

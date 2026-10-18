@@ -97,6 +97,7 @@ pub enum PluginInstruction {
         reply: std::sync::mpsc::Sender<Result<String, String>>,
     },
     LoadPaneTab {
+        skip_cache: bool,
         id: yinz_types::pane_tabs::PaneTabsId,
         index: usize,
         generation: u64,

@@ -28,6 +28,8 @@ use crate::config::Config;
 /// resolved.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScreenConfig {
+    pub overlay_tab_plugins: Vec<yinz_types::pane_tabs::PaneTabDescriptor>,
+    pub plugin_aliases: yinz_types::input::plugins::PluginAliases,
     pub agent_theme_mapping: yinz_types::agent::theme::AgentThemeMapping,
     // theme and chrome
     /// Applied on a reload only. At startup `Screen` paints with the first client's
@@ -125,6 +127,8 @@ impl ScreenConfig {
             styling
         };
         Self {
+            overlay_tab_plugins: config.resolved_overlay_tab_plugins().unwrap_or_default(),
+            plugin_aliases: config.plugins.clone(),
             terminal_theme: config.terminal_theme_config(options.theme.as_ref()),
             terminal_themes: config
                 .themes

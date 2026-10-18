@@ -4,6 +4,34 @@ use yinz_types::pane_tabs::*;
 impl Screen {
     pub(crate) fn report_pane_tabs(&mut self) -> Result<()> {
         let tabs: Vec<_> = self.tabs.values().flat_map(Tab::pane_tabs_infos).collect();
+        self.overlay_tab_completions
+            .retain_mut(|(id, index, completion)| {
+                let slot = tabs
+                    .iter()
+                    .find(|info| info.id == *id)
+                    .and_then(|info| info.tabs.get(*index));
+                match slot {
+                    Some(PaneTabInfo {
+                        plugin_id: Some(plugin),
+                        ..
+                    }) => {
+                        completion.set_affected_pane_id(PaneId::Plugin(*plugin));
+                    },
+                    Some(slot) if matches!(slot.state, PaneTabLoadState::Loading) => return true,
+                    Some(PaneTabInfo {
+                        state: PaneTabLoadState::Failed(error),
+                        ..
+                    }) => {
+                        completion.set_exit_status(1);
+                        completion.set_error_message(error.clone());
+                    },
+                    _ => {
+                        completion.set_exit_status(1);
+                        completion.set_error_message("Overlay tab closed before loading".into());
+                    },
+                }
+                false
+            });
         if tabs != self.reported_pane_tabs {
             self.reported_pane_tabs = tabs.clone();
             self.bus
@@ -103,8 +131,12 @@ impl Screen {
         generation: u64,
         result: std::result::Result<(PluginId, RunPluginOrAlias), String>,
     ) -> Result<()> {
+        if self.pending_overlay_tab_loaded(id, &result)? {
+            return Ok(());
+        }
         if let Ok(tab) = self.pane_tabs_tab_mut(id) {
             tab.pane_tab_loaded(id, index, generation, result)?;
+            self.report_pane_tabs()?;
             self.log_and_report_session_state()
                 .context("failed to report loaded pane tab")?;
         } else if let Ok((plugin_id, _)) = result {
