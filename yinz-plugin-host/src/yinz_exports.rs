@@ -7169,10 +7169,7 @@ fn resolve_fs_path_with_permission(
         .real;
         // Authority follows the physical directory, including aliases through /host and
         // absolute paths. Removing or renaming an ancestor also changes the plugin folder.
-        if resolved.real.starts_with(&plugin_dir)
-            || (resolution == FsPathResolution::PreserveEntry
-                && plugin_dir.starts_with(&resolved.real))
-        {
+        if reaches_folder(&resolved.real, &plugin_dir, intent, resolution) {
             return Err(anyhow!(
                 "'{}' changes the plugin folder, which needs the 'AuthorPlugins' permission",
                 path.display()
@@ -7184,24 +7181,20 @@ fn resolve_fs_path_with_permission(
     if !has_permission(env, PermissionType::AuthorPlugins) {
         let log_dir =
             resolve_fs_ancestors(&YINZ_TMP_LOG_DIR).unwrap_or_else(|_| YINZ_TMP_LOG_DIR.clone());
-        if resolved.real.starts_with(&log_dir)
-            || (intent == FsIntent::Write
-                && resolution == FsPathResolution::PreserveEntry
-                && log_dir.starts_with(&resolved.real))
-        {
+        if reaches_folder(&resolved.real, &log_dir, intent, resolution) {
             return Err(anyhow!(
                 "'{}' reaches the yinz log folder, which needs the 'AuthorPlugins' permission",
                 path.display()
             ));
         }
     }
-    // Removing or renaming a root would take every later command's folder with it, and
-    // renaming onto an empty root would replace it.
+    // Removing or renaming a root, or a folder holding one, would take every later command's
+    // folder with it, and renaming onto an empty root would replace it.
     if intent == FsIntent::Write && resolution == FsPathResolution::PreserveEntry {
         for (prefix, root) in fs_roots(env) {
-            if resolve_fs_ancestors(&root).is_ok_and(|root| root == resolved.real) {
+            if resolve_fs_ancestors(&root).is_ok_and(|root| root.starts_with(&resolved.real)) {
                 return Err(anyhow!(
-                    "'{}' is the plugin's {prefix} folder itself, which cannot be removed or \
+                    "'{}' is or holds the plugin's {prefix} folder, which cannot be removed or \
                      replaced",
                     path.display()
                 ));
@@ -7209,6 +7202,20 @@ fn resolve_fs_path_with_permission(
         }
     }
     Ok(resolved.real)
+}
+
+/// Whether an access to `real` reaches into `folder`: a path inside it, or, for the entry
+/// writes (remove, rename), an ancestor whose removal or move takes `folder` along.
+fn reaches_folder(
+    real: &Path,
+    folder: &Path,
+    intent: FsIntent,
+    resolution: FsPathResolution,
+) -> bool {
+    real.starts_with(folder)
+        || (intent == FsIntent::Write
+            && resolution == FsPathResolution::PreserveEntry
+            && folder.starts_with(real))
 }
 
 /// Whether the plugin holds `permission`. Built-in plugins hold everything, as they do in
@@ -9624,6 +9631,42 @@ mod permission_tests {
             FsPathResolution::FollowSymlink
         )
         .is_ok());
+    }
+
+    #[test]
+    fn a_folder_holding_a_root_cannot_be_removed_or_renamed() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("share/yinz/data");
+        fs::create_dir_all(&data).unwrap();
+        let mut env = crate::test_env::test_env();
+        env.plugin_cwd = temp.path().to_owned();
+        env.plugin_own_data_dir = data;
+        *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::WriteFiles]));
+        for path in ["/host/share", "/host/share/yinz", "/data"] {
+            let error = resolve_fs_path_with_permission(
+                &env,
+                Path::new(path),
+                FsIntent::Write,
+                FsPathResolution::PreserveEntry,
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("cannot be removed or replaced"),
+                "{path}: {error:#}"
+            );
+        }
+        // Writing inside the folder, or removing a sibling, is untouched.
+        fs::create_dir(temp.path().join("other")).unwrap();
+        for (path, resolution) in [
+            ("/host/share/new.txt", FsPathResolution::FollowSymlink),
+            ("/host/other", FsPathResolution::PreserveEntry),
+        ] {
+            assert!(
+                resolve_fs_path_with_permission(&env, Path::new(path), FsIntent::Write, resolution)
+                    .is_ok(),
+                "{path}"
+            );
+        }
     }
 
     #[test]
