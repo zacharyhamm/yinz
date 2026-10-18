@@ -10,6 +10,7 @@ import "command.proto";
 package api.event;
 
 enum EventType {
+    reserved 52 to 54;
     reserved 31, 34, 43, 47, 64;
     /// The input mode or relevant metadata changed
     ModeUpdate = 0;
@@ -74,12 +75,6 @@ enum EventType {
     WebRequestStreamChunk = 50;
     /// The results of a watch registered with `data_watch` changed
     PluginDataChanged = 51;
-    /// A job this plugin enqueued on a work queue started running
-    QueueJobStarted = 52;
-    /// A job this plugin enqueued on a work queue finished
-    QueueJobFinished = 53;
-    /// A work queue's contents or concurrency changed
-    QueueChanged = 54;
     /// A right-click asked for a context menu
     ContextMenuRequested = 55;
     /// A plugin-supplied context menu item was chosen
@@ -106,6 +101,7 @@ message EventNameList {
 }
 
 message Event {
+  reserved 46 to 48;
   reserved 27, 28, 37, 41, 61;
   EventType name = 1;
   oneof payload {
@@ -154,9 +150,6 @@ message Event {
     ActivePaneScrollPayload active_pane_scroll_payload = 43;
     WebRequestStreamChunkPayload web_request_stream_chunk_payload = 44;
     PluginDataChangedPayload plugin_data_changed_payload = 45;
-    QueueJobStartedPayload queue_job_started_payload = 46;
-    QueueJobFinishedPayload queue_job_finished_payload = 47;
-    QueueChangedPayload queue_changed_payload = 48;
     ContextMenuRequestedPayload context_menu_requested_payload = 49;
     ContextMenuItemSelectedPayload context_menu_item_selected_payload = 50;
     HookPayload hook_payload = 51;
@@ -234,57 +227,6 @@ message AgentEventPayload {
   optional string tool_name = 9;
   optional string cwd = 10;
   string raw = 11;
-}
-
-enum QueueJobOutcome {
-  Succeeded = 0;
-  Failed = 1;
-  Cancelled = 2;
-  Aborted = 3;
-}
-
-enum QueueJobState {
-  Pending = 0;
-  Running = 1;
-}
-
-message QueueJobInfo {
-  uint64 job_id = 1;
-  string queue = 2;
-  string plugin_url = 3;
-  optional uint32 plugin_id = 4;
-  uint32 enqueuer_plugin_id = 5;
-  repeated ContextItem context = 6;
-  QueueJobState state = 7;
-}
-
-message QueueSnapshot {
-  string queue = 1;
-  uint32 concurrency = 2;
-  repeated QueueJobInfo pending = 3;
-  repeated QueueJobInfo running = 4;
-}
-
-message QueueJobStartedPayload {
-  string queue = 1;
-  uint64 job_id = 2;
-  uint32 plugin_id = 3;
-  repeated ContextItem context = 4;
-}
-
-message QueueJobFinishedPayload {
-  string queue = 1;
-  uint64 job_id = 2;
-  QueueJobOutcome outcome = 3;
-  optional string payload = 4;
-  repeated ContextItem context = 5;
-}
-
-message QueueChangedPayload {
-  string queue = 1;
-  uint32 concurrency = 2;
-  repeated QueueJobInfo pending = 3;
-  repeated QueueJobInfo running = 4;
 }
 
 message HintTextPayload {

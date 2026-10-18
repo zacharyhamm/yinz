@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="243, 242, 236, 237, 238, 233, 234, 235, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 230, 231, 232, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 229, 239, 241, 245, 246, 247, 244, 248, 250, 251")]
+    #[prost(oneof="plugin_command::Payload", tags="243, 242, 236, 237, 238, 233, 234, 235, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 230, 231, 232, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 229, 239, 241, 245, 246, 247, 244, 248, 250, 251")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -374,16 +374,6 @@ pub mod plugin_command {
         OpenCommandPaneOverlayPayload(super::OpenCommandPaneOverlayPayload),
         #[prost(message, tag="197")]
         SetPaneTitlePrefixPayload(super::SetPaneTitlePrefixPayload),
-        #[prost(message, tag="198")]
-        EnqueueQueueJobPayload(super::EnqueueQueueJobPayload),
-        #[prost(message, tag="199")]
-        ConfigureQueuePayload(super::ConfigureQueuePayload),
-        #[prost(message, tag="200")]
-        CancelQueueJobPayload(super::CancelQueueJobPayload),
-        #[prost(message, tag="201")]
-        QueueStatusPayload(super::QueueStatusPayload),
-        #[prost(message, tag="202")]
-        FinishQueueJobPayload(super::FinishQueueJobPayload),
         #[prost(message, tag="203")]
         FsReadPayload(super::FsReadPayload),
         #[prost(message, tag="204")]
@@ -643,69 +633,6 @@ pub mod fs_mutate_response {
         #[prost(string, tag="2")]
         Error(::prost::alloc::string::String),
     }
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct EnqueueQueueJobPayload {
-    #[prost(string, tag="1")]
-    pub queue: ::prost::alloc::string::String,
-    #[prost(string, tag="2")]
-    pub plugin_url: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag="3")]
-    pub config: ::prost::alloc::vec::Vec<ContextItem>,
-    #[prost(message, repeated, tag="4")]
-    pub context: ::prost::alloc::vec::Vec<ContextItem>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ConfigureQueuePayload {
-    #[prost(string, tag="1")]
-    pub queue: ::prost::alloc::string::String,
-    #[prost(uint32, tag="2")]
-    pub concurrency: u32,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CancelQueueJobPayload {
-    #[prost(uint64, tag="1")]
-    pub job_id: u64,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct QueueStatusPayload {
-    #[prost(string, optional, tag="1")]
-    pub queue: ::core::option::Option<::prost::alloc::string::String>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FinishQueueJobPayload {
-    #[prost(bool, tag="1")]
-    pub success: bool,
-    #[prost(string, optional, tag="2")]
-    pub payload: ::core::option::Option<::prost::alloc::string::String>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct EnqueueQueueJobResponse {
-    #[prost(oneof="enqueue_queue_job_response::Result", tags="1, 2")]
-    pub result: ::core::option::Option<enqueue_queue_job_response::Result>,
-}
-/// Nested message and enum types in `EnqueueQueueJobResponse`.
-pub mod enqueue_queue_job_response {
-    #[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Result {
-        #[prost(uint64, tag="1")]
-        JobId(u64),
-        #[prost(string, tag="2")]
-        Error(::prost::alloc::string::String),
-    }
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct QueueStatusResponse {
-    #[prost(message, repeated, tag="1")]
-    pub queues: ::prost::alloc::vec::Vec<super::event::QueueSnapshot>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3465,11 +3392,6 @@ pub enum CommandName {
     ChangeOverlayCoordinates = 253,
     OpenCommandPaneOverlay = 254,
     SetPaneTitlePrefix = 256,
-    EnqueueQueueJob = 257,
-    ConfigureQueue = 258,
-    CancelQueueJob = 259,
-    QueueStatus = 260,
-    FinishQueueJob = 261,
     FsRead = 262,
     FsList = 263,
     FsMetadata = 264,
@@ -3742,11 +3664,6 @@ impl CommandName {
             CommandName::ChangeOverlayCoordinates => "ChangeOverlayCoordinates",
             CommandName::OpenCommandPaneOverlay => "OpenCommandPaneOverlay",
             CommandName::SetPaneTitlePrefix => "SetPaneTitlePrefix",
-            CommandName::EnqueueQueueJob => "EnqueueQueueJob",
-            CommandName::ConfigureQueue => "ConfigureQueue",
-            CommandName::CancelQueueJob => "CancelQueueJob",
-            CommandName::QueueStatus => "QueueStatus",
-            CommandName::FinishQueueJob => "FinishQueueJob",
             CommandName::FsRead => "FsRead",
             CommandName::FsList => "FsList",
             CommandName::FsMetadata => "FsMetadata",
@@ -4016,11 +3933,6 @@ impl CommandName {
             "ChangeOverlayCoordinates" => Some(Self::ChangeOverlayCoordinates),
             "OpenCommandPaneOverlay" => Some(Self::OpenCommandPaneOverlay),
             "SetPaneTitlePrefix" => Some(Self::SetPaneTitlePrefix),
-            "EnqueueQueueJob" => Some(Self::EnqueueQueueJob),
-            "ConfigureQueue" => Some(Self::ConfigureQueue),
-            "CancelQueueJob" => Some(Self::CancelQueueJob),
-            "QueueStatus" => Some(Self::QueueStatus),
-            "FinishQueueJob" => Some(Self::FinishQueueJob),
             "FsRead" => Some(Self::FsRead),
             "FsList" => Some(Self::FsList),
             "FsMetadata" => Some(Self::FsMetadata),

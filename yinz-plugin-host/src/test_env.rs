@@ -41,7 +41,6 @@ pub(crate) fn test_env() -> PluginEnv {
         temporary_data_dir: None,
         data_access: Arc::new(DataAccess::sqlite(&PathBuf::from("."))),
         watch_generations: Default::default(),
-        queues: Default::default(),
         plugin_own_cache_dir: PathBuf::from("."),
         tab_index: Some(TabId::new(0)),
         path_to_default_shell: PathBuf::from("."),

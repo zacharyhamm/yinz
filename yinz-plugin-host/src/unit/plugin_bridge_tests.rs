@@ -452,7 +452,7 @@ fn cached_pipe_without_an_instance_fails_on_replay_or_load_failure() {
         assert!(test.pipe_acknowledgements().is_empty());
         if failed {
             test.bridge
-                .queue_plugin_failed(plugin, None, None, None, "load failed".into(), true)
+                .plugin_failed(plugin, None, None, None, "load failed".into(), true)
                 .unwrap();
         } else {
             let (shutdown, _) = tokio::sync::mpsc::channel(1);
@@ -469,47 +469,42 @@ fn cached_pipe_without_an_instance_fails_on_replay_or_load_failure() {
 
 #[test]
 fn load_failure_reports_each_cached_request_once_without_acknowledging() {
-    for queued_job in [false, true] {
-        let mut test = TestBridge::new();
-        let plugin = PluginId::new(1);
-        if queued_job {
-            launch_job(&mut test.bridge, "load-failure", plugin);
-        }
-        let load = test.bridge.begin_plugin_load(plugin);
-        test.bridge.loading_plugins.insert((plugin, run_plugin()));
-        test.bridge.cache_plugin_events(plugin);
-        for pipe in ["first", "second", "first"] {
-            test.pipe(plugin, pipe);
-        }
-        assert!(test.receiver::<ServerInstruction>().try_recv().is_err());
-        test.bridge
-            .queue_plugin_failed(plugin, Some(load), None, None, "load failed".into(), true)
-            .unwrap();
-        let messages: Vec<_> = test
-            .receiver::<ServerInstruction>()
-            .try_iter()
-            .map(|(instruction, _)| instruction)
-            .collect();
-        for pipe in ["first", "second"] {
-            let replies: Vec<_> = messages
-                .iter()
-                .filter_map(|instruction| match instruction {
-                    ServerInstruction::CliPipeError(id, error) if id == pipe => {
-                        assert_eq!(error, "load failed");
-                        Some("error")
-                    },
-                    ServerInstruction::UnblockCliPipeInput(id) if id == pipe => Some("ack"),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                replies,
-                vec!["error"; if pipe == "first" { 2 } else { 1 }],
-                "{pipe}: {messages:?}"
-            );
-        }
-        assert!(test.bridge.pending_pipes.take_ready().is_empty());
+    let mut test = TestBridge::new();
+    let plugin = PluginId::new(1);
+    let load = test.bridge.begin_plugin_load(plugin);
+    test.bridge.loading_plugins.insert((plugin, run_plugin()));
+    test.bridge.cache_plugin_events(plugin);
+    for pipe in ["first", "second", "first"] {
+        test.pipe(plugin, pipe);
     }
+    assert!(test.receiver::<ServerInstruction>().try_recv().is_err());
+    test.bridge
+        .plugin_failed(plugin, Some(load), None, None, "load failed".into(), true)
+        .unwrap();
+    let messages: Vec<_> = test
+        .receiver::<ServerInstruction>()
+        .try_iter()
+        .map(|(instruction, _)| instruction)
+        .collect();
+    for pipe in ["first", "second"] {
+        let replies: Vec<_> = messages
+            .iter()
+            .filter_map(|instruction| match instruction {
+                ServerInstruction::CliPipeError(id, error) if id == pipe => {
+                    assert_eq!(error, "load failed");
+                    Some("error")
+                },
+                ServerInstruction::UnblockCliPipeInput(id) if id == pipe => Some("ack"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            replies,
+            vec!["error"; if pipe == "first" { 2 } else { 1 }],
+            "{pipe}: {messages:?}"
+        );
+    }
+    assert!(test.bridge.pending_pipes.take_ready().is_empty());
 }
 
 #[test]
@@ -576,7 +571,7 @@ fn resolution_failure_reports_each_cached_request_without_acknowledging() {
         assert!(failed_to_load);
         assert!(error.contains(diagnostic), "{error}");
         test.bridge
-            .queue_plugin_failed(
+            .plugin_failed(
                 plugin_id,
                 load_id,
                 generation,
@@ -681,7 +676,7 @@ fn reload_and_runtime_failure_release_explicit_holds_after_output() {
                 {
                     failed = true;
                     test.bridge
-                        .queue_plugin_failed(
+                        .plugin_failed(
                             plugin_id,
                             None,
                             generation,
@@ -714,7 +709,7 @@ fn stale_loader_results_cannot_drop_or_replay_a_replacements_cached_pipe() {
         .apply_cached_events_for_load(old_load, vec![plugin], false, shutdown.clone())
         .unwrap();
     test.bridge
-        .queue_plugin_failed(
+        .plugin_failed(
             plugin,
             Some(old_load),
             None,
@@ -772,7 +767,7 @@ fn loading_failure_notifications_wait_for_the_current_load_identity() {
             panic!("expected loading failure");
         };
         test.bridge
-            .queue_plugin_failed(
+            .plugin_failed(
                 plugin_id,
                 load_id,
                 generation,
@@ -2377,27 +2372,6 @@ fn run_plugin() -> RunPlugin {
         .expect("a valid plugin url")
 }
 
-/// Put `plugin_id` on `queue` as a running job, the way `pump_queue` would have.
-fn launch_job(bridge: &mut PluginBridge, queue: &str, plugin_id: PluginId) {
-    let mut queues = bridge.queues.lock().unwrap();
-    queues.enqueue(
-        queue,
-        (crate::PluginId::new(1), crate::ClientId::new(1)),
-        None,
-        yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-            "file:/plugins/job.scm",
-            &None,
-            None,
-            None,
-        )
-        .unwrap(),
-        BTreeMap::new(),
-        None,
-    );
-    let job = queues.pop_launchable(queue).expect("the queue has a slot");
-    queues.on_job_launched(job, plugin_id);
-}
-
 fn cancellation_marks(bridge: &PluginBridge) -> Vec<PluginId> {
     let mut marks: Vec<PluginId> = bridge
         .unloaded_while_loading
@@ -2504,10 +2478,9 @@ fn steel_repl_disconnect_retires_a_cached_pipe_before_its_loader_runs() {
 }
 
 #[test]
-fn a_stale_steel_failure_neither_paints_an_error_nor_finishes_a_job() {
+fn a_stale_steel_failure_does_not_paint_an_error() {
     let mut test = TestBridge::new();
     let plugin_id = PluginId::new(7);
-    launch_job(&mut test.bridge, "merge", plugin_id);
     let screen = test._receivers.iter().find_map(|receiver| {
         receiver.downcast_ref::<channels::Receiver<(ScreenInstruction, yinz_types::diagnostics::ErrorContext)>>()
     }).unwrap();
@@ -2518,7 +2491,7 @@ fn a_stale_steel_failure_neither_paints_an_error_nor_finishes_a_job() {
     screen.try_iter().for_each(drop);
     plugin.try_iter().for_each(drop);
     // Generation 41 has already left the map. Its queued error must have no effects,
-    // even though the plugin id still names a running queue job.
+    // even though the plugin id may be reused by a replacement.
     handle_plugin_crash(
         plugin_id,
         Some(41),
@@ -2546,7 +2519,7 @@ fn a_stale_steel_failure_neither_paints_an_error_nor_finishes_a_job() {
     };
     assert_eq!(generation, Some(41));
     test.bridge
-        .queue_plugin_failed(
+        .plugin_failed(
             plugin_id,
             None,
             generation,
@@ -2559,22 +2532,10 @@ fn a_stale_steel_failure_neither_paints_an_error_nor_finishes_a_job() {
         screen.try_recv().is_err(),
         "stale failures must not paint or close the pane"
     );
-    let snapshot = test
-        .bridge
-        .queues
-        .lock()
-        .unwrap()
-        .queue_snapshot("merge")
-        .unwrap();
-    assert_eq!(
-        snapshot.running.len(),
-        1,
-        "stale failures must not finish the current job"
-    );
 }
 
 #[test]
-fn a_disconnected_steel_failure_neither_paints_an_error_nor_finishes_a_job() {
+fn a_disconnected_steel_failure_does_not_paint_an_error() {
     let mut test = TestBridge::new();
     let plugin = PluginId::new(1);
     let departing = ClientId::new(1);
@@ -2596,7 +2557,6 @@ fn a_disconnected_steel_failure_neither_paints_an_error_nor_finishes_a_job() {
         .generation()
         .unwrap();
     let instance = test.instance_id(plugin, departing);
-    launch_job(&mut test.bridge, "merge", plugin);
     let screen = test.receiver::<ScreenInstruction>();
     screen.try_iter().for_each(drop);
 
@@ -2604,7 +2564,7 @@ fn a_disconnected_steel_failure_neither_paints_an_error_nor_finishes_a_job() {
     let release = test.hold_executor(plugin);
     test.bridge.remove_client(departing);
     test.bridge
-        .queue_plugin_failed(
+        .plugin_failed(
             plugin,
             None,
             Some(generation),
@@ -2627,18 +2587,6 @@ fn a_disconnected_steel_failure_neither_paints_an_error_nor_finishes_a_job() {
         .lock()
         .unwrap()
         .contains(plugin, remaining));
-    assert_eq!(
-        test.bridge
-            .queues
-            .lock()
-            .unwrap()
-            .queue_snapshot("merge")
-            .unwrap()
-            .running
-            .len(),
-        1,
-        "cancelled failures must not finish the current job"
-    );
 }
 
 #[test]
@@ -2676,15 +2624,14 @@ fn shutting_down_after_screen_exit_cancels_a_plugin_that_is_still_loading() {
 }
 
 #[test]
-fn a_job_whose_load_failed_leaves_no_cancellation_mark() {
+fn a_plugin_whose_load_failed_leaves_no_cancellation_mark() {
     let mut test = TestBridge::new();
-    launch_job(&mut test.bridge, "merge", crate::PluginId::new(7));
     test.bridge
         .loading_plugins
         .insert((crate::PluginId::new(7), run_plugin()));
 
     test.bridge
-        .queue_plugin_failed(
+        .plugin_failed(
             crate::PluginId::new(7),
             None,
             None,
@@ -2698,42 +2645,6 @@ fn a_job_whose_load_failed_leaves_no_cancellation_mark() {
         cancellation_marks(&test.bridge).is_empty(),
         "the loader already ran and gave up: a mark here would never be consumed"
     );
-    assert!(test.bridge.loading_plugins.is_empty());
-    let snapshot = test
-        .bridge
-        .queues
-        .lock()
-        .unwrap()
-        .queue_snapshot("merge")
-        .unwrap();
-    assert!(
-        snapshot.running.is_empty() && snapshot.pending.is_empty(),
-        "the failed job freed its slot: {snapshot:?}"
-    );
-}
-
-#[test]
-fn a_job_that_trapped_while_still_loading_is_cancelled() {
-    // the other side of the coin: a plugin that failed *after* it loaded has a loader still
-    // pending only if it never got there, so this path must keep marking it.
-    let mut test = TestBridge::new();
-    launch_job(&mut test.bridge, "merge", crate::PluginId::new(7));
-    test.bridge
-        .loading_plugins
-        .insert((crate::PluginId::new(7), run_plugin()));
-
-    test.bridge
-        .queue_plugin_failed(
-            crate::PluginId::new(7),
-            None,
-            None,
-            None,
-            "boom".to_owned(),
-            false,
-        )
-        .unwrap();
-
-    assert_eq!(cancellation_marks(&test.bridge), vec![PluginId::new(7)]);
     assert!(test.bridge.loading_plugins.is_empty());
 }
 
@@ -3012,7 +2923,7 @@ fn overlapping_reloads_retain_data_until_success_failure_or_unload() {
                 assert!(error.contains("replacement failed"), "{error}");
                 failed = true;
                 test.bridge
-                    .queue_plugin_failed(
+                    .plugin_failed(
                         plugin_id,
                         load_id,
                         generation,
@@ -3311,7 +3222,7 @@ fn deferred_url_reload_recovers_after_load_failure() {
                     assert_eq!(load_id, Some(old_load));
                     assert!(failed_to_load);
                     test.bridge
-                        .queue_plugin_failed(
+                        .plugin_failed(
                             plugin_id,
                             load_id,
                             generation,
@@ -4034,7 +3945,7 @@ fn runtime_failure_while_waiting_for_permissions_rejects_cached_and_new_pipes() 
                     .unwrap();
             }
             test.bridge
-                .queue_plugin_failed(
+                .plugin_failed(
                     plugin,
                     None,
                     None,
@@ -4227,7 +4138,7 @@ fn runtime_failure_keeps_the_healthy_peer_and_stale_failures_cannot_retire_a_rel
         test.settle(plugin);
         assert_eq!(test.pipe_failures(), ["fanout"]);
         test.bridge
-            .queue_plugin_failed(
+            .plugin_failed(
                 plugin,
                 None,
                 None,
@@ -4244,7 +4155,7 @@ fn runtime_failure_keeps_the_healthy_peer_and_stale_failures_cannot_retire_a_rel
         test.bridge.reload_plugin_with_id(plugin).unwrap();
         test.finish_reload(plugin);
         test.bridge
-            .queue_plugin_failed(plugin, None, None, Some(old), "stale failure".into(), false)
+            .plugin_failed(plugin, None, None, Some(old), "stale failure".into(), false)
             .unwrap();
         test.pipe(plugin, "replacement");
         test.settle(plugin);
@@ -4966,7 +4877,7 @@ fn deferred_lifecycle_reload_keeps_empty_configuration_exact() {
                     assert_eq!(plugin_id, id);
                     failed = true;
                     test.bridge
-                        .queue_plugin_failed(
+                        .plugin_failed(
                             plugin_id,
                             load_id,
                             generation,
@@ -6084,129 +5995,111 @@ fn background_permission_cancellation_replays_in_order_and_rechecks_pending_requ
 }
 
 #[test]
-fn background_permission_callback_and_render_failures_retire_exact_instances_and_jobs() {
+fn background_permission_callback_and_render_failures_retire_exact_instances() {
     use yinz_types::cli::{PluginOperation, PluginState};
     for render_failure in [false, true] {
-        for queued in [false, true] {
-            let mut test = TestBridge::new();
-            let id = PluginId::new(1);
-            let client = ClientId::new(1);
-            let source = if render_failure {
-                "(define answered #f) (define (update event) (set! answered #t) #t) (define (render rows cols) (when answered (error \"permission render failed\")) \"\")"
-            } else {
-                "(define (update event) (error \"permission callback failed\"))"
-            };
-            let context = test.context(1, 1, source);
-            test.load(context).unwrap();
-            let context = test.context(1, 2, "(void)");
-            test.load(context).unwrap();
-            let runtime = test
-                .bridge
-                .plugin_map
-                .lock()
-                .unwrap()
-                .get_running_plugin(id, Some(client))
-                .unwrap();
-            let generation = runtime.lock().unwrap().generation();
-            let instance = test.instance_id(id, client);
-            if queued {
-                launch_job(&mut test.bridge, "permissions", id);
-            }
-            let (shutdown, _) = tokio::sync::mpsc::channel(1);
-            test.bridge
-                .request_permissions(
-                    id,
-                    instance,
-                    client,
-                    vec![PermissionType::RunCommands],
-                    shutdown.clone(),
-                )
-                .unwrap();
-            let token = *test.bridge.permission_requests.keys().next().unwrap();
-            test.receiver::<ScreenInstruction>()
-                .try_iter()
-                .for_each(drop);
-            test.bridge
-                .answer_permissions(token, PermissionStatus::Denied, None, shutdown)
-                .unwrap();
-            test.settle(id);
-            assert!(!test
-                .receiver::<ScreenInstruction>()
-                .try_iter()
-                .any(|(event, _)| matches!(event, ScreenInstruction::PluginBytes(_))));
-            let failure = test
-                .receiver::<PluginInstruction>()
-                .try_iter()
-                .find_map(|(event, _)| match event {
-                    PluginInstruction::PluginFailed {
-                        plugin_id,
-                        generation,
-                        instance_id,
-                        error,
-                        failed_to_load,
-                        load_id,
-                        ..
-                    } => Some((
-                        plugin_id,
-                        generation,
-                        instance_id,
-                        error,
-                        failed_to_load,
-                        load_id,
-                    )),
-                    _ => None,
-                })
-                .expect("permission failures must reach host cleanup");
-            assert_eq!(
-                (failure.0, failure.1, failure.2),
-                (id, generation, Some(instance))
-            );
-            assert!(failure.3.contains(if render_failure {
-                "permission render failed"
-            } else {
-                "permission callback failed"
-            }));
-            test.bridge
-                .queue_plugin_failed(
-                    failure.0, failure.5, failure.1, failure.2, failure.3, failure.4,
-                )
-                .unwrap();
-            if queued {
-                assert!(test
-                    .bridge
-                    .queues
-                    .lock()
-                    .unwrap()
-                    .queue_snapshot("permissions")
-                    .unwrap()
-                    .running
-                    .is_empty());
-                assert!(test.receiver::<PluginInstruction>().try_iter().any(|(event, _)| matches!(event, PluginInstruction::Update(events) if events.iter().any(|(_, _, event)| matches!(event, Event::QueueJobFinished { outcome: QueueJobOutcome::Failed, .. })))));
-            } else {
-                test.settle(id);
-                assert!(runtime.lock().unwrap().is_disposed());
-                assert!(!test
-                    .bridge
-                    .plugin_map
-                    .lock()
-                    .unwrap()
-                    .get_running_plugin(id, Some(ClientId::new(2)))
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .is_unavailable());
-                let run = test.bridge.run_plugin_of_plugin_id(id).unwrap();
-                let status = test
-                    .bridge
-                    .plugin_request(lifecycle_request(PluginOperation::Inspect, &run), client)
-                    .unwrap()
-                    .plugins
-                    .remove(0);
-                assert_eq!(status.state, PluginState::Failed);
-                assert!(status.latest_error.unwrap().contains("permission"));
-                test.bridge.unload_plugin(id).unwrap();
-            }
-        }
+        let mut test = TestBridge::new();
+        let id = PluginId::new(1);
+        let client = ClientId::new(1);
+        let source = if render_failure {
+            "(define answered #f) (define (update event) (set! answered #t) #t) (define (render rows cols) (when answered (error \"permission render failed\")) \"\")"
+        } else {
+            "(define (update event) (error \"permission callback failed\"))"
+        };
+        let context = test.context(1, 1, source);
+        test.load(context).unwrap();
+        let context = test.context(1, 2, "(void)");
+        test.load(context).unwrap();
+        let runtime = test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin(id, Some(client))
+            .unwrap();
+        let generation = runtime.lock().unwrap().generation();
+        let instance = test.instance_id(id, client);
+        let (shutdown, _) = tokio::sync::mpsc::channel(1);
+        test.bridge
+            .request_permissions(
+                id,
+                instance,
+                client,
+                vec![PermissionType::RunCommands],
+                shutdown.clone(),
+            )
+            .unwrap();
+        let token = *test.bridge.permission_requests.keys().next().unwrap();
+        test.receiver::<ScreenInstruction>()
+            .try_iter()
+            .for_each(drop);
+        test.bridge
+            .answer_permissions(token, PermissionStatus::Denied, None, shutdown)
+            .unwrap();
+        test.settle(id);
+        assert!(!test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .any(|(event, _)| matches!(event, ScreenInstruction::PluginBytes(_))));
+        let failure = test
+            .receiver::<PluginInstruction>()
+            .try_iter()
+            .find_map(|(event, _)| match event {
+                PluginInstruction::PluginFailed {
+                    plugin_id,
+                    generation,
+                    instance_id,
+                    error,
+                    failed_to_load,
+                    load_id,
+                    ..
+                } => Some((
+                    plugin_id,
+                    generation,
+                    instance_id,
+                    error,
+                    failed_to_load,
+                    load_id,
+                )),
+                _ => None,
+            })
+            .expect("permission failures must reach host cleanup");
+        assert_eq!(
+            (failure.0, failure.1, failure.2),
+            (id, generation, Some(instance))
+        );
+        assert!(failure.3.contains(if render_failure {
+            "permission render failed"
+        } else {
+            "permission callback failed"
+        }));
+        test.bridge
+            .plugin_failed(
+                failure.0, failure.5, failure.1, failure.2, failure.3, failure.4,
+            )
+            .unwrap();
+        test.settle(id);
+        assert!(runtime.lock().unwrap().is_disposed());
+        assert!(!test
+            .bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .get_running_plugin(id, Some(ClientId::new(2)))
+            .unwrap()
+            .lock()
+            .unwrap()
+            .is_unavailable());
+        let run = test.bridge.run_plugin_of_plugin_id(id).unwrap();
+        let status = test
+            .bridge
+            .plugin_request(lifecycle_request(PluginOperation::Inspect, &run), client)
+            .unwrap()
+            .plugins
+            .remove(0);
+        assert_eq!(status.state, PluginState::Failed);
+        assert!(status.latest_error.unwrap().contains("permission"));
+        test.bridge.unload_plugin(id).unwrap();
     }
 }
 

@@ -16,8 +16,6 @@ use yinz_bus::thread_bus::ThreadSenders;
 
 use yinz_storage::data_access::DataAccess;
 
-use crate::plugin_bridge::PluginBridge;
-use crate::queues::Queues;
 use yinz_runtime::errors::prelude::*;
 use {
     yinz_config::plugins::PluginConfig, yinz_types::data::EventType, yinz_types::data::InputMode,
@@ -159,19 +157,8 @@ fn configuration_matches_for_reload(
     running: &PluginUserConfiguration,
     requested: &PluginUserConfiguration,
 ) -> bool {
-    let without_launch_context = |configuration: &PluginUserConfiguration| {
-        let mut configuration = configuration.without_caller_context();
-        // A queued job's identity keys, added per launch by `PluginBridge::launch_job`. Stripped
-        // here rather than in `without_caller_context`, which every "is this the plugin that is
-        // already running?" comparison shares: a queued job *is* a distinct instance everywhere
-        // else, and only a reload lookup wants to see past that.
-        configuration.remove(PluginBridge::QUEUE_CONFIG_KEY);
-        configuration.remove(PluginBridge::QUEUE_JOB_ID_CONFIG_KEY);
-        configuration.remove(PluginBridge::QUEUE_ENQUEUER_CONFIG_KEY);
-        configuration
-    };
-    let requested = without_launch_context(requested);
-    requested.is_empty() || without_launch_context(running) == requested
+    let requested = requested.without_caller_context();
+    requested.is_empty() || running.without_caller_context() == requested
 }
 
 impl PluginMap {
@@ -831,11 +818,6 @@ pub struct PluginEnv {
     /// The process-wide provider for plugin data.
     pub data_access: Arc<DataAccess>,
     pub watch_generations: WatchGenerations,
-    /// The work queues, shared with the plugin thread. A plugin enqueues and reads status
-    /// straight from here rather than asking the plugin thread, because a plugin that waits for
-    /// the plugin thread while holding its own lock deadlocks the moment another plugin loads
-    /// (the loader lists every running plugin, which takes every plugin's lock).
-    pub queues: Arc<Mutex<Queues>>,
     pub plugin_own_cache_dir: PathBuf,
     pub path_to_default_shell: PathBuf,
     pub default_shell: Option<TerminalAction>,

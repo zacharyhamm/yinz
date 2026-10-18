@@ -15,7 +15,6 @@ use yinz_types::input::options::PaneFrameStyle;
 use yinz_types::internal_ids::ContextMenuItemId;
 use yinz_types::internal_ids::ContextMenuRequestId;
 use yinz_types::internal_ids::DataWatchId;
-use yinz_types::internal_ids::QueueJobId;
 use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
@@ -2378,27 +2377,6 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::SetPaneSubtitle => PluginCommand::SetPaneSubtitle {
             pane_id: pane_id(tc),
             subtitle: optional_strings(tc),
-        },
-        CommandType::EnqueueQueueJob => PluginCommand::EnqueueQueueJob {
-            queue: strings(tc),
-            plugin_url: strings(tc),
-            config: context(tc),
-            context: context(tc),
-        },
-        // `ConfigureQueuePayload.concurrency` is a `uint32`.
-        CommandType::ConfigureQueue => PluginCommand::ConfigureQueue {
-            queue: strings(tc),
-            concurrency: usize_as_u32(tc),
-        },
-        CommandType::CancelQueueJob => PluginCommand::CancelQueueJob {
-            job_id: QueueJobId::new(u64s(tc)),
-        },
-        CommandType::QueueStatus => PluginCommand::QueueStatus {
-            queue: optional_strings(tc),
-        },
-        CommandType::FinishQueueJob => PluginCommand::FinishQueueJob {
-            success: booleans(tc),
-            payload: optional_strings(tc),
         },
     }
 }

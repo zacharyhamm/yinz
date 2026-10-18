@@ -18,7 +18,6 @@ use {
     yinz_plugin_api::plugin_command::dump_layout_response,
     yinz_plugin_api::plugin_command::dump_session_layout_response,
     yinz_plugin_api::plugin_command::edit_layout_response,
-    yinz_plugin_api::plugin_command::enqueue_queue_job_response,
     yinz_plugin_api::plugin_command::focus_or_create_tab_response,
     yinz_plugin_api::plugin_command::fs_list_response,
     yinz_plugin_api::plugin_command::fs_metadata_response,
@@ -56,7 +55,6 @@ use {
     yinz_plugin_api::plugin_command::ProtobufDumpLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufDumpSessionLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufEditLayoutResponse,
-    yinz_plugin_api::plugin_command::ProtobufEnqueueQueueJobResponse,
     yinz_plugin_api::plugin_command::ProtobufFocusOrCreateTabResponse,
     yinz_plugin_api::plugin_command::ProtobufFsListResponse,
     yinz_plugin_api::plugin_command::ProtobufFsMetadataResponse,
@@ -104,7 +102,6 @@ use {
     yinz_plugin_api::plugin_command::ProtobufOpenTerminalResponse,
     yinz_plugin_api::plugin_command::ProtobufPaneId,
     yinz_plugin_api::plugin_command::ProtobufParseLayoutResponse,
-    yinz_plugin_api::plugin_command::ProtobufQueueStatusResponse,
     yinz_plugin_api::plugin_command::ProtobufReadPluginLogResponse,
     yinz_plugin_api::plugin_command::ProtobufRenameLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
@@ -127,7 +124,7 @@ use {
     yinz_types::data::ListOrphanedPanesResponse, yinz_types::data::NotificationInfo,
     yinz_types::data::PaneGitProbe, yinz_types::data::PaneId,
     yinz_types::data::PaneScrollbackResponse, yinz_types::data::PluginIds,
-    yinz_types::data::QueueStatusResponse, yinz_types::data::WarpPaneResponse,
+    yinz_types::data::WarpPaneResponse,
 };
 
 /// A decoded host reply. File contents stay binary, including invalid UTF-8.
@@ -545,17 +542,6 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 DataUnwatchResponse::Ok => value(true),
                 DataUnwatchResponse::Err(e) => Err(anyhow!("{}", e)),
             }
-        }),
-        CommandType::EnqueueQueueJob => {
-            decode(bytes).and_then(|r: ProtobufEnqueueQueueJobResponse| match r.result {
-                Some(enqueue_queue_job_response::Result::JobId(job_id)) => value(job_id),
-                Some(enqueue_queue_job_response::Result::Error(e)) => Err(anyhow!("{}", e)),
-                None => Err(anyhow!("yinz answered with nothing")),
-            })
-        },
-        CommandType::QueueStatus => decode(bytes).and_then(|r: ProtobufQueueStatusResponse| {
-            let queues = QueueStatusResponse::try_from(r).map_err(|e| anyhow!("{}", e))?;
-            value(queues)
         }),
         CommandType::ListNotifications => {
             decode(bytes).and_then(|r: ProtobufListNotificationsResponse| match r.error {

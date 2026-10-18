@@ -273,27 +273,6 @@ fn fixture_pipes_route_sources_queue_commands_and_one_shot_frames() {
         .render(12, 50)
         .unwrap()
         .contains("Rows: 12, Cols: 50, Received events:"));
-    host.lock()
-        .unwrap()
-        .replies
-        .insert("EnqueueQueueJob".into(), json!(5));
-    pipe(
-        &mut runtime,
-        json!("Keybind"),
-        "enqueue_queue_job",
-        Some("file:/job.scm"),
-    );
-    assert_eq!(runtime.render(12, 50).unwrap(), "enqueued job 5\n");
-    pipe(
-        &mut runtime,
-        json!("Keybind"),
-        "finish_queue_job",
-        Some("done"),
-    );
-    assert_eq!(
-        host.lock().unwrap().commands.last(),
-        Some(&json!({"FinishQueueJob":{"success":true,"payload":"done"}}))
-    );
     runtime.update(json!("BeforeClose")).unwrap();
     assert_eq!(
         host.lock().unwrap().commands.last(),

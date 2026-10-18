@@ -10,10 +10,8 @@ use crate::plugin_map::{
 };
 use crate::{PipeStateChange, PluginRenderAsset};
 use yinz_bus::plugins::{PipeCompletion, PipeRequestId, PluginInstanceId};
-use yinz_types::internal_ids::QueueJobId;
 use yinz_types::internal_ids::TabId;
 
-use crate::queues::{CancelResult, FinishedJob, QueuedJob, Queues};
 use log::info;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -38,7 +36,6 @@ use {
     yinz_types::data::LayoutWithError, yinz_types::data::PaneContents,
     yinz_types::data::PaneRenderReport, yinz_types::data::PermissionStatus,
     yinz_types::data::PermissionType, yinz_types::data::PipeMessage, yinz_types::data::PipeSource,
-    yinz_types::data::QueueJobOutcome,
 };
 
 use crate::ClientId;
@@ -132,7 +129,6 @@ pub struct LoadingContext {
     pub yinz_data_dir: PathBuf,
     pub data_access: Arc<DataAccess>,
     pub watch_generations: super::plugin_map::WatchGenerations,
-    pub queues: Arc<Mutex<Queues>>,
     pub size: Size,
     pub cancel: Arc<AtomicBool>,
     pub client_cancel: Arc<AtomicBool>,
@@ -370,7 +366,6 @@ impl LoadingContext {
             yinz_data_dir: plugin_bridge.yinz_data_dir.clone(),
             data_access: plugin_bridge.data_access.clone(),
             watch_generations: plugin_bridge.watch_generations.clone(),
-            queues: plugin_bridge.queues.clone(),
             size,
             // Made by the load or reload this context is for; a context built for a plugin
             // nothing registered (an `add_client` for one mid-unload) gets a token nobody sets.
@@ -442,11 +437,6 @@ pub struct PluginBridge {
     // Attachment-scoped: a reused client ID must not revive pending work from its
     // previous connection. Separate from plugin cancellation so peers keep running.
     client_cancellations: Arc<Mutex<HashMap<ClientId, Arc<AtomicBool>>>>,
-    /// Named work queues. Jobs are ordinary plugins once running; this is what decides when
-    /// they start and who is told when they end. Shared with every `PluginEnv`, which enqueues
-    /// and reads status directly - see the note on `PluginEnv::queues`. Never hold this lock
-    /// across `load_plugin` or `unload_plugin`.
-    queues: Arc<Mutex<Queues>>,
     path_to_default_shell: PathBuf,
     yinz_cwd: PathBuf,
     session_env_vars: std::collections::BTreeMap<String, String>,
@@ -657,7 +647,6 @@ impl PluginBridge {
             pending_plugin_id_reloads: HashSet::new(),
             cancel_tokens: HashMap::new(),
             client_cancellations: Arc::default(),
-            queues: Default::default(),
             yinz_cwd,
             session_env_vars,
             server_session,
@@ -1043,74 +1032,12 @@ impl PluginBridge {
                 .send_to_background_jobs(BackgroundJob::ReportPluginList(plugin_list));
         }
 
-        // The one place a queue slot is released. Every way a job can end - it reported, it was
-        // cancelled, it closed itself, its pane was closed, it crashed - comes through here.
-        let finished = self.queues.lock().unwrap().on_plugin_unloaded(pid);
-        if let Some(finished) = finished {
-            let queue = finished.queue.clone();
-            self.report_finished_jobs(vec![finished]);
-            self.pump_queue(&queue);
-        }
-
         Ok(())
     }
 
-    // --- work queues ---------------------------------------------------------------------------
-
-    /// The configuration keys a job can read to learn what it is.
-    pub const QUEUE_CONFIG_KEY: &'static str = "yinz_queue";
-    pub const QUEUE_JOB_ID_CONFIG_KEY: &'static str = "yinz_queue_job_id";
-    pub const QUEUE_ENQUEUER_CONFIG_KEY: &'static str = "yinz_queue_enqueuer_plugin_id";
-
-    pub fn queue_configure(&mut self, queue: &str, concurrency: usize) {
-        self.queues.lock().unwrap().configure(queue, concurrency);
-        self.pump_queue(queue);
-    }
-
-    pub fn queue_cancel(&mut self, job_id: QueueJobId) -> Result<()> {
-        let result = self.queues.lock().unwrap().cancel(job_id);
-        match result {
-            CancelResult::DroppedPending(finished) => {
-                let queue = finished.queue.clone();
-                self.report_finished_jobs(vec![finished]);
-                self.broadcast_queue_changed(&queue);
-                Ok(())
-            },
-            CancelResult::UnloadRunning(plugin_id) => self.close_job_plugin(plugin_id),
-            CancelResult::NotFound => {
-                log::warn!("cancel_queue_job: no job {job_id}");
-                Ok(())
-            },
-        }
-    }
-
-    pub fn queue_finish_job(
-        &mut self,
-        plugin_id: PluginId,
-        success: bool,
-        payload: Option<String>,
-    ) -> Result<()> {
-        let outcome = if success {
-            QueueJobOutcome::Succeeded
-        } else {
-            QueueJobOutcome::Failed
-        };
-        let recorded = self
-            .queues
-            .lock()
-            .unwrap()
-            .record_outcome(plugin_id, outcome, payload);
-        if !recorded {
-            log::warn!("finish_queue_job: plugin {plugin_id} is not a queued job, ignoring");
-            return Ok(());
-        }
-        self.close_job_plugin(plugin_id)
-    }
-
-    /// A plugin failed to load or trapped. If it was a job, it is over: record why and unload
-    /// it, so the slot frees and the enqueuer hears. Other failed instances retire while their
-    /// metadata and error pane remain available for explicit reload.
-    pub fn queue_plugin_failed(
+    /// A plugin failed to load or trapped. Retire failed instances while keeping their
+    /// metadata and error pane available for explicit reload.
+    pub fn plugin_failed(
         &mut self,
         plugin_id: PluginId,
         load_id: Option<u64>,
@@ -1214,206 +1141,32 @@ impl PluginBridge {
             }
         }
         self.cancel_permission_requests(plugin_id, instance_id);
-        self.latest_plugin_errors.insert(plugin_id, error.clone());
+        self.latest_plugin_errors.insert(plugin_id, error);
         self.finish_pipe_requests();
-        let recorded = self.queues.lock().unwrap().record_outcome(
-            plugin_id,
-            QueueJobOutcome::Failed,
-            Some(error),
-        );
-        if !recorded {
-            if failed_to_load {
-                let run_plugin = self.run_plugin_of_loading_plugin_id(plugin_id).cloned();
-                self.cached_events_for_pending_plugins.remove(&plugin_id);
-                self.cached_resizes_for_pending_plugins.remove(&plugin_id);
-                self.loading_plugins.retain(|(id, _)| *id != plugin_id);
-                self.plugin_ids_waiting_for_permission_request
-                    .remove(&plugin_id);
-                if self.pending_plugin_id_reloads.remove(&plugin_id) {
-                    self.reload_plugin_with_id(plugin_id)
-                        .with_context(|| format!("run deferred reload of plugin {plugin_id}"))
+
+        if failed_to_load {
+            let run_plugin = self.run_plugin_of_loading_plugin_id(plugin_id).cloned();
+            self.cached_events_for_pending_plugins.remove(&plugin_id);
+            self.cached_resizes_for_pending_plugins.remove(&plugin_id);
+            self.loading_plugins.retain(|(id, _)| *id != plugin_id);
+            self.plugin_ids_waiting_for_permission_request
+                .remove(&plugin_id);
+            if self.pending_plugin_id_reloads.remove(&plugin_id) {
+                self.reload_plugin_with_id(plugin_id)
+                    .with_context(|| format!("run deferred reload of plugin {plugin_id}"))
+                    .non_fatal();
+            }
+            if let Some(run_plugin) = run_plugin {
+                if self.pending_plugin_reloads.remove(&run_plugin) {
+                    self.reload_plugin(&run_plugin)
+                        .with_context(|| format!("run deferred reload of {}", run_plugin.location))
                         .non_fatal();
                 }
-                if let Some(run_plugin) = run_plugin {
-                    if self.pending_plugin_reloads.remove(&run_plugin) {
-                        self.reload_plugin(&run_plugin)
-                            .with_context(|| {
-                                format!("run deferred reload of {}", run_plugin.location)
-                            })
-                            .non_fatal();
-                    }
-                }
-            }
-            return Ok(());
-        }
-        if failed_to_load {
-            self.forget_failed_load(plugin_id);
-        }
-        self.close_job_plugin(plugin_id)
-    }
-
-    /// A job whose *load* failed, on its way to being unloaded. Its loader has already run and
-    /// given up, so there is nothing left to cancel: dropping it from `loading_plugins` here is
-    /// what stops the unload below from leaving behind a cancellation mark nobody will consume
-    /// (the loader's trailing `ApplyCachedEvents`, which usually does this, has not arrived yet).
-    /// The load registered the plugin with the executor and never unloaded it, so that is ours
-    /// to undo too.
-    fn forget_failed_load(&mut self, plugin_id: PluginId) {
-        self.loading_plugins.retain(|(p_id, _)| *p_id != plugin_id);
-        // a no-op on the plugin's own thread, so the unregister lands after the loader closure
-        self.plugin_executor
-            .execute_plugin_unload(plugin_id, |_, _, _| {});
-    }
-
-    /// The `close_self` pair, done host-side: drop the suppressed pane, unload the plugin. The
-    /// unload runs the queue hook, which reports the job and starts the next one.
-    fn close_job_plugin(&mut self, plugin_id: PluginId) -> Result<()> {
-        self.senders
-            .send_to_screen(ScreenInstruction::ClosePane(
-                PaneId::Plugin(plugin_id),
-                None,
-                None,
-                None,
-            ))
-            .with_context(|| format!("failed to close the pane of job plugin {plugin_id}"))
-            .non_fatal();
-        self.unload_plugin(plugin_id)
-            .with_context(|| format!("failed to unload job plugin {plugin_id}"))
-    }
-
-    /// Start jobs on `queue` until it is at its limit or empty, one at a time so that a launch
-    /// that fails frees its slot for the next before we decide whether there is room.
-    pub fn pump_queue(&mut self, queue: &str) {
-        if self.queues.lock().unwrap().is_shut_down() {
-            return;
-        }
-        let mut finished = vec![];
-        loop {
-            let job = self.queues.lock().unwrap().pop_launchable(queue);
-            let Some(job) = job else {
-                break;
-            };
-            match self.launch_job(&job) {
-                Ok(plugin_id) => {
-                    let started = Event::QueueJobStarted {
-                        queue: job.queue.clone(),
-                        job_id: job.job_id,
-                        plugin_id,
-                        context: job.context.clone(),
-                    };
-                    let enqueuer = job.enqueuer;
-                    let generation = job.generation;
-                    self.queues.lock().unwrap().on_job_launched(job, plugin_id);
-                    self.send_event_to(enqueuer, generation, started);
-                },
-                Err(e) => {
-                    finished.push(
-                        self.queues
-                            .lock()
-                            .unwrap()
-                            .on_launch_failed(job, format!("{e:#}")),
-                    );
-                },
             }
         }
-        self.report_finished_jobs(finished);
-        self.broadcast_queue_changed(queue);
+        Ok(())
     }
 
-    /// Load the job's plugin as a fresh headless instance, with its queue identity in its
-    /// configuration. Bypasses `get_or_load_plugins` deliberately: that dedupes on
-    /// `(location, configuration)`, and two jobs of the same plugin must be two instances.
-    fn launch_job(&mut self, job: &QueuedJob) -> Result<PluginId> {
-        let mut run_plugin_or_alias = job.run_plugin_or_alias.clone();
-        run_plugin_or_alias.populate_run_plugin_if_needed(&self.plugin_aliases.lock().unwrap());
-        let mut run_plugin = run_plugin_or_alias.get_run_plugin().ok_or_else(|| {
-            anyhow!(
-                "{} could not be resolved",
-                job.run_plugin_or_alias.location_string()
-            )
-        })?;
-        run_plugin
-            .configuration
-            .insert(Self::QUEUE_CONFIG_KEY, job.queue.clone());
-        run_plugin
-            .configuration
-            .insert(Self::QUEUE_JOB_ID_CONFIG_KEY, job.job_id.to_string());
-        run_plugin
-            .configuration
-            .insert(Self::QUEUE_ENQUEUER_CONFIG_KEY, job.enqueuer.0.to_string());
-        // A job is session work, not per-client UI: one instance, however many clients are
-        // attached now or later. Without this the loader would instantiate it once per client,
-        // each copy running the same job. Set last so the enqueuer's configuration cannot undo it.
-        run_plugin.configuration.insert("shared", "true".to_owned());
-        let pending_id = PluginId::new(self.next_plugin_id);
-        self.plugin_roles.lock().unwrap().insert(pending_id, true);
-        let (plugin_id, client_id) = self
-            .load_plugin(
-                &Some(run_plugin.clone()),
-                None,
-                Size::default(),
-                job.cwd.clone(),
-                false,
-                Some(job.enqueuer.1),
-            )
-            .inspect_err(|_| {
-                self.plugin_roles.lock().unwrap().remove(&pending_id);
-            })?;
-        let _ = self
-            .senders
-            .send_to_screen(super::add_suppressed_plugin_pane(
-                RunPluginOrAlias::RunPlugin(run_plugin),
-                plugin_id,
-                job.cwd.clone(),
-                client_id,
-            ));
-        Ok(plugin_id)
-    }
-
-    fn report_finished_jobs(&self, finished: Vec<FinishedJob>) {
-        for job in finished {
-            let event = Event::QueueJobFinished {
-                queue: job.queue,
-                job_id: job.job_id,
-                outcome: job.outcome,
-                payload: job.payload,
-                context: job.context,
-            };
-            self.send_event_to(job.enqueuer, job.generation, event);
-        }
-    }
-
-    fn broadcast_queue_changed(&self, queue: &str) {
-        let snapshot = self.queues.lock().unwrap().queue_snapshot(queue);
-        let Some(snapshot) = snapshot else {
-            return;
-        };
-        let event = Event::QueueChanged {
-            queue: snapshot.queue,
-            concurrency: snapshot.concurrency,
-            pending: snapshot.pending,
-            running: snapshot.running,
-        };
-        let _ = self
-            .senders
-            .send_to_plugin(PluginInstruction::Update(vec![(None, None, event)]));
-    }
-
-    /// Queue events go back through the bus like a `RunCommandResult` does, rather than being
-    /// applied here: this can run from inside `unload_plugin`, and the update path takes the
-    /// same locks.
-    fn send_event_to(
-        &self,
-        (plugin_id, client_id): (PluginId, ClientId),
-        generation: Option<u64>,
-        event: Event,
-    ) {
-        let _ = self
-            .senders
-            .send_to_plugin(PluginInstruction::for_plugin_event(
-                plugin_id, client_id, generation, event,
-            ));
-    }
     pub fn reload_plugin_with_id(&mut self, plugin_id: PluginId) -> Result<()> {
         let picker = self.picks.contains_key(&plugin_id);
         self.cancel_plugin_picks(plugin_id);
@@ -1496,7 +1249,7 @@ impl PluginBridge {
             Some(arm_reload_watchdog(plugin_id, cancel, instances))
         };
 
-        // A failure already queued by the old generation must not finish a queue job or
+        // A failure already queued by the old generation must not
         // paint over this reload, even before the executor installs the replacement.
         self.plugin_map
             .lock()
@@ -1733,7 +1486,7 @@ impl PluginBridge {
         message: String,
     ) -> Result<()> {
         self.pending_pipes.retire_plugin(plugin_id, pipe_reason);
-        self.queue_plugin_failed(plugin_id, Some(load_id), None, None, message, true)
+        self.plugin_failed(plugin_id, Some(load_id), None, None, message, true)
     }
     pub fn reload_plugin(&mut self, run_plugin: &RunPlugin) -> Result<()> {
         self.remember_plugin_location(run_plugin);
@@ -1892,7 +1645,7 @@ impl PluginBridge {
                     // nor the plugin itself: it is still running for the other clients. So this
                     // ends like a load that failed on the executor for a new client, which
                     // replays the cached events to the instances that exist, rather than
-                    // through `queue_plugin_failed`, which fails the plugin session-wide.
+                    // through `plugin_failed`, which fails the plugin session-wide.
                     Err::<(), _>(error)
                         .with_context(|| {
                             format!("prepare plugin {plugin_id} for new client {client_id}")
@@ -3311,9 +3064,6 @@ impl PluginBridge {
     /// plugin thread has `PLUGIN_THREAD_EXIT_TIMEOUT` in all before its join is abandoned, and
     /// a budget that re-armed per lock added up to more than that.
     pub fn cleanup(&mut self, deadline: Instant) {
-        // Before any unload: the unload hook pumps queues, and nothing may start now.
-        self.queues.lock().unwrap().shut_down();
-
         // Already done by the shutdown sequence if a job overran its grace; for every other
         // guest this is the first it hears of it, and for a caller that skipped the wait
         // (a test) it is the only cancel there is.
@@ -4445,10 +4195,7 @@ pub(crate) fn check_event_permission(
         EventType::AgentEvent => PermissionType::ReadApplicationState,
         EventType::PickResult => PermissionType::MessageAndLaunchOtherPlugins,
         EventType::AgentProvidersChanged | EventType::ProjectProvidersChanged => PermissionType::RunCommands,
-        // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
-        // need nothing more than the permission it enqueued with.
         EventType::NotificationReceived | EventType::NotificationResolved => PermissionType::ReadApplicationState,
-        EventType::QueueChanged => PermissionType::ReadApplicationState,
         EventType::PaneOutput | EventType::PaneRenderReport => PermissionType::ReadPaneContents,
         EventType::UserAction => PermissionType::InterceptInput,
         // Ungated on purpose. These are either addressed to this plugin alone (its own input,
@@ -4483,8 +4230,6 @@ pub(crate) fn check_event_permission(
         // plugin the user bound in `hooks { }`, and binding it is the consent. A headless plugin
         // has no pane to show a permission prompt on, so gating this would mean silence.
         | EventType::Hook
-        | EventType::QueueJobStarted
-        | EventType::QueueJobFinished
         // Paths and metadata under the host folder, not contents; see `ScanHostFolder` in
         // `yinz_exports::command_permission` for why these stay open for now.
         | EventType::FileSystemCreate

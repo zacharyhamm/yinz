@@ -51,10 +51,8 @@ use yinz_storage::data_access::DataAccess;
 use yinz_storage::plugin_data_store;
 use yinz_types::agent::control::{AgentOutcome, AgentResponse};
 use yinz_types::agent::{AgentLaunchResources, SpawnedAgent};
-use yinz_types::data::EnqueueQueueJobResponse;
 use yinz_types::internal_ids::DataWatchId;
 use yinz_types::internal_ids::ProcessId;
-use yinz_types::internal_ids::QueueJobId;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
@@ -1041,20 +1039,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::GetSessionList => get_session_list(env),
             PluginCommand::DumpSessionLayout { tab_index } => dump_session_layout(env, tab_index),
             PluginCommand::CloseSelf => close_self(env),
-            PluginCommand::EnqueueQueueJob {
-                queue,
-                plugin_url,
-                config,
-                context,
-            } => enqueue_queue_job(env, queue, plugin_url, config, context),
-            PluginCommand::ConfigureQueue { queue, concurrency } => {
-                configure_queue(env, queue, concurrency)
-            },
-            PluginCommand::CancelQueueJob { job_id } => cancel_queue_job(env, job_id),
-            PluginCommand::QueueStatus { queue } => queue_status(env, queue),
-            PluginCommand::FinishQueueJob { success, payload } => {
-                finish_queue_job(env, success, payload)
-            },
             PluginCommand::Reconfigure(new_config, write_config_to_disk) => {
                 reconfigure(env, new_config, write_config_to_disk)?
             },
@@ -4832,108 +4816,6 @@ fn close_self(env: &PluginEnv) {
     env.senders
         .send_to_plugin(PluginInstruction::Unload(env.plugin_id))
         .with_context(|| "failed to close self".to_string())
-        .non_fatal();
-}
-
-/// Queue commands that answer do so from the shared `Queues` rather than by asking the plugin
-/// thread, because a plugin that blocks on the plugin thread while another plugin is loading
-/// deadlocks: the loader holds the plugin map and takes every running plugin's lock, this
-/// plugin's included. Only what needs the plugin thread - starting and stopping jobs - goes
-/// there, and never with a reply to wait for.
-fn enqueue_queue_job(
-    env: &mut PluginEnv,
-    queue: String,
-    plugin_url: String,
-    mut config: BTreeMap<String, String>,
-    context: BTreeMap<String, String>,
-) {
-    use yinz_plugin_api::plugin_command::ProtobufEnqueueQueueJobResponse;
-
-    let plugin_url = if plugin_url == "yinz:OWN_URL" {
-        env.plugin_config.location.display()
-    } else {
-        plugin_url
-    };
-    // The same courtesy `message_to_plugin` extends: a job usually wants to work where its
-    // enqueuer works.
-    config
-        .entry("caller_cwd".to_owned())
-        .or_insert_with(|| env.plugin_cwd.display().to_string());
-    let response = if queue.is_empty() {
-        EnqueueQueueJobResponse::Err("a queue needs a name".to_owned())
-    } else {
-        let resolved = {
-            let plugin_aliases = env.plugin_aliases.lock().unwrap();
-            yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-                &plugin_url,
-                &Some(config),
-                Some(&plugin_aliases),
-                Some(env.plugin_cwd.clone()),
-            )
-            .and_then(|mut run_plugin_or_alias| {
-                run_plugin_or_alias.populate_run_plugin_if_needed(&plugin_aliases);
-                if run_plugin_or_alias.get_run_plugin().is_some() {
-                    Ok(run_plugin_or_alias)
-                } else {
-                    Err(format!("{plugin_url} is not a plugin or a known alias"))
-                }
-            })
-        };
-        match resolved {
-            Ok(run_plugin_or_alias) => {
-                let job_id = env.queues.lock().unwrap().enqueue(
-                    &queue,
-                    (env.plugin_id, env.client_id),
-                    env.generation,
-                    run_plugin_or_alias,
-                    context,
-                    Some(env.plugin_cwd.clone()),
-                );
-                env.senders
-                    .send_to_plugin(PluginInstruction::QueuePump { queue })
-                    .with_context(|| "failed to pump queue".to_string())
-                    .non_fatal();
-                EnqueueQueueJobResponse::Ok(job_id)
-            },
-            Err(e) => EnqueueQueueJobResponse::Err(e),
-        }
-    };
-    let response: ProtobufEnqueueQueueJobResponse = response.into();
-    let _ = write_response(env, &response.encode_to_vec());
-}
-
-fn configure_queue(env: &PluginEnv, queue: String, concurrency: usize) {
-    env.senders
-        .send_to_plugin(PluginInstruction::QueueConfigure { queue, concurrency })
-        .with_context(|| "failed to configure queue".to_string())
-        .non_fatal();
-}
-
-fn cancel_queue_job(env: &PluginEnv, job_id: QueueJobId) {
-    env.senders
-        .send_to_plugin(PluginInstruction::QueueCancelJob { job_id })
-        .with_context(|| "failed to cancel queue job".to_string())
-        .non_fatal();
-}
-
-fn queue_status(env: &mut PluginEnv, queue: Option<String>) {
-    use yinz_plugin_api::plugin_command::ProtobufQueueStatusResponse;
-
-    let queues = env.queues.lock().unwrap().snapshot(queue.as_deref());
-    let response: ProtobufQueueStatusResponse = queues.into();
-    let _ = write_response(env, &response.encode_to_vec());
-}
-
-/// The job reports and the host unloads it — the host, not the job, because the outcome has
-/// to be recorded before the unload frees the slot, and only the plugin thread can order those.
-fn finish_queue_job(env: &PluginEnv, success: bool, payload: Option<String>) {
-    env.senders
-        .send_to_plugin(PluginInstruction::QueueFinishJob {
-            plugin_id: env.plugin_id,
-            success,
-            payload,
-        })
-        .with_context(|| "failed to finish queue job".to_string())
         .non_fatal();
 }
 
@@ -9452,19 +9334,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::GetPluginIdsForUrlWithConfiguration => PermissionType::ReadApplicationState,
         CommandType::OpenCommandPaneInNewTab => PermissionType::RunCommands,
         CommandType::OpenEditorPaneInNewTab => PermissionType::OpenFiles,
-        // Enqueueing is launching another plugin, just later.
-        CommandType::Pick | CommandType::EnqueueQueueJob => {
-            PermissionType::MessageAndLaunchOtherPlugins
-        },
-        // Raising a queue's parallelism or killing someone else's job reaches past the caller's
-        // own work, which is more than "may launch plugins" should grant.
-        CommandType::ConfigureQueue | CommandType::CancelQueueJob => {
-            PermissionType::ChangeApplicationState
-        },
-        CommandType::QueueStatus => PermissionType::ReadApplicationState,
-        // A job reporting on itself needs nothing, like `CloseSelf`: it runs headless, and a
-        // permission prompt it raised would have no pane for anyone to answer it in.
-        CommandType::FinishQueueJob => return None,
+        CommandType::Pick => PermissionType::MessageAndLaunchOtherPlugins,
         // A clock. It says the machine's offset from UTC and nothing about the session,
         // which is less than `GetYinzVersion` already says, and a permission prompt in
         // front of drawing a timestamp would be answered blind every time.
@@ -9970,7 +9840,6 @@ mod permission_tests {
             CommandType::PostMessageToPlugin,
             CommandType::ScanHostFolder,
             CommandType::WatchFilesystem,
-            CommandType::FinishQueueJob,
             CommandType::GetLocalUtcOffset,
         ];
         for kind in CommandType::iter() {

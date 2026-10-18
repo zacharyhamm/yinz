@@ -12,7 +12,6 @@ use crate::internal_ids::DataWatchId;
 use crate::internal_ids::HostId;
 use crate::internal_ids::NotificationId;
 use crate::internal_ids::ProcessId;
-use crate::internal_ids::QueueJobId;
 use crate::internal_ids::SessionName;
 use crate::internal_ids::SupervisorId;
 use crate::internal_ids::TabId;
@@ -308,34 +307,6 @@ pub enum Event {
         rows: DataRows,
         truncated: bool,
     },
-    /// A job this plugin enqueued with `EnqueueQueueJob` has started running.
-    ///
-    /// Sent only to the plugin that enqueued the job; `context` is what it passed, echoed
-    /// verbatim. `plugin_id` is the job's own plugin instance.
-    QueueJobStarted {
-        queue: String,
-        job_id: QueueJobId,
-        plugin_id: crate::internal_ids::PluginId,
-        context: BTreeMap<String, String>,
-    },
-    /// A job this plugin enqueued has finished, one way or another. Sent only to the enqueuer.
-    ///
-    /// `payload` is what the job passed to `FinishQueueJob`, or the error for a job that failed
-    /// to load or crashed; a job that was cancelled or simply unloaded itself has none.
-    QueueJobFinished {
-        queue: String,
-        job_id: QueueJobId,
-        outcome: QueueJobOutcome,
-        payload: Option<String>,
-        context: BTreeMap<String, String>,
-    },
-    /// A queue's contents or concurrency changed. Broadcast to every subscriber.
-    QueueChanged {
-        queue: String,
-        concurrency: usize,
-        pending: Vec<QueueJobInfo>,
-        running: Vec<QueueJobInfo>,
-    },
     /// A hook point with a headless shape was reached. Sent only to the plugin bound to `point`
     /// in `hooks { }`, which is loaded (without a pane) the first time it is needed and receives
     /// every later firing. The payload is typed per point - see [`HookPayload`].
@@ -394,7 +365,6 @@ impl EventType {
         EventType::FileSystemUpdate,
         EventType::FileSystemDelete,
         EventType::PluginConfigurationChanged,
-        EventType::QueueChanged,
         EventType::AgentEvent,
     ];
 
@@ -431,48 +401,6 @@ impl EventType {
             .map(EventType::to_string)
             .collect()
     }
-}
-
-/// How a queued job ended.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum QueueJobOutcome {
-    /// The job called `FinishQueueJob` with `success: true`.
-    Succeeded,
-    /// The job called `FinishQueueJob` with `success: false`, failed to load, or crashed.
-    Failed,
-    /// Someone called `CancelQueueJob` on it.
-    Cancelled,
-    /// The job's plugin unloaded without reporting: it closed itself, or its pane was closed.
-    Aborted,
-}
-
-/// Where a queued job is in its life.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum QueueJobState {
-    Pending,
-    Running,
-}
-
-/// One job on a work queue, as reported by `QueueStatus` and `Event::QueueChanged`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QueueJobInfo {
-    pub job_id: QueueJobId,
-    pub queue: String,
-    pub plugin_url: String,
-    /// The job's plugin instance, once it is running.
-    pub plugin_id: Option<crate::internal_ids::PluginId>,
-    pub enqueuer_plugin_id: crate::internal_ids::PluginId,
-    pub context: BTreeMap<String, String>,
-    pub state: QueueJobState,
-}
-
-/// One work queue and everything on it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QueueSnapshot {
-    pub queue: String,
-    pub concurrency: usize,
-    pub pending: Vec<QueueJobInfo>,
-    pub running: Vec<QueueJobInfo>,
 }
 
 pub use crate::style::HostTerminalThemeMode;
@@ -3304,40 +3232,6 @@ pub enum PluginCommand {
         pane_id: PaneId,
         prefix: Option<String>,
     },
-    /// Put a plugin on a named work queue, to be run as a fresh headless instance when the queue
-    /// has a free slot. Sends the job id back.
-    ///
-    /// The queue is created with concurrency 1 if it does not exist. `config` becomes the job's
-    /// configuration (the host adds `yinz_queue`, `yinz_queue_job_id` and
-    /// `yinz_queue_enqueuer_plugin_id`); `context` is not given to the job but echoed back in
-    /// [`Event::QueueJobStarted`] and [`Event::QueueJobFinished`], which only the enqueuer receives.
-    EnqueueQueueJob {
-        queue: String,
-        plugin_url: String,
-        config: BTreeMap<String, String>,
-        context: BTreeMap<String, String>,
-    },
-    /// Set how many jobs `queue` may run at once, creating it if needed. Lowering the limit below
-    /// the number of running jobs evicts none of them; it just stops new ones starting.
-    ConfigureQueue {
-        queue: String,
-        concurrency: usize,
-    },
-    /// Drop a pending job, or unload a running one. Its enqueuer is told `Cancelled`.
-    CancelQueueJob {
-        job_id: QueueJobId,
-    },
-    /// Sends back every queue, or just the named one, with its pending and running jobs.
-    QueueStatus {
-        queue: Option<String>,
-    },
-    /// Called by a job to report its outcome. The host then unloads the calling plugin.
-    ///
-    /// Ignored when the caller is not a queued job.
-    FinishQueueJob {
-        success: bool,
-        payload: Option<String>,
-    },
     /// Compile `source` as a TypeScript plugin without running it, and answer with the compile error if
     /// there is one. `name` is what the error names, as the loader's own error would
     /// (`keys.ts:3: ...`). Nothing is written or loaded: this is the check a writer runs before
@@ -3451,16 +3345,6 @@ pub enum PluginCommand {
         epoch_ms: SignedUnixMillis,
     },
 }
-
-/// The job id handed back by `EnqueueQueueJob`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EnqueueQueueJobResponse {
-    Ok(QueueJobId),
-    Err(String),
-}
-
-/// The queues reported by `QueueStatus`.
-pub type QueueStatusResponse = Vec<QueueSnapshot>;
 
 /// The outcome of declaring an entity in the data store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
