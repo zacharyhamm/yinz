@@ -871,6 +871,20 @@ pub struct PluginEnv {
 
 impl PluginEnv {
     pub(crate) fn clear_agent_providers(&self) {
+        if let Some(generation) = self.generation {
+            if yinz_types::project_provider::unregister_owner(generation) {
+                crate::yinz_exports::broadcast_project_providers(&self.senders);
+            }
+            if crate::project_provider::clear(generation) {
+                self.senders
+                    .send_to_screen(
+                        yinz_bus::screen::ScreenInstruction::InvalidateAgentEventProjects,
+                    )
+                    .context("invalidate project memberships")
+                    .non_fatal();
+            }
+        }
+
         if self
             .generation
             .is_some_and(yinz_types::agent::provider::unregister_owner)

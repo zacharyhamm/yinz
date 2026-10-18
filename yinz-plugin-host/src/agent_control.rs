@@ -78,7 +78,7 @@ pub fn control_agent(
                 },
             };
         if let Some(project) = project {
-            filter_project(&mut response, &project, data, |pane_id, cwd| {
+            let pending = filter_project(&mut response, &project, data, |pane_id, cwd| {
                 let (reply, receiver) = crossbeam::channel::bounded(1);
                 if let Err(error) = senders.send_to_pty(PtyInstruction::GetPaneGitProbe {
                     pane_id,
@@ -94,6 +94,11 @@ pub fn control_agent(
                         yinz_types::data::GetPaneGitProbeResponse::Err(error.to_string())
                     })
             })?;
+            if pending {
+                return Err(
+                    "project membership is incomplete; retry after project probes finish".into(),
+                );
+            }
         }
         Ok(response)
     })();
@@ -168,7 +173,7 @@ pub(super) fn projects(data: &DataAccess) -> Result<yinz_types::data::DataRows, 
         })
 }
 
-// Returns whether any required remote probe is still pending.
+// Returns whether any required local or remote probe is still pending.
 fn filter_project(
     response: &mut AgentResponse,
     name: &str,
@@ -208,6 +213,7 @@ fn filter_project(
         }
     }
     let mut pending = false;
+    let probed = crate::project_provider::snapshot();
     response.agents.retain(|status| {
         let rows = assignments
             .get(&(status.host_id.clone(), status.session.clone()))
@@ -259,20 +265,12 @@ fn filter_project(
             _ => status.cwd.as_deref(),
         };
         cwd.is_some_and(|cwd| {
-            let probe = yinz_process::pty_host::remote::status::probe_git(cwd);
-            let project_data::git_probe::ProbeOutcome::Checkout(repository) =
-                project_data::git_probe::repository(
-                    probe.exit_code,
-                    &probe.metadata,
-                    &probe.config,
-                )
-            else {
-                return false;
-            };
             let location = project_data::location::Location::local(cwd);
-            let probed = BTreeMap::from([(location.clone(), repository)]);
-            project_data::projects::project_for_cwd(&probed, &registry, &location)
-                .is_some_and(|owner| owner.name == project.name)
+            let owner = project_data::projects::registered_for_cwd(&probed, &registry, &location);
+            if !probed.contains_key(&location) && owner.is_none() {
+                pending = true;
+            }
+            owner.is_some_and(|owner| owner.name == project.name)
         })
     });
     Ok(pending)

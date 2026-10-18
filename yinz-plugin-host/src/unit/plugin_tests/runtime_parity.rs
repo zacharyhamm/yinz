@@ -30,11 +30,20 @@ fn record(commands: &Commands, command: &PluginCommand) {
             values.sort_by_key(Value::to_string);
         }
     }
+    super::reference_trace::legacy_project_fields(&mut value);
     commands.lock().unwrap().push(value);
 }
 
 pub(crate) fn default_reply(command: &PluginCommand) -> Option<Vec<u8>> {
     Some(match command {
+        PluginCommand::GetProjectProviders => ProtobufAgentProvidersResponse {
+            json: "{\"Ok\":[]}".into(),
+        }
+        .encode_to_vec(),
+        PluginCommand::PublishProjectLocations(_) => ProtobufAgentProvidersResponse {
+            json: "{\"Ok\":null}".into(),
+        }
+        .encode_to_vec(),
         PluginCommand::GetPluginIds => ProtobufPluginIds {
             plugin_id: 1,
             client_id: 1,
@@ -357,6 +366,13 @@ impl Pair {
         let normalize = |commands: Vec<Value>| {
             commands
                 .into_iter()
+                // Provider-chain and cache tests cover these new service effects.
+                .filter(|command| {
+                    command != "GetProjectProviders"
+                        && command.get("PublishProjectLocations").is_none()
+                        && command.get("Subscribe")
+                            != Some(&serde_json::json!(["ProjectProvidersChanged"]))
+                })
                 // History I/O now belongs to a worker and unchanged snapshots omit it entirely.
                 // Dedicated archive tests assert requests, ordering and failures separately.
                 // The screen now creates and moves the overlay container.

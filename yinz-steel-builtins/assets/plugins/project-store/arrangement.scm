@@ -13,10 +13,8 @@
       (define location (ps-model "agents" "PaneCheckoutLocation" pane))
       (define repo (ps-get (hash-ref reply "repositories") location json-null))
       (define details (if (json-null? repo) (hash "is_checkout" #f) (ps-model "projects" "RepositoryDetails" repo)))
-      (define registered (if (json-null? location) json-null (ps-model "projects" "ForCwd" registry location)))
-      (when (and (not (json-null? registered)) (hash-ref registered "discovered")) (set! registered json-null))
-      (when (and (json-null? registered) (not (json-null? repo))) (set! registered (ps-model "projects" "ForRepository" registry repo)))
-      (when (and (json-null? registered) (hash-ref details "is_checkout")) (set! registered (ps-model "projects" "ForCwd" registry location)))
+      (define registered (if (json-null? location) json-null
+          (ps-model "projects" "RegisteredForCwd" (hash-ref reply "repositories") registry location)))
       (define identity json-null)
       (define name json-null)
       (define root json-null)

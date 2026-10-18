@@ -4436,7 +4436,7 @@ pub(crate) fn check_event_permission(
         // carries: a plugin that may read the panes may read this.
         EventType::AgentEvent => PermissionType::ReadApplicationState,
         EventType::PickResult => PermissionType::MessageAndLaunchOtherPlugins,
-        EventType::AgentProvidersChanged => PermissionType::RunCommands,
+        EventType::AgentProvidersChanged | EventType::ProjectProvidersChanged => PermissionType::RunCommands,
         // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
         // need nothing more than the permission it enqueued with.
         EventType::NotificationReceived | EventType::NotificationResolved => PermissionType::ReadApplicationState,
@@ -4569,6 +4569,9 @@ pub fn apply_events_to_plugin(
                 let mut event = event.clone();
                 // Registrations can change on different executor threads after a broadcast
                 // queues. Mirror the current registry, never an older queued snapshot.
+                if let Event::ProjectProvidersChanged(providers) = &mut event {
+                    *providers = yinz_types::project_provider::providers();
+                }
                 if let Event::AgentProvidersChanged(providers) = &mut event {
                     *providers = yinz_types::agent::provider::providers();
                 }

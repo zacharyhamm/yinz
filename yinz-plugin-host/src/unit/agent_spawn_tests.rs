@@ -951,3 +951,68 @@ fn agent_destination_is_carried_for_local_and_ssh_spawns() {
         worker.join().unwrap();
     }
 }
+
+#[test]
+fn project_provider_registration_requires_permissions_shared_scheme_and_owned_generation() {
+    use yinz_types::project_provider::{providers, ProjectProvider};
+    let mut env = crate::test_env::test_env();
+    env.response_sink = None;
+    let definition = ProjectProvider {
+        id: "host-project-fixture".into(),
+        priority: 7,
+        plugin_id: 999,
+        generation: 999,
+    };
+    let response = |env: &mut PluginEnv| -> Result<serde_json::Value, String> {
+        let bytes: Vec<u8> = env.response_sink.take().unwrap();
+        let wire = yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse::decode(
+            bytes.as_slice(),
+        )
+        .unwrap();
+        serde_json::from_str(&wire.json).unwrap()
+    };
+    run_plugin_command(
+        &mut env,
+        PluginCommand::RegisterProjectProvider(definition.clone()),
+    )
+    .unwrap();
+    assert!(response(&mut env)
+        .unwrap_err()
+        .contains("Permission denied"));
+    *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::RunCommands]));
+    run_plugin_command(
+        &mut env,
+        PluginCommand::RegisterProjectProvider(definition.clone()),
+    )
+    .unwrap();
+    assert!(response(&mut env).unwrap_err().contains("Scheme"));
+    env.generation = Some(51);
+    env.resolved_source_path = Some("fixture.scm".into());
+    run_plugin_command(
+        &mut env,
+        PluginCommand::RegisterProjectProvider(definition.clone()),
+    )
+    .unwrap();
+    assert!(response(&mut env).unwrap_err().contains("shared true"));
+    env.plugin_config.initial_userspace_configuration =
+        yinz_types::input::layout::PluginUserConfiguration::new(BTreeMap::from([(
+            "shared".into(),
+            "true".into(),
+        )]));
+    run_plugin_command(&mut env, PluginCommand::RegisterProjectProvider(definition)).unwrap();
+    response(&mut env).unwrap();
+    let provider = providers()
+        .into_iter()
+        .find(|p| p.id == "host-project-fixture")
+        .unwrap();
+    assert_eq!(provider.generation, 51);
+    assert_eq!(provider.plugin_id, env.plugin_id.get());
+    run_plugin_command(
+        &mut env,
+        PluginCommand::PublishProjectLocations(serde_json::json!({"providers":[],"locations":{}})),
+    )
+    .unwrap();
+    assert!(response(&mut env).unwrap_err().contains("only the builtin"));
+    env.clear_agent_providers();
+    assert!(!providers().iter().any(|p| p.id == "host-project-fixture"));
+}

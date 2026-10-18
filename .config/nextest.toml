@@ -30,6 +30,12 @@ threads-required = 4
 fail-fast = false
 slow-timeout = { period = "15s", terminate-after = 4 }
 
+# This subprocess arms the production one-second hook deadline while pruning a large prompt.
+# Competing tests can exhaust that deadline before the debug build finishes the payload.
+[[profile.unit.overrides]]
+filter = 'package(yinz-muse) & test(=tests::reports_reach_the_bound_pane_and_nothing_else)'
+threads-required = "num-test-threads"
+
 # These parity tests replay 8,784 and 8,976 terminal renders, respectively.
 [[profile.unit.overrides]]
 filter = 'test(=plugin_tests::compact_bar::compact_bar_wasm_deno_markers_nested_hints_and_themes) | test(=plugin_tests::tab_bar::tab_bar_wasm_deno_mouse_ranges_and_breadcrumbs)'

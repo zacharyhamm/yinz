@@ -141,6 +141,17 @@ pub enum DecodedResponse {
 /// caller hands the bytes back untouched.
 pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<DecodedResponse>> {
     Some(match command {
+        CommandType::RegisterProjectProvider
+        | CommandType::GetProjectProviders
+        | CommandType::ValidateProjectMatch
+        | CommandType::PublishProjectLocations => decode(bytes).and_then(
+            |response: yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse| {
+                let result: Result<serde_json::Value, String> =
+                    serde_json::from_str(&response.json)
+                        .context("decode agent provider response")?;
+                value(result.map_err(|error| anyhow!(error))?)
+            },
+        ),
         CommandType::RegisterAgentProvider | CommandType::GetAgentProviders => decode(bytes)
             .and_then(
                 |response: yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse| {

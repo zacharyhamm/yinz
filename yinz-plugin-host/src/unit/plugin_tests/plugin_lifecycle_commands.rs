@@ -203,7 +203,7 @@ pub fn rebind_keys_plugin_command() {
         None,
         None,
     ));
-    wait_for_permissions(&received_screen_instructions);
+    wait_for_render_containing(&received_screen_instructions, "Rows: 20, Cols: 121");
 
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,

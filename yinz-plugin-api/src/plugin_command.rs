@@ -3646,12 +3646,31 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for FinishQueueJob"),
             },
+            Some(CommandName::RegisterProjectProvider) => match protobuf_plugin_command.payload {
+                Some(Payload::RegisterProjectProviderPayload(json)) => serde_json::from_str(&json)
+                    .map(PluginCommand::RegisterProjectProvider)
+                    .map_err(|_| "Malformed agent provider"),
+                _ => Err("Mismatched payload for RegisterProjectProvider"),
+            },
+            Some(CommandName::ValidateProjectMatch) => match protobuf_plugin_command.payload {
+                Some(Payload::ValidateProjectMatchPayload(json)) => serde_json::from_str(&json)
+                    .map(PluginCommand::ValidateProjectMatch)
+                    .map_err(|_| "Malformed agent provider"),
+                _ => Err("Mismatched payload for ValidateProjectMatch"),
+            },
+            Some(CommandName::PublishProjectLocations) => match protobuf_plugin_command.payload {
+                Some(Payload::PublishProjectLocationsPayload(json)) => serde_json::from_str(&json)
+                    .map(PluginCommand::PublishProjectLocations)
+                    .map_err(|_| "Malformed agent provider"),
+                _ => Err("Mismatched payload for PublishProjectLocations"),
+            },
             Some(CommandName::RegisterAgentProvider) => match protobuf_plugin_command.payload {
                 Some(Payload::RegisterAgentProviderPayload(json)) => serde_json::from_str(&json)
                     .map(PluginCommand::RegisterAgentProvider)
                     .map_err(|_| "Malformed agent provider"),
                 _ => Err("Mismatched payload for RegisterAgentProvider"),
             },
+            Some(CommandName::GetProjectProviders) => Ok(PluginCommand::GetProjectProviders),
             Some(CommandName::GetAgentProviders) => Ok(PluginCommand::GetAgentProviders),
             Some(CommandName::RegisterDefaultKeybindings) => {
                 match protobuf_plugin_command.payload {
@@ -6125,6 +6144,27 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     payload,
                 })),
             }),
+            PluginCommand::RegisterProjectProvider(provider) => Ok(ProtobufPluginCommand {
+                name: CommandName::RegisterProjectProvider as i32,
+                payload: Some(Payload::RegisterProjectProviderPayload(
+                    serde_json::to_string(&provider)
+                        .map_err(|_| "Cannot serialize agent provider")?,
+                )),
+            }),
+            PluginCommand::ValidateProjectMatch(provider) => Ok(ProtobufPluginCommand {
+                name: CommandName::ValidateProjectMatch as i32,
+                payload: Some(Payload::ValidateProjectMatchPayload(
+                    serde_json::to_string(&provider)
+                        .map_err(|_| "Cannot serialize agent provider")?,
+                )),
+            }),
+            PluginCommand::PublishProjectLocations(provider) => Ok(ProtobufPluginCommand {
+                name: CommandName::PublishProjectLocations as i32,
+                payload: Some(Payload::PublishProjectLocationsPayload(
+                    serde_json::to_string(&provider)
+                        .map_err(|_| "Cannot serialize agent provider")?,
+                )),
+            }),
             PluginCommand::RegisterAgentProvider(provider) => Ok(ProtobufPluginCommand {
                 name: CommandName::RegisterAgentProvider as i32,
                 payload: Some(Payload::RegisterAgentProviderPayload(
@@ -6134,6 +6174,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             }),
             PluginCommand::GetAgentProviders => Ok(ProtobufPluginCommand {
                 name: CommandName::GetAgentProviders as i32,
+                payload: None,
+            }),
+            PluginCommand::GetProjectProviders => Ok(ProtobufPluginCommand {
+                name: CommandName::GetProjectProviders as i32,
                 payload: None,
             }),
             PluginCommand::RegisterDefaultKeybindings(keybindings) => Ok(ProtobufPluginCommand {
@@ -8164,6 +8208,10 @@ mod tests {
                 | PluginCommand::LoadNewPlugin { .. }
                 | PluginCommand::RegisterDefaultKeybindings(_)
                 | PluginCommand::RegisterAgentProvider(_)
+                | PluginCommand::RegisterProjectProvider(_)
+                | PluginCommand::GetProjectProviders
+                | PluginCommand::ValidateProjectMatch(_)
+                | PluginCommand::PublishProjectLocations(_)
                 | PluginCommand::GetAgentProviders
                 | PluginCommand::ListClients
                 | PluginCommand::ChangeHostFolder(_)

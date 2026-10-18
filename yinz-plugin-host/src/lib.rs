@@ -17,6 +17,7 @@
 //! commands into instructions for the other server threads. It talks to the rest of the server
 //! over [`yinz_bus`], using [`yinz_routing`] to dispatch actions. It owns plugin job queues.
 mod agent_provider;
+mod project_provider;
 pub use agent_provider::inspect_agent_provider;
 mod background_worker;
 mod compilation_worker;
@@ -888,6 +889,18 @@ pub fn plugin_thread_main(
                             plugin_id, client_id,
                         ))
                         .context("send current cell pixel size to subscriber")?;
+                }
+                if events.contains(&EventType::ProjectProvidersChanged) {
+                    plugin_bridge.update_plugins(
+                        vec![(
+                            Some(plugin_id),
+                            Some(client_id),
+                            Event::ProjectProvidersChanged(
+                                yinz_types::project_provider::providers(),
+                            ),
+                        )],
+                        shutdown_send.clone(),
+                    )?;
                 }
                 if events.contains(&EventType::AgentProvidersChanged) {
                     plugin_bridge.update_plugins(

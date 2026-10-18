@@ -303,11 +303,26 @@ fn project_filter_uses_repository_identity_before_containment() {
             .define_entity(project_data::store::SHARED, "test", &def, false)
             .unwrap();
     }
-    let outer = project_data::projects::validate("outer", root.to_str().unwrap()).unwrap();
+    let mut outer = project_data::projects::validate("outer", root.to_str().unwrap()).unwrap();
+    outer.discovered = true;
     let mut project = project_data::projects::validate("work", "/registered/elsewhere").unwrap();
     project.remote = Some("git@example.com:team/repo.git".into());
     project.common_dir = Some(checkout.join(".git").to_string_lossy().into_owned());
     let check = |cwd: &std::path::Path, name: &str, expected: bool| {
+        let probe = yinz_process::pty_host::remote::status::probe_git(cwd.to_str().unwrap());
+        let repository = match project_data::git_probe::repository(
+            probe.exit_code,
+            &probe.metadata,
+            &probe.config,
+        ) {
+            project_data::git_probe::ProbeOutcome::Checkout(repository) => repository,
+            _ => project_data::projects::Repository::folder(cwd.to_string_lossy()),
+        };
+        crate::project_provider::publish(
+            1,
+            serde_json::json!({"providers":[], "locations": {cwd.to_str().unwrap():repository}}),
+        )
+        .unwrap();
         let mut response = AgentResponse::new(AgentOutcome::Ok);
         response.agents.push(agent_status(cwd));
         filter_project(&mut response, name, &data, |_, _| panic!("local probe")).unwrap();
@@ -1241,4 +1256,151 @@ fn project_launch_uses_worktree_defaults_collision_names_and_reuse() {
         assert_eq!(prepared.cwd, root.join("custom-trees").join(branch));
         assert_eq!(prepared.branch.as_deref(), Some(branch));
     }
+}
+
+#[test]
+fn project_agent_list_rejects_partial_membership_until_local_probes_finish() {
+    use project_data::projects::{self, Repository};
+    let temp = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(temp.path());
+    for def in project_data::store::shared_defs() {
+        data.plugin_data()
+            .define_entity(project_data::store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    let mut project = projects::validate("work", "/work").unwrap();
+    project.discovered = true;
+    project.provider_identity = Some("[\"marker\",\"work\"]".into());
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &[projects::to_mutation(&project)],
+        )
+        .unwrap();
+    let project_id = projects::row_ids(&super::projects(&data).unwrap())["work"];
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &[Mutation::put("agent_assignment")
+                .uid("assigned")
+                .set("host_id", "host")
+                .set("yinz_session_name", "session")
+                .set("tab_id", 3i64)
+                .set("project", "work")
+                .set("project_id", project_id.get())
+                .build()],
+        )
+        .unwrap();
+    let assigned = agent_status(std::path::Path::new("/outside"));
+    let mut probed = agent_status(std::path::Path::new("/work/child"));
+    probed.pane_id = PaneId::Terminal(TerminalId::new(8));
+    probed.tab_id = Some(TabId::new(4));
+    for resolved in [false, true] {
+        if resolved {
+            let repository = Repository {
+                root: "/work".into(),
+                provider_identity: project.provider_identity.clone(),
+                ..Default::default()
+            };
+            crate::project_provider::publish(
+                99,
+                serde_json::json!({"providers":[], "locations":{"/work/child":repository}}),
+            )
+            .unwrap();
+        } else {
+            crate::project_provider::invalidate();
+        }
+        let agents = vec![assigned.clone(), probed.clone()];
+        let (to_screen, screen_rx) = yinz_runtime::channels::unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(yinz_runtime::channels::SenderWithContext::new(to_screen)),
+            ..Default::default()
+        };
+        let screen = thread::spawn(move || {
+            let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let ScreenInstruction::AgentControlReply(AgentRequest::List { .. }, reply) =
+                instruction
+            else {
+                panic!("expected list request");
+            };
+            let mut response = AgentResponse::new(AgentOutcome::Ok);
+            response.agents = agents;
+            reply.send(response).unwrap();
+        });
+        let response = control_agent(
+            AgentRequest::List {
+                project: Some("work".into()),
+            },
+            crate::ClientId::new(1),
+            &senders,
+            &data,
+        );
+        screen.join().unwrap();
+        if resolved {
+            assert_eq!(response.outcome, AgentOutcome::Ok);
+            assert_eq!(response.agents.len(), 2);
+        } else {
+            assert_eq!(response.outcome, AgentOutcome::Rejected);
+            assert!(response.agents.is_empty());
+            assert!(response
+                .message
+                .unwrap()
+                .contains("membership is incomplete"));
+        }
+    }
+    crate::project_provider::clear(99);
+}
+
+#[test]
+fn project_provider_snapshot_drives_native_filter_and_membership_events() {
+    use project_data::projects::{self, Repository};
+    let temp = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(temp.path());
+    for def in project_data::store::shared_defs() {
+        data.plugin_data()
+            .define_entity(project_data::store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    let mut project = projects::validate("work", "/first").unwrap();
+    project.provider_identity = Some("[\"marker\",\"work\"]".into());
+    data.plugin_data()
+        .apply(
+            project_data::store::SHARED,
+            &[projects::to_mutation(&project)],
+        )
+        .unwrap();
+    let status = agent_status(std::path::Path::new("/second"));
+    let repository = Repository {
+        root: "/second".into(),
+        provider_identity: project.provider_identity.clone(),
+        display_name: Some("Work".into()),
+        ..Default::default()
+    };
+    crate::project_provider::publish(
+        99,
+        serde_json::json!({"providers":[], "locations":{"/second":repository}}),
+    )
+    .unwrap();
+    let mut response = AgentResponse::new(AgentOutcome::Ok);
+    response.agents = vec![status.clone()];
+    assert!(!filter_project(&mut response, "work", &data, |_, _| panic!(
+        "must use service snapshot"
+    ))
+    .unwrap());
+    assert_eq!(response.agents.len(), 1);
+    let memberships = agent_event_projects(
+        vec![status.clone()],
+        vec!["work".into()],
+        &data,
+        &ThreadSenders::default(),
+    );
+    assert_eq!(memberships["work"], Ok(Some(vec![status.pane_id])));
+    crate::project_provider::clear(99);
+    let memberships = agent_event_projects(
+        vec![status],
+        vec!["work".into()],
+        &data,
+        &ThreadSenders::default(),
+    );
+    assert_eq!(memberships["work"], Ok(None));
 }

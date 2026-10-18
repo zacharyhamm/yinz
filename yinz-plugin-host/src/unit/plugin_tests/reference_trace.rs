@@ -198,7 +198,8 @@ impl Trace {
                 self.cursor
             )
         });
-        let input = replace(input, &self.root, "<fixture-root>");
+        let mut input = replace(input, &self.root, "<fixture-root>");
+        legacy_project_fields(&mut input);
         assert!(
             input == step.input,
             "reference input at {} step {}: {}",
@@ -209,13 +210,19 @@ impl Trace {
         let mut commands = vec![];
         for call in &step.calls {
             let command_json = replace(call.command.clone(), "<fixture-root>", &self.root);
-            let command: PluginCommand = serde_json::from_value(command_json.clone()).unwrap();
+            let mut command: PluginCommand = serde_json::from_value(command_json.clone()).unwrap();
+            if let PluginCommand::DataDefineEntity { def, .. } = &mut command {
+                if def.name == "project" {
+                    *def = project_data::store::project_def();
+                }
+            }
             let reply = responder(&command);
-            let actual = replace(
+            let mut actual = replace(
                 reply_value(&command, reply.as_deref()),
                 &self.root,
                 "<fixture-root>",
             );
+            legacy_project_fields(&mut actual);
             assert_eq!(
                 actual,
                 call.reply,
@@ -383,4 +390,73 @@ fn reference_trace_compression_preserves_full_transcript_and_root_placeholder() 
         ),
         json!("/temporary/test-root/file 日本語")
     );
+}
+
+/// Original Git-only recordings predate the nullable provider column.
+/// Provider tests check populated values; never erase a populated identity here.
+pub(crate) fn legacy_project_fields(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if let Some(index) =
+                object
+                    .get("columns")
+                    .and_then(Value::as_array)
+                    .and_then(|columns| {
+                        columns
+                            .iter()
+                            .position(|column| column == "provider_identity")
+                    })
+            {
+                if let Some(rows) = object.get_mut("rows").and_then(Value::as_array_mut) {
+                    for row in rows {
+                        let cells = row.as_array_mut().unwrap();
+                        assert!(cells[index].is_null() || cells[index] == "Null");
+                        cells.remove(index);
+                    }
+                }
+                object
+                    .get_mut("columns")
+                    .unwrap()
+                    .as_array_mut()
+                    .unwrap()
+                    .remove(index);
+            }
+            if object
+                .get("provider_identity")
+                .is_some_and(|v| v.is_null() || v == "Null")
+            {
+                object.remove("provider_identity");
+            }
+            if object
+                .get("entity")
+                .is_some_and(|entity| entity == "project")
+            {
+                if let Some(values) = object.get_mut("values").and_then(Value::as_array_mut) {
+                    values.retain(|pair| {
+                        !(pair[0] == "provider_identity"
+                            && (pair[1].is_null() || pair[1] == "Null"))
+                    });
+                }
+            }
+            for key in ["attrs", "attrs_added", "select"] {
+                if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
+                    items.retain(|item| {
+                        item != "provider_identity"
+                            && item
+                                .get("name")
+                                .is_none_or(|name| name != "provider_identity")
+                    });
+                }
+            }
+            for child in object.values_mut() {
+                legacy_project_fields(child);
+            }
+        },
+        Value::Array(items) => {
+            for item in items {
+                legacy_project_fields(item);
+            }
+        },
+        _ => {},
+    }
 }
