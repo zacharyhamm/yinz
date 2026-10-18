@@ -973,6 +973,7 @@ impl Screen {
                 .collect::<Vec<_>>(),
             viewport,
         )?;
+        arrangement.tiled_layout.tab_group = self.tab_group_info(tab_index);
 
         let mut slots: Vec<PaneId> = arrangement
             .all_tiled_order
@@ -1548,6 +1549,7 @@ impl Screen {
         payload: WarpedTab,
         adopted: AdoptedTabPanes,
         client_id: ClientId,
+        is_rollback: bool,
         placement: Option<WarpPlacement>,
         response_channel: Option<crossbeam::channel::Sender<Result<()>>>,
         hold: Option<yinz_bus::warp::PaneWarpHold>,
@@ -1560,12 +1562,37 @@ impl Screen {
             default_layout.swap_tiled_layouts.clone(),
             default_layout.swap_floating_layouts.clone(),
         );
+        let mut tiled_layout = payload.tiled_layout;
+        tiled_layout.hide_floating_panes = payload.hide_floating_panes;
+        tiled_layout.group_focused = false;
+        if let Some(group) = &mut tiled_layout.tab_group {
+            group.name = yinz_types::text::clean_string_from_control_and_linebreak(&group.name);
+            // Rollback IDs belong to this session; arrivals match displayed names.
+            if !is_rollback {
+                if let Some(id) = self
+                    .tab_groups
+                    .keys()
+                    .copied()
+                    .find(|id| self.tab_group_name(*id).as_deref() == Some(group.name.as_str()))
+                {
+                    group.id = id;
+                } else {
+                    group.id =
+                        u32::try_from(self.next_tab_group_id).context("tab group IDs exhausted")?;
+                    self.next_tab_group_id += 1;
+                }
+            }
+            if let Some(existing) = self.tab_groups.get(&group.id) {
+                group.name = existing.name.clone();
+            }
+        }
         self.new_tab(
             tab_index,
             swap_layouts,
             payload.name.clone(),
             Some(client_id),
         )?;
+        self.restore_tab_group(tab_index, &tiled_layout);
         // A name the tab was born with elsewhere is only a fallback here, as it was there;
         // a rename the user made there still holds.
         if let Some(tab) = self.tabs.get_mut(&tab_index) {
@@ -1576,9 +1603,6 @@ impl Screen {
             self.pending_warp_relationships
                 .insert(tab_index, relationships);
         }
-        let mut tiled_layout = payload.tiled_layout;
-        tiled_layout.hide_floating_panes = payload.hide_floating_panes;
-
         // Set the terminals aside for this tab *before* asking for it. The
         // request goes out through the plugin thread and comes back to the pty
         // thread, so anything the user opens in the meantime arrives on that

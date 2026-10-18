@@ -509,6 +509,143 @@ fn a_remote_pane_keeps_its_process_when_it_moves_between_sessions() {
     drop(travelling);
 }
 
+fn tab_groups(session: &TestSession) -> Vec<serde_json::Value> {
+    let (code, output) = session.run_cli_action_reporting(CliAction::ListTabGroups { json: true });
+    assert_eq!(code, 0, "{output}");
+    serde_json::from_str(&output).unwrap()
+}
+
+fn new_group_with_output(session: &TestSession, name: &str, output: &str) -> FakePtyHandle {
+    let (code, reported) = session.run_cli_action_reporting(CliAction::NewTabGroup {
+        name: Some(name.to_owned()),
+    });
+    assert_eq!(code, 0, "{reported}");
+    let pane = session.expect_pty_spawn();
+    pane.output(format!("{output}\r\n").as_bytes());
+    session.wait_until("new group content", |grid| grid.contains(output));
+    pane
+}
+
+#[test]
+fn tab_groups_follow_separately_pulled_tabs() {
+    for already_exists in [false, true] {
+        let (receiver, _) = start_with_a_shell();
+        let _ = new_group_with_output(&receiver, "Destination", "destination group");
+        if already_exists {
+            let _ = new_group_with_output(&receiver, "Work", "existing work group");
+        }
+        let (sender, _) = start_with_a_shell();
+        let _ = new_group_with_output(&sender, "Work", "FIRST_GROUP_MEMBER");
+        sender.send_stdin(&keys::ctrl('t'));
+        sender.send_stdin(&keys::key('n'));
+        let second = sender.expect_pty_spawn();
+        second.output(b"SECOND_GROUP_MEMBER\r\n");
+        sender.wait_until("second tab content", |grid| {
+            grid.contains("SECOND_GROUP_MEMBER")
+        });
+        let source_groups = tab_groups(&sender);
+        let source_group = source_groups
+            .iter()
+            .find(|group| group["name"] == "Work")
+            .unwrap();
+        let source_id = source_group["id"].as_u64().unwrap();
+        let mut destination_id = None;
+        for (tab, marker) in source_group["tab_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(["FIRST_GROUP_MEMBER", "SECOND_GROUP_MEMBER"])
+        {
+            // Both fake servers share environment variables; pass the receiver's name explicitly.
+            yinz_bus::warp::warp_tab_from_session(
+                &receiver.session_name().into(),
+                &sender.session_name().into(),
+                yinz_types::internal_ids::TabId::new(tab.as_u64().unwrap() as usize),
+                yinz_bus::warp::WARP_PULL_TIMEOUT,
+            )
+            .unwrap();
+            let arrived = receiver.expect_adopted_pty();
+            receiver.wait_until("pulled tab content", |grid| grid.contains(marker));
+            type_and_confirm(&receiver, &arrived, marker.as_bytes());
+            let groups = tab_groups(&receiver);
+            let group = groups.iter().find(|group| group["name"] == "Work").unwrap();
+            let id = group["id"].as_u64().unwrap();
+            assert_ne!(id, source_id, "the source ID collides with Destination");
+            assert_eq!(*destination_id.get_or_insert(id), id);
+            assert!(groups.iter().any(|group| group["name"] == "Destination"));
+        }
+        let groups = tab_groups(&receiver);
+        let work = groups
+            .iter()
+            .filter(|group| group["name"] == "Work")
+            .collect::<Vec<_>>();
+        assert_eq!(work.len(), 1);
+        assert_eq!(
+            work[0]["tab_ids"].as_array().unwrap().len(),
+            if already_exists { 3 } else { 2 }
+        );
+        assert!(tab_groups(&sender)
+            .iter()
+            .all(|group| group["name"] != "Work"));
+    }
+}
+
+#[test]
+fn failed_tab_warps_restore_group_membership() {
+    let ((sender, _), (receiver, _)) = sender_and_receiver();
+    let _ = new_group_with_output(&sender, "Work", "OTHER_WORK_GROUP");
+    let _ = new_group_with_output(&sender, "Work", "REMAINING_GROUP_MEMBER");
+    sender.send_stdin(&keys::ctrl('t'));
+    sender.send_stdin(&keys::key('n'));
+    let subject = sender.expect_pty_spawn();
+    subject.output(b"GROUP_ROLLBACK_MEMBER\r\n");
+    sender.wait_until("tab to warp", |grid| grid.contains("GROUP_ROLLBACK_MEMBER"));
+    let before = tab_groups(&sender);
+    let source = before
+        .iter()
+        .find(|group| group["name"] == "Work" && group["active"] == true)
+        .unwrap();
+    let source_id = source["id"].clone();
+    let source_tabs = source["tab_ids"].as_array().unwrap();
+    assert_eq!(source_tabs.len(), 2);
+    let other = before
+        .iter()
+        .find(|group| group["name"] == "Work" && group["id"] != source_id)
+        .unwrap();
+    subject.fail_warp(WarpFailure::UnadoptableOnce);
+    let (code, output) = sender.run_cli_action_reporting(CliAction::WarpTab {
+        to_session: Some(receiver.session_name().to_owned()),
+        from_session: None,
+        tab_id: None,
+    });
+    assert_ne!(code, 0, "{output}");
+    assert!(output.contains("back in this session"), "{output}");
+    let restored = sender.expect_adopted_pty();
+    restored.output(b"GROUP_ROLLBACK_LIVE\r\n");
+    sender.wait_until("restored group content", |grid| {
+        grid.contains("GROUP_ROLLBACK_LIVE")
+    });
+    let groups = tab_groups(&sender);
+    assert_eq!(groups.len(), before.len());
+    assert_eq!(
+        groups.iter().find(|group| group["id"] == other["id"]),
+        Some(other)
+    );
+    let work = groups
+        .iter()
+        .find(|group| group["id"] == source_id)
+        .unwrap();
+    assert_eq!(work["name"], "Work");
+    let restored_tabs = work["tab_ids"].as_array().unwrap();
+    assert_eq!(restored_tabs.len(), 2);
+    assert!(restored_tabs.contains(&source_tabs[0]));
+    assert_eq!(work["active"], true);
+    type_and_confirm(&sender, &restored, b"group-rollback-input");
+    assert!(tab_groups(&receiver)
+        .iter()
+        .all(|group| group["name"] != "Work"));
+}
+
 /// A tab is released whole, so one remote pane in it puts both addressing shapes
 /// through the same message — and a mistake in either loses the whole tab.
 #[test]

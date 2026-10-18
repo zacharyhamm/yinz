@@ -4740,6 +4740,7 @@ dependencies = [
  "tokio",
  "url",
  "vte 0.15.0",
+ "yinz-bus",
  "yinz-cli",
  "yinz-client",
  "yinz-config",

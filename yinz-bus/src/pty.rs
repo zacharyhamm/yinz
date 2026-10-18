@@ -396,6 +396,7 @@ pub enum PtyInstruction {
     AdoptTab {
         payload: Box<WarpedTab>,
         client_id: ClientId,
+        is_rollback: bool,
         response_channel: crossbeam::channel::Sender<Result<()>>,
     },
     /// Set aside a tab's adopted terminals for the `NewTab` that will place them.

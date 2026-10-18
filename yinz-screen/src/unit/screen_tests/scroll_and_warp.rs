@@ -852,6 +852,7 @@ fn warping_a_visible_editor_carries_its_subject() {
         .take_released_tab_for_warp(tab_id, released, prepared)
         .expect("transfer");
     assert!(payload.relationships.is_some());
+    assert!(payload.tiled_layout.tab_group.is_none());
     assert!(slots
         .iter()
         .all(|id| screen.tabs[&tab_id].get_pane_with_id(*id).is_none()));
@@ -2873,6 +2874,7 @@ fn warp_adoption_preserves_explicit_floating_layouts_over_destination_template()
                         floating: vec![],
                     },
                     ClientId::new(1),
+                    false,
                     placement,
                     None,
                     None,
@@ -2942,6 +2944,7 @@ fn queue_warp_group(
                 floating: vec![],
             },
             ClientId::new(1),
+            false,
             Some(placement),
             Some(tx),
             None,

@@ -891,6 +891,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                 .senders
                                 .send_to_screen(ScreenInstruction::AdoptedTabReady {
                                     payload: group,
+                                    is_rollback: false,
                                     adopted: Box::new(adopted),
                                     client_id,
                                     placement: Some(placement),
@@ -986,6 +987,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             PtyInstruction::AdoptTab {
                 payload,
                 client_id,
+                is_rollback,
                 response_channel,
             } => {
                 let result = match pty.adopt_tab(&payload) {
@@ -994,6 +996,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             pty.bus
                                 .senders
                                 .send_to_screen(ScreenInstruction::AdoptedTabReady {
+                                    is_rollback,
                                     placement: None,
                                     response_channel: None,
                                     hold: None,

@@ -542,6 +542,7 @@ fn adopting_a_tab_times_out_rather_than_waiting_on_a_pty_thread_that_never_answe
         &harness.senders,
         crate::ClientId::new(1),
         Box::default(),
+        false,
         TEST_TIMEOUT,
     );
 
@@ -550,7 +551,13 @@ fn adopting_a_tab_times_out_rather_than_waiting_on_a_pty_thread_that_never_answe
     // the request never being made.
     assert!(matches!(
         harness.pty.try_recv(),
-        Ok((PtyInstruction::AdoptTab { .. }, _))
+        Ok((
+            PtyInstruction::AdoptTab {
+                is_rollback: false,
+                ..
+            },
+            _
+        ))
     ));
 }
 
@@ -558,34 +565,40 @@ fn adopting_a_tab_times_out_rather_than_waiting_on_a_pty_thread_that_never_answe
 fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
     // Doubly true for a tab: the refusal is the only place the list of
     // supervisors left running gets written down.
-    let harness = harness();
-    let senders = harness.senders.clone();
-    let responder = std::thread::spawn(move || {
-        let (instruction, _) = harness.pty.recv().expect("the request should arrive");
-        match instruction {
-            PtyInstruction::AdoptTab {
-                response_channel, ..
-            } => {
-                let _ = response_channel.send(Err(anyhow!(
-                    "recover them with `yinz pty-host adopt abc123`"
-                )));
-            },
-            other => panic!("unexpected instruction: {other:?}"),
-        }
-    });
+    for is_rollback in [false, true] {
+        let harness = harness();
+        let senders = harness.senders.clone();
+        let responder = std::thread::spawn(move || {
+            let (instruction, _) = harness.pty.recv().expect("the request should arrive");
+            match instruction {
+                PtyInstruction::AdoptTab {
+                    response_channel,
+                    is_rollback: received,
+                    ..
+                } => {
+                    assert_eq!(received, is_rollback);
+                    let _ = response_channel.send(Err(anyhow!(
+                        "recover them with `yinz pty-host adopt abc123`"
+                    )));
+                },
+                other => panic!("unexpected instruction: {other:?}"),
+            }
+        });
 
-    let result = adopt_tab_here(
-        &senders,
-        crate::ClientId::new(1),
-        Box::default(),
-        Duration::from_secs(5),
-    );
-    responder.join().expect("the responder should not panic");
+        let result = adopt_tab_here(
+            &senders,
+            crate::ClientId::new(1),
+            Box::default(),
+            is_rollback,
+            Duration::from_secs(5),
+        );
+        responder.join().expect("the responder should not panic");
 
-    assert_eq!(
-        result,
-        Err("recover them with `yinz pty-host adopt abc123`".to_owned())
-    );
+        assert_eq!(
+            result,
+            Err("recover them with `yinz pty-host adopt abc123`".to_owned())
+        );
+    }
 }
 
 // --- what a stranded pane is called ---
