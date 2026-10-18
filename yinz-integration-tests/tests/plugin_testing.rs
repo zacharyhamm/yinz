@@ -464,7 +464,9 @@ fn installed_palette_uses_real_keyboard_discovery_and_execution() {
     (test-session "key" "Ctrl Alt p") (test-session "text" query)
     (test-wait-for-text label) (assert (not (string-contains? (test-session "logs") marker)))
     (test-session "key" "Enter")
-    (test-wait-for "palette action executed" (lambda () (string-contains? (test-session "logs") marker))))
+    (test-wait-for "palette action executed" (lambda () (string-contains? (test-session "logs") marker)))
+    ;; The callback logs before the screen receives its close reply.
+    (test-wait-for "palette closed" (lambda () (not (string-contains? (test-session "screen") query)))))
     '(("static-keyword" "Unique static fixture action" "STATIC_EXECUTED")
       ("dynamic-keyword" "Unique dynamic fixture action" "DYNAMIC_EXECUTED")))))
 "#,
