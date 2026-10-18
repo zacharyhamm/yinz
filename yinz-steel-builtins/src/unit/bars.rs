@@ -292,3 +292,62 @@ fn tab_bar_swap_and_scroll_indicators_keep_cached_keys_and_dimmed_state() {
     wire(&mut runtime, json!({"ActivePaneScroll":null}));
     assert!(!runtime.render(1, 100).unwrap().contains("SCROLL"));
 }
+
+#[test]
+fn group_row_filters_tabs_and_mouse_targets_keep_global_addresses() {
+    let (mut runtime, host) = plugin();
+    let mut mode = ModeInfo::default();
+    mode.capabilities.arrow_fonts = false;
+    event(&mut runtime, Event::ModeUpdate(mode));
+    let mut tabs = vec![
+        tab(0, "hidden", false),
+        tab(1, "first", true),
+        tab(2, "second", false),
+    ];
+    for (index, tab) in tabs.iter_mut().enumerate() {
+        tab.group = Some(yinz_types::tab_bar::TabGroupInfo {
+            id: if index == 0 { 0 } else { 4 },
+            name: if index == 0 { "Default" } else { "工程" }.into(),
+        });
+    }
+    event(&mut runtime, Event::TabUpdate(tabs));
+    let rendered = runtime.render(2, 120).unwrap();
+    let lines: Vec<_> = rendered.lines().collect();
+    assert!(
+        lines[0].contains("Default") && lines[0].contains("工程"),
+        "{rendered}"
+    );
+    assert!(
+        lines[1].contains("first") && lines[1].contains("second"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("hidden"));
+    let parts = runtime.value("parts").unwrap();
+    let mut col = 0;
+    for part in parts.as_array().unwrap() {
+        if part["tab"] == 1 {
+            break;
+        }
+        col += part["len"].as_u64().unwrap();
+    }
+    wire(&mut runtime, json!({"Mouse":{"LeftClick":[1,col]}}));
+    assert_eq!(
+        host.lock().unwrap().commands.last(),
+        Some(&json!({"SwitchTabTo":3}))
+    );
+    wire(&mut runtime, json!({"Mouse":{"Hover":[1,col]}}));
+    assert_eq!(runtime.value("hovered-tab").unwrap(), json!(2));
+    wire(&mut runtime, json!({"Mouse":{"Hover":[0,1]}}));
+    assert_eq!(runtime.value("hovered-tab").unwrap(), json!(false));
+    assert_eq!(runtime.value("hovered-group").unwrap(), json!(0));
+    wire(&mut runtime, json!({"Mouse":{"LeftClick":[0,1]}}));
+    assert_eq!(
+        host.lock().unwrap().commands.last(),
+        Some(&json!({"RunAction":[{"SwitchTabGroup":{"id":0}},{}]}))
+    );
+    let single = runtime.render(1, 120).unwrap();
+    assert!(single.contains("first") && !single.contains("Default"));
+    for columns in [1, 2, 8, 20] {
+        assert!(runtime.render(2, columns).is_ok());
+    }
+}

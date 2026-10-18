@@ -19,6 +19,8 @@ pub struct TabLayoutManifest {
     pub hide_floating_panes: bool,
     /// Whether the user chose the tab's name, so that it comes back holding off the project.
     pub user_named: bool,
+    pub tab_group: Option<crate::tab_bar::TabGroupInfo>,
+    pub group_focused: bool,
 }
 
 #[derive(Default, Debug, Clone)]

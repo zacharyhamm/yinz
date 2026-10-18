@@ -27,7 +27,7 @@ fn open_new_tab_and_wait_for_prompt(yinz: &TestSession, expected_tab: &str) -> F
     yinz.wait_until("new tab opened with prompt", move |grid_snapshot| {
         grid_snapshot.status_bar_appears()
             && grid_snapshot.contains(&expected_tab)
-            && grid_snapshot.cursor_is_at(col(2).row(1))
+            && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     terminal
 }
@@ -204,7 +204,7 @@ fn break_pane_into_new_tab() {
         grid_snapshot.status_bar_appears()
             && grid_snapshot.contains("Tab #2")
             && !grid_snapshot.contains("Pane #1")
-            && grid_snapshot.cursor_is_at(col(2).row(1))
+            && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -235,7 +235,7 @@ fn break_floating_pane_into_new_tab_resizes_its_pty_exactly_once() {
     });
 
     // the pane now takes up the whole tab, with only the tab bar and status bar around it
-    let expected_size = (TERMINAL_SIZE.cols as u16, TERMINAL_SIZE.rows as u16 - 2);
+    let expected_size = (TERMINAL_SIZE.cols as u16, TERMINAL_SIZE.rows as u16 - 3);
     floating_terminal.wait_for_size("pane resized to its new tab", move |cols, rows| {
         (cols, rows) == expected_size
     });
@@ -319,7 +319,7 @@ fn open_new_tab() {
     let grid_snapshot = yinz.wait_until("second tab steady in normal mode", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
             && grid_snapshot.contains("Tab #2")
-            && grid_snapshot.cursor_is_at(col(2).row(1))
+            && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -340,7 +340,7 @@ fn close_tab() {
             grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("Tab #1")
                 && !grid_snapshot.contains("Tab #2")
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
         },
     );
     assert_snapshot!(normalized(&grid_snapshot));
@@ -367,7 +367,7 @@ fn closing_a_tab_resizes_the_tab_it_returns_to() {
     yinz.send_stdin(&keys::ctrl('t'));
     yinz.send_stdin(&keys::key('x'));
 
-    let expected_size = (larger_size.cols as u16, larger_size.rows as u16 - 2);
+    let expected_size = (larger_size.cols as u16, larger_size.rows as u16 - 3);
     first_terminal.wait_for_size(
         "first tab resized to the enlarged window once it is focused again",
         move |cols, rows| (cols, rows) == expected_size,

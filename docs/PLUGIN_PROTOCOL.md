@@ -381,7 +381,9 @@ interface PaneInfo {
   cwd: string | null; host: string | null; target: PaneTarget; agent: AgentInfo | null;
 }
 
+interface TabGroupInfo {id: number; name: string;}
 interface TabInfo {
+  group?: TabGroupInfo | null;
   position: number; name: string; active: boolean; panes_to_hide: Integer; is_fullscreen_active: boolean; is_sync_panes_active: boolean;
   are_floating_panes_visible: boolean; other_focused_clients: number[];
   // Each other focused client's multiplayer color slot (`player_<slot>`), 1 to 10, or null past
@@ -545,6 +547,7 @@ type RunPluginOrAlias = {RunPlugin: RunPlugin} | {Alias: {name: string; configur
 type Run = {plugin: RunPluginOrAlias} | {command: RunCommand} | {EditFile: [string, Integer | null, string | null]} | {Cwd: string};
 
 interface TiledPaneLayout {
+  tab_group?: TabGroupInfo | null; group_focused?: boolean;
   user_named?: boolean;
   children_split_direction: 'Horizontal' | 'Vertical'; name: string | null; children: TiledPaneLayout[]; split_size: PercentOrFixed | null;
   run: Run | null; borderless: boolean | null; focus: boolean | null; external_children_index: Integer | null;
@@ -594,6 +597,8 @@ interface PluginPaneLaunch {plugin: RunPluginOrAlias; pane_name: string | null; 
 interface ActionPipe {name: string | null; payload: string | null; args: StringMap | null; plugin: string | null; configuration: StringMap | null; launch_new: boolean; skip_cache: boolean; floating: boolean | null; in_place: boolean | null; cwd: string | null; pane_title: string | null;}
 
 interface ActionPayloads {
+  GoToTabInGroup: {index: number}; SwitchTabGroup: {id: number};
+  RenameTabGroup: {id: number; name: string}; CloseTabGroup: {id: number};
   Write: {key_with_modifier: KeyWithModifier | null; bytes: Bytes; is_kitty_keyboard_protocol: boolean}; WriteChars: {chars: string};
   WriteToPaneId: ActionPane & {bytes: Bytes}; WriteCharsToPaneId: ActionPane & {chars: string}; Paste: {chars: string; pane_id: PaneId | null};
   SwitchToMode: {input_mode: InputMode}; SwitchModeForAllClients: {input_mode: InputMode}; Resize: {resize: Resize; direction: Direction | null};
@@ -640,7 +645,7 @@ interface ActionPayloads {
   ToggleFloatingPanesByTabId: ActionTab; PreviousSwapLayoutByTabId: ActionTab; NextSwapLayoutByTabId: ActionTab; MoveTabByTabId: ActionTab & {direction: Direction};
 }
 
-type UnitAction = 'FocusPaneTabs' | 'PreviousPaneTab' | 'NextPaneTab' | 'Quit' | 'FocusNextPane' | 'FocusPreviousPane' | 'FocusLastPane' | 'SwitchFocus' | 'MovePaneBackwards' | 'ClearScreen'
+type UnitAction = 'NewTabGroup' | 'GoToNextTabGroup' | 'GoToPreviousTabGroup' | 'FocusPaneTabs' | 'PreviousPaneTab' | 'NextPaneTab' | 'Quit' | 'FocusNextPane' | 'FocusPreviousPane' | 'FocusLastPane' | 'SwitchFocus' | 'MovePaneBackwards' | 'ClearScreen'
   | 'DumpLayout' | 'SaveSession' | 'ScrollUp' | 'ScrollDown' | 'ScrollToBottom' | 'ScrollToTop' | 'ScrollToPreviousPrompt' | 'ScrollToNextPrompt'
   | 'SelectCommandAtScrollPosition' | 'CopyLastCommandOutput' | 'SwapTextSelectionEnds' | 'ActivateNotification' | 'ActivateLastNotification' | 'ToggleNotificationDetail' | 'PageScrollUp' | 'PageScrollDown' | 'HalfPageScrollUp' | 'HalfPageScrollDown'
   | 'ToggleFocusFullscreen' | 'ToggleFocusNoUiFullscreen' | 'TogglePaneFrames' | 'ToggleCommandPalette' | 'ToggleActiveSyncTab' | 'TogglePaneEmbedOrFloating' | 'ToggleFloatingPanes'

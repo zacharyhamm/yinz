@@ -1781,6 +1781,23 @@ impl TryFrom<yinz_types::input::actions::Action>
         use std::collections::HashMap;
 
         let action_type = match action {
+            yinz_types::input::actions::Action::NewTabGroup => ActionType::NewTabGroup(
+                crate::client_server_contract::client_server_contract::NewTabGroupAction {},
+            ),
+            yinz_types::input::actions::Action::GoToNextTabGroup => ActionType::GoToNextTabGroup(
+                crate::client_server_contract::client_server_contract::GoToNextTabGroupAction {},
+            ),
+            yinz_types::input::actions::Action::GoToPreviousTabGroup => ActionType::GoToPreviousTabGroup(
+                crate::client_server_contract::client_server_contract::GoToPreviousTabGroupAction {},
+            ),
+            yinz_types::input::actions::Action::GoToTabInGroup { index } => {
+                ActionType::GoToTabInGroup(index.get())
+            },
+            yinz_types::input::actions::Action::SwitchTabGroup { id } => ActionType::SwitchTabGroup(id),
+            yinz_types::input::actions::Action::CloseTabGroup { id } => ActionType::CloseTabGroup(id),
+            yinz_types::input::actions::Action::RenameTabGroup { id, name } => ActionType::RenameTabGroup(
+                crate::client_server_contract::client_server_contract::TabGroup { id, name },
+            ),
             yinz_types::input::actions::Action::Quit => ActionType::Quit(QuitAction {}),
             yinz_types::input::actions::Action::Write {
                 key_with_modifier,
@@ -2885,6 +2902,30 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             .ok_or_else(|| anyhow!("Action missing action_type"))?;
 
         match action_type {
+            ActionType::NewTabGroup(_) => Ok(yinz_types::input::actions::Action::NewTabGroup),
+            ActionType::GoToNextTabGroup(_) => {
+                Ok(yinz_types::input::actions::Action::GoToNextTabGroup)
+            },
+            ActionType::GoToPreviousTabGroup(_) => {
+                Ok(yinz_types::input::actions::Action::GoToPreviousTabGroup)
+            },
+            ActionType::GoToTabInGroup(index) => {
+                Ok(yinz_types::input::actions::Action::GoToTabInGroup {
+                    index: TabNumber::new(index),
+                })
+            },
+            ActionType::SwitchTabGroup(id) => {
+                Ok(yinz_types::input::actions::Action::SwitchTabGroup { id })
+            },
+            ActionType::CloseTabGroup(id) => {
+                Ok(yinz_types::input::actions::Action::CloseTabGroup { id })
+            },
+            ActionType::RenameTabGroup(group) => {
+                Ok(yinz_types::input::actions::Action::RenameTabGroup {
+                    id: group.id,
+                    name: group.name,
+                })
+            },
             ActionType::Quit(_) => Ok(yinz_types::input::actions::Action::Quit),
             ActionType::Write(write_action) => Ok(yinz_types::input::actions::Action::Write {
                 key_with_modifier: write_action
@@ -5294,6 +5335,13 @@ impl From<yinz_types::input::layout::TiledPaneLayout>
             is_expanded_in_stack: layout.is_expanded_in_stack,
             hide_floating_panes: layout.hide_floating_panes,
             user_named: layout.user_named,
+            tab_group: layout.tab_group.map(|g| {
+                crate::client_server_contract::client_server_contract::TabGroup {
+                    id: g.id,
+                    name: g.name,
+                }
+            }),
+            group_focused: layout.group_focused,
             pane_initial_contents: layout.pane_initial_contents,
             default_fg: layout.default_fg,
             default_bg: layout.default_bg,
@@ -5752,6 +5800,11 @@ impl TryFrom<crate::client_server_contract::client_server_contract::TiledPaneLay
             run_instructions_to_ignore: vec![], // not represented in protobuf
             hide_floating_panes: layout.hide_floating_panes,
             user_named: layout.user_named,
+            tab_group: layout.tab_group.map(|g| yinz_types::tab_bar::TabGroupInfo {
+                id: g.id,
+                name: g.name,
+            }),
+            group_focused: layout.group_focused,
             pane_initial_contents: layout.pane_initial_contents,
             default_fg: layout.default_fg,
             default_bg: layout.default_bg,

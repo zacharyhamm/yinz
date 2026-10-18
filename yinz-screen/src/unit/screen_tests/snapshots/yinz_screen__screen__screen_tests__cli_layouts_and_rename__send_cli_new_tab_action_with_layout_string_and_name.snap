@@ -1,6 +1,5 @@
 ---
 source: yinz-screen/src/screen/../unit/screen_tests/cli_layouts_and_rename.rs
-assertion_line: 99
 expression: output
 ---
 NewTab(
@@ -32,6 +31,8 @@ NewTab(
                     run_instructions_to_ignore: [],
                     hide_floating_panes: false,
                     user_named: false,
+                    tab_group: None,
+                    group_focused: false,
                     pane_initial_contents: None,
                     default_fg: None,
                     default_bg: None,
@@ -56,6 +57,8 @@ NewTab(
                     run_instructions_to_ignore: [],
                     hide_floating_panes: false,
                     user_named: false,
+                    tab_group: None,
+                    group_focused: false,
                     pane_initial_contents: None,
                     default_fg: None,
                     default_bg: None,
@@ -80,6 +83,8 @@ NewTab(
                     run_instructions_to_ignore: [],
                     hide_floating_panes: false,
                     user_named: false,
+                    tab_group: None,
+                    group_focused: false,
                     pane_initial_contents: None,
                     default_fg: None,
                     default_bg: None,
@@ -100,6 +105,8 @@ NewTab(
             run_instructions_to_ignore: [],
             hide_floating_panes: false,
             user_named: true,
+            tab_group: None,
+            group_focused: false,
             pane_initial_contents: None,
             default_fg: None,
             default_bg: None,

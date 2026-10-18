@@ -377,6 +377,23 @@ pub enum Action {
         initial_panes: Option<Vec<CommandOrPlugin>>,
         first_pane_unblock_condition: Option<UnblockCondition>,
     },
+    /// Create and focus a group with a fresh tab.
+    NewTabGroup,
+    GoToNextTabGroup,
+    GoToPreviousTabGroup,
+    GoToTabInGroup {
+        index: TabNumber,
+    },
+    SwitchTabGroup {
+        id: u32,
+    },
+    RenameTabGroup {
+        id: u32,
+        name: String,
+    },
+    CloseTabGroup {
+        id: u32,
+    },
     /// Do nothing.
     #[default]
     NoOp,

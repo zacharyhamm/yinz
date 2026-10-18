@@ -1486,6 +1486,7 @@ impl Screen {
         );
         let client_for_tab = should_change_focus_to_new_tab.then_some(client_id);
         self.new_tab(tab_index, swap_layouts, None, client_for_tab)?;
+        self.assign_tab_group(tab_index, Some(client_id));
         let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
         tiled_panes_layout.ignore_run_instruction(invoked_with);
         if let Some(tab) = self.tabs.get_mut(&tab_index) {

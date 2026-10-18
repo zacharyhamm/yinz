@@ -2,6 +2,7 @@
 source: yinz-integration-tests/tests/clients.rs
 expression: normalized(&main_grid)
 ---
+ Default 
  Yinz (test)  [0] Tab #1  [1] Tab #2 [ ] + 
 $ █
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

@@ -218,9 +218,21 @@ impl SessionLayoutMetadata {
             is_focused,
             hide_floating_panes,
             user_named,
+            tab_group: None,
+            group_focused: false,
             tiled_panes,
             floating_panes,
         })
+    }
+    pub fn set_last_tab_group(
+        &mut self,
+        group: Option<yinz_types::tab_bar::TabGroupInfo>,
+        focused: bool,
+    ) {
+        if let Some(tab) = self.tabs.last_mut() {
+            tab.tab_group = group;
+            tab.group_focused = focused;
+        }
     }
     pub fn all_terminal_ids(&self) -> Vec<TerminalId> {
         let mut terminal_ids = vec![];
@@ -513,6 +525,8 @@ impl From<TabLayoutMetadata> for TabLayoutManifest {
             is_focused: val.is_focused,
             hide_floating_panes: val.hide_floating_panes,
             user_named: val.user_named,
+            tab_group: val.tab_group,
+            group_focused: val.group_focused,
         }
     }
 }
@@ -563,6 +577,8 @@ pub struct TabLayoutMetadata {
     is_focused: bool,
     hide_floating_panes: bool,
     user_named: bool,
+    tab_group: Option<yinz_types::tab_bar::TabGroupInfo>,
+    group_focused: bool,
 }
 
 #[derive(Debug, Clone)]

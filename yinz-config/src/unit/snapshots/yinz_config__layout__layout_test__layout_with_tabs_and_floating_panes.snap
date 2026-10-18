@@ -1,6 +1,5 @@
 ---
 source: yinz-config/src/./unit/layout_test.rs
-assertion_line: 523
 expression: "normalize_layout_debug(format!(\"{:#?}\", layout))"
 ---
 Layout {
@@ -28,6 +27,8 @@ Layout {
                         run_instructions_to_ignore: [],
                         hide_floating_panes: false,
                         user_named: false,
+                        tab_group: None,
+                        group_focused: false,
                         pane_initial_contents: None,
                         default_fg: None,
                         default_bg: None,
@@ -44,6 +45,8 @@ Layout {
                 run_instructions_to_ignore: [],
                 hide_floating_panes: false,
                 user_named: false,
+                tab_group: None,
+                group_focused: false,
                 pane_initial_contents: None,
                 default_fg: None,
                 default_bg: None,
@@ -91,6 +94,8 @@ Layout {
                         run_instructions_to_ignore: [],
                         hide_floating_panes: false,
                         user_named: false,
+                        tab_group: None,
+                        group_focused: false,
                         pane_initial_contents: None,
                         default_fg: None,
                         default_bg: None,
@@ -107,6 +112,8 @@ Layout {
                 run_instructions_to_ignore: [],
                 hide_floating_panes: false,
                 user_named: false,
+                tab_group: None,
+                group_focused: false,
                 pane_initial_contents: None,
                 default_fg: None,
                 default_bg: None,
@@ -168,6 +175,8 @@ Layout {
                 run_instructions_to_ignore: [],
                 hide_floating_panes: false,
                 user_named: false,
+                tab_group: None,
+                group_focused: false,
                 pane_initial_contents: None,
                 default_fg: None,
                 default_bg: None,

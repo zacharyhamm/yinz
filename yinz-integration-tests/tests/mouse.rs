@@ -24,7 +24,7 @@ fn focus_pane_with_mouse() {
 
     yinz.send_stdin(&sgr_mouse_report(2, 5, 0));
     let grid_snapshot = yinz.wait_until("focus moved back to the left pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(3))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -43,7 +43,7 @@ fn scrolling_inside_a_pane_with_mouse() {
         grid_snapshot.contains("line21")
     });
 
-    yinz.send_stdin(&sgr_mouse_report(64, 2, 64));
+    yinz.send_stdin(&sgr_mouse_report(64, 4, 64));
     // Scrolling the pane puts the client in Scroll mode, so the status bar is the scroll hints
     // rather than the normal-mode bar.
     let grid_snapshot = yinz.wait_until("scrolled up inside the right pane", |grid_snapshot| {
@@ -80,7 +80,7 @@ fn pin_floating_panes() {
         |grid_snapshot| {
             grid_snapshot.status_bar_appears()
                 && grid_snapshot.contains("PIN [+]")
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
         },
     );
 

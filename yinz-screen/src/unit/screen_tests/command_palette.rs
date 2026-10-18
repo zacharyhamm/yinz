@@ -5425,3 +5425,33 @@ fn palette_uses_displayed_tab_names_but_renames_the_stored_name() {
     assert!(frame.contains("Tab #1"), "{frame}");
     assert!(!frame.contains("yinz:topic"), "{frame}");
 }
+
+#[test]
+fn palette_tab_group_actions_capture_identity_and_confirm_closure() {
+    let mut screen = screen();
+    let receiver = palette_actions_receiver(&mut screen);
+    palette_search(&mut screen, "New tab group");
+    palette_key(&mut screen, BareKey::Enter);
+    assert_eq!(enqueued_palette_action(&receiver), Action::NewTabGroup);
+
+    palette_search(&mut screen, "Rename tab group");
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Esc);
+    assert!(receiver.try_recv().is_err(), "cancel must not rename");
+    screen.close_command_palette(CLIENT);
+
+    palette_search(&mut screen, "Close tab group");
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(
+        receiver.try_recv().is_err(),
+        "confirmation defaults to cancel"
+    );
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Down);
+    palette_key(&mut screen, BareKey::Enter);
+    assert_eq!(
+        enqueued_palette_action(&receiver),
+        Action::CloseTabGroup { id: 0 }
+    );
+}

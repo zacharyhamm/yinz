@@ -304,6 +304,11 @@ pub enum ScreenInstruction {
     SwitchTabPrev(ClientId, Option<NotificationEnd>),
     ToggleActiveSyncTab(ClientId, Option<NotificationEnd>),
     CloseTab(ClientId, Option<NotificationEnd>),
+    TabGroup(
+        yinz_types::input::actions::Action,
+        ClientId,
+        Option<NotificationEnd>,
+    ),
     GoToTab(TabNumber, Option<ClientId>, Option<NotificationEnd>), // this Option is a hacky workaround, please do not copy this behaviour
     GoToTabName(
         String,

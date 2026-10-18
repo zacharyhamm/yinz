@@ -142,6 +142,7 @@ mod render;
 mod session;
 mod sizing;
 mod subscriptions;
+mod tab_groups;
 mod tab_layout;
 mod tabs;
 mod thread_main;
@@ -679,6 +680,9 @@ pub(crate) struct Screen {
     animation_clock: Option<Duration>,
     global_last_active_tab_id: TabId,
     tab_history: BTreeMap<ClientId, Vec<TabId>>,
+    tab_groups: BTreeMap<u32, tab_groups::TabGroup>,
+    tab_group_ids: HashMap<TabId, u32>,
+    next_tab_group_id: u64,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
     mode_info: BTreeMap<ClientId, ModeInfo>,
     // Defaults for new clients and readers without a per-client mode entry.
@@ -1400,6 +1404,9 @@ impl Screen {
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
             terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),
             tab_history: BTreeMap::new(),
+            tab_groups: BTreeMap::new(),
+            tab_group_ids: HashMap::new(),
+            next_tab_group_id: 1,
             pane_history: BTreeMap::new(),
             mode_info: BTreeMap::new(),
             default_mode_info: mode_info,
@@ -1669,19 +1676,15 @@ impl Screen {
     /// Returns an immutable reference to this [`Screen`]'s previous active [`Tab`].
     /// Consumes the last entry in tab history.
     pub fn get_previous_tab(&mut self, client_id: ClientId) -> Result<Option<&Tab>> {
-        Ok(
-            match self
-                .tab_history
-                .get_mut(&client_id)
-                .with_context(|| {
-                    format!("failed to retrieve tab history for client {client_id:?}")
-                })?
-                .pop()
-            {
-                Some(tab) => self.tabs.get(&tab),
-                None => None,
-            },
-        )
+        let group = self.group_for_client(Some(client_id));
+        let history = self
+            .tab_history
+            .get_mut(&client_id)
+            .context("missing tab history")?;
+        let previous = history
+            .iter()
+            .rposition(|id| self.tab_group_ids.get(id) == Some(&group));
+        Ok(previous.and_then(|index| self.tabs.get(&history.remove(index))))
     }
 
     /// Returns a mutable reference to this [`Screen`]'s active [`Tab`].
@@ -1916,6 +1919,7 @@ impl Screen {
         tab.update_background_opacity(self.background_opacity);
         tab.update_selection_options(self.osc133_command_selection, self.word_separators.clone());
         self.tabs.insert(tab_id, tab);
+        self.assign_tab_group(tab_id, client_id);
         self.has_created_tab = true;
         Ok(())
     }
@@ -2166,6 +2170,9 @@ impl Screen {
                 completion.set_exit_status(1);
                 completion.set_error_message(format!("{error:#}"));
             }
+        }
+        if applied.is_ok() {
+            self.finish_group_restore();
         }
         applied
     }
@@ -2692,6 +2699,14 @@ impl Screen {
     }
 
     pub fn move_active_tab_to_left(&mut self, client_id: ClientId) -> Result<()> {
+        if self.tab_groups.len() > 1 {
+            if let Some(client) = self.client_id(client_id) {
+                if let Some(tab) = self.active_tab_ids.get(&client).copied() {
+                    self.move_group_tab(tab, false)?;
+                }
+            }
+            return Ok(());
+        }
         let err_context = || "Failed to move active tab left";
         if self.tabs.len() < 2 {
             debug!("cannot move tab to left: only one tab exists");
@@ -2803,6 +2818,14 @@ impl Screen {
     }
 
     pub fn move_active_tab_to_right(&mut self, client_id: ClientId) -> Result<()> {
+        if self.tab_groups.len() > 1 {
+            if let Some(client) = self.client_id(client_id) {
+                if let Some(tab) = self.active_tab_ids.get(&client).copied() {
+                    self.move_group_tab(tab, true)?;
+                }
+            }
+            return Ok(());
+        }
         let err_context = || "Failed to move active tab right ";
         if self.tabs.len() < 2 {
             debug!("cannot move tab to right: only one tab exists");
@@ -2829,6 +2852,9 @@ impl Screen {
     }
 
     pub fn move_tab_by_id(&mut self, tab_id: TabId, direction: Direction) -> Result<()> {
+        if self.tab_groups.len() > 1 && matches!(direction, Direction::Left | Direction::Right) {
+            return self.move_group_tab(tab_id, direction == Direction::Right);
+        }
         if self.tabs.len() < 2 {
             return Ok(());
         }
@@ -2942,7 +2968,11 @@ impl Screen {
             // tab. Across a multipane's divider the tab has already moved
             // (`Tab::move_focus_to_overlay_sibling`).
             if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
-                if self.tabs.len() == 1 {
+                if self
+                    .group_tabs(self.group_for_client(Some(client_id)))
+                    .len()
+                    == 1
+                {
                     self.bubble_focus_to_host(client_id, Direction::Left);
                 } else {
                     self.switch_tab_prev(Some(Direction::Left), true, client_id)
@@ -2987,7 +3017,11 @@ impl Screen {
             // tab. Across a multipane's divider the tab has already moved
             // (`Tab::move_focus_to_overlay_sibling`).
             if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
-                if self.tabs.len() == 1 {
+                if self
+                    .group_tabs(self.group_for_client(Some(client_id)))
+                    .len()
+                    == 1
+                {
                     self.bubble_focus_to_host(client_id, Direction::Right);
                 } else {
                     self.switch_tab_next(Some(Direction::Right), true, client_id)
@@ -4673,6 +4707,19 @@ impl Screen {
                 tiled_panes.into_iter().map(|(_, pane)| pane).collect(),
                 floating_panes.into_iter().map(|(_, pane)| pane).collect(),
             );
+            let group = self.tab_group_info(*tab_index);
+            let focused = group.as_ref().is_some_and(|group| {
+                first_client_id
+                    .and_then(|client| self.preferred_group_tab(group.id, client, false))
+                    .or_else(|| {
+                        self.tab_groups
+                            .get(&group.id)?
+                            .preferred
+                            .filter(|id| self.tabs.contains_key(id))
+                    })
+                    == Some(*tab_index)
+            });
+            session_layout_metadata.set_last_tab_group(group, focused);
         }
         session_layout_metadata
     }
@@ -5264,6 +5311,7 @@ impl Screen {
             let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
 
             TabInfo {
+                group: self.tab_group_info(tab.id),
                 position: tab.position,
                 name: tab_names[&tab.id].clone(),
                 active: self.active_tab_ids.values().any(|i| i == &tab.id),

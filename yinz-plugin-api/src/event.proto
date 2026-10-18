@@ -668,6 +668,7 @@ message IndexInPaneGroup {
 }
 
 message TabInfo {
+    action.TabGroup group = 23;
     uint32 position = 1;
     string name = 2;
     bool active = 3;

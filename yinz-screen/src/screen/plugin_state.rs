@@ -48,6 +48,7 @@ impl Screen {
             let selectable_tiled_panes_count = tab.get_selectable_tiled_panes_count();
             let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
             let tab_info_for_screen = TabInfo {
+                group: self.tab_group_info(tab.id),
                 position: tab.position,
                 name: plugin_tab_names[&tab.id].clone(),
                 active: self.active_tab_ids.values().any(|i| i == &tab.id),
@@ -94,6 +95,7 @@ impl Screen {
                 let selectable_tiled_panes_count = tab.get_selectable_tiled_panes_count();
                 let selectable_floating_panes_count = tab.get_selectable_floating_panes_count();
                 let tab_info_for_plugins = TabInfo {
+                    group: self.tab_group_info(tab.id),
                     position: tab.position,
                     name: plugin_tab_names
                         .get(&tab.id)

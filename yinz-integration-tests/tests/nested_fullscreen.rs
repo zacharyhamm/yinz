@@ -49,9 +49,8 @@ fn guest_normal_mode_bar_settled(guest_grid: &GridSnapshot) -> bool {
 }
 
 fn guest_ui_settled(guest_grid: &GridSnapshot) -> bool {
-    let lines = guest_grid.lines();
-    lines
-        .first()
+    guest_grid
+        .tab_bar_line()
         .is_some_and(|first_line| first_line.contains("Tab #1"))
         && last_line_contains(guest_grid, "Ctrl +")
         && guest_normal_mode_bar_settled(guest_grid)
@@ -59,8 +58,7 @@ fn guest_ui_settled(guest_grid: &GridSnapshot) -> bool {
 
 fn guest_fullscreen_breadcrumb_line(guest_grid: &GridSnapshot) -> bool {
     guest_grid
-        .lines()
-        .first()
+        .tab_bar_line()
         .is_some_and(|first_line| first_line.contains('▸') && first_line.contains('('))
 }
 
@@ -150,10 +148,10 @@ fn guest_fullscreen_fills_the_host_display_and_hides_chrome() {
         |host_grid| {
             host_grid.contains(&expected_breadcrumb)
                 && !host_own_name_present(host_grid, &host_session_name)
-                && host_grid.lines().first().is_some_and(|first_line| {
+                && host_grid.tab_bar_line().is_some_and(|first_line| {
                     first_line.contains(&expected_breadcrumb) && first_line.contains("Tab #1")
                 })
-                && host_grid.cursor_is_at(col(0).row(1))
+                && host_grid.cursor_is_at(col(0).row(2))
         },
     );
     assert!(
@@ -239,8 +237,7 @@ fn toggle_off_restores_the_host_layout_exactly() {
     );
     assert!(
         after_fullscreen
-            .lines()
-            .first()
+            .tab_bar_line()
             .is_some_and(|first_line| !first_line.contains('▸')),
         "breadcrumb gone from the host tab-bar after fullscreen exit"
     );
@@ -313,8 +310,7 @@ fn breadcrumb_is_present_only_while_fullscreened() {
     assert!(
         !guest_fullscreen_breadcrumb_line(&before)
             && before
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_none_or(|first_line| !first_line.contains('▸')),
         "no breadcrumb on the guest tab-bar before fullscreen"
     );
@@ -326,12 +322,11 @@ fn breadcrumb_is_present_only_while_fullscreened() {
         "guest tab-bar shows the breadcrumb while fullscreened",
         |guest_grid| {
             guest_grid
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_some_and(|first_line| first_line.contains(&expected_breadcrumb))
         },
     );
-    let first_line = fullscreened.lines().into_iter().next().unwrap();
+    let first_line = fullscreened.tab_bar_line().unwrap();
     assert!(
         first_line.contains(&format!("{})", guest_session_name)),
         "the guest's own name is present in the breadcrumb"
@@ -339,21 +334,21 @@ fn breadcrumb_is_present_only_while_fullscreened() {
 
     let ancestor_column = column_of(&first_line, &host_session_name);
     assert!(
-        fullscreened.char_is_italic(ancestor_column, 0),
+        fullscreened.char_is_italic(ancestor_column, 1),
         "the ancestor segment of the breadcrumb is styled italic"
     );
     let name_column = column_of(&first_line, &guest_session_name);
     assert!(
-        fullscreened.char_is_bold(name_column, 0),
+        fullscreened.char_is_bold(name_column, 1),
         "the guest's own name in the breadcrumb is styled bold"
     );
     assert!(
-        !fullscreened.char_is_dim(ancestor_column, 0),
+        !fullscreened.char_is_dim(ancestor_column, 1),
         "the ancestor segment is not dimmed"
     );
     assert_snapshot!(
         "depth2_breadcrumb_tab_bar_line",
-        normalized(&fullscreened).lines().next().unwrap()
+        normalized(&fullscreened).lines().nth(1).unwrap()
     );
 
     let exited = nested.mark_host_to_guest();
@@ -377,8 +372,7 @@ fn breadcrumb_is_present_only_while_fullscreened() {
         "guest breadcrumb gone after fullscreen exit",
         |guest_grid| {
             guest_grid
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
@@ -395,8 +389,7 @@ fn nested_but_tiled_guest_shows_no_breadcrumb() {
         .wait_until("nested guest tab-bar settled while tiled", guest_ui_settled);
     assert!(
         tiled
-            .lines()
-            .first()
+            .tab_bar_line()
             .is_none_or(|first_line| { !first_line.contains('▸') }),
         "a nested but not fullscreened guest shows no breadcrumb"
     );
@@ -481,10 +474,10 @@ fn innermost_fullscreen_fills_the_whole_outer_terminal_and_zooms_the_chain() {
             outer_grid.contains(&expected_breadcrumb)
                 && !host_own_name_present(outer_grid, &outer_session_name)
                 && !host_own_name_present(outer_grid, &middle_session_name)
-                && outer_grid.lines().first().is_some_and(|first_line| {
+                && outer_grid.tab_bar_line().is_some_and(|first_line| {
                     first_line.contains(&expected_breadcrumb) && first_line.contains("Tab #1")
                 })
-                && outer_grid.cursor_is_at(col(0).row(1))
+                && outer_grid.cursor_is_at(col(0).row(2))
         },
     );
     assert_snapshot!(
@@ -659,7 +652,7 @@ fn fullscreen_from_inner_while_middle_already_fullscreen_does_not_cancel() {
             outer_grid.contains(&inner_breadcrumb)
                 && !host_own_name_present(outer_grid, &outer_session_name)
                 && !host_own_name_present(outer_grid, &middle_session_name)
-                && outer_grid.cursor_is_at(col(0).row(1))
+                && outer_grid.cursor_is_at(col(0).row(2))
         },
     );
 
@@ -894,8 +887,7 @@ fn restoring_the_innermost_fullscreen_unzooms_the_whole_chain() {
             outer_grid.status_bar_appears()
                 && host_own_name_present(outer_grid, &outer_session_name)
                 && outer_grid
-                    .lines()
-                    .first()
+                    .tab_bar_line()
                     .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
@@ -904,8 +896,7 @@ fn restoring_the_innermost_fullscreen_unzooms_the_whole_chain() {
         |middle_grid| {
             middle_grid.status_bar_appears()
                 && middle_grid
-                    .lines()
-                    .first()
+                    .tab_bar_line()
                     .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
@@ -929,22 +920,21 @@ fn clicking_the_ancestor_breadcrumb_segment_ascends_out_of_the_guest() {
         "guest fullscreened with the breadcrumb visible before clicking",
         |host_grid| {
             host_grid
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_some_and(|first_line| first_line.contains(&expected_breadcrumb))
         },
     );
-    let first_line = fullscreen_grid.lines().into_iter().next().unwrap();
+    let first_line = fullscreen_grid.tab_bar_line().unwrap();
     let (ancestor_start, ancestor_end) = ancestor_segment_range(&first_line);
 
     let non_ascend_before = nested
         .guest_to_host()
         .count(|message| matches!(message, NestedSessionMessage::FocusHost { direction: None }));
     let name_column = column_of(&first_line, &guest_session_name) + 1;
-    nested.host.send_stdin(&sgr_mouse_report(name_column, 1, 0));
+    nested.host.send_stdin(&sgr_mouse_report(name_column, 2, 0));
     nested
         .host
-        .send_stdin(&format!("\u{1b}[<0;{};1m", name_column).into_bytes());
+        .send_stdin(&format!("\u{1b}[<0;{};2m", name_column).into_bytes());
     nested.guest.wait_until(
         "guest still fullscreened after a non-ancestor click",
         guest_ui_settled,
@@ -963,10 +953,10 @@ fn clicking_the_ancestor_breadcrumb_segment_ascends_out_of_the_guest() {
     let ancestor_click_column = (ancestor_start + ancestor_end) / 2 + 1;
     nested
         .host
-        .send_stdin(&sgr_mouse_report(ancestor_click_column, 1, 0));
+        .send_stdin(&sgr_mouse_report(ancestor_click_column, 2, 0));
     nested
         .host
-        .send_stdin(&format!("\u{1b}[<0;{};1m", ancestor_click_column).into_bytes());
+        .send_stdin(&format!("\u{1b}[<0;{};2m", ancestor_click_column).into_bytes());
     nested.guest_to_host().wait_for_after(
         requested,
         "clicking the ancestor breadcrumb segment asks the host to take focus back",
@@ -1041,8 +1031,7 @@ fn host_manually_breaking_fullscreen_drifts_the_guest_to_not_fullscreen() {
         "guest breadcrumb clears after the host manually broke the fullscreen",
         |guest_grid| {
             guest_grid
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
@@ -1080,7 +1069,7 @@ fn guest_killed_while_fullscreened_unzooms_the_host_after_liveness_timeout() {
         |host_grid| {
             host_grid.contains(&expected_breadcrumb)
                 && !host_own_name_present(host_grid, &host_session_name)
-                && host_grid.cursor_is_at(col(0).row(1))
+                && host_grid.cursor_is_at(col(0).row(2))
         },
     );
 
@@ -1092,8 +1081,7 @@ fn guest_killed_while_fullscreened_unzooms_the_host_after_liveness_timeout() {
             host_grid.status_bar_appears()
                 && host_own_name_present(host_grid, &host_session_name)
                 && host_grid
-                    .lines()
-                    .first()
+                    .tab_bar_line()
                     .is_some_and(|first_line| !first_line.contains('▸'))
         },
     );
@@ -1113,13 +1101,12 @@ fn fullscreen_breadcrumb_has_no_nested_marker_and_an_emphasized_own_name() {
         "guest tab-bar shows the breadcrumb while fullscreened",
         |guest_grid| {
             guest_grid
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_some_and(|first_line| first_line.contains(&expected_breadcrumb))
         },
     );
 
-    let first_line = fullscreened.lines().into_iter().next().unwrap();
+    let first_line = fullscreened.tab_bar_line().unwrap();
     assert!(
         !first_line.contains("[NESTED]"),
         "the breadcrumb no longer contains the [NESTED] marker"
@@ -1131,21 +1118,21 @@ fn fullscreen_breadcrumb_has_no_nested_marker_and_an_emphasized_own_name() {
 
     let ancestor_column = column_of(&first_line, &host_session_name);
     assert!(
-        fullscreened.char_is_italic(ancestor_column, 0),
+        fullscreened.char_is_italic(ancestor_column, 1),
         "the ancestor breadcrumb segment is italic while descended"
     );
     assert!(
-        !fullscreened.char_is_dim(ancestor_column, 0),
+        !fullscreened.char_is_dim(ancestor_column, 1),
         "the descended guest breadcrumb ancestor segment is not dimmed"
     );
 
     let name_column = column_of(&first_line, &guest_session_name);
     assert!(
-        fullscreened.char_is_bold(name_column, 0),
+        fullscreened.char_is_bold(name_column, 1),
         "the guest's own name in the breadcrumb is bold while descended"
     );
     assert!(
-        !fullscreened.char_is_dim(name_column, 0),
+        !fullscreened.char_is_dim(name_column, 1),
         "the descended guest breadcrumb own name is not dimmed"
     );
 }

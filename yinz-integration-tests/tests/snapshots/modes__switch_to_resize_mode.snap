@@ -2,6 +2,7 @@
 source: yinz-integration-tests/tests/modes.rs
 expression: normalized(&grid_snapshot)
 ---
+ Default 
  Yinz (test)  [0] Tab #1  + 
 $ █
  Ctrl + <n> SIZE   +|-  Increase/Decrease size  ←↓↑→  Increase to  HJKL  Decrease from  ENTER  Select pane 

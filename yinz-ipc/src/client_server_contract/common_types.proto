@@ -312,6 +312,13 @@ message Action {
     ToggleNotificationDetailAction toggle_notification_detail = 167;
     ToggleCommandPaletteAction toggle_command_palette = 171;
     ActivateLastNotificationAction activate_last_notification = 173;
+    NewTabGroupAction new_tab_group = 174;
+    GoToNextTabGroupAction go_to_next_tab_group = 175;
+    GoToPreviousTabGroupAction go_to_previous_tab_group = 176;
+    uint32 go_to_tab_in_group = 177;
+    uint32 switch_tab_group = 178;
+    TabGroup rename_tab_group = 179;
+    uint32 close_tab_group = 180;
   }
 }
 
@@ -1219,7 +1226,16 @@ message PaneTarget {
 }
 
 
+message NewTabGroupAction {}
+message GoToNextTabGroupAction {}
+message GoToPreviousTabGroupAction {}
+message TabGroup {
+  uint32 id = 1;
+  string name = 2;
+}
 message TiledPaneLayout {
+  TabGroup tab_group = 18;
+  bool group_focused = 19;
   optional string pane_tabs_json = 17;
   SplitDirection children_split_direction = 1;
   optional string name = 2;

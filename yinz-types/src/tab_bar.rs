@@ -1,5 +1,13 @@
 //! Shared terminal-cell geometry for native and plugin tab bars.
+use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthChar;
+
+/// Session-local group identity; IDs also preserve creation order across resurrection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TabGroupInfo {
+    pub id: u32,
+    pub name: String,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabTarget {

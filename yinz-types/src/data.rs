@@ -1203,6 +1203,8 @@ use crate::agent::{AgentInfo, AgentState};
 /// Contains all the information for a currently opened tab.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct TabInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<crate::tab_bar::TabGroupInfo>,
     /// The Tab's 0 indexed position
     pub position: TabPosition,
     /// The name of the tab as it appears in the UI (if there's enough room for it)

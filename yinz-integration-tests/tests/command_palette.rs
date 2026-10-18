@@ -406,6 +406,70 @@ fn replace_name(yinz: &yinz_integration_tests::TestSession, name: &str) {
 }
 
 #[test]
+fn tab_group_palette_and_resurrection_preserve_names_membership_and_focus() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("session_serialization true\nserialize_pane_viewport true")
+        .start();
+    let root = yinz.expect_pty_spawn();
+    root.output(b"DEFAULT_GROUP_CONTENT");
+    yinz.wait_until("default group ready", |grid| {
+        grid.contains("DEFAULT_GROUP_CONTENT") && grid.tab_bar_appears()
+    });
+    palette_query(&yinz, "New tab group");
+    let first = yinz.expect_pty_spawn();
+    first.output(b"FIRST_GROUP_TAB");
+    yinz.wait_until("created group ready", |grid| {
+        grid.contains("Group 1") && grid.contains("FIRST_GROUP_TAB")
+    });
+    palette_query(&yinz, "Rename tab group…");
+    replace_name(&yinz, "Work");
+    yinz.wait_until("group renamed", |grid| {
+        grid.lines()[0].contains("Work") && !grid.contains("Name:")
+    });
+    yinz.send_stdin(b"\x14n");
+    let second = yinz.expect_pty_spawn();
+    second.output(b"SECOND_GROUP_TAB");
+    yinz.wait_until("second group tab ready", |grid| {
+        grid.contains("SECOND_GROUP_TAB")
+    });
+    yinz.send_stdin(b"\x14H\x1b");
+    yinz.wait_until("default focused before saving", |grid| {
+        grid.contains("DEFAULT_GROUP_CONTENT") && !grid.contains("SECOND_GROUP_TAB")
+    });
+    yinz.save_session();
+    yinz.wait_for_serialized_session();
+    yinz.quit();
+    yinz.resurrect(TERMINAL_SIZE);
+    for _ in 0..3 {
+        yinz.expect_pty_spawn();
+    }
+    yinz.wait_until("groups restored with default focused", |grid| {
+        grid.contains("DEFAULT_GROUP_CONTENT")
+            && grid.lines()[0].contains("Work")
+            && grid.tab_bar_appears()
+    });
+    palette_query(&yinz, "Switch tab group…");
+    yinz.wait_until("group picker ready", |grid| {
+        grid.contains("Switch tab group") && grid.contains("Esc Back")
+    });
+    yinz.send_stdin(b"Work");
+    yinz.wait_until("group picker selects Work", |grid| grid.contains("› Work"));
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("saved group focus restored", |grid| {
+        grid.contains("SECOND_GROUP_TAB") && !grid.contains("DEFAULT_GROUP_CONTENT")
+    });
+    palette_query(&yinz, "Close tab group…");
+    yinz.wait_until("group closure asks for confirmation", |grid| {
+        grid.contains("Close Work (2 tabs,") && grid.contains("Cancel")
+    });
+    yinz.send_stdin(b"\x1b[B\r");
+    yinz.wait_until("group and both tabs closed", |grid| {
+        grid.contains("DEFAULT_GROUP_CONTENT") && !grid.contains("Work")
+    });
+    yinz.quit();
+}
+
+#[test]
 fn command_palette_creates_renames_navigates_and_confirms_closing() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config("load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\npane_frame_style \"full\"")

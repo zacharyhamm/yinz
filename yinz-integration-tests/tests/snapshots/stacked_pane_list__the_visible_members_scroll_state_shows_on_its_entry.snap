@@ -2,11 +2,10 @@
 source: yinz-integration-tests/tests/stacked_pane_list.rs
 expression: normalized(&grid_snapshot)
 ---
+ Default 
  Yinz (test)  [1] Tab #1  + 
                                                      │ [0] Pane #1 │
-                                                   > │ [1] Pane #2 │                                  [ SCROLL: 21/22 ]
-line1
-line2
+                                                   > │ [1] Pane #2 │                                  [ SCROLL: 20/23 ]
 line3
 line4
 line5
@@ -23,5 +22,6 @@ line15
 line16
 line17
 line18
-█ine19
+line19
+█ine20
  Ctrl + <s> SEARCH   s  Search  ↓|↑|PgDn|PgUp|d|u  Scroll  e  Edit  ENTER  Select  []  Commands 

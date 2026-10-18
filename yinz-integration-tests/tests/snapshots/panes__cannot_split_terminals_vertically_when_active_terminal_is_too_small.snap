@@ -1,8 +1,8 @@
 ---
 source: yinz-integration-tests/tests/panes.rs
-assertion_line: 39
 expression: normalized(&grid_snapshot)
 ---
+[0] Tab…
  
 $ done█
  Ctrl +

@@ -513,6 +513,8 @@ enum WarpTarget {
 enum FormKind {
     NewPane,
     NewTab,
+    RenameTabGroup(u32),
+    CloseTabGroup(u32),
     RenamePane,
     RenameTab,
     ClosePane,
@@ -619,6 +621,32 @@ impl Screen {
         ] {
             command(id, label, &[], Builtin::Form(form));
         }
+        command(
+            "new-tab-group",
+            "New tab group",
+            &["create group workspace"],
+            Builtin::Action(NewTabGroup),
+        );
+        command(
+            "switch-tab-group",
+            "Switch tab group…",
+            &["workspace"],
+            Builtin::Picker(EntryKind::TabGroup),
+        );
+        if let Some(group) = self.tab_group_ids.get(&tab_id) {
+            command(
+                "rename-tab-group",
+                "Rename tab group…",
+                &[],
+                Builtin::Form(FormKind::RenameTabGroup(*group)),
+            );
+            command(
+                "close-tab-group",
+                "Close tab group…",
+                &[],
+                Builtin::Form(FormKind::CloseTabGroup(*group)),
+            );
+        }
         for (id, label, action) in [
             (
                 "fullscreen",
@@ -721,6 +749,23 @@ impl Screen {
                     kind: EntryKind::Command,
                 },
                 Builtin::Picker(kind),
+            ));
+        }
+        for (id, group) in &self.tab_groups {
+            entries.push((
+                Entry {
+                    id: format!("tab-group:{id}"),
+                    label: group.name.clone(),
+                    description: if self.tab_group_ids.get(&tab_id) == Some(id) {
+                        "Current".into()
+                    } else {
+                        String::new()
+                    },
+                    shortcut: String::new(),
+                    aliases: vec![],
+                    kind: EntryKind::TabGroup,
+                },
+                Builtin::Action(Action::SwitchTabGroup { id: *id }),
             ));
         }
         entries.extend(self.warp_palette_entries(state.warp_source.as_ref()));
@@ -1112,6 +1157,9 @@ impl Screen {
         match action {
             Action::FocusPaneByPaneId { pane_id } => self.tab_containing_pane(*pane_id).is_some(),
             Action::GoToTabById { id } => self.tabs.contains_key(id),
+            Action::SwitchTabGroup { id }
+            | Action::RenameTabGroup { id, .. }
+            | Action::CloseTabGroup { id } => self.tab_groups.contains_key(id),
             _ => true,
         }
     }
@@ -1353,6 +1401,34 @@ impl Screen {
             .find(|info| info.id == pane)
             .ok_or("Pane no longer exists")?;
         let (title, fields, submit, confirmation) = match kind {
+            FormKind::RenameTabGroup(id) => (
+                "Rename tab group".into(),
+                vec![Field::text(
+                    "Name",
+                    &self
+                        .tab_groups
+                        .get(&id)
+                        .ok_or("Group no longer exists")?
+                        .name,
+                )],
+                "Rename",
+                false,
+            ),
+            FormKind::CloseTabGroup(id) => {
+                let group = self.tab_groups.get(&id).ok_or("Group no longer exists")?;
+                let tabs = self.group_tabs(id);
+                let panes: usize = tabs
+                    .iter()
+                    .filter_map(|id| self.tabs.get(id))
+                    .map(|tab| tab.pane_infos().len())
+                    .sum();
+                (
+                    format!("Close {} ({} tabs, {panes} panes)?", group.name, tabs.len()),
+                    vec![],
+                    "Close group",
+                    true,
+                )
+            },
             FormKind::NewPane => (
                 "New pane".into(),
                 vec![
@@ -1425,6 +1501,18 @@ impl Screen {
             return Err("Directory does not exist or is not accessible".into());
         }
         Ok(match kind {
+            FormKind::RenameTabGroup(id) => {
+                if !self.tab_groups.contains_key(&id) {
+                    return Err("Group no longer exists".into());
+                }
+                Action::RenameTabGroup { id, name }
+            },
+            FormKind::CloseTabGroup(id) => {
+                if !self.tab_groups.contains_key(&id) {
+                    return Err("Group no longer exists".into());
+                }
+                Action::CloseTabGroup { id }
+            },
             FormKind::NewPane => {
                 let command = cwd.map(|cwd| {
                     let mut command = match self.default_shell_action.clone() {
@@ -1523,25 +1611,13 @@ impl Screen {
             anyhow::bail!("Pane is no longer available");
         }
         if let Some(direction) = direction {
-            let mut tabs: Vec<_> = self
-                .tabs
-                .values()
-                .map(|tab| (tab.position, tab.id))
-                .collect();
-            tabs.sort();
-            if tabs.len() < 2 {
+            let destination = self
+                .adjacent_group_tab(tab, direction != Direction::Left)
+                .and_then(|position| self.get_tab_id_at_position(position));
+            let Some(destination) = destination.filter(|destination| *destination != tab) else {
                 notify(&self.bus.senders, "Pane was not moved: no other tab".into());
                 return Ok(());
-            }
-            let Some(index) = tabs.iter().position(|(_, id)| *id == tab) else {
-                return Ok(());
             };
-            let offset = if direction == Direction::Left {
-                tabs.len() - 1
-            } else {
-                1
-            };
-            let destination = tabs[(index + offset) % tabs.len()].1;
             let outcome = self
                 .break_multiple_panes_to_tab_with_id(vec![pane], destination, true, client)
                 .context("failed to move palette pane")?;

@@ -1147,6 +1147,21 @@ pub fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        action @ (Action::NewTabGroup
+        | Action::GoToNextTabGroup
+        | Action::GoToPreviousTabGroup
+        | Action::GoToTabInGroup { .. }
+        | Action::SwitchTabGroup { .. }
+        | Action::RenameTabGroup { .. }
+        | Action::CloseTabGroup { .. }) => {
+            senders
+                .send_to_screen(ScreenInstruction::TabGroup(
+                    action,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::GoToNextTab => {
             senders
                 .send_to_screen(ScreenInstruction::SwitchTabNext(

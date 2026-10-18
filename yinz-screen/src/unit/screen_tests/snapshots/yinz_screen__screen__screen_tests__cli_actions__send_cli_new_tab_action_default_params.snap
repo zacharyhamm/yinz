@@ -1,6 +1,5 @@
 ---
 source: yinz-screen/src/screen/../unit/screen_tests/cli_actions.rs
-assertion_line: 1850
 expression: "format!(\"{:#?}\", new_tab_action)"
 ---
 Some(
@@ -29,6 +28,8 @@ Some(
                         run_instructions_to_ignore: [],
                         hide_floating_panes: false,
                         user_named: false,
+                        tab_group: None,
+                        group_focused: false,
                         pane_initial_contents: None,
                         default_fg: None,
                         default_bg: None,
@@ -49,6 +50,8 @@ Some(
                         run_instructions_to_ignore: [],
                         hide_floating_panes: false,
                         user_named: false,
+                        tab_group: None,
+                        group_focused: false,
                         pane_initial_contents: None,
                         default_fg: None,
                         default_bg: None,
@@ -65,6 +68,8 @@ Some(
                 run_instructions_to_ignore: [],
                 hide_floating_panes: false,
                 user_named: false,
+                tab_group: None,
+                group_focused: false,
                 pane_initial_contents: None,
                 default_fg: None,
                 default_bg: None,

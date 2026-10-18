@@ -1046,6 +1046,57 @@ fn layout_with_tab_templates() {
 }
 
 #[test]
+fn tab_group_metadata_is_preserved_with_and_without_templates() {
+    for (template, node) in [
+        ("", "tab"),
+        ("default_tab_template { children; }", "tab"),
+        ("tab_template name=\"custom\" { children; }", "custom"),
+    ] {
+        for (metadata, expected_group, expected_focus) in [
+            ("", None, false),
+            ("group_id=0", Some((0, "Default")), false),
+            ("group_id=4294967295", Some((u32::MAX, "Default")), false),
+            (
+                "group_id=7 group_name=\"工程\" group_focused=true",
+                Some((7, "工程")),
+                true,
+            ),
+        ] {
+            let raw = format!("layout {{ {template}\n{node} {metadata}; }}");
+            let layout = crate::kdl::layout::from_kdl(&raw, None, None, None).unwrap();
+            let tab = &layout.tabs[0].1;
+            assert_eq!(
+                tab.tab_group.as_ref().map(|g| (g.id, g.name.as_str())),
+                expected_group,
+                "{raw}"
+            );
+            assert_eq!(tab.group_focused, expected_focus, "{raw}");
+        }
+    }
+}
+
+#[test]
+fn tab_group_ids_are_validated_with_and_without_templates() {
+    for (template, node) in [
+        ("", "tab"),
+        ("default_tab_template { children; }", "tab"),
+        ("tab_template name=\"custom\" { children; }", "custom"),
+    ] {
+        for (id, message) in [
+            ("-1", "Group ID is out of range"),
+            ("4294967296", "Group ID is out of range"),
+            ("\"7\"", "Group ID must be an integer"),
+            ("1.5", "Group ID must be an integer"),
+            ("true", "Group ID must be an integer"),
+        ] {
+            let raw = format!("layout {{ {template}\n{node} group_id={id}; }}");
+            let error = crate::kdl::layout::from_kdl(&raw, None, None, None).unwrap_err();
+            assert!(format!("{error:?}").contains(message), "{raw}: {error:?}");
+        }
+    }
+}
+
+#[test]
 fn layout_with_default_tab_template() {
     let kdl_layout = r#"
         layout {

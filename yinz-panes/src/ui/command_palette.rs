@@ -37,6 +37,7 @@ pub enum EntryKind {
     WarpPane,
     Project,
     Theme,
+    TabGroup,
 }
 
 impl EntryKind {
@@ -46,6 +47,7 @@ impl EntryKind {
             Self::WarpPaneSession => Some("Warp pane · Source session"),
             Self::WarpTab => Some("Warp tab"),
             Self::WarpPane => Some("Warp pane"),
+            Self::TabGroup => Some("Switch tab group"),
             Self::Theme => Some("Change theme"),
             Self::Project => Some("Switch current project"),
             Self::Command | Self::Plugin => None,
@@ -510,6 +512,7 @@ impl CommandPalette {
                     !matches!(
                         entry.kind,
                         EntryKind::Theme
+                            | EntryKind::TabGroup
                             | EntryKind::Project
                             | EntryKind::WarpTabSession
                             | EntryKind::WarpPaneSession

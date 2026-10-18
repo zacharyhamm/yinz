@@ -45,6 +45,205 @@ fn dispatch_override(
         .expect("override was dispatched to plugins")
 }
 
+fn grouped_layout_at(position: usize, group: u32, focused: bool) -> TabLayoutInfo {
+    let mut layout = layout_at(position, 1);
+    layout.tiled_layout.tab_group = Some(yinz_types::tab_bar::TabGroupInfo {
+        id: group,
+        name: format!("Group {group}"),
+    });
+    layout.tiled_layout.group_focused = focused;
+    layout
+}
+
+fn override_results(
+    screen: &Screen,
+    layouts: Vec<(TabId, TabLayoutInfo)>,
+) -> Vec<crate::screen::TabOverrideResult> {
+    layouts
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, layout))| crate::screen::TabOverrideResult {
+            tab_index: id,
+            tab_name: layout.tab_name,
+            tiled_layout: layout.tiled_layout,
+            floating_layouts: layout.floating_layouts,
+            swap_tiled_layouts: layout.swap_tiled_layouts,
+            swap_floating_layouts: layout.swap_floating_layouts,
+            new_terminal_pids: if screen.tabs[&id].is_pending() {
+                vec![(TerminalId::new(100 + index as u32), None)]
+            } else {
+                vec![]
+            },
+            new_floating_pane_pids: vec![],
+            plugin_ids: HashMap::new(),
+        })
+        .collect()
+}
+
+#[test]
+fn override_layout_restores_groups_on_existing_and_reserved_tabs() {
+    for existing_tabs in [1, 4] {
+        let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+        for index in 0..existing_tabs {
+            new_tab(&mut screen, index as u32 + 1, TabId::new(index));
+        }
+        let (layouts, tabs_to_close) = dispatch_override(
+            &mut screen,
+            vec![
+                grouped_layout_at(0, 7, true),
+                grouped_layout_at(1, 8, true),
+                grouped_layout_at(2, 7, false),
+                grouped_layout_at(3, 8, false),
+            ],
+            false,
+        );
+        assert!(!screen.tab_groups.contains_key(&7));
+        let results = override_results(&screen, layouts);
+        screen
+            .complete_override_layout(
+                results,
+                vec![],
+                tabs_to_close,
+                true,
+                true,
+                ClientId::new(1),
+                &mut super::super::thread_main::PendingEvents::default(),
+            )
+            .unwrap();
+        assert!(!screen.has_pending_tabs());
+        assert_eq!(screen.tab_groups.len(), 2);
+        for (tab, group) in [(0, 7), (1, 8), (2, 7), (3, 8)] {
+            assert_eq!(screen.tab_group_ids[&TabId::new(tab)], group);
+        }
+        assert_eq!(screen.tab_groups[&7].name, "Group 7");
+        assert_eq!(screen.tab_groups[&8].name, "Group 8");
+        assert_eq!(screen.tab_groups[&7].preferred, Some(TabId::new(0)));
+        assert_eq!(screen.tab_groups[&8].preferred, Some(TabId::new(1)));
+        assert_eq!(screen.next_tab_group_id, 9);
+        // Restored preferences must win over visits made before the override.
+        let other_group = if screen.group_for_client(Some(ClientId::new(1))) == 7 {
+            8
+        } else {
+            7
+        };
+        screen
+            .tab_group_action(
+                Action::SwitchTabGroup { id: other_group },
+                ClientId::new(1),
+                None,
+                &mut HashSet::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            screen.active_tab_ids[&ClientId::new(1)],
+            TabId::new((other_group - 7) as usize)
+        );
+
+        let mut expected = screen.tab_group_ids.clone();
+        let (layouts, tabs_to_close) = dispatch_override(
+            &mut screen,
+            (0..5).map(|position| layout_at(position, 1)).collect(),
+            false,
+        );
+        expected.insert(TabId::new(4), other_group);
+        let results = override_results(&screen, layouts);
+        screen
+            .complete_override_layout(
+                results,
+                vec![],
+                tabs_to_close,
+                true,
+                true,
+                ClientId::new(1),
+                &mut super::super::thread_main::PendingEvents::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            screen.tab_group_ids, expected,
+            "omitted metadata preserves assignments"
+        );
+    }
+}
+
+#[test]
+fn focused_override_applies_explicit_groups_and_preserves_omitted_groups() {
+    for explicit in [false, true] {
+        let mut screen = screen_with_diverged_tab_ids();
+        let focused = screen.active_tab_ids[&ClientId::new(1)];
+        screen.restore_tab_group(focused, &grouped_layout_at(0, 7, true).tiled_layout);
+        let before = screen.tab_group_ids.clone();
+        let layout = if explicit {
+            grouped_layout_at(0, 8, true)
+        } else {
+            layout_at(0, 1)
+        };
+        let (layouts, tabs_to_close) = dispatch_override(&mut screen, vec![layout], true);
+        let results = override_results(&screen, layouts);
+        screen
+            .complete_override_layout(
+                results,
+                vec![],
+                tabs_to_close,
+                true,
+                true,
+                ClientId::new(1),
+                &mut super::super::thread_main::PendingEvents::default(),
+            )
+            .unwrap();
+        for (tab, group) in before {
+            assert_eq!(
+                screen.tab_group_ids[&tab],
+                if tab == focused && explicit { 8 } else { group }
+            );
+        }
+        let group = if explicit { 8 } else { 7 };
+        assert_eq!(screen.tab_groups[&group].name, format!("Group {group}"));
+        assert_eq!(screen.tab_groups[&group].preferred, Some(focused));
+    }
+}
+
+#[test]
+fn failed_override_does_not_apply_group_metadata() {
+    for spawn_failed in [false, true] {
+        let mut screen = screen_with_diverged_tab_ids();
+        let before = screen.tab_group_ids.clone();
+        let original_name = screen.tab_groups[&0].name.clone();
+        let original_preferred = screen.tab_groups[&0].preferred;
+        let (layouts, tabs_to_close) = dispatch_override(
+            &mut screen,
+            vec![grouped_layout_at(0, 0, true), grouped_layout_at(1, 8, true)],
+            false,
+        );
+        let mut results = override_results(&screen, layouts);
+        let failed_tabs = if spawn_failed {
+            vec![results.pop().unwrap().tab_index]
+        } else {
+            results[1].tiled_layout = TiledPaneLayout {
+                tab_group: results[1].tiled_layout.tab_group.clone(),
+                group_focused: true,
+                ..unfit_layout()
+            };
+            vec![]
+        };
+        assert!(screen
+            .complete_override_layout(
+                results,
+                failed_tabs,
+                tabs_to_close,
+                true,
+                true,
+                ClientId::new(1),
+                &mut super::super::thread_main::PendingEvents::default(),
+            )
+            .is_err());
+        assert_eq!(screen.tab_group_ids, before);
+        assert_eq!(screen.tab_groups.len(), 1);
+        assert_eq!(screen.tab_groups[&0].name, original_name);
+        assert_eq!(screen.tab_groups[&0].preferred, original_preferred);
+        assert_eq!(screen.next_tab_group_id, 1);
+    }
+}
+
 #[test]
 fn override_layout_uses_reordered_positions_and_closes_only_surplus_tabs() {
     let mut screen = screen_with_diverged_tab_ids();

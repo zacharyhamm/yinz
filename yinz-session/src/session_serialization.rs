@@ -648,7 +648,7 @@ fn serialize_multiple_tabs(
         // Every tab serializes: one whose arrangement is not a tree of splits is
         // approximated rather than dropped, so there is no longer a way for a tab
         // to fall out of the session it belongs to.
-        serialized_tabs.push(serialize_tab(
+        let mut serialized_tab = serialize_tab(
             tab_name.clone(),
             tab_layout_manifest.is_focused,
             hide_floating_panes,
@@ -656,7 +656,21 @@ fn serialize_multiple_tabs(
             &tiled_panes,
             &floating_panes,
             pane_contents,
-        ));
+        );
+        if let Some(group) = tab_layout_manifest.tab_group {
+            serialized_tab
+                .entries_mut()
+                .push(KdlEntry::new_prop("group_id", i64::from(group.id)));
+            serialized_tab
+                .entries_mut()
+                .push(KdlEntry::new_prop("group_name", group.name));
+            if tab_layout_manifest.group_focused {
+                serialized_tab
+                    .entries_mut()
+                    .push(KdlEntry::new_prop("group_focused", true));
+            }
+        }
+        serialized_tabs.push(serialized_tab);
     }
     Ok(serialized_tabs)
 }
@@ -3007,14 +3021,14 @@ mod tests {
     }
 
     #[test]
-    fn an_approximation_preserves_positions_or_rejects_undersized_panes() {
+    fn an_approximation_preserves_positions_after_rounding() {
         // The approximation is only reached for arrangements no layout describes,
         // but it should not be a *different* arrangement when handed one that a
         // layout does describe - a cut nothing straddles is a real split. Checked
         // against the arrangements these tests already have: each pane must come
         // back nearer its own rectangle than any other pane's, which is the
         // strongest thing that can be asked of something allowed to round.
-        for (index, panegeoms) in PANEGEOMS_JSON.iter().enumerate() {
+        for panegeoms in PANEGEOMS_JSON.iter() {
             // each pane named after its index, so the leaves can be paired with
             // the panes they came from rather than with wherever they turn up
             let arrangement: Vec<PaneLayoutManifest> = panegeoms
@@ -3046,15 +3060,6 @@ mod tests {
                     .unwrap(),
             );
             let positioned = approximated.position_panes_in_space(&space, None, false, false);
-            if index == 3 {
-                // This approximation nests 44% inside a 70% row split, leaving only three
-                // rows for its last flexible pane. It must be rejected at the minimum check.
-                assert_eq!(
-                    positioned.unwrap_err(),
-                    yinz_types::input::layout::LayoutError::UndersizedPane
-                );
-                continue;
-            }
             let positioned = positioned.unwrap();
             let landed: Vec<(usize, PaneGeom)> = positioned
                 .into_iter()

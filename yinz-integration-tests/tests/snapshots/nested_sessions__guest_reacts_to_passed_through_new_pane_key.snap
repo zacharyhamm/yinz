@@ -2,11 +2,10 @@
 source: yinz-integration-tests/tests/nested_sessions.rs
 expression: normalized(&guest_after_new_pane)
 ---
+ Default 
  Yinz (test)  Tab #1  + 
           [0] Pane #1        │         [1] Pane #2
 $                            │█
-                             │
-                             │
                              │
                              │
                              │

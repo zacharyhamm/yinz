@@ -147,6 +147,7 @@ pub enum ScreenContext {
     SwitchTabNext,
     SwitchTabPrev,
     CloseTab,
+    TabGroup,
     GoToTab,
     GoToTabName,
     UpdateTabName,

@@ -887,6 +887,8 @@ pub struct IndexInPaneGroup {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TabInfo {
+    #[prost(message, optional, tag="23")]
+    pub group: ::core::option::Option<super::action::TabGroup>,
     #[prost(uint32, tag="1")]
     pub position: u32,
     #[prost(string, tag="2")]

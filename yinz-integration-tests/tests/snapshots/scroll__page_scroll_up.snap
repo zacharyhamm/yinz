@@ -2,7 +2,8 @@
 source: yinz-integration-tests/tests/scroll.rs
 expression: normalized(&grid_snapshot)
 ---
- Yinz (test)  [0] Tab #1  +                                                                      [ SCROLL 19/19 ]
+ Default 
+ Yinz (test)  [0] Tab #1  +                                                                      [ SCROLL 20/20 ]
 $ line01
 line02
 line03
@@ -23,6 +24,5 @@ line17
 line18
 line19
 line20
-line21
-█ine22
+█ine21
  Ctrl + <s> SEARCH   s  Search  ↓|↑|PgDn|PgUp|d|u  Scroll  e  Edit  ENTER  Select  []  Commands 

@@ -109,7 +109,7 @@ fn configuration_load_and_wizard_preserve_pane_setup_contract() {
 #[test]
 fn every_preset_matches_templates_and_parses_with_agent_selection_and_notifications() {
     let mut plugin = Configuration::new(false);
-    // Stable FNV-1a hashes pin exact preset outputs.
+    // Keep the original presets pinned after removing the new group bindings.
     for (primary, secondary, locked, expected) in [
         ("Ctrl", "Alt", false, 15960040746295113056u64),
         ("Ctrl", "Alt", true, 12161722900292792986),
@@ -131,7 +131,12 @@ fn every_preset_matches_templates_and_parses_with_agent_selection_and_notificati
             )
             .unwrap();
         let source = source.as_str().unwrap();
-        let hash = source.bytes().fold(14695981039346656037u64, |hash, byte| {
+        let legacy = source
+            .split_inclusive('\n')
+            .filter(|line| !line.contains("TabGroup"))
+            .collect::<String>()
+            .replace("GoToTabInGroup", "GoToTab");
+        let hash = legacy.bytes().fold(14695981039346656037u64, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(1099511628211)
         });
         assert_eq!(
@@ -160,6 +165,22 @@ fn every_preset_matches_templates_and_parses_with_agent_selection_and_notificati
                     );
                 }
             }
+            assert_eq!(
+                config.keybinds.0[&InputMode::Tab][&key("g")][0],
+                Action::NewTabGroup
+            );
+            assert_eq!(
+                config.keybinds.0[&InputMode::Tab][&key("H")],
+                vec![Action::GoToPreviousTabGroup]
+            );
+            assert_eq!(
+                config.keybinds.0[&InputMode::Tab][&key("L")],
+                vec![Action::GoToNextTabGroup]
+            );
+            assert!(matches!(
+                config.keybinds.0[&InputMode::Tab][&key("1")][0],
+                Action::GoToTabInGroup { .. }
+            ));
             assert_eq!(
                 config.keybinds.0[&InputMode::Session][&key("n")],
                 vec![Action::SwitchToMode {
