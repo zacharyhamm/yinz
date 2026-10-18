@@ -1982,9 +1982,9 @@ fn session_start_payload(session: &ServerSession, client_id: ClientId) -> HookFi
 /// Run the plugin bound to `point`, in the point's shape.
 ///
 /// A `ReplacePane` point opens the plugin in place of `pane_id`. The hook's payload becomes the
-/// plugin's configuration, and plugin identity is (location, configuration) - so a payload
-/// naming a different pane yields a separate instance, which is what makes two agents exiting
-/// at once get a hook pane each rather than fighting over one.
+/// plugin's configuration. Record (hook point, pane id) at launch so later firings reach that
+/// instance as `Event::Hook`, even when the payload changes. Different panes get separate
+/// instances; loading instances queue events, and unloading releases the association.
 ///
 /// Loaded and placed here rather than through `PluginBridge::get_or_load_plugins`: the
 /// latter opens a pane only when it has to *load* the plugin, and answers a request for one
@@ -1994,9 +1994,8 @@ fn session_start_payload(session: &ServerSession, client_id: ClientId) -> HookFi
 /// hook that quietly resolved to an existing instance would leave the pane it was fired for
 /// showing nothing but its exit code, which is exactly the failure it exists to replace.
 ///
-/// A `Headless` point is the opposite shape, and [`deliver_to_headless_hook`] is where it is
-/// explained: one long-lived instance, found by its configured identity, receives every firing
-/// as `Event::Hook`.
+/// A `Headless` point uses one long-lived instance found by its configured identity and receives
+/// every firing as `Event::Hook`; see [`deliver_to_headless_hook`].
 #[allow(clippy::too_many_arguments)]
 fn run_hook(
     point: HookPoint,
@@ -2047,6 +2046,23 @@ fn run_hook(
         log::error!("hook '{point}' replaces a pane, and was fired without one");
         return;
     };
+    if let Some(plugin_id) = plugin_bridge.pane_hook_instance(point, pane_id) {
+        plugin_bridge
+            .update_plugins(
+                vec![(
+                    Some(plugin_id),
+                    Some(client_id),
+                    Event::Hook {
+                        point,
+                        payload: HookPayload::AgentExit(payload),
+                    },
+                )],
+                shutdown_send.clone(),
+            )
+            .context("delivering a pane hook re-entry")
+            .non_fatal();
+        return;
+    }
     let mut run_plugin_or_alias = run_plugin_or_alias.clone();
     run_plugin_or_alias.populate_run_plugin_if_needed(plugin_aliases);
     let cwd = run_plugin_or_alias.get_initial_cwd();
@@ -2061,13 +2077,6 @@ fn run_hook(
     // Merged rather than replaced: a hook declared with its own configuration block keeps it,
     // and the payload wins where the two name the same key.
     let run_plugin = run_plugin.merge_configuration(&Some(payload));
-    // One hook pane per (pane, exit): a point that fires twice for the same moment must not
-    // stack a second screen on the first. Asked of the live plugin map, so an instance the
-    // user has since closed does not count as one already up.
-    if plugin_bridge.plugin_instance_exists(&run_plugin) {
-        log::info!("hook '{point}' is already up for {pane_id:?}");
-        return;
-    }
     let skip_cache = false;
     match plugin_bridge.load_plugin(
         &Some(run_plugin.clone()),
@@ -2078,6 +2087,7 @@ fn run_hook(
         Some(client_id),
     ) {
         Ok((plugin_id, client_id)) => {
+            plugin_bridge.pane_hooks.insert((point, pane_id), plugin_id);
             // The id that addresses the pane the user is looking at, which is the hook pane in
             // front rather than the terminal suppressed behind it. A terminal frame leads with
             // its own id (`TerminalPane::framed_title`) because that is how the pane is named
@@ -2165,8 +2175,8 @@ fn request_context_menu(
 ///
 /// The instance is found by the plugin's *configured* identity, never by the payload: that is
 /// what makes one long-lived instance receive every firing, and it is the deliberate opposite
-/// of `run_hook`'s pane-replacing shape, where the payload is merged into the configuration and
-/// each firing is its own instance.
+/// of `run_hook`'s pane-replacing shape, where the first payload is merged into the configuration
+/// and each pane has its own instance.
 ///
 /// Loaded lazily rather than at session start, because every hook point is opt-in: loading a
 /// plugin into every session for a point most of them never bind would be a cost paid by

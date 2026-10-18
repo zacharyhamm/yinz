@@ -533,6 +533,12 @@ impl PluginMap {
                 .get(&(plugin_id, client_id))
                 .is_some_and(|(_, cancel)| cancel.load(Ordering::Acquire))
     }
+
+    pub(crate) fn has_available_instance(&self, plugin_id: PluginId) -> bool {
+        self.availability.iter().any(|((id, client), unavailable)| {
+            *id == plugin_id && self.contains(*id, *client) && !unavailable.load(Ordering::Acquire)
+        })
+    }
     /// Validate failure identity without locking an isolate that may be executing guest code.
     pub fn contains_generation(&self, plugin_id: PluginId, generation: u64) -> bool {
         self.client_cancellations

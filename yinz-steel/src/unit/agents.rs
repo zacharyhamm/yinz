@@ -1,6 +1,29 @@
 use super::panes_tests::Harness;
 use serde_json::{json, Value};
 
+#[test]
+fn agent_exit_hook_events_keep_string_payloads_and_use_normal_subscriptions() {
+    let mut h = Harness::new(
+        r#"
+        (define received '())
+        (define stop (yinz-on-event "Hook"
+          (lambda (event) (set! received (append received (list event))) #f)))
+        "#,
+    );
+    assert_eq!(h.sent("Subscribe"), vec![json!(["Hook"])]);
+    let firing = json!({"point":"agent_exit", "payload":{
+        "agent_pane_id":"7", "agent_pane_title":"Review", "agent_exit_code":"17",
+        "agent_cwd":"/work", "agent_command":"claude --resume sid", "agent_kind":"claude",
+        "agent_target":"local", "agent_session_id":"sid"
+    }});
+    h.event(json!({"Hook":firing}));
+    h.event(json!({"Hook":firing}));
+    assert_eq!(h.value("received"), json!([firing, firing]));
+    h.eval("(stop)");
+    h.event(json!({"Hook":firing}));
+    assert_eq!(h.value("received"), json!([firing, firing]));
+}
+
 fn manifest(h: &mut Harness, panes: Value) {
     h.event(json!({"PaneUpdate":{"panes":{"0":panes}}}));
 }

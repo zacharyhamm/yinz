@@ -7,6 +7,7 @@ pub use super::generated_api::api::{
         pane_scrollback_response, ActionCompletePayload as ProtobufActionCompletePayload,
         ActivePaneScrollPayload as ProtobufActivePaneScrollPayload,
         AgentEventPayload as ProtobufAgentEventPayload,
+        AgentExitHookPayload as ProtobufAgentExitHookPayload,
         AgentHookPayload as ProtobufAgentHookPayload, AgentInfo as ProtobufAgentInfo,
         AgentSource as ProtobufAgentSource, AgentState as ProtobufAgentState,
         AvailableLayoutInfoPayload as ProtobufAvailableLayoutInfoPayload,
@@ -722,6 +723,11 @@ impl TryFrom<ProtobufEvent> for Event {
                     let point = HookPoint::from_str(&p.point)
                         .map_err(|_| "Malformed hook point for Hook Event")?;
                     let payload = match p.payload {
+                        Some(hook_payload::Payload::AgentExit(exit)) => {
+                            yinz_types::data::HookPayload::AgentExit(
+                                exit.configuration.into_iter().collect(),
+                            )
+                        },
                         Some(hook_payload::Payload::Agent(agent)) => {
                             yinz_types::data::HookPayload::Agent {
                                 pane_id: yinz_types::internal_ids::TerminalId::new(agent.pane_id),
@@ -1505,6 +1511,11 @@ impl TryFrom<Event> for ProtobufEvent {
             }),
             Event::Hook { point, payload } => {
                 let payload = match payload {
+                    yinz_types::data::HookPayload::AgentExit(configuration) => {
+                        hook_payload::Payload::AgentExit(ProtobufAgentExitHookPayload {
+                            configuration: configuration.into_iter().collect(),
+                        })
+                    },
                     yinz_types::data::HookPayload::Agent {
                         pane_id,
                         agent,
@@ -2955,6 +2966,11 @@ fn serialize_mode_update_event() {
 fn serialize_hook_event() {
     use prost::Message;
     let payloads = [
+        yinz_types::data::HookPayload::AgentExit(BTreeMap::from([
+            ("agent_pane_id".into(), "7".into()),
+            ("agent_exit_code".into(), "17".into()),
+            ("agent_command".into(), "claude --resume sid".into()),
+        ])),
         yinz_types::data::HookPayload::Agent {
             pane_id: yinz_types::internal_ids::TerminalId::new(7),
             agent: AgentInfo {

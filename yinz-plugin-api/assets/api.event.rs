@@ -166,7 +166,7 @@ pub struct HookPayload {
     /// The point's snake_case name, as `hooks { }` spells it
     #[prost(string, tag="1")]
     pub point: ::prost::alloc::string::String,
-    #[prost(oneof="hook_payload::Payload", tags="3, 4, 5")]
+    #[prost(oneof="hook_payload::Payload", tags="3, 4, 5, 6")]
     pub payload: ::core::option::Option<hook_payload::Payload>,
 }
 /// Nested message and enum types in `HookPayload`.
@@ -180,7 +180,15 @@ pub mod hook_payload {
         PaneExit(super::PaneExitHookPayload),
         #[prost(message, tag="5")]
         SessionStart(super::SessionStartHookPayload),
+        #[prost(message, tag="6")]
+        AgentExit(super::AgentExitHookPayload),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentExitHookPayload {
+    #[prost(map="string, string", tag="1")]
+    pub configuration: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

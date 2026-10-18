@@ -388,6 +388,7 @@ mod permission_requests;
 pub(crate) mod picker;
 
 pub struct PluginBridge {
+    pub(crate) pane_hooks: HashMap<(yinz_types::input::hooks::HookPoint, PaneId), PluginId>,
     picks: HashMap<PluginId, picker::PendingPick>,
     permission_requests: BTreeMap<u64, permission_requests::PendingPermission>,
     next_permission_request: u64,
@@ -631,6 +632,7 @@ impl PluginBridge {
             watch_generations: Default::default(),
             plugin_map,
             plugin_executor,
+            pane_hooks: HashMap::new(),
             path_to_default_shell,
             next_plugin_id: 0,
             next_load_id: 0,
@@ -867,6 +869,7 @@ impl PluginBridge {
         pid: PluginId,
         plugin_map_deadline: Option<Instant>,
     ) -> Result<()> {
+        self.pane_hooks.retain(|_, plugin_id| *plugin_id != pid);
         self.repl_pipe_owners.remove(&pid);
         self.cancel_plugin_picks(pid);
         let _ = self
@@ -3446,6 +3449,27 @@ impl PluginBridge {
             .map(|plugin_ids| !plugin_ids.is_empty())
             .unwrap_or(false)
     }
+
+    /// Match the launch's pane and hook point, never the changing exit payload or configuration.
+    pub(crate) fn pane_hook_instance(
+        &mut self,
+        point: yinz_types::input::hooks::HookPoint,
+        pane_id: PaneId,
+    ) -> Option<PluginId> {
+        let plugin_id = *self.pane_hooks.get(&(point, pane_id))?;
+        if self.loading_plugins.iter().any(|(id, _)| *id == plugin_id)
+            || self
+                .plugin_map
+                .lock()
+                .unwrap()
+                .has_available_instance(plugin_id)
+        {
+            Some(plugin_id)
+        } else {
+            self.pane_hooks.remove(&(point, pane_id));
+            None
+        }
+    }
     #[cfg(test)]
     pub(crate) fn get_plugin_ids_for_url(&self, url: &str) -> Result<Vec<PluginId>, String> {
         self.get_plugin_ids_for_url_with_configuration(url, None)
@@ -4239,9 +4263,7 @@ pub(crate) fn check_event_permission(
         | EventType::NotificationRequested
         | EventType::ContextMenuRequested
         | EventType::ContextMenuItemSelected
-        // Never broadcast: `deliver_to_headless_hook` addresses it to the one instance of the
-        // plugin the user bound in `hooks { }`, and binding it is the consent. A headless plugin
-        // has no pane to show a permission prompt on, so gating this would mean silence.
+        // Addressed only to the bound hook (including pane re-entry); the binding is consent.
         | EventType::Hook
         // Paths and metadata under the host folder, not contents; see `ScanHostFolder` in
         // `yinz_exports::command_permission` for why these stay open for now.
