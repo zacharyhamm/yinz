@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::{json, Value};
-use syntect::highlighting::{Color, Theme, ThemeSet};
+use syntect::highlighting::{Color, Highlighter, Theme, ThemeSet};
+use syntect::parsing::Scope;
 
 use yinz_types::codex_verified_version as verified_version;
 
@@ -93,6 +94,13 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
     terminal_defaults(&mut snapshot.definitions);
     let Some(theme) = theme else {
         snapshot.theme = "automatic".into();
+        let themes = two_face::theme::extra();
+        for (variant, name) in [
+            ("dark", two_face::theme::EmbeddedThemeName::CatppuccinMocha),
+            ("light", two_face::theme::EmbeddedThemeName::CatppuccinLatte),
+        ] {
+            footer_definitions(themes.get(name), variant, &mut snapshot.definitions);
+        }
         snapshot.availability = Availability::Partial("Codex automatic syntax palette is unresolved; fixed provider colors are mapped and terminal-derived UI colors are mapped after successful terminal replies".into());
         return Ok(());
     };
@@ -111,6 +119,7 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
         }
     };
     definitions(&parsed, &mut snapshot.definitions);
+    footer_definitions(&parsed, "selected", &mut snapshot.definitions);
     snapshot.availability = Availability::Partial("theme scopes and fixed provider colors resolved; terminal-derived surfaces, text, accents and selection are mapped after successful terminal replies".into());
     Ok(())
 }
@@ -297,6 +306,44 @@ fn source(color: Color) -> Option<SourceColor> {
         0 => Some(SourceColor::Index(color.r)),
         1 => Some(SourceColor::Default),
         _ => Some(SourceColor::Rgb(color.r, color.g, color.b)),
+    }
+}
+
+pub(super) fn footer_definitions(theme: &Theme, variant: &str, result: &mut Vec<Definition>) {
+    let highlighter = Highlighter::new(theme);
+    for (token, scopes, fallback) in [
+        (
+            "model",
+            &["entity.name.type", "support.type", "variable"][..],
+            6,
+        ),
+        ("path", &["string", "markup.underline.link"][..], 2),
+    ] {
+        let color = scopes
+            .iter()
+            .find_map(|name| {
+                let scope = Scope::new(name).ok()?;
+                let color = highlighter.style_mod_for_stack(&[scope]).foreground?;
+                // Codex skips terminal-default scopes and tries the next scope.
+                (color.a != 1).then(|| source(color)).flatten()
+            })
+            .unwrap_or(SourceColor::Index(fallback));
+        let color = match color {
+            SourceColor::Rgb(r, g, b) => {
+                let luma = (77 * u16::from(r) + 150 * u16::from(g) + 29 * u16::from(b)) / 256;
+                let soften = |c| ((u16::from(c) * 85 + luma * 15 + 50) / 100) as u8;
+                SourceColor::Rgb(soften(r), soften(g), soften(b))
+            },
+            color => color,
+        };
+        result.push(Definition {
+            token: format!("codex.footer.{variant}.{token}"),
+            channel: Channel::Foreground,
+            color,
+            pair: None,
+            // Candidates become mappings only after observing the startup background.
+            target: None,
+        });
     }
 }
 

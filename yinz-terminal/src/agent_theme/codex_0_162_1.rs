@@ -97,8 +97,43 @@ fn derive(snapshot: &mut AgentThemeSnapshot, fg: Rgb, bg: Rgb) {
                 .map(|(target, rgb)| (d.token.clone(), target.role, rgb))
         })
         .collect();
+    let footer_prefix = if snapshot
+        .definitions
+        .iter()
+        .any(|d| d.token.starts_with("codex.footer.selected."))
+    {
+        "codex.footer.selected."
+    } else if light {
+        "codex.footer.light."
+    } else {
+        "codex.footer.dark."
+    };
+    let footer: Vec<_> = snapshot
+        .definitions
+        .iter()
+        .filter_map(|d| {
+            let role = match d.token.strip_prefix(footer_prefix)? {
+                "model" => Role::Accent,
+                "path" => Role::Success,
+                _ => return None,
+            };
+            Some((d.token.clone(), d.color, role))
+        })
+        .collect();
     for indexed in [false, true] {
         let defs = &mut snapshot.definitions;
+        for (token, source, role) in &footer {
+            let resolved =
+                as_rgb(*source).map_or(*source, |preferred| foreground(preferred, bg, indexed));
+            push(
+                defs,
+                token,
+                Channel::Foreground,
+                resolved,
+                Some((resolved, SourceColor::Default)),
+                *role,
+            );
+        }
         let surfaces = [
             ("codex.terminal.composer-plan", best(composer, indexed)),
             ("codex.terminal.history-prompt", best(history, indexed)),
