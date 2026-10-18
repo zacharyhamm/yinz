@@ -765,3 +765,115 @@ fn claude_presets_and_custom_overrides_map_ui_and_both_diff_channels() {
 
 #[path = "claude_code_tests.rs"]
 mod claude_code;
+
+#[test]
+fn codex_footer_resolves_automatic_bundled_and_custom_scopes() {
+    let dir = tempfile::tempdir().unwrap();
+    // Expected softened colors also come from the pinned provider fixture generator.
+    for (name, variant, model, path) in [
+        (None, "dark", (246, 226, 183), (171, 223, 167)),
+        (None, "light", (213, 144, 48), (72, 154, 54)),
+        (
+            Some("catppuccin-mocha"),
+            "selected",
+            (246, 226, 183),
+            (171, 223, 167),
+        ),
+        (
+            Some("catppuccin-latte"),
+            "selected",
+            (213, 144, 48),
+            (72, 154, 54),
+        ),
+        (Some("custom"), "selected", (236, 210, 168), (193, 227, 185)),
+    ] {
+        write(
+            dir.path(),
+            ".codex/themes/custom.tmTheme",
+            r##"<?xml version="1.0"?><plist version="1.0"><dict><key>settings</key><array>
+          <dict><key>settings</key><dict><key>foreground</key><string>#dddddd</string></dict></dict>
+          <dict><key>scope</key><string>entity.name</string><key>settings</key><dict><key>foreground</key><string>#f0d2a0</string></dict></dict>
+          <dict><key>scope</key><string>support.type</string><key>settings</key><dict><key>foreground</key><string>#ff0000</string></dict></dict>
+          <dict><key>scope</key><string>markup.underline.link</string><key>settings</key><dict><key>foreground</key><string>#bee6b4</string></dict></dict>
+        </array></dict></plist>"##,
+        );
+        let launch = fake_codex(
+            dir.path(),
+            serde_json::json!({"config":{"tui":{"theme":name}},"layers":[]}),
+        );
+        let snapshot = resolve("codex", &launch).unwrap();
+        for (item, (r, g, b)) in [("model", model), ("path", path)] {
+            let definition = snapshot
+                .definitions
+                .iter()
+                .find(|d| d.token == format!("codex.footer.{variant}.{item}"))
+                .unwrap();
+            assert_eq!(
+                definition.color,
+                SourceColor::Rgb(r, g, b),
+                "{name:?}/{item}"
+            );
+            assert_eq!(definition.target, None);
+        }
+    }
+}
+
+#[test]
+fn codex_footer_scope_fallback_skips_default_and_preserves_indexed_colors() {
+    use syntect::highlighting::{Color, StyleModifier, Theme, ThemeItem};
+    let mut theme = Theme::default();
+    let mut definitions = vec![];
+    codex::footer_definitions(&theme, "selected", &mut definitions);
+    assert_eq!(definitions[0].color, SourceColor::Index(6));
+    assert_eq!(definitions[1].color, SourceColor::Index(2));
+    for (scope, color) in [
+        (
+            "entity.name.type",
+            Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 1,
+            },
+        ),
+        (
+            "support.type",
+            Color {
+                r: 14,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
+        ),
+        (
+            "variable",
+            Color {
+                r: 200,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
+        ),
+        (
+            "string",
+            Color {
+                r: 151,
+                g: 0,
+                b: 0,
+                a: 0,
+            },
+        ),
+    ] {
+        theme.scopes.push(ThemeItem {
+            scope: scope.parse().unwrap(),
+            style: StyleModifier {
+                foreground: Some(color),
+                ..StyleModifier::default()
+            },
+        });
+    }
+    definitions.clear();
+    codex::footer_definitions(&theme, "selected", &mut definitions);
+    assert_eq!(definitions[0].color, SourceColor::Index(14));
+    assert_eq!(definitions[1].color, SourceColor::Index(151));
+}

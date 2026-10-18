@@ -43,6 +43,9 @@ fn matches_pinned_provider_fixtures() {
         assert!(observe(&mut snapshot, 10, fixture.foreground));
         assert!(observe(&mut snapshot, 11, fixture.background));
         for (name, expected) in &fixture.colors {
+            if name.starts_with("footer") {
+                continue;
+            }
             let token = if name.ends_with("-accent") {
                 "surface-accent"
             } else {
@@ -65,6 +68,111 @@ fn matches_pinned_provider_fixtures() {
                 fixture.indexed
             );
         }
+    }
+}
+
+#[test]
+fn footer_matches_provider_softening_contrast_and_indexed_fixtures() {
+    let fixtures: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("codex-0.162.1-colors.json")).unwrap();
+    for fixture in fixtures {
+        let colors: BTreeMap<String, SourceColor> =
+            serde_json::from_value(fixture["colors"].clone()).unwrap();
+        for palette in ["mocha", "latte", "custom"] {
+            // A custom theme can itself be named "automatic"; selected candidates still win.
+            let mut snapshot = snapshot();
+            for item in ["model", "path"] {
+                snapshot.definitions.push(Definition {
+                    token: format!("codex.footer.selected.{item}"),
+                    channel: Channel::Foreground,
+                    color: colors[&format!("footer-source.{palette}.{item}")],
+                    pair: None,
+                    target: None,
+                });
+            }
+            observe(
+                &mut snapshot,
+                10,
+                serde_json::from_value(fixture["foreground"].clone()).unwrap(),
+            );
+            observe(
+                &mut snapshot,
+                11,
+                serde_json::from_value(fixture["background"].clone()).unwrap(),
+            );
+            for (item, role) in [("model", Role::Accent), ("path", Role::Success)] {
+                let expected = colors[&format!("footer.{palette}.{item}")];
+                assert!(
+                    snapshot.definitions.iter().any(|d| {
+                        d.token == format!("codex.footer.selected.{item}")
+                            && d.color == expected
+                            && d.pair == Some((expected, SourceColor::Default))
+                            && d.target == Some(role.into())
+                    }),
+                    "{palette}.{item}: {fixture}"
+                );
+            }
+            if palette == "mocha" && fixture["name"] == "light" && fixture["indexed"] == true {
+                // ANSI reduction makes the model and separator identical; keep collision priority.
+                let key = yinz_types::agent::theme::MatchKey {
+                    channel: Channel::Foreground,
+                    color: SourceColor::Index(243),
+                    pair: Some((SourceColor::Index(243), SourceColor::Default)),
+                };
+                assert_eq!(snapshot.compile().0[&key], Some(Role::Muted.into()));
+            }
+        }
+    }
+}
+
+#[test]
+fn automatic_footer_selects_only_the_startup_palette_and_preserves_ansi_fallbacks() {
+    for (background, variant) in [((18, 20, 30), "dark"), ((255, 255, 255), "light")] {
+        let mut snapshot = snapshot();
+        for (variant, model, path) in [("dark", 6, 2), ("light", 14, 10)] {
+            for (item, index) in [("model", model), ("path", path)] {
+                snapshot.definitions.push(Definition {
+                    token: format!("codex.footer.{variant}.{item}"),
+                    channel: Channel::Foreground,
+                    color: SourceColor::Index(index),
+                    pair: None,
+                    target: None,
+                });
+            }
+        }
+        observe(&mut snapshot, 11, background);
+        assert!(snapshot
+            .definitions
+            .iter()
+            .filter(|d| d.token.starts_with("codex.footer."))
+            .all(|d| d.target.is_none()));
+        observe(&mut snapshot, 10, (220, 220, 220));
+        let mapped: Vec<_> = snapshot
+            .definitions
+            .iter()
+            .filter(|d| d.token.starts_with("codex.footer.") && d.target.is_some())
+            .collect();
+        assert_eq!(mapped.len(), 4);
+        assert!(mapped
+            .iter()
+            .all(|d| d.token.starts_with(&format!("codex.footer.{variant}."))));
+        for d in mapped {
+            assert_eq!(d.pair, Some((d.color, SourceColor::Default)));
+            assert_eq!(
+                d.target,
+                Some(
+                    if d.token.ends_with("model") {
+                        Role::Accent
+                    } else {
+                        Role::Success
+                    }
+                    .into()
+                )
+            );
+        }
+        let before = snapshot.clone();
+        assert!(!observe(&mut snapshot, 11, (130, 130, 130)));
+        assert_eq!(before, snapshot);
     }
 }
 
