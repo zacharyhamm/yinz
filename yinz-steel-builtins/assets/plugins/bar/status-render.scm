@@ -124,8 +124,15 @@
   (define focus (apply append (map (lambda (direction)
           (choose (bar-action-keys km (list (bar-direction (if (member direction '("Left" "Right")) "MoveFocusOrTab" "MoveFocus") direction)))
             (lambda (key) (equal? (hash-ref key "bare_key") direction)))) '("Left" "Down" "Up" "Right"))))
+  (define group-ids (foldl (lambda (tab ids)
+        (define group (bar-get tab "group" #f))
+        (define id (if (hash? group) (hash-ref group "id") 0))
+        (if (member id ids) ids (cons id ids))) '() (hash-ref state "tabs")))
+  (define groups (if (and (not (null? focus)) (> (length group-ids) 1))
+      (apply append (map (lambda (action) (bar-own-key (bar-action-keys km (list action))))
+          '("GoToPreviousTabGroup" "GoToNextTabGroup"))) '()))
   (define floating (choose (bar-action-keys km '("ToggleFloatingPanes")) (lambda (key) (bar-equal? key (bar-char-key "f" '("Alt"))))))
-  (define common (bar-common-modifiers (append pane focus sizes floating)))
+  (define common (bar-common-modifiers (append pane focus sizes groups floating)))
   (define multi (and tab (> (hash-ref tab (if (hash-ref tab "are_floating_panes_visible") "selectable_floating_panes_count" "selectable_tiled_panes_count")) 1)))
   (let loop ((forms '(#f #t)))
     (if (null? forms) #f
@@ -138,6 +145,7 @@
           (and (> (hash-ref result "len") start) (list start (hash-ref result "len"))))
         (define pane-range (add (if short "New" "New Pane") pane #f (hash-ref state "newPaneHovered")))
         (when multi (add (if short "Focus" "Change Focus") focus #f #f) (add "Resize" sizes #f #f))
+        (add (if short "Groups" "Switch group") groups #f #f)
         (define floating-range (add "Floating" floating (and tab (hash-ref tab "are_floating_panes_visible")) (hash-ref state "floatingHovered")))
         (if (<= (hash-ref result "len") maximum)
           (and (> (hash-ref result "len") 0) (hash "line" result "newPane" pane-range "floating" floating-range))
@@ -216,7 +224,7 @@
               (line (string-append prefix (base "): Press ") (green (bar-key-label pane-key)) (base ", <") (green (bar-key-label toggle)) (base "> to hide."))))))
         ((equal? mode "Normal") (bar-tip mi (hash-ref state "tipName") maximum))
         (else (if (<= (string-length " -- INTERFACE LOCKED -- ") maximum) (line locked) (empty)))))
-    (else (bar-render-hints mi maximum (lambda (first label keys)
+    (else (bar-render-hints mi maximum #t (lambda (first label keys)
           (if (null? keys) (empty)
             (line (string-append (bar-paint (if first " " " / ") (hash-ref c "base") #f "")
                 (bar-classic-keys keys (colors mi) #f) (base (string-append " " label))))))))))
@@ -246,7 +254,7 @@
               (let ((separator (group-separator mi remaining)))
                 (when separator
                   (set! result (hash-insert result "line" (bar-concat left separator
-                        (bar-render-hints mi (- remaining (hash-ref separator "len"))
+                        (bar-render-hints mi (- remaining (hash-ref separator "len")) #f
                           (lambda (first label keys) (bar-shortcut mi label keys #f 2 #f #f #f))))))))))
           (hash-insert result "line" (hash-insert (hash-ref result "line") "part"
               (string-append (hash-ref (hash-ref result "line") "part") (bar-fill mi)))))))))

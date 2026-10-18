@@ -1196,3 +1196,7 @@ mod agents_hook_traffic;
 #[cfg(test)]
 #[path = "unit/agents_focus_cycle.rs"]
 mod agents_focus_cycle;
+
+#[cfg(test)]
+#[path = "unit/tab_groups.rs"]
+mod tab_groups;

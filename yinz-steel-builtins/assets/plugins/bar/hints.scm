@@ -3,7 +3,7 @@
 
 (define (hint long short keys) (list long short keys))
 (define (search-input byte) (hash "SearchInput" (hash "input" (list byte))))
-(define (bar-hints-for-mode mi)
+(define (bar-hints-for-mode mi show-group-navigation)
   (define original (bar-mode-keymap mi))
   (define base (hash-ref mi "base_mode"))
   (define exits (bar-action-keys original (list (bar-switch-mode (if (json-null? base) "Normal" base)))))
@@ -50,7 +50,7 @@
     ((equal? mode "Tab")
       (list (hint "New" "New" (doing (hash "NewTab" (hash))))
         (hint "New group" "Group" (doing "NewTabGroup"))
-        (hint "Switch group" "Groups" (each '("GoToPreviousTabGroup" "GoToNextTabGroup")))
+        (hint "Switch group" "Groups" (if show-group-navigation (each '("GoToPreviousTabGroup" "GoToNextTabGroup")) '()))
         (hint "Change focus" "Move" (append (preferring "GoToPreviousTab" "Left") (preferring "GoToNextTab" "Right")))
         (hint "Close" "Close" (doing "CloseTab"))
         (hint "Rename" "Rename" (doing (bar-switch-mode "RenameTab")))
@@ -120,8 +120,8 @@
     ((member mode '("Normal" "Locked" "Prompt")) '())
     (else (error (string-append "Unknown input mode: " mode)))))
 
-(define (bar-render-hints mi maximum renderer)
-  (define hints (bar-hints-for-mode mi))
+(define (bar-render-hints mi maximum show-group-navigation renderer)
+  (define hints (bar-hints-for-mode mi show-group-navigation))
   (define (complete index)
     (foldl (lambda (hint result)
         (bar-concat result (renderer (= (hash-ref result "len") 0) (list-ref hint index) (caddr hint))))
