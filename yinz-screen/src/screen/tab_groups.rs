@@ -1,6 +1,6 @@
 use super::Screen;
 use crate::{plugins::PluginInstruction, route::NotificationEnd, ClientId};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{
     input::actions::Action,
@@ -19,7 +19,30 @@ impl Screen {
         let id = *self.tab_group_ids.get(&tab)?;
         Some(TabGroupInfo {
             id,
-            name: self.tab_groups.get(&id)?.name.clone(),
+            name: self.tab_group_name(id)?,
+        })
+    }
+
+    pub(super) fn tab_group_name(&self, id: u32) -> Option<String> {
+        let group = self.tab_groups.get(&id)?;
+        let mut seen = HashSet::new();
+        let projects: Vec<_> = self
+            .group_tabs(id)
+            .into_iter()
+            .flat_map(|tab| {
+                self.tabs[&tab]
+                    .get_all_pane_ids()
+                    .into_iter()
+                    .filter_map(|pane| self.pane_projects.get(&pane))
+                    .map(|name| yinz_types::text::clean_string_from_control_and_linebreak(name))
+                    .collect::<BTreeSet<_>>()
+            })
+            .filter(|name| !name.trim().is_empty() && seen.insert(name.clone()))
+            .collect();
+        Some(if projects.is_empty() {
+            group.name.clone()
+        } else {
+            projects.join(" + ")
         })
     }
 

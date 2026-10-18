@@ -26,6 +26,75 @@ fn grouped_screen() -> Screen {
 }
 
 #[test]
+fn group_names_follow_distinct_projects_in_tab_order() {
+    let mut screen = grouped_screen();
+    screen.pane_projects = [(1, "x"), (3, "y"), (2, "z"), (4, "z")]
+        .into_iter()
+        .map(|(id, name)| (PaneId::Terminal(TerminalId::new(id)), name.to_owned()))
+        .collect();
+    screen
+        .get_tab_by_id_mut(TabId::new(0))
+        .unwrap()
+        .rename_by_user("notes".into());
+    assert_eq!(screen.tab_group_info(TabId::new(0)).unwrap().name, "x + y");
+    assert_eq!(screen.tab_group_name(1).unwrap(), "z");
+    screen.move_group_tab(TabId::new(0), true).unwrap();
+    assert_eq!(screen.tab_group_name(0).unwrap(), "y + x");
+    screen.close_tab_by_id(TabId::new(2)).unwrap();
+    assert_eq!(screen.tab_group_name(0).unwrap(), "x");
+    screen
+        .pane_projects
+        .remove(&PaneId::Terminal(TerminalId::new(1)));
+    assert_eq!(screen.tab_group_name(0).unwrap(), "Group 0");
+}
+
+#[test]
+fn default_group_uses_projects_and_falls_back_when_none_are_known() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    assert_eq!(screen.tab_group_name(0).unwrap(), "Default");
+    screen
+        .pane_projects
+        .insert(PaneId::Terminal(TerminalId::new(1)), "x".into());
+    screen
+        .pane_projects
+        .insert(PaneId::Terminal(TerminalId::new(99)), "unrelated".into());
+    assert_eq!(screen.tab_group_name(0).unwrap(), "x");
+    screen
+        .pane_projects
+        .insert(PaneId::Terminal(TerminalId::new(1)), "\n\r".into());
+    assert_eq!(screen.tab_group_name(0).unwrap(), "Default");
+}
+
+#[test]
+fn group_names_include_each_project_within_a_tab_without_branch_labels() {
+    let mut screen = grouped_screen();
+    screen
+        .get_tab_by_id_mut(TabId::new(0))
+        .unwrap()
+        .horizontal_split(
+            PaneId::Terminal(TerminalId::new(9)),
+            None,
+            None,
+            CLIENT,
+            None,
+            None,
+        )
+        .unwrap();
+    screen
+        .pane_projects
+        .insert(PaneId::Terminal(TerminalId::new(1)), "x".into());
+    screen
+        .pane_projects
+        .insert(PaneId::Terminal(TerminalId::new(9)), "y".into());
+    screen
+        .tab_projects
+        .insert(TabId::new(0), "x:main + y:topic".into());
+    assert_eq!(screen.tab_group_name(0).unwrap(), "x + y");
+}
+
+#[test]
 fn group_navigation_uses_local_order_and_remembers_tabs() {
     let mut screen = grouped_screen();
     screen.switch_tab_next(None, true, CLIENT).unwrap();
@@ -579,6 +648,10 @@ fn saved_groups_round_trip_names_order_membership_and_preferred_tabs() {
             &mut HashSet::new(),
         )
         .unwrap();
+    screen
+        .pane_projects
+        .insert(PaneId::Terminal(TerminalId::new(1)), "project".into());
+    assert_eq!(screen.tab_group_name(0).unwrap(), "project");
     let metadata = screen.get_layout_metadata(None, None);
     let (raw, _) =
         yinz_session::session_serialization::serialize_session_layout(metadata.into()).unwrap();

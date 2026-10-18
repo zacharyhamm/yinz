@@ -330,6 +330,25 @@ fn a_guarded_session_with_nobody_attached_waits_for_a_client() {
     wait_for_guard(&yinz);
 
     yinz.detach_main_client();
+    // The server drops the connection before the screen processes its detach instruction.
+    let deadline = std::time::Instant::now() + yinz_integration_tests::default_timeout();
+    loop {
+        let (status, clients) = yinz.run_cli_action_reporting(CliAction::ListClients);
+        assert_eq!(status, 0, "{clients}");
+        assert!(clients.contains("CLIENT_ID"), "{clients}");
+        if clients
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+            == 1
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "screen still has attached clients: {clients}"
+        );
+    }
     terminal.exit(Some(0));
 
     let client = yinz.attach_client(Size { cols: 80, rows: 24 });

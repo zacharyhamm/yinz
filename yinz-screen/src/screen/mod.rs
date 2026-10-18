@@ -4721,7 +4721,15 @@ impl Screen {
                 tiled_panes.into_iter().map(|(_, pane)| pane).collect(),
                 floating_panes.into_iter().map(|(_, pane)| pane).collect(),
             );
-            let group = self.tab_group_info(*tab_index);
+            // Persist the fallback, so derived project names do not replace it on restore.
+            let group = self.tab_group_ids.get(tab_index).and_then(|id| {
+                self.tab_groups
+                    .get(id)
+                    .map(|group| yinz_types::tab_bar::TabGroupInfo {
+                        id: *id,
+                        name: group.name.clone(),
+                    })
+            });
             let focused = group.as_ref().is_some_and(|group| {
                 first_client_id
                     .and_then(|client| self.preferred_group_tab(group.id, client, false))

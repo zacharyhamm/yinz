@@ -5455,3 +5455,26 @@ fn palette_tab_group_actions_capture_identity_and_confirm_closure() {
         Action::CloseTabGroup { id: 0 }
     );
 }
+
+#[test]
+fn palette_closes_groups_by_project_name_but_edits_the_fallback() {
+    let mut screen = screen();
+    screen
+        .pane_projects
+        .insert(PaneId::Terminal(TerminalId::new(1)), "project".into());
+    screen.log_and_report_session_state().unwrap();
+    let renders = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "Close tab group");
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+    assert!(
+        frame.contains("Close project (1 tabs, 1 panes)?"),
+        "{frame}"
+    );
+    screen.close_command_palette(CLIENT);
+    palette_search(&mut screen, "Rename tab group");
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+    assert!(frame.contains("Default"), "{frame}");
+}
