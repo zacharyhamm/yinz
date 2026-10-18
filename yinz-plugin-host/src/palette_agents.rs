@@ -109,6 +109,40 @@ fn execute(
     let choices = |title: String, choices| Ok(AgentReply::Choices { title, choices });
     match &request.action {
         History(_) => unreachable!("handled above"),
+        NewProject { kind } => {
+            if request.values.is_empty() {
+                return Ok(AgentReply::Form {
+                    title: format!("Spawn {kind} agent in new project"),
+                    labels: vec![
+                        "Project name".into(),
+                        "Destination directory (absolute local path)".into(),
+                    ],
+                    submit: "Create and launch".into(),
+                    action: request.action.clone(),
+                });
+            }
+            let [name, destination] = request.values.as_slice() else {
+                return Err("Project name and destination directory are required".into());
+            };
+            if name.trim().is_empty() || destination.trim().is_empty() {
+                return Err("Project name and destination directory are required".into());
+            }
+            current_source(request, senders)?;
+            Ok(AgentReply::Launched(agent_control::control_agent(
+                yinz_types::agent::control::AgentRequest::SpawnNewProject {
+                    name: name.clone(),
+                    destination: destination.into(),
+                    spec: AgentSpawnSpec {
+                        kind: Some(kind.clone()),
+                        ..Default::default()
+                    },
+                    placement: AgentPlacement::Automatic,
+                },
+                request.client,
+                senders,
+                data,
+            )))
+        },
         Start { kind, project } => {
             let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let action = match project.as_ref().filter(|name| registry.contains_key(*name)) {
@@ -206,10 +240,11 @@ fn execute(
             path,
         } => {
             let branch = if path.is_none() {
-                let Some(value) = request.value.as_ref() else {
+                let Some(value) = request.values.first() else {
                     return Ok(AgentReply::Form {
                         title: "Create new worktree".into(),
-                        label: "Branch name".into(),
+                        labels: vec!["Branch name".into()],
+                        submit: "Launch".into(),
                         action: request.action.clone(),
                     });
                 };
@@ -230,7 +265,7 @@ fn execute(
             execute(
                 &AgentRequest {
                     action,
-                    value: None,
+                    values: vec![],
                     ..request.clone()
                 },
                 senders,

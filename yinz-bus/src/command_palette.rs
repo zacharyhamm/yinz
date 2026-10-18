@@ -94,13 +94,16 @@ pub struct AgentRequest {
     pub step: u64,
     pub source: yinz_types::data::PaneInfo,
     pub action: AgentAction,
-    pub value: Option<String>,
+    pub values: Vec<String>,
     pub active: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
 pub enum AgentAction {
     History(HistoryAction),
+    NewProject {
+        kind: String,
+    },
     Start {
         kind: String,
         project: Option<String>,
@@ -154,7 +157,8 @@ pub enum AgentReply {
     },
     Form {
         title: String,
-        label: String,
+        labels: Vec<String>,
+        submit: String,
         action: AgentAction,
     },
     Launched(yinz_types::agent::control::AgentResponse),

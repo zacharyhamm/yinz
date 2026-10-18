@@ -271,7 +271,7 @@ impl Screen {
                 None,
             );
         } else {
-            self.request_palette_agent(client, AgentAction::History(action), None);
+            self.request_palette_agent(client, AgentAction::History(action), vec![]);
         }
     }
 
@@ -301,7 +301,7 @@ impl Screen {
                     {
                         *from = Some(first);
                         let action = browser.action.clone();
-                        self.request_palette_agent(client, AgentAction::History(action), None);
+                        self.request_palette_agent(client, AgentAction::History(action), vec![]);
                         return;
                     }
                 }
@@ -486,7 +486,7 @@ impl Screen {
             semantic: true,
             status: Some("Loading…".into()),
         }]);
-        self.request_palette_agent(client, AgentAction::History(action), None);
+        self.request_palette_agent(client, AgentAction::History(action), vec![]);
     }
 
     pub(super) fn palette_history_tick(
@@ -554,7 +554,7 @@ impl Screen {
                     };
                 }
             }
-            self.request_palette_agent(client, AgentAction::History(action), None);
+            self.request_palette_agent(client, AgentAction::History(action), vec![]);
         }
     }
 
@@ -695,7 +695,7 @@ impl Screen {
         match &action {
             HistoryAction::Resume { .. } => {
                 state.agents.cancel();
-                self.request_palette_agent(client, AgentAction::History(action), None)
+                self.request_palette_agent(client, AgentAction::History(action), vec![])
             },
             HistoryAction::Run { id, .. } if matches!(&browser.action, HistoryAction::Run { id: current, .. } if current == id) =>
             {
@@ -705,7 +705,7 @@ impl Screen {
                 browser.action = action.clone();
                 state.widget.set_query(String::new());
                 state.agents.cancel();
-                self.request_palette_agent(client, AgentAction::History(action), None);
+                self.request_palette_agent(client, AgentAction::History(action), vec![]);
             },
             HistoryAction::Hit { .. } => {
                 let live = browser.live.clone();

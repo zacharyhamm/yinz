@@ -860,6 +860,75 @@ fn command_palette_launches_agent_in_selected_worktree_and_focuses_it() {
     yinz.quit();
 }
 
+#[test]
+fn command_palette_creates_a_project_and_focuses_its_agent() {
+    use agent_proto::store;
+    use yinz_storage::data_access::DataAccess;
+    let test_root = yinz_integration_tests::test_env::init();
+    let data = DataAccess::sqlite(&test_root.join("data"));
+    for definition in store::shared_defs() {
+        data.plugin_data()
+            .define_entity(store::SHARED, "test", &definition, false)
+            .unwrap();
+    }
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().canonicalize().unwrap().join("new-app");
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready", |s| s.contains("$"));
+    palette_query(&yinz, "Spawn claude agent in new project…");
+    yinz.wait_until("new project form", |s| {
+        s.contains("Project name") && s.contains("Destination directory")
+    });
+    assert!(!destination.exists());
+    yinz.send_stdin(b"new-app");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(destination.to_str().unwrap().as_bytes());
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    let agent = yinz.expect_pty_spawn();
+    let command = agent.run_command();
+    assert_eq!(command.cwd.as_ref(), Some(&destination));
+    assert_eq!(
+        yinz_types::agent::agent_kind_of(&command.command, &command.args).as_deref(),
+        Some("claude")
+    );
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&destination)
+        .args(["symbolic-ref", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "refs/heads/main"
+    );
+    let rows = data
+        .plugin_data()
+        .fetch(
+            store::SHARED,
+            &yinz_types::plugin_data::FetchRequest::entity("project"),
+        )
+        .unwrap();
+    let projects = agent_proto::projects::from_rows(&rows);
+    assert_eq!(projects["new-app"].root, destination.to_str().unwrap());
+    agent.output(b"NEW PROJECT AGENT READY\r\n");
+    yinz.wait_until("palette closes after project launch", |s| {
+        s.contains("NEW PROJECT AGENT READY") && !s.contains("Create and launch")
+    });
+    yinz.send_stdin(b"project-agent-input");
+    agent.wait_for_stdin("new project agent is focused", |bytes| {
+        bytes.ends_with(b"project-agent-input")
+    });
+    assert!(shell.stdin_bytes().is_empty());
+    yinz.quit();
+}
+
 fn project_note_editor_flow(size: yinz_integration_tests::Size) {
     use yinz_cli::notes_todos::NotesTodos;
     use yinz_types::input::command::TerminalAction;

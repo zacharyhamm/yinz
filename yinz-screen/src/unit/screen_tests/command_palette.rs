@@ -3200,6 +3200,19 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
         screen.toggle_command_palette(CLIENT);
         screen.command_palette_handles_input(
             &None,
+            format!("{kind} new project").as_bytes(),
+            false,
+            CLIENT,
+        );
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        let request = next();
+        assert!(
+            matches!(&request.action, AgentAction::NewProject { kind: selected } if selected == kind)
+        );
+        screen.close_command_palette(CLIENT);
+        screen.toggle_command_palette(CLIENT);
+        screen.command_palette_handles_input(
+            &None,
             format!("{kind} worktree").as_bytes(),
             false,
             CLIENT,
@@ -3267,7 +3280,8 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
         step: form.step,
         reply: Ok(AgentReply::Form {
             title: "Create new worktree".into(),
-            label: "Branch name".into(),
+            labels: vec!["Branch name".into()],
+            submit: "Launch".into(),
             action: action.clone(),
         }),
     });
@@ -3281,12 +3295,102 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
         step: form.step,
         reply: Ok(AgentReply::Form {
             title: "Create new worktree".into(),
-            label: "Branch name".into(),
+            labels: vec!["Branch name".into()],
+            submit: "Launch".into(),
             action,
         }),
     });
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(snapshot.contains("my-branch"), "{snapshot}");
+}
+
+#[test]
+fn native_new_project_form_preserves_both_fields_and_guards_submission() {
+    use yinz_bus::command_palette::{AgentAction, AgentReply, Instruction};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (tx, rx) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || {
+        rx.try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::PaletteAgent(request) => Some(*request),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let show_form = |screen: &mut Screen, request: &yinz_bus::command_palette::AgentRequest| {
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply: Ok(AgentReply::Form {
+                title: "New project".into(),
+                labels: vec!["Project name".into(), "Destination directory".into()],
+                submit: "Create and launch".into(),
+                action: request.action.clone(),
+            }),
+        });
+    };
+    screen.toggle_command_palette(CLIENT);
+    screen.command_palette_handles_input(&None, b"claude new project", false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    show_form(&mut screen, &next());
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Project name"), "{snapshot}");
+    assert!(snapshot.contains("Destination directory"), "{snapshot}");
+    assert!(snapshot.contains("Create and launch"), "{snapshot}");
+    screen.command_palette_handles_input(&None, b"new-app", false, CLIENT);
+    palette_key(&mut screen, BareKey::Tab);
+    screen.command_palette_handles_input(&None, b"/tmp/new-app", false, CLIENT);
+    palette_key(&mut screen, BareKey::Esc);
+    palette_key(&mut screen, BareKey::Enter);
+    show_form(&mut screen, &next());
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("new-app"), "{snapshot}");
+    assert!(snapshot.contains("/tmp/new-app"), "{snapshot}");
+    for _ in 0..3 {
+        palette_key(&mut screen, BareKey::Enter);
+    }
+    let submitted = next();
+    assert!(matches!(submitted.action, AgentAction::NewProject { .. }));
+    assert_eq!(submitted.values, ["new-app", "/tmp/new-app"]);
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(!rx
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PluginInstruction::PaletteAgent(_))));
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: submitted.opening,
+        step: submitted.step,
+        reply: Ok(AgentReply::Launched(
+            yinz_types::agent::control::AgentResponse {
+                outcome: yinz_types::agent::control::AgentOutcome::Rejected,
+                message: Some("project destination already exists".into()),
+                ..Default::default()
+            },
+        )),
+    });
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        snapshot.contains("project destination already exists"),
+        "{snapshot}"
+    );
+    assert!(snapshot.contains("new-app"), "{snapshot}");
+    assert!(snapshot.contains("/tmp/new-app"), "{snapshot}");
+    palette_key(&mut screen, BareKey::Enter);
+    let submitted = next();
+    assert_eq!(submitted.values, ["new-app", "/tmp/new-app"]);
+    palette_key(&mut screen, BareKey::Esc);
+    assert!(!submitted.active.load(std::sync::atomic::Ordering::Acquire));
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(!rx
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PluginInstruction::PaletteAgent(_))));
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Launch already submitted"), "{snapshot}");
 }
 
 #[test]

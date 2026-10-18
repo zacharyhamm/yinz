@@ -407,7 +407,7 @@ pin_context_to_instruction! {
         PluginInstruction::PaletteAgent(Box::new(crate::command_palette::AgentRequest {
             client: ClientId::new(1), opening: 1, step: 1,
             source: Default::default(), action: crate::command_palette::AgentAction::Fork,
-            value: None, active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            values: vec![], active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })),
         "Update"
     ), (

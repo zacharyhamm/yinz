@@ -21,7 +21,7 @@ pub(super) struct State {
     actions: HashMap<String, AgentAction>,
     pub(super) browsers: HashMap<u64, super::history::Browser>,
     submitted: bool,
-    pub(super) values: HashMap<String, String>,
+    pub(super) values: HashMap<String, Vec<String>>,
 }
 
 impl State {
@@ -39,8 +39,8 @@ impl State {
     }
     pub(super) fn save_form(&mut self, widget: &crate::ui::command_palette::CommandPalette) {
         if let Some((id, values)) = widget.form_values() {
-            if let (Some(action), Some(value)) = (self.actions.get(id), values.first()) {
-                self.values.insert(format!("{action:?}"), value.clone());
+            if let Some(action) = self.actions.get(id) {
+                self.values.insert(format!("{action:?}"), values);
             }
         }
     }
@@ -62,7 +62,7 @@ impl Screen {
         &mut self,
         client: ClientId,
         action: AgentAction,
-        value: Option<String>,
+        values: Vec<String>,
     ) {
         let Some(state) = self.command_palettes.get_mut(&client) else {
             return;
@@ -83,7 +83,8 @@ impl Screen {
                 | AgentAction::Duplicate { .. }
                 | AgentAction::Launch { .. }
                 | AgentAction::History(yinz_bus::command_palette::HistoryAction::Resume { .. })
-        ) || matches!(&action, AgentAction::Checkout { path, .. } if path.is_some() || value.is_some());
+        ) || matches!(&action, AgentAction::Checkout { path, .. } if path.is_some() || !values.is_empty())
+            || matches!(&action, AgentAction::NewProject { .. } if !values.is_empty());
         state.agents.step += 1;
         let active = Arc::new(AtomicBool::new(true));
         state.agents.pending = Some((state.widget.view, active.clone(), action.clone()));
@@ -95,7 +96,7 @@ impl Screen {
             step: state.agents.step,
             source: state.agents.source.clone(),
             action,
-            value,
+            values,
             active,
         };
         if matches!(&request.action, AgentAction::History(action) if !matches!(action, yinz_bus::command_palette::HistoryAction::Resume { .. }))
@@ -157,15 +158,15 @@ impl Screen {
             }
             return true;
         }
-        let (id, value) = match outcome {
-            Outcome::Activate(id) => (id, None),
-            Outcome::Submit { id, values } => (id, values.first().cloned()),
+        let (id, values) = match outcome {
+            Outcome::Activate(id) => (id, vec![]),
+            Outcome::Submit { id, values } => (id, values.clone()),
             _ => return false,
         };
         let Some(action) = state.agents.actions.get(id).cloned() else {
             return false;
         };
-        self.request_palette_agent(client, action, value);
+        self.request_palette_agent(client, action, values);
         true
     }
 
@@ -257,7 +258,8 @@ impl Screen {
             },
             Ok(AgentReply::Form {
                 title,
-                label,
+                labels,
+                submit,
                 action,
             }) => {
                 state.agents.submitted = false;
@@ -267,16 +269,23 @@ impl Screen {
                 state.widget.open_form(Form::new(
                     id,
                     title,
-                    vec![Field::text(
-                        &label,
-                        state
-                            .agents
-                            .values
-                            .get(&format!("{action:?}"))
-                            .map(String::as_str)
-                            .unwrap_or(""),
-                    )],
-                    "Launch",
+                    labels
+                        .iter()
+                        .enumerate()
+                        .map(|(index, label)| {
+                            Field::text(
+                                label,
+                                state
+                                    .agents
+                                    .values
+                                    .get(&format!("{action:?}"))
+                                    .and_then(|values| values.get(index))
+                                    .map(String::as_str)
+                                    .unwrap_or(""),
+                            )
+                        })
+                        .collect(),
+                    &submit,
                     false,
                 ));
             },

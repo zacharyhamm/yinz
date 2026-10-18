@@ -60,7 +60,7 @@ fn request(root: &Path, action: AgentAction) -> AgentRequest {
             ..Default::default()
         },
         action,
-        value: None,
+        values: vec![],
         active: Arc::new(AtomicBool::new(true)),
     }
 }
@@ -121,6 +121,82 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
 }
 
 #[test]
+fn palette_new_project_form_validation_and_launch_use_the_shared_backend() {
+    let (repo, data) = repository();
+    let parent = tempfile::tempdir().unwrap();
+    let destination = parent.path().canonicalize().unwrap().join("new-app");
+    let mut create = request(
+        repo.path(),
+        AgentAction::NewProject {
+            kind: "claude".into(),
+        },
+    );
+    let (reply, commands) = run(&create, &data);
+    assert!(commands.is_empty());
+    let AgentReply::Form { labels, submit, .. } = reply.unwrap() else {
+        panic!("expected new project form");
+    };
+    assert_eq!(labels.len(), 2);
+    assert_eq!(submit, "Create and launch");
+    for values in [
+        vec!["new-app".into()],
+        vec![String::new(), destination.display().to_string()],
+        vec!["new-app".into(), " ".into()],
+    ] {
+        create.values = values;
+        let (reply, commands) = run(&create, &data);
+        assert!(reply.unwrap_err().contains("required"));
+        assert!(commands.is_empty());
+        assert!(!destination.exists());
+    }
+    for (name, path, error) in [
+        ("new-app", "relative/path".into(), "absolute"),
+        (
+            "new-app",
+            parent.path().display().to_string(),
+            "already exists",
+        ),
+        (
+            "project",
+            destination.display().to_string(),
+            "already exists",
+        ),
+    ] {
+        create.values = vec![name.into(), path];
+        let (reply, commands) = run(&create, &data);
+        let AgentReply::Launched(response) = reply.unwrap() else {
+            panic!("expected backend rejection");
+        };
+        assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+        assert!(response.message.unwrap().contains(error));
+        assert!(commands.is_empty());
+        assert!(!destination.exists());
+    }
+    create.values = vec!["new-app".into(), destination.display().to_string()];
+    create
+        .active
+        .store(false, std::sync::atomic::Ordering::Release);
+    assert!(run(&create, &data).0.unwrap_err().contains("cancelled"));
+    assert!(!destination.exists());
+    create
+        .active
+        .store(true, std::sync::atomic::Ordering::Release);
+    let (reply, commands) = run(&create, &data);
+    assert!(
+        matches!(&reply, Ok(AgentReply::Launched(r)) if r.outcome == AgentOutcome::Ok),
+        "{reply:?}"
+    );
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].cwd.as_ref(), Some(&destination));
+    assert_eq!(
+        git(&destination, &["symbolic-ref", "HEAD"]).trim(),
+        "refs/heads/main"
+    );
+    let projects = project_data::projects::from_rows(&agent_control::projects(&data).unwrap());
+    assert_eq!(projects["new-app"].root, destination.to_str().unwrap());
+}
+
+#[test]
 fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
     let (repo, data) = repository();
     let external = tempfile::tempdir().unwrap();
@@ -169,9 +245,9 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
         run(&create, &data).0.unwrap(),
         AgentReply::Form { .. }
     ));
-    create.value = Some(String::new());
+    create.values = vec![String::new()];
     assert!(run(&create, &data).0.unwrap_err().contains("required"));
-    create.value = Some("review".into());
+    create.values = vec!["review".into()];
     let (reply, commands) = run(&create, &data);
     assert!(
         matches!(&reply, Ok(AgentReply::Launched(r)) if r.outcome == AgentOutcome::Ok),
@@ -259,7 +335,7 @@ fn palette_worktree_base_prefers_main_and_falls_back_to_primary_head() {
                     path: None,
                 },
             );
-            create.value = Some("review".into());
+            create.values = vec!["review".into()];
             let (reply, commands) = run(&create, &data);
             assert!(
                 matches!(&reply, Ok(AgentReply::Launched(r)) if r.outcome == AgentOutcome::Ok),
