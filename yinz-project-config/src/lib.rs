@@ -1,5 +1,7 @@
-//! Agent-exit configuration is data. Reading it never launches a command or grants permissions.
+//! Project configuration is data. Reading it never launches a configured command or grants permissions.
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use yinz_types::configuration::Node;
 
 #[cfg(unix)]
 pub mod bubblewrap;
@@ -14,15 +16,19 @@ pub fn root_key(root: &std::path::Path) -> String {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub default_branch: Option<String>,
+    /// Plugin-owned top-level nodes, excluding the host's `agent_exit` block.
+    #[serde(default)]
+    pub sections: BTreeMap<String, Node>,
 }
 
 impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
             default_branch: Some("main".into()),
+            sections: BTreeMap::new(),
         }
     }
 }
@@ -32,13 +38,24 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
         .parse()
         .map_err(|e| format!(".yinz/agent-exit.kdl: {e}"))?;
     let mut config = ProjectConfig::default();
-    if doc.nodes().is_empty() {
+    let mut agent_exit = None;
+    for node in doc.nodes() {
+        let name = node.name().value();
+        let duplicate = if name == "agent_exit" {
+            agent_exit.replace(node).is_some()
+        } else {
+            config
+                .sections
+                .insert(name.into(), section(node)?)
+                .is_some()
+        };
+        if duplicate {
+            return Err(format!(".yinz/agent-exit.kdl: duplicate section {name}"));
+        }
+    }
+    let Some(node) = agent_exit else {
         return Ok(config);
-    }
-    if doc.nodes().len() != 1 || doc.nodes()[0].name().value() != "agent_exit" {
-        return Err(".yinz/agent-exit.kdl must contain only one agent_exit block".into());
-    }
-    let node = &doc.nodes()[0];
+    };
     if !node.entries().is_empty() || node.ty().is_some() {
         return Err("agent_exit takes a block, not arguments or a type".into());
     }
@@ -65,6 +82,47 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
         config.default_branch = Some(branch.to_owned());
     }
     Ok(config)
+}
+
+fn section(node: &kdl::KdlNode) -> Result<Node, String> {
+    fn value(value: &kdl::KdlValue) -> Result<serde_json::Value, String> {
+        Ok(if let Some(value) = value.as_string() {
+            value.into()
+        } else if let Some(value) = value.as_bool() {
+            value.into()
+        } else if let Some(value) = value.as_i64() {
+            value.into()
+        } else if let Some(value) = value.as_f64() {
+            if !value.is_finite() {
+                return Err(".yinz/agent-exit.kdl: section numbers must be finite".into());
+            }
+            value.into()
+        } else {
+            serde_json::Value::Null
+        })
+    }
+    Ok(Node {
+        name: node.name().value().into(),
+        arguments: node
+            .entries()
+            .iter()
+            .filter(|e| e.name().is_none())
+            .map(|e| value(e.value()))
+            .collect::<Result<_, _>>()?,
+        properties: node
+            .entries()
+            .iter()
+            .filter_map(|e| {
+                e.name()
+                    .map(|n| value(e.value()).map(|v| (n.value().into(), v)))
+            })
+            .collect::<Result<_, _>>()?,
+        children: node
+            .children()
+            .map(|c| c.nodes().iter().map(section).collect::<Result<_, _>>())
+            .transpose()?
+            .unwrap_or_default(),
+    })
 }
 
 fn valid_branch(branch: &str) -> bool {

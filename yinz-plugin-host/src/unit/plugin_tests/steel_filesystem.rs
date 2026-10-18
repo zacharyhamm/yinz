@@ -526,29 +526,38 @@ fn steel_project_configuration_requires_write_permission_and_revision() {
         .success());
     std::fs::create_dir(roots.host.path().join(".yinz")).unwrap();
     let path = roots.host.path().join(".yinz/agent-exit.kdl");
-    let source = "agent_exit { default_branch \"main\"; }";
-    let replacement = "agent_exit { default_branch \"trunk\"; }";
+    let source =
+        "agent_exit { default_branch \"main\"; }\nmerge_queue { ci_command \"cargo x ci check\"; }";
+    let replacement = "agent_exit { default_branch \"trunk\"; }\nmerge_queue { merge \"ff\"; }";
     std::fs::write(&path, source).unwrap();
     let readonly = [PermissionType::ReadFiles]
         .into_iter()
         .collect::<HashSet<_>>();
+    let snapshot = run(
+        &roots,
+        readonly.clone(),
+        &[json!({"ProjectConfigRead":{"directory":"."}})],
+    )
+    .unwrap();
+    assert_eq!(snapshot["source"], json!(source));
     assert_eq!(
-        run(
-            &roots,
-            readonly.clone(),
-            &[json!({"ProjectConfigRead":{"directory":"."}})]
-        )
-        .unwrap()["source"],
-        json!(source)
+        snapshot["config"]["sections"]["merge_queue"],
+        json!({
+            "name": "merge_queue", "arguments": [], "properties": {}, "children": [
+                {"name": "ci_command", "arguments": ["cargo x ci check"], "properties": {}, "children": []}
+            ]
+        })
     );
     let command =
         json!({"ProjectConfigWrite":{"directory":".","source":replacement,"expected":source}});
     let error = run(&roots, readonly, std::slice::from_ref(&command)).unwrap_err();
     assert!(error.contains("WriteFiles"), "{error}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    let snapshot = run(&roots, permissions(), std::slice::from_ref(&command)).unwrap();
+    assert_eq!(snapshot["source"], json!(replacement));
     assert_eq!(
-        run(&roots, permissions(), std::slice::from_ref(&command)).unwrap()["source"],
-        json!(replacement)
+        snapshot["config"]["sections"]["merge_queue"]["children"][0]["arguments"],
+        json!(["ff"])
     );
     assert!(run(&roots, permissions(), &[command]).is_err());
     assert_eq!(std::fs::read_to_string(path).unwrap(), replacement);

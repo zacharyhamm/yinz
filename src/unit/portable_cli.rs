@@ -550,10 +550,19 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
     failure(apply(json!([deletion])), "AssertRows");
     let config = success(session.run(&["action", "project-config-read", "work"], None));
     assert!(config["source"].is_null());
-    success(session.run(
+    assert_eq!(config["config"]["sections"], json!({}));
+    let source = "agent_exit { default_branch \"main\"; }\nmerge_queue { ci_command \"cargo x ci check\"; }\n";
+    let written = success(session.run(
         &["action", "project-config-write", "work", "--file", "-"],
-        Some("{\"source\":\"agent_exit { default_branch \\\"main\\\"; }\\n\",\"expected\":null}"),
+        Some(&json!({"source": source, "expected": null}).to_string()),
     ));
+    let config = success(session.run(&["action", "project-config-read", "work"], None));
+    assert_eq!(config, written);
+    assert_eq!(config["source"], source);
+    assert_eq!(
+        config["config"]["sections"]["merge_queue"]["children"][0]["arguments"],
+        json!(["cargo x ci check"])
+    );
     failure(
         session.run(
             &["action", "project-config-write", "work", "--file", "-"],

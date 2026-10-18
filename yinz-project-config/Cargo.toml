@@ -1,6 +1,6 @@
 [package]
 name = "yinz-project-config"
-description = "Agent-exit settings read from .yinz/agent-exit.kdl"
+description = "Project settings read from .yinz/agent-exit.kdl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,12 +13,12 @@ yinz-types = { workspace = true }
 yinz-runtime = { workspace = true }
 kdl = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Only the host-side readers and writers touch the filesystem; `parse` and the types also build
 # for the wasm plugins through yinz-tile.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 libc = { workspace = true }
-serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 

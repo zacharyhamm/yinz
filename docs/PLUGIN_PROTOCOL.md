@@ -492,7 +492,10 @@ type WarpPlacement = 'NewTab' | 'FocusedTab' | 'Floating';
 
 interface ProjectConfigSnapshot {root: string; source: string | null; config: ProjectConfig; error: string | null;}
 
-interface ProjectConfig {default_branch: string | null;}
+// Plugin-owned nodes exclude agent_exit. See PLUGIN_SDK.md, "Per-project configuration".
+// Duplicate top-level names are errors. A sections-only file retains default_branch = "main".
+// Reads and writes return the same shape; source preserves the original KDL text.
+interface ProjectConfig {default_branch: string | null; sections: Record<string, ConfigurationNode>;}
 
 type DataValue = 'Null' | {Int: Integer} | {Real: number} | {Text: string} | {Bool: boolean} | {Blob: Bytes};
 
@@ -697,7 +700,7 @@ interface PickOptions {
 
 type PickCommand = { Start: { request_id: string; options: PickOptions } } | { Cancel: { request_id: string; timeout: boolean } } | "Request" | { Attach: { pane_id: number } } | { Complete: { result: { Ok: string | null } | { Err: string } } };
 
-interface ConfigurationNode {name: string; arguments: (string | number | boolean)[]; properties: Record<string, string | number | boolean>; children: ConfigurationNode[];}
+interface ConfigurationNode {name: string; arguments: (string | number | boolean | null)[]; properties: Record<string, string | number | boolean | null>; children: ConfigurationNode[];}
 
 interface ConfigurationPatch {reset?: boolean; path: string[]; node: ConfigurationNode | null;}
 
