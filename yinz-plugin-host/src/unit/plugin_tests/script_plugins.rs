@@ -1019,16 +1019,22 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
 #[test]
 #[serial(plugin_tests)]
 fn agent_exit_reentry_delivers_changed_and_identical_payloads_to_the_loaded_instance() {
-    agent_exit_reentry(true);
+    agent_exit_reentry(true, false);
 }
 
 #[test]
 #[serial(plugin_tests)]
 fn agent_exit_reentry_queues_firings_during_loading() {
-    agent_exit_reentry(false);
+    agent_exit_reentry(false, false);
 }
 
-fn agent_exit_reentry(wait_for_load: bool) {
+#[test]
+#[serial(plugin_tests)]
+fn agent_exit_reentry_reaches_remaining_client_after_origin_disconnects() {
+    agent_exit_reentry(true, true);
+}
+
+fn agent_exit_reentry(wait_for_load: bool, disconnect_origin: bool) {
     let root = tempdir().unwrap();
     let source = root.path().join("reentry.scm");
     std::fs::write(
@@ -1092,6 +1098,21 @@ fn agent_exit_reentry(wait_for_load: bool) {
         .unwrap();
     if wait_for_load {
         wait_for_render_containing(&instructions, "loaded");
+        if disconnect_origin {
+            let remaining_client = ClientId::new(2);
+            sender
+                .send(PluginInstruction::AddClient(remaining_client))
+                .unwrap();
+            instructions.wait_until("the remaining client's hook", default_timeout(), |log| {
+                rendered_assets(log)
+                    .iter()
+                    .any(|(client, frame)| *client == remaining_client && frame.contains("loaded"))
+                    .then_some(())
+            });
+            sender
+                .send(PluginInstruction::RemoveClient(client_id))
+                .unwrap();
+        }
         fire("0");
     }
     wait_for_render_containing(&instructions, "agent_exit:1:0:payload-ok");
@@ -1102,6 +1123,14 @@ fn agent_exit_reentry(wait_for_load: bool) {
     teardown();
     logger.join().unwrap();
     let instructions = instructions.lock();
+    let recipient = if disconnect_origin {
+        ClientId::new(2)
+    } else {
+        client_id
+    };
+    assert!(rendered_assets(&instructions).iter().any(
+        |(client, frame)| *client == recipient && frame.contains("agent_exit:3:17:payload-ok")
+    ));
     let opened = hook_panes_opened(&instructions);
     assert_eq!(opened.len(), 1, "{instructions:?}");
     assert_eq!(opened[0].1, PaneId::Terminal(TERMINAL_7));
