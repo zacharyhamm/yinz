@@ -182,3 +182,30 @@ fn agent_send_keeps_large_prompt_bytes_compact_and_exact() {
     assert!(bytes[6..bytes.len() - 6].iter().all(|byte| *byte == b'x'));
     assert_eq!(writes[0][1], json!({"Terminal": 7}));
 }
+
+#[test]
+fn agent_restart_returns_a_deferred_and_preserves_options_and_errors() {
+    let mut h = Harness::new("(define reply #f) (define failure #f)");
+    h.eval(
+        r#"(yinz-then (yinz-agent-restart (hash "Terminal" 7)
+      (hash "prompt" "P" "session" "resume" "context" (hash "job" "fix")))
+      (lambda (value) (set! reply value)))"#,
+    );
+    assert_eq!(
+        h.value("reply"),
+        json!({"pane_id":{"Terminal":7},"session_id":"sid","command":["claude","P"]})
+    );
+    assert_eq!(
+        h.sent("RestartAgentPane"),
+        vec![
+            json!({"pane_id":{"Terminal":7},"prompt":"P","session":"resume","context":{"job":"fix"}})
+        ]
+    );
+    h.eval(r#"(yinz-agent-restart 7 (hash "session" "fresh"))"#);
+    assert_eq!(h.sent("RestartAgentPane")[1]["prompt"], Value::Null);
+    *h.failure.lock().unwrap() = Some("RestartAgentPane".into());
+    h.eval(r#"(yinz-catch (yinz-agent-restart 7 (hash "session" "resume")) (lambda (message) (set! failure message)))"#);
+    assert_eq!(h.value("failure"), "RestartAgentPane dispatch failed");
+    h.eval(r#"(yinz-catch (yinz-agent-restart (hash "Plugin" 7) (hash "session" "fresh")) (lambda (message) (set! failure message)))"#);
+    assert!(h.value("failure").as_str().unwrap().contains("terminal ID"));
+}

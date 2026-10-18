@@ -1421,3 +1421,245 @@ fn a_replacement_agent_starts_a_fresh_record_in_the_same_pane() {
         assert_eq!(fired.last().unwrap().0, HookPoint::AgentExit);
     }
 }
+
+#[test]
+fn agent_restart_keeps_flags_and_session_while_suppressed_then_fires_exit_again() {
+    use yinz_types::agent::control::AgentRestartSession;
+    for session in [AgentRestartSession::Resume, AgentRestartSession::Fresh] {
+        let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
+        let (to_plugin, plugins) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        let (to_pty, pty) = channels::unbounded();
+        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        let tab_id = TabId::new(0);
+        new_tab(&mut screen, 2, tab_id);
+        let pane_id = PaneId::Terminal(TERMINAL_2);
+        let plugin_id = yinz_types::internal_ids::PluginId::new(42);
+        let original = RunCommand {
+            command: "claude".into(),
+            args: ["--model", "X", "--permission-mode", "Y", "task"]
+                .map(str::to_owned)
+                .into(),
+            cwd: Some("/tmp/worktree".into()),
+            hold_on_close: true,
+            ..Default::default()
+        };
+        apply_pane_agent_report(
+            &mut screen,
+            pane_id,
+            Some(report(AgentState::Busy, Some("sid"))),
+        )
+        .unwrap();
+        // SessionEnd clears the live record before the process exit.
+        apply_pane_agent_report(&mut screen, pane_id, None).unwrap();
+        super::super::replay_pending_plugin_events(&mut screen, vec![hold(2, original.clone())])
+            .unwrap();
+        assert_eq!(
+            screen
+                .get_pane_info(pane_id)
+                .unwrap()
+                .last_agent_session_id
+                .as_deref(),
+            Some("sid")
+        );
+        screen
+            .tabs
+            .get_mut(&tab_id)
+            .unwrap()
+            .suppress_pane_and_replace_with_pid(
+                pane_id,
+                PaneId::Plugin(plugin_id),
+                false,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let origin = OriginatingPlugin::new(
+            plugin_id,
+            crate::ClientId::new(1),
+            BTreeMap::from([("job".into(), "fix".into())]),
+        );
+        let restarted = screen
+            .restart_agent_pane(pane_id, Some("P"), session, Some(origin.clone()))
+            .unwrap();
+        let resumed = session == AgentRestartSession::Resume;
+        assert_eq!(restarted.session_id.as_deref(), resumed.then_some("sid"));
+        let command = pty
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PtyInstruction::ReRunCommandInPane(id, command, _) if id == pane_id => {
+                    Some(command)
+                },
+                _ => None,
+            })
+            .unwrap();
+        let expected: Vec<String> = if resumed {
+            vec![
+                "--model",
+                "X",
+                "--permission-mode",
+                "Y",
+                "--resume",
+                "sid",
+                "P",
+            ]
+        } else {
+            vec!["--model", "X", "--permission-mode", "Y", "P"]
+        }
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(command.args, expected);
+        assert_eq!(command.cwd, original.cwd);
+        assert_eq!(command.originating_plugin, Some(origin));
+        assert_eq!(restarted.command[1..], command.args);
+        let info = screen.get_pane_info(pane_id).unwrap();
+        assert!(info.is_suppressed && !info.is_held && !info.exited);
+        let agent = info.agent.unwrap();
+        assert_eq!(agent.state, AgentState::Busy);
+        assert_eq!(agent.cwd.as_deref(), Some("/tmp/worktree"));
+        assert_eq!(
+            info.last_agent_session_id.as_deref(),
+            resumed.then_some("sid")
+        );
+        // CloseSelf uses the ordinary close path, revealing the suppressed pane.
+        screen
+            .tabs
+            .get_mut(&tab_id)
+            .unwrap()
+            .close_pane(PaneId::Plugin(plugin_id), false, None);
+        assert!(!screen.get_pane_info(pane_id).unwrap().is_suppressed);
+        let new_session = if resumed { "sid" } else { "new-session" };
+        apply_pane_agent_report(
+            &mut screen,
+            pane_id,
+            Some(report(AgentState::Busy, Some(new_session))),
+        )
+        .unwrap();
+        apply_pane_agent_report(&mut screen, pane_id, None).unwrap();
+        super::super::replay_pending_plugin_events(&mut screen, vec![hold(2, command)]).unwrap();
+        let exits: Vec<_> = plugins
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::RunHook {
+                    point: HookPoint::AgentExit,
+                    pane_id: id,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(id, Some(pane_id));
+                    Some(config(&payload).clone())
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(exits.len(), 2);
+        assert_eq!(exits[0]["agent_session_id"], "sid");
+        assert_eq!(exits[1]["agent_session_id"], new_session);
+    }
+}
+
+#[test]
+fn agent_restart_rejects_missing_sessions_live_panes_and_unsafe_commands() {
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentRestartSession};
+    let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 2, TabId::new(0));
+    let pane = PaneId::Terminal(TERMINAL_2);
+    assert!(screen
+        .restart_agent_pane(pane, None, AgentRestartSession::Fresh, None)
+        .unwrap_err()
+        .contains("held"));
+    apply_pane_agent_report(&mut screen, pane, Some(report(AgentState::Busy, None))).unwrap();
+    let command = RunCommand {
+        command: "claude".into(),
+        hold_on_close: true,
+        ..Default::default()
+    };
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .hold_pane(pane, Some(0), false, command.clone());
+    let (reply, receive) = std::sync::mpsc::channel();
+    screen.agent_control_with_reply(
+        AgentRequest::Restart {
+            pane_id: pane,
+            prompt: Some("P".into()),
+            session: AgentRestartSession::Resume,
+        },
+        crate::screen::agent_control::Reply::Host(reply),
+    );
+    let response = receive.recv().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Rejected);
+    assert!(response.message.unwrap().contains("no remembered session"));
+    assert!(screen.get_pane_info(pane).unwrap().is_held);
+    let unsafe_command = RunCommand {
+        args: vec!["--unknown".into()],
+        ..command
+    };
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .hold_pane(pane, Some(0), false, unsafe_command);
+    assert_eq!(
+        screen
+            .restart_agent_pane(pane, None, AgentRestartSession::Fresh, None)
+            .unwrap_err(),
+        screen.get_pane_info(pane).unwrap().restart_error.unwrap()
+    );
+}
+
+#[test]
+fn agent_control_fresh_restart_without_a_prompt_forgets_the_previous_session() {
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentRestartSession};
+    let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
+    let (to_pty, pty) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    let tab_id = TabId::new(0);
+    new_tab(&mut screen, 2, tab_id);
+    let pane = PaneId::Terminal(TERMINAL_2);
+    apply_pane_agent_report(
+        &mut screen,
+        pane,
+        Some(report(AgentState::Busy, Some("old"))),
+    )
+    .unwrap();
+    let command = RunCommand {
+        command: "claude".into(),
+        hold_on_close: true,
+        ..Default::default()
+    };
+    screen
+        .tabs
+        .get_mut(&tab_id)
+        .unwrap()
+        .hold_pane(pane, Some(0), false, command.clone());
+    let (reply, receive) = std::sync::mpsc::channel();
+    screen.agent_control_with_reply(
+        AgentRequest::Restart {
+            pane_id: pane,
+            prompt: None,
+            session: AgentRestartSession::Fresh,
+        },
+        crate::screen::agent_control::Reply::Host(reply),
+    );
+    let response = receive.recv().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Ok);
+    let restarted = response.restarted.unwrap();
+    assert_eq!(restarted.pane_id, pane);
+    assert_eq!(restarted.command, vec!["claude"]);
+    assert_eq!(restarted.session_id, None);
+    assert!(pty.try_iter().any(|(instruction, _)| matches!(instruction, PtyInstruction::ReRunCommandInPane(id, _, _) if id == pane)));
+    let info = screen.get_pane_info(pane).unwrap();
+    assert_eq!(info.last_agent_session_id, None);
+    assert_eq!(info.agent.unwrap().session_id, None);
+    assert!(!info.is_held);
+    // A process that exits before its first hook must not report the old session.
+    super::super::replay_pending_plugin_events(&mut screen, vec![hold(2, command)]).unwrap();
+    assert_eq!(
+        screen.get_pane_info(pane).unwrap().last_agent_session_id,
+        None
+    );
+}

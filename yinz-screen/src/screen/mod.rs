@@ -3560,9 +3560,8 @@ impl Screen {
         let PaneId::Terminal(terminal_pane_id) = pane_id else {
             return;
         };
-        // Strings, because a plugin's configuration is a `BTreeMap<String, String>`. The hook
-        // does not need the command itself: it restarts the pane with `RerunCommandPane`, and
-        // the pane replays the `RunCommand` it already holds.
+        // Strings, because a plugin's configuration is a `BTreeMap<String, String>`.
+        // RestartAgentPane reads the structured command from the held pane.
         //
         // Every key is prefixed. `PluginUserConfiguration::new` silently drops a reserved word -
         // an unprefixed `cwd` arrives as nothing at all - and a payload key blanking itself
@@ -3592,6 +3591,13 @@ impl Screen {
             .and_then(|tab| tab.pane_last_agent_cwd(pane_id))
         {
             payload.insert("agent_cwd".to_owned(), cwd);
+        }
+        if let Some(session_id) = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.get_pane_with_id(pane_id))
+            .and_then(|pane| pane.last_agent_session_id())
+        {
+            payload.insert("agent_session_id".to_owned(), session_id.to_owned());
         }
         payload.insert("agent_command".to_owned(), run_command.to_string());
         let kind = self
@@ -3744,6 +3750,77 @@ impl Screen {
             .tab_containing_pane(pane_id)
             .and_then(|tab| tab.pane_agent_info(pane_id));
         self.fire_agent_state_hooks(pane_id, previous.as_ref(), current.as_ref());
+    }
+    pub(super) fn restart_agent_pane(
+        &mut self,
+        pane_id: PaneId,
+        prompt: Option<&str>,
+        session: yinz_types::agent::control::AgentRestartSession,
+        originating_plugin: Option<yinz_types::data::OriginatingPlugin>,
+    ) -> Result<yinz_types::agent::control::RestartedAgent, String> {
+        use yinz_types::agent::{
+            control::AgentRestartSession, control::RestartedAgent, AgentSource,
+        };
+        let PaneId::Terminal(terminal_id) = pane_id else {
+            return Err("target must be a terminal pane".into());
+        };
+        let pane = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.get_pane_with_id(pane_id))
+            .ok_or("target pane does not exist")?;
+        let mut command = pane.agent_restart_command(session, prompt)?;
+        let kind = pane
+            .last_agent_kind()
+            .ok_or("target has no remembered agent kind")?
+            .to_owned();
+        let cwd = command
+            .cwd
+            .as_ref()
+            .map(|cwd| cwd.display().to_string())
+            .or_else(|| pane.last_agent_cwd().map(str::to_owned));
+        let session_id = (session == AgentRestartSession::Resume)
+            .then(|| pane.last_agent_session_id().map(str::to_owned))
+            .flatten();
+        let previous = pane.agent_info().cloned();
+        if let Some(origin) = originating_plugin {
+            command.originating_plugin = Some(origin);
+        }
+        command.hold_on_close = true;
+        let result = RestartedAgent {
+            pane_id,
+            session_id: session_id.clone(),
+            command: std::iter::once(command.command.display().to_string())
+                .chain(command.args.iter().cloned())
+                .collect(),
+        };
+        self.refresh_agent_events();
+        let tab = self
+            .tab_containing_pane_mut(pane_id)
+            .ok_or("target pane does not exist")?;
+        if !tab.run_command_in_pane_with_id(terminal_id, command, false) {
+            return Err("agent pane could not accept the restart".into());
+        }
+        if session == AgentRestartSession::Fresh {
+            if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
+                pane.clear_agent_session_id();
+            }
+        }
+        let current = AgentInfo {
+            kind,
+            cwd,
+            session_id,
+            state: AgentState::Busy,
+            source: AgentSource::Spawned,
+            detail: None,
+            waiting_on: None,
+            run_id: None,
+            wait_needs_a_person: false,
+        };
+        tab.set_pane_agent(pane_id, Some(current.clone()));
+        self.retire_agent_event_pane(pane_id, "pane_replaced");
+        self.invalidate_agent_lifecycle(pane_id, "agent_restarted");
+        self.fire_agent_state_hooks(pane_id, previous.as_ref(), Some(&current));
+        Ok(result)
     }
     /// Run a *different* command in an existing command pane, reusing its pane id.
     pub fn run_command_in_pane_with_id(

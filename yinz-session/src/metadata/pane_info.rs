@@ -129,6 +129,7 @@ pub fn decode_from_kdl(
         exit_status,
         is_held,
         restart_error: None,
+        last_agent_session_id: None,
         pane_x,
         pane_content_x,
         pane_y,

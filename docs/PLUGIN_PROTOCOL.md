@@ -163,6 +163,7 @@ interface CommandArgs {
   DumpSessionLayout: {tab_index: number | null}; CloseSelf: undefined; NewTabsWithLayoutInfo: LayoutInfo;
   Reconfigure: [string, boolean]; HidePaneWithId: PaneId; ShowPaneWithId: [PaneId, boolean, boolean];
   OpenCommandPaneBackground: [CommandToRun, StringMap]; RerunCommandPane: number;
+  RestartAgentPane: {pane_id: PaneId; prompt?: string | null; session: "resume" | "fresh"; context?: StringMap};
   RunCommandInPane: {pane_id: PaneId; command: CommandToRun; context: StringMap; keep_scrollback?: boolean};
   ResizePaneIdWithDirection: [ResizeStrategy, PaneId]; EditScrollbackForPaneWithId: PaneId;
   GetPaneScrollback: {pane_id: PaneId; get_full_scrollback: boolean};
@@ -254,6 +255,7 @@ interface CommandReplies {
   OpenCommandPaneInPlaceOfPlugin: PaneId | null; OpenCommandPaneInPlaceOfPaneId: PaneId | null; OpenPluginPaneFloating: PaneId | null;
   RegisterAgentProvider: AgentProvider[]; GetAgentProviders: AgentProvider[];
   OpenCommandPaneInGitCheckoutNearPlugin: PaneId | null; SpawnAgent: SpawnedAgent;
+  RestartAgentPane: {pane_id: PaneId; session_id: string | null; command: string[]};
   OpenCommandPaneInNewTab: PaneInNewTab; OpenPluginPaneInNewTab: PaneInNewTab; OpenEditorPaneInNewTab: PaneInNewTab;
   InspectConfiguration: ConfigurationSnapshot; EditConfiguration: ConfigurationSnapshot;
   ReadPluginLog: string; ProjectConfigRead: ProjectConfigSnapshot; ProjectConfigWrite: ProjectConfigSnapshot;
@@ -369,6 +371,7 @@ interface PaneInfo {
   id: number; is_plugin: boolean; is_focused: boolean; is_fullscreen: boolean; is_floating: boolean; is_suppressed: boolean; is_stack_list_member: boolean;
   display_title?: string | null;
   title: string; exited: boolean; exit_status: number | null; is_held: boolean; restart_error: string | null;
+  last_agent_session_id?: string | null;
   pane_x: Integer; pane_content_x: Integer; pane_y: Integer; pane_content_y: Integer;
   pane_rows: Integer; pane_content_rows: Integer; pane_columns: Integer; pane_content_columns: Integer;
   cursor_coordinates_in_pane: CellCoordinates | null; terminal_command: string | null; plugin_url: string | null;
@@ -702,3 +705,33 @@ interface ConfigurationSetting {name: string; label: string; kind: string; choic
 
 interface ConfigurationSnapshot {action_children: Record<string, ConfigurationNode[]>; action_properties: Record<string, Record<string, string | number | boolean>>; section_timing: Record<string, string>; sections: string[]; templates: Record<string, ConfigurationNode[]>; actions: ConfigurationNode[]; revision: string; catalog: ConfigurationSetting[]; saved: ConfigurationNode[]; clients: Record<string, ConfigurationNode[]>; overrides: ConfigurationPatch[]; notice: string;}
 ```
+
+## Restart an exited agent
+
+`RestartAgentPane` requires `RunCommands`. The target must be an exited, held
+terminal agent pane. It may be suppressed behind an `agent_exit` plugin.
+The host cleans the structured held command with the normal restart grammar,
+keeps launch flags, cwd and target, then applies the provider's session and
+opening prompt arguments. Unknown or ambiguous restart arguments return the
+same refusal as `PaneInfo.restart_error`. Resume requires a remembered session
+id. Providers that cannot resume with a prompt return an error. Prompts must
+fit in 1 MiB and contain no NUL bytes.
+
+The reply contains the pane id (`{"Terminal":7}`), selected session id
+(null for fresh), and executable plus argv. It confirms that the screen accepted
+the restart for PTY spawning. It does not wait for provider startup. Inspect the
+pane before retrying after a transport timeout. `context` is echoed in
+`CommandPaneExited` to the calling plugin. Close the hook plugin with `CloseSelf`
+after success to reveal the running agent.
+
+The pane remains an agent pane and fires `agent_exit` again on its next exit.
+`agent_exit` configuration includes `agent_session_id` when known, even after
+`SessionEnd` cleared the live record. `PaneInfo.last_agent_session_id` carries
+that same memory. A fresh restart clears it until a new session reports itself.
+
+`AgentControl` also accepts `{"Restart":{"pane_id":{"Terminal":7},
+"prompt":"P","session":"resume"}}`. Its ordinary `AgentResponse` has a
+`restarted` object with the same reply fields on success, or outcome `rejected`
+and a message on error. This direct control request retains the held command's
+original plugin routing. Use `RestartAgentPane` to receive exit context in the
+calling hook plugin.

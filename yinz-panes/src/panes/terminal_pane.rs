@@ -152,6 +152,7 @@ pub struct TerminalPane {
     was_an_agent: bool,
     last_agent_kind: Option<String>,
     last_agent_cwd: Option<String>,
+    last_agent_session_id: Option<String>,
     /// Whether this pane is kin of the focused one - see `Pane::has_related_highlight`.
     /// Written whole-session at a time by `Tab::set_related_panes`, read by `frame_color`.
     is_related: bool,
@@ -1508,6 +1509,12 @@ impl Pane for TerminalPane {
     fn last_agent_cwd(&self) -> Option<&str> {
         self.last_agent_cwd.as_deref()
     }
+    fn last_agent_session_id(&self) -> Option<&str> {
+        self.last_agent_session_id.as_deref()
+    }
+    fn clear_agent_session_id(&mut self) {
+        self.last_agent_session_id = None;
+    }
     fn last_agent_kind(&self) -> Option<&str> {
         self.last_agent_kind.as_deref()
     }
@@ -1534,6 +1541,9 @@ impl Pane for TerminalPane {
         self.was_an_agent |= agent.is_some();
         if let Some(agent) = &agent {
             self.last_agent_kind = Some(agent.kind.clone());
+            if let Some(id) = agent.session_id.as_ref().filter(|id| !id.is_empty()) {
+                self.last_agent_session_id = Some(id.clone());
+            }
             if agent.cwd.is_some() {
                 self.last_agent_cwd = agent.cwd.clone();
             }
@@ -1662,6 +1672,42 @@ impl Pane for TerminalPane {
     fn restart_error(&self) -> Option<String> {
         self.restart_command_args().err()
     }
+    fn agent_restart_command(
+        &self,
+        session: yinz_types::agent::control::AgentRestartSession,
+        prompt: Option<&str>,
+    ) -> Result<RunCommand, String> {
+        use yinz_types::agent::control::{AgentRestartSession, MAX_PROMPT_BYTES};
+        if prompt.is_some_and(|prompt| prompt.len() > MAX_PROMPT_BYTES || prompt.contains('\0')) {
+            return Err("restart prompt exceeds 1 MiB or contains NUL".into());
+        }
+        let Some((_, false, command)) = self.is_held.as_ref() else {
+            return Err("target must be an exited, held agent pane".into());
+        };
+        if !self.was_an_agent || self.warp_pending {
+            return Err("target must be an exited, held agent pane".into());
+        }
+        self.restart_command_args()?;
+        let session_id = match session {
+            AgentRestartSession::Resume => Some(
+                self.last_agent_session_id
+                    .as_deref()
+                    .filter(|id| !id.trim().is_empty())
+                    .ok_or("agent pane has no remembered session id")?,
+            ),
+            AgentRestartSession::Fresh => None,
+        };
+        let args = yinz_runtime::agent::restart_with_prompt(
+            &command.command,
+            &command.args,
+            session_id,
+            prompt,
+        )?;
+        Ok(RunCommand {
+            args,
+            ..command.clone()
+        })
+    }
     fn respawn(
         &mut self,
         replacement: Option<RunCommand>,
@@ -1688,6 +1734,9 @@ impl Pane for TerminalPane {
             None
         };
         let fresh_agent = cleaned.is_some();
+        if fresh_agent {
+            self.last_agent_session_id = None;
+        }
         self.is_held.take().map(|(_, _, mut run_command)| {
             run_command.agent_theme = None;
             if let Some(Run::Command(command)) = self.invoked_with.as_mut() {
@@ -1743,6 +1792,7 @@ impl Pane for TerminalPane {
                         self.was_an_agent = false;
                         self.last_agent_kind = None;
                         self.last_agent_cwd = None;
+                        self.last_agent_session_id = None;
                     }
                     self.invoked_with = Some(Run::Command(replacement.clone()));
                     // A replacement marked as an agent starts a fresh conversation.
@@ -2120,6 +2170,7 @@ impl TerminalPane {
             was_an_agent: agent.is_some(),
             last_agent_kind: agent.as_ref().map(|agent| agent.kind.clone()),
             last_agent_cwd: agent.as_ref().and_then(|agent| agent.cwd.clone()),
+            last_agent_session_id: agent.as_ref().and_then(|agent| agent.session_id.clone()),
             agent,
             waiting_pulse_started_at: None,
             waiting_pulse: None,

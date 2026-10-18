@@ -79,6 +79,21 @@ impl AgentPlacement {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum_macros::EnumString)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum AgentRestartSession {
+    Resume,
+    Fresh,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RestartedAgent {
+    pub pane_id: PaneId,
+    pub session_id: Option<String>,
+    pub command: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
     /// Read-only feature negotiation before sending placement to an older server.
@@ -107,6 +122,11 @@ pub enum AgentRequest {
         spec: AgentSpawnSpec,
         #[serde(default)]
         placement: AgentPlacement,
+    },
+    Restart {
+        pane_id: PaneId,
+        prompt: Option<String>,
+        session: AgentRestartSession,
     },
     Prompt {
         pane_id: PaneId,
@@ -192,6 +212,8 @@ pub struct AgentResponse {
     pub outcome: AgentOutcome,
     pub agents: Vec<AgentStatus>,
     pub spawned: Option<SpawnedAgent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restarted: Option<RestartedAgent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_resources: Option<super::AgentLaunchResources>,
     pub output: Option<String>,

@@ -332,6 +332,27 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
                 json,
             )
         },
+        Agent::Restart {
+            target,
+            session,
+            text,
+            file,
+            json,
+        } => {
+            let prompt = if text.is_some() || file.is_some() {
+                Some(read_prompt(text, file.as_deref(), stdin)?)
+            } else {
+                None
+            };
+            (
+                AgentRequest::Restart {
+                    pane_id: target,
+                    session,
+                    prompt,
+                },
+                json,
+            )
+        },
         Agent::Prompt {
             target,
             text,
@@ -637,6 +658,9 @@ pub(crate) fn allow_closed_stdout(result: Result<()>) -> Result<()> {
 fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) -> Result<()> {
     if json {
         let mut value = serde_json::to_value(response).context("cannot encode agent response")?;
+        if let Some(restarted) = &response.restarted {
+            value["restarted"]["pane_id"] = restarted.pane_id.to_string().into();
+        }
         if let Some(spawned) = &response.spawned {
             value["spawned"]["pane_id"] = spawned.pane_id.to_string().into();
             if !spawned.occupied_by.is_empty() {
@@ -685,6 +709,15 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             )
             .context("cannot write spawned tab")?;
         }
+    }
+    if let Some(restarted) = &response.restarted {
+        writeln!(
+            out,
+            "{}\t{}",
+            restarted.pane_id,
+            restarted.session_id.as_deref().unwrap_or("-")
+        )
+        .context("cannot write restarted agent")?;
     }
     if let Some(resources) = &response.launch_resources {
         writeln!(

@@ -287,6 +287,7 @@ enum CommandName {
   GetProjectProviders = 310;
   ValidateProjectMatch = 311;
   PublishProjectLocations = 312;
+  RestartAgentPane = 313;
 }
 
 message PluginCommand {
@@ -517,6 +518,7 @@ message PluginCommand {
     string register_project_provider_payload = 248;
     string validate_project_match_payload = 250;
     string publish_project_locations_payload = 251;
+    string restart_agent_pane_payload = 252;
   }
 }
 
@@ -2072,3 +2074,5 @@ message PickResponse { string json = 1; }
 message GetCellPixelSizeResponse {
   optional event.CellPixelSize size = 1;
 }
+
+message RestartAgentPaneResponse { string json = 1; }

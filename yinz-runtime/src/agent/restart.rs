@@ -1,5 +1,57 @@
 use std::path::Path;
 
+/// Replace the prompt and session selectors inside the original command's wrappers.
+pub fn restart_with_prompt(
+    program: &Path,
+    args: &[String],
+    session_id: Option<&str>,
+    prompt: Option<&str>,
+) -> Result<Vec<String>, String> {
+    // Use one provider revision for cleaning, defaults, resume and prompt grammar.
+    crate::agent::provider::with_snapshot(&crate::agent::provider::providers(), || {
+        use crate::agent::launch::{prompt_args, shape_args, Spec};
+        let cleaned = restart_args(program, args)?;
+        let mut inner_program = program;
+        let mut inner_args = cleaned.as_slice();
+        loop {
+            let (next_program, next_args) =
+                crate::agent::unwrapped_program_and_args(inner_program, inner_args)
+                    .ok_or("unsupported agent wrapper for restart")?;
+            if next_program == inner_program && next_args.len() == inner_args.len() {
+                break;
+            }
+            inner_program = next_program;
+            inner_args = next_args;
+        }
+        let kind = crate::agent::agent_kind_of(inner_program, inner_args)
+            .ok_or("unsupported agent command for restart")?;
+        let spec = Spec {
+            kind: Some(kind.clone()),
+            resume: session_id.map(str::to_owned),
+            prompt: prompt.map(str::to_owned),
+            hooks: Some(false),
+            ..Default::default()
+        };
+        let (mut leading, flags) = shape_args(Some(&kind), &spec)?;
+        let provider = crate::agent::provider::provider(&kind);
+        if let Some(provider) = &provider {
+            // Launch defaults are already present in the held command.
+            leading.drain(..provider.launch.args.len());
+        }
+        let mut result = cleaned[..cleaned.len() - inner_args.len()].to_vec();
+        result.extend(leading);
+        let separator = inner_args
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(inner_args.len());
+        result.extend_from_slice(&inner_args[..separator]);
+        result.extend(flags);
+        result.extend(prompt_args(Some(&kind), provider.as_deref(), &spec)?);
+        result.extend_from_slice(&inner_args[separator..]);
+        Ok(result)
+    })
+}
+
 /// Remove an agent's opening prompt and conversation selectors without changing its launch
 /// options. Unknown option arities and non-interactive commands must be refused: guessing
 /// could replay work or silently change the model, permissions, or working directory.
@@ -599,6 +651,153 @@ fn provider_restart_args(
 mod tests {
     use super::*;
     use crate::agent::launch::{plan, Spec};
+
+    #[test]
+    fn restart_replaces_prompt_and_session_inside_wrappers_preserving_flags() {
+        for (program, prefix) in [
+            ("claude", vec![]),
+            (
+                "yinz",
+                strings(&["agent", "claude", "--command", "/opt/claude", "--"]),
+            ),
+            (
+                "env",
+                strings(&[
+                    "-C",
+                    "/tmp/topic",
+                    "SETTING=a b",
+                    "yinz",
+                    "agent",
+                    "claude",
+                    "--command",
+                    "claude",
+                    "--",
+                ]),
+            ),
+        ] {
+            let flags = strings(&["--model", "X", "--permission-mode", "Y", "--add-dir=/extra"]);
+            let original = [
+                prefix.clone(),
+                flags.clone(),
+                strings(&["--resume", "old", "task"]),
+            ]
+            .concat();
+            for session in [None, Some("sid")] {
+                let expected = [
+                    prefix.clone(),
+                    flags.clone(),
+                    if session.is_some() {
+                        strings(&["--resume", "sid", "P"])
+                    } else {
+                        strings(&["P"])
+                    },
+                ]
+                .concat();
+                assert_eq!(
+                    restart_with_prompt(Path::new(program), &original, session, Some("P")).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn restart_uses_provider_resume_and_prompt_grammar() {
+        crate::agent::provider_fixture::register_opencode();
+        for (program, original, expected) in [
+            (
+                "codex",
+                vec!["--model", "X", "task"],
+                vec!["resume", "sid", "--model", "X", "P"],
+            ),
+            (
+                "agy",
+                vec!["--model", "X", "--prompt-interactive", "task"],
+                vec![
+                    "--model",
+                    "X",
+                    "--conversation",
+                    "sid",
+                    "--prompt-interactive",
+                    "P",
+                ],
+            ),
+            (
+                "opencode",
+                vec!["--prompt=task", "--", "-project"],
+                vec!["--session", "sid", "--prompt", "P", "--", "-project"],
+            ),
+            (
+                "opencode",
+                vec!["--prompt=task", "-m", "X", "/project"],
+                vec!["-m", "X", "/project", "--session", "sid", "--prompt", "P"],
+            ),
+        ] {
+            assert_eq!(
+                restart_with_prompt(
+                    Path::new(program),
+                    &strings(&original),
+                    Some("sid"),
+                    Some("P")
+                )
+                .unwrap(),
+                strings(&expected),
+                "{program}"
+            );
+        }
+        assert!(
+            restart_with_prompt(Path::new("muse"), &[], Some("sid"), Some("P"))
+                .unwrap_err()
+                .contains("no opening prompt")
+        );
+        assert!(restart_with_prompt(
+            Path::new("claude"),
+            &strings(&["--unknown", "task"]),
+            None,
+            Some("P")
+        )
+        .is_err());
+        assert_eq!(
+            restart_with_prompt(
+                Path::new("muse"),
+                &strings(&["--model", "X", "task"]),
+                Some("sid"),
+                None
+            )
+            .unwrap(),
+            strings(&["resume", "sid", "--model", "X"])
+        );
+    }
+
+    #[test]
+    fn provider_restart_keeps_existing_defaults_once_and_positions_resume_first() {
+        use crate::agent::provider::{provider, register};
+        crate::agent::provider_fixture::register_opencode();
+        let mut custom = (*provider("opencode").unwrap()).clone();
+        custom.kind = "restart-fixture".into();
+        custom.executable = "restart-fixture".into();
+        custom.launch.args = strings(&["--auto"]);
+        custom.launch.resume_before_args = true;
+        register(42, custom).unwrap();
+        assert_eq!(
+            restart_with_prompt(
+                Path::new("restart-fixture"),
+                &strings(&["--auto", "--model", "X", "--prompt", "task"]),
+                Some("sid"),
+                Some("P")
+            )
+            .unwrap(),
+            strings(&[
+                "--session",
+                "sid",
+                "--auto",
+                "--model",
+                "X",
+                "--prompt",
+                "P"
+            ])
+        );
+    }
 
     #[test]
     fn pi_restart_removes_prompts_and_session_selectors_with_exact_arity() {

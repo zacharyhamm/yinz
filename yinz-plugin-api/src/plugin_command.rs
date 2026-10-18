@@ -5,6 +5,7 @@ pub use super::generated_api::api::plugin_command::GetPluginIdsForUrlResponse as
 pub use super::generated_api::api::plugin_command::MultipaneResponse as ProtobufMultipaneResponse;
 pub use super::generated_api::api::plugin_command::PaneTabsResponse as ProtobufPaneTabsResponse;
 pub use super::generated_api::api::plugin_command::PickResponse as ProtobufPickResponse;
+pub use super::generated_api::api::plugin_command::RestartAgentPaneResponse as ProtobufRestartAgentPaneResponse;
 pub use super::generated_api::api::plugin_command::{
     GetPluginInfoPayload, GetPluginInfoResponse as ProtobufGetPluginInfoResponse,
 };
@@ -3017,6 +3018,19 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetPaneAgentRun"),
             },
+            Some(CommandName::RestartAgentPane) => match protobuf_plugin_command.payload {
+                Some(Payload::RestartAgentPanePayload(payload)) => {
+                    let (pane_id, prompt, session, context) = serde_json::from_str(&payload)
+                        .map_err(|_| "invalid agent restart payload")?;
+                    Ok(PluginCommand::RestartAgentPane {
+                        pane_id,
+                        prompt,
+                        session,
+                        context,
+                    })
+                },
+                _ => Err("Mismatched payload for RestartAgentPane"),
+            },
             Some(CommandName::AgentControl) => match protobuf_plugin_command.payload {
                 Some(Payload::AgentControlPayload(payload)) => {
                     let (id, request) = serde_json::from_str(&payload)
@@ -5477,6 +5491,18 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     run_id,
                 })),
             }),
+            PluginCommand::RestartAgentPane {
+                pane_id,
+                prompt,
+                session,
+                context,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::RestartAgentPane as i32,
+                payload: Some(Payload::RestartAgentPanePayload(
+                    serde_json::to_string(&(pane_id, prompt, session, context))
+                        .map_err(|_| "invalid agent restart payload")?,
+                )),
+            }),
             PluginCommand::AgentControl { id, request } => Ok(ProtobufPluginCommand {
                 name: CommandName::AgentControl as i32,
                 payload: Some(Payload::AgentControlPayload(
@@ -7905,6 +7931,7 @@ mod tests {
                 | PluginCommand::SetPaneAgentRun { .. }
                 | PluginCommand::SpawnAgent { .. }
                 | PluginCommand::AgentControl { .. }
+                | PluginCommand::RestartAgentPane { .. }
                 | PluginCommand::InspectConfiguration(..)
                 | PluginCommand::EditConfiguration(..)
                 | PluginCommand::ProjectConfigRead { .. }

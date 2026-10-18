@@ -578,6 +578,7 @@ message PaneInfo {
     optional MultipaneInfo multipane = 36;
     optional string pane_tabs_json = 37;
     optional string display_title = 38;
+    optional string last_agent_session_id = 39;
 }
 
 message AgentInfo {

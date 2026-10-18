@@ -357,6 +357,9 @@ pub trait Pane {
     fn last_agent_cwd(&self) -> Option<&str> {
         None
     }
+    fn last_agent_session_id(&self) -> Option<&str> {
+        None
+    }
     fn last_agent_kind(&self) -> Option<&str> {
         None
     }
@@ -853,6 +856,14 @@ pub trait Pane {
     fn restart_error(&self) -> Option<String> {
         None
     }
+    fn agent_restart_command(
+        &self,
+        _session: yinz_types::agent::control::AgentRestartSession,
+        _prompt: Option<&str>,
+    ) -> Result<RunCommand, String> {
+        Err("target must be an exited, held agent pane".into())
+    }
+    fn clear_agent_session_id(&mut self) {}
     fn rerun(&mut self) -> Option<RunCommand> {
         self.respawn(None, false)
     } // only relevant to terminal panes
@@ -1037,6 +1048,7 @@ pub fn pane_info_for_pane(
         exit_status: pane.exit_status(),
         is_held: pane.is_held(),
         restart_error: pane.restart_error(),
+        last_agent_session_id: pane.last_agent_session_id().map(str::to_owned),
         index_in_pane_group,
         default_fg,
         default_bg,

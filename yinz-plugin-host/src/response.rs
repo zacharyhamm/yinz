@@ -158,6 +158,14 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                     value(result.map_err(|error| anyhow!(error))?)
                 },
             ),
+        CommandType::RestartAgentPane => decode(bytes).and_then(
+            |response: yinz_plugin_api::plugin_command::ProtobufRestartAgentPaneResponse| {
+                let result: Result<yinz_types::agent::control::RestartedAgent, String> =
+                    serde_json::from_str(&response.json)
+                        .context("decode agent restart response")?;
+                value(result.map_err(|error| anyhow!(error))?)
+            },
+        ),
         CommandType::PaneTabs => decode(bytes).and_then(
             |response: yinz_plugin_api::plugin_command::ProtobufPaneTabsResponse| {
                 let result: yinz_types::pane_tabs::PaneTabsResponse =

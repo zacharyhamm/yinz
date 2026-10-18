@@ -533,6 +533,7 @@ impl Agent {
             | Agent::List { json, .. }
             | Agent::Status { json, .. }
             | Agent::Spawn { json, .. }
+            | Agent::Restart { json, .. }
             | Agent::Prompt { json, .. }
             | Agent::Wait { json, .. }
             | Agent::Read { json, .. }
@@ -734,6 +735,20 @@ pub enum Agent {
         #[clap(long)]
         allow_yinz: bool,
         /// Print the launch outcome, actual pane, directory and branch as JSON.
+        #[clap(long)]
+        json: bool,
+    },
+    /// Restart an exited, held agent in its own pane with an optional opening prompt.
+    Restart {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        /// Resume the pane's remembered conversation, or start fresh.
+        #[clap(long)]
+        session: yinz_types::agent::control::AgentRestartSession,
+        /// Optional opening prompt; pass either TEXT or --file.
+        text: Option<String>,
+        #[clap(long)]
+        file: Option<PathBuf>,
         #[clap(long)]
         json: bool,
     },

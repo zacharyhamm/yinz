@@ -49,6 +49,7 @@ impl Harness {
                     "GetAgentProviders" => {
                         json!([{"kind":"fixture-agent","executable":"fixture-agent"}])
                     },
+                    "RestartAgentPane" => json!({"pane_id":{"Terminal":7},"session_id":"sid","command":["claude","P"]}),
                     "SpawnAgent" => json!({"pane_id":{"Terminal":7}}),
                     _ => Value::Null,
                 })

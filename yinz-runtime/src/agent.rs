@@ -6,7 +6,7 @@ pub mod paths;
 pub mod pi;
 pub mod report;
 mod restart;
-pub use restart::restart_args;
+pub use restart::{restart_args, restart_with_prompt};
 
 #[cfg(test)]
 #[path = "unit/agent_provider_fixture.rs"]
