@@ -14,7 +14,7 @@ fn cannot_split_terminals_vertically_when_active_terminal_is_too_small() {
     let terminal = yinz.expect_pty_spawn();
     terminal.output(PROMPT);
     yinz.wait_until("first terminal prompt rendered", |grid_snapshot| {
-        grid_snapshot.cursor_is_at(col(2).row(2))
+        grid_snapshot.cursor_is_at(col(2).row(1))
     });
     let (width_before_split, _) = terminal.wait_for_size("first terminal sized", |_, _| true);
 
@@ -30,7 +30,7 @@ fn cannot_split_terminals_vertically_when_active_terminal_is_too_small() {
                 && grid_snapshot.contains("Ctrl +")
                 && grid_snapshot
                     .lines()
-                    .get(1)
+                    .first()
                     .is_some_and(|first_line| first_line.contains(tab_bar_glyph))
         },
     );
@@ -51,7 +51,7 @@ fn key_after_mode_switch_is_interpreted_in_new_mode_not_leaked_to_pane() {
     let second_terminal = yinz.expect_pty_spawn();
     second_terminal.output(PROMPT);
     yinz.wait_until("split-right interpreted in pane mode", |grid_snapshot| {
-        grid_snapshot.cursor_is_at(col(62).row(3))
+        grid_snapshot.cursor_is_at(col(62).row(2))
     });
 
     assert!(!first_terminal.stdin_bytes().contains(&keys::key('r')[0]));
@@ -68,7 +68,7 @@ fn toggle_pane_fullscreen() {
     yinz.send_stdin(&keys::key('f'));
 
     let grid_snapshot = yinz.wait_until("focused pane is fullscreen", |grid_snapshot| {
-        grid_snapshot.cursor_is_at(col(2).row(3))
+        grid_snapshot.cursor_is_at(col(2).row(2))
             && grid_snapshot.contains("LOCK")
             && grid_snapshot.contains("(FULLSCREEN)")
     });
@@ -113,7 +113,7 @@ fn closing_the_fullscreen_pane_restores_the_remaining_layout() {
     claim_first_terminal_and_wait_for_prompt(&yinz);
     split_right_and_wait_for_prompt(&yinz);
     let two_pane_state = yinz.wait_until("two panes settled", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(3))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(2))
     });
 
     yinz.send_stdin(&keys::ctrl('p'));
@@ -121,7 +121,7 @@ fn closing_the_fullscreen_pane_restores_the_remaining_layout() {
     let third_terminal = yinz.expect_pty_spawn();
     third_terminal.output(PROMPT);
     yinz.wait_until("third pane split below the right pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(14))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(13))
     });
 
     yinz.send_stdin(&keys::ctrl('p'));
@@ -137,7 +137,7 @@ fn closing_the_fullscreen_pane_restores_the_remaining_layout() {
         |grid_snapshot| {
             !grid_snapshot.contains("(FULLSCREEN)")
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(62).row(3))
+                && grid_snapshot.cursor_is_at(col(62).row(2))
         },
     );
 
@@ -161,7 +161,7 @@ fn close_pane() {
     let grid_snapshot =
         yinz.wait_until("right pane closed, focus back on first", |grid_snapshot| {
             grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(2))
+                && grid_snapshot.cursor_is_at(col(2).row(1))
                 && grid_snapshot
                     .tab_bar_line()
                     .is_some_and(|bar| bar.contains("[0] Tab #1"))
@@ -230,7 +230,7 @@ fn pane_closes_when_its_process_exits() {
     let grid_snapshot =
         yinz.wait_until("right pane closed, focus back on first", |grid_snapshot| {
             grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(2))
+                && grid_snapshot.cursor_is_at(col(2).row(1))
                 && grid_snapshot
                     .tab_bar_line()
                     .is_some_and(|bar| bar.contains("[0] Tab #1"))
@@ -418,7 +418,7 @@ fn move_focus_up_in_pane_mode() {
     yinz.send_stdin(&keys::ENTER);
 
     let grid_snapshot = yinz.wait_until("focus moved to the upper pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(3))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -433,14 +433,14 @@ fn move_focus_down_in_pane_mode() {
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('k'));
     yinz.wait_until("focus moved to the upper pane", |grid_snapshot| {
-        grid_snapshot.cursor_is_at(col(2).row(3))
+        grid_snapshot.cursor_is_at(col(2).row(2))
     });
 
     yinz.send_stdin(&keys::key('j'));
     yinz.send_stdin(&keys::ENTER);
 
     let grid_snapshot = yinz.wait_until("focus moved back to the lower pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(14))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(13))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -586,7 +586,7 @@ fn move_focus_or_tab_moves_focus_between_panes() {
     yinz.send_stdin(&keys::alt('h'));
 
     let grid_snapshot = yinz.wait_until("focus moved to the left pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(3))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -630,7 +630,7 @@ fn new_pane_in_pane_mode() {
 
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('n'));
-    let grid_snapshot = spawn_second_pane_and_wait_for_grid(&yinz, col(62).row(3));
+    let grid_snapshot = spawn_second_pane_and_wait_for_grid(&yinz, col(62).row(2));
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
 }
@@ -641,7 +641,7 @@ fn new_pane_in_normal_mode() {
     claim_first_terminal_and_wait_for_prompt(&yinz);
 
     yinz.send_stdin(&keys::alt('n'));
-    let grid_snapshot = spawn_second_pane_and_wait_for_grid(&yinz, col(62).row(3));
+    let grid_snapshot = spawn_second_pane_and_wait_for_grid(&yinz, col(62).row(2));
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
 }
@@ -653,7 +653,7 @@ fn split_pane_downward() {
 
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('d'));
-    let grid_snapshot = spawn_second_pane_and_wait_for_grid(&yinz, col(2).row(14));
+    let grid_snapshot = spawn_second_pane_and_wait_for_grid(&yinz, col(2).row(13));
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
 }
@@ -665,7 +665,7 @@ fn new_stacked_pane() {
 
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('s'));
-    let grid_snapshot = spawn_second_stacked_pane_and_wait_for_grid(&yinz, col(2).row(5));
+    let grid_snapshot = spawn_second_stacked_pane_and_wait_for_grid(&yinz, col(2).row(4));
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
 }
@@ -681,7 +681,7 @@ fn move_focus_left_in_pane_mode() {
     yinz.send_stdin(&keys::ENTER);
 
     let grid_snapshot = yinz.wait_until("focus moved to the left pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(3))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -696,14 +696,14 @@ fn move_focus_right_in_pane_mode() {
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('h'));
     yinz.wait_until("focus moved to the left pane", |grid_snapshot| {
-        grid_snapshot.cursor_is_at(col(2).row(3))
+        grid_snapshot.cursor_is_at(col(2).row(2))
     });
 
     yinz.send_stdin(&keys::key('l'));
     yinz.send_stdin(&keys::ENTER);
 
     let grid_snapshot = yinz.wait_until("focus moved back to the right pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(3))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -720,7 +720,7 @@ fn switch_focus_in_pane_mode() {
     yinz.send_stdin(&keys::ENTER);
 
     let grid_snapshot = yinz.wait_until("focus switched to the other pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(3))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -749,7 +749,7 @@ fn toggle_pane_frames() {
             && !grid_snapshot.contains("Pane #1")
             && !grid_snapshot.contains("Pane #2")
             && !grid_snapshot.contains("┌")
-            && grid_snapshot.cursor_is_at(col(62).row(2))
+            && grid_snapshot.cursor_is_at(col(62).row(1))
     });
 
     cycle_pane_frames(&yinz);
@@ -846,7 +846,7 @@ fn toggle_frames_with_stacked_panes() {
 
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('s'));
-    spawn_second_stacked_pane_and_wait_for_grid(&yinz, col(2).row(5));
+    spawn_second_stacked_pane_and_wait_for_grid(&yinz, col(2).row(4));
 
     yinz.wait_until("stacked panes show their titles", |grid_snapshot| {
         grid_snapshot.contains("Pane #1")
@@ -883,7 +883,7 @@ fn start_without_pane_frames() {
         |grid_snapshot| {
             grid_snapshot.tab_bar_appears()
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(2))
+                && grid_snapshot.cursor_is_at(col(2).row(1))
         },
     );
 
@@ -895,7 +895,7 @@ fn start_without_pane_frames() {
     let grid_snapshot = yinz.wait_until(
         "right frameless terminal prompt rendered",
         |grid_snapshot| {
-            grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(2))
+            grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(1))
         },
     );
     assert_snapshot!(normalized(&grid_snapshot));

@@ -1424,6 +1424,7 @@ fn get_domain_row_constraint(
     (y_min, y_max): (usize, usize),
 ) -> Option<Constraint> {
     let mut percent = 0.0;
+    let mut fixed = 0;
     let mut y = y_min;
     while y != y_max {
         // we only look at one (ie the last) geom that has value `y` for `g.y`
@@ -1437,6 +1438,10 @@ fn get_domain_row_constraint(
                 }
                 if let Some(size) = geom.geom.rows.as_percent() {
                     percent += size;
+                    fixed += geom.geom.rows.as_usize();
+                } else if let Constraint::Fixed(size) = geom.geom.rows.constraint {
+                    // Collapsed chrome keeps its configured height in the constraint.
+                    fixed += size;
                 }
                 y += geom.geom.rows.as_usize();
             },
@@ -1446,7 +1451,7 @@ fn get_domain_row_constraint(
         }
     }
     if percent == 0.0 {
-        Some(Constraint::Fixed(y_max - y_min))
+        Some(Constraint::Fixed(fixed))
     } else {
         Some(Constraint::Percent(percent))
     }

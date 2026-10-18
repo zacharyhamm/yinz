@@ -4839,8 +4839,10 @@ impl Screen {
                 } else {
                     tab.hidden_stack_list_members_for_serialization(false)
                 })
-                .map(|(pane_id, p, geom)| {
-                    let geom = tab.tab_bar_serialization_geom(pane_id, geom);
+                .map(|(pane_id, p, mut geom)| {
+                    if p.is_builtin_tab_bar() && !geom.is_stacked() {
+                        geom.rows.constraint = p.configured_rows().constraint;
+                    }
                     let focused_clients: Vec<ClientId> = active_pane_ids
                         .iter()
                         .filter_map(|(c_id, p_id)| {

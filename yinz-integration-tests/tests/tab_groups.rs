@@ -9,20 +9,15 @@ fn tab_groups_keyboard_mouse_and_last_pane_lifecycle() {
         .start();
     let default = yinz.expect_pty_spawn();
     default.output(b"DEFAULT_CONTENT");
-    let grid = yinz.wait_until("default group and buttons ready", |grid| {
-        grid.contains("Default")
-            && grid.contains("DEFAULT_CONTENT")
+    yinz.wait_until("single group collapses to one row", |grid| {
+        !grid.lines()[0].contains("Default")
             && grid.lines()[0].contains('+')
-            && grid.lines()[1].contains('+')
+            && grid.lines()[1].contains("DEFAULT_CONTENT")
     });
-    let group_row = &grid.lines()[0];
-    let group_button_column = group_row[..group_row.find('+').unwrap()].chars().count() + 1;
-    yinz.send_stdin(
-        format!("\x1b[<0;{group_button_column};1M\x1b[<0;{group_button_column};1m").as_bytes(),
-    );
+    yinz.send_stdin(b"\x14g");
     let first = yinz.expect_pty_spawn();
     first.output(b"GROUP_FIRST");
-    let grid = yinz.wait_until("clicked new group focused", |grid| {
+    let grid = yinz.wait_until("second group expands the bar and takes focus", |grid| {
         grid.contains("Group 1")
             && grid.contains("GROUP_FIRST")
             && !grid.contains("DEFAULT_CONTENT")
@@ -65,7 +60,9 @@ fn tab_groups_keyboard_mouse_and_last_pane_lifecycle() {
     });
     first.exit(Some(0));
     yinz.wait_until("last pane exit removes group", |grid| {
-        grid.contains("DEFAULT_CONTENT") && !grid.contains("Group 1")
+        grid.lines()[1].contains("DEFAULT_CONTENT")
+            && !grid.contains("Group 1")
+            && !grid.lines()[0].contains("Default")
     });
     yinz.quit();
 }
@@ -102,9 +99,14 @@ fn tab_groups_can_start_disabled_and_toggle_live_without_losing_groups() {
         assert_eq!(code, 0, "{output}");
     };
     configure(&yinz, true);
-    yinz.wait_until("group row restored", |grid| {
-        grid.lines()[0].contains("Default") && grid.lines()[1].contains("Tab #2")
-    });
+    yinz.wait_until(
+        "single group stays collapsed after enabling groups",
+        |grid| {
+            !grid.contains("Default")
+                && grid.lines()[0].contains("Tab #2")
+                && grid.lines()[1].contains("SECOND_CONTENT")
+        },
+    );
     yinz.send_stdin(b"\x14g");
     let third = yinz.expect_pty_spawn();
     third.output(b"THIRD_CONTENT");

@@ -330,7 +330,7 @@
 
 (define (render rows columns)
   (set! new-group-range #f)
-  (set! group-row-visible (and (bar-tab-groups? mi) (> rows 1) (not (null? groups))))
+  (set! group-row-visible (and (bar-tab-groups? mi) (> rows 1) (> (length groups) 1)))
   (unless group-row-visible (set! hovered-group #f) (set! hovered-group-button #f))
   (if group-row-visible
     (string-append (render-groups columns) "\r\n" (render-tabs rows columns))

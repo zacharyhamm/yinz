@@ -623,6 +623,7 @@ impl<'a> LayoutApplier<'a> {
         let remaining_pane_ids = existing_tab_state.pane_ids();
         let mut prepared = vec![];
         for (mut pane, geom, layout) in placements {
+            pane.set_configured_rows(geom.rows);
             pane.set_geom(geom);
             if let Some(borderless) = layout.borderless {
                 pane.set_borderless(borderless);
@@ -1981,6 +1982,7 @@ impl<'a> PaneApplier<'a> {
         position_and_size: Option<PaneGeom>,
     ) {
         if let Some(position_and_size) = position_and_size {
+            pane.set_configured_rows(position_and_size.rows);
             pane.set_geom(position_and_size);
         }
         if let Some(should_be_borderless) = layout.borderless {

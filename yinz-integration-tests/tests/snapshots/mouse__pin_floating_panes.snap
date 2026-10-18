@@ -2,21 +2,22 @@
 source: yinz-integration-tests/tests/mouse.rs
 expression: normalized(&grid_snapshot)
 ---
- Yinz (test)  Default  + 
- [0] Tab #1  + 
+ Yinz (test)  [0] Tab #1  + 
 $ line1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 line2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 line3aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 line4aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 line5aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-line6aaaaaaaaaaaaaaaaaaaaaaaaa┌ [1] Pane #2 ──────────────────────────────────── PIN [+] ┐aaaaaaaaaaaaaaaaaaaaaaaaaaa
-line7aaaaaaaaaaaaaaaaaaaaaaaaa│$                                                         │aaaaaaaaaaaaaaaaaaaaaaaaaaa
-line8aaaaaaaaaaaaaaaaaaaaaaaaa│                                                          │aaaaaaaaaaaaaaaaaaaaaaaaaaa
+line6aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+line7aaaaaaaaaaaaaaaaaaaaaaaaa┌ [1] Pane #2 ──────────────────────────────────── PIN [+] ┐aaaaaaaaaaaaaaaaaaaaaaaaaaa
+line8aaaaaaaaaaaaaaaaaaaaaaaaa│$                                                         │aaaaaaaaaaaaaaaaaaaaaaaaaaa
 line9aaaaaaaaaaaaaaaaaaaaaaaaa│                                                          │aaaaaaaaaaaaaaaaaaaaaaaaaaa
 line10aaaaaaaaaaaaaaaaaaaaaaaa│                                                          │aaaaaaaaaaaaaaaaaaaaaaaaaaaa
 line11aaaaaaaaaaaaaaaaaaaaaaaa│                                                          │aaaaaaaaaaaaaaaaaaaaaaaaaaaa
 line12aaaaaaaaaaaaaaaaaaaaaaaa│                                                          │aaaaaaaaaaaaaaaaaaaaaaaaaaaa
 line13aaaaaaaaaaaaaaaaaaaaaaaa│                                                          │aaaaaaaaaaaaaaaaaaaaaaaaaaaa
 █                             │                                                          │
+                              │                                                          │
+                              │                                                          │
                               └──────────────────────────────────────────────────────────┘
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

@@ -414,6 +414,7 @@ impl Screen {
     }
 
     pub(super) fn log_and_report_session_state(&mut self) -> Result<()> {
+        self.sync_tab_bar_rows()?;
         self.update_active_pane_ids();
         // generate own session info
         let pane_manifest = self.generate_and_report_pane_state()?;

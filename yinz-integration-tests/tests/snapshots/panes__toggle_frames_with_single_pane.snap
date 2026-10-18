@@ -2,10 +2,10 @@
 source: yinz-integration-tests/tests/panes.rs
 expression: normalized(&grid_snapshot)
 ---
- Yinz (test)  Default  + 
- Tab #1  + 
+ Yinz (test)  Tab #1  + 
 ┌ [0] Pane #1 ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │$ █                                                                                                                   │
+│                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │

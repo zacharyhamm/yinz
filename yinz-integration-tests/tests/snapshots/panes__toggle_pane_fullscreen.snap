@@ -2,8 +2,7 @@
 source: yinz-integration-tests/tests/panes.rs
 expression: normalized(&grid_snapshot)
 ---
- Yinz (test)  Default  + 
- Tab #1 (FULLSCREEN)  + 
+ Yinz (test)  Tab #1 (FULLSCREEN)  + 
                                                        [1] Pane #2
 $ █
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

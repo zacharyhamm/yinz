@@ -205,7 +205,7 @@ fn mouse_click_new_tab_button_in_tab_bar_opens_a_new_tab() {
     let new_tab_button_column =
         display_column_of(&tab_bar, "+").expect("new tab button is on the tab bar") + 1;
 
-    yinz.send_stdin(&sgr_left_click(new_tab_button_column, 2));
+    yinz.send_stdin(&sgr_left_click(new_tab_button_column, 1));
     let new_tab_terminal = yinz.expect_pty_spawn();
     new_tab_terminal.output(PROMPT);
 

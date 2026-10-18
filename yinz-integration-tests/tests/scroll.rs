@@ -30,7 +30,7 @@ fn page_scroll_up() {
     let grid_snapshot = yinz.wait_until("scrolled up by a page", |grid_snapshot| {
         grid_snapshot.contains("PgDn|PgUp")
             && !grid_snapshot.contains(LAST_LINE)
-            && grid_snapshot.contains("SCROLL 20/")
+            && grid_snapshot.contains("SCROLL 19/")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();

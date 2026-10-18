@@ -5,6 +5,240 @@ use yinz_types::{input::actions::Action, tab_bar::TabGroupInfo};
 
 const CLIENT: ClientId = ClientId::new(1);
 
+fn tab_with_bar(screen: &mut Screen, index: u32, height: usize, alias: bool) -> TiledPaneLayout {
+    let plugin = RunPlugin {
+        location: RunPluginLocation::Yinz(yinz_types::data::PluginTag::new("tab-bar")),
+        ..Default::default()
+    };
+    let run = if alias {
+        RunPluginOrAlias::Alias(PluginAlias {
+            name: "tabs".into(),
+            run_plugin: Some(plugin),
+            ..Default::default()
+        })
+    } else {
+        RunPluginOrAlias::RunPlugin(plugin)
+    };
+    let layout = TiledPaneLayout {
+        children: vec![
+            TiledPaneLayout {
+                run: Some(Run::Plugin(run.clone())),
+                split_size: Some(yinz_types::geometry::SplitSize::Fixed(height)),
+                borderless: Some(true),
+                ..Default::default()
+            },
+            TiledPaneLayout::default(),
+        ],
+        ..Default::default()
+    };
+    let id = TabId::new(index as usize);
+    screen
+        .new_tab(id, (vec![], vec![]), None, Some(CLIENT))
+        .unwrap();
+    screen
+        .apply_layout(
+            layout.clone(),
+            vec![],
+            vec![(TerminalId::new(index + 1), None)],
+            vec![],
+            HashMap::from([(run, vec![PluginId::new(index + 1)])]),
+            id,
+            true,
+            CLIENT,
+            None,
+        )
+        .unwrap();
+    screen
+        .tabs
+        .get_mut(&id)
+        .unwrap()
+        .set_pane_selectable(PaneId::Plugin(PluginId::new(index + 1)), false);
+    layout
+}
+
+fn assert_bar_height(screen: &Screen, index: u32, height: usize) {
+    let tab = &screen.tabs[&TabId::new(index as usize)];
+    let bar = tab
+        .get_pane_with_id(PaneId::Plugin(PluginId::new(index + 1)))
+        .unwrap();
+    assert_eq!(bar.position_and_size().rows.as_usize(), height);
+    let terminal = tab
+        .get_pane_with_id(PaneId::Terminal(TerminalId::new(index + 1)))
+        .unwrap();
+    assert_eq!(terminal.position_and_size().y, height);
+    assert_eq!(terminal.position_and_size().rows.as_usize(), 24 - height);
+    assert_eq!(tab.get_viewport().y, height);
+    assert_eq!(tab.get_viewport().rows, 24 - height);
+}
+
+#[test]
+fn tab_bar_height_follows_group_count_and_preserves_explicit_layout_heights() {
+    for alias in [false, true] {
+        for configured in [1, 2, 3] {
+            let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+            let (sender, _receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            let layout = tab_with_bar(&mut screen, 0, configured, alias);
+            tab_with_bar(&mut screen, 1, configured, alias);
+            screen.sync_tab_bar_rows().unwrap();
+            let collapsed = if configured == 2 { 1 } else { configured };
+            for index in 0..2 {
+                assert_bar_height(&screen, index, collapsed);
+            }
+            screen.restore_tab_group(
+                TabId::new(1),
+                &TiledPaneLayout {
+                    tab_group: Some(TabGroupInfo {
+                        id: 1,
+                        name: "Other".into(),
+                    }),
+                    ..Default::default()
+                },
+            );
+            screen.sync_tab_bar_rows().unwrap();
+            for index in 0..2 {
+                assert_bar_height(&screen, index, configured);
+            }
+            screen.close_tab_by_id(TabId::new(1)).unwrap();
+            screen.sync_tab_bar_rows().unwrap();
+            assert_bar_height(&screen, 0, collapsed);
+            let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+            tab.unset_fullscreen();
+            tab.override_layout(
+                layout,
+                vec![],
+                None,
+                None,
+                vec![],
+                vec![],
+                HashMap::new(),
+                true,
+                true,
+                CLIENT,
+                None,
+            )
+            .unwrap();
+            screen.sync_tab_bar_rows().unwrap();
+            assert_bar_height(&screen, 0, collapsed);
+        }
+    }
+}
+
+#[test]
+fn tab_bar_height_changes_preserve_fullscreen() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    let (sender, _receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    tab_with_bar(&mut screen, 0, 2, false);
+    screen.sync_tab_bar_rows().unwrap();
+    for count in [2, 1] {
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        tab.toggle_pane_no_ui_fullscreen(PaneId::Terminal(TerminalId::new(1)));
+        assert!(tab.is_fullscreen_active());
+        tab.set_tab_group_count(count).unwrap();
+        assert!(tab.is_fullscreen_active());
+        assert!(tab.fullscreen_covers_ui());
+        tab.unset_fullscreen();
+        assert_bar_height(&screen, 0, count);
+    }
+}
+
+#[test]
+fn tab_bar_expansion_keeps_valid_geometry_when_the_screen_is_too_short() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    let (sender, receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    tab_with_bar(&mut screen, 0, 2, false);
+    screen.sync_tab_bar_rows().unwrap();
+    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    tab.resize_whole_tab(Size { cols: 80, rows: 2 }).unwrap();
+    tab.set_tab_group_count(2).unwrap();
+    let bar = tab
+        .get_pane_with_id(PaneId::Plugin(PluginId::new(1)))
+        .unwrap();
+    assert_eq!(bar.position_and_size().rows.as_usize(), 1);
+    let terminal = tab
+        .get_pane_with_id(PaneId::Terminal(TerminalId::new(1)))
+        .unwrap();
+    assert_eq!(terminal.position_and_size().y, 1);
+    assert_eq!(terminal.position_and_size().rows.as_usize(), 1);
+    let instructions = receiver.len();
+    tab.set_tab_group_count(2).unwrap();
+    assert_eq!(
+        receiver.len(),
+        instructions,
+        "a refused expansion must not cause a resize loop"
+    );
+    tab.resize_whole_tab(Size { cols: 80, rows: 24 }).unwrap();
+    assert_bar_height(&screen, 0, 2);
+}
+
+#[test]
+fn collapsed_tab_bar_restores_its_configured_height_and_expands_after_restore() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    let (sender, _receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    tab_with_bar(&mut screen, 0, 2, false);
+    screen.sync_tab_bar_rows().unwrap();
+    assert_bar_height(&screen, 0, 1);
+    let (raw, _) = yinz_session::session_serialization::serialize_session_layout(
+        screen.get_layout_metadata(None, None).into(),
+    )
+    .unwrap();
+    let layout = yinz_config::kdl::layout::from_kdl(&raw, None, None, None)
+        .unwrap()
+        .tabs
+        .remove(0)
+        .1;
+    assert_eq!(
+        layout.children[0].split_size,
+        Some(yinz_types::geometry::SplitSize::Fixed(2))
+    );
+    let run = match layout.children[0].run.clone().unwrap() {
+        Run::Plugin(run) => run,
+        _ => panic!("tab bar plugin"),
+    };
+    let mut restored = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    restored.bus.senders.to_plugin = screen.bus.senders.to_plugin.clone();
+    restored
+        .new_tab(TabId::new(0), (vec![], vec![]), None, Some(CLIENT))
+        .unwrap();
+    restored.restore_tab_group(TabId::new(0), &layout);
+    restored
+        .apply_layout(
+            layout,
+            vec![],
+            vec![(TerminalId::new(1), None)],
+            vec![],
+            HashMap::from([(run, vec![PluginId::new(1)])]),
+            TabId::new(0),
+            true,
+            CLIENT,
+            None,
+        )
+        .unwrap();
+    restored.sync_tab_bar_rows().unwrap();
+    restored
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_selectable(PaneId::Plugin(PluginId::new(1)), false);
+    assert_bar_height(&restored, 0, 1);
+    new_tab(&mut restored, 2, TabId::new(1));
+    restored.restore_tab_group(
+        TabId::new(1),
+        &TiledPaneLayout {
+            tab_group: Some(TabGroupInfo {
+                id: 1,
+                name: "Other".into(),
+            }),
+            ..Default::default()
+        },
+    );
+    restored.sync_tab_bar_rows().unwrap();
+    assert_bar_height(&restored, 0, 2);
+}
+
 fn grouped_screen() -> Screen {
     let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
     for (id, group) in [(0, 0), (1, 1), (2, 0), (3, 1)] {

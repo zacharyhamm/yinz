@@ -52,6 +52,7 @@ fn tab_group_toggle_reclaims_a_row_and_restores_declared_height() {
             );
             let client = ClientId::new(1);
             let terminal = tab.get_active_pane_id(client);
+            tab.set_tab_group_count(2).unwrap();
             tab.update_tab_groups(initially_enabled).unwrap();
             let (layout, plugin) = bar_layout(2, alias);
             tab.override_layout(
@@ -77,7 +78,10 @@ fn tab_group_toggle_reclaims_a_row_and_restores_declared_height() {
                 assert_eq!(tab.get_viewport().y, if enabled { 2 } else { 1 });
                 assert_eq!(tab.get_viewport().rows, if enabled { 28 } else { 29 });
                 assert_eq!(
-                    tab.tab_bar_serialization_geom(bar, geom).rows.constraint,
+                    tab.get_pane_with_id(bar)
+                        .unwrap()
+                        .configured_rows()
+                        .constraint,
                     Constraint::Fixed(2)
                 );
                 assert_eq!(tab.get_active_pane_id(client), terminal);
@@ -179,6 +183,7 @@ fn tab_group_toggle_preserves_floating_fullscreen() {
             senders,
         );
         let client = ClientId::new(1);
+        tab.set_tab_group_count(2).unwrap();
         let (layout, plugin) = bar_layout(2, false);
         tab.override_layout(
             layout,

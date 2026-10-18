@@ -155,6 +155,12 @@ fn only_the_first_regular_tab_has_a_flat_left_edge() {
         for active in [0, 1] {
             for multiplayer in [false, true] {
                 let mut tabs = vec![tab(0, "main", active == 0), tab(1, "other", active == 1)];
+                let mut hidden = tab(2, "hidden", false);
+                hidden.group = Some(yinz_types::tab_bar::TabGroupInfo {
+                    id: 1,
+                    name: "Other".into(),
+                });
+                tabs.push(hidden);
                 if multiplayer {
                     for tab in &mut tabs {
                         tab.other_focused_clients = vec![ClientId::new(1)];
@@ -392,6 +398,64 @@ fn tab_bar_swap_and_scroll_indicators_keep_cached_keys_and_dimmed_state() {
 }
 
 #[test]
+fn single_group_keeps_session_and_alt_hints_on_the_tab_row() {
+    let (mut runtime, host) = plugin();
+    let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
+    mode["session_name"] = json!("session");
+    mode["session_ancestry"] = json!(["parent"]);
+    mode["host_fullscreen"] = json!(true);
+    wire(&mut runtime, json!({"ModeUpdate":mode}));
+    wire(
+        &mut runtime,
+        json!({"InitialKeybinds":[["Normal",[
+            [{"bare_key":{"Char":"["},"key_modifiers":["Alt"]},["PreviousSwapLayout"]],
+            [{"bare_key":{"Char":"]"},"key_modifiers":["Alt"]},["NextSwapLayout"]]
+        ]]]}),
+    );
+    let mut active = tab(0, "main", true);
+    active.active_swap_layout_name = Some("stacked".into());
+    let mut other = tab(1, "hidden", false);
+    other.group = Some(yinz_types::tab_bar::TabGroupInfo {
+        id: 1,
+        name: "Other".into(),
+    });
+    for multiple in [false, true, false] {
+        let mut tabs = vec![active.clone()];
+        if multiple {
+            tabs.push(other.clone());
+        }
+        event(&mut runtime, Event::TabUpdate(tabs));
+        let frame = runtime.render(2, 120).unwrap();
+        assert_eq!(frame.contains("\r\n"), multiple, "{frame}");
+        let lines: Vec<_> = frame.split("\r\n").collect();
+        let prefix = lines[0];
+        for text in ["host", "parent ▸ ", "session"] {
+            assert!(prefix.contains(text), "{prefix}");
+        }
+        for text in ["Alt <[]>", "STACKED"] {
+            assert!(rendered_text(prefix).contains(text), "{prefix}");
+        }
+        assert_eq!(prefix.contains("Default"), multiple);
+        assert_eq!(runtime.value("group-row-visible").unwrap(), json!(multiple));
+        if multiple {
+            assert!(lines[1].contains("main") && !lines[1].contains("host"));
+            let col = runtime.value("new-group-range").unwrap()[0].clone();
+            wire(&mut runtime, json!({"Mouse":{"Hover":[0,col]}}));
+        } else {
+            assert!(prefix.contains("main"));
+            assert_eq!(runtime.value("new-group-range").unwrap(), json!(false));
+            assert_eq!(runtime.value("hovered-group-button").unwrap(), json!(false));
+            let col = runtime.value("breadcrumb-range").unwrap()[0].clone();
+            wire(&mut runtime, json!({"Mouse":{"LeftClick":[0,col]}}));
+            assert_eq!(
+                host.lock().unwrap().commands.last(),
+                Some(&json!("FocusHostSession"))
+            );
+        }
+    }
+}
+
+#[test]
 fn group_row_filters_tabs_and_mouse_targets_keep_global_addresses() {
     let (mut runtime, host) = plugin();
     let mut mode = ModeInfo::default();
@@ -461,7 +525,15 @@ fn group_row_filters_tabs_and_mouse_targets_keep_global_addresses() {
 #[test]
 fn group_plus_matches_tab_plus_styling_with_hover_arrows_and_dimming() {
     let (mut runtime, _) = plugin();
-    event(&mut runtime, Event::TabUpdate(vec![tab(0, "main", true)]));
+    let mut other = tab(2, "other", false);
+    other.group = Some(yinz_types::tab_bar::TabGroupInfo {
+        id: 1,
+        name: "Other".into(),
+    });
+    event(
+        &mut runtime,
+        Event::TabUpdate(vec![tab(0, "main", true), tab(1, "second", false), other]),
+    );
     for arrow_fonts in [false, true] {
         for dimmed in [false, true] {
             let mut mode = ModeInfo::default();

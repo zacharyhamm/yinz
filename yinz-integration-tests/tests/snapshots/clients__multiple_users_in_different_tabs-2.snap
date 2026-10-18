@@ -2,7 +2,6 @@
 source: yinz-integration-tests/tests/clients.rs
 expression: normalized(&second_grid)
 ---
- Yinz (test)  Default  + 
- [0] Tab #1 [ ] [1] Tab #2  + 
+ Yinz (test)  [0] Tab #1 [ ] [1] Tab #2  + 
 $ █
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

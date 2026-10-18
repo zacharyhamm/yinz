@@ -37,7 +37,7 @@ pub fn claim_first_terminal_and_wait_for_prompt(yinz: &TestSession) -> FakePtyHa
         |grid_snapshot| {
             grid_snapshot.tab_bar_appears()
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(2))
+                && grid_snapshot.cursor_is_at(col(2).row(1))
         },
     );
     terminal
@@ -50,7 +50,7 @@ pub fn split_right_and_wait_for_prompt(yinz: &TestSession) -> FakePtyHandle {
     terminal.output(PROMPT);
     yinz.wait_until("right terminal prompt rendered", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(62).row(3))
+            && grid_snapshot.cursor_is_at(col(62).row(2))
             && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     terminal
@@ -63,7 +63,7 @@ pub fn split_down_and_wait_for_prompt(yinz: &TestSession) -> FakePtyHandle {
     terminal.output(PROMPT);
     yinz.wait_until("lower terminal prompt rendered", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(2).row(14))
+            && grid_snapshot.cursor_is_at(col(2).row(13))
             && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     terminal

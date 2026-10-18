@@ -137,6 +137,11 @@ pub trait Pane {
     fn invalidate_frame(&mut self, _client_id: ClientId) {}
     fn reset_size_and_position_override(&mut self);
     fn set_geom(&mut self, position_and_size: PaneGeom);
+    /// Layout intent survives presentation changes such as a collapsed tab bar.
+    fn configured_rows(&self) -> yinz_types::pane_size::Dimension {
+        self.position_and_size().rows
+    }
+    fn set_configured_rows(&mut self, _rows: yinz_types::pane_size::Dimension) {}
     fn set_geom_override(&mut self, pane_geom: PaneGeom);
     /// Apply a complete layout before resizing content. Grid-backed panes override this to avoid
     /// reflowing through intermediate sizes when a frame becomes part of a shared container.
@@ -719,6 +724,11 @@ pub trait Pane {
         None
     }
     fn invoked_with(&self) -> &Option<Run>;
+    fn is_builtin_tab_bar(&self) -> bool {
+        matches!(self.invoked_with(), Some(Run::Plugin(plugin))
+            if plugin.get_run_plugin().is_some_and(|plugin|
+                matches!(plugin.location, RunPluginLocation::Yinz(tag) if tag.to_string() == "tab-bar")))
+    }
     fn update_plugin_location(&mut self, _location: RunPluginLocation) {}
     fn set_notification_end(&mut self, _notification_end: Option<NotificationEnd>) {}
     fn set_title(&mut self, title: String);

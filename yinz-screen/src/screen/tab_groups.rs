@@ -40,6 +40,15 @@ impl Screen {
         tabs.into_iter().map(|tab| tab.id).collect()
     }
 
+    pub(super) fn sync_tab_bar_rows(&mut self) -> Result<()> {
+        let count = self.tab_groups.len();
+        for tab in self.tabs.values_mut().filter(|tab| !tab.is_pending()) {
+            tab.set_tab_group_count(count)
+                .context("sync tab bar height")?;
+        }
+        Ok(())
+    }
+
     pub(super) fn tab_group_info(&self, tab: TabId) -> Option<TabGroupInfo> {
         let id = *self.tab_group_ids.get(&tab)?;
         Some(TabGroupInfo {

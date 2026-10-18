@@ -184,7 +184,7 @@ fn return_to_normal_mode() {
     yinz.send_stdin(&keys::ENTER);
 
     let grid_snapshot = yinz.wait_until("returned to normal mode", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(1))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -240,7 +240,7 @@ fn tmux_mode() {
 
     let grid_snapshot = yinz.wait_until("right terminal opened via tmux mode", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(62).row(3))
+            && grid_snapshot.cursor_is_at(col(62).row(2))
             && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     assert_snapshot!(normalized(&grid_snapshot));
@@ -295,7 +295,7 @@ fn scrolling_inside_a_pane() {
     let right_terminal = yinz.expect_pty_spawn();
     right_terminal.output(PROMPT);
     yinz.wait_until("right terminal prompt rendered", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(3))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(2))
     });
 
     for line in 1..=22 {
@@ -310,7 +310,7 @@ fn scrolling_inside_a_pane() {
     yinz.send_stdin(&keys::key('k'));
 
     let grid_snapshot = yinz.wait_until("scrolled up one line inside the pane", |grid_snapshot| {
-        grid_snapshot.contains("SCROLL: 2/3")
+        grid_snapshot.contains("SCROLL: 2/2")
             && grid_snapshot.contains("PgDn|PgUp")
             && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
