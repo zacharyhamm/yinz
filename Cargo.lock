@@ -3263,7 +3263,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "steel-core"
 version = "0.8.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=ec6d3add3e3a1248588baec69466fde5e17ed49e#ec6d3add3e3a1248588baec69466fde5e17ed49e"
+source = "git+https://github.com/zacharyhamm/steel?branch=yinz-0.8.3#d059b10c7f4f9063d2f7c10d95bd30fbd8b91077"
 dependencies = [
  "arc-swap",
  "bigdecimal",
@@ -3316,7 +3316,7 @@ dependencies = [
 [[package]]
 name = "steel-derive"
 version = "0.8.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=ec6d3add3e3a1248588baec69466fde5e17ed49e#ec6d3add3e3a1248588baec69466fde5e17ed49e"
+source = "git+https://github.com/zacharyhamm/steel?branch=yinz-0.8.3#d059b10c7f4f9063d2f7c10d95bd30fbd8b91077"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3326,7 +3326,7 @@ dependencies = [
 [[package]]
 name = "steel-gen"
 version = "0.8.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=ec6d3add3e3a1248588baec69466fde5e17ed49e#ec6d3add3e3a1248588baec69466fde5e17ed49e"
+source = "git+https://github.com/zacharyhamm/steel?branch=yinz-0.8.3#d059b10c7f4f9063d2f7c10d95bd30fbd8b91077"
 dependencies = [
  "codegen",
  "serde",
@@ -3335,7 +3335,7 @@ dependencies = [
 [[package]]
 name = "steel-parser"
 version = "0.8.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=ec6d3add3e3a1248588baec69466fde5e17ed49e#ec6d3add3e3a1248588baec69466fde5e17ed49e"
+source = "git+https://github.com/zacharyhamm/steel?branch=yinz-0.8.3#d059b10c7f4f9063d2f7c10d95bd30fbd8b91077"
 dependencies = [
  "compact_str",
  "dashmap",
@@ -3356,7 +3356,7 @@ dependencies = [
 [[package]]
 name = "steel-quickscope"
 version = "0.3.3"
-source = "git+https://github.com/zacharyhamm/steel?rev=ec6d3add3e3a1248588baec69466fde5e17ed49e#ec6d3add3e3a1248588baec69466fde5e17ed49e"
+source = "git+https://github.com/zacharyhamm/steel?branch=yinz-0.8.3#d059b10c7f4f9063d2f7c10d95bd30fbd8b91077"
 dependencies = [
  "indexmap 2.14.0",
  "smallvec",
