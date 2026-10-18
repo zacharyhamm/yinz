@@ -352,6 +352,7 @@ pub enum Event {
     /// Complete provider registry snapshot, replayed to new subscribers.
     PickResult(crate::pick::PickResult),
     AgentProvidersChanged(Vec<crate::agent::provider::AgentProvider>),
+    ProjectProvidersChanged(Vec<crate::project_provider::ProjectProvider>),
     /// Which modifier keys the client believes are held down right now, so a plugin can show
     /// something for as long as one is - the status bar swaps its `Alt + ...` hint in this way.
     ///
@@ -3057,6 +3058,10 @@ pub enum PluginCommand {
     RegisterAgentProvider(crate::agent::provider::AgentProvider),
     /// Read all registered agent provider definitions. Requires RunCommands.
     GetAgentProviders,
+    RegisterProjectProvider(crate::project_provider::ProjectProvider),
+    GetProjectProviders,
+    ValidateProjectMatch(serde_json::Value),
+    PublishProjectLocations(serde_json::Value),
     ListClients,
     ChangeHostFolder(PathBuf),
     SetFloatingPanePinned(PaneId, bool), // bool -> should be pinned

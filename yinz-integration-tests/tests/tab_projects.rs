@@ -924,3 +924,115 @@ fn registry_updates_palette_and_switching_project_preserves_focus() {
     });
     yinz.quit();
 }
+
+#[test]
+fn non_git_provider_labels_discovers_groups_and_filters_agents() {
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest};
+    let directory = tempfile::tempdir().unwrap();
+    let first_root = directory.path().join("first");
+    let second_root = directory.path().join("second");
+    std::fs::create_dir(&first_root).unwrap();
+    std::fs::create_dir(&second_root).unwrap();
+    let provider = directory.path().join("provider.scm");
+    for root in [&first_root, &second_root] {
+        let marker = root.join(".yinz-project");
+        std::fs::create_dir(&marker).unwrap();
+        std::fs::write(marker.join("identity"), "shared-work").unwrap();
+        std::fs::write(marker.join("name"), "MarkerWork").unwrap();
+    }
+    // Resolve interpreter shims before the harness replaces HOME.
+    let python = std::process::Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(
+        python.status.success(),
+        "resolve Python 3: {}",
+        String::from_utf8_lossy(&python.stderr)
+    );
+    let python = String::from_utf8(python.stdout).unwrap();
+    let source = include_str!("../../docs/examples/marker-project.scm")
+        .replace("\"python3\"", &serde_json::json!(python.trim()).to_string());
+    std::fs::write(&provider, source).unwrap();
+    let config = AGENT_PROJECT_CONFIG.replace(
+        "  \"project-store\"\n",
+        &format!(
+            "  \"project-store\"\n  \"file:{}\" {{ shared true; }}\n",
+            provider.display()
+        ),
+    );
+    let layout = format!(
+        r#"layout {{
+      tab {{
+        pane size=1 borderless=true {{ plugin location="yinz:tab-bar"; }}
+        pane cwd="{}"
+      }}
+      tab focus=true {{
+        pane size=1 borderless=true {{ plugin location="yinz:tab-bar"; }}
+        pane cwd="{}"
+      }}
+    }}"#,
+        first_root.display(),
+        second_root.display()
+    );
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config(&config)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    let first = yinz.expect_pty_spawn();
+    let second = yinz.expect_pty_spawn();
+    first.output(b"MARKER_FIRST");
+    second.output(b"MARKER_SECOND");
+    yinz.wait_until("project provider permission prompt", |screen| {
+        screen.contains("Plugin permissions")
+    });
+    yinz.send_stdin(b"\t\r");
+    wait_for_tab(&yinz, "MarkerWork", &[]);
+    assert_eq!(yinz.run_cli_action(CliAction::ArrangePanesByProject), 0);
+    yinz.wait_until("non-Git roots grouped together", |screen| {
+        screen.contains("MARKER_FIRST") && screen.contains("MARKER_SECOND")
+    });
+    first.run_foreground(&["codex"]);
+    second.run_foreground(&["codex"]);
+    // Opening Agents observes the saved project, beyond the shell-only label.
+    yinz.run_cli_action(CliAction::LaunchOrFocusPlugin {
+        url: "yinz:agents".into(),
+        configuration: None,
+        configuration_json: None,
+        floating: true,
+        in_place: false,
+        close_replaced_pane: false,
+        move_to_focused_tab: false,
+        skip_plugin_cache: false,
+        tab_id: None,
+    });
+    yinz.wait_until("non-Git agents grouped in the project panel", |screen| {
+        screen.contains("MarkerWork") && screen.contains("codex")
+    });
+    let socket = yinz_ipc::consts::ipc_connect(
+        &yinz_runtime::consts::YINZ_SOCK_DIR.join(yinz.session_name()),
+    )
+    .unwrap();
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
+    let mut receiver = sender.get_receiver::<ServerToClientMsg>().unwrap();
+    receiver
+        .set_recv_timeout(Some(std::time::Duration::from_secs(30)))
+        .unwrap();
+    sender
+        .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::List {
+            project: Some("MarkerWork".into()),
+        }))
+        .unwrap();
+    let response = loop {
+        match receiver.recv_server_msg() {
+            IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _) => break response,
+            IpcRecv::Msg(_, _) => {},
+            _ => panic!("missing agent list"),
+        }
+    };
+    assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+    assert_eq!(response.agents.len(), 2, "{response:?}");
+    yinz.quit();
+}

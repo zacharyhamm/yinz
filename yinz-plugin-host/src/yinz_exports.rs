@@ -459,6 +459,59 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     ))
                     .context("sending palette command")?;
             },
+            PluginCommand::RegisterProjectProvider(provider) => {
+                let supported_source = env.plugin_config.is_builtin()
+                    || yinz_plugin_api::authoring::is_script_plugin(
+                        env.resolved_source_path
+                            .as_deref()
+                            .unwrap_or(&env.plugin_config.path),
+                    );
+                let result = match env.generation.filter(|_| supported_source) {
+                    _ if env.unavailable.load(atomic::Ordering::Acquire)
+                        || env.cancel.load(atomic::Ordering::Acquire) =>
+                    {
+                        Err("project provider plugin is no longer available".to_owned())
+                    },
+                    None => Err("project providers require a Scheme plugin instance".to_owned()),
+                    Some(_) if !env.plugin_config.is_shared() => Err(
+                        "project provider plugins require shared true in their configuration"
+                            .to_owned(),
+                    ),
+                    Some(generation) => yinz_types::project_provider::register(
+                        provider,
+                        generation,
+                        env.plugin_id.get(),
+                    ),
+                };
+                if result.is_ok() {
+                    broadcast_project_providers(&env.senders);
+                }
+                write_project_response(
+                    env,
+                    result.map(|()| serde_json::json!(yinz_types::project_provider::providers())),
+                )?;
+            },
+            PluginCommand::GetProjectProviders => {
+                write_project_response(
+                    env,
+                    Ok(serde_json::json!(yinz_types::project_provider::providers())),
+                )?;
+            },
+            PluginCommand::ValidateProjectMatch(value) => {
+                let result = crate::project_provider::service(env)
+                    .and_then(|_| crate::project_provider::validate(value));
+                write_project_response(env, result)?;
+            },
+            PluginCommand::PublishProjectLocations(value) => {
+                let result = crate::project_provider::service(env)
+                    .and_then(|generation| crate::project_provider::publish(generation, value));
+                if matches!(result, Ok(true)) {
+                    env.senders
+                        .send_to_screen(ScreenInstruction::InvalidateAgentEventProjects)
+                        .context("invalidate project memberships")?;
+                }
+                write_project_response(env, result.map(|_| serde_json::Value::Null))?;
+            },
             PluginCommand::RegisterAgentProvider(provider) => {
                 let supported_source = env.plugin_config.is_builtin()
                     || yinz_plugin_api::authoring::is_script_plugin(
@@ -1301,6 +1354,19 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
         (PermissionStatus::Denied, permission) => {
             if matches!(
                 command,
+                PluginCommand::RegisterProjectProvider(_)
+                    | PluginCommand::GetProjectProviders
+                    | PluginCommand::ValidateProjectMatch(_)
+                    | PluginCommand::PublishProjectLocations(_)
+            ) {
+                return write_project_response(
+                    env,
+                    Err(format!("Permission denied: {permission:?}")),
+                );
+            }
+
+            if matches!(
+                command,
                 PluginCommand::RegisterAgentProvider(_) | PluginCommand::GetAgentProviders
             ) {
                 return write_agent_providers_response(
@@ -1380,6 +1446,32 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
         },
     };
     Ok(())
+}
+
+fn write_project_response(
+    env: &mut PluginEnv,
+    result: Result<serde_json::Value, String>,
+) -> Result<()> {
+    let response = yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse {
+        json: serde_json::to_string(&result).context("serialize project provider response")?,
+    };
+    write_response(env, &response.encode_to_vec())
+}
+
+pub(crate) fn broadcast_project_providers(senders: &ThreadSenders) {
+    crate::project_provider::invalidate();
+    senders
+        .send_to_screen(ScreenInstruction::InvalidateAgentEventProjects)
+        .context("invalidate project memberships")
+        .non_fatal();
+    senders
+        .send_to_plugin(PluginInstruction::Update(vec![(
+            None,
+            None,
+            Event::ProjectProvidersChanged(yinz_types::project_provider::providers()),
+        )]))
+        .context("broadcast project providers")
+        .non_fatal();
 }
 
 fn write_agent_providers_response(
@@ -9130,6 +9222,10 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenCommandPaneInPlaceOfPaneId
         | CommandType::RunCommand
         | CommandType::AgentControl
+        | CommandType::RegisterProjectProvider
+        | CommandType::GetProjectProviders
+        | CommandType::ValidateProjectMatch
+        | CommandType::PublishProjectLocations
         | CommandType::RegisterAgentProvider
         | CommandType::GetAgentProviders
         | CommandType::RunCommandInPane

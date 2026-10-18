@@ -63,3 +63,5 @@ pub mod secrets;
 pub mod pick;
 
 pub mod configuration;
+
+pub mod project_provider;

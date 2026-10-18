@@ -2059,6 +2059,16 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             })
         },
         CommandType::GetAgentProviders => PluginCommand::GetAgentProviders,
+        CommandType::GetProjectProviders => PluginCommand::GetProjectProviders,
+        CommandType::RegisterProjectProvider => {
+            PluginCommand::RegisterProjectProvider(Default::default())
+        },
+        CommandType::ValidateProjectMatch => {
+            PluginCommand::ValidateProjectMatch(serde_json::json!({}))
+        },
+        CommandType::PublishProjectLocations => {
+            PluginCommand::PublishProjectLocations(serde_json::json!({}))
+        },
         CommandType::RegisterDefaultKeybindings => {
             PluginCommand::RegisterDefaultKeybindings(strings(tc))
         },

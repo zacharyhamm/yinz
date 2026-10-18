@@ -221,3 +221,190 @@ fn publishing_and_persistence_keep_long_histories_and_other_live_agents() {
         }
     }
 }
+
+#[test]
+fn project_provider_chain_precedence_fallback_deadline_and_stale_replies() {
+    let source = r#"
+        (require "./agent-service/state.scm")
+        (require "./agent-service/probes.scm")
+        (define (seed providers)
+          (as-set! "project-providers" providers)
+          (as-record-cwd! 7 "/work")
+          (as-call "resolve-repositories"))
+        (define (answer result) (yinz-resolve! test-pending result) #f)
+        (define (reject) (yinz-reject! test-pending "provider failed") #f)
+        (define (expire) (set! test-now 6001) (reject))
+        (define (move)
+          (as-record-cwd! 7 "/other") (as-call "resolve-repositories"))
+        (define (reload providers) (as-call "project-providers-changed" providers))
+        (define (repositories) (as-get "repositories"))
+        (define (calls) test-calls)
+    "#;
+    let prelude = r#"
+        (define test-pending #f)
+        (define test-calls '())
+        (define test-now 1000)
+        (define (yinz-wall-clock-ms) test-now)
+        (define (yinz-rpc-call options)
+          (set! test-calls (append test-calls (list options)))
+          (set! test-pending (yinz-deferred)) test-pending)
+    "#;
+    let providers = json!([
+        {"id":"first","priority":2,"plugin_id":20,"generation":1},
+        {"id":"second","priority":1,"plugin_id":20,"generation":1}
+    ]);
+    let repository =
+        json!({"root":"/work","provider_identity":"[\"first\",\"work\"]","display_name":"Work"});
+    for scenario in [
+        "match", "decline", "error", "invalid", "timeout", "move", "reload",
+    ] {
+        let (mut runtime, host) = plugin_with_source(
+            "project-provider-test",
+            source,
+            json!({}),
+            BTreeMap::from([("ValidateProjectMatch".into(), repository.clone())]),
+            prelude,
+        );
+        runtime.invoke("seed", vec![providers.clone()]).unwrap();
+        assert_eq!(
+            runtime.invoke("calls", vec![]).unwrap()[0]["name"],
+            "project-identify:first"
+        );
+        assert_eq!(
+            runtime
+                .invoke("calls", vec![])
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        match scenario {
+            "match" => {
+                runtime
+                    .invoke(
+                        "answer",
+                        vec![json!({"identity":"work","root":"/work","name":"Work"})],
+                    )
+                    .unwrap();
+            },
+            "decline" => {
+                runtime.invoke("answer", vec![json!(null)]).unwrap();
+            },
+            "error" => {
+                runtime.invoke("reject", vec![]).unwrap();
+            },
+            "invalid" => {
+                host.lock()
+                    .unwrap()
+                    .failures
+                    .insert("ValidateProjectMatch".into(), "invalid root".into());
+                runtime
+                    .invoke("answer", vec![json!({"root":"relative"})])
+                    .unwrap();
+            },
+            "timeout" => {
+                runtime.invoke("expire", vec![]).unwrap();
+            },
+            "move" => {
+                runtime.eval("(define old-pending test-pending)").unwrap();
+                runtime.invoke("move", vec![]).unwrap();
+                runtime
+                    .eval("(yinz-resolve! old-pending (hash \"identity\" \"old\")) #f")
+                    .unwrap();
+            },
+            "reload" => {
+                runtime.eval("(define old-pending test-pending)").unwrap();
+                runtime.invoke("reload", vec![json!([])]).unwrap();
+                runtime
+                    .eval("(yinz-resolve! old-pending (hash \"identity\" \"old\")) #f")
+                    .unwrap();
+            },
+            _ => unreachable!(),
+        }
+        runtime.invoke("yinz-async-poll", vec![]).unwrap();
+        let repositories = runtime.invoke("repositories", vec![]).unwrap();
+        if scenario == "match" {
+            assert_eq!(repositories["/work"], repository);
+        } else {
+            assert!(
+                repositories.as_object().unwrap().is_empty(),
+                "{scenario}: {repositories}"
+            );
+        }
+        if matches!(scenario, "decline" | "error" | "invalid") {
+            let calls = runtime.invoke("calls", vec![]).unwrap();
+            assert_eq!(calls[1]["pluginId"], 20);
+            assert_eq!(calls[1]["name"], "project-identify:second");
+            runtime.invoke("answer", vec![json!(null)]).unwrap();
+        }
+        runtime.invoke("yinz-async-poll", vec![]).unwrap();
+        let host = host.lock().unwrap();
+        let git = host
+            .commands
+            .iter()
+            .filter(|command| command.get("RunCommand").is_some())
+            .count();
+        assert_eq!(
+            git,
+            if matches!(
+                scenario,
+                "decline" | "error" | "invalid" | "timeout" | "reload"
+            ) {
+                2
+            } else {
+                0
+            },
+            "{scenario}"
+        );
+    }
+}
+
+#[test]
+fn marker_project_example_runs_its_real_command() {
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join(".yinz-project");
+    std::fs::create_dir(&marker).unwrap();
+    std::fs::write(marker.join("identity"), "work-id").unwrap();
+    std::fs::write(marker.join("name"), "Work").unwrap();
+    let (mut runtime, host) = plugin_with_source(
+        "marker-example",
+        include_str!("../../../docs/examples/marker-project.scm"),
+        json!({}),
+        BTreeMap::new(),
+        "",
+    );
+    runtime
+        .eval(&format!(
+            "(define result (identify {}))",
+            json!(directory.path())
+        ))
+        .unwrap();
+    let host = host.lock().unwrap();
+    let command = host
+        .commands
+        .iter()
+        .find_map(|command| command.get("RunCommand"))
+        .unwrap()
+        .clone();
+    drop(host);
+    let argv = command[0].as_array().unwrap();
+    let output = std::process::Command::new(argv[0].as_str().unwrap())
+        .args(argv[1..].iter().map(|arg| arg.as_str().unwrap()))
+        .current_dir(command[2].as_str().unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["identity"], "work-id");
+    assert_eq!(result["name"], "Work");
+    runtime.eval("(define observed #f) (define (observed-result) observed) (yinz-catch (yinz-then result (lambda (value) (set! observed value))) (lambda (failure) (set! observed failure)))").unwrap();
+    runtime
+        .update(json!({"RunCommandResult":[0.0, output.stdout, output.stderr, command[3]]}))
+        .unwrap();
+    assert_eq!(runtime.invoke("observed-result", vec![]).unwrap(), result);
+}

@@ -123,3 +123,9 @@
     "cwd" (%async-get options "cwd" json-null) "name" (%async-get options "name" json-null)
     "context" (%async-get options "context" (hash)) "start_suppressed" (%async-get options "startSuppressed" #f)))))
 (define (yinz-agent-spawn options) (hash-ref (yinz-agent-spawn-details options) "pane_id"))
+
+;; Install the handler before registration makes this shared instance discoverable.
+(define (yinz-project-register-provider definition identify)
+  (yinz-rpc-handle (string-append "project-identify:" (hash-ref definition "id")) (lambda (cwd context) (identify cwd)))
+  (yinz-command (hash "RegisterProjectProvider" definition)))
+(define (yinz-project-providers) (yinz-command "GetProjectProviders"))

@@ -97,6 +97,7 @@ pub fn project_def() -> EntityDef {
         // that would need a mapping table to read in the file.
         .attr(AttrDef::text("worktree_status"))
         .attr(AttrDef::text("common_dir"))
+        .attr(AttrDef::text("provider_identity"))
         .attr(AttrDef::json("replaced_ids"))
         .attr(AttrDef::boolean("discovered").required().default(false))
 }

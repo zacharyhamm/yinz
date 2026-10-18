@@ -787,6 +787,14 @@ impl TryFrom<ProtobufEvent> for Event {
                     .map_err(|_| "Malformed PickResult"),
                 _ => Err("Malformed PickResult payload"),
             },
+            Ok(ProtobufEventType::ProjectProvidersChanged) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::ProjectProvidersChangedPayload(json)) => {
+                    serde_json::from_str(&json)
+                        .map(Event::ProjectProvidersChanged)
+                        .map_err(|_| "Malformed agent provider snapshot")
+                },
+                _ => Err("Malformed payload for ProjectProvidersChanged Event"),
+            },
             Ok(ProtobufEventType::AgentProvidersChanged) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::AgentProvidersChangedPayload(json)) => {
                     serde_json::from_str(&json)
@@ -1623,6 +1631,13 @@ impl TryFrom<Event> for ProtobufEvent {
                 name: ProtobufEventType::PickResult as i32,
                 payload: Some(event::Payload::PickResultPayload(
                     serde_json::to_string(&result).map_err(|_| "Invalid PickResult")?,
+                )),
+            }),
+            Event::ProjectProvidersChanged(providers) => Ok(ProtobufEvent {
+                name: ProtobufEventType::ProjectProvidersChanged as i32,
+                payload: Some(event::Payload::ProjectProvidersChangedPayload(
+                    serde_json::to_string(&providers)
+                        .map_err(|_| "Cannot serialize agent providers")?,
                 )),
             }),
             Event::AgentProvidersChanged(providers) => Ok(ProtobufEvent {
@@ -2844,6 +2859,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::AgentEvent => EventType::AgentEvent,
             ProtobufEventType::PickResult => EventType::PickResult,
             ProtobufEventType::AgentProvidersChanged => EventType::AgentProvidersChanged,
+            ProtobufEventType::ProjectProvidersChanged => EventType::ProjectProvidersChanged,
             ProtobufEventType::ModifiersHeld => EventType::ModifiersHeld,
         })
     }
@@ -2916,6 +2932,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::AgentEvent => ProtobufEventType::AgentEvent,
             EventType::PickResult => ProtobufEventType::PickResult,
             EventType::AgentProvidersChanged => ProtobufEventType::AgentProvidersChanged,
+            EventType::ProjectProvidersChanged => ProtobufEventType::ProjectProvidersChanged,
             EventType::ModifiersHeld => ProtobufEventType::ModifiersHeld,
         })
     }

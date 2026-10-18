@@ -57,6 +57,48 @@ fn pipe(runtime: &mut Runtime, name: &str, source: Value, body: Value) {
 }
 
 #[test]
+fn project_provider_callbacks_are_independent_within_one_plugin() {
+    let (mut runtime, commands, _) = runtime(
+        r#"
+        (yinz-project-register-provider (hash "id" "first" "priority" 2)
+          (lambda (cwd) (hash "identity" "first" "root" cwd "name" "First")))
+        (yinz-project-register-provider (hash "id" "second" "priority" 1)
+          (lambda (cwd) (hash "identity" "second" "root" cwd "name" "Second")))
+        "#,
+    );
+    for replacement in [false, true] {
+        if replacement {
+            runtime
+                .eval(
+                    r#"(yinz-project-register-provider (hash "id" "first" "priority" 2)
+                  (lambda (cwd) (hash "identity" "replacement" "root" cwd "name" "Replacement")))"#,
+                )
+                .unwrap();
+        }
+        for provider in ["first", "second"] {
+            pipe(
+                &mut runtime,
+                "yinz_rpc_call",
+                json!({"Plugin":7}),
+                json!({"version":1,"call_id":format!("{provider}-{replacement}"),
+                    "name":format!("project-identify:{provider}"),"payload":"/work"}),
+            );
+            let replies = sent(&commands, "yinz_rpc_reply");
+            let reply = &replies.last().unwrap().0;
+            assert_eq!(reply["result"]["root"], "/work");
+            assert_eq!(
+                reply["result"]["identity"],
+                if replacement && provider == "first" {
+                    "replacement"
+                } else {
+                    provider
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn handlers_validate_source_keep_public_pipes_and_restore_async_origin() {
     let (mut runtime, commands, _) = runtime(
         r#"

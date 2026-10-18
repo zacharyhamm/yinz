@@ -449,3 +449,60 @@ or hashes with `"name"`, `"args"`, `"props"`, and `"children"`. A handler receiv
 the keybinding pipe message and can return `#t` or a deferred result. Only messages
 from a host keybinding invoke these handlers. Registering again replaces the
 previous defaults and handlers.
+
+## Local project identification providers
+
+A shared Scheme plugin can identify projects without Git:
+
+```scheme
+(yinz-project-register-provider (hash "id" "marker" "priority" 100)
+  (lambda (cwd)
+    ;; Return json-null (or #f) for no match, or a deferred result.
+    (hash "identity" "stable-work-id" "root" "/work/example" "name" "Example")))
+```
+
+The helper installs a `project-identify:<provider-id>` RPC handler before registration.
+A plugin can register multiple IDs with separate callbacks; registering an ID again
+replaces only that callback. The callback receives a local absolute working directory.
+Return an object with `identity`, `root`, `name`, and optionally `branch`. The host checks that the root
+is an existing absolute directory and canonically contains the requested directory.
+Identity and name must be nonempty and have no control characters. Unknown fields
+are rejected; a provider cannot set host identity or another provider's namespace.
+
+Provider IDs use 1–32 lowercase letters, digits, underscores, or hyphens. IDs must
+be unique; `git` is reserved. Higher integer priorities run first, with ties sorted
+by ID. Custom providers precede Git. A location's complete provider chain has five
+seconds; errors, invalid results, and timeouts are logged and fall through to the
+next provider or Git. Registration belongs to the plugin generation and is removed
+on unload or crash. Reload and registration changes invalidate cached local results.
+
+Choose an identity that stays stable across renames and checkouts. Two roots that
+return the same identity from the same provider share one project. Identical IDs
+from different providers remain distinct. Do not use a branch as project identity.
+Explicit project registrations and tab assignments remain overrides. Agent
+checkouts can create saved projects; ordinary shells receive labels without
+creating registry entries. Remote panes continue to use Git; SSH paths are never
+sent to these providers.
+
+Registration and reading providers (`yinz-project-providers`) require
+`RunCommands`. RPC requires `MessageAndLaunchOtherPlugins`. Filesystem commands
+and subprocesses require their usual permissions; registration grants no additional
+authority. The host commands are `RegisterProjectProvider`, `GetProjectProviders`,
+and the subscription event is `ProjectProvidersChanged`. Returned descriptors
+include host-owned `plugin_id` and `generation` fields.
+
+The runnable [marker provider](examples/marker-project.scm) requires Python 3.
+Create `.yinz-project/identity` and `.yinz-project/name` text files in a project
+root, then load the example as a shared background plugin:
+
+```kdl
+load_plugins {
+    "file:/absolute/path/to/marker-project.scm" { shared true; }
+}
+```
+
+For example, put `my-workspace` in `identity` and `My workspace` in `name`.
+Copy those marker files to another checkout to group both roots together. The
+example searches upward for the nearest marker directory and has no Git dependency.
+It passes the host path as an argument and runs from `/`; command working directories
+otherwise apply the SDK’s special `/tmp`, `/host`, `/cache`, and `/data` mappings.

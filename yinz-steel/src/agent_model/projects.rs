@@ -131,15 +131,21 @@ pub(super) fn run(op: &str, input: Value) -> Result<Value> {
             let (repository,): (projects::Repository,) = args(input)?;
             value(
                 repository
-                    .remote
-                    .as_deref()
-                    .filter(|remote| !remote.is_empty())
-                    .map(|remote| format!("remote:{}", projects::origin_identity(remote)))
+                    .provider_identity
+                    .as_ref()
+                    .map(|id| format!("provider:{id}"))
                     .or_else(|| {
                         repository
-                            .common_dir
-                            .as_ref()
-                            .map(|dir| format!("git:{:?}:{dir}", repository.host))
+                            .remote
+                            .as_deref()
+                            .filter(|remote| !remote.is_empty())
+                            .map(|remote| format!("remote:{}", projects::origin_identity(remote)))
+                            .or_else(|| {
+                                repository
+                                    .common_dir
+                                    .as_ref()
+                                    .map(|dir| format!("git:{:?}:{dir}", repository.host))
+                            })
                     }),
             )
         },

@@ -8,6 +8,8 @@
 
 (define (load configuration)
   (as-reset!)
+  (as-send (hash "Subscribe" '("ProjectProvidersChanged")))
+  (as-set! "project-providers" (as-safe (lambda () (as-send "GetProjectProviders")) '()))
   (as-send (hash "Subscribe" '("AgentProvidersChanged")))
   (as-set! "providers" (as-safe (lambda () (as-send "GetAgentProviders")) '()))
   (as-send (hash "Subscribe" '("AgentEvent" "PaneUpdate" "TabUpdate" "CommandChanged" "CwdChanged" "SessionUpdate" "RunCommandResult" "WebRequestResult" "Timer")))
@@ -23,6 +25,7 @@
 (define (update event)
   (when (hash? event)
     (cond
+      ((hash-contains? event "ProjectProvidersChanged") (as-call "project-providers-changed" (hash-ref event "ProjectProvidersChanged")))
       ((hash-contains? event "AgentProvidersChanged") (as-set! "providers" (hash-ref event "AgentProvidersChanged")))
       ((hash-contains? event "PluginDataChanged")
         (when (member (hash-ref (hash-ref event "PluginDataChanged") "watch_id") (as-get "watches"))

@@ -69,6 +69,9 @@ pub const FILE: &str = "/cache/projects.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
+    /// Host-assigned, provider-qualified identity; absent for Git.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_identity: Option<String>,
     pub name: String,
     pub root: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -93,13 +96,15 @@ pub struct Project {
 }
 
 impl Project {
-    /// True when this project carries the Git identity of a checkout.
+    /// True when this project carries a provider or Git checkout identity.
     ///
     /// A user project need not have one — the user can name any folder. A
     /// discovered project always does, because discovery only runs on
     /// checkouts.
     pub fn is_checkout(&self) -> bool {
-        self.worktree_status.is_some() || self.common_dir.is_some()
+        self.provider_identity.is_some()
+            || self.worktree_status.is_some()
+            || self.common_dir.is_some()
     }
 }
 
@@ -110,9 +115,14 @@ pub enum WorktreeStatus {
     Linked,
 }
 
-/// What Git says about one checkout. Missing Git fields mean an ordinary folder.
+/// A resolved project checkout, or an ordinary folder when no provider matched.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Repository {
+    /// Host-assigned, provider-qualified identity; absent for Git.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub root: String,
     /// The machine this checkout is on, or `None` for this one.
     ///
@@ -157,9 +167,11 @@ impl Repository {
         self
     }
 
-    /// True when Git claimed this folder. Only a checkout makes a project.
+    /// True when a custom provider or Git claimed this folder.
     pub fn is_checkout(&self) -> bool {
-        self.worktree_status.is_some() || self.common_dir.is_some()
+        self.provider_identity.is_some()
+            || self.worktree_status.is_some()
+            || self.common_dir.is_some()
     }
 
     /// `repo:branch` — where this checkout is, in the fewest words that still
@@ -207,9 +219,9 @@ impl Repository {
         }
         // A checkout at `/` names no folder, and a lone separator on a pane frame
         // is noise rather than an address.
-        self.common_dir
+        self.display_name
             .as_deref()
-            .and_then(repository_name)
+            .or_else(|| self.common_dir.as_deref().and_then(repository_name))
             .or_else(|| Some(folder_name(&self.root)).filter(|name| !name.is_empty()))
             .map(str::to_owned)
     }
@@ -263,6 +275,7 @@ pub fn parse_legacy(json: &[u8]) -> Registry {
             let mut project = validate(&saved.name, &saved.root).ok()?;
             project.discovered = saved.discovered;
             project.worktree_dir = saved.worktree_dir.filter(|dir| !dir.contains('\0'));
+            project.provider_identity = saved.provider_identity;
             project.remote = saved.remote;
             project.worktree_status = saved.worktree_status;
             project.common_dir = saved.common_dir;
@@ -290,6 +303,7 @@ pub fn validate(name: &str, root: &str) -> Result<Project, String> {
         name: name.to_owned(),
         root,
 
+        provider_identity: None,
         worktree_dir: None,
         remote: None,
         worktree_status: None,
@@ -319,6 +333,7 @@ pub const ROW_COLUMNS: &[&str] = &[
     "common_dir",
     "discovered",
     "replaced_ids",
+    "provider_identity",
 ];
 
 impl WorktreeStatus {
@@ -369,6 +384,7 @@ pub fn from_rows(rows: &DataRows) -> Registry {
                 Project {
                     name,
                     root,
+                    provider_identity: text_at(rows, row, "provider_identity"),
                     worktree_dir: text_at(rows, row, "worktree_dir"),
                     remote: text_at(rows, row, "remote"),
                     worktree_status: text_at(rows, row, "worktree_status")
@@ -394,6 +410,7 @@ pub fn from_rows(rows: &DataRows) -> Registry {
 pub fn to_mutation(project: &Project) -> Mutation {
     Mutation::put("project")
         .uid(project.name.clone())
+        .set("provider_identity", project.provider_identity.clone())
         .set("name", project.name.clone())
         .set("root", project.root.clone())
         .set("worktree_dir", project.worktree_dir.clone())
@@ -467,6 +484,10 @@ pub fn to_rows(projects: &Registry) -> DataRows {
                         .map_or(DataValue::Null, DataValue::Text),
                     DataValue::Bool(project.discovered),
                     DataValue::Text(serde_json::json!(project.replaced_ids).to_string()),
+                    project
+                        .provider_identity
+                        .clone()
+                        .map_or(DataValue::Null, DataValue::Text),
                 ]
             })
             .collect(),
@@ -586,8 +607,18 @@ pub fn plan_merge(rows: &DataRows, source: &str, target: &str) -> Result<Change,
     };
     let source = lookup(source)?;
     let mut project = lookup(target)?.clone();
-    if !equivalent_origins(source.remote.as_deref(), project.remote.as_deref()) {
-        return Err("projects must have equivalent nonempty origins".into());
+    if !(source.provider_identity.is_some()
+        && source.provider_identity == project.provider_identity)
+        && !equivalent_origins(source.remote.as_deref(), project.remote.as_deref())
+    {
+        return Err(
+            if source.provider_identity.is_some() || project.provider_identity.is_some() {
+                "projects must have equivalent provider identities"
+            } else {
+                "projects must have equivalent nonempty origins"
+            }
+            .into(),
+        );
     }
     let mut mutations = vec![assert_projects(rows, "name", &[&source.name, target])?];
     if source.root != project.root {
@@ -695,6 +726,11 @@ pub fn for_cwd<'a>(projects: &'a Registry, cwd: &Location) -> Option<&'a Project
 /// need its own machine's folders to be known before it could, and that is a
 /// larger change than this one.
 fn same_repository(project: &Project, repository: &Repository) -> bool {
+    if project.provider_identity.is_some() || repository.provider_identity.is_some() {
+        return repository.host.is_none()
+            && project.provider_identity.is_some()
+            && project.provider_identity == repository.provider_identity;
+    }
     match (&project.remote, &repository.remote) {
         (Some(left), Some(right)) => equivalent_origins(Some(left), Some(right)),
         (None, None) => {
@@ -747,7 +783,7 @@ pub fn repository_for_cwd<'a>(probed: &'a Probed, cwd: &Location) -> Option<&'a 
         .map(|(_, repository)| repository)
 }
 
-/// The project that owns a folder, when Git claims that folder.
+/// The project that owns an identified checkout.
 ///
 /// A folder outside a repository belongs to no project even when a project root
 /// contains it: a pane that is not in a checkout is not working on a project.
@@ -775,7 +811,13 @@ pub fn project_for_cwd<'a>(
 ) -> Option<&'a Project> {
     let repository =
         repository_for_cwd(probed, cwd).filter(|repository| repository.is_checkout())?;
-    for_repository(projects, repository).or_else(|| for_cwd(projects, cwd))
+    for_repository(projects, repository).or_else(|| {
+        for_cwd(projects, cwd).filter(|project| {
+            !project.discovered
+                || (project.provider_identity.is_none() && repository.provider_identity.is_none())
+                || same_repository(project, repository)
+        })
+    })
 }
 
 /// Resolve registered membership, preferring explicit local roots over repository matches.
@@ -862,7 +904,7 @@ fn unique_name(projects: &Registry, base: &str) -> String {
 
 /// Make a project for each checkout that no project owns yet.
 ///
-/// Only a Git checkout makes a project. A folder outside a repository is
+/// Only an identified checkout makes a project. An unclaimed folder is
 /// somewhere an agent happened to be started, not work worth remembering for
 /// good under a name taken from its last path component.
 ///
@@ -900,17 +942,28 @@ pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discove
             let Some(project) = projects.get_mut(&name) else {
                 continue;
             };
-            if project.remote.is_none() && project.common_dir.is_none() {
+            if (project.provider_identity.is_none()
+                && project.remote.is_none()
+                && project.common_dir.is_none())
+                || (project.discovered && project.provider_identity != repository.provider_identity)
+            {
+                project
+                    .provider_identity
+                    .clone_from(&repository.provider_identity);
                 project.remote.clone_from(&repository.remote);
                 project.worktree_status = repository.worktree_status;
                 project.common_dir.clone_from(&repository.common_dir);
-                if repository.worktree_status.is_some() {
+                if repository.is_checkout() {
                     discovery.updated.push(name);
                 }
             }
             continue;
         }
-        if for_cwd(projects, &root).is_some() {
+        if for_cwd(projects, &root).is_some_and(|project| {
+            !project.discovered
+                || (project.provider_identity.is_none() && repository.provider_identity.is_none())
+                || same_repository(project, repository)
+        }) {
             continue;
         }
         let identity_matches: Vec<String> = projects
@@ -930,6 +983,9 @@ pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discove
                 && repository.worktree_status == Some(WorktreeStatus::Primary)
             {
                 let old = std::mem::replace(&mut project.root, repository.root.clone());
+                project
+                    .provider_identity
+                    .clone_from(&repository.provider_identity);
                 project.remote.clone_from(&repository.remote);
                 project.worktree_status = repository.worktree_status;
                 project.common_dir.clone_from(&repository.common_dir);
@@ -937,12 +993,19 @@ pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discove
             }
             continue;
         }
-        let Some(leaf) = leaf_name(&repository.root) else {
+        let Some(name) = repository
+            .display_name
+            .clone()
+            .or_else(|| leaf_name(&repository.root))
+        else {
             continue;
         };
-        let Ok(mut project) = validate(&leaf, &repository.root) else {
+        let Ok(mut project) = validate(&name, &repository.root) else {
             continue;
         };
+        project
+            .provider_identity
+            .clone_from(&repository.provider_identity);
         project.remote.clone_from(&repository.remote);
         project.worktree_status = repository.worktree_status;
         project.common_dir.clone_from(&repository.common_dir);
@@ -955,6 +1018,8 @@ pub fn discover(projects: &mut Registry, repositories: &[Repository]) -> Discove
             .values()
             .filter(|below| {
                 below.discovered
+                    && ((below.provider_identity.is_none() && project.provider_identity.is_none())
+                        || below.provider_identity == project.provider_identity)
                     && below.root != project.root
                     && Path::new(&below.root).starts_with(&project.root)
             })
@@ -997,6 +1062,9 @@ pub fn adopt(projects: &mut Registry, mut project: Project) -> Adopted {
         .values()
         .find(|other| other.discovered && other.root == project.root && other.name != project.name)
         .map(|other| {
+            project
+                .provider_identity
+                .clone_from(&other.provider_identity);
             project.remote.clone_from(&other.remote);
             project.worktree_status = other.worktree_status;
             project.common_dir.clone_from(&other.common_dir);
@@ -2373,3 +2441,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "unit/project_providers.rs"]
+mod provider_tests;

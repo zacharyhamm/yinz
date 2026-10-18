@@ -96,6 +96,7 @@ pub fn repository(exit_code: Option<i32>, metadata: &[u8], config: &[u8]) -> Pro
         // The parse says nothing about which machine Git ran on — it is handed
         // bytes. Whoever asked stamps that on, in `record_probe_outcome`.
         host: None,
+        ..Repository::default()
     })
 }
 
