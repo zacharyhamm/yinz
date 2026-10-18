@@ -327,6 +327,10 @@ The hook configuration includes `"agent_session_id"` when known, and later
 `PaneUpdate` observations expose `"last_agent_session_id"` even when `"agent"`
 is null after `SessionEnd`. Fresh restart clears the old id until the new
 conversation reports itself.
+`RunCommandInPane` clears the previous session id even for an identical command.
+Use `yinz-agent-restart` with `"session" "resume"` to retain the selected session.
+A different provider cannot inherit the previous provider's id. Reusing the pane
+for a non-agent command removes the remembered id and disarms `agent_exit`.
 
 ## Workers
 

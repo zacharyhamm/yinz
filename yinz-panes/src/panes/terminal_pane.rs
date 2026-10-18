@@ -1540,6 +1540,9 @@ impl Pane for TerminalPane {
         // pane, and the memory is set once and never taken back.
         self.was_an_agent |= agent.is_some();
         if let Some(agent) = &agent {
+            if self.last_agent_kind.as_deref() != Some(agent.kind.as_str()) {
+                self.last_agent_session_id = None;
+            }
             self.last_agent_kind = Some(agent.kind.clone());
             if let Some(id) = agent.session_id.as_ref().filter(|id| !id.is_empty()) {
                 self.last_agent_session_id = Some(id.clone());
@@ -1733,7 +1736,8 @@ impl Pane for TerminalPane {
         } else {
             None
         };
-        let fresh_agent = cleaned.is_some();
+        // Explicit resumes restore their selected session in Screen::restart_agent_pane.
+        let fresh_agent = cleaned.is_some() || replacement.is_some();
         if fresh_agent {
             self.last_agent_session_id = None;
         }
@@ -1792,12 +1796,10 @@ impl Pane for TerminalPane {
                         self.was_an_agent = false;
                         self.last_agent_kind = None;
                         self.last_agent_cwd = None;
-                        self.last_agent_session_id = None;
                     }
                     self.invoked_with = Some(Run::Command(replacement.clone()));
                     // A replacement marked as an agent starts a fresh conversation.
                     if let Some(agent) = agent_from_run(self.invoked_with.as_ref()) {
-                        self.last_agent_session_id = None;
                         self.set_agent_info(Some(agent));
                     }
                     replacement

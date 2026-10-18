@@ -2869,3 +2869,64 @@ fn terminal_frames_keep_the_calculated_fade_color() {
                 == Some(color.map(Into::into).unwrap_or(AnsiCode::Reset))));
     }
 }
+
+#[test]
+fn changing_provider_does_not_inherit_another_providers_session() {
+    for kind in ["claude", "codex", "pi", "muse", "agy"] {
+        for clear_record in [false, true] {
+            let mut pane = agent_pane();
+            let mut previous = AgentInfo {
+                kind: if kind == "claude" { "codex" } else { "claude" }.into(),
+                state: AgentState::Busy,
+                source: AgentSource::Reported,
+                session_id: Some("old-session".into()),
+                run_id: None,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: None,
+            };
+            pane.set_agent_info(Some(previous.clone()));
+            if clear_record {
+                pane.set_agent_info(None);
+            }
+            previous.kind = kind.into();
+            previous.session_id = None;
+            pane.set_agent_info(Some(previous));
+            assert_eq!(pane.last_agent_session_id(), None, "{kind}/{clear_record}");
+        }
+    }
+}
+
+#[test]
+fn reusing_an_agent_pane_for_a_non_agent_clears_its_session_memory() {
+    let mut pane = agent_pane_with_run(Some(super::Run::Command(RunCommand {
+        command: "env".into(),
+        args: vec!["YINZ_AGENT_PANE=1".into(), "claude".into()],
+        ..Default::default()
+    })));
+    let mut reported = pane.agent_info().unwrap().clone();
+    reported.session_id = Some("old-session".into());
+    pane.set_agent_info(Some(reported));
+    pane.set_agent_info(None);
+    pane.hold(
+        Some(0),
+        false,
+        RunCommand {
+            command: "claude".into(),
+            ..Default::default()
+        },
+    );
+    pane.respawn(
+        Some(RunCommand {
+            command: "/usr/bin/true".into(),
+            ..Default::default()
+        }),
+        false,
+    )
+    .unwrap();
+    let info = crate::pane::pane_info_for_pane(&pane.pid(), &pane, &HashMap::new());
+    assert!(info.agent.is_none());
+    assert!(info.last_agent_session_id.is_none());
+    assert!(!pane.was_an_agent());
+}

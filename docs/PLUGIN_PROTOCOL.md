@@ -728,6 +728,11 @@ The pane remains an agent pane and fires `agent_exit` again on its next exit.
 `agent_exit` configuration includes `agent_session_id` when known, even after
 `SessionEnd` cleared the live record. `PaneInfo.last_agent_session_id` carries
 that same memory. A fresh restart clears it until a new session reports itself.
+`RunCommandInPane` also clears the previous session id, even when the command
+and arguments are unchanged. Use `RestartAgentPane` with `session: "resume"`
+to retain the selected session. A report from a different provider clears the
+previous provider's id before recording its own. Reusing the pane for a
+non-agent command removes the remembered id and disarms `agent_exit`.
 
 `AgentControl` also accepts `{"Restart":{"pane_id":{"Terminal":7},
 "prompt":"P","session":"resume"}}`. Its ordinary `AgentResponse` has a

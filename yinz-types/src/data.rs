@@ -1235,7 +1235,8 @@ pub struct PaneInfo {
     /// Why this held agent command cannot safely restart, if applicable.
     #[serde(default)]
     pub restart_error: Option<String>,
-    /// Last reported conversation, retained after SessionEnd until a fresh restart.
+    /// Last reported conversation, retained after SessionEnd until a fresh restart,
+    /// command replacement, or provider change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_agent_session_id: Option<String>,
     pub pane_x: Column,
