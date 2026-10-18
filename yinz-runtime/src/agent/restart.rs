@@ -10,7 +10,8 @@ pub fn restart_with_prompt(
     // Use one provider revision for cleaning, defaults, resume and prompt grammar.
     crate::agent::provider::with_snapshot(&crate::agent::provider::providers(), || {
         use crate::agent::launch::{prompt_args, shape_args, Spec};
-        let cleaned = restart_args(program, args)?;
+        let resuming = session_id.is_some_and(|id| !id.trim().is_empty());
+        let (cleaned, separator) = clean_restart_args(program, args, resuming, false)?;
         let mut inner_program = program;
         let mut inner_args = cleaned.as_slice();
         loop {
@@ -38,16 +39,14 @@ pub fn restart_with_prompt(
             // Launch defaults are already present in the held command.
             leading.drain(..provider.launch.args.len());
         }
-        let mut result = cleaned[..cleaned.len() - inner_args.len()].to_vec();
+        let prefix_len = cleaned.len() - inner_args.len();
+        let mut result = cleaned[..prefix_len].to_vec();
         result.extend(leading);
-        let separator = inner_args
-            .iter()
-            .position(|arg| arg == "--")
-            .unwrap_or(inner_args.len());
-        result.extend_from_slice(&inner_args[..separator]);
+        let separator = separator.unwrap_or(cleaned.len());
+        result.extend_from_slice(&cleaned[prefix_len..separator]);
         result.extend(flags);
         result.extend(prompt_args(Some(&kind), provider.as_deref(), &spec)?);
-        result.extend_from_slice(&inner_args[separator..]);
+        result.extend_from_slice(&cleaned[separator..]);
         Ok(result)
     })
 }
@@ -56,13 +55,29 @@ pub fn restart_with_prompt(
 /// options. Unknown option arities and non-interactive commands must be refused: guessing
 /// could replay work or silently change the model, permissions, or working directory.
 pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, String> {
+    clean_restart_args(program, args, false, false).map(|(args, _)| args)
+}
+
+// The separator index names a retained delimiter, never an option value equal to `--`.
+fn clean_restart_args(
+    program: &Path,
+    args: &[String],
+    resuming: bool,
+    managed_codex: bool,
+) -> Result<(Vec<String>, Option<usize>), String> {
     let name = program.file_name().and_then(|name| name.to_str());
     if matches!(name, Some("yinz" | "sh")) {
         if let Some((inner, inner_args)) = crate::agent::unwrapped_program_and_args(program, args) {
             if inner != program {
                 let mut result = args[..args.len() - inner_args.len()].to_vec();
-                result.extend(restart_args(inner, inner_args)?);
-                return Ok(result);
+                let managed_codex = managed_codex
+                    || (name == Some("yinz")
+                        && args.get(1).is_some_and(|launcher| launcher == "codex"));
+                let (cleaned, separator) =
+                    clean_restart_args(inner, inner_args, resuming, managed_codex)?;
+                let separator = separator.map(|index| result.len() + index);
+                result.extend(cleaned);
+                return Ok((result, separator));
             }
         }
     }
@@ -98,8 +113,15 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
         }
         let program = args.get(index).ok_or("env has no agent command")?;
         let mut cleaned = args[..=index].to_vec();
-        cleaned.extend(restart_args(Path::new(program), &args[index + 1..])?);
-        return Ok(cleaned);
+        let (inner_args, separator) = clean_restart_args(
+            Path::new(program),
+            &args[index + 1..],
+            resuming,
+            managed_codex,
+        )?;
+        let separator = separator.map(|index| cleaned.len() + index);
+        cleaned.extend(inner_args);
+        return Ok((cleaned, separator));
     }
     if let Some(provider) = name
         .and_then(crate::agent::kind_of)
@@ -467,6 +489,8 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
         ),
         _ => unreachable!(),
     };
+    let managed_codex =
+        managed_codex && kind == "codex" && super::codex::bridge_options(args).is_some();
     let mut cleaned = Vec::new();
     let mut index = 0;
     let mut positionals = 0;
@@ -482,6 +506,22 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
             let (flag, inline) = arg
                 .split_once('=')
                 .map_or((arg.as_str(), None), |(k, v)| (k, Some(v)));
+            if managed_codex
+                && resuming
+                && matches!(
+                    flag,
+                    "--full-auto"
+                        | "--dangerously-bypass-approvals-and-sandbox"
+                        | "--ask-for-approval"
+                        | "-a"
+                        | "--sandbox"
+                        | "-s"
+                )
+            {
+                return Err(format!(
+                    "Yinz's managed Codex bridge cannot resume with {flag}; start a fresh conversation to preserve the requested permissions"
+                ));
+            }
             if kind == "pi"
                 && (inline.is_some()
                     || (flag == "--mode" && args.get(index).map(String::as_str) != Some("text")))
@@ -575,23 +615,25 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
             }
         }
     }
-    Ok(cleaned)
+    Ok((cleaned, None))
 }
 
 fn provider_restart_args(
     kind: &str,
     grammar: &crate::agent::provider::AgentRestart,
     args: &[String],
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Option<usize>), String> {
     let mut cleaned = Vec::new();
     let mut index = 0;
     let mut positionals = 0;
     let mut after_separator = false;
+    let mut separator = None;
     while let Some(arg) = args.get(index) {
         index += 1;
         if arg == "--" && !after_separator {
             after_separator = true;
             if grammar.keep_positionals {
+                separator = Some(cleaned.len());
                 cleaned.push(arg.clone());
             }
             continue;
@@ -644,7 +686,7 @@ fn provider_restart_args(
             }
         }
     }
-    Ok(cleaned)
+    Ok((cleaned, separator))
 }
 
 #[cfg(test)]
@@ -698,6 +740,253 @@ mod tests {
                     expected
                 );
             }
+        }
+    }
+
+    #[test]
+    fn restart_distinguishes_option_values_from_separators() {
+        crate::agent::provider_fixture::register_opencode();
+        for (kind, options, tail, retained, resume, prompt) in [
+            (
+                "claude",
+                vec!["--system-prompt", "--"],
+                vec!["old task"],
+                vec![],
+                vec!["--resume", "sid"],
+                vec!["P"],
+            ),
+            (
+                "claude",
+                vec!["--system-prompt", "--"],
+                vec!["--", "old task"],
+                vec![],
+                vec!["--resume", "sid"],
+                vec!["P"],
+            ),
+            (
+                "opencode",
+                vec!["-m", "--"],
+                vec!["--prompt", "old task"],
+                vec![],
+                vec!["--session", "sid"],
+                vec!["--prompt", "P"],
+            ),
+            (
+                "opencode",
+                vec!["-m", "--"],
+                vec!["--prompt", "old task", "--", "-project"],
+                vec!["--", "-project"],
+                vec!["--session", "sid"],
+                vec!["--prompt", "P"],
+            ),
+        ] {
+            let mut wrappers = vec![
+                (kind, vec![]),
+                ("env", strings(&["--", "SETTING=1", kind])),
+                (
+                    "env",
+                    strings(&["--", "SETTING=1", "env", "-u", "OLD", kind]),
+                ),
+            ];
+            if kind == "claude" {
+                wrappers.push(("yinz", strings(&["agent", kind, "--command", kind, "--"])));
+            }
+            for (program, prefix) in wrappers {
+                let original = [prefix.clone(), strings(&options), strings(&tail)].concat();
+                for session in [None, Some("sid")] {
+                    let expected = [
+                        prefix.clone(),
+                        strings(&options),
+                        if session.is_some() {
+                            strings(&resume)
+                        } else {
+                            vec![]
+                        },
+                        strings(&prompt),
+                        strings(&retained),
+                    ]
+                    .concat();
+                    assert_eq!(
+                        restart_with_prompt(Path::new(program), &original, session, Some("P"))
+                            .unwrap(),
+                        expected,
+                        "{program}: {original:?}, {session:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn managed_codex_restart_rejects_preserved_permission_overrides() {
+        for mode in std::iter::once(None).chain(
+            crate::agent::launch::CODEX_PERMISSION_MODES
+                .iter()
+                .copied()
+                .map(Some),
+        ) {
+            for hooks in [true, false] {
+                for with_env in [false, true] {
+                    let spec = Spec {
+                        kind: Some("codex".into()),
+                        permission_mode: mode.map(str::to_owned),
+                        hooks: Some(hooks),
+                        prompt: Some("original task".into()),
+                        env: if with_env {
+                            [("SETTING".into(), "value".into())].into()
+                        } else {
+                            Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    let (original, _) = plan(&spec).unwrap();
+                    let (fresh, _) = plan(&Spec {
+                        prompt: Some("new task".into()),
+                        ..spec
+                    })
+                    .unwrap();
+                    assert_eq!(
+                        restart_with_prompt(&original.path, &original.args, None, Some("new task"))
+                            .unwrap(),
+                        fresh.args
+                    );
+                    for session in ["sid", "last"] {
+                        let result = restart_with_prompt(
+                            &original.path,
+                            &original.args,
+                            Some(session),
+                            Some("new task"),
+                        );
+                        if hooks && mode.is_some() {
+                            let error = result.unwrap_err();
+                            assert!(error.contains("managed Codex"), "{error}");
+                            assert!(error.contains("fresh"), "{error}");
+                        } else {
+                            assert!(result.is_ok(), "{mode:?}, {hooks}, {with_env}: {result:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn standalone_codex_resumes_preserve_permission_overrides() {
+        for standalone in [
+            vec!["--no-daemon"],
+            vec!["--add-dir", "/extra"],
+            vec!["--add-dir=/extra"],
+            vec!["--remote", "unix:///tmp/codex.sock"],
+            vec!["--remote=unix:///tmp/codex.sock"],
+            vec!["-c", "sandbox_workspace_write.writable_roots=['/extra']"],
+            vec!["--config=sandbox_workspace_write.writable_roots=['/extra']"],
+        ] {
+            for permissions in [
+                vec!["--full-auto"],
+                vec!["--dangerously-bypass-approvals-and-sandbox"],
+                vec!["--ask-for-approval", "never"],
+                vec!["--ask-for-approval=never"],
+                vec!["-a", "never"],
+                vec!["-a=never"],
+                vec!["--sandbox", "read-only"],
+                vec!["--sandbox=read-only"],
+                vec!["-s", "read-only"],
+                vec!["-s=read-only"],
+            ] {
+                for options in [
+                    [strings(&standalone), strings(&permissions)].concat(),
+                    [strings(&permissions), strings(&standalone)].concat(),
+                ] {
+                    for (program, prefix) in [
+                        ("codex", vec![]),
+                        ("yinz", strings(&["agent", "codex", "--"])),
+                        (
+                            "yinz",
+                            strings(&["agent", "codex", "--command", "/opt/codex", "--"]),
+                        ),
+                        (
+                            "env",
+                            strings(&["--", "SETTING=value", "yinz", "agent", "codex", "--"]),
+                        ),
+                    ] {
+                        for previous in [
+                            strings(&["old task"]),
+                            strings(&["resume", "old-session", "old task"]),
+                        ] {
+                            let original = [prefix.clone(), options.clone(), previous].concat();
+                            for session in ["session-id", "last"] {
+                                let resume = if session == "last" { "--last" } else { session };
+                                let expected = [
+                                    prefix.clone(),
+                                    strings(&["resume", resume]),
+                                    options.clone(),
+                                    strings(&["replacement prompt"]),
+                                ]
+                                .concat();
+                                assert_eq!(
+                                    restart_with_prompt(
+                                        Path::new(program),
+                                        &original,
+                                        Some(session),
+                                        Some("replacement prompt"),
+                                    )
+                                    .unwrap(),
+                                    expected,
+                                    "{program}: {original:?}, {session}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_restart_validates_options_only_inside_managed_wrappers() {
+        for flags in [
+            vec!["--full-auto"],
+            vec!["--dangerously-bypass-approvals-and-sandbox"],
+            vec!["--ask-for-approval", "never"],
+            vec!["--ask-for-approval=never"],
+            vec!["-a", "never"],
+            vec!["-a=never"],
+            vec!["--sandbox", "read-only"],
+            vec!["--sandbox=read-only"],
+            vec!["-s", "read-only"],
+            vec!["-s=read-only"],
+        ] {
+            for prefix in [
+                vec!["agent", "codex", "--"],
+                vec!["agent", "codex", "--command", "/opt/codex", "--"],
+            ] {
+                let args = [strings(&prefix), strings(&flags)].concat();
+                let error =
+                    restart_with_prompt(Path::new("yinz"), &args, Some("sid"), None).unwrap_err();
+                assert!(
+                    error.contains(flags[0].split('=').next().unwrap()),
+                    "{error}"
+                );
+            }
+            assert!(
+                restart_with_prompt(Path::new("codex"), &strings(&flags), Some("sid"), None)
+                    .is_ok()
+            );
+        }
+        for args in [
+            vec!["--model", "--full-auto"],
+            vec!["--model=--full-auto"],
+            vec!["--", "--full-auto"],
+            vec!["original task mentions --full-auto"],
+        ] {
+            let original = [strings(&["agent", "codex", "--"]), strings(&args)].concat();
+            assert!(restart_with_prompt(
+                Path::new("yinz"),
+                &original,
+                Some("sid"),
+                Some("--full-auto")
+            )
+            .is_ok());
         }
     }
 

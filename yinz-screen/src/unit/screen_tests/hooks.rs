@@ -1419,6 +1419,14 @@ fn a_replacement_agent_starts_a_fresh_record_in_the_same_pane() {
         assert_eq!(agent.source, AgentSource::Spawned);
         assert!(agent.session_id.is_none() && agent.run_id.is_none());
         assert_eq!(fired.last().unwrap().0, HookPoint::AgentExit);
+        let exits: Vec<_> = fired
+            .iter()
+            .filter(|(point, _, _)| *point == HookPoint::AgentExit)
+            .map(|(_, _, firing)| config(firing))
+            .collect();
+        assert_eq!(exits.len(), 2);
+        assert_eq!(exits[0]["agent_session_id"], "old-session");
+        assert!(!exits[1].contains_key("agent_session_id"));
     }
 }
 
