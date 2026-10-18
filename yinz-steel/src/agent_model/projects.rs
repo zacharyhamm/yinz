@@ -86,6 +86,11 @@ pub(super) fn run(op: &str, input: Value) -> Result<Value> {
             let (project,): (projects::Project,) = args(input)?;
             value(projects::forgotten(&project))
         },
+        "Resolve" => {
+            let (probed, registry, cwd): (projects::Probed, projects::Registry, Location) =
+                args(input)?;
+            value(projects::resolve(&probed, &registry, &cwd))
+        },
         "ForCwd" => {
             let (registry, cwd): (projects::Registry, Location) = args(input)?;
             value(projects::for_cwd(&registry, &cwd))
@@ -117,37 +122,11 @@ pub(super) fn run(op: &str, input: Value) -> Result<Value> {
         },
         "ConfigurationRoot" => {
             let (common, fallback): (Option<String>, String) = args(input)?;
-            value(
-                common
-                    .as_deref()
-                    .map(std::path::Path::new)
-                    .filter(|path| path.file_name().is_some_and(|name| name == ".git"))
-                    .and_then(std::path::Path::parent)
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or(fallback),
-            )
+            value(projects::configuration_root(common.as_deref(), &fallback))
         },
         "RepositoryIdentity" => {
             let (repository,): (projects::Repository,) = args(input)?;
-            value(
-                repository
-                    .provider_identity
-                    .as_ref()
-                    .map(|id| format!("provider:{id}"))
-                    .or_else(|| {
-                        repository
-                            .remote
-                            .as_deref()
-                            .filter(|remote| !remote.is_empty())
-                            .map(|remote| format!("remote:{}", projects::origin_identity(remote)))
-                            .or_else(|| {
-                                repository
-                                    .common_dir
-                                    .as_ref()
-                                    .map(|dir| format!("git:{:?}:{dir}", repository.host))
-                            })
-                    }),
-            )
+            value(projects::repository_identity(&repository))
         },
         _ => bail!("unknown project model operation {op}"),
     }

@@ -114,6 +114,37 @@ a deferred result. The predicate receives the event payload.
 See [command and event shapes](PLUGIN_PROTOCOL.md), also available through
 `yinz plugins docs protocol`, for every command payload and synchronous reply.
 
+## Resolve a directory's project
+
+`(yinz-project-resolve directory)` returns a deferred reply containing a hash with
+`"identity"`, `"name"`, and `"root"`, or `json-null` when the directory belongs to no
+project. It requires `ReadApplicationState`. Relative directories use the plugin's
+working directory; absolute paths refer to the local host filesystem. Missing or
+invalid directories and host failures reject the deferred.
+
+```scheme
+(yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
+  (lambda (_)
+    (yinz-then (yinz-project-resolve "/work/project/.worktrees/topic")
+      (lambda (project)
+        (unless (json-null? project)
+          (yinz-log (hash-ref project "identity")))))))
+```
+
+This uses the same resolver as project pane arrangement, including remembered and
+discovered projects, subdirectories, linked worktrees and repositories inside a
+remembered parent project. Use `"identity"` as your persisted project key, and
+`"name"` for display. Registered identities are `project:<registered-root>` and
+survive display renames and branch changes. Moving or merging roots can change
+them. Unregistered checkouts use repository identities until registered; that
+registration can change their key. `"root"` is the configuration root, which is
+not sufficient to identify a multi-repository project. Custom providers use the
+service's published matches; this query does not invoke a fresh provider scan.
+See [the protocol contract](PLUGIN_PROTOCOL.md#directory-project-resolution).
+
+The raw synchronous command is
+`(yinz-command (hash "ResolveProject" (hash "directory" directory)))`.
+
 ## Per-project configuration
 
 `ProjectConfigRead {directory}` reads the primary Git checkout's

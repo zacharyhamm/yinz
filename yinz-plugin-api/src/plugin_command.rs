@@ -3069,6 +3069,14 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     .map_err(|_| "Invalid configuration edit"),
                 _ => Err("Mismatched payload for EditConfiguration"),
             },
+            Some(CommandName::ResolveProject) => match protobuf_plugin_command.payload {
+                Some(Payload::ResolveProjectPayload(directory)) => {
+                    Ok(PluginCommand::ResolveProject {
+                        directory: directory.into(),
+                    })
+                },
+                _ => Err("Mismatched payload for ResolveProject"),
+            },
             Some(CommandName::ProjectConfigRead) => match protobuf_plugin_command.payload {
                 Some(Payload::ProjectConfigReadPayload(directory)) => {
                     Ok(PluginCommand::ProjectConfigRead {
@@ -5549,6 +5557,12 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     serde_json::to_string(&edit).map_err(|_| "Invalid configuration edit")?,
                 )),
             }),
+            PluginCommand::ResolveProject { directory } => Ok(ProtobufPluginCommand {
+                name: CommandName::ResolveProject as i32,
+                payload: Some(Payload::ResolveProjectPayload(
+                    directory.to_string_lossy().into_owned(),
+                )),
+            }),
             PluginCommand::ProjectConfigRead { directory } => Ok(ProtobufPluginCommand {
                 name: CommandName::ProjectConfigRead as i32,
                 payload: Some(Payload::ProjectConfigReadPayload(
@@ -7974,6 +7988,7 @@ mod tests {
                 | PluginCommand::OpenPluginPaneInPlaceOfPaneId { .. }
                 | PluginCommand::InspectConfiguration(..)
                 | PluginCommand::EditConfiguration(..)
+                | PluginCommand::ResolveProject { .. }
                 | PluginCommand::ProjectConfigRead { .. }
                 | PluginCommand::ProjectConfigWrite { .. }
                 | PluginCommand::SetQuitNotice { .. }

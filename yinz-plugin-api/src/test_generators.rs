@@ -1684,6 +1684,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 reset: vec![],
             })
         },
+        CommandType::ResolveProject => PluginCommand::ResolveProject {
+            directory: strings(tc).into(),
+        },
         CommandType::ProjectConfigRead => PluginCommand::ProjectConfigRead {
             directory: strings(tc).into(),
         },

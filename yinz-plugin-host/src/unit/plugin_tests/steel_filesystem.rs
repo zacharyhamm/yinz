@@ -742,3 +742,73 @@ fn steel_filesystem_binary_directory_operations_and_escape_endpoints_are_confine
     );
     assert!(!outside.path().join("new").exists());
 }
+
+#[test]
+fn steel_resolve_project_requires_read_application_state() {
+    let roots = Roots::new();
+    let error = run(
+        &roots,
+        HashSet::new(),
+        &[json!({"ResolveProject":{"directory":"."}})],
+    )
+    .unwrap_err();
+    assert!(error.contains("ReadApplicationState"), "{error}");
+}
+
+#[test]
+fn steel_project_resolve_helper_delivers_deferred_membership_and_null() {
+    let roots = Roots::new();
+    let root = roots.host.path().canonicalize().unwrap();
+    let mut env = crate::test_env::test_env();
+    env.plugin_cwd = root.clone();
+    env.plugin_own_data_dir = roots.data.path().to_owned();
+    env.plugin_own_cache_dir = roots.cache.path().to_owned();
+    env.data_access = Arc::new(yinz_storage::data_access::DataAccess::sqlite(
+        roots.data.path(),
+    ));
+    env.permissions = Arc::new(std::sync::Mutex::new(Some(HashSet::from([
+        PermissionType::ReadApplicationState,
+    ]))));
+    let store = env.data_access.plugin_data();
+    store
+        .define_entity(
+            project_data::store::SHARED,
+            "agents",
+            &project_data::store::project_def(),
+            false,
+        )
+        .unwrap();
+    let project =
+        project_data::projects::validate("Friendly name", root.to_str().unwrap()).unwrap();
+    store
+        .apply(
+            project_data::store::SHARED,
+            &[project_data::projects::to_mutation(&project)],
+        )
+        .unwrap();
+    let source = r#"
+      (define reply "pending")
+      (define (load config)
+        (define request (yinz-project-resolve "."))
+        (unless (yinz-deferred? request) (error "expected a deferred"))
+        (yinz-then request (lambda (project)
+          (yinz-then (yinz-project-resolve (hash-ref config "outside"))
+            (lambda (outside) (set! reply (yinz-json-string (list project outside))))))))
+      (define (render rows cols) reply)
+    "#;
+    let mut plugin =
+        crate::steel::SteelPlugin::new(source, &root.join("resolve.scm"), env, Arc::default())
+            .unwrap();
+    plugin
+        .load(&BTreeMap::from([(
+            "outside".into(),
+            roots.cache.path().to_str().unwrap().into(),
+        )]))
+        .unwrap();
+    plugin.tick().unwrap();
+    let reply: Value = serde_json::from_slice(&plugin.render(1, 400).unwrap()).unwrap();
+    assert_eq!(
+        reply,
+        json!([{"identity":format!("project:{}", root.display()), "name":"Friendly name", "root":root}, null])
+    );
+}

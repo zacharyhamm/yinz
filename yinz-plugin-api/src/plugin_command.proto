@@ -289,6 +289,7 @@ enum CommandName {
   PublishProjectLocations = 312;
   RestartAgentPane = 313;
   OpenPluginPaneInPlaceOfPaneId = 314;
+  ResolveProject = 315;
 }
 
 message PluginCommand {
@@ -504,6 +505,7 @@ message PluginCommand {
     SetQuitNoticePayload set_quit_notice_payload = 220;
     GetLocalUtcOffsetPayload get_local_utc_offset_payload = 221;
     SpawnAgentPayload spawn_agent_payload = 222;
+    string resolve_project_payload = 254;
     string project_config_read_payload = 223;
     ProjectConfigWritePayload project_config_write_payload = 224;
     SetRelatedPanesPayload set_related_panes_payload = 225;
