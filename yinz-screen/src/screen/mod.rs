@@ -2391,7 +2391,7 @@ impl Screen {
 
     pub fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
         let was_attached = self.is_client_attached(client_id);
-        if !was_attached && self.has_pending_tabs() {
+        if self.has_pending_tabs() {
             self.departed_before_layout.insert(client_id);
         }
         self.remove_client_inner(client_id, was_attached)

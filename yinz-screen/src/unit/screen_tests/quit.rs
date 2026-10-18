@@ -2370,3 +2370,32 @@ fn moving_a_pane_to_a_hidden_only_tab_does_not_recover_parked_work() {
     assert!(screen.tabs[&destination]
         .has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(1))));
 }
+
+#[test]
+fn detaching_while_replacement_loads_preserves_confirmation_for_next_client() {
+    let client = ClientId::new(1);
+    let (mut screen, screen_receiver, server_receiver, plugin_receiver) =
+        screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[client]);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
+    close_pane(&mut screen, PaneId::Terminal(TerminalId::new(1)));
+    screen.settle_tabs().unwrap();
+    let replacement = requested_tabs(&plugin_receiver)[0];
+    screen.remove_client(client).unwrap();
+    load_replacement_tab(&mut screen, replacement, 2);
+    assert!(
+        screen.active_tab_ids.is_empty(),
+        "layout must not reattach a departed client"
+    );
+    screen.settle_tabs().unwrap();
+    screen.settle_tabs().unwrap();
+    assert_eq!(launches(&screen_receiver), 0);
+    assert!(!session_ended(&server_receiver));
+    screen.add_client(CLIENT_2).unwrap();
+    screen.settle_tabs().unwrap();
+    assert_eq!(screen.active_tab_ids[&CLIENT_2], replacement);
+    assert_eq!(launches(&screen_receiver), 1);
+    screen.settle_tabs().unwrap();
+    assert_eq!(launches(&screen_receiver), 0);
+    assert_eq!(screen.tabs.len(), 1);
+    assert!(requested_tabs(&plugin_receiver).is_empty());
+}

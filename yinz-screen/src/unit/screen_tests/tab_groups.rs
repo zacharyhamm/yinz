@@ -726,3 +726,262 @@ fn last_pane_exit_removes_group_but_pending_tabs_keep_it_alive() {
     assert!(screen.tab_groups.contains_key(&0));
     assert!(screen.tabs[&pending].is_pending());
 }
+
+#[test]
+fn move_pane_between_groups_follows_both_directions_and_wraps() {
+    for (action, source, destination) in [
+        (Action::MovePaneToNextTabGroup, 0, 1),
+        (Action::MovePaneToPreviousTabGroup, 0, 3),
+        (Action::MovePaneToNextTabGroup, 3, 2),
+        (Action::MovePaneToPreviousTabGroup, 1, 2),
+    ] {
+        for floating in [false, true] {
+            let mut screen = grouped_screen();
+            screen.restore_tab_group(
+                TabId::new(3),
+                &TiledPaneLayout {
+                    tab_group: Some(TabGroupInfo {
+                        id: 2,
+                        name: "Third".into(),
+                    }),
+                    ..Default::default()
+                },
+            );
+            screen
+                .switch_active_tab(TabPosition::new(source), None, true, CLIENT)
+                .unwrap();
+            let pane = PaneId::Terminal(TerminalId::new(42));
+            add_pane_to_tab(&mut screen, TabId::new(source), pane, floating);
+            screen
+                .get_active_tab_mut(CLIENT)
+                .unwrap()
+                .focus_pane_with_id(pane, false, false, CLIENT)
+                .unwrap();
+            assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
+            screen
+                .tab_group_action(action.clone(), CLIENT, None, &mut HashSet::new())
+                .unwrap();
+            assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(destination));
+            assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
+            assert_eq!(
+                screen.tabs[&TabId::new(destination)].pane_id_is_floating(&pane),
+                floating
+            );
+            assert!(!screen.tabs[&TabId::new(source)].has_pane_with_pid(&pane));
+        }
+    }
+}
+
+#[test]
+fn move_pane_between_groups_syncs_scroll_mode_with_final_focus() {
+    for action in [
+        Action::MovePaneToNextTabGroup,
+        Action::MovePaneToPreviousTabGroup,
+    ] {
+        for source_scrolled in [false, true] {
+            for mode in [InputMode::Normal, InputMode::Scroll, InputMode::Tab] {
+                let mut screen = grouped_screen();
+                let source = TabId::new(3);
+                let destination = TabId::new(2);
+                let moved = PaneId::Terminal(TerminalId::new(4));
+                let resident = PaneId::Terminal(TerminalId::new(3));
+                for (tab, pane, scrolled) in [
+                    (source, moved, source_scrolled),
+                    (destination, resident, !source_scrolled),
+                ] {
+                    let pane = screen
+                        .tabs
+                        .get_mut(&tab)
+                        .unwrap()
+                        .get_pane_with_id_mut(pane)
+                        .unwrap();
+                    pane.handle_pty_bytes(b"scrollback\r\n".repeat(100));
+                    if scrolled {
+                        pane.scroll_up(5, Some(CLIENT));
+                    }
+                }
+                screen.change_mode(mode, None, CLIENT).unwrap();
+                assert_eq!(screen.get_active_pane_id(&CLIENT), Some(moved));
+                let receiver = screen_wired_to_server(&mut screen);
+                screen
+                    .tab_group_action(action.clone(), CLIENT, None, &mut HashSet::new())
+                    .unwrap();
+
+                assert_eq!(screen.active_tab_ids[&CLIENT], destination);
+                assert_eq!(screen.get_active_pane_id(&CLIENT), Some(moved));
+                for (pane, scrolled) in [(moved, source_scrolled), (resident, !source_scrolled)] {
+                    assert_eq!(
+                        screen.tabs[&destination]
+                            .get_pane_with_id(pane)
+                            .unwrap()
+                            .scroll_position()
+                            .0,
+                        if scrolled { 5 } else { 0 },
+                    );
+                }
+                let expected_mode = if mode == InputMode::Tab {
+                    mode
+                } else if source_scrolled {
+                    InputMode::Scroll
+                } else {
+                    InputMode::Normal
+                };
+                let changes: Vec<_> = receiver
+                    .try_iter()
+                    .filter_map(|(instruction, _)| match instruction {
+                        ServerInstruction::ChangeMode(client, mode, _) => Some((client, mode)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    changes,
+                    if mode == expected_mode {
+                        vec![]
+                    } else {
+                        vec![(CLIENT, expected_mode)]
+                    },
+                    "action {action:?}, source scrolled {source_scrolled}, initial mode {mode:?}",
+                );
+                // Apply the queued server response only after checking for intermediate-focus changes.
+                for (client, mode) in changes {
+                    screen.change_mode(mode, None, client).unwrap();
+                }
+                assert_eq!(screen.mode_info[&CLIENT].mode, expected_mode);
+                assert_eq!(screen.active_pane_is_scrolled(CLIENT), source_scrolled);
+            }
+        }
+    }
+}
+
+#[test]
+fn move_pane_to_group_uses_history_then_preferred_then_first_loaded_tab() {
+    for (history, preferred, expected) in [(true, true, 0), (false, true, 2), (false, false, 0)] {
+        let mut screen = grouped_screen();
+        screen
+            .tab_history
+            .insert(CLIENT, if history { vec![TabId::new(0)] } else { vec![] });
+        screen.tab_groups.get_mut(&0).unwrap().preferred = preferred.then_some(TabId::new(2));
+        let pane = screen.get_active_pane_id(&CLIENT).unwrap();
+        screen
+            .tab_group_action(
+                Action::MovePaneToNextTabGroup,
+                CLIENT,
+                None,
+                &mut HashSet::new(),
+            )
+            .unwrap();
+        assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(expected));
+        assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
+        screen.settle_tabs().unwrap();
+        assert!(
+            !screen.tabs.contains_key(&TabId::new(3)),
+            "empty source tab is cleaned up"
+        );
+        assert_eq!(screen.tabs.len(), 3, "no replacement tab");
+    }
+}
+
+#[test]
+fn move_pane_to_group_skips_pending_groups() {
+    let mut screen = grouped_screen();
+    screen.restore_tab_group(
+        TabId::new(3),
+        &TiledPaneLayout {
+            tab_group: Some(TabGroupInfo {
+                id: 2,
+                name: "Third".into(),
+            }),
+            ..Default::default()
+        },
+    );
+    screen.close_tab_by_id(TabId::new(1)).unwrap();
+    screen
+        .new_tab(TabId::new(4), (vec![], vec![]), None, Some(CLIENT))
+        .unwrap();
+    screen.restore_tab_group(
+        TabId::new(4),
+        &TiledPaneLayout {
+            tab_group: Some(TabGroupInfo {
+                id: 1,
+                name: "Pending".into(),
+            }),
+            ..Default::default()
+        },
+    );
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, CLIENT)
+        .unwrap();
+    let pane = screen.get_active_pane_id(&CLIENT).unwrap();
+    screen
+        .tab_group_action(
+            Action::MovePaneToNextTabGroup,
+            CLIENT,
+            None,
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
+}
+
+#[test]
+fn move_pane_to_group_without_destination_or_room_preserves_pane_and_focus() {
+    for no_other_group in [true, false] {
+        let mut screen = grouped_screen();
+        let source = TabId::new(3);
+        if no_other_group {
+            for group in screen.tab_group_ids.values_mut() {
+                *group = 1;
+            }
+            screen.prune_tab_groups();
+        } else {
+            screen
+                .tabs
+                .get_mut(&TabId::new(2))
+                .unwrap()
+                .resize_whole_tab(Size { cols: 4, rows: 2 })
+                .unwrap();
+        }
+        let pane = screen.get_active_pane_id(&CLIENT).unwrap();
+        let (sender, errors) = channels::unbounded();
+        screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(sender));
+        screen
+            .tab_group_action(
+                Action::MovePaneToNextTabGroup,
+                CLIENT,
+                None,
+                &mut HashSet::new(),
+            )
+            .unwrap();
+        assert!(errors.try_iter().any(|(job, _)| matches!(job,
+            BackgroundJob::DisplayPaneError(panes, message)
+                if panes == vec![pane] && message == if no_other_group {
+                    "No other tab groups to add pane to!"
+                } else { "Could not move pane to tab group!" }
+        )));
+        assert_eq!(screen.active_tab_ids[&CLIENT], source);
+        assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
+        assert!(screen.tabs[&source].has_pane_with_pid(&pane));
+        assert_eq!(screen.tabs.len(), 4);
+    }
+}
+
+#[test]
+fn moving_last_pane_out_of_group_removes_group_without_replacement() {
+    let mut screen = grouped_screen();
+    screen.close_tab_by_id(TabId::new(1)).unwrap();
+    let pane = screen.get_active_pane_id(&CLIENT).unwrap();
+    screen
+        .tab_group_action(
+            Action::MovePaneToPreviousTabGroup,
+            CLIENT,
+            None,
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    screen.settle_tabs().unwrap();
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
+    assert_eq!(screen.tabs.len(), 2);
+    assert_eq!(screen.tab_groups.len(), 1);
+    assert!(screen.tab_groups.contains_key(&0));
+}

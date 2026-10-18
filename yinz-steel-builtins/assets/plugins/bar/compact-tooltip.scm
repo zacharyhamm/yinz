@@ -28,7 +28,7 @@
         (list (matches (hash "NewTab" (hash "layout_source" 'json-null "tiled_layout" 'json-null
                 "swap_tiled_layouts" 'json-null "swap_floating_layouts" 'json-null "tab_name" 'json-null
                 "should_change_focus_to_new_tab" #t "cwd" 'json-null)))) (named '("CloseTab"))
-        (switches '("RenameTab")) (named '("TabNameInput" "ToggleActiveSyncTab" "BreakPane" "BreakPaneLeft" "BreakPaneRight" "ToggleTab"))))
+        (switches '("RenameTab")) (named '("TabNameInput" "ToggleActiveSyncTab" "BreakPane" "BreakPaneLeft" "BreakPaneRight" "MovePaneToPreviousTabGroup" "MovePaneToNextTabGroup" "ToggleTab"))))
     ((equal? mode "Resize") (append (map (lambda (size) (matches (bar-resize size 'json-null))) '("Increase" "Decrease"))
         (apply append (map (lambda (size) (map (lambda (direction) (matches (bar-resize size direction))) directions)) '("Increase" "Decrease")))))
     ((equal? mode "Move") (directed "MovePane"))
@@ -47,13 +47,13 @@
 (define descriptions (hash "MoveFocus" "Move focus" "MovePaneWithDirection" "Move pane" "MovePaneWithoutDirection" "Move pane"
     "ResizeIncrease" "Increase size in direction" "ResizeDecrease" "Decrease size in direction" "ResizeAny" "Increase or decrease size"
     "Search" "Search" "NewPaneWithDirection" "Split right/down" "NewPaneWithoutDirection" "New pane"
-    "BreakPaneLeftOrRight" "Break pane to adjacent tab" "GoToAdjacentTab" "Move tab focus" "Scroll" "Scroll"
+    "MovePaneToTabGroup" "Move pane to adjacent group" "BreakPaneLeftOrRight" "Break pane to adjacent tab" "GoToAdjacentTab" "Move tab focus" "Scroll" "Scroll"
     "PageScroll" "Scroll page" "HalfPageScroll" "Scroll half Page" "SessionManager" "Session manager"
     "PluginManager" "Plugin manager" "Configuration" "Configuration" "TogglePaneEmbedOrFloating" "Float or embed"
     "NewStackedPane" "New stacked pane" "ToggleFocusFullscreen" "Toggle fullscreen" "ToggleFloatingPanes" "Show/hide floating panes"
     "CloseFocus" "Close pane" "CloseTab" "Close tab" "ToggleActiveSyncTab" "Sync panes in tab" "ToggleTab" "Circle tab focus"
     "BreakPane" "Break pane to new tab" "EditScrollback" "Open pane scrollback in editor" "NewTab" "New tab" "Detach" "Detach" "Quit" "Quit"))
-(define grouped-types '(("BreakPaneLeftOrRight" "BreakPaneLeft" "BreakPaneRight") ("GoToAdjacentTab" "GoToPreviousTab" "GoToNextTab")
+(define grouped-types '(("MovePaneToTabGroup" "MovePaneToPreviousTabGroup" "MovePaneToNextTabGroup") ("BreakPaneLeftOrRight" "BreakPaneLeft" "BreakPaneRight") ("GoToAdjacentTab" "GoToPreviousTab" "GoToNextTab")
     ("Scroll" "ScrollUp" "ScrollDown") ("PageScroll" "PageScrollUp" "PageScrollDown") ("HalfPageScroll" "HalfPageScrollUp" "HalfPageScrollDown")))
 (define (action-type action)
   (define name (bar-tag action))

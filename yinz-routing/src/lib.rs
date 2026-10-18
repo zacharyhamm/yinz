@@ -1149,6 +1149,8 @@ pub fn route_action(
         },
         action @ (Action::NewTabGroup
         | Action::GoToNextTabGroup
+        | Action::MovePaneToNextTabGroup
+        | Action::MovePaneToPreviousTabGroup
         | Action::GoToPreviousTabGroup
         | Action::GoToTabInGroup { .. }
         | Action::SwitchTabGroup { .. }

@@ -147,6 +147,20 @@ fn every_preset_matches_templates_and_parses_with_agent_selection_and_notificati
         let saved = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
         let key = |s: &str| -> KeyWithModifier { s.parse().unwrap() };
         for config in [&config, &saved] {
+            for (binding, action) in [
+                ("{", Action::MovePaneToPreviousTabGroup),
+                ("}", Action::MovePaneToNextTabGroup),
+            ] {
+                assert_eq!(
+                    config.keybinds.0[&InputMode::Tab][&key(binding)],
+                    vec![
+                        action,
+                        Action::SwitchToMode {
+                            input_mode: InputMode::Normal
+                        }
+                    ]
+                );
+            }
             for mode in config.keybinds.0.keys().copied() {
                 let actions = config
                     .keybinds

@@ -645,7 +645,7 @@ interface ActionPayloads {
   ToggleFloatingPanesByTabId: ActionTab; PreviousSwapLayoutByTabId: ActionTab; NextSwapLayoutByTabId: ActionTab; MoveTabByTabId: ActionTab & {direction: Direction};
 }
 
-type UnitAction = 'NewTabGroup' | 'GoToNextTabGroup' | 'GoToPreviousTabGroup' | 'FocusPaneTabs' | 'PreviousPaneTab' | 'NextPaneTab' | 'Quit' | 'FocusNextPane' | 'FocusPreviousPane' | 'FocusLastPane' | 'SwitchFocus' | 'MovePaneBackwards' | 'ClearScreen'
+type UnitAction = 'NewTabGroup' | 'GoToNextTabGroup' | 'GoToPreviousTabGroup' | 'MovePaneToPreviousTabGroup' | 'MovePaneToNextTabGroup' | 'FocusPaneTabs' | 'PreviousPaneTab' | 'NextPaneTab' | 'Quit' | 'FocusNextPane' | 'FocusPreviousPane' | 'FocusLastPane' | 'SwitchFocus' | 'MovePaneBackwards' | 'ClearScreen'
   | 'DumpLayout' | 'SaveSession' | 'ScrollUp' | 'ScrollDown' | 'ScrollToBottom' | 'ScrollToTop' | 'ScrollToPreviousPrompt' | 'ScrollToNextPrompt'
   | 'SelectCommandAtScrollPosition' | 'CopyLastCommandOutput' | 'SwapTextSelectionEnds' | 'ActivateNotification' | 'ActivateLastNotification' | 'ToggleNotificationDetail' | 'PageScrollUp' | 'PageScrollDown' | 'HalfPageScrollUp' | 'HalfPageScrollDown'
   | 'ToggleFocusFullscreen' | 'ToggleFocusNoUiFullscreen' | 'TogglePaneFrames' | 'ToggleCommandPalette' | 'ToggleActiveSyncTab' | 'TogglePaneEmbedOrFloating' | 'ToggleFloatingPanes'

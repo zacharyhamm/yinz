@@ -380,6 +380,8 @@ pub enum Action {
     /// Create and focus a group with a fresh tab.
     NewTabGroup,
     GoToNextTabGroup,
+    MovePaneToNextTabGroup,
+    MovePaneToPreviousTabGroup,
     GoToPreviousTabGroup,
     GoToTabInGroup {
         index: TabNumber,

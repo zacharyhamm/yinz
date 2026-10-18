@@ -1255,6 +1255,8 @@ pub enum ActionName {
     SwitchTabGroup = 133,
     RenameTabGroup = 134,
     CloseTabGroup = 135,
+    MovePaneToNextTabGroup = 136,
+    MovePaneToPreviousTabGroup = 137,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1394,6 +1396,8 @@ impl ActionName {
             ActionName::SwitchTabGroup => "SwitchTabGroup",
             ActionName::RenameTabGroup => "RenameTabGroup",
             ActionName::CloseTabGroup => "CloseTabGroup",
+            ActionName::MovePaneToNextTabGroup => "MovePaneToNextTabGroup",
+            ActionName::MovePaneToPreviousTabGroup => "MovePaneToPreviousTabGroup",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1530,6 +1534,8 @@ impl ActionName {
             "SwitchTabGroup" => Some(Self::SwitchTabGroup),
             "RenameTabGroup" => Some(Self::RenameTabGroup),
             "CloseTabGroup" => Some(Self::CloseTabGroup),
+            "MovePaneToNextTabGroup" => Some(Self::MovePaneToNextTabGroup),
+            "MovePaneToPreviousTabGroup" => Some(Self::MovePaneToPreviousTabGroup),
             _ => None,
         }
     }

@@ -113,6 +113,8 @@ macro_rules! parse_kdl_action_arguments {
                 "NoOp" => Ok(Action::NoOp),
                 "NewTabGroup" => Ok(Action::NewTabGroup),
                 "GoToNextTabGroup" => Ok(Action::GoToNextTabGroup),
+                "MovePaneToNextTabGroup" => Ok(Action::MovePaneToNextTabGroup),
+                "MovePaneToPreviousTabGroup" => Ok(Action::MovePaneToPreviousTabGroup),
                 "GoToPreviousTabGroup" => Ok(Action::GoToPreviousTabGroup),
                 "GoToNextTab" => Ok(Action::GoToNextTab),
                 "GoToPreviousTab" => Ok(Action::GoToPreviousTab),

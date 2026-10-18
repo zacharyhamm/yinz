@@ -61,6 +61,8 @@ keybinds clear-defaults=true {
         bind "s" { ToggleActiveSyncTab; SwitchToMode "normal"; }
         bind "Ctrl t" { SwitchToMode "normal"; }
         bind "x" { CloseTab; SwitchToMode "normal"; }
+        bind "{" { MovePaneToPreviousTabGroup; SwitchToMode "normal"; }
+        bind "}" { MovePaneToNextTabGroup; SwitchToMode "normal"; }
         bind "tab" { ToggleTab; }
     }
     resize {

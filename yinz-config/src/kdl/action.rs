@@ -660,6 +660,8 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
         Action::NoOp => Ok(KdlNode::new("NoOp")),
         Action::NewTabGroup => Ok(KdlNode::new("NewTabGroup")),
         Action::GoToNextTabGroup => Ok(KdlNode::new("GoToNextTabGroup")),
+        Action::MovePaneToNextTabGroup => Ok(KdlNode::new("MovePaneToNextTabGroup")),
+        Action::MovePaneToPreviousTabGroup => Ok(KdlNode::new("MovePaneToPreviousTabGroup")),
         Action::GoToPreviousTabGroup => Ok(KdlNode::new("GoToPreviousTabGroup")),
         Action::GoToTabInGroup { index } => Ok(child("GoToTabInGroup", i64::from(index.get()))),
         Action::SwitchTabGroup { id } => Ok(child("SwitchTabGroup", i64::from(*id))),
@@ -1209,6 +1211,8 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
         | "NoOp"
         | "NewTabGroup"
         | "GoToNextTabGroup"
+        | "MovePaneToNextTabGroup"
+        | "MovePaneToPreviousTabGroup"
         | "GoToPreviousTabGroup"
         | "GoToNextTab"
         | "GoToPreviousTab"

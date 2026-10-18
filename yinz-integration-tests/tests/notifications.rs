@@ -343,8 +343,11 @@ fn notification_browser_keeps_dismissed_session_history() {
     notify(&yinz, "history first");
     let newest = format!("{} detail tail", "newest ".repeat(20));
     notify(&yinz, &newest);
+    yinz.wait_until("newest notification appears", |grid_snapshot| {
+        grid_snapshot.contains("newest")
+    });
     yinz.wait_until("notifications dismiss", |grid_snapshot| {
-        !grid_snapshot.contains("history first") && !grid_snapshot.contains("detail tail")
+        !grid_snapshot.contains("history first") && !grid_snapshot.contains("newest")
     });
 
     yinz.send_stdin(&keys::ctrl('o'));
@@ -372,7 +375,7 @@ fn notification_browser_keeps_dismissed_session_history() {
     );
     assert!(list.contains("…"), "the list truncates long notifications");
 
-    yinz.send_stdin(&keys::key('\n'));
+    yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("full notification opens", |grid_snapshot| {
         grid_snapshot.contains("detail tail")
     });

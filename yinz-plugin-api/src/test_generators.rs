@@ -966,6 +966,8 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::CloseTab => Action::CloseTab,
         ActionKind::NewTabGroup => Action::NewTabGroup,
         ActionKind::GoToNextTabGroup => Action::GoToNextTabGroup,
+        ActionKind::MovePaneToNextTabGroup => Action::MovePaneToNextTabGroup,
+        ActionKind::MovePaneToPreviousTabGroup => Action::MovePaneToPreviousTabGroup,
         ActionKind::GoToPreviousTabGroup => Action::GoToPreviousTabGroup,
         ActionKind::GoToTabInGroup => Action::GoToTabInGroup {
             index: TabNumber::new(u32s(tc)),

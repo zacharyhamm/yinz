@@ -2373,6 +2373,28 @@ Config {
                 },
             ],
             KeyWithModifier {
+                bare_key: Char(
+                    '{',
+                ),
+                key_modifiers: {},
+            }: [
+                MovePaneToPreviousTabGroup,
+                SwitchToMode {
+                    input_mode: Normal,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    '}',
+                ),
+                key_modifiers: {},
+            }: [
+                MovePaneToNextTabGroup,
+                SwitchToMode {
+                    input_mode: Normal,
+                },
+            ],
+            KeyWithModifier {
                 bare_key: Tab,
                 key_modifiers: {},
             }: [

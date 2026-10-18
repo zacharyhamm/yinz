@@ -1325,6 +1325,8 @@ pub const ACTION_NAMES: &[&str] = &[
     "GoToPreviousTab",
     "NewTabGroup",
     "GoToNextTabGroup",
+    "MovePaneToNextTabGroup",
+    "MovePaneToPreviousTabGroup",
     "GoToPreviousTabGroup",
     "GoToTabInGroup",
     "SwitchTabGroup",

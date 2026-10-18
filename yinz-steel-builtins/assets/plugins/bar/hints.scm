@@ -56,6 +56,7 @@
         (hint "Rename" "Rename" (doing (bar-switch-mode "RenameTab")))
         (hint "Sync" "Sync" (doing "ToggleActiveSyncTab"))
         (hint "Break pane to new tab" "Break out" (doing "BreakPane"))
+        (hint "Move pane to group" "Group" (each '("MovePaneToPreviousTabGroup" "MovePaneToNextTabGroup")))
         (hint "Break pane left/right" "Break" (each '("BreakPaneLeft" "BreakPaneRight")))
         (hint "Toggle" "Toggle" (doing "ToggleTab")) select))
     ((equal? mode "Resize")

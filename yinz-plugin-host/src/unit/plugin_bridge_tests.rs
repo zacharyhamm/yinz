@@ -5672,6 +5672,67 @@ fn background_permissions_coalesce_an_identity_and_retire_only_removed_instances
 }
 
 #[test]
+fn permission_callbacks_wait_for_cache_persistence() {
+    let mut test = TestBridge::new();
+    let id = PluginId::new(1);
+    let client = ClientId::new(1);
+    let context = test.context(
+        1,
+        1,
+        r#"
+(define (update event) #t)
+(define (render rows columns) "size permission callback;")
+"#,
+    );
+    test.load(context).unwrap();
+    let instance = test.instance_id(id, client);
+    let (shutdown, _) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .request_permissions(
+            id,
+            instance,
+            client,
+            vec![PermissionType::RunCommands],
+            shutdown.clone(),
+        )
+        .unwrap();
+    let token = *test.bridge.permission_requests.keys().next().unwrap();
+    let cache = test._dirs[0].path().join("permissions.kdl");
+    let lock_path = cache.with_added_extension("lock");
+    let screen = test.receiver::<ScreenInstruction>();
+    screen.try_iter().for_each(drop);
+    let (locked, ready) = std::sync::mpsc::channel();
+    let blocker = std::thread::spawn(move || {
+        let lock = std::fs::File::create(lock_path).unwrap();
+        lock.lock().unwrap();
+        locked.send(()).unwrap();
+        // A cache lock can outlast a synchronous host query's one-second deadline.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut callback_before_save = false;
+        while let Ok((instruction, _)) = screen.recv_deadline(deadline) {
+            if matches!(instruction, ScreenInstruction::PluginBytes(_)) {
+                callback_before_save = true;
+                break;
+            }
+        }
+        lock.unlock().unwrap();
+        callback_before_save
+    });
+    ready
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    test.bridge
+        .answer_permissions(token, PermissionStatus::Granted, Some(cache), shutdown)
+        .unwrap();
+    test.settle(id);
+    assert!(
+        !blocker.join().unwrap(),
+        "callback ran while its permission save blocked the plugin thread"
+    );
+    assert_eq!(frames(&mut test, id), ["size permission callback"]);
+}
+
+#[test]
 fn background_storage_preserves_initial_owner_on_reload() {
     use yinz_types::plugin_data::{AttrDef, EntityDef, FetchRequest, Mutation};
     for case in ["absolute", "relative", "url", "url-retry"] {
