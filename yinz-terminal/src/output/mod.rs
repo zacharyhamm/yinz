@@ -966,6 +966,7 @@ impl Output {
         rect: CellRect,
         opacity: u8,
         overlay_chunks: Vec<CharacterChunk>,
+        cursor: Option<(usize, usize)>,
         palette: yinz_types::style::Palette,
         tint: yinz_types::colors::PaletteColor,
         terminal_emulator_color_codes: &HashMap<usize, String>,
@@ -978,6 +979,9 @@ impl Output {
         backing.prepare(rect, opacity, palette, tint, terminal_emulator_color_codes);
         let mut composition = backing.update(chunks, display_cleared)?;
         composition.add(&overlay_chunks, 1);
+        if let Some((x, y)) = cursor {
+            composition.protect_cursor_cell(x, y, 1);
+        }
         let mut outside = vec![];
         // Clip one at a time to preserve paint order where notifications overlap pane chunks.
         for chunk in std::mem::take(chunks) {

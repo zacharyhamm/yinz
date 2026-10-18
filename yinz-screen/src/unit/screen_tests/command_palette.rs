@@ -370,6 +370,65 @@ fn opening_palette_closes_context_menu_and_toggle_key_closes_palette() {
 }
 
 #[test]
+fn palette_cursor_is_opaque_on_query_idle_and_watcher_frames() {
+    use yinz_terminal::panes::terminal_character::AnsiCode;
+
+    for watching in [false, true] {
+        let mut screen = screen();
+        let mut config = test_screen_config();
+        config.background_opacity = 50;
+        config.theme.text_unselected.background =
+            yinz_types::colors::PaletteColor::Rgb((90, 80, 70));
+        screen
+            .reconfigure(config, Keybinds::default(), CLIENT)
+            .unwrap();
+        let watcher = ClientId::new(2);
+        screen.add_watcher_client(watcher).unwrap();
+        screen.set_watcher_size(watcher, SIZE);
+        screen.set_followed_client(CLIENT).unwrap();
+        let client = if watching { watcher } else { CLIENT };
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let paint = (1..=SIZE.rows)
+            .map(|row| format!("\x1b[{row};1H{}", "w".repeat(SIZE.cols)))
+            .collect::<String>();
+        screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .handle_pty_bytes(
+                TerminalId::new(1),
+                format!("\x1b[?7l\x1b[48;2;10;20;30m{paint}").into_bytes(),
+            )
+            .unwrap();
+        screen.toggle_command_palette(CLIENT);
+        let background = Some(AnsiCode::from(
+            screen.style.colors.text_unselected.background,
+        ));
+        for (query, expected_x) in [("", 6), ("pane", 10)] {
+            screen.command_palette_handles_input(&None, query.as_bytes(), false, CLIENT);
+            for _ in 0..2 {
+                let (cursor, frame) =
+                    render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+                assert_eq!(cursor, Some((expected_x, 7)), "{frame}");
+                let cells = grid.as_character_lines();
+                assert_eq!(cells[7][expected_x].character, ' ');
+                assert_eq!(cells[7][expected_x].styles.background, background);
+                assert_eq!(cells[7][expected_x + 1].character, 'w');
+                assert_ne!(cells[7][expected_x + 1].styles.background, background);
+            }
+        }
+        palette_key(&mut screen, BareKey::Left);
+        let (cursor, _) = render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
+        assert_eq!(cursor, Some((9, 7)));
+        let cells = grid.as_character_lines();
+        assert_eq!(cells[7][9].character, 'e');
+        assert_eq!(cells[7][9].styles.background, background);
+        assert_eq!(cells[7][10].character, 'w');
+        assert_ne!(cells[7][10].styles.background, background);
+    }
+}
+
+#[test]
 fn palette_repaints_its_background_on_frames_without_new_pane_output() {
     let mut screen = screen();
     let receiver = screen_wired_to_server(&mut screen);
