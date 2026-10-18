@@ -288,6 +288,7 @@ enum CommandName {
   ValidateProjectMatch = 311;
   PublishProjectLocations = 312;
   RestartAgentPane = 313;
+  OpenPluginPaneInPlaceOfPaneId = 314;
 }
 
 message PluginCommand {
@@ -519,6 +520,7 @@ message PluginCommand {
     string validate_project_match_payload = 250;
     string publish_project_locations_payload = 251;
     string restart_agent_pane_payload = 252;
+    string open_plugin_pane_in_place_of_pane_id_payload = 253;
   }
 }
 
@@ -1876,6 +1878,10 @@ message OpenEditPaneInPlaceOfPaneIdPayload {
 }
 
 message OpenCommandPaneInPlaceOfPaneIdResponse {
+  optional PaneId pane_id = 1;
+}
+
+message OpenPluginPaneInPlaceOfPaneIdResponse {
   optional PaneId pane_id = 1;
 }
 

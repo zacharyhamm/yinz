@@ -377,8 +377,15 @@ fn pane_tabs_permanent_replacement_closes_children_and_discards_late_loads() {
                 let pane = tab.build_pane(replacement, None, None, None).unwrap();
                 tab.close_pane_and_replace_with_other_pane(first, pane, None);
             } else {
-                tab.suppress_pane_and_replace_with_pid(first, replacement, true, None, None, None)
-                    .unwrap();
+                tab.suppress_pane_and_replace_with_pid(
+                    first,
+                    replacement,
+                    yinz_bus::pty::ReplacedPane::Close,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
             }
             assert!(tab.pane_tabs_info(info.id).is_none());
             assert!(tab.get_pane_with_id(first).is_none());
@@ -434,8 +441,15 @@ fn pane_tabs_temporary_replacement_restores_composition() {
     )
     .unwrap();
     let info = tab.mount_pane_tabs(first, layout(), 0, client).unwrap();
-    tab.suppress_pane_and_replace_with_pid(first, replacement, false, None, None, None)
-        .unwrap();
+    tab.suppress_pane_and_replace_with_pid(
+        first,
+        replacement,
+        yinz_bus::pty::ReplacedPane::Suppress,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     assert!(tab.pane_tabs_info(info.id).is_some());
     tab.close_pane(replacement, false, None);
     assert!(tab.floating_panes.panes_contain(&first));

@@ -179,7 +179,7 @@ enum PanePlacement {
         set_blocking: bool,
     },
     /// The pane it was asked to take over: `ScreenInstruction::ReplacePane`.
-    InPlace { close_replaced_pane: bool },
+    InPlace { replaced: ReplacedPane },
 }
 
 impl PendingPaneSpawn {
@@ -206,14 +206,12 @@ impl PendingPaneSpawn {
                 self.completion_tx,
                 set_blocking,
             ),
-            PanePlacement::InPlace {
-                close_replaced_pane,
-            } => ScreenInstruction::ReplacePane(
+            PanePlacement::InPlace { replaced } => ScreenInstruction::ReplacePane(
                 PaneId::Terminal(terminal_id),
                 hold_for_command,
                 self.pane_title,
                 self.invoked_with,
-                close_replaced_pane,
+                replaced,
                 self.client_or_tab_index,
                 self.completion_tx,
             ),
@@ -671,7 +669,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             PtyInstruction::SpawnInPlaceTerminal(
                 terminal_action,
                 name,
-                close_replaced_pane,
+                replaced,
                 client_id_tab_index_or_pane_id,
                 completion_tx,
             ) => {
@@ -704,9 +702,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                         invoked_with,
                         client_or_tab_index: client_id_tab_index_or_pane_id,
                         completion_tx,
-                        placement: PanePlacement::InPlace {
-                            close_replaced_pane,
-                        },
+                        placement: PanePlacement::InPlace { replaced },
                     },
                 )?;
             },

@@ -70,7 +70,7 @@ fn launch(env: &PluginEnv, slot: PaneId, child: MultipaneChild, reserved: bool) 
                     .send_to_pty(PtyInstruction::SpawnInPlaceTerminal(
                         Some(TerminalAction::RunCommand(run.into())),
                         None,
-                        true,
+                        ReplacedPane::Close,
                         ClientTabIndexOrPaneId::PaneId(slot),
                         Some(NotificationEnd::new(send)),
                     ))?;

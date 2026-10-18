@@ -306,8 +306,15 @@ fn tab_teardown_preserves_only_surviving_replacement_chains() {
             )
             .unwrap();
             for pair in chain.windows(2) {
-                tab.suppress_pane_and_replace_with_pid(pair[0], pair[1], false, None, None, None)
-                    .unwrap();
+                tab.suppress_pane_and_replace_with_pid(
+                    pair[0],
+                    pair[1],
+                    yinz_bus::pty::ReplacedPane::Suppress,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
             }
             for &id in chain {
                 if matches!(id, PaneId::Terminal(_)) {

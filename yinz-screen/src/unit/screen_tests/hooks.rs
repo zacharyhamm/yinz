@@ -1479,7 +1479,7 @@ fn agent_restart_keeps_flags_and_session_while_suppressed_then_fires_exit_again(
             .suppress_pane_and_replace_with_pid(
                 pane_id,
                 PaneId::Plugin(plugin_id),
-                false,
+                yinz_bus::pty::ReplacedPane::Suppress,
                 None,
                 None,
                 None,

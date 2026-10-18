@@ -275,6 +275,31 @@ that pane and waits for its correlated exit. A step uses command fields such as
 `"timeoutMs"`. These two helpers observe completion; cancellation only stops
 observation.
 
+`(yinz-open-plugin-in-place-of pane url [options])` loads the plugin at `url` in
+place of `pane` and returns a deferred result with the new pane ID, for example
+`(hash "Plugin" 12)`. The function requires `OpenTerminalsOrPlugins`. Its `pane`
+argument accepts a terminal ID, `(hash "Terminal" id)`, or `(hash "Plugin" id)`.
+The `"configuration"` option is a string hash passed to the new plugin, and
+`"context"` is reserved. The covered pane stays suppressed behind the new pane.
+It returns when the new pane closes, including through an explicit close by the user.
+The deferred result rejects when `pane` is suppressed or missing. It also rejects
+when an instance with the same URL and configuration exists. Nothing loads in
+either case.
+
+```scheme
+;; A background coordinator reopens a merge-queue job's UI over its agent pane.
+(yinz-catch
+  (yinz-open-plugin-in-place-of 7 "file:/plugins/merge-queue.scm" (hash "configuration" (hash "job" "42")))
+  (lambda (message) (displayln message)))
+```
+
+Commands that open a pane in place of the calling plugin, or of another pane by
+ID, lend that slot too when `close_replaced_pane` is `#f`. If the user presses
+Ctrl-C on a held command that a hook opened with `OpenCommandPaneInPlaceOfPlugin`,
+the hook returns, and the pane behind the hook stays suppressed. These commands
+reject a target that is suppressed or missing. See
+[pane slots](PLUGIN_PROTOCOL.md#pane-slots).
+
 `(yinz-pane-sequence options)` runs a nonempty `"steps"` list in one reusable pane.
 Options include `"name"`, `"floating"`, `"stopOnFailure"`, `"closeOnSuccess"`,
 `"keepScrollback"`, `"killGraceMs"`, `"onCancel"` (`"keep"` or `"close"`),

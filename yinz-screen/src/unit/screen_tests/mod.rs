@@ -1781,7 +1781,7 @@ fn screen_with_a_pane_replaced_in_place() -> Screen {
         .suppress_pane_and_replace_with_pid(
             PaneId::Terminal(crate::TerminalId::new(1)),
             PaneId::Terminal(crate::TerminalId::new(9)),
-            false,
+            yinz_bus::pty::ReplacedPane::Suppress,
             None,
             None,
             None,
@@ -2031,6 +2031,7 @@ mod host_focus;
 mod host_query;
 mod key_intercepts;
 mod layout_watcher;
+mod lent_slots;
 mod mouse;
 mod nested_sessions;
 mod new_pane_placement;

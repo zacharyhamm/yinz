@@ -7289,3 +7289,47 @@ fn a_headless_cli_load_survives_the_cli_disconnecting() {
     assert!(test.bridge.plugin_map.lock().unwrap().contains(plugin, cli));
     test.bridge.unload_plugin(plugin).unwrap();
 }
+
+#[test]
+fn a_plugin_opened_in_place_of_a_pane_refuses_an_existing_instance() {
+    let mut test = TestBridge::new();
+    let run = RunPlugin {
+        location: RunPluginLocation::File(PathBuf::from("/hook.scm")),
+        ..Default::default()
+    };
+    let id = PluginId::new(7);
+    // Loading counts as existing: its pane is already on its way somewhere.
+    test.bridge.loading_plugins.insert((id, run.clone()));
+    let refused = crate::load_plugin_in_place_of(
+        &mut test.bridge,
+        &PluginAliases::default(),
+        "file:/hook.scm",
+        BTreeMap::new(),
+        PathBuf::from("/"),
+        yinz_types::internal_ids::TabId::new(0),
+        ClientId::new(1),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("already exists"),
+        "{refused:#}"
+    );
+    assert_eq!(test.bridge.next_plugin_id, 0, "nothing was loaded");
+    let unknown = crate::load_plugin_in_place_of(
+        &mut test.bridge,
+        &PluginAliases::default(),
+        "no-such-alias",
+        BTreeMap::new(),
+        PathBuf::from("/"),
+        yinz_types::internal_ids::TabId::new(0),
+        ClientId::new(1),
+    )
+    .unwrap_err();
+    assert!(
+        format!("{unknown:#}").contains("not a plugin or a known alias"),
+        "{unknown:#}"
+    );
+    assert_eq!(test.bridge.next_plugin_id, 0);
+    assert!(test.receiver::<ScreenInstruction>().is_empty());
+    test.bridge.loading_plugins.clear();
+}

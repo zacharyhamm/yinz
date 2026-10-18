@@ -20,7 +20,7 @@ Some(
         Some(
             "Editing: /some/file.txt",
         ),
-        true,
+        Close,
         ClientId(
             ClientId(
                 10,

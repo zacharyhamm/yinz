@@ -3842,7 +3842,7 @@ impl PluginBridge {
                             drop(self.senders.send_to_screen(ScreenInstruction::AddPlugin(
                                 Some(should_float),
                                 should_be_open_in_place,
-                                false, // close_replaced_pane
+                                yinz_bus::pty::ReplacedPane::Suppress,
                                 run_plugin_or_alias,
                                 pane_title,
                                 None,

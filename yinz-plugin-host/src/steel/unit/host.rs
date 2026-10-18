@@ -578,3 +578,75 @@ fn restart_agent_pane_requires_run_commands_and_returns_the_screen_reply() {
     assert_eq!(result["session_id"], "sid");
     assert_eq!(result["command"], json!(["claude", "P"]));
 }
+
+#[test]
+fn plugin_pane_in_place_of_pane_id_requires_open_terminals_or_plugins_and_reports_refusals() {
+    let mut env = env();
+    let (to_screen, screen) = channels::unbounded();
+    env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    let mut plugin = SteelPlugin::new(
+        r#"(define result #f) (define failure #f)
+        (define (open)
+          (set! result #f) (set! failure #f)
+          (yinz-catch (yinz-then (yinz-open-plugin-in-place-of 7 "file:/hook.scm"
+              (hash "configuration" (hash "job" "42")))
+            (lambda (reply) (set! result reply))) (lambda (error) (set! failure error))))
+        (define (load config) (yinz-command (hash "Subscribe" (list "CustomMessage"))) (open))
+        (define (update event) (open) #t)
+        (define (render rows columns) (yinz-json-string (list result failure)))"#,
+        Path::new("test.scm"),
+        env,
+        Arc::default(),
+    )
+    .unwrap();
+    let outcome = |plugin: &mut SteelPlugin| -> serde_json::Value {
+        serde_json::from_slice(&plugin.render(10, 80).unwrap()).unwrap()
+    };
+    // Covering a pane is opening one: denied before anything reaches the screen.
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert!(screen.try_recv().is_err());
+    assert!(outcome(&mut plugin)[1]
+        .as_str()
+        .unwrap()
+        .contains("OpenTerminalsOrPlugins"));
+    plugin
+        .env_mut()
+        .set_permissions([PermissionType::OpenTerminalsOrPlugins].into());
+    let handler = std::thread::spawn(move || {
+        for refusal in [None, Some("pane terminal_7 is suppressed")] {
+            let (
+                yinz_bus::screen::ScreenInstruction::OpenPluginPaneInPlaceOfPaneId {
+                    pane_id,
+                    plugin_url,
+                    configuration,
+                    mut completion,
+                    ..
+                },
+                _,
+            ) = screen.recv().unwrap()
+            else {
+                panic!("expected an in-place plugin pane")
+            };
+            assert_eq!(pane_id.to_string(), "terminal_7");
+            assert_eq!(plugin_url, "file:/hook.scm");
+            assert_eq!(configuration["job"], "42");
+            match refusal {
+                None => completion.set_affected_pane_id(yinz_bus::PaneId::Plugin(
+                    yinz_types::internal_ids::PluginId::new(12),
+                )),
+                Some(error) => {
+                    completion.set_exit_status(1);
+                    completion.set_error_message(error.into());
+                },
+            }
+        }
+    });
+    let event = Event::CustomMessage("open".into(), String::new());
+    plugin.update(&event).unwrap();
+    assert_eq!(outcome(&mut plugin), json!([{"Plugin":12}, false]));
+    plugin.update(&event).unwrap();
+    let refused = outcome(&mut plugin);
+    assert_eq!(refused[0], false);
+    assert!(refused[1].as_str().unwrap().contains("is suppressed"));
+    handler.join().unwrap();
+}

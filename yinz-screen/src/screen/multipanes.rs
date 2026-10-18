@@ -109,7 +109,7 @@ impl Screen {
                     return Ok(Some(info));
                 }
                 self.validate_multipane_children(&[child])?;
-                self.replace_pane_with_existing_pane(info.children[slot], child, false, None);
+                self.replace_pane_with_existing_pane(info.children[slot], child, false, None)?;
                 self.multipane_member(id)?
             },
         };

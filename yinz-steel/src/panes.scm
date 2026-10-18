@@ -129,6 +129,24 @@
       (hash "pane_id" (hash "Terminal" id) "command" (%pane-command step (hash "Terminal" id)) "context" context "keep_scrollback" #t))))
   operation)
 
+;; A slot names any pane: a terminal ID, or a hash naming a terminal or a plugin pane.
+(define (%pane-slot pane)
+  (if (and (hash? pane) (= (length (hash-keys->list pane)) 1) (hash-contains? pane "Plugin"))
+      (let ([id (hash-ref pane "Plugin")])
+        (unless (and (integer? id) (exact? id) (<= 0 id) (<= id 4294967295))
+          (error "plugin pane must be a plugin ID fitting u32"))
+        (hash "Plugin" id))
+      (hash "Terminal" (%pane-id pane))))
+(define (yinz-open-plugin-in-place-of pane url . arguments)
+  (define operation (yinz-deferred))
+  (with-handler (lambda (failure) (yinz-reject! operation failure))
+    (define options (%pane-options (if (null? arguments) (hash) (car arguments)) "plugin in place options"))
+    (unless (string? url) (error "plugin url must be a string"))
+    (yinz-resolve! operation (yinz-command (hash "OpenPluginPaneInPlaceOfPaneId" (hash
+      "pane_id" (%pane-slot pane) "plugin_url" url
+      "configuration" (%pane-get options "configuration" (hash)) "context" (%pane-get options "context" (hash)))))))
+  operation)
+
 ;; A sequence handle exposes procedures so its state remains owned by the guest.
 (define (yinz-pane-sequence value)
   (define options (%pane-options value "paneSequence options"))

@@ -3209,7 +3209,7 @@ fn in_place_spawn(
         client_or_tab_index: ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1)),
         completion_tx: None,
         placement: PanePlacement::InPlace {
-            close_replaced_pane: true,
+            replaced: ReplacedPane::Close,
         },
     }
 }
@@ -3339,7 +3339,7 @@ fn an_in_place_command_pane_tells_its_plugin_it_opened() {
     assert!(
         matches!(
             &screen[..],
-            [ScreenInstruction::ReplacePane(PaneId::Terminal(id), None, _, _, true, _, _)]
+            [ScreenInstruction::ReplacePane(PaneId::Terminal(id), None, _, _, ReplacedPane::Close, _, _)]
                 if *id == TerminalId::new(0)
         ),
         "the pane takes over the one it was asked to, got: {screen:?}"

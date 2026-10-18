@@ -209,6 +209,7 @@ interface CommandArgs {
   SetPaneColor: [PaneId, string | null, string | null]; SetPaneRegexHighlights: [PaneId, RegexHighlight[]];
   SetContextMenu: {request_id: Integer; items: ContextMenuItem[]}; ClearPaneHighlights: PaneId;
   OpenPluginPaneFloating: {plugin_url: string; configuration: StringMap; floating_pane_coordinates: FloatingPaneCoordinates | null; context: StringMap};
+  OpenPluginPaneInPlaceOfPaneId: {pane_id: PaneId; plugin_url: string; configuration?: StringMap; context?: StringMap};
   GetDisconnectTargets: undefined; GetSessionList: undefined; KillSessionsAndReply: string[]; DeleteDeadSessionAndReply: string; DeleteAllDeadSessionsAndReply: undefined;
   FocusHostSession: undefined; ListNotifications: undefined; ResolveNotification: {id: Integer; decision: NotificationDecision};
   WarpPaneToSession: {pane_id: PaneId; to_session: string; placement: WarpPlacement};
@@ -253,6 +254,7 @@ interface CommandReplies {
   CreateMultipane: MultipaneInfo; UpdateMultipane: MultipaneInfo; ReplaceMultipaneChild: MultipaneInfo;
   OpenCommandPaneNearPlugin: PaneId | null; OpenCommandPaneOverlay: PaneId | null; OpenCommandPaneFloatingNearPlugin: PaneId | null;
   OpenCommandPaneInPlaceOfPlugin: PaneId | null; OpenCommandPaneInPlaceOfPaneId: PaneId | null; OpenPluginPaneFloating: PaneId | null;
+  OpenPluginPaneInPlaceOfPaneId: PaneId;
   RegisterAgentProvider: AgentProvider[]; GetAgentProviders: AgentProvider[];
   OpenCommandPaneInGitCheckoutNearPlugin: PaneId | null; SpawnAgent: SpawnedAgent;
   RestartAgentPane: {pane_id: PaneId; session_id: string | null; command: string[]};
@@ -705,6 +707,52 @@ interface ConfigurationSetting {name: string; label: string; kind: string; choic
 
 interface ConfigurationSnapshot {action_children: Record<string, ConfigurationNode[]>; action_properties: Record<string, Record<string, string | number | boolean>>; section_timing: Record<string, string>; sections: string[]; templates: Record<string, ConfigurationNode[]>; actions: ConfigurationNode[]; revision: string; catalog: ConfigurationSetting[]; saved: ConfigurationNode[]; clients: Record<string, ConfigurationNode[]>; overrides: ConfigurationPatch[]; notice: string;}
 ```
+
+## Pane slots
+
+A pane opened in place of another takes that pane's slot. The other pane is
+closed, or suppressed behind the new pane until the new pane leaves the slot.
+`ReplacePaneWithExistingPane`, and the `…InPlaceOfPlugin` and `…InPlaceOfPaneId`
+commands, require a target that holds a slot: a tiled, floating, or overlay pane.
+A suppressed or missing target, or one that would be replaced by itself, is
+refused with a Scheme error. Nothing is moved, and a pane spawned for the request
+is closed instead of left running unseen. The commands that open in place of the
+calling plugin fail the same way while the plugin is hidden.
+
+With `close_replaced_pane` false, the `…InPlaceOfPlugin` and `…InPlaceOfPaneId`
+commands *lend* the slot. Every close of the new pane, including an explicit one,
+restores the pane behind it. This includes Ctrl-C on a held command,
+`CloseTerminalPane`, and the user's close-pane key. For example, an `agent_exit`
+hook `P` over its agent `A` can run a CI gate `C` in its own slot:
+
+```scheme
+(yinz-command (hash "OpenCommandPaneInPlaceOfPlugin"
+  (list (hash "path" "make" "args" '("check")) #f (hash "job" "42"))))
+```
+
+The stack is `A <- P <- C`. When the user presses Ctrl-C on held `C`, `P`
+returns to the slot, and `A` remains suppressed behind `P`. On `CommandPaneExited`,
+the plugin can close `C` with `CloseTerminalPane` to take its slot back. It can
+also use `ReplacePaneWithExistingPane` with `[C, P, false]`.
+
+Other suppressions are one unit. These include an `agent_exit` hook over its pane,
+the scrollback editor over its terminal, and panes opened in place of the focused
+pane, such as `OpenCommandPaneInPlace` or a user's in-place pane. An explicit
+close of either pane closes both. A natural exit or `CloseSelf` still restores the
+pane behind. An explicit close also closes every pane in front of the closed pane,
+whether that pane was lent or not. To close a whole stack, close its bottom pane.
+For example, `CloseTerminalPane` on `A` closes `A`, `P`, and `C`. A slot lent
+before a session warp arrives as an ordinary suppression.
+
+`OpenPluginPaneInPlaceOfPaneId` requires `OpenTerminalsOrPlugins`, the permission
+for opening plugin panes and for the other `…InPlaceOfPaneId` commands.
+It loads `plugin_url` with `configuration` in place of `pane_id` and lends it
+the slot. The command is refused when the
+target holds no slot, before anything loads. It is also refused when an instance
+with that URL and configuration is running or loading. In that case, focus or close
+the existing instance, or use a distinct configuration. The reply is the new
+plugin pane's id after the pane is placed. `context` is reserved; plugin panes do
+not echo it.
 
 ## Restart an exited agent
 

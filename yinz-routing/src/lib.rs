@@ -11,7 +11,7 @@ use yinz_bus::thread_bus::ThreadSenders;
 use yinz_bus::{
     os_input_output::ServerOsApi,
     plugins::PluginInstruction,
-    pty::{ClientTabIndexOrPaneId, PtyInstruction},
+    pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane},
     screen::ScreenInstruction,
     PaneId, ServerInstruction,
 };
@@ -856,7 +856,7 @@ pub fn route_action(
                 PtyInstruction::SpawnInPlaceTerminal(
                     Some(open_file),
                     Some(title),
-                    close_replaced_pane,
+                    ReplacedPane::closed_if(close_replaced_pane),
                     client_tab_index_or_paneid,
                     Some(NotificationEnd::new(completion_tx)),
                 )
@@ -955,7 +955,7 @@ pub fn route_action(
                 .send_to_pty(PtyInstruction::SpawnInPlaceTerminal(
                     run_cmd,
                     name,
-                    close_replaced_pane,
+                    ReplacedPane::closed_if(close_replaced_pane),
                     client_tab_index_or_paneid,
                     Some(NotificationEnd::new(completion_tx)),
                 ))

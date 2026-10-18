@@ -58,7 +58,11 @@ use std::{
 use yinz_bus::route::NotificationEnd;
 use yinz_bus::screen::ScreenInstruction;
 use yinz_bus::session_layout_metadata::SessionLayoutMetadata;
-use yinz_bus::{pty::PtyInstruction, thread_bus::Bus, ServerInstruction};
+use yinz_bus::{
+    pty::{PtyInstruction, ReplacedPane},
+    thread_bus::Bus,
+    ServerInstruction,
+};
 use yinz_storage::data_access::DataAccess;
 use yinz_types::input::context_menu::ContextMenu;
 use {
@@ -292,7 +296,7 @@ pub fn plugin_thread_main(
                         drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
                             should_float,
                             should_be_open_in_place,
-                            close_replaced_pane,
+                            ReplacedPane::closed_if(close_replaced_pane),
                             run_plugin_or_alias,
                             pane_title,
                             tab_index,
@@ -472,7 +476,7 @@ pub fn plugin_thread_main(
                                     drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
                                         should_float,
                                         should_be_open_in_place,
-                                        false, // close_replaced_pane
+                                        ReplacedPane::Suppress,
                                         run_plugin_or_alias,
                                         pane_title,
                                         Some(tab_index),
@@ -1624,6 +1628,50 @@ pub fn plugin_thread_main(
                 let _ = response.send(result);
             },
             PluginInstruction::PickRetired(finder) => plugin_bridge.pick_retired(finder),
+            PluginInstruction::OpenPluginPaneInPlaceOfPaneId {
+                pane_id,
+                plugin_url,
+                configuration,
+                cwd,
+                tab_id,
+                client_id,
+                mut completion,
+            } => {
+                let loaded = load_plugin_in_place_of(
+                    &mut plugin_bridge,
+                    &plugin_aliases,
+                    &plugin_url,
+                    configuration,
+                    cwd,
+                    tab_id,
+                    client_id,
+                );
+                match loaded {
+                    Ok((run_plugin_or_alias, plugin_id, client_id, cwd)) => {
+                        drop(bus.senders.send_to_screen(ScreenInstruction::AddPlugin(
+                            Some(false),
+                            true, // should be opened in place
+                            ReplacedPane::Lend,
+                            run_plugin_or_alias,
+                            None, // pane title
+                            Some(tab_id),
+                            plugin_id,
+                            Some(pane_id),
+                            cwd,
+                            false, // start suppressed
+                            None,  // floating pane coordinates
+                            Some(false),
+                            Some(client_id),
+                            Some(completion),
+                            None, // overlay placement
+                        )));
+                    },
+                    Err(error) => {
+                        completion.set_exit_status(1);
+                        completion.set_error_message(format!("{error:#}"));
+                    },
+                }
+            },
             PluginInstruction::GetPluginIdsForUrl {
                 url,
                 configuration,
@@ -2228,6 +2276,47 @@ fn load_background_plugin(
         .ok()
 }
 
+/// Load `plugin_url` for a pane that will open in place of another one, refusing a url and
+/// configuration that already has an instance: that instance has a pane of its own already,
+/// and loading it again is the silent no-op this exists to replace.
+pub(crate) fn load_plugin_in_place_of(
+    plugin_bridge: &mut PluginBridge,
+    plugin_aliases: &PluginAliases,
+    plugin_url: &str,
+    configuration: BTreeMap<String, String>,
+    cwd: PathBuf,
+    tab_id: yinz_types::internal_ids::TabId,
+    client_id: ClientId,
+) -> Result<(RunPluginOrAlias, PluginId, ClientId, Option<PathBuf>)> {
+    let mut run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        plugin_url,
+        &Some(configuration),
+        Some(plugin_aliases),
+        Some(cwd.clone()),
+    )
+    .map_err(|error| anyhow!("Failed to parse plugin url: {error}"))?;
+    run_plugin_or_alias.populate_run_plugin_if_needed(plugin_aliases);
+    let run_plugin = run_plugin_or_alias
+        .get_run_plugin()
+        .with_context(|| format!("{plugin_url} is not a plugin or a known alias"))?;
+    if plugin_bridge.plugin_instance_exists(&run_plugin) {
+        bail!(
+            "an instance of {plugin_url} with this configuration already exists; \
+             focus or close it instead, or open one with a different configuration"
+        );
+    }
+    let cwd = run_plugin_or_alias.get_initial_cwd().or(Some(cwd));
+    let (plugin_id, client_id) = plugin_bridge.load_plugin(
+        &Some(run_plugin),
+        Some(tab_id),
+        Size::default(),
+        cwd.clone(),
+        false,
+        Some(client_id),
+    )?;
+    Ok((run_plugin_or_alias, plugin_id, client_id, cwd))
+}
+
 /// The screen-side half of a hook: a pane opened over `pane_id_to_replace`, which is
 /// suppressed behind it rather than closed.
 ///
@@ -2251,7 +2340,9 @@ pub(crate) fn add_plugin_pane_in_place_of(
     ScreenInstruction::AddPlugin(
         should_float,
         should_be_open_in_place,
-        false, // close_replaced_pane
+        // Not lent: the hook screen and the pane it reports on are one thing, so the user
+        // closing the screen closes that pane too.
+        ReplacedPane::Suppress,
         run_plugin_or_alias,
         pane_title,
         None, // tab_index
@@ -2283,7 +2374,7 @@ pub(crate) fn add_suppressed_plugin_pane(
     ScreenInstruction::AddPlugin(
         should_float,
         should_be_open_in_place,
-        false, // close_replaced_pane
+        ReplacedPane::Suppress,
         run_plugin_or_alias,
         pane_title,
         None,

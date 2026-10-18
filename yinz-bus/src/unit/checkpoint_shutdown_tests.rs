@@ -64,9 +64,11 @@ fn checkpoint_task_finishes_before_background_thread_on_exit_and_receive_error()
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
         release.send(()).unwrap();
+        // The released write still syncs four times; under a loaded disk that alone has
+        // taken five seconds. What is under test is the order, not the latency.
         assert_eq!(
             completion
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(yinz_test_support::default_timeout())
                 .unwrap()
                 .is_err(),
             disconnect
@@ -126,8 +128,9 @@ fn checkpoint_shutdown_does_not_start_overdue_writes_after_cancellation() {
         Err(std::sync::mpsc::RecvTimeoutError::Timeout)
     ));
     release.send(()).unwrap();
+    // As above: the released write syncs, so give it the shared deadline.
     completion
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(yinz_test_support::default_timeout())
         .unwrap()
         .unwrap();
     worker.join().unwrap();
