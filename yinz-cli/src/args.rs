@@ -1862,6 +1862,64 @@ pub enum CliAction {
         #[clap(short, long, value_parser)]
         pane_id: Option<String>,
     },
+    /// Create and focus a group with a fresh tab. Prints the new group ID.
+    NewTabGroup {
+        #[clap(short, long)]
+        name: Option<String>,
+    },
+    /// List groups with their IDs, displayed names, active state, and tab IDs.
+    ListTabGroups {
+        #[clap(short, long)]
+        json: bool,
+    },
+    /// Print the current group's name and ID, or its full record as JSON.
+    CurrentTabGroupInfo {
+        #[clap(short, long)]
+        json: bool,
+    },
+    /// Focus the remembered tab in a group by stable ID.
+    GoToTabGroupById {
+        id: u32,
+    },
+    /// Focus a group by exact displayed name; duplicate names select the lowest ID.
+    GoToTabGroupName {
+        name: String,
+        /// Create when missing and print the new group ID.
+        #[clap(short, long)]
+        create: bool,
+    },
+    /// Rename the current group or a group by ID. Project names can override this name.
+    RenameTabGroup {
+        name: String,
+        #[clap(long)]
+        group_id: Option<u32>,
+    },
+    /// Close every tab in the current group or a group by ID.
+    CloseTabGroup {
+        #[clap(long)]
+        group_id: Option<u32>,
+    },
+    /// Rename a group by stable ID.
+    RenameTabGroupById {
+        id: u32,
+        name: String,
+    },
+    /// Close every tab in a group by stable ID.
+    CloseTabGroupById {
+        id: u32,
+    },
+    /// Focus the next group, wrapping at the end.
+    GoToNextTabGroup,
+    /// Focus the previous group, wrapping at the start.
+    GoToPreviousTabGroup,
+    /// Focus a tab by its one-based index within the current group.
+    GoToTabInGroup {
+        index: TabNumber,
+    },
+    /// Move the focused pane to the next group and follow it.
+    MovePaneToNextTabGroup,
+    /// Move the focused pane to the previous group and follow it.
+    MovePaneToPreviousTabGroup,
     /// Go to the next tab.
     GoToNextTab,
     /// Go to the previous tab.

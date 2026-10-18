@@ -28,3 +28,40 @@ Basic live operations do not require `agent-service` or `project-store`. Registr
 
 Native file, Git, web, and external-service tools remain appropriate for work outside
 these Yinz interfaces.
+
+## Tab groups
+
+Create a group with a fresh tab and capture its stable ID:
+
+```sh
+group_id=$(yinz action new-tab-group --name work)
+yinz action list-tab-groups --json
+yinz action go-to-tab-group-by-id "$group_id"
+yinz action rename-tab-group review --group-id "$group_id"
+yinz action close-tab-group-by-id "$group_id"
+```
+
+Creation focuses the new group and prints only its group ID.
+IDs are unsigned 32-bit numbers, including zero.
+Closing a group closes all its tabs and uses the existing session quit guard.
+
+Use `go-to-tab-group-name NAME --create` to select a group or create it when missing.
+Name lookup matches the displayed name exactly.
+When multiple groups have the same displayed name, lookup selects the lowest ID.
+This command prints an ID only when it creates a group.
+Project-derived names can override stored names in the display and in name lookup.
+
+`list-tab-groups` prints a table.
+With `--json`, it prints an array with `id`, `name`, `active`, and `tab_ids` for each group.
+Groups are ordered by ID. Tab IDs follow the group's tab order.
+`current-tab-group-info` prints the current group's name and ID.
+With `--json`, it prints one record with the same fields.
+
+`rename-tab-group NAME` and `close-tab-group` act on the current group.
+Both accept `--group-id ID`.
+The explicit forms are `rename-tab-group-by-id ID NAME` and `close-tab-group-by-id ID`.
+
+Use `go-to-next-tab-group` and `go-to-previous-tab-group` to cycle through groups.
+Each group remembers its focused tab.
+Use `go-to-tab-in-group INDEX` to select a tab by its one-based position in the current group.
+Use `move-pane-to-next-tab-group` or `move-pane-to-previous-tab-group` to move the focused pane and follow it.

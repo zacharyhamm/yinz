@@ -1130,6 +1130,12 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
         | Action::CliPipe { .. }
         | Action::ListClients
         | Action::ListPanes { .. }
+        | Action::NewNamedTabGroup { .. }
+        | Action::GoToTabGroupName { .. }
+        | Action::RenameCurrentTabGroup { .. }
+        | Action::CloseCurrentTabGroup
+        | Action::ListTabGroups { .. }
+        | Action::CurrentTabGroupInfo { .. }
         | Action::ListTabs { .. }
         | Action::CurrentTabInfo { .. }
         | Action::StackPanes { .. }

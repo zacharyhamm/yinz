@@ -985,3 +985,143 @@ fn moving_last_pane_out_of_group_removes_group_without_replacement() {
     assert_eq!(screen.tab_groups.len(), 1);
     assert!(screen.tab_groups.contains_key(&0));
 }
+
+#[test]
+fn cli_group_lookup_uses_display_names_and_lowest_id() {
+    let mut screen = grouped_screen();
+    for id in [0, 1] {
+        screen
+            .tab_group_action(
+                Action::RenameTabGroup {
+                    id,
+                    name: "duplicate".into(),
+                },
+                CLIENT,
+                None,
+                &mut HashSet::new(),
+            )
+            .unwrap();
+    }
+    screen
+        .tab_group_action(
+            Action::GoToTabGroupName {
+                name: "duplicate".into(),
+                create: true,
+            },
+            CLIENT,
+            None,
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(screen.group_for_client(Some(CLIENT)), 0);
+    assert_eq!(screen.tab_groups.len(), 2);
+    screen
+        .pane_projects
+        .insert(PaneId::Terminal(TerminalId::new(2)), "project".into());
+    screen
+        .tab_group_action(
+            Action::GoToTabGroupName {
+                name: "project".into(),
+                create: false,
+            },
+            CLIENT,
+            None,
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(screen.group_for_client(Some(CLIENT)), 1);
+    screen
+        .tab_group_action(
+            Action::RenameCurrentTabGroup {
+                name: "clean\n\rname".into(),
+            },
+            CLIENT,
+            None,
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(screen.tab_groups[&1].name, "cleanname");
+    assert_eq!(screen.tab_group_name(1).as_deref(), Some("project"));
+}
+
+#[test]
+fn cli_group_errors_reach_completion() {
+    for action in [
+        Action::SwitchTabGroup { id: 99 },
+        Action::RenameTabGroup {
+            id: 99,
+            name: "missing".into(),
+        },
+        Action::CloseTabGroup { id: 99 },
+        Action::GoToTabGroupName {
+            name: "missing".into(),
+            create: false,
+        },
+    ] {
+        let mut screen = grouped_screen();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        assert!(screen
+            .tab_group_action(
+                action,
+                CLIENT,
+                Some(crate::NotificationEnd::new(tx)),
+                &mut HashSet::new(),
+            )
+            .is_err());
+        assert!(rx.try_recv().unwrap().error_message.is_some());
+    }
+}
+
+#[test]
+fn cli_group_creation_waits_for_layout_and_reports_group_id() {
+    let mut screen = grouped_screen();
+    let (tx, rx): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let (done, mut result) = tokio::sync::oneshot::channel();
+    screen
+        .tab_group_action(
+            Action::NewNamedTabGroup {
+                name: Some("named\n".into()),
+            },
+            CLIENT,
+            Some(crate::NotificationEnd::new(done)),
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    assert!(matches!(
+        result.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    let (tab, completion) = rx
+        .try_iter()
+        .find_map(|(instruction, _)| {
+            if let PluginInstruction::NewTab(_, _, _, _, tab, _, _, _, _, completion) = instruction
+            {
+                Some((tab, completion))
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let group = screen.tab_group_ids[&tab];
+    assert_eq!(screen.tab_groups[&group].name, "named");
+    screen
+        .land_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(9), None)],
+            vec![],
+            vec![],
+            HashMap::new(),
+            tab,
+            true,
+            CLIENT,
+            completion,
+            None,
+            &mut crate::screen::thread_main::PendingEvents::default(),
+        )
+        .unwrap();
+    let result = result.try_recv().unwrap();
+    assert_eq!(result.stdout_message, Some(group.to_string()));
+    assert_eq!(result.error_message, None);
+}

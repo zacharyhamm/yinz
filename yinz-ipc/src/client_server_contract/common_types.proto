@@ -321,6 +321,12 @@ message Action {
     uint32 close_tab_group = 180;
     MovePaneToNextTabGroupAction move_pane_to_next_tab_group = 181;
     MovePaneToPreviousTabGroupAction move_pane_to_previous_tab_group = 182;
+    NewNamedTabGroupAction new_named_tab_group = 183;
+    GoToTabNameAction go_to_tab_group_name = 184;
+    string rename_current_tab_group = 185;
+    CloseCurrentTabGroupAction close_current_tab_group = 186;
+    bool list_tab_groups = 187;
+    bool current_tab_group_info = 188;
   }
 }
 
@@ -1229,6 +1235,8 @@ message PaneTarget {
 
 
 message NewTabGroupAction {}
+message NewNamedTabGroupAction { optional string name = 1; }
+message CloseCurrentTabGroupAction {}
 message GoToNextTabGroupAction {}
 message MovePaneToNextTabGroupAction {}
 message MovePaneToPreviousTabGroupAction {}

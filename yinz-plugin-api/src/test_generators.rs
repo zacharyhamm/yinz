@@ -964,6 +964,21 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::GoToNextTab => Action::GoToNextTab,
         ActionKind::GoToPreviousTab => Action::GoToPreviousTab,
         ActionKind::CloseTab => Action::CloseTab,
+        ActionKind::NewNamedTabGroup => Action::NewNamedTabGroup {
+            name: optional_strings(tc),
+        },
+        ActionKind::GoToTabGroupName => Action::GoToTabGroupName {
+            name: strings(tc),
+            create: booleans(tc),
+        },
+        ActionKind::RenameCurrentTabGroup => Action::RenameCurrentTabGroup { name: strings(tc) },
+        ActionKind::CloseCurrentTabGroup => Action::CloseCurrentTabGroup,
+        ActionKind::ListTabGroups => Action::ListTabGroups {
+            output_json: booleans(tc),
+        },
+        ActionKind::CurrentTabGroupInfo => Action::CurrentTabGroupInfo {
+            output_json: booleans(tc),
+        },
         ActionKind::NewTabGroup => Action::NewTabGroup,
         ActionKind::GoToNextTabGroup => Action::GoToNextTabGroup,
         ActionKind::MovePaneToNextTabGroup => Action::MovePaneToNextTabGroup,

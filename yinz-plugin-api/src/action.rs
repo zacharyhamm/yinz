@@ -2429,7 +2429,13 @@ impl TryFrom<Action> for ProtobufAction {
             | Action::AdoptTab { .. }
             | Action::WarpTabFrom { .. }
             | Action::SaveSession
-            | Action::ListTabs { .. }
+            | Action::NewNamedTabGroup { .. }
+        | Action::GoToTabGroupName { .. }
+        | Action::RenameCurrentTabGroup { .. }
+        | Action::CloseCurrentTabGroup
+        | Action::ListTabGroups { .. }
+        | Action::CurrentTabGroupInfo { .. }
+        | Action::ListTabs { .. }
             | Action::CurrentTabInfo { .. }
             | Action::SetPaneColor { .. }
             | Action::SetPaneAgent { .. }
@@ -4556,6 +4562,12 @@ pub(crate) mod tests {
                 | Action::CliPipe { .. }
                 | Action::ListClients
                 | Action::ListPanes { .. }
+                | Action::NewNamedTabGroup { .. }
+                | Action::GoToTabGroupName { .. }
+                | Action::RenameCurrentTabGroup { .. }
+                | Action::CloseCurrentTabGroup
+                | Action::ListTabGroups { .. }
+                | Action::CurrentTabGroupInfo { .. }
                 | Action::ListTabs { .. }
                 | Action::CurrentTabInfo { .. }
                 | Action::StackPanes { .. }

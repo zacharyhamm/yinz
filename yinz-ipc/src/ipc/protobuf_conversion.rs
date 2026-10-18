@@ -1781,6 +1781,18 @@ impl TryFrom<yinz_types::input::actions::Action>
         use std::collections::HashMap;
 
         let action_type = match action {
+            yinz_types::input::actions::Action::NewNamedTabGroup { name } => ActionType::NewNamedTabGroup(
+                crate::client_server_contract::client_server_contract::NewNamedTabGroupAction { name },
+            ),
+            yinz_types::input::actions::Action::GoToTabGroupName { name, create } => ActionType::GoToTabGroupName(
+                crate::client_server_contract::client_server_contract::GoToTabNameAction { name, create },
+            ),
+            yinz_types::input::actions::Action::RenameCurrentTabGroup { name } => ActionType::RenameCurrentTabGroup(name),
+            yinz_types::input::actions::Action::CloseCurrentTabGroup => ActionType::CloseCurrentTabGroup(
+                crate::client_server_contract::client_server_contract::CloseCurrentTabGroupAction {},
+            ),
+            yinz_types::input::actions::Action::ListTabGroups { output_json } => ActionType::ListTabGroups(output_json),
+            yinz_types::input::actions::Action::CurrentTabGroupInfo { output_json } => ActionType::CurrentTabGroupInfo(output_json),
             yinz_types::input::actions::Action::NewTabGroup => ActionType::NewTabGroup(
                 crate::client_server_contract::client_server_contract::NewTabGroupAction {},
             ),
@@ -2908,6 +2920,27 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             .ok_or_else(|| anyhow!("Action missing action_type"))?;
 
         match action_type {
+            ActionType::NewNamedTabGroup(group) => {
+                Ok(yinz_types::input::actions::Action::NewNamedTabGroup { name: group.name })
+            },
+            ActionType::GoToTabGroupName(group) => {
+                Ok(yinz_types::input::actions::Action::GoToTabGroupName {
+                    name: group.name,
+                    create: group.create,
+                })
+            },
+            ActionType::RenameCurrentTabGroup(name) => {
+                Ok(yinz_types::input::actions::Action::RenameCurrentTabGroup { name })
+            },
+            ActionType::CloseCurrentTabGroup(_) => {
+                Ok(yinz_types::input::actions::Action::CloseCurrentTabGroup)
+            },
+            ActionType::ListTabGroups(output_json) => {
+                Ok(yinz_types::input::actions::Action::ListTabGroups { output_json })
+            },
+            ActionType::CurrentTabGroupInfo(output_json) => {
+                Ok(yinz_types::input::actions::Action::CurrentTabGroupInfo { output_json })
+            },
             ActionType::NewTabGroup(_) => Ok(yinz_types::input::actions::Action::NewTabGroup),
             ActionType::GoToNextTabGroup(_) => {
                 Ok(yinz_types::input::actions::Action::GoToNextTabGroup)

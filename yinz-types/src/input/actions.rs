@@ -379,6 +379,25 @@ pub enum Action {
     },
     /// Create and focus a group with a fresh tab.
     NewTabGroup,
+    /// CLI creation with an optional stored name.
+    NewNamedTabGroup {
+        name: Option<String>,
+    },
+    GoToTabGroupName {
+        name: String,
+        create: bool,
+    },
+    RenameCurrentTabGroup {
+        name: String,
+    },
+    CloseCurrentTabGroup,
+    ListTabGroups {
+        output_json: bool,
+    },
+    CurrentTabGroupInfo {
+        output_json: bool,
+    },
+
     GoToNextTabGroup,
     MovePaneToNextTabGroup,
     MovePaneToPreviousTabGroup,
