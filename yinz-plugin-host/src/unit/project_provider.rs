@@ -158,6 +158,65 @@ fn resolve_project_multi_repository_root_and_rename_keep_one_identity() {
 }
 
 #[test]
+fn resolve_project_symlinked_registration_preserves_identity_and_containment() {
+    use project_data::projects::{self, Registry};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    let alias = temp.path().join("alias");
+    let outside = temp.path().join("project-old");
+    std::fs::create_dir_all(root.join("child")).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+    let project = projects::validate("Remembered folder", alias.to_str().unwrap()).unwrap();
+    let missing =
+        projects::validate("Missing", temp.path().join("missing").to_str().unwrap()).unwrap();
+    let registry = Registry::from([
+        (project.name.clone(), project.clone()),
+        (missing.name.clone(), missing),
+    ]);
+    for directory in [&alias, &root, &alias.join("child"), &root.join("child")] {
+        let resolved = resolve_directory(directory, &registry, Default::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.identity, format!("project:{}", project.root));
+        assert_eq!(resolved.name, project.name);
+        assert_eq!(resolved.root.as_deref(), Some(project.root.as_str()));
+    }
+    for directory in [&outside, &alias.join("escape")] {
+        assert_eq!(
+            resolve_directory(directory, &registry, Default::default()).unwrap(),
+            None
+        );
+    }
+}
+
+#[test]
+fn resolve_project_prefers_deepest_canonical_registered_root() {
+    use project_data::projects::{self, Registry};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    let parent_alias = temp.path().join("long/alias/path");
+    let child_alias = temp.path().join("child-alias");
+    std::fs::create_dir_all(root.join("child/src")).unwrap();
+    std::fs::create_dir_all(parent_alias.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&root, &parent_alias).unwrap();
+    std::os::unix::fs::symlink(root.join("child"), &child_alias).unwrap();
+    let parent = projects::validate("Parent", parent_alias.to_str().unwrap()).unwrap();
+    let child = projects::validate("Child", child_alias.to_str().unwrap()).unwrap();
+    let registry = Registry::from([
+        (parent.name.clone(), parent),
+        (child.name.clone(), child.clone()),
+    ]);
+    let resolved = resolve_directory(&root.join("child/src"), &registry, Default::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.identity, format!("project:{}", child.root));
+    assert_eq!(resolved.name, child.name);
+    assert_eq!(resolved.root.as_deref(), Some(child.root.as_str()));
+}
+
+#[test]
 fn resolve_project_preserves_published_provider_precedence() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();

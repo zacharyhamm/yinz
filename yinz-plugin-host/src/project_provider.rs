@@ -26,8 +26,23 @@ pub(crate) fn resolve_directory(
     }
     let location = Location::local(directory.to_string_lossy());
     // Remembered folders resolve without Git, just as they do in pane arrangement.
-    if let Some(project) = project_data::projects::resolve(&Probed::new(), registry, &location) {
-        return Ok(Some(project));
+    if let Some((project, _)) = registry
+        .values()
+        .filter(|project| !project.discovered)
+        .filter_map(|project| {
+            let root = Path::new(&project.root).canonicalize().ok()?;
+            directory.starts_with(&root).then_some((project, root))
+        })
+        .max_by_key(|(_, root)| root.components().count())
+    {
+        return Ok(Some(yinz_types::data::ResolvedProject {
+            identity: format!("project:{}", project.root),
+            name: project.name.clone(),
+            root: Some(project_data::projects::configuration_root(
+                project.common_dir.as_deref(),
+                &project.root,
+            )),
+        }));
     }
     // Provider results are owned by agent-service; preserve its precedence over Git.
     if !project_data::projects::repository_for_cwd(&probed, &location)
