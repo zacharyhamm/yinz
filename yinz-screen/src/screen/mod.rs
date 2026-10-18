@@ -3927,6 +3927,8 @@ impl Screen {
             Err(error) => {
                 let error = format!("{error:#}");
                 if let Some(completion) = completion_tx.as_mut() {
+                    // A caller may have named the pane before placing it; it is gone now.
+                    completion.clear_affected_pane_id();
                     completion.set_exit_status(1);
                     completion.set_error_message(error.clone());
                 }
@@ -4021,7 +4023,7 @@ impl Screen {
                 .tabs
                 .get(&tab_of_pane_to_replace)
                 .context("tab of the pane to replace disappeared")?;
-            if !tab.pane_holds_a_slot(pane_id_to_replace) {
+            if !tab.has_non_suppressed_pane_with_pid(&pane_id_to_replace) {
                 return Err(tab.no_slot_error(pane_id_to_replace));
             }
         }
@@ -4043,7 +4045,7 @@ impl Screen {
             .get_mut(&tab_of_pane_to_replace)
             .context("tab of the pane to replace disappeared")?;
         // Taking the pane can take its whole container with it, the target included.
-        if !tab.pane_holds_a_slot(pane_id_to_replace) {
+        if !tab.has_non_suppressed_pane_with_pid(&pane_id_to_replace) {
             let error = tab.no_slot_error(pane_id_to_replace);
             if let Some(origin) = self.tabs.get_mut(&tab_of_existing_pane) {
                 origin.park_pane(extracted_pane_from_other_tab);

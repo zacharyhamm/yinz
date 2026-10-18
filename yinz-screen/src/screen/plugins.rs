@@ -259,12 +259,9 @@ impl Screen {
         client_id: ClientId,
         mut completion: NotificationEnd,
     ) {
-        let tab_id = match self.tab_id_containing_pane(pane_id) {
-            Some(tab_id) => match self.tabs.get(&tab_id) {
-                Some(tab) if tab.pane_holds_a_slot(pane_id) => Ok(tab_id),
-                Some(tab) => Err(tab.no_slot_error(pane_id)),
-                None => Err(anyhow!("pane {pane_id:?} not found")),
-            },
+        let tab_id = match self.tab_containing_pane(pane_id) {
+            Some(tab) if tab.has_non_suppressed_pane_with_pid(&pane_id) => Ok(tab.id),
+            Some(tab) => Err(tab.no_slot_error(pane_id)),
             None => Err(anyhow!("pane {pane_id:?} not found")),
         };
         let tab_id = match tab_id {

@@ -701,18 +701,23 @@ pub fn screen_thread_main(
                     completion_tx,
                     set_blocking,
                 ) => {
-                    screen.place_new_pane(
-                        pid,
-                        initial_pane_title,
-                        hold_for_command,
-                        invoked_with,
-                        new_pane_placement,
-                        start_suppressed,
-                        client_or_tab_index,
-                        completion_tx,
-                        set_blocking,
-                        &mut pending,
-                    )?;
+                    // A placement that fails has already been reported on its completion and
+                    // the pane forgotten; an in-place target without a slot is one such
+                    // request, and must not take the screen thread down with it.
+                    screen
+                        .place_new_pane(
+                            pid,
+                            initial_pane_title,
+                            hold_for_command,
+                            invoked_with,
+                            new_pane_placement,
+                            start_suppressed,
+                            client_or_tab_index,
+                            completion_tx,
+                            set_blocking,
+                            &mut pending,
+                        )
+                        .non_fatal();
                     screen.log_and_report_session_state()?;
 
                     screen.render()?;

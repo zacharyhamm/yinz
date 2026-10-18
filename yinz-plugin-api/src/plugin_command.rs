@@ -7222,7 +7222,8 @@ impl From<OpenCommandPaneInPlaceOfPaneIdResponse>
 impl From<OpenPluginPaneInPlaceOfPaneIdResponse> for ProtobufOpenPluginPaneInPlaceOfPaneIdResponse {
     fn from(response: OpenPluginPaneInPlaceOfPaneIdResponse) -> Self {
         ProtobufOpenPluginPaneInPlaceOfPaneIdResponse {
-            pane_id: response.map(|p| p.try_into().unwrap()),
+            // Infallible: every `PaneId` variant has a protobuf spelling.
+            pane_id: response.and_then(|p| p.try_into().ok()),
         }
     }
 }
