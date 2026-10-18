@@ -139,7 +139,7 @@ fn shared_bar_defaults_key_normalization_and_selection_match_wire_types() {
 }
 
 #[test]
-fn only_the_first_regular_tab_has_a_flat_left_edge() {
+fn only_the_first_tab_below_a_visible_group_row_has_a_flat_left_edge() {
     let (mut runtime, _) = plugin();
     for simple in [false, true] {
         let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
@@ -151,7 +151,6 @@ fn only_the_first_regular_tab_has_a_flat_left_edge() {
         ] {
             mode["style"]["colors"][role]["background"] = json!({"EightBit":color});
         }
-        wire(&mut runtime, json!({"ModeUpdate":mode}));
         for active in [0, 1] {
             for multiplayer in [false, true] {
                 let mut tabs = vec![tab(0, "main", active == 0), tab(1, "other", active == 1)];
@@ -166,9 +165,27 @@ fn only_the_first_regular_tab_has_a_flat_left_edge() {
                         tab.other_focused_clients = vec![ClientId::new(1)];
                     }
                 }
-                event(&mut runtime, Event::TabUpdate(tabs));
-                for rows in [1, 2] {
+                for (groups_enabled, multiple_groups, rows) in [
+                    (true, true, 1),
+                    (true, true, 2),
+                    (true, false, 1),
+                    (true, false, 2),
+                    (false, true, 1),
+                    (false, true, 2),
+                ] {
+                    mode["tab_groups"] = json!(groups_enabled);
+                    wire(&mut runtime, json!({"ModeUpdate":mode.clone()}));
+                    let mut visible_tabs = tabs.clone();
+                    if !multiple_groups {
+                        visible_tabs.truncate(2);
+                    }
+                    event(&mut runtime, Event::TabUpdate(visible_tabs));
                     runtime.render(rows, 120).unwrap();
+                    let group_row_visible = groups_enabled && multiple_groups && rows == 2;
+                    assert_eq!(
+                        runtime.value("group-row-visible").unwrap(),
+                        json!(group_row_visible)
+                    );
                     let parts = runtime.value("parts").unwrap();
                     for part in parts.as_array().unwrap() {
                         let text = part["part"].as_str().unwrap();
@@ -177,7 +194,11 @@ fn only_the_first_regular_tab_has_a_flat_left_edge() {
                             if simple {
                                 assert!(!text.contains(''), "{text:?}");
                             } else {
-                                let fg = if position == 0 { bg } else { 1 };
+                                let fg = if position == 0 && group_row_visible {
+                                    bg
+                                } else {
+                                    1
+                                };
                                 assert!(
                                     text.starts_with(&format!("\u{1b}[38;5;{fg};48;5;{bg}m")),
                                     "{text:?}"
@@ -187,7 +208,7 @@ fn only_the_first_regular_tab_has_a_flat_left_edge() {
                                     "{text:?}"
                                 );
                             }
-                            let title_len = if position == 0 { 4 } else { 5 };
+                            let title_len = tabs[position as usize].name.len();
                             assert_eq!(
                                 part["len"],
                                 json!(
@@ -201,7 +222,7 @@ fn only_the_first_regular_tab_has_a_flat_left_edge() {
                             assert!(text.starts_with("\u{1b}[38;5;1;48;5;2m"), "{text:?}");
                         }
                     }
-                    if rows == 2 && !simple {
+                    if group_row_visible && !simple {
                         let groups = runtime.value("group-parts").unwrap();
                         let group = groups
                             .as_array()

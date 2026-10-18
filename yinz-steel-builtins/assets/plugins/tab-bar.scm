@@ -200,7 +200,7 @@
   (define name (if (and (hash-ref tab "active") (equal? (hash-ref mi "mode") "RenameTab") (equal? (hash-ref tab "name") ""))
       "Enter name..." (hash-ref tab "name")))
   (define text (string-append " " (ellipsize name (max 0 (- budget (yinz-text-width suffix)))) suffix " "))
-  (define flat-left (= (hash-ref tab "position") 0))
+  (define flat-left (and group-row-visible (= (hash-ref tab "position") 0)))
   (define part (tile text fg bg flat-left))
   (unless (null? (hash-ref tab "other_focused_clients"))
     (define cursors (bar-focused-client-cursors tab (hash-ref p "multiplayer_user_colors")))
