@@ -23,10 +23,10 @@ pub use super::generated_api::api::{
         data_apply_response, data_catalog_response, data_count_response, data_define_response,
         data_fetch_response, data_unwatch_response, data_watch_response, delete_layout_response,
         dump_layout_response, dump_session_layout_response, edit_layout_response,
-        enqueue_queue_job_response, focus_or_create_tab_response, fs_list_response,
-        fs_metadata_response, fs_mutate_response, fs_read_response, get_focused_pane_info_response,
-        get_pane_cwd_response, get_pane_git_probe_response, get_pane_pid_response,
-        get_pane_running_command_response, get_session_list_response, hide_floating_panes_response,
+        focus_or_create_tab_response, fs_list_response, fs_metadata_response, fs_mutate_response,
+        fs_read_response, get_focused_pane_info_response, get_pane_cwd_response,
+        get_pane_git_probe_response, get_pane_pid_response, get_pane_running_command_response,
+        get_session_list_response, hide_floating_panes_response,
         highlight_style::Style as ProtobufHighlightStyleVariant, list_orphaned_panes_response,
         new_tab_response, new_tab_unfocused_response, open_command_pane_in_git_checkout_payload,
         open_command_pane_in_git_checkout_response, parse_layout_response, plugin_command::Payload,
@@ -39,12 +39,12 @@ pub use super::generated_api::api::{
         BreakPanesToTabWithIdResponse as ProtobufBreakPanesToTabWithIdResponse,
         BreakPanesToTabWithIndexPayload,
         BreakPanesToTabWithIndexResponse as ProtobufBreakPanesToTabWithIndexResponse,
-        CancelQueueJobPayload, CancelWebRequestPayload, ChangeFloatingPanesCoordinatesPayload,
-        ChangeHostFolderPayload, ChangeOverlayCoordinatesPayload, CheckPluginPayload,
+        CancelWebRequestPayload, ChangeFloatingPanesCoordinatesPayload, ChangeHostFolderPayload,
+        ChangeOverlayCoordinatesPayload, CheckPluginPayload,
         CheckPluginResponse as ProtobufCheckPluginResponse, ClearPaneHighlightsPayload,
         ClearScreenForPaneIdPayload, CliPipeOutputPayload, CloseMultiplePanesPayload,
-        CloseTabWithIdPayload, CloseTabWithIndexPayload, CommandName, ConfigureQueuePayload,
-        ContextItem, CopyToClipboardPayload, CreateTokenResponse as ProtobufCreateTokenResponse,
+        CloseTabWithIdPayload, CloseTabWithIndexPayload, CommandName, ContextItem,
+        CopyToClipboardPayload, CreateTokenResponse as ProtobufCreateTokenResponse,
         CreateTokenResponse, CurrentSessionLastSavedTimePayload,
         CurrentSessionLastSavedTimeResponse as ProtobufCurrentSessionLastSavedTimeResponse,
         CursorPosition, CustomIndexHighlight as ProtobufCustomIndexHighlight,
@@ -62,9 +62,8 @@ pub use super::generated_api::api::{
         DumpLayoutResponse as ProtobufDumpLayoutResponse, DumpSessionLayoutPayload,
         DumpSessionLayoutResponse as ProtobufDumpSessionLayoutResponse, EditLayoutPayload,
         EditLayoutResponse as ProtobufEditLayoutResponse, EditScrollbackForPaneWithIdPayload,
-        EmbedMultiplePanesPayload, EnqueueQueueJobPayload,
-        EnqueueQueueJobResponse as ProtobufEnqueueQueueJobResponse, EnvVariable, ExecCmdPayload,
-        FinishQueueJobPayload, FixedOrPercent as ProtobufFixedOrPercent,
+        EmbedMultiplePanesPayload, EnvVariable, ExecCmdPayload,
+        FixedOrPercent as ProtobufFixedOrPercent,
         FixedOrPercentValue as ProtobufFixedOrPercentValue, FloatMultiplePanesPayload,
         FloatingPaneCoordinates as ProtobufFloatingPaneCoordinates,
         FocusOrCreateTabResponse as ProtobufFocusOrCreateTabResponse, FocusedPaneInfo,
@@ -161,7 +160,6 @@ pub use super::generated_api::api::{
         PaneIdAndFloatingPaneCoordinates, PaneProject, PaneType as ProtobufPaneType,
         ParseLayoutPayload, ParseLayoutResponse as ProtobufParseLayoutResponse,
         PluginCommand as ProtobufPluginCommand, PluginMessagePayload, ProjectConfigWritePayload,
-        QueueStatusPayload, QueueStatusResponse as ProtobufQueueStatusResponse,
         ReadPluginLogPayload, ReadPluginLogResponse as ProtobufReadPluginLogResponse,
         RebindKeysPayload, ReconfigurePayload, RegexHighlight as ProtobufRegexHighlight,
         ReloadPluginPayload, RenameLayoutPayload,
@@ -198,7 +196,6 @@ use yinz_types::internal_ids::ContextMenuRequestId;
 use yinz_types::internal_ids::DataWatchId;
 use yinz_types::internal_ids::NotificationId;
 use yinz_types::internal_ids::ProcessId;
-use yinz_types::internal_ids::QueueJobId;
 use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
@@ -226,20 +223,18 @@ use {
     yinz_types::data::DataFetchResponse, yinz_types::data::DataUnwatchResponse,
     yinz_types::data::DataWatchResponse, yinz_types::data::DeleteAllDeadSessionsResponse,
     yinz_types::data::DeleteDeadSessionResponse, yinz_types::data::DeleteLayoutResponse,
-    yinz_types::data::EditLayoutResponse, yinz_types::data::EnqueueQueueJobResponse,
-    yinz_types::data::GetFocusedPaneInfoResponse, yinz_types::data::GetPaneCwdResponse,
-    yinz_types::data::GetPaneGitProbeResponse, yinz_types::data::GetPanePidResponse,
-    yinz_types::data::GetPaneRunningCommandResponse, yinz_types::data::GetSessionListResponse,
-    yinz_types::data::HighlightLayer, yinz_types::data::HighlightStyle, yinz_types::data::HttpVerb,
-    yinz_types::data::InputMode, yinz_types::data::KillSessionsResponse,
-    yinz_types::data::ListOrphanedPanesResponse, yinz_types::data::MessageToPlugin,
-    yinz_types::data::Mutation, yinz_types::data::NewPluginArgs,
+    yinz_types::data::EditLayoutResponse, yinz_types::data::GetFocusedPaneInfoResponse,
+    yinz_types::data::GetPaneCwdResponse, yinz_types::data::GetPaneGitProbeResponse,
+    yinz_types::data::GetPanePidResponse, yinz_types::data::GetPaneRunningCommandResponse,
+    yinz_types::data::GetSessionListResponse, yinz_types::data::HighlightLayer,
+    yinz_types::data::HighlightStyle, yinz_types::data::HttpVerb, yinz_types::data::InputMode,
+    yinz_types::data::KillSessionsResponse, yinz_types::data::ListOrphanedPanesResponse,
+    yinz_types::data::MessageToPlugin, yinz_types::data::Mutation, yinz_types::data::NewPluginArgs,
     yinz_types::data::NotificationInfo, yinz_types::data::NotifyClick,
     yinz_types::data::OpenCommandPaneInGitCheckoutResponse,
     yinz_types::data::OpenCommandPaneOverlayResponse, yinz_types::data::OrphanedPane,
     yinz_types::data::OverlayPlacement, yinz_types::data::PaneGitProbe, yinz_types::data::PaneId,
     yinz_types::data::PermissionType, yinz_types::data::PluginCommand,
-    yinz_types::data::QueueSnapshot, yinz_types::data::QueueStatusResponse,
     yinz_types::data::RegexHighlight, yinz_types::data::RenameLayoutResponse,
     yinz_types::data::SaveLayoutResponse, yinz_types::data::SessionInfo,
     yinz_types::data::SessionListSnapshot, yinz_types::data::SpawnAgentResponse,
@@ -3595,57 +3590,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for GetLocalUtcOffset"),
             },
-            Some(CommandName::EnqueueQueueJob) => match protobuf_plugin_command.payload {
-                Some(Payload::EnqueueQueueJobPayload(payload)) => {
-                    Ok(PluginCommand::EnqueueQueueJob {
-                        queue: payload.queue,
-                        plugin_url: payload.plugin_url,
-                        config: payload
-                            .config
-                            .into_iter()
-                            .map(|e| (e.name, e.value))
-                            .collect(),
-                        context: payload
-                            .context
-                            .into_iter()
-                            .map(|e| (e.name, e.value))
-                            .collect(),
-                    })
-                },
-                _ => Err("Mismatched payload for EnqueueQueueJob"),
-            },
-            Some(CommandName::ConfigureQueue) => match protobuf_plugin_command.payload {
-                Some(Payload::ConfigureQueuePayload(payload)) => {
-                    Ok(PluginCommand::ConfigureQueue {
-                        queue: payload.queue,
-                        concurrency: payload.concurrency as usize,
-                    })
-                },
-                _ => Err("Mismatched payload for ConfigureQueue"),
-            },
-            Some(CommandName::CancelQueueJob) => match protobuf_plugin_command.payload {
-                Some(Payload::CancelQueueJobPayload(payload)) => {
-                    Ok(PluginCommand::CancelQueueJob {
-                        job_id: QueueJobId::new(payload.job_id),
-                    })
-                },
-                _ => Err("Mismatched payload for CancelQueueJob"),
-            },
-            Some(CommandName::QueueStatus) => match protobuf_plugin_command.payload {
-                Some(Payload::QueueStatusPayload(payload)) => Ok(PluginCommand::QueueStatus {
-                    queue: payload.queue,
-                }),
-                _ => Err("Mismatched payload for QueueStatus"),
-            },
-            Some(CommandName::FinishQueueJob) => match protobuf_plugin_command.payload {
-                Some(Payload::FinishQueueJobPayload(payload)) => {
-                    Ok(PluginCommand::FinishQueueJob {
-                        success: payload.success,
-                        payload: payload.payload,
-                    })
-                },
-                _ => Err("Mismatched payload for FinishQueueJob"),
-            },
             Some(CommandName::RegisterProjectProvider) => match protobuf_plugin_command.payload {
                 Some(Payload::RegisterProjectProviderPayload(json)) => serde_json::from_str(&json)
                     .map(PluginCommand::RegisterProjectProvider)
@@ -6100,50 +6044,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     namespace,
                 })),
             }),
-            PluginCommand::EnqueueQueueJob {
-                queue,
-                plugin_url,
-                config,
-                context,
-            } => Ok(ProtobufPluginCommand {
-                name: CommandName::EnqueueQueueJob as i32,
-                payload: Some(Payload::EnqueueQueueJobPayload(EnqueueQueueJobPayload {
-                    queue,
-                    plugin_url,
-                    config: config
-                        .into_iter()
-                        .map(|(name, value)| ContextItem { name, value })
-                        .collect(),
-                    context: context
-                        .into_iter()
-                        .map(|(name, value)| ContextItem { name, value })
-                        .collect(),
-                })),
-            }),
-            PluginCommand::ConfigureQueue { queue, concurrency } => Ok(ProtobufPluginCommand {
-                name: CommandName::ConfigureQueue as i32,
-                payload: Some(Payload::ConfigureQueuePayload(ConfigureQueuePayload {
-                    queue,
-                    concurrency: concurrency.min(u32::MAX as usize) as u32,
-                })),
-            }),
-            PluginCommand::CancelQueueJob { job_id } => Ok(ProtobufPluginCommand {
-                name: CommandName::CancelQueueJob as i32,
-                payload: Some(Payload::CancelQueueJobPayload(CancelQueueJobPayload {
-                    job_id: job_id.get(),
-                })),
-            }),
-            PluginCommand::QueueStatus { queue } => Ok(ProtobufPluginCommand {
-                name: CommandName::QueueStatus as i32,
-                payload: Some(Payload::QueueStatusPayload(QueueStatusPayload { queue })),
-            }),
-            PluginCommand::FinishQueueJob { success, payload } => Ok(ProtobufPluginCommand {
-                name: CommandName::FinishQueueJob as i32,
-                payload: Some(Payload::FinishQueueJobPayload(FinishQueueJobPayload {
-                    success,
-                    payload,
-                })),
-            }),
             PluginCommand::RegisterProjectProvider(provider) => Ok(ProtobufPluginCommand {
                 name: CommandName::RegisterProjectProvider as i32,
                 payload: Some(Payload::RegisterProjectProviderPayload(
@@ -6185,55 +6085,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::RegisterDefaultKeybindingsPayload(keybindings)),
             }),
         }
-    }
-}
-
-impl From<EnqueueQueueJobResponse> for ProtobufEnqueueQueueJobResponse {
-    fn from(response: EnqueueQueueJobResponse) -> Self {
-        ProtobufEnqueueQueueJobResponse {
-            result: Some(match response {
-                EnqueueQueueJobResponse::Ok(job_id) => {
-                    enqueue_queue_job_response::Result::JobId(job_id.get())
-                },
-                EnqueueQueueJobResponse::Err(error) => {
-                    enqueue_queue_job_response::Result::Error(error)
-                },
-            }),
-        }
-    }
-}
-
-impl TryFrom<ProtobufEnqueueQueueJobResponse> for EnqueueQueueJobResponse {
-    type Error = &'static str;
-    fn try_from(protobuf: ProtobufEnqueueQueueJobResponse) -> Result<Self, &'static str> {
-        match protobuf.result {
-            Some(enqueue_queue_job_response::Result::JobId(job_id)) => {
-                Ok(EnqueueQueueJobResponse::Ok(QueueJobId::new(job_id)))
-            },
-            Some(enqueue_queue_job_response::Result::Error(error)) => {
-                Ok(EnqueueQueueJobResponse::Err(error))
-            },
-            None => Err("EnqueueQueueJobResponse without a result"),
-        }
-    }
-}
-
-impl From<QueueStatusResponse> for ProtobufQueueStatusResponse {
-    fn from(queues: QueueStatusResponse) -> Self {
-        ProtobufQueueStatusResponse {
-            queues: queues.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl TryFrom<ProtobufQueueStatusResponse> for QueueStatusResponse {
-    type Error = &'static str;
-    fn try_from(protobuf: ProtobufQueueStatusResponse) -> Result<Self, &'static str> {
-        protobuf
-            .queues
-            .into_iter()
-            .map(QueueSnapshot::try_from)
-            .collect()
     }
 }
 
@@ -8299,12 +8150,7 @@ mod tests {
                 | PluginCommand::DataUnwatch { .. }
                 | PluginCommand::DataCatalog { .. }
                 | PluginCommand::SetPaneTitlePrefix { .. }
-                | PluginCommand::SetPaneSubtitle { .. }
-                | PluginCommand::EnqueueQueueJob { .. }
-                | PluginCommand::ConfigureQueue { .. }
-                | PluginCommand::CancelQueueJob { .. }
-                | PluginCommand::QueueStatus { .. }
-                | PluginCommand::FinishQueueJob { .. }) => carried,
+                | PluginCommand::SetPaneSubtitle { .. }) => carried,
                 // `CursorPosition` is a pair of `uint32`, so both coordinates are cut to 32 bits.
                 PluginCommand::ShowCursor(position) => PluginCommand::ShowCursor(
                     position.map(|(x, y)| (x as u32 as usize, y as u32 as usize)),

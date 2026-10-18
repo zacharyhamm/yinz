@@ -502,10 +502,6 @@ pub enum PluginContext {
     GetLastSessionSaveTime,
     DetectPluginConfigChanges,
     HighlightClicked,
-    QueuePump,
-    QueueConfigure,
-    QueueCancelJob,
-    QueueFinishJob,
     GrantPermissionsToLocation,
     PluginFailed,
 }

@@ -36,7 +36,6 @@ pub use yinz_plugin_authoring as plugin_authoring;
 mod plugin_bridge;
 mod plugin_loader;
 mod plugin_map;
-pub mod queues;
 pub(crate) mod response;
 mod watch_filesystem;
 mod yinz_exports;
@@ -1639,24 +1638,6 @@ pub fn plugin_thread_main(
                 let timestamp = *plugin_bridge.last_session_save_time.lock().unwrap();
                 let _ = response_channel.send(timestamp);
             },
-            PluginInstruction::QueuePump { queue } => {
-                plugin_bridge.pump_queue(&queue);
-            },
-            PluginInstruction::QueueConfigure { queue, concurrency } => {
-                plugin_bridge.queue_configure(&queue, concurrency);
-            },
-            PluginInstruction::QueueCancelJob { job_id } => {
-                plugin_bridge.queue_cancel(job_id).non_fatal();
-            },
-            PluginInstruction::QueueFinishJob {
-                plugin_id,
-                success,
-                payload,
-            } => {
-                plugin_bridge
-                    .queue_finish_job(plugin_id, success, payload)
-                    .non_fatal();
-            },
             PluginInstruction::GrantPermissionsToLocation {
                 plugin_url,
                 permissions,
@@ -1688,7 +1669,7 @@ pub fn plugin_thread_main(
                         .non_fatal();
                 }
                 plugin_bridge
-                    .queue_plugin_failed(
+                    .plugin_failed(
                         plugin_id,
                         load_id,
                         generation,
@@ -1956,9 +1937,9 @@ fn session_start_payload(session: &ServerSession, client_id: ClientId) -> HookFi
 /// naming a different pane yields a separate instance, which is what makes two agents exiting
 /// at once get a hook pane each rather than fighting over one.
 ///
-/// Loaded and placed here rather than through `PluginBridge::get_or_load_plugins`, for the same
-/// reason `PluginBridge::launch_job` bypasses it: that function opens a pane only when it has to
-/// *load* the plugin, and answers a request for one that already exists with its id and no
+/// Loaded and placed here rather than through `PluginBridge::get_or_load_plugins`: the
+/// latter opens a pane only when it has to *load* the plugin, and answers a request for one
+/// that already exists with its id and no
 /// screen instruction at all. That is the right shape for "open it, or focus the one already
 /// open". It is the wrong shape for a hook, whose whole contract is that a pane appears - a
 /// hook that quietly resolved to an existing instance would leave the pane it was fired for

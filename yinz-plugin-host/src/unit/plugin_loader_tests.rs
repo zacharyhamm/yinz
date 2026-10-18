@@ -1006,7 +1006,7 @@ fn disposed_instances_keep_retry_metadata_without_retaining_configuration() {
         let plugin = PluginId::new(id);
         let instance = test.instance_id(plugin, client);
         test.bridge
-            .queue_plugin_failed(
+            .plugin_failed(
                 plugin,
                 None,
                 None,

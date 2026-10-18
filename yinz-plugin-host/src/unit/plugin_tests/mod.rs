@@ -1043,7 +1043,6 @@ mod open_and_session_commands;
 mod pane_id_commands;
 mod permissions;
 mod plugin_lifecycle_commands;
-mod queues;
 mod run_and_pipe_commands;
 mod runaway;
 mod script_harness;

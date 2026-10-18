@@ -139,7 +139,7 @@
   (send (hash "Subscribe"
     '("InputReceived" "Key" "SystemClipboardFailure" "CustomMessage"
       "FileSystemCreate" "FileSystemUpdate" "FileSystemDelete" "BeforeClose"
-      "PluginConfigurationChanged" "HighlightClicked" "QueueJobStarted" "QueueJobFinished")))
+      "PluginConfigurationChanged" "HighlightClicked")))
   (for-each
     (lambda (entry)
       (when (equal? (get config (car entry) #f) "true")
@@ -277,14 +277,7 @@
     [(equal? name "pipe_message_to_plugin")
      (send (hash "MessageToPlugin" (hash "message_name" "message_to_plugin" "message_payload" "my_cool_payload")))]
     [(equal? name "message_to_plugin") (set! message-to-plugin-payload (if (json-null? payload) #f payload))]
-    [(equal? name "panic_while_handling_pipe") (error "intentional panic for the pipe-release-on-crash test")]
-    [(equal? name "enqueue_queue_job")
-     (result-text "enqueue failed: "
-       (lambda () (string-append "enqueued job "
-         (text (yinz-command (hash "EnqueueQueueJob"
-           (hash "queue" "fixture_queue" "plugin_url" (if (json-null? payload) "" payload)
-                 "config" (hash) "context" (hash "origin" "fixture"))))))))]
-    [(equal? name "finish_queue_job") (send (hash "FinishQueueJob" (hash "success" #t "payload" payload)))])
+    [(equal? name "panic_while_handling_pipe") (error "intentional panic for the pipe-release-on-crash test")])
   #t)
 
 (define (render rows cols)

@@ -38,13 +38,8 @@ pub use super::generated_api::api::{
         PaneScrollbackResponse as ProtobufPaneScrollbackResponse, PaneType as ProtobufPaneType,
         PluginConfigurationChangedPayload as ProtobufPluginConfigurationChangedPayload,
         PluginDataChangedPayload as ProtobufPluginDataChangedPayload,
-        PluginInfo as ProtobufPluginInfo, QueueChangedPayload as ProtobufQueueChangedPayload,
-        QueueJobFinishedPayload as ProtobufQueueJobFinishedPayload,
-        QueueJobInfo as ProtobufQueueJobInfo, QueueJobOutcome as ProtobufQueueJobOutcome,
-        QueueJobStartedPayload as ProtobufQueueJobStartedPayload,
-        QueueJobState as ProtobufQueueJobState, QueueSnapshot as ProtobufQueueSnapshot,
-        ResurrectableSession as ProtobufResurrectableSession, SelectedText as ProtobufSelectedText,
-        SessionManifest as ProtobufSessionManifest,
+        PluginInfo as ProtobufPluginInfo, ResurrectableSession as ProtobufResurrectableSession,
+        SelectedText as ProtobufSelectedText, SessionManifest as ProtobufSessionManifest,
         SessionStartHookPayload as ProtobufSessionStartHookPayload,
         StyledText as ProtobufStyledText, StyledTextIndices as ProtobufStyledTextIndices,
         SyntaxError as ProtobufSyntaxError, TabInfo as ProtobufTabInfo,
@@ -58,7 +53,6 @@ use crate::plugin_data::ProtobufRows as ProtobufDataRows;
 use yinz_types::internal_ids::ContextMenuItemId;
 use yinz_types::internal_ids::ContextMenuRequestId;
 use yinz_types::internal_ids::DataWatchId;
-use yinz_types::internal_ids::QueueJobId;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabPosition;
@@ -79,8 +73,6 @@ use {
     yinz_types::data::PaneInfo, yinz_types::data::PaneManifest, yinz_types::data::PaneMetadata,
     yinz_types::data::PaneScrollbackResponse, yinz_types::data::PermissionStatus,
     yinz_types::data::PluginCapabilities, yinz_types::data::PluginInfo,
-    yinz_types::data::QueueJobInfo, yinz_types::data::QueueJobOutcome,
-    yinz_types::data::QueueJobState, yinz_types::data::QueueSnapshot,
     yinz_types::data::SelectedText, yinz_types::data::SessionInfo, yinz_types::data::StyledText,
     yinz_types::data::TabInfo, yinz_types::data::TabMetadata,
 };
@@ -701,17 +693,6 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for PluginDataChanged Event"),
             },
-            Ok(ProtobufEventType::QueueJobStarted) => match protobuf_event.payload {
-                Some(ProtobufEventPayload::QueueJobStartedPayload(p)) => {
-                    Ok(Event::QueueJobStarted {
-                        queue: p.queue,
-                        job_id: QueueJobId::new(p.job_id),
-                        plugin_id: yinz_types::internal_ids::PluginId::new(p.plugin_id),
-                        context: context_from_items(p.context),
-                    })
-                },
-                _ => Err("Malformed payload for QueueJobStarted Event"),
-            },
             Ok(ProtobufEventType::NotificationReceived) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::NotificationReceivedPayload(json)) => {
                     serde_json::from_str(&json)
@@ -846,38 +827,6 @@ impl TryFrom<ProtobufEvent> for Event {
                     })
                 },
                 _ => Err("Malformed payload for ModifiersHeld Event"),
-            },
-            Ok(ProtobufEventType::QueueJobFinished) => match protobuf_event.payload {
-                Some(ProtobufEventPayload::QueueJobFinishedPayload(p)) => {
-                    let outcome = ProtobufQueueJobOutcome::try_from(p.outcome)
-                        .map_err(|_| "Malformed outcome for QueueJobFinished Event")?
-                        .into();
-                    Ok(Event::QueueJobFinished {
-                        queue: p.queue,
-                        job_id: QueueJobId::new(p.job_id),
-                        outcome,
-                        payload: p.payload,
-                        context: context_from_items(p.context),
-                    })
-                },
-                _ => Err("Malformed payload for QueueJobFinished Event"),
-            },
-            Ok(ProtobufEventType::QueueChanged) => match protobuf_event.payload {
-                Some(ProtobufEventPayload::QueueChangedPayload(p)) => Ok(Event::QueueChanged {
-                    queue: p.queue,
-                    concurrency: p.concurrency as usize,
-                    pending: p
-                        .pending
-                        .into_iter()
-                        .map(QueueJobInfo::try_from)
-                        .collect::<Result<_, _>>()?,
-                    running: p
-                        .running
-                        .into_iter()
-                        .map(QueueJobInfo::try_from)
-                        .collect::<Result<_, _>>()?,
-                }),
-                _ => Err("Malformed payload for QueueChanged Event"),
             },
             Err(_) => Err("Unknown Protobuf Event"),
         }
@@ -1533,22 +1482,6 @@ impl TryFrom<Event> for ProtobufEvent {
                     },
                 )),
             }),
-            Event::QueueJobStarted {
-                queue,
-                job_id,
-                plugin_id,
-                context,
-            } => Ok(ProtobufEvent {
-                name: ProtobufEventType::QueueJobStarted as i32,
-                payload: Some(event::Payload::QueueJobStartedPayload(
-                    ProtobufQueueJobStartedPayload {
-                        queue,
-                        job_id: job_id.get(),
-                        plugin_id: plugin_id.get(),
-                        context: context_to_items(context),
-                    },
-                )),
-            }),
             Event::NotificationReceived(notification) => Ok(ProtobufEvent {
                 name: ProtobufEventType::NotificationReceived as i32,
                 payload: Some(event::Payload::NotificationReceivedPayload(
@@ -1662,40 +1595,6 @@ impl TryFrom<Event> for ProtobufEvent {
                         tool_name: agent_event.tool_name,
                         cwd: agent_event.cwd,
                         raw: agent_event.raw,
-                    },
-                )),
-            }),
-            Event::QueueJobFinished {
-                queue,
-                job_id,
-                outcome,
-                payload,
-                context,
-            } => Ok(ProtobufEvent {
-                name: ProtobufEventType::QueueJobFinished as i32,
-                payload: Some(event::Payload::QueueJobFinishedPayload(
-                    ProtobufQueueJobFinishedPayload {
-                        queue,
-                        job_id: job_id.get(),
-                        outcome: ProtobufQueueJobOutcome::from(outcome) as i32,
-                        payload,
-                        context: context_to_items(context),
-                    },
-                )),
-            }),
-            Event::QueueChanged {
-                queue,
-                concurrency,
-                pending,
-                running,
-            } => Ok(ProtobufEvent {
-                name: ProtobufEventType::QueueChanged as i32,
-                payload: Some(event::Payload::QueueChangedPayload(
-                    ProtobufQueueChangedPayload {
-                        queue,
-                        concurrency: concurrency as u32,
-                        pending: pending.into_iter().map(Into::into).collect(),
-                        running: running.into_iter().map(Into::into).collect(),
                     },
                 )),
             }),
@@ -2851,9 +2750,6 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::ActivePaneScroll => EventType::ActivePaneScroll,
             ProtobufEventType::PluginDataChanged => EventType::PluginDataChanged,
             ProtobufEventType::WebRequestStreamChunk => EventType::WebRequestStreamChunk,
-            ProtobufEventType::QueueJobStarted => EventType::QueueJobStarted,
-            ProtobufEventType::QueueJobFinished => EventType::QueueJobFinished,
-            ProtobufEventType::QueueChanged => EventType::QueueChanged,
             ProtobufEventType::NotificationReceived => EventType::NotificationReceived,
             ProtobufEventType::NotificationRequested => EventType::NotificationRequested,
             ProtobufEventType::NotificationResolved => EventType::NotificationResolved,
@@ -2924,9 +2820,6 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::ActivePaneScroll => ProtobufEventType::ActivePaneScroll,
             EventType::PluginDataChanged => ProtobufEventType::PluginDataChanged,
             EventType::WebRequestStreamChunk => ProtobufEventType::WebRequestStreamChunk,
-            EventType::QueueJobStarted => ProtobufEventType::QueueJobStarted,
-            EventType::QueueJobFinished => ProtobufEventType::QueueJobFinished,
-            EventType::QueueChanged => ProtobufEventType::QueueChanged,
             EventType::NotificationReceived => ProtobufEventType::NotificationReceived,
             EventType::NotificationRequested => ProtobufEventType::NotificationRequested,
             EventType::NotificationResolved => ProtobufEventType::NotificationResolved,
@@ -3909,108 +3802,6 @@ impl TryFrom<SelectedText> for ProtobufSelectedText {
 // serialize_timer_event stays as the exemplar of the shape, and because
 // Timer's payload narrows to f32 - see the note on the generator.
 
-fn context_from_items(items: Vec<ProtobufContextItem>) -> BTreeMap<String, String> {
-    items.into_iter().map(|i| (i.name, i.value)).collect()
-}
-
-fn context_to_items(context: BTreeMap<String, String>) -> Vec<ProtobufContextItem> {
-    context
-        .into_iter()
-        .map(|(name, value)| ProtobufContextItem { name, value })
-        .collect()
-}
-
-impl From<ProtobufQueueJobOutcome> for QueueJobOutcome {
-    fn from(outcome: ProtobufQueueJobOutcome) -> Self {
-        match outcome {
-            ProtobufQueueJobOutcome::Succeeded => QueueJobOutcome::Succeeded,
-            ProtobufQueueJobOutcome::Failed => QueueJobOutcome::Failed,
-            ProtobufQueueJobOutcome::Cancelled => QueueJobOutcome::Cancelled,
-            ProtobufQueueJobOutcome::Aborted => QueueJobOutcome::Aborted,
-        }
-    }
-}
-
-impl From<QueueJobOutcome> for ProtobufQueueJobOutcome {
-    fn from(outcome: QueueJobOutcome) -> Self {
-        match outcome {
-            QueueJobOutcome::Succeeded => ProtobufQueueJobOutcome::Succeeded,
-            QueueJobOutcome::Failed => ProtobufQueueJobOutcome::Failed,
-            QueueJobOutcome::Cancelled => ProtobufQueueJobOutcome::Cancelled,
-            QueueJobOutcome::Aborted => ProtobufQueueJobOutcome::Aborted,
-        }
-    }
-}
-
-impl TryFrom<ProtobufQueueJobInfo> for QueueJobInfo {
-    type Error = &'static str;
-    fn try_from(info: ProtobufQueueJobInfo) -> Result<Self, &'static str> {
-        let state = match ProtobufQueueJobState::try_from(info.state) {
-            Ok(ProtobufQueueJobState::Pending) => QueueJobState::Pending,
-            Ok(ProtobufQueueJobState::Running) => QueueJobState::Running,
-            Err(_) => return Err("Malformed state for QueueJobInfo"),
-        };
-        Ok(QueueJobInfo {
-            job_id: QueueJobId::new(info.job_id),
-            queue: info.queue,
-            plugin_url: info.plugin_url,
-            plugin_id: info.plugin_id.map(yinz_types::internal_ids::PluginId::new),
-            enqueuer_plugin_id: yinz_types::internal_ids::PluginId::new(info.enqueuer_plugin_id),
-            context: context_from_items(info.context),
-            state,
-        })
-    }
-}
-
-impl From<QueueJobInfo> for ProtobufQueueJobInfo {
-    fn from(info: QueueJobInfo) -> Self {
-        let state = match info.state {
-            QueueJobState::Pending => ProtobufQueueJobState::Pending,
-            QueueJobState::Running => ProtobufQueueJobState::Running,
-        };
-        ProtobufQueueJobInfo {
-            job_id: info.job_id.get(),
-            queue: info.queue,
-            plugin_url: info.plugin_url,
-            plugin_id: info.plugin_id.map(|id| id.get()),
-            enqueuer_plugin_id: info.enqueuer_plugin_id.get(),
-            context: context_to_items(info.context),
-            state: state as i32,
-        }
-    }
-}
-
-impl TryFrom<ProtobufQueueSnapshot> for QueueSnapshot {
-    type Error = &'static str;
-    fn try_from(snapshot: ProtobufQueueSnapshot) -> Result<Self, &'static str> {
-        Ok(QueueSnapshot {
-            queue: snapshot.queue,
-            concurrency: snapshot.concurrency as usize,
-            pending: snapshot
-                .pending
-                .into_iter()
-                .map(QueueJobInfo::try_from)
-                .collect::<Result<_, _>>()?,
-            running: snapshot
-                .running
-                .into_iter()
-                .map(QueueJobInfo::try_from)
-                .collect::<Result<_, _>>()?,
-        })
-    }
-}
-
-impl From<QueueSnapshot> for ProtobufQueueSnapshot {
-    fn from(snapshot: QueueSnapshot) -> Self {
-        ProtobufQueueSnapshot {
-            queue: snapshot.queue,
-            concurrency: snapshot.concurrency as u32,
-            pending: snapshot.pending.into_iter().map(Into::into).collect(),
-            running: snapshot.running.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
 /// `ContextMenuItem` and friends cross the plugin boundary the long way round, by hand, like
 /// everything else in this file. Two shapes are worth noting:
 ///
@@ -4264,43 +4055,6 @@ mod tests {
             yinz_types::data::PermissionStatus,
         };
 
-        /// Every `Event` variant whose payload is built from plain scalars,
-        /// collections and small enums.
-        ///
-        /// `ModeUpdate`, `TabUpdate`, `PaneUpdate`, `Key`, `Mouse`,
-        /// `SessionUpdate`, `ListClients`, `UserAction`, `ActionComplete`,
-        /// `PaneRenderReport`, `InitialKeybinds`, `AvailableLayoutInfo`,
-        /// `HintText` and `InterceptedKeyPress` are not here: they carry
-        /// `ModeInfo`, `Action` and friends, which need generators of their
-        /// own. Their example tests stay.
-        ///
-        /// `Timer` draws a finite f64 on purpose - a NaN payload would fail the
-        /// round-trip assertion on `NaN != NaN` rather than on anything the
-        /// encoding did wrong.
-        fn any_queue_job_info(tc: &hegel::TestCase) -> QueueJobInfo {
-            QueueJobInfo {
-                job_id: QueueJobId::new(tc.draw(generators::integers::<u64>())),
-                queue: strings(tc),
-                plugin_url: strings(tc),
-                plugin_id: tc
-                    .draw(generators::optional(generators::integers::<u32>()))
-                    .map(yinz_types::internal_ids::PluginId::new),
-                enqueuer_plugin_id: yinz_types::internal_ids::PluginId::new(
-                    tc.draw(generators::integers::<u32>()),
-                ),
-                context: context(tc),
-                state: tc.draw(generators::sampled_from(vec![
-                    QueueJobState::Pending,
-                    QueueJobState::Running,
-                ])),
-            }
-        }
-
-        fn any_queue_job_infos(tc: &hegel::TestCase) -> Vec<QueueJobInfo> {
-            let count = tc.draw(generators::integers::<usize>().max_value(3));
-            (0..count).map(|_| any_queue_job_info(tc)).collect()
-        }
-
         /// Never draws `actions`: they are deliberately absent from the wire, so an item with
         /// actions could not survive a round trip and the property would be asserting the wrong
         /// thing. What has to survive is identity - `id` - and everything the plugin draws with.
@@ -4348,10 +4102,23 @@ mod tests {
             }
         }
 
+        /// Every `Event` variant whose payload is built from plain scalars,
+        /// collections and small enums.
+        ///
+        /// `ModeUpdate`, `TabUpdate`, `PaneUpdate`, `Key`, `Mouse`,
+        /// `SessionUpdate`, `ListClients`, `UserAction`, `ActionComplete`,
+        /// `PaneRenderReport`, `InitialKeybinds`, `AvailableLayoutInfo`,
+        /// `HintText` and `InterceptedKeyPress` are not here: they carry
+        /// `ModeInfo`, `Action` and friends, which need generators of their
+        /// own. Their example tests stay.
+        ///
+        /// `Timer` draws a finite f64 on purpose - a NaN payload would fail the
+        /// round-trip assertion on `NaN != NaN` rather than on anything the
+        /// encoding did wrong.
         #[hegel::composite]
         fn any_event(tc: &hegel::TestCase) -> Event {
-            match tc.draw(generators::integers::<u8>().max_value(37)) {
-                37 => Event::AgentEvent(yinz_types::agent::AgentEvent {
+            match tc.draw(generators::integers::<u8>().max_value(34)) {
+                34 => Event::AgentEvent(yinz_types::agent::AgentEvent {
                     pane_id: yinz_types::internal_ids::TerminalId::new(
                         tc.draw(generators::integers::<u32>()),
                     ),
@@ -4371,7 +4138,7 @@ mod tests {
                     cwd: tc.draw(generators::optional(generators::text().max_size(8))),
                     raw: strings(tc),
                 }),
-                36 => Event::Hook {
+                33 => Event::Hook {
                     point: tc.draw(generators::sampled_from(HookPoint::ALL.to_vec())),
                     payload: match tc.draw(generators::integers::<u8>().max_value(2)) {
                         0 => yinz_types::data::HookPayload::Agent {
@@ -4406,37 +4173,11 @@ mod tests {
                         },
                     },
                 },
-                34 => Event::ContextMenuRequested(Box::new(any_context_menu_context(tc))),
-                35 => Event::ContextMenuItemSelected {
+                31 => Event::ContextMenuRequested(Box::new(any_context_menu_context(tc))),
+                32 => Event::ContextMenuItemSelected {
                     label: strings(tc),
                     item_context: context(tc),
                     context: Box::new(any_context_menu_context(tc)),
-                },
-                30 => Event::QueueJobStarted {
-                    queue: strings(tc),
-                    job_id: QueueJobId::new(tc.draw(generators::integers::<u64>())),
-                    plugin_id: yinz_types::internal_ids::PluginId::new(
-                        tc.draw(generators::integers::<u32>()),
-                    ),
-                    context: context(tc),
-                },
-                31 => Event::QueueJobFinished {
-                    queue: strings(tc),
-                    job_id: QueueJobId::new(tc.draw(generators::integers::<u64>())),
-                    outcome: tc.draw(generators::sampled_from(vec![
-                        QueueJobOutcome::Succeeded,
-                        QueueJobOutcome::Failed,
-                        QueueJobOutcome::Cancelled,
-                        QueueJobOutcome::Aborted,
-                    ])),
-                    payload: tc.draw(generators::optional(generators::text())),
-                    context: context(tc),
-                },
-                32 => Event::QueueChanged {
-                    queue: strings(tc),
-                    concurrency: tc.draw(generators::integers::<u16>()) as usize,
-                    pending: any_queue_job_infos(tc),
-                    running: any_queue_job_infos(tc),
                 },
                 // The protobuf field is a float, not a double (see
                 // `TimerPayload(f32)` in assets/prost/api.event.rs), so the

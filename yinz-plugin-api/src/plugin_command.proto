@@ -15,6 +15,7 @@ import "plugin_data.proto";
 package api.plugin_command;
 
 enum CommandName {
+  reserved 257 to 261;
   reserved 127, 133, 134, 135, 136, 138, 139, 140, 141, 142, 215, 216, 219, 222, 230, 246;
   Subscribe = 0;
   Unsubscribe = 1;
@@ -233,11 +234,6 @@ enum CommandName {
   ChangeOverlayCoordinates = 253;
   OpenCommandPaneOverlay = 254;
   SetPaneTitlePrefix = 256;
-  EnqueueQueueJob = 257;
-  ConfigureQueue = 258;
-  CancelQueueJob = 259;
-  QueueStatus = 260;
-  FinishQueueJob = 261;
   FsRead = 262;
   FsList = 263;
   FsMetadata = 264;
@@ -294,6 +290,7 @@ enum CommandName {
 }
 
 message PluginCommand {
+  reserved 198 to 202;
   reserved 228;
   reserved "swamp_request_payload";
   reserved 213, 174;
@@ -483,11 +480,6 @@ message PluginCommand {
     ChangeOverlayCoordinatesPayload change_overlay_coordinates_payload = 194;
     OpenCommandPaneOverlayPayload open_command_pane_overlay_payload = 195;
     SetPaneTitlePrefixPayload set_pane_title_prefix_payload = 197;
-    EnqueueQueueJobPayload enqueue_queue_job_payload = 198;
-    ConfigureQueuePayload configure_queue_payload = 199;
-    CancelQueueJobPayload cancel_queue_job_payload = 200;
-    QueueStatusPayload queue_status_payload = 201;
-    FinishQueueJobPayload finish_queue_job_payload = 202;
     FsReadPayload fs_read_payload = 203;
     FsListPayload fs_list_payload = 204;
     FsMetadataPayload fs_metadata_payload = 205;
@@ -625,42 +617,6 @@ message FsMutateResponse {
     bool success = 1;
     string error = 2;
   }
-}
-
-message EnqueueQueueJobPayload {
-  string queue = 1;
-  string plugin_url = 2;
-  repeated ContextItem config = 3;
-  repeated ContextItem context = 4;
-}
-
-message ConfigureQueuePayload {
-  string queue = 1;
-  uint32 concurrency = 2;
-}
-
-message CancelQueueJobPayload {
-  uint64 job_id = 1;
-}
-
-message QueueStatusPayload {
-  optional string queue = 1;
-}
-
-message FinishQueueJobPayload {
-  bool success = 1;
-  optional string payload = 2;
-}
-
-message EnqueueQueueJobResponse {
-  oneof result {
-    uint64 job_id = 1;
-    string error = 2;
-  }
-}
-
-message QueueStatusResponse {
-  repeated event.QueueSnapshot queues = 1;
 }
 
 message OpenCommandPaneInGitCheckoutPayload {

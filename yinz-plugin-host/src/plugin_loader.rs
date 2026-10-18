@@ -1,6 +1,5 @@
 use crate::plugin_bridge::LoadingContext;
 use crate::plugin_map::{PluginEnv, PluginMap, ResponseSink, RunningPlugin, CANCELLED_BY_HOST};
-use crate::queues::Queues;
 use crate::{ClientId, PluginId};
 use std::{
     collections::{HashMap, HashSet},
@@ -88,7 +87,6 @@ pub struct PluginLoader {
     _pending_configuration: Arc<crate::plugin_map::PendingConfiguration>,
     data_access: Arc<DataAccess>,
     watch_generations: super::plugin_map::WatchGenerations,
-    queues: Arc<Mutex<Queues>>,
     size: Size,
     cancel: Arc<AtomicBool>,
     client_cancel: Arc<AtomicBool>,
@@ -143,7 +141,6 @@ impl PluginLoader {
             _pending_configuration: loading_context.pending_configuration,
             data_access: loading_context.data_access,
             watch_generations: loading_context.watch_generations,
-            queues: loading_context.queues,
             size: loading_context.size,
             cancel: loading_context.cancel,
             client_cancel: loading_context.client_cancel,
@@ -387,7 +384,6 @@ impl PluginLoader {
             temporary_data_dir: Some(self.temporary_data_dir.clone()),
             data_access: self.data_access.clone(),
             watch_generations: self.watch_generations.clone(),
-            queues: self.queues.clone(),
             plugin_own_cache_dir: self.plugin_own_cache_dir.clone(),
             tab_index: self.tab_index,
             path_to_default_shell: self.path_to_default_shell.clone(),

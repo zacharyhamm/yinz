@@ -256,19 +256,10 @@ unsigned_identity!(
     /// A plugin data watch identity, scoped to the server process.
     ///
     /// ```compile_fail
-    /// use yinz_types::internal_ids::{DataWatchId, QueueJobId};
-    /// let _: DataWatchId = QueueJobId::new(0);
+    /// use yinz_types::internal_ids::{DataWatchId, NotificationId};
+    /// let _: DataWatchId = NotificationId::new(0);
     /// ```
     DataWatchId(u64)
-);
-unsigned_identity!(
-    /// A queued plugin job identity, separate from its running plugin.
-    ///
-    /// ```compile_fail
-    /// use yinz_types::internal_ids::{QueueJobId, PluginId};
-    /// let _: QueueJobId = PluginId::new(0);
-    /// ```
-    QueueJobId(u64)
 );
 unsigned_identity!(
     /// A notification identity, including zero for the first notification.
@@ -549,18 +540,16 @@ mod tests {
     fn asynchronous_ids_keep_numeric_values_and_map_keys() {
         type Ids = (
             DataWatchId,
-            QueueJobId,
             NotificationId,
             ContextMenuRequestId,
             ContextMenuItemId,
         );
-        let json = "[0,18446744073709551615,7,8,9]";
+        let json = "[0,7,8,9]";
         let ids: Ids = serde_json::from_str(json).unwrap();
         assert_eq!(
             ids,
             (
                 DataWatchId::new(0),
-                QueueJobId::new(u64::MAX),
                 NotificationId::new(7),
                 ContextMenuRequestId::new(8),
                 ContextMenuItemId::new(9)
@@ -573,7 +562,6 @@ mod tests {
         assert_eq!(ids[&DataWatchId::new(u64::MAX)], "last");
         assert_eq!(serde_json::to_string(&ids).unwrap(), json);
         assert!(DataWatchId::try_from(-1_i64).is_err());
-        assert!(serde_json::from_str::<QueueJobId>("-1").is_err());
         assert!(serde_json::from_str::<ContextMenuRequestId>("18446744073709551616").is_err());
     }
 

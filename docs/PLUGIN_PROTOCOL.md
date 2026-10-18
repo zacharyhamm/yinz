@@ -77,11 +77,9 @@ interface EventPayloads {
   ContextMenuRequested: ContextMenuContext; ContextMenuItemSelected: {label: string; item_context: StringMap; context: ContextMenuContext};
   InitialKeybinds: Keybinds; HostTerminalThemeChanged: 'Dark' | 'Light'; HintText: Record<string, {text: string; indices: Integer[][]}>;
   ActivePaneScroll: [Integer, Integer] | null; PluginDataChanged: {watch_id: Integer; rows: DataRows; truncated: boolean};
-  QueueJobStarted: {queue: string; job_id: Integer; plugin_id: number; context: StringMap};
-  QueueJobFinished: {queue: string; job_id: Integer; outcome: QueueJobOutcome; payload: string | null; context: StringMap};
   AgentProvidersChanged: AgentProvider[];
   PickResult: { request_id: string; result: { Ok: string | null } | { Err: string } };
-  QueueChanged: QueueSnapshot; Hook: {point: HookPoint; payload: HookPayload}; AgentEvent: AgentEvent;
+  Hook: {point: HookPoint; payload: HookPayload}; AgentEvent: AgentEvent;
   ModifiersHeld: {modifiers: KeyModifier[]; is_live: boolean};
 }
 
@@ -221,9 +219,6 @@ interface CommandArgs {
   DataWatch: {request: FetchRequest; mode: WatchMode}; DataUnwatch: {watch_id: Integer}; DataCatalog: {namespace: string | null};
   SetPaneTitlePrefix: {pane_id: PaneId; prefix: string | null};
   SetPaneSubtitle: {pane_id: PaneId; subtitle: string | null};
-  EnqueueQueueJob: {queue: string; plugin_url: string; config: StringMap; context: StringMap};
-  ConfigureQueue: {queue: string; concurrency: Integer}; CancelQueueJob: {job_id: Integer}; QueueStatus: {queue: string | null};
-  FinishQueueJob: {success: boolean; payload: string | null};
   SetPaneAgent: {pane_id: PaneId; agent: AgentInfo | null}; SetPaneAgentRun: {pane_id: PaneId; run_id: string | null};
   ProjectConfigRead: {directory: string}; ProjectConfigWrite: {directory: string; source: string; expected: string | null};
   SpawnAgent: {spec: AgentSpawnSpec; source_directory?: string | null; cwd?: string | null; name?: string | null; context?: StringMap; start_suppressed?: boolean};
@@ -243,7 +238,7 @@ interface CommandReplies {
   ShowFloatingPanes: boolean; HideFloatingPanes: boolean; DeleteDeadSessionAndReply: boolean; DeleteAllDeadSessionsAndReply: boolean; KillSessionsAndReply: boolean;
   WarpPaneToSession: string; WarpPaneFromSession: string; WarpTabToSession: string; WarpTabFromSession: string; AdoptOrphanedPane: string;
   ListOrphanedPanes: OrphanedPane[]; DataDefineEntity: DataSchemaInfo; DataApply: ApplyReport; DataFetch: DataRows; DataCount: Integer;
-  DataWatch: DataWatchHandle; DataUnwatch: boolean; DataCatalog: DataEntityInfo[]; EnqueueQueueJob: Integer; QueueStatus: QueueSnapshot[];
+  DataWatch: DataWatchHandle; DataUnwatch: boolean; DataCatalog: DataEntityInfo[];
   ListNotifications: NotificationInfo[];
   NewTab: number | null; NewTabUnfocused: number | null; NewTabsWithLayout: number[]; NewTabsWithLayoutInfo: number[];
   FocusOrCreateTab: number | null; BreakPanesToNewTab: number | null; BreakPanesToTabWithIndex: number | null; BreakPanesToTabWithId: number | null;
@@ -487,11 +482,8 @@ type HookPayload = {pane_id: number; agent: AgentInfo; previous_state: AgentStat
 
 type WarpPlacement = 'NewTab' | 'FocusedTab' | 'Floating';
 
-type QueueJobOutcome = 'Succeeded' | 'Failed' | 'Cancelled' | 'Aborted';
 
-interface QueueJobInfo {job_id: Integer; queue: string; plugin_url: string; plugin_id: number | null; enqueuer_plugin_id: number; context: StringMap; state: 'Pending' | 'Running';}
 
-interface QueueSnapshot {queue: string; concurrency: Integer; pending: QueueJobInfo[]; running: QueueJobInfo[];}
 
 interface ProjectConfigSnapshot {root: string; source: string | null; config: ProjectConfig; error: string | null;}
 

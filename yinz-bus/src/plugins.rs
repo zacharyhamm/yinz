@@ -1,5 +1,4 @@
 use std::str::FromStr;
-use yinz_types::internal_ids::QueueJobId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TerminalId;
 
@@ -387,24 +386,6 @@ pub enum PluginInstruction {
         response_channel: crossbeam::channel::Sender<Option<u64>>,
     },
     DetectPluginConfigChanges(PluginAliases),
-    /// Something was put on `queue` (by a plugin, straight into the shared `Queues`): start
-    /// whatever it now has room for.
-    QueuePump {
-        queue: String,
-    },
-    QueueConfigure {
-        queue: String,
-        concurrency: usize,
-    },
-    QueueCancelJob {
-        job_id: QueueJobId,
-    },
-    /// A job (`plugin_id`) reported its outcome and wants to be unloaded.
-    QueueFinishJob {
-        plugin_id: PluginId,
-        success: bool,
-        payload: Option<String>,
-    },
     /// Grant permissions to every plugin at a location, running or not, as if the user had
     /// answered its prompt. Sent only on behalf of a builtin - see `grant_plugin_permissions`
     /// in `yinz_exports`.
@@ -413,7 +394,7 @@ pub enum PluginInstruction {
         permissions: Vec<PermissionType>,
     },
     /// A plugin failed to load or trapped. Runtime reports are validated against their instance
-    /// generation before painting errors or disposing it. Failed jobs also release their slot.
+    /// generation before painting errors or disposing it.
     PluginFailed {
         load_id: Option<u64>,
         plugin_id: PluginId,
@@ -424,7 +405,7 @@ pub enum PluginInstruction {
         error: String,
         /// True when the load itself failed, so the loader has already run and given up; false
         /// when a plugin that was loaded trapped. The two need different cleanup - see
-        /// `PluginBridge::queue_plugin_failed`.
+        /// `PluginBridge::plugin_failed`.
         failed_to_load: bool,
     },
     HighlightClicked {
