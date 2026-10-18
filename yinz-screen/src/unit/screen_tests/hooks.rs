@@ -155,6 +155,80 @@ fn run_command_in_pane(pane_id: u32, run_command: RunCommand) -> ScreenInstructi
     ScreenInstruction::RunCommandInPane(crate::TerminalId::new(pane_id), run_command, false)
 }
 
+#[test]
+fn agent_exit_fires_again_while_its_hook_pane_is_still_loaded() {
+    use yinz_types::agent::control::AgentRestartSession;
+
+    let (mut screen, _) = screen_with_background_jobs(Size { cols: 80, rows: 24 });
+    let (to_plugin, plugins) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    let (to_pty, _pty) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    let tab_id = TabId::new(0);
+    new_tab(&mut screen, 2, tab_id);
+    let pane_id = PaneId::Terminal(TERMINAL_2);
+    let hook_id = PaneId::Plugin(yinz_types::internal_ids::PluginId::new(42));
+    let command = RunCommand {
+        command: "claude".into(),
+        cwd: Some("/work".into()),
+        hold_on_close: true,
+        ..Default::default()
+    };
+    apply_pane_agent_report(&mut screen, pane_id, Some(report(AgentState::Busy, None))).unwrap();
+    super::super::replay_pending_plugin_events(&mut screen, vec![hold(2, command.clone())])
+        .unwrap();
+    screen
+        .tabs
+        .get_mut(&tab_id)
+        .unwrap()
+        .suppress_pane_and_replace_with_pid(
+            pane_id,
+            hook_id,
+            yinz_bus::pty::ReplacedPane::Suppress,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    for _ in 0..2 {
+        screen
+            .restart_agent_pane(pane_id, None, AgentRestartSession::Fresh, None)
+            .unwrap();
+        assert!(screen.get_pane_info(pane_id).unwrap().is_suppressed);
+        super::super::replay_pending_plugin_events(
+            &mut screen,
+            vec![ScreenInstruction::HoldPane(
+                pane_id,
+                Some(17),
+                command.clone(),
+            )],
+        )
+        .unwrap();
+        assert!(screen.get_pane_info(hook_id).is_some());
+    }
+    let exits: Vec<_> = plugins
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::RunHook {
+                point: HookPoint::AgentExit,
+                pane_id: id,
+                payload,
+                ..
+            } => {
+                assert_eq!(id, Some(pane_id));
+                Some(config(&payload).clone())
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(exits.len(), 3);
+    assert_eq!(exits[0]["agent_exit_code"], "0");
+    assert_eq!(exits[1]["agent_exit_code"], "17");
+    assert_eq!(exits[1]["agent_pane_id"], "2");
+    assert_eq!(exits[1], exits[2], "identical exits must both fire");
+}
+
 /// Drive the screen through `steps` and return every hook it asked the plugin thread for, in
 /// order. The screen drains its instructions in order and `teardown` waits for the last one, so
 /// nothing here needs a sleep.

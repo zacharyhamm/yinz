@@ -229,6 +229,52 @@ impl TestBridge {
 }
 
 #[test]
+fn pane_hook_lookup_tracks_loading_live_and_retiring_instances() {
+    use yinz_types::input::hooks::HookPoint;
+    let mut test = TestBridge::new();
+    let point = HookPoint::AgentExit;
+    let pane = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
+    let plugin = PluginId::new(1);
+    let client = ClientId::new(1);
+    test.bridge.add_client(client).unwrap();
+    test.bridge.pane_hooks.insert((point, pane), plugin);
+    test.bridge.loading_plugins.insert((plugin, run_plugin()));
+    assert_eq!(test.bridge.pane_hook_instance(point, pane), Some(plugin));
+    assert_eq!(
+        test.bridge.pane_hook_instance(HookPoint::PaneExit, pane),
+        None
+    );
+    assert_eq!(
+        test.bridge.pane_hook_instance(
+            point,
+            PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(8))
+        ),
+        None
+    );
+
+    let context = test.context(1, 1, RECOVERABLE_SCHEME);
+    test.load(context).unwrap();
+    test.bridge.loading_plugins.clear();
+    assert_eq!(test.bridge.pane_hook_instance(point, pane), Some(plugin));
+    let instance = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(plugin, Some(client))
+        .unwrap();
+    instance.lock().unwrap().mark_failed();
+    assert_eq!(test.bridge.pane_hook_instance(point, pane), None);
+
+    // Unload must release the association before its queued guest cleanup can run.
+    test.bridge.pane_hooks.insert((point, pane), plugin);
+    let release = test.hold_executor(plugin);
+    test.bridge.unload_plugin(plugin).unwrap();
+    assert_eq!(test.bridge.pane_hook_instance(point, pane), None);
+    release.send(()).unwrap();
+}
+
+#[test]
 fn unload_watchdog_does_not_keep_disposed_instances_alive() {
     let mut test = TestBridge::new();
     let plugin = PluginId::new(1);

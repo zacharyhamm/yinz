@@ -189,7 +189,12 @@ message HookPayload {
     AgentHookPayload agent = 3;
     PaneExitHookPayload pane_exit = 4;
     SessionStartHookPayload session_start = 5;
+    AgentExitHookPayload agent_exit = 6;
   }
+}
+
+message AgentExitHookPayload {
+  map<string, string> configuration = 1;
 }
 
 message AgentHookPayload {

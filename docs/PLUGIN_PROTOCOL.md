@@ -483,7 +483,15 @@ type HookPoint = 'agent_exit' | 'agent_start' | 'agent_waiting' | 'agent_idle' |
 
 type HookPayload = {pane_id: number; agent: AgentInfo; previous_state: AgentState | null; command: string | null}
   | {pane_id: number; exit_code: number | null; cwd: string | null; command: string | null; held: boolean}
-  | {session_name: string; client_id: number};
+  | {session_name: string; client_id: number}
+  | AgentExitHookPayload;
+
+// agent_exit re-entry uses the same string values as the initial configuration.
+interface AgentExitHookPayload {
+  agent_pane_id: string; agent_pane_title?: string; agent_exit_code?: string;
+  agent_cwd: string; agent_command: string; agent_kind?: string; agent_target: string;
+  agent_session_id?: string;
+}
 
 type WarpPlacement = 'NewTab' | 'FocusedTab' | 'Floating';
 
@@ -799,6 +807,18 @@ pane before retrying after a transport timeout. `context` is echoed in
 after success to reveal the running agent.
 
 The pane remains an agent pane and fires `agent_exit` again on its next exit.
+If its hook instance is still loaded, it receives `Hook {point: "agent_exit", payload}`.
+The payload contains the new firing's configuration keys and string values, including
+optional fields only when available. Identical payloads also produce an event.
+The first firing still supplies these values through the plugin's configuration.
+
+The host records the hook point and terminal pane ID when it launches the instance.
+While the hook is enabled, it uses that association for re-entry even if the payload or binding changes.
+It queues events while the instance loads and removes the association before unload cleanup.
+If the instance is gone or unavailable, the next firing launches the current binding.
+`Hook` requires a subscription. It needs no extra permission because the user's hook
+binding authorizes delivery to that plugin alone. It is never broadcast to other plugins.
+
 `agent_exit` configuration includes `agent_session_id` when known, even after
 `SessionEnd` cleared the live record. `PaneInfo.last_agent_session_id` carries
 that same memory. A fresh restart clears it until a new session reports itself.

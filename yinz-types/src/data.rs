@@ -307,9 +307,9 @@ pub enum Event {
         rows: DataRows,
         truncated: bool,
     },
-    /// A hook point with a headless shape was reached. Sent only to the plugin bound to `point`
-    /// in `hooks { }`, which is loaded (without a pane) the first time it is needed and receives
-    /// every later firing. The payload is typed per point - see [`HookPayload`].
+    /// A hook point was reached. Sent only to its bound plugin: every firing for headless
+    /// hooks, or re-entry for a pane-replacing hook that is already loaded for that pane.
+    /// The payload is typed per point - see [`HookPayload`].
     Hook {
         point: HookPoint,
         payload: HookPayload,
@@ -1864,13 +1864,13 @@ impl FileToOpen {
 
 use crate::command::{CommandToRun, PaneTarget};
 
-/// What a headless hook point hands the plugin bound to it, typed per point.
+/// What a hook point hands the plugin bound to it, typed per point.
 ///
-/// Untagged on the wire a plugin reads (`yinz events`, a TypeScript plugin's `event.payload`), so a
+/// Untagged on the wire a plugin reads, so a
 /// hook reads `payload.pane_id` and `payload.agent.state` rather than a variant name; the
 /// variants are told apart by the fields only one of them has. The `agent_exit` point is the
-/// exception to all of this: its plugin is opened *in place of* the pane, and its payload is
-/// the plugin's configuration - a string map, documented with that point.
+/// exception: its first firing opens a plugin in place of the pane with a string configuration
+/// map. Re-entry delivers the new firing's string map to that same plugin.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum HookPayload {
@@ -1898,6 +1898,8 @@ pub enum HookPayload {
         session_name: SessionName,
         client_id: ClientId,
     },
+    /// `agent_exit` re-entry: the same keys and string values supplied on initial load.
+    AgentExit(BTreeMap<String, String>),
 }
 
 pub use crate::agent::{AgentSpawnSpec, SpawnedAgent};

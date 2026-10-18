@@ -401,6 +401,28 @@ provider to start.
 
 This works while pane 7 is suppressed behind the hook plugin. Closing the
 plugin reveals the running agent. Its next exit fires `agent_exit` again.
+If the hook plugin remains loaded, subscribe to `Hook` to receive each later exit:
+
+```scheme
+(define (load config)
+  (yinz-on-event "Hook"
+    (lambda (event)
+      (when (equal? (hash-ref event "point") "agent_exit")
+        (define payload (hash-ref event "payload"))
+        ;; The pane ID and exit code are strings, as in the initial config.
+        (yinz-log (hash-ref payload "agent_pane_id")))
+      #f)))
+```
+
+`yinz-on-event` subscribes automatically. A raw `update` handler must subscribe
+with `(yinz-command (hash "Subscribe" (list "Hook")))`.
+The callback receives a hash with `"point"` and `"payload"`. The payload has the same
+keys and string values that a new instance receives from this firing.
+Optional keys, such as `"agent_exit_code"`, can be absent. Identical firings also arrive.
+The existing instance keeps its initial configuration. Read the event payload for new values.
+Delivery needs no extra permission and goes only to the bound hook instance.
+Closing the instance lets the next firing open a new hook pane.
+
 The hook configuration includes `"agent_session_id"` when known, and later
 `PaneUpdate` observations expose `"last_agent_session_id"` even when `"agent"`
 is null after `SessionEnd`. Fresh restart clears the old id until the new

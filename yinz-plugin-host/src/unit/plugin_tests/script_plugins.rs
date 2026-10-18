@@ -1018,6 +1018,108 @@ pub fn the_agent_exit_hook_opens_a_pane_in_place_of_the_one_that_exited() {
 
 #[test]
 #[serial(plugin_tests)]
+fn agent_exit_reentry_delivers_changed_and_identical_payloads_to_the_loaded_instance() {
+    agent_exit_reentry(true);
+}
+
+#[test]
+#[serial(plugin_tests)]
+fn agent_exit_reentry_queues_firings_during_loading() {
+    agent_exit_reentry(false);
+}
+
+fn agent_exit_reentry(wait_for_load: bool) {
+    let root = tempdir().unwrap();
+    let source = root.path().join("reentry.scm");
+    std::fs::write(
+        &source,
+        r#"
+        (define text "loaded")
+        (define count 0)
+        (define (load config)
+          (yinz-on-event "Hook"
+            (lambda (event)
+              (define payload (hash-ref event "payload"))
+              (define code (hash-ref payload "agent_exit_code"))
+              (set! count (+ count 1))
+              (set! text (string-append
+                (hash-ref event "point") ":" (number->string count) ":" code ":"
+                (if (equal? payload (hash-insert config "agent_exit_code" code))
+                    "payload-ok" "payload-mismatch")))
+              #t)))
+        (define (render rows cols) text)
+        "#,
+    )
+    .unwrap();
+    let hook = RunPluginOrAlias::RunPlugin(
+        yinz_runtime::plugin_location::run_plugin_from_url(&format!("file:{}", source.display()))
+            .unwrap(),
+    );
+    let (sender, receiver, teardown) = create_plugin_thread_with_hooks(
+        Some(root.path().into()),
+        None,
+        None,
+        yinz_types::input::hooks::Hooks::from_data(BTreeMap::from([(HookPoint::AgentExit, hook)])),
+    );
+    let instructions = Watched::new(vec![]);
+    let logger = log_until_disconnect(&instructions, receiver);
+    let client_id = ClientId::new(1);
+    sender
+        .send(PluginInstruction::AddClient(client_id))
+        .unwrap();
+    let fire = |code: &str| {
+        let mut payload = agent_exit_payload();
+        payload.insert("agent_exit_code".into(), code.into());
+        sender
+            .send(PluginInstruction::RunHook {
+                point: HookPoint::AgentExit,
+                pane_id: Some(PaneId::Terminal(TERMINAL_7)),
+                payload: HookFiring::ReplacePane(payload),
+                client_id,
+            })
+            .unwrap();
+    };
+    fire("0");
+    if !wait_for_load {
+        fire("0");
+    }
+    let plugin_id = instructions.wait_until("the hook pane", default_timeout(), |instructions| {
+        hook_panes_opened(instructions).first().map(|(id, _)| *id)
+    });
+    // The real screen sizes the new pane; the host-only harness must do that too.
+    sender
+        .send(PluginInstruction::Resize(plugin_id, 80, 24))
+        .unwrap();
+    if wait_for_load {
+        wait_for_render_containing(&instructions, "loaded");
+        fire("0");
+    }
+    wait_for_render_containing(&instructions, "agent_exit:1:0:payload-ok");
+    fire("17");
+    wait_for_render_containing(&instructions, "agent_exit:2:17:payload-ok");
+    fire("17");
+    wait_for_render_containing(&instructions, "agent_exit:3:17:payload-ok");
+    teardown();
+    logger.join().unwrap();
+    let instructions = instructions.lock();
+    let opened = hook_panes_opened(&instructions);
+    assert_eq!(opened.len(), 1, "{instructions:?}");
+    assert_eq!(opened[0].1, PaneId::Terminal(TERMINAL_7));
+    let rendered_ids: std::collections::HashSet<_> = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::PluginBytes(assets) => {
+                Some(assets.iter().map(|asset| asset.plugin_id))
+            },
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(rendered_ids, std::collections::HashSet::from([opened[0].0]));
+}
+
+#[test]
+#[serial(plugin_tests)]
 pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
     // The hook's own flow: it offers to restart the agent, and a restarted agent exits again -
     // with the same pane, cwd, command and exit code, so with the same payload and therefore
