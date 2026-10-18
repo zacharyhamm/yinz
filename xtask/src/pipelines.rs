@@ -38,7 +38,7 @@ pub fn make(sh: &Shell, flags: flags::Make) -> anyhow::Result<()> {
         .with_context(err_context)
 }
 
-/// Install the native executable, including its embedded Scheme plugins.
+/// Install the native executable, and its builtin Scheme files.
 pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     let profile = flags.profile.as_deref().unwrap_or("release");
     build::build(
@@ -61,6 +61,10 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     } else {
         destination
     };
+    let data_dir = flags
+        .data_dir
+        .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data_dir)?;
     let binary = crate::target_dir()
         .join(build::profile_dir(profile))
         .join("yinz");
@@ -93,13 +97,13 @@ pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
             .as_ref()
             .map(|data_dir| sh.current_dir().join(data_dir))
     };
+    let data_dir = data_dir.unwrap_or_else(yinz_runtime::home::get_default_data_dir);
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data_dir)?;
     build::run_proto_codegen(sh, false);
 
     let cargo = crate::cargo().with_context(|| err_context(&flags))?;
     let mut cmd = cmd!(sh, "{cargo} run").args(["--package", "yinz", "--"]);
-    if let Some(data_dir) = data_dir {
-        cmd = cmd.args(["--data-dir", &format!("{}", data_dir.display())]);
-    }
+    cmd = cmd.args(["--data-dir", &format!("{}", data_dir.display())]);
     run_interactive(cmd.args(&flags.args)).with_context(|| err_context(&flags))
 }
 

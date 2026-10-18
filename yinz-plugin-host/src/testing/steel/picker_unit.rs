@@ -25,7 +25,14 @@ fn scheme_installed_render_settles_callbacks_before_capturing_visible_text() {
 "#,
     )
     .unwrap();
-    let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    let report = run(
+        crate::testing::fixture_data().path(),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
 
@@ -129,7 +136,14 @@ fn scheme_installed_picker_harness_uses_results_cancellation_and_deadlines() {
 "#,
     )
     .unwrap();
-    let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    let report = run(
+        crate::testing::fixture_data().path(),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
     assert_eq!(report.tests.len(), 7);
 }

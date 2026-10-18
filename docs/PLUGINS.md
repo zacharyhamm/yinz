@@ -67,7 +67,7 @@ PNG input accepts 8 MiB and render output accepts 16 MiB, including printed and 
 Raw filesystem, process, and network APIs are unavailable. Access host resources through permission-checked commands.
 Use `require` and `provide` for modules. Imports must name a relative `.scm`, `.ss`, or `.sld`
 file inside the entrypoint directory. Repository plugins can import from their repository root.
-Symlinks cannot escape that root. Embedded builtins import only from the embedded source tree.
+Symlinks cannot escape that root. Builtins import only from the installed `plugins/builtins/` tree in the selected Yinz data directory.
 `only-in` and `prefix-in` select and rename imports.
 
 Named workers have separate state and process messages in order:

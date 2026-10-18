@@ -1336,21 +1336,15 @@ fn history_process(
             None => serde_json::to_value(response)?,
         })
     }).unwrap();
-    let mut sources = BTreeMap::new();
-    let mut directories = vec![&yinz_steel_builtins::BUILTIN_STEEL_FILES];
-    while let Some(directory) = directories.pop() {
-        directories.extend(directory.dirs());
-        for file in directory.files() {
-            sources.insert(
-                file.path().to_str().unwrap().to_owned(),
-                file.contents_utf8().unwrap().to_owned(),
-            );
-        }
-    }
+    runtime.set_source_root(
+        yinz_steel::modules::SourceRoot::file(
+            &yinz_steel_builtins::asset_dir().join("agents.scm"),
+            None,
+        )
+        .unwrap(),
+    );
     runtime
-        .set_source_root(yinz_steel::modules::SourceRoot::embedded("agents.scm", sources).unwrap());
-    runtime
-        .eval(yinz_steel_builtins::builtin_steel_plugin("agents").unwrap())
+        .eval(&yinz_steel_builtins::fixture_source("agents").unwrap())
         .unwrap();
     (runtime, commands)
 }

@@ -36,7 +36,7 @@ fn pipe(runtime: &mut Runtime, source: Value, name: &str, payload: Option<&str>)
 
 #[test]
 fn fixture_is_excluded_from_production_and_requests_filesystem_authority() {
-    assert!(crate::builtin_steel_plugin("fixture-plugin-for-tests").is_none());
+    assert!(crate::fixture_source("fixture-plugin-for-tests").is_none());
     let (_, host) = fixture();
     let host = host.lock().unwrap();
     assert!(host.commands[0]["RequestPluginPermissions"]

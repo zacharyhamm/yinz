@@ -59,7 +59,7 @@ pub(super) struct OwnedSession {
     stopped: bool,
 }
 impl OwnedSession {
-    pub fn new() -> Result<Self> {
+    pub fn new(data_dir: &Path) -> Result<Self> {
         // Short /tmp paths fit macOS's 104-byte Unix socket limit too.
         let root = tempfile::Builder::new()
             .prefix("ypt-")
@@ -76,6 +76,10 @@ impl OwnedSession {
                 .context("test socket directory")?,
         )
         .context("create test socket directory")?;
+        yinz_steel_builtins::install(
+            &data_dir.join("plugins/builtins"),
+            &root.path().join("data/yinz"),
+        )?;
         let mut command = Command::new(binary()?);
         environment(&mut command, root.path());
         let child = command

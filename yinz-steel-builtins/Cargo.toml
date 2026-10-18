@@ -1,6 +1,6 @@
 [package]
 name = "yinz-steel-builtins"
-description = "Embedded Steel Scheme builtin plugins"
+description = "Installed Steel Scheme builtin plugins"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,14 +9,13 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-include_dir = { workspace = true }
+anyhow = { workspace = true }
+yinz-runtime = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 yinz-config = { workspace = true }
 serde_json = { workspace = true }
 yinz-steel = { workspace = true }
 yinz-types = { workspace = true }
-yinz-runtime = { workspace = true }
-
-tempfile = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }

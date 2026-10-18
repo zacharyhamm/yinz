@@ -26,7 +26,14 @@ fn permission_cases(source: &str) {
     std::fs::write(root.path().join("permissions.scm"), PERMISSIONS_PLUGIN).unwrap();
     let entry = root.path().join("permissions.test.scm");
     std::fs::write(&entry, source).unwrap();
-    let report = run(&entry, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    let report = run(
+        crate::testing::fixture_data().path(),
+        &entry,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
 
@@ -178,7 +185,7 @@ fn scheme_installed_instance_cancellation_stops_a_running_worker_and_reaps_its_s
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("cancel.integration.test.scm");
     std::fs::write(&path, r#"(test "cancel" (lambda () (test-session "start") (displayln "worker is running") (let loop () (loop))))"#).unwrap();
-    let mut owned = session::OwnedSession::new().unwrap();
+    let mut owned = session::OwnedSession::new(crate::testing::fixture_data().path()).unwrap();
     let session_root = owned.root().to_owned();
     let pid: i32 = std::fs::read_to_string(session_root.join("server.pid"))
         .unwrap()
@@ -265,7 +272,14 @@ fn scheme_installed_runner_retains_source_errors_filters_and_import_confinement(
         ),
     ] {
         std::fs::write(&path, source).unwrap();
-        let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+        let report = run(
+            crate::testing::fixture_data().path(),
+            &path,
+            &Default::default(),
+            None,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert!(!report.passed(), "{report:#?}");
         assert!(
             report.tests.iter().any(|test| test
@@ -277,6 +291,7 @@ fn scheme_installed_runner_retains_source_errors_filters_and_import_confinement(
     }
     std::fs::write(&path, "(test \"one\" (lambda () (void)))").unwrap();
     let report = run(
+        crate::testing::fixture_data().path(),
         &path,
         &PluginTestOptions {
             filter: Some("absent".into()),
@@ -287,7 +302,14 @@ fn scheme_installed_runner_retains_source_errors_filters_and_import_confinement(
     )
     .unwrap();
     assert!(!report.passed(), "{report:#?}");
-    let report = run(&path, &Default::default(), None, &AtomicBool::new(true)).unwrap();
+    let report = run(
+        crate::testing::fixture_data().path(),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(true),
+    )
+    .unwrap();
     assert!(report.tests[0]
         .error
         .as_deref()

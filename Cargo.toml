@@ -64,6 +64,7 @@ name = "agent_report"
 path = "src/tests/agent_report.rs"
 
 [dev-dependencies]
+yinz-steel-builtins = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 insta = "1.48"
 yinz-test-support = { path = "yinz-test-support" }

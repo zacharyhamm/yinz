@@ -60,6 +60,7 @@ struct Request {
 /// Sequential by design. A subprocess bounds registration, type checking, and each case.
 /// `allowed` is the API caller's authority; the CLI supplies `None`.
 pub fn run(
+    data_dir: &Path,
     path: &Path,
     options: &PluginTestOptions,
     allowed: Option<&[PermissionType]>,
@@ -162,7 +163,7 @@ pub fn run(
             }
             let started = Instant::now();
             let owned = if kind == PluginTestKind::Integration {
-                Some(session::OwnedSession::new()?)
+                Some(session::OwnedSession::new(data_dir)?)
             } else {
                 None
             };
@@ -208,30 +209,23 @@ pub fn run(
 }
 
 pub fn run_named(
+    data_dir: &Path,
     dir: &Path,
     name: &str,
     options: &PluginTestOptions,
     allowed: Option<&[PermissionType]>,
     cancel: &AtomicBool,
 ) -> Result<PluginTestReport> {
-    if yinz_steel_builtins::builtin_steel_plugin(name).is_some() {
-        let root = tempfile::tempdir().context("unpack builtin Scheme tests")?;
-        yinz_steel_builtins::BUILTIN_STEEL_FILES
-            .extract(root.path())
-            .context("extract builtin Scheme test sources")?;
-        return run(
-            &root.path().join(format!("{name}.scm")),
-            options,
-            allowed,
-            cancel,
-        );
+    if yinz_runtime::consts::BUILTIN_PLUGIN_NAMES.contains(&name) {
+        let path = yinz_steel_builtins::builtin_path(data_dir, name)?;
+        return run(data_dir, &path, options, allowed, cancel);
     }
     if dir.as_os_str().is_empty() {
         bail!("no plugin folder is configured; set user_plugin_dir or pass --config-dir");
     }
     let path = yinz_plugin_api::authoring::resolve_plugin_file(dir, name)
         .map_err(|error| anyhow!(error))?;
-    run(&path, options, allowed, cancel)
+    run(data_dir, &path, options, allowed, cancel)
 }
 
 fn failed(name: String, kind: PluginTestKind, error: anyhow::Error) -> PluginTestResult {
@@ -430,6 +424,7 @@ fn start_run(
     if request_id.is_empty() || request_id.len() > 256 {
         bail!("test request ID must contain 1 to 256 bytes");
     }
+    let data_dir = env.yinz_data_dir.clone();
     let dir = env
         .user_plugin_dir
         .clone()
@@ -476,8 +471,15 @@ fn start_run(
         }
     });
     std::thread::spawn(move || {
-        let result = run_named(&dir, &name, &options, allowed.as_deref(), &cancel)
-            .map_err(|error| format!("{error:#}"));
+        let result = run_named(
+            &data_dir,
+            &dir,
+            &name,
+            &options,
+            allowed.as_deref(),
+            &cancel,
+        )
+        .map_err(|error| format!("{error:#}"));
         done.store(true, Ordering::Release);
         RUNS.lock().unwrap().remove(&key);
         sender
@@ -494,4 +496,11 @@ fn start_run(
             .non_fatal();
     });
     Ok(())
+}
+
+#[cfg(test)]
+fn fixture_data() -> tempfile::TempDir {
+    let data = tempfile::tempdir().unwrap();
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path()).unwrap();
+    data
 }

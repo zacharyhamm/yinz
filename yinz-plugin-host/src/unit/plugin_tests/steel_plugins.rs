@@ -168,7 +168,7 @@ fn steel_reload_interrupts_and_joins_a_looping_worker() {
 fn steel_shared_builtin_keeps_per_client_state_in_one_instance() {
     let harness = Harness::new(
         "scm",
-        yinz_steel_builtins::builtin_steel_plugin("shared-test").unwrap(),
+        &yinz_steel_builtins::fixture_source("shared-test").unwrap(),
         PermissionStatus::Granted,
     );
     let first = ClientId::new(1);

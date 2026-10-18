@@ -60,6 +60,7 @@ fn absolute_roots_work_from_an_exited_pane_but_relative_roots_require_a_cwd() {
         (and (equal? (hash-ref pane "title") "HELD PICK COMPLETE") (hash-ref pane "is_held"))) (test-session "panes"))))))))
 "#).unwrap();
     let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
         &path,
         &Default::default(),
         None,

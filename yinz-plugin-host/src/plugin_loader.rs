@@ -44,13 +44,14 @@ fn create_plugin_fs_entries(plugin_own_data_dir: &PathBuf, plugin_own_cache_dir:
 fn script_source(
     plugin_config: &PluginConfig,
     user_plugin_dir: Option<&Path>,
+    data_dir: &Path,
 ) -> Result<(Option<PathBuf>, String)> {
     match &plugin_config.location {
         RunPluginLocation::Yinz(tag) if plugin_config.is_builtin() => {
-            let tag = tag.to_string();
-            let source = yinz_steel_builtins::builtin_steel_plugin(&tag)
-                .with_context(|| format!("the Steel builtin '{tag}' is not compiled in"))?;
-            Ok((None, source.to_owned()))
+            let path = yinz_steel_builtins::builtin_path(data_dir, &tag.to_string())?;
+            let root = yinz_steel::modules::SourceRoot::file(&path, None)?;
+            let source = root.read_entry()?;
+            Ok((Some(path), source))
         },
         _ => {
             let (path, source) = plugin_config.resolve_source(user_plugin_dir)?;
@@ -80,6 +81,7 @@ pub struct PluginLoader {
     default_shell: Option<TerminalAction>,
     layout_dir: Option<PathBuf>,
     user_plugin_dir: Option<PathBuf>,
+    yinz_data_dir: PathBuf,
     default_mode: InputMode,
     keybinds: Keybinds,
     configuration_version: u64,
@@ -114,6 +116,7 @@ impl PluginLoader {
             &loading_context.plugin_own_cache_dir,
         );
         Self {
+            yinz_data_dir: loading_context.yinz_data_dir.clone(),
             plugin_roles: loading_context.plugin_roles,
             pick_request: loading_context.pick_request,
             pick_cancelled: loading_context.pick_cancelled,
@@ -218,9 +221,12 @@ impl PluginLoader {
             )
         };
         self.loading_indication.override_previous_error();
-        let (resolved_source_path, source) =
-            script_source(&self.plugin_config, self.user_plugin_dir.as_deref())
-                .with_context(err_context)?;
+        let (resolved_source_path, source) = script_source(
+            &self.plugin_config,
+            self.user_plugin_dir.as_deref(),
+            &self.yinz_data_dir,
+        )
+        .with_context(err_context)?;
 
         let mut plugin_env = self.create_plugin_env();
         plugin_env.resolved_source_path = resolved_source_path.clone();
@@ -350,6 +356,7 @@ impl PluginLoader {
 
     fn create_plugin_env(&self) -> PluginEnv {
         PluginEnv {
+            yinz_data_dir: self.yinz_data_dir.clone(),
             background: self
                 .plugin_roles
                 .lock()
@@ -445,7 +452,6 @@ impl PluginLoader {
 #[cfg(test)]
 mod tests {
     use super::script_source;
-    use std::path::Path;
     use yinz_config::plugins::PluginConfig;
     use yinz_types::data::PluginTag;
     use yinz_types::input::layout::{RunPlugin, RunPluginLocation};
@@ -459,36 +465,56 @@ mod tests {
     }
 
     #[test]
-    fn a_builtin_beats_a_same_named_file_in_the_user_plugin_dir() {
-        let plugin_dir = tempfile::tempdir().unwrap();
-        std::fs::write(plugin_dir.path().join("agent-exit.scm"), "; impostor").unwrap();
-        let (path, source) =
-            script_source(&builtin_plugin("agent-exit"), Some(plugin_dir.path())).unwrap();
-        assert_eq!(path, None, "a builtin has no file of its own");
-        assert!(source.contains("Agent exited."));
+    fn builtins_use_only_selected_data_directory_and_reload_disk_edits() {
+        let data = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        std::fs::write(user.path().join("agent-exit.scm"), "; impostor").unwrap();
+        let plugin = builtin_plugin("agent-exit");
+        let error = script_source(&plugin, Some(user.path()), data.path()).unwrap_err();
+        assert!(error.to_string().contains("reinstall"));
+        yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path()).unwrap();
+        let path = data.path().join("plugins/builtins/agent-exit.scm");
+        for source in ["; first", "; second"] {
+            std::fs::write(&path, source).unwrap();
+            assert_eq!(
+                script_source(&plugin, Some(user.path()), data.path()).unwrap(),
+                (Some(path.clone()), source.to_owned())
+            );
+        }
+        assert!(yinz_steel_builtins::builtin_path(data.path(), "../agent-exit").is_err());
+        assert!(script_source(&plugin, None, user.path()).is_err());
     }
 
     #[test]
-    fn builtins_resolve_from_embedded_source() {
-        for name in yinz_runtime::consts::BUILTIN_PLUGIN_NAMES {
-            let plugin = builtin_plugin(name);
-            assert!(plugin.is_builtin());
-            assert_eq!(
-                script_source(&plugin, Some(Path::new("/missing/plugins"))).unwrap(),
-                (
-                    None,
-                    yinz_steel_builtins::builtin_steel_plugin(name)
-                        .unwrap()
-                        .to_owned()
-                )
-            );
-        }
-        let file = PluginConfig::from_run_plugin(&RunPlugin {
-            location: RunPluginLocation::File("context-menu.scm".into()),
-            ..Default::default()
-        })
+    fn builtin_entrypoint_symlink_escape_is_rejected() {
+        let data = tempfile::tempdir().unwrap();
+        let outside = tempfile::Builder::new().suffix(".scm").tempfile().unwrap();
+        let root = data.path().join("plugins/builtins");
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("agent-exit.scm")).unwrap();
+        assert!(script_source(&builtin_plugin("agent-exit"), None, data.path()).is_err());
+    }
+
+    #[test]
+    fn builtin_dependencies_and_source_sizes_remain_confined() {
+        let data = tempfile::tempdir().unwrap();
+        let outside = tempfile::Builder::new().suffix(".scm").tempfile().unwrap();
+        let root = data.path().join("plugins/builtins");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("agent-exit.scm");
+        std::fs::write(&path, "; entry").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("dependency.scm")).unwrap();
+        let (path, _) = script_source(&builtin_plugin("agent-exit"), None, data.path()).unwrap();
+        let mut sources = yinz_steel::modules::SourceRoot::file(&path.unwrap(), None).unwrap();
+        let entry = sources.entry_id().to_owned();
+        assert!(sources.load(&entry, "./dependency.scm").is_err());
+        assert!(sources.load(&entry, "../escape.scm").is_err());
+        std::fs::write(
+            root.join("agent-exit.scm"),
+            vec![b' '; yinz_steel::MAX_SOURCE_BYTES + 1],
+        )
         .unwrap();
-        assert!(!file.is_builtin());
+        assert!(script_source(&builtin_plugin("agent-exit"), None, data.path()).is_err());
     }
 
     #[test]
@@ -503,7 +529,7 @@ mod tests {
         for source in ["(define title \"first\")", "(define title \"second\")"] {
             std::fs::write(&path, source).unwrap();
             assert_eq!(
-                script_source(&config, None).unwrap(),
+                script_source(&config, None, directory.path()).unwrap(),
                 (Some(path.canonicalize().unwrap()), source.to_owned())
             );
         }

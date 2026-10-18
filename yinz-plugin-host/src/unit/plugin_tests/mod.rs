@@ -643,6 +643,7 @@ fn create_plugin_thread_with_services(
     )
     .should_silently_fail();
     let data_dir = repository_data_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data_dir).unwrap();
     let data_access = Arc::new(data_access.unwrap_or_else(|| DataAccess::sqlite(&data_dir)));
     let layout_dir = PathBuf::from(tempdir().unwrap().path());
     let user_plugin_dir =
@@ -746,6 +747,7 @@ fn create_plugin_thread_with_server_receiver(
     )
     .should_silently_fail();
     let data_dir = PathBuf::from(tempdir().unwrap().path());
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data_dir).unwrap();
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
     let default_shell_action = None;
@@ -850,6 +852,7 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
     )
     .should_silently_fail();
     let data_dir = PathBuf::from(tempdir().unwrap().path());
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data_dir).unwrap();
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let layout_dir = layout_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
     let user_plugin_dir = PathBuf::from(tempdir().unwrap().path());
@@ -936,6 +939,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
     )
     .should_silently_fail();
     let data_dir = PathBuf::from(tempdir().unwrap().path());
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data_dir).unwrap();
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
     let default_shell_action = None;

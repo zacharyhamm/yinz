@@ -8,7 +8,9 @@ use std::{
 
 fn command(dir: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_yinz"));
-    cmd.env("HOME", dir)
+    cmd.arg("--data-dir")
+        .arg(dir.join("yinz"))
+        .env("HOME", dir)
         .env("XDG_CONFIG_HOME", dir)
         .env("XDG_DATA_HOME", dir)
         .env("XDG_CACHE_HOME", dir)
@@ -62,6 +64,7 @@ impl Drop for Session {
 fn notes_todos_commands_return_json_and_failures_with_redirected_stdin() {
     let session = Session(tempfile::tempdir().unwrap());
     let dir = session.0.path();
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &dir.join("yinz")).unwrap();
     let config = dir.join("config.kdl");
     let layout = dir.join("layout.kdl");
     std::fs::write(&config, "plugins { project-store location=\"yinz:project-store\" { shared true; }; }\nload_plugins clear-defaults=true { \"project-store\"; }\ndetachable_panes false\n").unwrap();

@@ -6,27 +6,22 @@ use std::{
 use serde_json::{json, Value};
 use yinz_steel::Runtime;
 
-use crate::builtin_steel_plugin;
+use crate::fixture_source;
 
 #[test]
-fn registered_builtins_are_embedded_entrypoints() {
+fn registered_builtins_are_disk_entrypoints() {
     let names = yinz_runtime::consts::BUILTIN_PLUGIN_NAMES;
     let expected = names
         .iter()
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(expected.len(), names.len(), "builtin names must be unique");
-    let embedded = crate::BUILTIN_STEEL_FILES
-        .files()
-        .map(|file| file.path().to_str().unwrap().strip_suffix(".scm").unwrap())
-        .collect::<std::collections::BTreeSet<_>>();
-    assert!(expected.is_subset(&embedded));
     for tag in names {
         assert!(
             !tag.contains('.'),
             "a builtin must be an entrypoint, not a module or test"
         );
-        assert!(builtin_steel_plugin(tag).is_some(), "missing builtin {tag}");
+        assert!(fixture_source(tag).is_some(), "missing builtin {tag}");
     }
 }
 
@@ -58,7 +53,7 @@ pub(super) fn plugin_with_prelude(
 ) -> (Runtime, Arc<Mutex<Host>>) {
     plugin_with_source(
         tag,
-        builtin_steel_plugin(tag).unwrap(),
+        &fixture_source(tag).unwrap(),
         configuration,
         replies,
         prelude,
@@ -120,20 +115,9 @@ pub(super) fn plugin_with_source(
     })
     .unwrap();
     runtime.eval(prelude).unwrap();
-    let mut directories = vec![&crate::BUILTIN_STEEL_FILES];
-    let mut sources = BTreeMap::new();
-    while let Some(directory) = directories.pop() {
-        directories.extend(directory.dirs());
-        for file in directory.files() {
-            sources.insert(
-                file.path().to_str().unwrap().to_owned(),
-                file.contents_utf8().unwrap().to_owned(),
-            );
-        }
-    }
-    sources.insert(format!("{tag}.scm"), source.to_owned());
     let mut root =
-        yinz_steel::modules::SourceRoot::embedded(&format!("{tag}.scm"), sources).unwrap();
+        yinz_steel::modules::SourceRoot::file(&crate::asset_dir().join(format!("{tag}.scm")), None)
+            .unwrap();
     runtime.eval_with_source_root(source, &mut root).unwrap();
     runtime.load(configuration).unwrap();
     (runtime, host)

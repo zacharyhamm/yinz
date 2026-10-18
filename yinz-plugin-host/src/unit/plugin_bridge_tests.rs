@@ -193,6 +193,7 @@ impl TestBridge {
             should_silently_fail: false,
         };
         let data_dir = tempdir().unwrap();
+        yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data_dir.path()).unwrap();
         let data_access = Arc::new(DataAccess::sqlite(data_dir.path()));
         let bridge = PluginBridge::new(
             senders,

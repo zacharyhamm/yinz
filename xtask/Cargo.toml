@@ -5,6 +5,8 @@ edition.workspace = true
 
 
 [dependencies]
+yinz-runtime = { workspace = true }
+yinz-steel-builtins = { workspace = true }
 libc = { workspace = true }
 tempfile = { workspace = true }
 anyhow = { workspace = true }

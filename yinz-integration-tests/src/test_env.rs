@@ -20,6 +20,11 @@ pub fn init() -> &'static Path {
     TEST_ROOT
         .get_or_init(|| {
             let test_root = create_test_root();
+            yinz_steel_builtins::install(
+                &yinz_steel_builtins::asset_dir(),
+                &test_root.join("data"),
+            )
+            .unwrap();
             isolate_process_environment(&test_root);
             record_background_thread_panics();
             yinz_runtime::logging::configure_logger();

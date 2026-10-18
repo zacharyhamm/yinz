@@ -214,22 +214,14 @@ impl SteelReference {
             None => yinz_steel::Runtime::new(host),
         }
         .unwrap();
-        let mut sources = BTreeMap::new();
-        let mut directories = vec![&yinz_steel_builtins::BUILTIN_STEEL_FILES];
-        while let Some(directory) = directories.pop() {
-            directories.extend(directory.dirs());
-            for file in directory.files() {
-                sources.insert(
-                    file.path().to_str().unwrap().to_owned(),
-                    file.contents_utf8().unwrap().to_owned(),
-                );
-            }
-        }
-        let mut root =
-            yinz_steel::modules::SourceRoot::embedded(&format!("{name}.scm"), sources).unwrap();
+        let mut root = yinz_steel::modules::SourceRoot::file(
+            &yinz_steel_builtins::asset_dir().join(format!("{name}.scm")),
+            None,
+        )
+        .unwrap();
         runtime
             .eval_with_source_root(
-                yinz_steel_builtins::builtin_steel_plugin(name).unwrap(),
+                &yinz_steel_builtins::fixture_source(name).unwrap(),
                 &mut root,
             )
             .unwrap();

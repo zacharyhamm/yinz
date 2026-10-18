@@ -61,4 +61,4 @@ Saved layouts preserve repository declarations with an encoded `git://plugin?rep
 
 Managed revisions remain immutable. Edit a local repository to develop a plugin, or use the existing commands for authored plugin files.
 This version does not run build hooks or read a repository manifest. It has no automatic reload, revision cleanup, or rollback command.
-Builtin Scheme sources are embedded in the server.
+Builtin Scheme sources must be installed in `<data-dir>/plugins/builtins/` with `cargo x install`.

@@ -3,6 +3,8 @@ use yinz_types::authoring::{PluginTestKind, PluginTestOptions};
 
 #[test]
 fn installed_builtin_scheme_integration_suites() {
+    let data = tempfile::tempdir().unwrap();
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path()).unwrap();
     for name in [
         "compact-bar",
         "tab-bar",
@@ -15,20 +17,21 @@ fn installed_builtin_scheme_integration_suites() {
         "configuration-palette",
     ] {
         assert!(
-            yinz_steel_builtins::BUILTIN_STEEL_FILES
-                .get_file(format!("{name}.integration.test.scm"))
-                .is_some(),
+            yinz_steel_builtins::asset_dir()
+                .join(format!("{name}.integration.test.scm"))
+                .exists(),
             "missing migrated integration suite for {name}"
         );
     }
     for name in yinz_runtime::consts::BUILTIN_PLUGIN_NAMES {
-        if yinz_steel_builtins::BUILTIN_STEEL_FILES
-            .get_file(format!("{name}.integration.test.scm"))
-            .is_none()
+        if !yinz_steel_builtins::asset_dir()
+            .join(format!("{name}.integration.test.scm"))
+            .exists()
         {
             continue;
         }
         let report = yinz_server::plugin_testing::run_named(
+            data.path(),
             Path::new("/unused"),
             name,
             &PluginTestOptions {
@@ -61,6 +64,7 @@ fn installed_integration_failure_and_timeout_reap_the_owned_session() {
         )
         .unwrap();
         let report = yinz_server::plugin_testing::run(
+            &yinz_integration_tests::test_env::init().join("data"),
             &path,
             &PluginTestOptions {
                 // Discovery and server startup must finish under parallel suite load.
@@ -108,6 +112,7 @@ fn installed_integration_discovery_failure_has_no_owned_server() {
     let path = root.path().join("discovery.integration.test.scm");
     std::fs::write(&path, r#"(error "controlled discovery failure")"#).unwrap();
     let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
         &path,
         &PluginTestOptions::default(),
         None,
@@ -212,9 +217,14 @@ fn installed_controller_routes_input_enforces_permissions_and_isolates_storage()
   '("first isolated case" "second isolated case"))
 "#.replace("TARGET_URL", &target)
     .replace("\"PANE_TARGET\"", &serde_json::to_string(&format!("file:{}", plugin.display())).unwrap())).unwrap();
-    let report =
-        yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
-            .unwrap();
+    let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
 
@@ -260,9 +270,14 @@ fn installed_async_plugin_api_returns_results_and_cancels_while_input_continues(
 "#,
     )
     .unwrap();
-    let report =
-        yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
-            .unwrap();
+    let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
 
@@ -308,6 +323,7 @@ fn installed_integration_server_crash_is_a_failure_and_is_reaped() {
     )
     .unwrap();
     let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
         &path,
         &PluginTestOptions {
             timeout_ms: 5000,
@@ -337,9 +353,16 @@ fn installed_integration_server_crash_is_a_failure_and_is_reaped() {
 #[test]
 fn installed_cli_runs_builtin_tests_without_a_configured_plugin_directory() {
     let root = tempfile::tempdir().unwrap();
+    yinz_steel_builtins::install(
+        &yinz_steel_builtins::asset_dir(),
+        &root.path().join("data/yinz"),
+    )
+    .unwrap();
     let binary = root.path().join("yinz");
     std::fs::copy(yinz_server::plugin_testing::binary().unwrap(), &binary).unwrap();
     let result = std::process::Command::new(binary)
+        .arg("--data-dir")
+        .arg(root.path().join("data/yinz"))
         .args([
             "plugins",
             "test",
@@ -399,9 +422,14 @@ fn installed_session_rpc_uses_real_headless_routing_storage_and_caller_identity(
     (assert-equal (length (hash-ref (test-session "data" (hash "plugin" "./service.scm" "entity" "rpc_rows")) "rows")) 1)
     (assert-throws (lambda () (test-session "rpc" (hash "plugin" "./service.scm" "name" "echo" "payload" "fail" "timeoutMs" 10000))) "fixture RPC failure")))
 "#).unwrap();
-    let report =
-        yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
-            .unwrap();
+    let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
 
@@ -442,9 +470,14 @@ fn installed_palette_uses_real_keyboard_discovery_and_execution() {
 "#,
     )
     .unwrap();
-    let report =
-        yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
-            .unwrap();
+    let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
 
@@ -486,8 +519,13 @@ fn installed_headless_lifecycle_exercises_the_permission_modal() {
   (assert-equal (hash-ref (test-session "status" "./background.scm") "plugins") '())
   (assert-throws (lambda () (test-session "reload" "./background.scm")) "not loaded; use plugins start")))
 "#).unwrap();
-    let report =
-        yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
-            .unwrap();
+    let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
 }

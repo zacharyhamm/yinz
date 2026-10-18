@@ -256,7 +256,7 @@ fn raw_actions_cannot_launch_or_reconfigure() {
 
 #[test]
 fn disposable_sessions_do_not_schedule_durable_metadata_checkpoints() {
-    let mut session = OwnedSession::new().unwrap();
+    let mut session = OwnedSession::new(crate::testing::fixture_data().path()).unwrap();
     let entry = session.root().join("case.test.scm");
     fs::write(&entry, "").unwrap();
     let loader = super::super::steel::Sources {
@@ -279,7 +279,7 @@ fn disposable_sessions_do_not_schedule_durable_metadata_checkpoints() {
 
 #[test]
 fn connected_repl_cli_evaluates_with_session_host_access() {
-    let mut session = OwnedSession::new().unwrap();
+    let mut session = OwnedSession::new(crate::testing::fixture_data().path()).unwrap();
     let entry = session.root().join("case.test.scm");
     fs::write(&entry, "").unwrap();
     let loader = super::super::steel::Sources {

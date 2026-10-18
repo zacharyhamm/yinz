@@ -103,6 +103,7 @@ read release
   '("keyboard" "typed"))
 "#).unwrap();
     let report = yinz_server::plugin_testing::run(
+        &yinz_integration_tests::test_env::init().join("data"),
         &path,
         &Default::default(),
         None,

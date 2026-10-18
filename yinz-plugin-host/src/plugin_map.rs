@@ -784,6 +784,7 @@ pub type WatchGenerations = Arc<Mutex<HashMap<yinz_types::internal_ids::DataWatc
 pub type PluginRoles = Arc<Mutex<HashMap<PluginId, bool>>>;
 
 pub struct PluginEnv {
+    pub yinz_data_dir: PathBuf,
     pub plugin_roles: PluginRoles,
     pub background: bool,
     pub pick_request: Option<yinz_types::pick::PickRequest>,
@@ -844,7 +845,7 @@ pub struct PluginEnv {
     pub user_plugin_dir: Option<PathBuf>,
     /// The canonical source file selected by the loader.
     /// This can differ from `plugin_config.location` after plugin-folder lookup.
-    /// Used for log identity and matching reloads by source path; absent for embedded builtins.
+    /// Used for log identity and matching reloads by source path, including installed builtins.
     pub resolved_source_path: Option<PathBuf>,
     pub plugin_cwd: PathBuf,
     // Own the watch with this instance: its root, recipient, and lifetime must agree.

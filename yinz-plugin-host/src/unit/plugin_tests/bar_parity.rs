@@ -130,23 +130,15 @@ impl Pair {
             (define (parity-choose-tip chosen cache)
               (vector-set! parity-random 0 (let loop ((names (sort (hash-keys->list (hash-ref cache \"cached_data\")) string<?)) (index 0))
                 (if (equal? (car names) chosen) index (loop (cdr names) (+ index 1))))))")).unwrap();
-        let mut directories = vec![&yinz_steel_builtins::BUILTIN_STEEL_FILES];
-        let mut sources = BTreeMap::new();
-        while let Some(directory) = directories.pop() {
-            directories.extend(directory.dirs());
-            for file in directory.files() {
-                sources.insert(
-                    file.path().to_str().unwrap().to_owned(),
-                    file.contents_utf8().unwrap().to_owned(),
-                );
-            }
-        }
-        let mut source_root =
-            yinz_steel::modules::SourceRoot::embedded(&format!("{name}.scm"), sources).unwrap();
+        let mut root = yinz_steel::modules::SourceRoot::file(
+            &yinz_steel_builtins::asset_dir().join(format!("{name}.scm")),
+            None,
+        )
+        .unwrap();
         steel
             .eval_with_source_root(
-                yinz_steel_builtins::builtin_steel_plugin(name).unwrap(),
-                &mut source_root,
+                &yinz_steel_builtins::fixture_source(name).unwrap(),
+                &mut root,
             )
             .unwrap();
         steel.load(json!(configuration)).unwrap();

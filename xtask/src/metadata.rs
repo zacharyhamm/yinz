@@ -243,8 +243,8 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// assert on IPC messages and recorded events and wait with test-support's timeouts, but neither
 /// thread names those crates otherwise.
 /// The tab's tests parse KDL layouts, stand up client IPC channels, and warm clipboard helpers.
-/// The Scheme builtins' tests hold their files to the runtime's name list, but the builtins
-/// name no crate, so the sources the plugin host embeds never wait on or rebuild with the runtime.
+/// Builtin disk lookup uses the runtime name list; only its evaluator and config tests
+/// need the interpreter and configuration crates.
 const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("yinz-project-config", &["yinz-test-support"]),
     ("yinz-plugin-authoring", &["yinz-test-support"]),
@@ -263,7 +263,6 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     (
         "yinz-steel-builtins",
         &[
-            "yinz-runtime",
             "yinz-types",
             "yinz-config",
             "yinz-steel",

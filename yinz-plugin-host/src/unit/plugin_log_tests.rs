@@ -42,8 +42,13 @@ fn connected_repl_separates_stdout_and_queryable_diagnostics_on_success_and_fail
     let identity = env.log_identity();
     let (sender, receiver) = channels::unbounded();
     env.senders.to_server = Some(SenderWithContext::new(sender));
-    let mut plugin =
-        SteelPlugin::new("", std::path::Path::new("repl"), env, Default::default()).unwrap();
+    let mut plugin = SteelPlugin::new(
+        "",
+        &yinz_steel_builtins::asset_dir().join("repl.scm"),
+        env,
+        Default::default(),
+    )
+    .unwrap();
     let cases = [
         (
             r#"(display "visible") (yinz-log "success diagnostic") 42"#,
