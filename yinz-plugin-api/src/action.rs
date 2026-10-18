@@ -126,6 +126,16 @@ impl TryFrom<ProtobufAction> for Action {
             {
                 Ok(Action::GoToNextTabGroup)
             },
+            Some(ProtobufActionName::MovePaneToNextTabGroup)
+                if protobuf_action.optional_payload.is_none() =>
+            {
+                Ok(Action::MovePaneToNextTabGroup)
+            },
+            Some(ProtobufActionName::MovePaneToPreviousTabGroup)
+                if protobuf_action.optional_payload.is_none() =>
+            {
+                Ok(Action::MovePaneToPreviousTabGroup)
+            },
             Some(ProtobufActionName::GoToPreviousTabGroup)
                 if protobuf_action.optional_payload.is_none() =>
             {
@@ -160,6 +170,8 @@ impl TryFrom<ProtobufAction> for Action {
             },
             Some(
                 ProtobufActionName::NewTabGroup
+                | ProtobufActionName::MovePaneToNextTabGroup
+                | ProtobufActionName::MovePaneToPreviousTabGroup
                 | ProtobufActionName::GoToNextTabGroup
                 | ProtobufActionName::GoToPreviousTabGroup,
             ) => Err("Unexpected tab group payload"),
@@ -1367,6 +1379,14 @@ impl TryFrom<Action> for ProtobufAction {
             }),
             Action::GoToNextTabGroup => Ok(ProtobufAction {
                 name: ProtobufActionName::GoToNextTabGroup as i32,
+                optional_payload: None,
+            }),
+            Action::MovePaneToNextTabGroup => Ok(ProtobufAction {
+                name: ProtobufActionName::MovePaneToNextTabGroup as i32,
+                optional_payload: None,
+            }),
+            Action::MovePaneToPreviousTabGroup => Ok(ProtobufAction {
+                name: ProtobufActionName::MovePaneToPreviousTabGroup as i32,
                 optional_payload: None,
             }),
             Action::GoToPreviousTabGroup => Ok(ProtobufAction {
@@ -4170,6 +4190,8 @@ pub(crate) mod tests {
         pub(crate) fn as_the_plugin_wire_carries_it(action: Action) -> Option<Action> {
             Some(match action {
                 carried @ (Action::NewTabGroup
+                | Action::MovePaneToNextTabGroup
+                | Action::MovePaneToPreviousTabGroup
                 | Action::GoToNextTabGroup
                 | Action::GoToPreviousTabGroup
                 | Action::GoToTabInGroup { .. }

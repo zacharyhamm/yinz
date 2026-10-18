@@ -737,6 +737,23 @@ impl Screen {
         update_mode_infos: bool,
         client_id: ClientId,
     ) -> Result<()> {
+        self.switch_active_tab_with_pane_focus(
+            new_tab_pos,
+            should_change_pane_focus,
+            update_mode_infos,
+            client_id,
+            None,
+        )
+    }
+
+    pub(super) fn switch_active_tab_with_pane_focus(
+        &mut self,
+        new_tab_pos: TabPosition,
+        should_change_pane_focus: Option<Direction>,
+        update_mode_infos: bool,
+        client_id: ClientId,
+        pane_to_focus: Option<PaneId>,
+    ) -> Result<()> {
         let err_context = || {
             format!(
             "Failed to switch to active tab at position {new_tab_pos} for client id: {client_id:?}"
@@ -756,6 +773,12 @@ impl Screen {
                     let mut transition = self.begin_tab_transition(client_id, new_tab_index);
                     self.finish_tab_transition(&mut transition, should_change_pane_focus)
                         .with_context(err_context)?;
+                    if let Some(pane) = pane_to_focus {
+                        self.get_active_tab_mut(client_id)
+                            .with_context(err_context)?
+                            .focus_pane_with_id(pane, false, false, client_id)
+                            .context("focus pane after switching tabs")?;
+                    }
                     if update_mode_infos {
                         if let Some(tab) = self.tabs.get_mut(&new_tab_index) {
                             tab.update_input_modes().with_context(err_context)?;
@@ -969,6 +992,10 @@ impl Screen {
             }
         }
         let confirm = self.replacement_pending && !another_destination;
+        // A client can detach while its replacement loads; keep the confirmation for reattach.
+        if confirm && self.quit_is_guarded() && self.active_tab_ids.is_empty() {
+            return Ok(());
+        }
         self.replacement_pending = false;
         for tab_id in doomed {
             self.teardown_tab(tab_id, !usable.is_empty())

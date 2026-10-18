@@ -584,6 +584,8 @@ enum ActionName {
     SwitchTabGroup = 133;
     RenameTabGroup = 134;
     CloseTabGroup = 135;
+    MovePaneToNextTabGroup = 136;
+    MovePaneToPreviousTabGroup = 137;
     reserved 127;
     reserved "ToggleMother";
     reserved 110;

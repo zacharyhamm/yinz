@@ -23,7 +23,11 @@ pub(super) fn legacy_keybinds() -> yinz_types::data::KeybindsVec {
             !actions.iter().any(|action| {
                 matches!(
                     action,
-                    Action::NewTabGroup | Action::GoToNextTabGroup | Action::GoToPreviousTabGroup
+                    Action::NewTabGroup
+                        | Action::GoToNextTabGroup
+                        | Action::GoToPreviousTabGroup
+                        | Action::MovePaneToNextTabGroup
+                        | Action::MovePaneToPreviousTabGroup
                 )
             })
         });

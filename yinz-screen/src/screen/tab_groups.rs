@@ -325,6 +325,60 @@ impl Screen {
                     }
                 }
             },
+            Action::MovePaneToNextTabGroup | Action::MovePaneToPreviousTabGroup => {
+                let pane = self
+                    .get_active_tab(client)?
+                    .get_active_pane_id(client)
+                    .context("no active pane to move to group")?;
+                let groups: Vec<_> = self.tab_groups.keys().copied().collect();
+                let active = self.group_for_client(Some(client));
+                let index = groups.iter().position(|id| *id == active).unwrap_or(0);
+                let forward = action == Action::MovePaneToNextTabGroup;
+                let destination = (1..groups.len()).find_map(|offset| {
+                    let index = if forward {
+                        (index + offset) % groups.len()
+                    } else {
+                        (index + groups.len() - offset) % groups.len()
+                    };
+                    self.preferred_group_tab(groups[index], client, false)
+                });
+                let error = if let Some(destination) = destination {
+                    let outcome = self
+                        .break_multiple_panes_to_tab_with_id(vec![pane], destination, false, client)
+                        .context("move pane to adjacent group")?;
+                    if outcome.moved.contains(&pane) {
+                        self.switch_active_tab_with_pane_focus(
+                            self.tabs[&destination].position,
+                            None,
+                            true,
+                            client,
+                            Some(pane),
+                        )
+                        .context("follow pane to adjacent group")?;
+                        None
+                    } else {
+                        if outcome.returned_to_source.contains(&pane) {
+                            self.get_active_tab_mut(client)?
+                                .focus_pane_with_id(pane, false, false, client)
+                                .context("restore focus after refused group move")?;
+                        }
+                        Some("Could not move pane to tab group!")
+                    }
+                } else {
+                    Some("No other tab groups to add pane to!")
+                };
+                if let Some(error) = error {
+                    self.bus
+                        .senders
+                        .send_to_background_jobs(
+                            crate::background_jobs::BackgroundJob::DisplayPaneError(
+                                vec![pane],
+                                error.into(),
+                            ),
+                        )
+                        .context("report pane group move failure")?;
+                }
+            },
             Action::GoToTabInGroup { index } => {
                 let tabs = self.group_tabs(self.group_for_client(Some(client)));
                 if let Some(tab) = tabs

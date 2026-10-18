@@ -32,6 +32,9 @@ Startup tabs belong to **Default**. Press **Ctrl+t**, then **g** to create a gro
 with a fresh terminal tab. In Tab mode, **Shift+h** and **Shift+l** switch groups;
 **1–9** and the usual tab navigation keys select tabs within the current group.
 Switching groups restores the last tab you used there.
+Press **Ctrl+t**, then **{** or **}** to move the focused pane to the previous or next group.
+The pane moves to that group's last-used tab, and focus follows it in Normal mode.
+These shortcuts wrap around and skip groups without a loaded tab.
 
 Use the command palette to create, switch, rename, or close a tab group. Closing a
 group asks for confirmation and closes its tabs and panes. A group also disappears

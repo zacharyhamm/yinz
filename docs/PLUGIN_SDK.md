@@ -17,6 +17,9 @@ These commands require the existing `RunActionsAsUser` permission. Direct close
 actions close the contents immediately; the built-in palette adds confirmation.
 `GoToTabInGroup {index}` uses a one-based index within the acting client's group.
 Existing tab ID and positional commands keep their session-wide meaning.
+`MovePaneToPreviousTabGroup` and `MovePaneToNextTabGroup` move the focused pane
+to the adjacent group's last-used loaded tab. Focus follows the pane after a successful move.
+These actions wrap around and skip groups without a loaded tab.
 
 ## Scheme language and text
 

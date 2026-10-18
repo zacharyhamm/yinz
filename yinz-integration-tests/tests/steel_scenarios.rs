@@ -574,10 +574,11 @@ fn native_pane_tabs_mix_fixture_and_scheme_and_retain_hidden_state() {
     fs::write(
         &plugin,
         r#"
-(define count 0) (define hides 0) (define hidden #f) (define updates 0)
+(define count 0) (define hides 0) (define hidden #f) (define updates 0) (define ready #f)
 (define (load configuration)
   (yinz-then (yinz-wait-for-permissions '("ReadApplicationState"))
-    (lambda (_) (yinz-command (hash "Subscribe" '("Key" "Visible" "PaneUpdate"))))))
+    (lambda (_) (yinz-command (hash "Subscribe" '("Key" "Visible" "PaneUpdate")))
+      (set! ready #t) (yinz-request-render))))
 (define (update event)
   (when (hash? event)
     (when (hash-contains? event "Key")
@@ -588,7 +589,9 @@ fn native_pane_tabs_mix_fixture_and_scheme_and_retain_hidden_state() {
       (set! hidden (not (hash-ref event "Visible"))) (when hidden (set! hides (+ hides 1))))
     (when (and (hash-contains? event "PaneUpdate") hidden) (set! updates (+ updates 1)))) #t)
 (define (render rows columns)
-  (string-append "SCHEME keys=" (number->string count) " hides=" (number->string hides) " hidden_updates=" (number->string updates)))
+  (if ready
+    (string-append "SCHEME keys=" (number->string count) " hides=" (number->string hides) " hidden_updates=" (number->string updates))
+    "Waiting for permissions"))
 "#,
     )
     .unwrap();

@@ -1787,6 +1787,12 @@ impl TryFrom<yinz_types::input::actions::Action>
             yinz_types::input::actions::Action::GoToNextTabGroup => ActionType::GoToNextTabGroup(
                 crate::client_server_contract::client_server_contract::GoToNextTabGroupAction {},
             ),
+            yinz_types::input::actions::Action::MovePaneToNextTabGroup => ActionType::MovePaneToNextTabGroup(
+                crate::client_server_contract::client_server_contract::MovePaneToNextTabGroupAction {},
+            ),
+            yinz_types::input::actions::Action::MovePaneToPreviousTabGroup => ActionType::MovePaneToPreviousTabGroup(
+                crate::client_server_contract::client_server_contract::MovePaneToPreviousTabGroupAction {},
+            ),
             yinz_types::input::actions::Action::GoToPreviousTabGroup => ActionType::GoToPreviousTabGroup(
                 crate::client_server_contract::client_server_contract::GoToPreviousTabGroupAction {},
             ),
@@ -2905,6 +2911,12 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::NewTabGroup(_) => Ok(yinz_types::input::actions::Action::NewTabGroup),
             ActionType::GoToNextTabGroup(_) => {
                 Ok(yinz_types::input::actions::Action::GoToNextTabGroup)
+            },
+            ActionType::MovePaneToNextTabGroup(_) => {
+                Ok(yinz_types::input::actions::Action::MovePaneToNextTabGroup)
+            },
+            ActionType::MovePaneToPreviousTabGroup(_) => {
+                Ok(yinz_types::input::actions::Action::MovePaneToPreviousTabGroup)
             },
             ActionType::GoToPreviousTabGroup(_) => {
                 Ok(yinz_types::input::actions::Action::GoToPreviousTabGroup)

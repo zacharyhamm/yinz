@@ -319,6 +319,8 @@ message Action {
     uint32 switch_tab_group = 178;
     TabGroup rename_tab_group = 179;
     uint32 close_tab_group = 180;
+    MovePaneToNextTabGroupAction move_pane_to_next_tab_group = 181;
+    MovePaneToPreviousTabGroupAction move_pane_to_previous_tab_group = 182;
   }
 }
 
@@ -1228,6 +1230,8 @@ message PaneTarget {
 
 message NewTabGroupAction {}
 message GoToNextTabGroupAction {}
+message MovePaneToNextTabGroupAction {}
+message MovePaneToPreviousTabGroupAction {}
 message GoToPreviousTabGroupAction {}
 message TabGroup {
   uint32 id = 1;

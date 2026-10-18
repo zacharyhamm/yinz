@@ -1141,6 +1141,8 @@ fn tab_group_actions_round_trip_kdl_and_default_bindings() {
     let actions = [
         Action::NewTabGroup,
         Action::GoToNextTabGroup,
+        Action::MovePaneToNextTabGroup,
+        Action::MovePaneToPreviousTabGroup,
         Action::GoToPreviousTabGroup,
         Action::GoToTabInGroup {
             index: TabNumber::new(9),
@@ -1168,6 +1170,20 @@ fn tab_group_actions_round_trip_kdl_and_default_bindings() {
     assert!(tab
         .values()
         .any(|actions| actions.contains(&Action::GoToNextTabGroup)));
+    for (key, action) in [
+        ('{', Action::MovePaneToPreviousTabGroup),
+        ('}', Action::MovePaneToNextTabGroup),
+    ] {
+        assert_eq!(
+            tab.get(&KeyWithModifier::new(BareKey::Char(key))),
+            Some(&vec![
+                action,
+                Action::SwitchToMode {
+                    input_mode: InputMode::Normal
+                }
+            ])
+        );
+    }
     assert!(tab
         .values()
         .any(|actions| actions.contains(&Action::GoToPreviousTabGroup)));

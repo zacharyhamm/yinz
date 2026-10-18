@@ -177,8 +177,20 @@ impl PluginBridge {
                 // Denial answers the FIFO head, preserving all earlier grants.
                 let mut permissions = env.permissions.lock().unwrap().clone().unwrap_or_default();
                 if status == PermissionStatus::Granted {
+                    if !granted {
+                        // Save before callbacks can issue synchronous queries to this thread.
+                        let mut cache = PermissionCache::from_path_or_default(cache_path.clone());
+                        cache.grant(
+                            pending.identity.location.to_string(),
+                            pending.permissions.clone(),
+                        );
+                        cache
+                            .write_to_file()
+                            .context("save plugin permission grant")
+                            .non_fatal();
+                        granted = true;
+                    }
                     permissions.extend(pending.permissions.iter().copied());
-                    granted = true;
                 }
                 env.set_permissions(permissions);
                 if let Some(workers) = &env.workers {
@@ -237,14 +249,6 @@ impl PluginBridge {
                     }
                 },
             );
-        }
-        if granted {
-            let mut cache = PermissionCache::from_path_or_default(cache_path);
-            cache.grant(pending.identity.location.to_string(), pending.permissions);
-            cache
-                .write_to_file()
-                .context("save plugin permission grant")
-                .non_fatal();
         }
         let ready = plugins
             .into_iter()

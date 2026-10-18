@@ -183,6 +183,8 @@ keybinds clear-defaults=true {
         bind \"b\" { BreakPane; SwitchToMode \"Locked\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Locked\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Locked\"; }
+        bind \"{\" { MovePaneToPreviousTabGroup; SwitchToMode \"Normal\"; }
+        bind \"}\" { MovePaneToNextTabGroup; SwitchToMode \"Normal\"; }
         bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Locked\"; }
         bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Locked\"; }
         bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Locked\"; }
@@ -465,6 +467,8 @@ keybinds clear-defaults=true {
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
+        bind \"{\" { MovePaneToPreviousTabGroup; SwitchToMode \"Normal\"; }
+        bind \"}\" { MovePaneToNextTabGroup; SwitchToMode \"Normal\"; }
         bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
         bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
         bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }
@@ -795,6 +799,8 @@ keybinds clear-defaults=true {
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
+        bind \"{\" { MovePaneToPreviousTabGroup; SwitchToMode \"Normal\"; }
+        bind \"}\" { MovePaneToNextTabGroup; SwitchToMode \"Normal\"; }
         bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
         bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
         bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }
@@ -1082,6 +1088,8 @@ keybinds clear-defaults=true {
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
+        bind \"{\" { MovePaneToPreviousTabGroup; SwitchToMode \"Normal\"; }
+        bind \"}\" { MovePaneToNextTabGroup; SwitchToMode \"Normal\"; }
         bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
         bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
         bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }
@@ -1352,6 +1360,8 @@ keybinds clear-defaults=true {
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
+        bind \"{\" { MovePaneToPreviousTabGroup; SwitchToMode \"Normal\"; }
+        bind \"}\" { MovePaneToNextTabGroup; SwitchToMode \"Normal\"; }
         bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
         bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
         bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }
@@ -1673,6 +1683,8 @@ keybinds clear-defaults=true {
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
+        bind \"{\" { MovePaneToPreviousTabGroup; SwitchToMode \"Normal\"; }
+        bind \"}\" { MovePaneToNextTabGroup; SwitchToMode \"Normal\"; }
         bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
         bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
         bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }

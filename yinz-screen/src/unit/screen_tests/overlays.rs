@@ -8646,3 +8646,80 @@ fn configured_overlay_coalesced_loads_keep_originating_clients() {
         }
     }
 }
+
+#[test]
+fn move_pane_to_tab_group_carries_overlay_container_and_focus() {
+    use yinz_types::multipane::*;
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 120,
+        rows: 40,
+    });
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    let first = open_overlay_plugin(
+        &mut screen,
+        PluginId::new(7),
+        TabId::new(0),
+        popup_coordinates(),
+    )
+    .1;
+    let second = open_overlay_plugin(
+        &mut screen,
+        PluginId::new(8),
+        TabId::new(0),
+        popup_coordinates(),
+    )
+    .1;
+    let info = screen
+        .multipane_command(
+            MultipaneOperation::Create {
+                children: [first, second],
+                split: MultipaneSplit {
+                    direction: MultipaneDirection::TopBottom,
+                    ratio: 3500,
+                },
+                placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
+                focus: Some(1),
+                min_cells: 0,
+            },
+            CLIENT_1,
+        )
+        .unwrap()
+        .unwrap();
+
+    screen.restore_tab_group(
+        TabId::new(1),
+        &TiledPaneLayout {
+            tab_group: Some(yinz_types::tab_bar::TabGroupInfo {
+                id: 1,
+                name: "Other".into(),
+            }),
+            ..Default::default()
+        },
+    );
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, CLIENT_1)
+        .unwrap();
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .focus_pane_with_id(second, false, false, CLIENT_1)
+        .unwrap();
+    screen
+        .tab_group_action(
+            yinz_types::input::actions::Action::MovePaneToNextTabGroup,
+            CLIENT_1,
+            None,
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(screen.active_tab_ids[&CLIENT_1], TabId::new(1));
+    assert_eq!(screen.get_active_pane_id(&CLIENT_1), Some(second));
+    let destination = &screen.tabs[&TabId::new(1)];
+    assert_eq!(destination.multipane_info(second).unwrap().id, info.id);
+    for pane in [first, second] {
+        assert!(destination.pane_is_overlay(pane));
+        assert!(!screen.tabs[&TabId::new(0)].has_pane_with_pid(&pane));
+    }
+}
