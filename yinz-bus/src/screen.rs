@@ -9,7 +9,7 @@ use yinz_types::internal_ids::TerminalId;
 
 use crate::loading_indication::LoadingIndication;
 use crate::plugins::{DumpSessionLayoutResponse, PluginId, PluginRenderAsset};
-use crate::pty::{AdoptedTabPanes, ClientTabIndexOrPaneId, VteBytes};
+use crate::pty::{AdoptedTabPanes, ClientTabIndexOrPaneId, ReplacedPane, VteBytes};
 use crate::pty_host::client::ReleasedPane;
 use crate::route::NotificationEnd;
 use crate::ClientId;
@@ -516,7 +516,7 @@ pub enum ScreenInstruction {
     AddPlugin(
         Option<bool>, // should_float
         bool,         // should be opened in place
-        bool,         // close_replaced_pane
+        ReplacedPane, // what becomes of the pane it is opened in place of
         RunPluginOrAlias,
         Option<String>, // pane title
         Option<TabId>,  // tab index
@@ -677,10 +677,21 @@ pub enum ScreenInstruction {
         HoldForCommand,
         Option<InitialTitle>,
         Option<Run>,
-        bool, // close replaced pane
+        ReplacedPane,
         ClientTabIndexOrPaneId,
         Option<NotificationEnd>, // completion signal
     ),
+    /// A plugin asked to open another plugin in place of `pane_id`, which lends it its slot.
+    /// The screen refuses a target that holds no slot before anything is loaded, and hands
+    /// the rest to the plugin thread, which refuses an instance that already exists.
+    OpenPluginPaneInPlaceOfPaneId {
+        pane_id: PaneId,
+        plugin_url: String,
+        configuration: BTreeMap<String, String>,
+        cwd: PathBuf,
+        client_id: ClientId,
+        completion: NotificationEnd,
+    },
     SerializeLayoutForResurrection,
     RenameSession(SessionName, ClientId, Option<NotificationEnd>), // String -> new name
     Notify(

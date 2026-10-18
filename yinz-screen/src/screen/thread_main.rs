@@ -733,14 +733,16 @@ pub fn screen_thread_main(
                         | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id_to_replace, _) => {
                             // As in `replace_pane`: there is nothing to edit in place of a pane the
                             // caller does not have, so no client fallback here.
-                            match screen.tab_containing_pane_mut(pane_id_to_replace) {
-                                Some(tab) => tab
-                                    .replace_pane_with_editor_pane(pid, pane_id_to_replace)
-                                    .non_fatal(),
-                                None => log::error!(
-                                    "Could not find pane with id {:?} to replace",
-                                    pane_id_to_replace
-                                ),
+                            let placed = match screen.tab_containing_pane_mut(pane_id_to_replace) {
+                                Some(tab) => {
+                                    tab.replace_pane_with_editor_pane(pid, pane_id_to_replace)
+                                },
+                                None => {
+                                    Err(anyhow!("pane {pane_id_to_replace:?} to replace not found"))
+                                },
+                            };
+                            if let Err(error) = placed {
+                                screen.forget_unplaced_pane(pid, format!("{error:#}"));
                             }
                         },
                     }
@@ -2750,7 +2752,7 @@ pub fn screen_thread_main(
                 ScreenInstruction::AddPlugin(
                     should_float,
                     should_be_in_place,
-                    close_replaced_pane,
+                    replaced,
                     run_plugin_or_alias,
                     pane_title,
                     tab_index,
@@ -2767,7 +2769,7 @@ pub fn screen_thread_main(
                     if screen.add_plugin(
                         should_float,
                         should_be_in_place,
-                        close_replaced_pane,
+                        replaced,
                         run_plugin_or_alias,
                         pane_title,
                         tab_index,
@@ -3320,32 +3322,51 @@ pub fn screen_thread_main(
                     hold_for_command,
                     pane_title,
                     invoked_with,
-                    close_replaced_pane,
+                    replaced,
                     client_id_tab_index_or_pane_id,
                     mut completion_tx,
                 ) => {
-                    if let Some(c) = completion_tx.as_mut() {
-                        c.set_affected_pane_id(new_pane_id)
-                    }
-                    screen.replace_pane(
+                    let placed = screen.replace_pane(
                         new_pane_id,
                         hold_for_command,
                         invoked_with,
                         pane_title,
-                        close_replaced_pane,
+                        replaced,
                         client_id_tab_index_or_pane_id,
-                    )?;
-                    // A plugin can open an agent pane in place, the same as anywhere else.
-                    screen.fire_agent_start_for_new_pane(new_pane_id);
-                    // Its reader can produce output before the replacement is placed, just
-                    // as it can before NewPane. Agent-start precedes the buffered events.
-                    if let Some(events) = pending.waiting_for_pane.remove(&new_pane_id) {
-                        for event in events {
+                        &mut completion_tx,
+                    );
+                    let waiting = pending.waiting_for_pane.remove(&new_pane_id);
+                    if placed {
+                        if let Some(c) = completion_tx.as_mut() {
+                            c.set_affected_pane_id(new_pane_id)
+                        }
+                        // A plugin can open an agent pane in place, the same as anywhere else.
+                        screen.fire_agent_start_for_new_pane(new_pane_id);
+                        // Its reader can produce output before the replacement is placed, just
+                        // as it can before NewPane. Agent-start precedes the buffered events.
+                        for event in waiting.into_iter().flatten() {
                             replay_pending_pane_event(&mut screen, event, &mut pending).non_fatal();
                         }
                     }
 
                     screen.log_and_report_session_state()?;
+                },
+                ScreenInstruction::OpenPluginPaneInPlaceOfPaneId {
+                    pane_id,
+                    plugin_url,
+                    configuration,
+                    cwd,
+                    client_id,
+                    completion,
+                } => {
+                    screen.open_plugin_pane_in_place_of_pane_id(
+                        pane_id,
+                        plugin_url,
+                        configuration,
+                        cwd,
+                        client_id,
+                        completion,
+                    );
                 },
                 ScreenInstruction::SerializeLayoutForResurrection => {
                     if screen.session_serialization {
@@ -4135,12 +4156,14 @@ pub fn screen_thread_main(
                     new_pane_id,
                     suppress_replaced_pane,
                     completion_tx,
-                ) => screen.replace_pane_with_existing_pane(
-                    old_pane_id,
-                    new_pane_id,
-                    suppress_replaced_pane,
-                    completion_tx,
-                ),
+                ) => screen
+                    .replace_pane_with_existing_pane(
+                        old_pane_id,
+                        new_pane_id,
+                        suppress_replaced_pane,
+                        completion_tx,
+                    )
+                    .non_fatal(),
                 ScreenInstruction::AddWatcherClient(client_id, size) => {
                     screen
                         .add_watcher_client(client_id)

@@ -26,7 +26,7 @@ fn attach(mock: &MockScreen, tab: TabId) {
         .send(ScreenInstruction::AddPlugin(
             None,
             false,
-            false,
+            yinz_bus::pty::ReplacedPane::Suppress,
             yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
                 "file:/background-permission-fixture",
                 &None,

@@ -34,7 +34,7 @@ Some(
         Some(
             "Editing: LAYOUT_FOLDER_PATH/test_layout2.kdl",
         ),
-        false,
+        Suppress,
         PaneId(
             Plugin(
                 PluginId(

@@ -751,10 +751,10 @@ fn hook_pane_over_a_held_terminal(
     tab.suppress_pane_and_replace_with_pid(
         PaneId::Terminal(terminal_id),
         PaneId::Plugin(plugin_id),
-        false, // close_replaced_pane
-        None,  // run
-        None,  // completion_tx
-        None,  // borderless
+        yinz_bus::pty::ReplacedPane::Suppress,
+        None, // run
+        None, // completion_tx
+        None, // borderless
     )
     .expect("TEST");
     // The agent's command exited before the hook fired, which is what makes the pane held.
@@ -1534,7 +1534,7 @@ fn cli_and_ctrl_c_closes_destroy_replacement_chains_and_preserve_input() {
                     None,
                     None,
                     None,
-                    false,
+                    yinz_bus::pty::ReplacedPane::Suppress,
                     ClientTabIndexOrPaneId::PaneId(replaced),
                     None,
                 ))
@@ -1821,7 +1821,7 @@ fn explicit_close_before_creation_waits_for_removal_and_completion() {
                 ScreenInstruction::AddPlugin(
                     Some(true),
                     false,
-                    false,
+                    yinz_bus::pty::ReplacedPane::Suppress,
                     yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
                         "file:/path/to/fake/plugin",
                         &None,

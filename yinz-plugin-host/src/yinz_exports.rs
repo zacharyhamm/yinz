@@ -39,7 +39,7 @@ use std::{
 use tokio::sync::oneshot;
 use yinz_bus::background_jobs::BackgroundJob;
 use yinz_bus::global_async_runtime::get_tokio_runtime;
-use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction};
+use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane};
 use yinz_bus::route::NotificationEnd;
 use yinz_bus::thread_bus::ThreadSenders;
 use yinz_bus::ServerInstruction;
@@ -216,6 +216,7 @@ use {
     yinz_plugin_api::plugin_command::ProtobufOpenFileResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenPaneInNewTabResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenPluginPaneFloatingResponse,
+    yinz_plugin_api::plugin_command::ProtobufOpenPluginPaneInPlaceOfPaneIdResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenTerminalFloatingNearPluginResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenTerminalFloatingResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenTerminalInPlaceOfPluginResponse,
@@ -938,7 +939,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             },
             PluginCommand::OpenTerminalInPlace(cwd) => open_terminal_in_place(env, cwd.path),
             PluginCommand::OpenTerminalInPlaceOfPlugin(cwd, close_plugin_after_replace) => {
-                open_terminal_in_place_of_plugin(env, cwd.path, close_plugin_after_replace)
+                open_terminal_in_place_of_plugin(env, cwd.path, close_plugin_after_replace)?
             },
             PluginCommand::OpenCommandPaneInPlace(command_to_run, context) => {
                 open_command_pane_in_place(env, command_to_run, context)
@@ -952,7 +953,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 command_to_run,
                 close_plugin_after_replace,
                 context,
-            ),
+            )?,
             PluginCommand::RenameSession(new_session_name) => rename_session(env, new_session_name),
             PluginCommand::Notify(text, pane_id, click) => notify(env, text, pane_id, click),
             PluginCommand::UnblockCliPipeInput(pipe_name) => unblock_cli_pipe_input(env, pipe_name),
@@ -1235,9 +1236,12 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 file_to_open,
                 close_plugin_after_replace,
                 context,
-            ) => {
-                open_file_in_place_of_plugin(env, file_to_open, close_plugin_after_replace, context)
-            },
+            ) => open_file_in_place_of_plugin(
+                env,
+                file_to_open,
+                close_plugin_after_replace,
+                context,
+            )?,
             PluginCommand::GroupAndUngroupPanes(
                 panes_to_group,
                 panes_to_ungroup,
@@ -1285,7 +1289,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 pane_id_to_replace,
                 existing_pane_id,
                 suppress_replaced_pane,
-            ),
+            )?,
             PluginCommand::RunAction(action, context) => run_action(env, action, context),
             PluginCommand::GetSessionEnvironmentVariables => {
                 get_session_environment_variables(env);
@@ -1331,9 +1335,9 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 command_to_run,
                 close_replaced_pane,
                 context,
-            ),
+            )?,
             PluginCommand::OpenTerminalPaneInPlaceOfPaneId(pane_id, cwd, close_replaced_pane) => {
-                open_terminal_pane_in_place_of_pane_id(env, pane_id, cwd, close_replaced_pane)
+                open_terminal_pane_in_place_of_pane_id(env, pane_id, cwd, close_replaced_pane)?
             },
             PluginCommand::OpenEditPaneInPlaceOfPaneId(
                 pane_id,
@@ -1346,7 +1350,19 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 file_to_open,
                 close_replaced_pane,
                 context,
-            ),
+            )?,
+            PluginCommand::OpenPluginPaneInPlaceOfPaneId {
+                pane_id,
+                plugin_url,
+                configuration,
+                context,
+            } => open_plugin_pane_in_place_of_pane_id(
+                env,
+                pane_id,
+                plugin_url,
+                configuration,
+                context,
+            )?,
             PluginCommand::ShowFloatingPanes { tab_id } => show_floating_panes(env, tab_id),
             PluginCommand::HideFloatingPanes { tab_id } => hide_floating_panes(env, tab_id),
             PluginCommand::SetPaneRegexHighlights(pane_id, highlights) => {
@@ -2571,12 +2587,22 @@ fn open_file_floating_near_plugin(
         .non_fatal();
 }
 
+/// The pane an in-place command opened, or why it could not open one. A target that is
+/// missing or suppressed is refused rather than covered, and the refusal rejects the
+/// command instead of answering with the id of a pane that was never placed.
+fn in_place_pane_id(result: yinz_bus::route::ActionCompletionResult) -> Result<Option<PaneId>> {
+    match result.error_message {
+        Some(error) => Err(anyhow!(error)),
+        None => Ok(result.affected_pane_id),
+    }
+}
+
 fn open_file_in_place_of_plugin(
     env: &mut PluginEnv,
     file_to_open: FileToOpen,
     close_plugin_after_replace: bool,
     context: BTreeMap<String, String>,
-) {
+) -> Result<()> {
     let cwd = file_to_open
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd))
@@ -2592,7 +2618,7 @@ fn open_file_in_place_of_plugin(
     let pty_instr = PtyInstruction::SpawnInPlaceTerminal(
         Some(open_file),
         Some(title),
-        close_plugin_after_replace,
+        ReplacedPane::lent_unless_closed(close_plugin_after_replace),
         ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
         Some(NotificationEnd::new(completion_tx)),
     );
@@ -2600,13 +2626,14 @@ fn open_file_in_place_of_plugin(
 
     // Wait for completion
     let result = wait_for_action_completion(completion_rx, "open_file_in_place_of_plugin", false);
-    let pane_id: OpenFileInPlaceOfPluginResponse = result.affected_pane_id;
+    let pane_id: OpenFileInPlaceOfPluginResponse = in_place_pane_id(result)?;
 
     // Write response to plugin
     let response = ProtobufOpenFileInPlaceOfPluginResponse::from(pane_id);
     write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_file_in_place_of_plugin response".to_string())
         .non_fatal();
+    Ok(())
 }
 
 fn open_terminal(env: &mut PluginEnv, cwd: PathBuf) {
@@ -2802,7 +2829,7 @@ fn open_terminal_in_place_of_plugin(
     env: &mut PluginEnv,
     cwd: PathBuf,
     close_plugin_after_replace: bool,
-) {
+) -> Result<()> {
     let cwd = translate_plugin_path(env, cwd);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -2821,7 +2848,7 @@ fn open_terminal_in_place_of_plugin(
         .send_to_pty(PtyInstruction::SpawnInPlaceTerminal(
             Some(default_shell),
             name,
-            close_plugin_after_replace,
+            ReplacedPane::lent_unless_closed(close_plugin_after_replace),
             ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
             Some(NotificationEnd::new(completion_tx)),
         ));
@@ -2829,13 +2856,14 @@ fn open_terminal_in_place_of_plugin(
     // Wait for completion
     let result =
         wait_for_action_completion(completion_rx, "open_terminal_in_place_of_plugin", false);
-    let pane_id: OpenTerminalInPlaceOfPluginResponse = result.affected_pane_id;
+    let pane_id: OpenTerminalInPlaceOfPluginResponse = in_place_pane_id(result)?;
 
     // Write response to plugin
     let response = ProtobufOpenTerminalInPlaceOfPluginResponse::from(pane_id);
     write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_terminal_in_place_of_plugin response".to_string())
         .non_fatal();
+    Ok(())
 }
 
 fn open_command_pane_in_place_of_plugin(
@@ -2843,10 +2871,10 @@ fn open_command_pane_in_place_of_plugin(
     command_to_run: CommandToRun,
     close_plugin_after_replace: bool,
     context: BTreeMap<String, String>,
-) {
+) -> Result<()> {
     let name: Option<String> = None;
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
-        return;
+        return Ok(());
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2857,7 +2885,7 @@ fn open_command_pane_in_place_of_plugin(
         .send_to_pty(PtyInstruction::SpawnInPlaceTerminal(
             Some(run_cmd),
             name,
-            close_plugin_after_replace,
+            ReplacedPane::lent_unless_closed(close_plugin_after_replace),
             ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id)),
             Some(NotificationEnd::new(completion_tx)),
         ));
@@ -2865,7 +2893,7 @@ fn open_command_pane_in_place_of_plugin(
     // Wait for completion
     let result =
         wait_for_action_completion(completion_rx, "open_command_pane_in_place_of_plugin", false);
-    let pane_id: OpenCommandPaneInPlaceOfPluginResponse = result.affected_pane_id;
+    let pane_id: OpenCommandPaneInPlaceOfPluginResponse = in_place_pane_id(result)?;
 
     // Write response to plugin
     let response = ProtobufOpenCommandPaneInPlaceOfPluginResponse::from(pane_id);
@@ -2874,6 +2902,7 @@ fn open_command_pane_in_place_of_plugin(
             "failed to write open_command_pane_in_place_of_plugin response".to_string()
         })
         .non_fatal();
+    Ok(())
 }
 
 fn open_terminal_pane_in_place_of_pane_id(
@@ -2881,7 +2910,7 @@ fn open_terminal_pane_in_place_of_pane_id(
     pane_id_to_replace: yinz_types::data::PaneId,
     cwd: FileToOpen,
     close_replaced_pane: bool,
-) {
+) -> Result<()> {
     let cwd_path = translate_plugin_path(env, cwd.path);
     let mut default_shell = env.default_shell.clone().unwrap_or_else(|| {
         TerminalAction::RunCommand(RunCommand {
@@ -2899,7 +2928,7 @@ fn open_terminal_pane_in_place_of_pane_id(
         .send_to_pty(PtyInstruction::SpawnInPlaceTerminal(
             Some(default_shell),
             name,
-            close_replaced_pane,
+            ReplacedPane::lent_unless_closed(close_replaced_pane),
             ClientTabIndexOrPaneId::PaneId(pane_id_to_replace),
             Some(NotificationEnd::new(completion_tx)),
         ));
@@ -2909,7 +2938,7 @@ fn open_terminal_pane_in_place_of_pane_id(
         "open_terminal_pane_in_place_of_pane_id",
         false,
     );
-    let pane_id: OpenTerminalPaneInPlaceOfPaneIdResponse = result.affected_pane_id;
+    let pane_id: OpenTerminalPaneInPlaceOfPaneIdResponse = in_place_pane_id(result)?;
 
     let response = ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse::from(pane_id);
     write_response(env, &response.encode_to_vec())
@@ -2917,6 +2946,7 @@ fn open_terminal_pane_in_place_of_pane_id(
             "failed to write open_terminal_pane_in_place_of_pane_id response".to_string()
         })
         .non_fatal();
+    Ok(())
 }
 
 fn open_command_pane_in_place_of_pane_id(
@@ -2925,10 +2955,10 @@ fn open_command_pane_in_place_of_pane_id(
     command_to_run: CommandToRun,
     close_replaced_pane: bool,
     context: BTreeMap<String, String>,
-) {
+) -> Result<()> {
     let name: Option<String> = None;
     let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
-        return;
+        return Ok(());
     };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
@@ -2938,7 +2968,7 @@ fn open_command_pane_in_place_of_pane_id(
         .send_to_pty(PtyInstruction::SpawnInPlaceTerminal(
             Some(run_cmd),
             name,
-            close_replaced_pane,
+            ReplacedPane::lent_unless_closed(close_replaced_pane),
             ClientTabIndexOrPaneId::PaneId(pane_id_to_replace),
             Some(NotificationEnd::new(completion_tx)),
         ));
@@ -2948,7 +2978,7 @@ fn open_command_pane_in_place_of_pane_id(
         "open_command_pane_in_place_of_pane_id",
         false,
     );
-    let pane_id: OpenCommandPaneInPlaceOfPaneIdResponse = result.affected_pane_id;
+    let pane_id: OpenCommandPaneInPlaceOfPaneIdResponse = in_place_pane_id(result)?;
 
     let response = ProtobufOpenCommandPaneInPlaceOfPaneIdResponse::from(pane_id);
     write_response(env, &response.encode_to_vec())
@@ -2956,6 +2986,43 @@ fn open_command_pane_in_place_of_pane_id(
             "failed to write open_command_pane_in_place_of_pane_id response".to_string()
         })
         .non_fatal();
+    Ok(())
+}
+
+/// Load a plugin in place of `pane_id`, which lends the new pane its slot: it comes back
+/// when the plugin pane closes, however that happens. Waits for the pane to be placed, so a
+/// missing or suppressed target, or an instance that already exists, rejects the command.
+fn open_plugin_pane_in_place_of_pane_id(
+    env: &mut PluginEnv,
+    pane_id: PaneId,
+    plugin_url: String,
+    configuration: BTreeMap<String, String>,
+    context: BTreeMap<String, String>,
+) -> Result<()> {
+    let _ = context; // context is not currently used for plugin panes
+    let (completion_tx, completion_rx) = oneshot::channel();
+    env.senders
+        .send_to_screen(ScreenInstruction::OpenPluginPaneInPlaceOfPaneId {
+            pane_id,
+            plugin_url,
+            configuration,
+            cwd: env.plugin_cwd.clone(),
+            client_id: env.client_id,
+            completion: NotificationEnd::new(completion_tx),
+        })
+        .context("route in-place plugin pane")?;
+    // Three threads answer this, one after the other, so the default action budget is
+    // too tight; a dropped completion arrives as an unconfirmed result rather than a hang.
+    let result = get_tokio_runtime()
+        .block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(10), completion_rx).await
+        })
+        .context("in-place plugin pane outcome unknown; inspect the pane before retrying")?
+        .context("in-place plugin pane was dropped before it was placed")?;
+    let pane_id = in_place_pane_id(result)?.context("in-place plugin pane was not placed")?;
+    let response = ProtobufOpenPluginPaneInPlaceOfPaneIdResponse::from(Some(pane_id));
+    write_response(env, &response.encode_to_vec())
+        .context("failed to write open_plugin_pane_in_place_of_pane_id response")
 }
 
 fn open_edit_pane_in_place_of_pane_id(
@@ -2964,7 +3031,7 @@ fn open_edit_pane_in_place_of_pane_id(
     file_to_open: FileToOpen,
     close_replaced_pane: bool,
     context: BTreeMap<String, String>,
-) {
+) -> Result<()> {
     let cwd = file_to_open
         .cwd
         .map(|cwd| translate_plugin_path(env, cwd))
@@ -2979,7 +3046,7 @@ fn open_edit_pane_in_place_of_pane_id(
     let pty_instr = PtyInstruction::SpawnInPlaceTerminal(
         Some(open_file),
         Some(title),
-        close_replaced_pane,
+        ReplacedPane::lent_unless_closed(close_replaced_pane),
         ClientTabIndexOrPaneId::PaneId(pane_id_to_replace),
         Some(NotificationEnd::new(completion_tx)),
     );
@@ -2987,12 +3054,13 @@ fn open_edit_pane_in_place_of_pane_id(
 
     let result =
         wait_for_action_completion(completion_rx, "open_edit_pane_in_place_of_pane_id", false);
-    let pane_id: OpenEditPaneInPlaceOfPaneIdResponse = result.affected_pane_id;
+    let pane_id: OpenEditPaneInPlaceOfPaneIdResponse = in_place_pane_id(result)?;
 
     let response = ProtobufOpenEditPaneInPlaceOfPaneIdResponse::from(pane_id);
     write_response(env, &response.encode_to_vec())
         .with_context(|| "failed to write open_edit_pane_in_place_of_pane_id response".to_string())
         .non_fatal();
+    Ok(())
 }
 
 fn open_command_pane(
@@ -8893,7 +8961,7 @@ fn replace_pane_with_existing_pane(
     pane_to_replace: PaneId,
     existing_pane: PaneId,
     suppress_replaced_pane: bool,
-) {
+) -> Result<()> {
     let (completion_tx, completion_rx) = oneshot::channel();
     let _ = env
         .senders
@@ -8903,7 +8971,12 @@ fn replace_pane_with_existing_pane(
             suppress_replaced_pane,
             Some(NotificationEnd::new(completion_tx)),
         ));
-    let _ = wait_for_action_completion(completion_rx, "replace_pane_with_existing_pane", false);
+    let result =
+        wait_for_action_completion(completion_rx, "replace_pane_with_existing_pane", false);
+    match result.error_message {
+        Some(error) => Err(anyhow!(error)),
+        None => Ok(()),
+    }
 }
 
 fn override_layout(
@@ -9137,7 +9210,8 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenPluginPaneFloating
         | CommandType::LoadNewPlugin
         | CommandType::NewTiledPaneInTab
-        | CommandType::OpenTerminalPaneInPlaceOfPaneId => PermissionType::OpenTerminalsOrPlugins,
+        | CommandType::OpenTerminalPaneInPlaceOfPaneId
+        | CommandType::OpenPluginPaneInPlaceOfPaneId => PermissionType::OpenTerminalsOrPlugins,
         CommandType::OpenCommandPane
         | CommandType::OpenCommandPaneNearPlugin
         | CommandType::OpenCommandPaneInGitCheckoutNearPlugin

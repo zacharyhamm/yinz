@@ -3,6 +3,7 @@ pub use super::generated_api::api::plugin_command::AgentProvidersResponse as Pro
 pub use super::generated_api::api::plugin_command::GetCellPixelSizeResponse as ProtobufGetCellPixelSizeResponse;
 pub use super::generated_api::api::plugin_command::GetPluginIdsForUrlResponse as ProtobufGetPluginIdsForUrlResponse;
 pub use super::generated_api::api::plugin_command::MultipaneResponse as ProtobufMultipaneResponse;
+pub use super::generated_api::api::plugin_command::OpenPluginPaneInPlaceOfPaneIdResponse as ProtobufOpenPluginPaneInPlaceOfPaneIdResponse;
 pub use super::generated_api::api::plugin_command::PaneTabsResponse as ProtobufPaneTabsResponse;
 pub use super::generated_api::api::plugin_command::PickResponse as ProtobufPickResponse;
 pub use super::generated_api::api::plugin_command::RestartAgentPaneResponse as ProtobufRestartAgentPaneResponse;
@@ -3031,6 +3032,22 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for RestartAgentPane"),
             },
+            Some(CommandName::OpenPluginPaneInPlaceOfPaneId) => {
+                match protobuf_plugin_command.payload {
+                    Some(Payload::OpenPluginPaneInPlaceOfPaneIdPayload(payload)) => {
+                        let (pane_id, plugin_url, configuration, context) =
+                            serde_json::from_str(&payload)
+                                .map_err(|_| "invalid in-place plugin pane payload")?;
+                        Ok(PluginCommand::OpenPluginPaneInPlaceOfPaneId {
+                            pane_id,
+                            plugin_url,
+                            configuration,
+                            context,
+                        })
+                    },
+                    _ => Err("Mismatched payload for OpenPluginPaneInPlaceOfPaneId"),
+                }
+            },
             Some(CommandName::AgentControl) => match protobuf_plugin_command.payload {
                 Some(Payload::AgentControlPayload(payload)) => {
                     let (id, request) = serde_json::from_str(&payload)
@@ -5491,6 +5508,18 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     run_id,
                 })),
             }),
+            PluginCommand::OpenPluginPaneInPlaceOfPaneId {
+                pane_id,
+                plugin_url,
+                configuration,
+                context,
+            } => Ok(ProtobufPluginCommand {
+                name: CommandName::OpenPluginPaneInPlaceOfPaneId as i32,
+                payload: Some(Payload::OpenPluginPaneInPlaceOfPaneIdPayload(
+                    serde_json::to_string(&(pane_id, plugin_url, configuration, context))
+                        .map_err(|_| "invalid in-place plugin pane payload")?,
+                )),
+            }),
             PluginCommand::RestartAgentPane {
                 pane_id,
                 prompt,
@@ -6413,6 +6442,7 @@ use {
     yinz_types::data::OpenFileInPlaceResponse, yinz_types::data::OpenFileNearPluginResponse,
     yinz_types::data::OpenFileResponse, yinz_types::data::OpenPaneInNewTabResponse,
     yinz_types::data::OpenPluginPaneFloatingResponse,
+    yinz_types::data::OpenPluginPaneInPlaceOfPaneIdResponse,
     yinz_types::data::OpenTerminalFloatingNearPluginResponse,
     yinz_types::data::OpenTerminalFloatingResponse,
     yinz_types::data::OpenTerminalInPlaceOfPluginResponse,
@@ -7189,6 +7219,14 @@ impl From<OpenCommandPaneInPlaceOfPaneIdResponse>
     }
 }
 
+impl From<OpenPluginPaneInPlaceOfPaneIdResponse> for ProtobufOpenPluginPaneInPlaceOfPaneIdResponse {
+    fn from(response: OpenPluginPaneInPlaceOfPaneIdResponse) -> Self {
+        ProtobufOpenPluginPaneInPlaceOfPaneIdResponse {
+            pane_id: response.map(|p| p.try_into().unwrap()),
+        }
+    }
+}
+
 impl TryFrom<ProtobufOpenTerminalPaneInPlaceOfPaneIdResponse>
     for OpenTerminalPaneInPlaceOfPaneIdResponse
 {
@@ -7932,6 +7970,7 @@ mod tests {
                 | PluginCommand::SpawnAgent { .. }
                 | PluginCommand::AgentControl { .. }
                 | PluginCommand::RestartAgentPane { .. }
+                | PluginCommand::OpenPluginPaneInPlaceOfPaneId { .. }
                 | PluginCommand::InspectConfiguration(..)
                 | PluginCommand::EditConfiguration(..)
                 | PluginCommand::ProjectConfigRead { .. }

@@ -377,6 +377,19 @@ pub enum PluginInstruction {
         response: crossbeam::channel::Sender<Result<Option<yinz_types::pick::PickRequest>, String>>,
     },
     PickRetired(PluginId),
+    /// Load `plugin_url` in place of `pane_id`, which the screen has found holding a slot in
+    /// `tab_id`, lending the new pane that slot. Refused when an instance with this url and
+    /// configuration already exists, rather than quietly doing nothing with it; the reason,
+    /// or the new pane, goes to `completion`.
+    OpenPluginPaneInPlaceOfPaneId {
+        pane_id: PaneId,
+        plugin_url: String,
+        configuration: BTreeMap<String, String>,
+        cwd: PathBuf,
+        tab_id: TabId,
+        client_id: ClientId,
+        completion: NotificationEnd,
+    },
     GetPluginIdsForUrl {
         url: String,
         configuration: Option<std::collections::BTreeMap<String, String>>,

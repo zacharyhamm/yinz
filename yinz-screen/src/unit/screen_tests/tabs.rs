@@ -239,11 +239,10 @@ pub fn closing_a_tab_closes_the_pane_behind_an_in_place_replacement() {
             Some(original),
             "precondition"
         );
-        let close_replaced_pane = false;
         tab.suppress_pane_and_replace_with_pid(
             original,
             stand_in,
-            close_replaced_pane,
+            yinz_bus::pty::ReplacedPane::Suppress,
             None,
             None,
             None,

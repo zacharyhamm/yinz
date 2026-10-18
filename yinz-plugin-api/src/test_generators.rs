@@ -1687,6 +1687,14 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::ProjectConfigRead => PluginCommand::ProjectConfigRead {
             directory: strings(tc).into(),
         },
+        CommandType::OpenPluginPaneInPlaceOfPaneId => {
+            PluginCommand::OpenPluginPaneInPlaceOfPaneId {
+                pane_id: pane_id(tc),
+                plugin_url: strings(tc),
+                configuration: context(tc),
+                context: context(tc),
+            }
+        },
         CommandType::RestartAgentPane => PluginCommand::RestartAgentPane {
             pane_id: pane_id(tc),
             prompt: optional_strings(tc),

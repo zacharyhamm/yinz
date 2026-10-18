@@ -107,7 +107,7 @@ use crate::{
     panes::sixel::SixelImageStore,
     panes::PaneId,
     plugins::{HookFiring, PluginId, PluginInstruction, PluginRenderAsset},
-    pty::{get_default_shell, ClientTabIndexOrPaneId, PtyInstruction},
+    pty::{get_default_shell, ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane},
     pty_writer::PtyWriteInstruction,
     tab::{Pane, Tab},
     thread_bus::Bus,
@@ -3866,24 +3866,30 @@ impl Screen {
         }
         Ok(())
     }
+    /// Open `new_pane_id` in place of the pane `client_id_tab_index_or_pane_id` names.
+    ///
+    /// Returns whether it was placed. A pane that could not be - its target is missing,
+    /// suppressed or names no pane - is forgotten, which closes its process or unloads its
+    /// plugin, and `completion_tx` carries the reason.
     pub fn replace_pane(
         &mut self,
         new_pane_id: PaneId,
         hold_for_command: HoldForCommand,
         run: Option<Run>,
         pane_title: Option<InitialTitle>,
-        close_replaced_pane: bool,
+        replaced: ReplacedPane,
         client_id_tab_index_or_pane_id: ClientTabIndexOrPaneId,
-    ) -> Result<()> {
-        let suppress_pane = |tab: &mut Tab, pane_id: PaneId, new_pane_id: PaneId| {
-            let _ = tab.suppress_pane_and_replace_with_pid(
+        completion_tx: &mut Option<NotificationEnd>,
+    ) -> bool {
+        let place = |tab: &mut Tab, pane_id: PaneId| -> Result<()> {
+            tab.suppress_pane_and_replace_with_pid(
                 pane_id,
                 new_pane_id,
-                close_replaced_pane,
+                replaced,
                 run,
                 None,
                 None,
-            );
+            )?;
             if let Some(pane_title) = pane_title {
                 let _ = tab.rename_pane(pane_title.as_bytes().to_vec(), new_pane_id);
             }
@@ -3891,55 +3897,43 @@ impl Screen {
                 let is_first_run = true;
                 let _ = tab.hold_pane(new_pane_id, None, is_first_run, hold_for_command);
             }
+            Ok(())
         };
-        match client_id_tab_index_or_pane_id {
+        let placed = match client_id_tab_index_or_pane_id {
             ClientTabIndexOrPaneId::ClientId(client_id)
-            | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
-                active_tab!(self, client_id, |tab: &mut Tab| {
-                    match tab.get_active_pane_id(client_id) {
-                        Some(pane_id) => {
-                            suppress_pane(tab, pane_id, new_pane_id);
-                        },
-                        None => {
-                            log::error!(
-                                "Failed to find active pane for client id: {:?}",
-                                client_id
-                            );
-                        },
-                    }
-                });
-            },
+            | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => self
+                .get_active_tab_mut(client_id)
+                .and_then(|tab| match tab.get_active_pane_id(client_id) {
+                    Some(pane_id) => place(tab, pane_id),
+                    None => Err(anyhow!("no active pane for client {client_id}")),
+                }),
+            // No client fallback here on purpose: replacing a pane the caller does not have
+            // is not a placement question, it is a request with no subject.
             ClientTabIndexOrPaneId::PaneId(pane_id)
             | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, _) => {
-                // No client fallback here on purpose: replacing a pane the caller does not have
-                // is not a placement question, it is a request with no subject.
-                let tab_index = self.tab_position_containing_pane(pane_id);
-                match tab_index {
-                    Some(tab_index) => {
-                        if let Some(tab) =
-                            self.tabs.iter_mut().find(|(_, t)| t.position == tab_index)
-                        {
-                            suppress_pane(tab.1, pane_id, new_pane_id);
-                        }
-                    },
-                    None => {
-                        self.forget_unplaced_pane(
-                            new_pane_id,
-                            format!("pane {pane_id:?} to replace not found"),
-                        );
-                    },
-                };
+                match self.tab_containing_pane_mut(pane_id) {
+                    Some(tab) => place(tab, pane_id),
+                    None => Err(anyhow!("pane {pane_id:?} to replace not found")),
+                }
             },
             ClientTabIndexOrPaneId::TabIndex(_tab_index)
             | ClientTabIndexOrPaneId::TabIndexNoFocus(_tab_index)
             | ClientTabIndexOrPaneId::TabIndexForClient(_tab_index, _) => {
-                self.forget_unplaced_pane(
-                    new_pane_id,
-                    "cannot replace a pane by tab index".to_owned(),
-                );
+                Err(anyhow!("cannot replace a pane by tab index"))
+            },
+        };
+        match placed {
+            Ok(()) => true,
+            Err(error) => {
+                let error = format!("{error:#}");
+                if let Some(completion) = completion_tx.as_mut() {
+                    completion.set_exit_status(1);
+                    completion.set_error_message(error.clone());
+                }
+                self.forget_unplaced_pane(new_pane_id, error);
+                false
             },
         }
-        Ok(())
     }
     /// Settle a [`ClientTabIndexOrPaneId::PaneIdOrClient`] against the tabs there are now.
     ///
@@ -3978,36 +3972,63 @@ impl Screen {
             .with_context(|| format!("failed to close unplaced pane {pane_id:?}"))
             .non_fatal();
     }
+    /// Move an existing pane into `pane_id_to_replace`'s slot, suppressing or closing the pane
+    /// that was there.
+    ///
+    /// Refused, with nothing moved, when the target holds no slot - it is suppressed or gone -
+    /// or is the pane being moved: the collections consume the pane they are handed, so a
+    /// replacement with nowhere to go would be dropped with its process still running.
     pub fn replace_pane_with_existing_pane(
         &mut self,
         pane_id_to_replace: PaneId,
         pane_id_of_existing_pane: PaneId,
         suppress_replaced_pane: bool,
-        _completion_tx: Option<NotificationEnd>, // ends here
-    ) {
-        let Some(tab_index_of_pane_id_to_replace) =
-            self.tab_position_containing_pane(pane_id_to_replace)
-        else {
-            log::error!(
-                "Could not find tab with pane_id: {:?} to replace",
-                pane_id_to_replace
-            );
-            return;
-        };
-        let Some(tab_index_of_existing_pane) =
-            self.tab_position_containing_pane(pane_id_of_existing_pane)
-        else {
-            log::error!(
-                "Could not find tab with pane_id: {:?} to be replaced by",
-                pane_id_of_existing_pane
-            );
-            return;
-        };
-        let Some((extracted_pane_from_other_tab, carried_respawn, retains_tab)) = self
+        mut completion_tx: Option<NotificationEnd>, // ends here
+    ) -> Result<()> {
+        let replaced = self.move_existing_pane_into_slot(
+            pane_id_to_replace,
+            pane_id_of_existing_pane,
+            suppress_replaced_pane,
+        );
+        if let Err(error) = &replaced {
+            if let Some(completion) = completion_tx.as_mut() {
+                completion.set_exit_status(1);
+                completion.set_error_message(format!("{error:#}"));
+            }
+        }
+        let _ = self.log_and_report_session_state();
+        replaced
+    }
+    fn move_existing_pane_into_slot(
+        &mut self,
+        pane_id_to_replace: PaneId,
+        pane_id_of_existing_pane: PaneId,
+        suppress_replaced_pane: bool,
+    ) -> Result<()> {
+        if pane_id_to_replace == pane_id_of_existing_pane {
+            bail!("cannot replace pane {pane_id_to_replace:?} with itself");
+        }
+        let tab_of_pane_to_replace = self
+            .tab_id_containing_pane(pane_id_to_replace)
+            .with_context(|| format!("pane {pane_id_to_replace:?} to replace not found"))?;
+        let tab_of_existing_pane = self
+            .tab_id_containing_pane(pane_id_of_existing_pane)
+            .with_context(|| {
+                format!("pane {pane_id_of_existing_pane:?} to replace it with not found")
+            })?;
+        {
+            let tab = self
+                .tabs
+                .get(&tab_of_pane_to_replace)
+                .context("tab of the pane to replace disappeared")?;
+            if !tab.pane_holds_a_slot(pane_id_to_replace) {
+                return Err(tab.no_slot_error(pane_id_to_replace));
+            }
+        }
+        let (extracted_pane_from_other_tab, carried_respawn, retains_tab) = self
             .tabs
-            .iter_mut()
-            .find(|(_, t)| t.position == tab_index_of_existing_pane)
-            .and_then(|(_, t)| {
+            .get_mut(&tab_of_existing_pane)
+            .and_then(|t| {
                 let retains_tab = t
                     .get_tiled_panes()
                     .chain(t.get_floating_panes())
@@ -4016,42 +4037,47 @@ impl Screen {
                 t.extract_pane(pane_id_of_existing_pane, true)
                     .map(|pane| (pane, carried_respawn, retains_tab))
             })
-        else {
-            log::error!("Failed to find pane");
-            return;
-        };
-        if let Some(tab) = self
+            .with_context(|| format!("failed to take pane {pane_id_of_existing_pane:?}"))?;
+        let tab = self
             .tabs
-            .iter_mut()
-            .find(|(_, t)| t.position == tab_index_of_pane_id_to_replace)
-        {
-            if suppress_replaced_pane {
-                tab.1.suppress_pane_and_replace_with_other_pane(
-                    pane_id_to_replace,
-                    extracted_pane_from_other_tab,
-                    None,
-                );
-            } else {
-                tab.1.close_pane_and_replace_with_other_pane(
-                    pane_id_to_replace,
-                    extracted_pane_from_other_tab,
-                    None,
-                );
+            .get_mut(&tab_of_pane_to_replace)
+            .context("tab of the pane to replace disappeared")?;
+        // Taking the pane can take its whole container with it, the target included.
+        if !tab.pane_holds_a_slot(pane_id_to_replace) {
+            let error = tab.no_slot_error(pane_id_to_replace);
+            if let Some(origin) = self.tabs.get_mut(&tab_of_existing_pane) {
+                origin.park_pane(extracted_pane_from_other_tab);
+                if let Some(entry) = carried_respawn {
+                    origin.restore_pending_respawn(pane_id_of_existing_pane, entry);
+                }
             }
-            if retains_tab {
-                tab.1.retain_tab_for_multipane(pane_id_of_existing_pane);
-            }
-            if let Some(entry) = carried_respawn {
-                tab.1
-                    .restore_pending_respawn(pane_id_of_existing_pane, entry);
-            }
+            return Err(error.context("moving the pane took the target with it; it is parked"));
+        }
+        if suppress_replaced_pane {
+            tab.suppress_pane_and_replace_with_other_pane(
+                pane_id_to_replace,
+                extracted_pane_from_other_tab,
+                None,
+            );
+        } else {
+            tab.close_pane_and_replace_with_other_pane(
+                pane_id_to_replace,
+                extracted_pane_from_other_tab,
+                None,
+            );
+        }
+        if retains_tab {
+            tab.retain_tab_for_multipane(pane_id_of_existing_pane);
+        }
+        if let Some(entry) = carried_respawn {
+            tab.restore_pending_respawn(pane_id_of_existing_pane, entry);
         }
         if !suppress_replaced_pane && self.tab_containing_pane(pane_id_to_replace).is_none() {
             if let PaneId::Plugin(plugin_id) = pane_id_to_replace {
                 self.drop_quit_notice(plugin_id);
             }
         }
-        let _ = self.log_and_report_session_state();
+        Ok(())
     }
     /// Apply a reloaded configuration. `config` is destructured without `..`, so a field added
     /// to `ScreenConfig` does not compile until this says what a reload does with it.

@@ -357,16 +357,16 @@ fn visible_and_hidden_plugin_companions_keep_their_launch_configuration() {
             yinz_runtime::plugin_location::run_plugin_from_url("yinz:strider")
                 .expect("plugin configuration"),
         ));
-        screen
-            .replace_pane(
-                plugin,
-                None,
-                Some(run.clone()),
-                None,
-                false,
-                ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(TerminalId::new(1))),
-            )
-            .expect("plugin cover");
+        let placed = screen.replace_pane(
+            plugin,
+            None,
+            Some(run.clone()),
+            None,
+            yinz_bus::pty::ReplacedPane::Suppress,
+            ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(TerminalId::new(1))),
+            &mut None,
+        );
+        assert!(placed, "plugin cover");
         let (_, terminals, prepared) = screen
             .prepare_pane_group(Some(plugin), ClientId::new(1))
             .expect("visible plugin")
@@ -374,16 +374,16 @@ fn visible_and_hidden_plugin_companions_keep_their_launch_configuration() {
         assert_eq!(terminals, vec![TerminalId::new(1)]);
         assert_eq!(prepared.tiled_layout.run, Some(run.clone()));
         let cover = PaneId::Terminal(TerminalId::new(60));
-        screen
-            .replace_pane(
-                cover,
-                None,
-                None,
-                None,
-                false,
-                ClientTabIndexOrPaneId::PaneId(plugin),
-            )
-            .expect("terminal cover");
+        let placed = screen.replace_pane(
+            cover,
+            None,
+            None,
+            None,
+            yinz_bus::pty::ReplacedPane::Suppress,
+            ClientTabIndexOrPaneId::PaneId(plugin),
+            &mut None,
+        );
+        assert!(placed, "terminal cover");
         assert!(screen
             .prepare_pane_group(Some(plugin), ClientId::new(1))
             .is_err());
@@ -911,16 +911,16 @@ fn a_replacement_for_a_pane_that_is_gone_is_closed_on_the_pty_thread() {
     let (to_pty, pty_receiver): ChannelWithContext<PtyInstruction> = channels::unbounded();
     screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
 
-    screen
-        .replace_pane(
-            PaneId::Terminal(crate::TerminalId::new(50)),
-            None,
-            None,
-            None,
-            false,
-            ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId::new(999))),
-        )
-        .expect("TEST");
+    let placed = screen.replace_pane(
+        PaneId::Terminal(crate::TerminalId::new(50)),
+        None,
+        None,
+        None,
+        yinz_bus::pty::ReplacedPane::Suppress,
+        ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(crate::TerminalId::new(999))),
+        &mut None,
+    );
+    assert!(!placed, "the target is gone");
 
     let closed_by_pty: Vec<PaneId> = pty_receiver
         .try_iter()
@@ -2539,7 +2539,7 @@ fn a_tab_with_a_replacement_chain_can_be_warped() {
         .suppress_pane_and_replace_with_pid(
             PaneId::Terminal(crate::TerminalId::new(1)),
             PaneId::Terminal(crate::TerminalId::new(9)),
-            false,
+            yinz_bus::pty::ReplacedPane::Suppress,
             None,
             None,
             None,

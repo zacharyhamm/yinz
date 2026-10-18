@@ -95,6 +95,7 @@ use {
     yinz_plugin_api::plugin_command::ProtobufOpenFileResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenPaneInNewTabResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenPluginPaneFloatingResponse,
+    yinz_plugin_api::plugin_command::ProtobufOpenPluginPaneInPlaceOfPaneIdResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenTerminalFloatingNearPluginResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenTerminalInPlaceOfPluginResponse,
     yinz_plugin_api::plugin_command::ProtobufOpenTerminalNearPluginResponse,
@@ -646,6 +647,8 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
         CommandType::OpenPluginPaneFloating => {
             decode(bytes).and_then(|r: ProtobufOpenPluginPaneFloatingResponse| pane_id(r.pane_id))
         },
+        CommandType::OpenPluginPaneInPlaceOfPaneId => decode(bytes)
+            .and_then(|r: ProtobufOpenPluginPaneInPlaceOfPaneIdResponse| pane_id(r.pane_id)),
         CommandType::OpenCommandPaneInGitCheckoutNearPlugin => {
             decode(bytes).and_then(|r: ProtobufOpenCommandPaneInGitCheckoutResponse| {
                 match r.result {

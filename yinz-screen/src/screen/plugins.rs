@@ -10,10 +10,11 @@ use super::{
 use crate::panes::PaneId;
 use crate::plugins::PluginId;
 use crate::plugins::PluginInstruction;
-use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction};
+use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane};
 use crate::route::NotificationEnd;
 use crate::tab::Tab;
 use crate::ClientId;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use yinz_types::data::{NewPanePlacement, OverlayPlacement};
 use yinz_types::geometry::FloatingPaneCoordinates;
@@ -245,6 +246,51 @@ impl Screen {
         Ok(())
     }
 
+    /// The screen's half of a plugin's `OpenPluginPaneInPlaceOfPaneId`: refuse a target that
+    /// holds no slot before the plugin thread loads anything, so that a refusal never starts
+    /// a plugin only to stop it again. `add_plugin` checks once more when the pane arrives,
+    /// since the target can go in between.
+    pub(super) fn open_plugin_pane_in_place_of_pane_id(
+        &mut self,
+        pane_id: PaneId,
+        plugin_url: String,
+        configuration: BTreeMap<String, String>,
+        cwd: PathBuf,
+        client_id: ClientId,
+        mut completion: NotificationEnd,
+    ) {
+        let tab_id = match self.tab_id_containing_pane(pane_id) {
+            Some(tab_id) => match self.tabs.get(&tab_id) {
+                Some(tab) if tab.pane_holds_a_slot(pane_id) => Ok(tab_id),
+                Some(tab) => Err(tab.no_slot_error(pane_id)),
+                None => Err(anyhow!("pane {pane_id:?} not found")),
+            },
+            None => Err(anyhow!("pane {pane_id:?} not found")),
+        };
+        let tab_id = match tab_id {
+            Ok(tab_id) => tab_id,
+            Err(error) => {
+                completion.set_exit_status(1);
+                completion.set_error_message(format!("{error:#}"));
+                return;
+            },
+        };
+        // A failed send drops the completion, which answers the caller unconfirmed.
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::OpenPluginPaneInPlaceOfPaneId {
+                pane_id,
+                plugin_url,
+                configuration,
+                cwd,
+                tab_id,
+                client_id,
+                completion,
+            })
+            .context("failed to reach the plugin thread")
+            .non_fatal();
+    }
+
     /// A plugin has loaded: work out where its pane goes (overlay, floating, tiled or in place of
     /// another pane) and open it there, then replay whatever was waiting for that pane.
     ///
@@ -254,7 +300,7 @@ impl Screen {
         &mut self,
         should_float: Option<bool>,
         should_be_in_place: bool,
-        close_replaced_pane: bool,
+        replaced: ReplacedPane,
         run_plugin_or_alias: RunPluginOrAlias,
         pane_title: Option<String>,
         tab_index: Option<TabId>,
@@ -308,7 +354,7 @@ impl Screen {
         }
         if should_be_in_place {
             new_pane_placement =
-                NewPanePlacement::with_pane_id_to_replace(pane_id_to_replace, close_replaced_pane);
+                NewPanePlacement::with_pane_id_to_replace(pane_id_to_replace, replaced.closes());
         }
         if self.active_tab_ids.is_empty() && tab_index.is_none() {
             pending
@@ -316,7 +362,7 @@ impl Screen {
                 .push(ScreenInstruction::AddPlugin(
                     maybe_should_float,
                     should_be_in_place,
-                    close_replaced_pane,
+                    replaced,
                     run_plugin_or_alias,
                     pane_title,
                     tab_index,
@@ -356,9 +402,10 @@ impl Screen {
                     None,
                     Some(run_plugin),
                     Some(pane_title),
-                    close_replaced_pane,
+                    replaced,
                     client_tab_index_or_pane_id,
-                )?;
+                    &mut completion_tx,
+                );
             } else if let Some(client_id) = client_id {
                 let client_tab_index_or_pane_id = ClientTabIndexOrPaneId::ClientId(client_id);
                 self.replace_pane(
@@ -366,9 +413,10 @@ impl Screen {
                     None,
                     Some(run_plugin),
                     Some(pane_title),
-                    close_replaced_pane,
+                    replaced,
                     client_tab_index_or_pane_id,
-                )?;
+                    &mut completion_tx,
+                );
             } else {
                 Err::<(), _>(anyhow!(
                     "Must have pane id to replace or connected client_id if replacing a pane"

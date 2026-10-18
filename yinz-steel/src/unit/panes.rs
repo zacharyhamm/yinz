@@ -50,6 +50,7 @@ impl Harness {
                         json!([{"kind":"fixture-agent","executable":"fixture-agent"}])
                     },
                     "RestartAgentPane" => json!({"pane_id":{"Terminal":7},"session_id":"sid","command":["claude","P"]}),
+                    "OpenPluginPaneInPlaceOfPaneId" => json!({"Plugin":12}),
                     "SpawnAgent" => json!({"pane_id":{"Terminal":7}}),
                     _ => Value::Null,
                 })
@@ -118,6 +119,47 @@ impl Harness {
         self.now.fetch_add(millis, Ordering::SeqCst);
         self.event(json!({"Timer":millis as f64 / 1000.0}));
     }
+}
+
+#[test]
+fn open_plugin_in_place_of_returns_a_deferred_for_terminal_and_plugin_slots() {
+    let mut h = Harness::new("(define reply #f) (define failure #f)");
+    h.eval(
+        r#"(yinz-then (yinz-open-plugin-in-place-of 7 "file:/hook.scm"
+      (hash "configuration" (hash "job" "42") "context" (hash "k" "v")))
+      (lambda (value) (set! reply value)))"#,
+    );
+    assert_eq!(h.value("reply"), json!({"Plugin":12}));
+    h.eval(r#"(yinz-open-plugin-in-place-of (hash "Plugin" 3) "file:/hook.scm")"#);
+    assert_eq!(
+        h.sent("OpenPluginPaneInPlaceOfPaneId"),
+        vec![
+            json!({"pane_id":{"Terminal":7},"plugin_url":"file:/hook.scm",
+                "configuration":{"job":"42"},"context":{"k":"v"}}),
+            json!({"pane_id":{"Plugin":3},"plugin_url":"file:/hook.scm",
+                "configuration":{},"context":{}}),
+        ]
+    );
+    // A host refusal - a suppressed target, an existing instance - rejects the deferred.
+    *h.failure.lock().unwrap() = Some("OpenPluginPaneInPlaceOfPaneId".into());
+    h.eval(r#"(yinz-catch (yinz-open-plugin-in-place-of 7 "file:/hook.scm") (lambda (message) (set! failure message)))"#);
+    assert_eq!(
+        h.value("failure"),
+        "OpenPluginPaneInPlaceOfPaneId dispatch failed"
+    );
+    let sent = h.sent("OpenPluginPaneInPlaceOfPaneId").len();
+    for invalid in [
+        r#"(yinz-open-plugin-in-place-of (hash "Plugin" -1) "file:/hook.scm")"#,
+        r#"(yinz-open-plugin-in-place-of 7 42)"#,
+        r#"(yinz-open-plugin-in-place-of 7 "file:/hook.scm" 1)"#,
+    ] {
+        h.eval("(set! failure #f)");
+        h.eval(&format!(
+            "(yinz-catch {invalid} (lambda (message) (set! failure message)))"
+        ));
+        assert!(h.value("failure").is_string(), "{invalid} was accepted");
+    }
+    assert_eq!(h.sent("OpenPluginPaneInPlaceOfPaneId").len(), sent);
 }
 
 #[test]

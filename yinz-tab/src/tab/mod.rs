@@ -71,7 +71,7 @@ use crate::{
     panes::{FloatingPanes, OverlayCarry, OverlayPanes, PaneFactory, TiledPanes},
     panes::{LinkHandler, PaneId, PluginPane, TerminalPane, EMPTY_TERMINAL_CHARACTER},
     plugins::PluginInstruction,
-    pty::{ClientTabIndexOrPaneId, PtyInstruction, VteBytes},
+    pty::{ClientTabIndexOrPaneId, PtyInstruction, ReplacedPane, VteBytes},
     thread_bus::ThreadSenders,
     ClientId, ServerInstruction,
 };
@@ -105,6 +105,9 @@ const MAX_PENDING_VTE_EVENTS: usize = 7000;
 pub struct StandIn {
     pub pane_id: PaneId,
     pub is_scrollback_editor: bool,
+    /// The stand-in only borrows the slot (`ReplacedPane::Lend`): an explicit close of the
+    /// stand-in brings the suppressed pane back instead of closing it as well.
+    pub lent: bool,
 }
 
 /// A pane that has been taken out of the layout but not closed: it is not
@@ -143,12 +146,18 @@ impl SuppressedPane {
             restored_by: None,
         }
     }
-    fn behind(pane: Box<dyn Pane>, stand_in: PaneId, is_scrollback_editor: bool) -> Self {
+    fn behind(
+        pane: Box<dyn Pane>,
+        stand_in: PaneId,
+        is_scrollback_editor: bool,
+        lent: bool,
+    ) -> Self {
         SuppressedPane {
             pane,
             restored_by: Some(StandIn {
                 pane_id: stand_in,
                 is_scrollback_editor,
+                lent,
             }),
         }
     }
@@ -3274,12 +3283,13 @@ impl Tab {
         blocking_notification: Option<NotificationEnd>,
         borderless: Option<bool>,
     ) -> Result<()> {
+        let replaced = ReplacedPane::closed_if(close_replaced_pane);
         match (pane_id_to_replace, client_id) {
             (Some(pane_id_to_replace), _) => {
                 self.suppress_pane_and_replace_with_pid(
                     pane_id_to_replace,
                     pid,
-                    close_replaced_pane,
+                    replaced,
                     invoked_with,
                     blocking_notification,
                     borderless,
@@ -3290,7 +3300,7 @@ impl Tab {
                     self.suppress_pane_and_replace_with_pid(
                         active_pane_id,
                         pid,
-                        close_replaced_pane,
+                        replaced,
                         invoked_with,
                         blocking_notification,
                         borderless,
@@ -3432,6 +3442,9 @@ impl Tab {
         // the pane with the given pane_id_to_replace is then suppressed (hidden and not rendered) until the current
         // created pane is closed, in which case it will be replaced back by it
         let err_context = || "failed to suppress pane".to_string();
+        if !self.pane_holds_a_slot(pane_id_to_replace) {
+            return Err(self.no_slot_error(pane_id_to_replace));
+        }
 
         match pid {
             PaneId::Terminal(pid) => {
@@ -3444,15 +3457,9 @@ impl Tab {
                     self.overlay_panes
                         .replace_pane(pane_id_to_replace, Box::new(new_pane))
                         .ok()
-                } else if self.tiled_panes.panes_contain(&pane_id_to_replace) {
+                } else {
                     self.tiled_panes
                         .replace_pane(pane_id_to_replace, Box::new(new_pane))
-                } else if self.suppressed_panes.contains_key(&pane_id_to_replace) {
-                    log::error!("Cannot replace suppressed pane");
-                    None
-                } else {
-                    // not a thing
-                    None
                 };
                 match replaced_pane {
                     Some(replaced_pane) => {
@@ -3482,11 +3489,18 @@ impl Tab {
         }
         Ok(())
     }
+    /// Open `new_pane_id` in `old_pane_id`'s slot, and close, suppress or lend the pane that
+    /// was there as `replaced` says.
+    ///
+    /// Fails before building anything when `old_pane_id` holds no slot: every collection's
+    /// `replace_pane` consumes the replacement, so asking one to replace a pane it does not
+    /// have would silently drop the new pane and orphan whatever it was running. The caller
+    /// owns the new pane id and has to forget it.
     pub fn suppress_pane_and_replace_with_pid(
         &mut self,
         old_pane_id: PaneId,
         new_pane_id: PaneId,
-        close_replaced_pane: bool,
+        replaced: ReplacedPane,
         run: Option<Run>,
         completion_tx: Option<NotificationEnd>,
         borderless: Option<bool>,
@@ -3495,6 +3509,11 @@ impl Tab {
         // the active pane is then suppressed (hidden and not rendered) until the current
         // created pane is closed, in which case it will be replaced back by it
         let err_context = || "failed to suppress active pane".to_string();
+        if !self.pane_holds_a_slot(old_pane_id) {
+            return Err(self.no_slot_error(old_pane_id));
+        }
+        let close_replaced_pane = replaced.closes();
+        let lent = replaced == ReplacedPane::Lend;
 
         match new_pane_id {
             PaneId::Terminal(new_pane_id) => {
@@ -3573,6 +3592,7 @@ impl Tab {
                                 replaced_pane,
                                 PaneId::Terminal(new_pane_id),
                                 is_scrollback_editor,
+                                lent,
                             );
                         },
                         None => {
@@ -3653,6 +3673,7 @@ impl Tab {
                                 replaced_pane,
                                 PaneId::Plugin(plugin_pid),
                                 is_scrollback_editor,
+                                lent,
                             );
                         },
                         None => {
@@ -3674,6 +3695,11 @@ impl Tab {
         pane_to_replace_with: Box<dyn Pane>,
         completion_tx: Option<NotificationEnd>,
     ) {
+        let Some(pane_to_replace_with) =
+            self.park_unless_slot_held(pane_id_to_replace, pane_to_replace_with)
+        else {
+            return;
+        };
         let replacement_pane_id = pane_to_replace_with.pid();
         let mut replaced_pane = if self.floating_panes.panes_contain(&pane_id_to_replace) {
             self.floating_panes
@@ -3711,12 +3737,35 @@ impl Tab {
             drop(replaced_pane);
         }
     }
+    /// Hand `pane` back when `pane_id_to_replace` holds a slot it can take. Otherwise park it
+    /// here and return `None`: every collection consumes the pane it is asked to put in place
+    /// of one it does not have, and a parked pane can still be found and closed.
+    fn park_unless_slot_held(
+        &mut self,
+        pane_id_to_replace: PaneId,
+        pane: Box<dyn Pane>,
+    ) -> Option<Box<dyn Pane>> {
+        if self.pane_holds_a_slot(pane_id_to_replace) {
+            return Some(pane);
+        }
+        log::error!(
+            "pane {pane_id_to_replace:?} holds no slot; parking {:?} rather than dropping it",
+            pane.pid()
+        );
+        self.park_pane(pane);
+        None
+    }
     pub fn suppress_pane_and_replace_with_other_pane(
         &mut self,
         pane_id_to_replace: PaneId,
         pane_to_replace_with: Box<dyn Pane>,
         _completion_tx: Option<NotificationEnd>,
     ) {
+        let Some(pane_to_replace_with) =
+            self.park_unless_slot_held(pane_id_to_replace, pane_to_replace_with)
+        else {
+            return;
+        };
         let mut replaced_pane = if self.floating_panes.panes_contain(&pane_id_to_replace) {
             self.floating_panes
                 .replace_pane(pane_id_to_replace, pane_to_replace_with)
@@ -6812,9 +6861,11 @@ impl Tab {
                 id,
                 SuppressedPane {
                     pane,
+                    // A warp does not carry `lent`: a lent slot arrives as a plain suppression.
                     restored_by: hidden.restored_by.map(|cover| StandIn {
                         pane_id: slots[cover as usize],
                         is_scrollback_editor: hidden.is_scrollback_editor,
+                        lent: false,
                     }),
                 },
             );
@@ -8255,8 +8306,15 @@ impl Tab {
             .senders
             .send_to_screen(ScreenInstruction::NotifyPaneClosedToSubscribers { pane_id: id });
     }
-    /// Explicit close destroys the whole replacement chain. Natural exits and `close_self`
+    /// Explicit close destroys the replacement chain. Natural exits and `close_self`
     /// still use `close_pane`, which restores the pane behind an editor or exit view.
+    ///
+    /// The chain is followed in both directions, with one exception: a lent slot
+    /// (`ReplacedPane::Lend`) is not followed from the stand-in back to the pane it borrowed
+    /// the slot from. Closing that stand-in restores the lender, as any other close of it
+    /// would, so a plugin's own pane survives the user closing a command it ran in its place.
+    /// Closing the lender, or any pane behind it, still closes everything standing in front
+    /// of it: closing the bottom of a stack is the way to close the whole stack.
     pub fn close_pane_explicitly(
         &mut self,
         id: PaneId,
@@ -8305,7 +8363,7 @@ impl Tab {
                 if let Some(stand_in) = suppressed.restored_by {
                     let related = if *subject == current {
                         Some(stand_in.pane_id)
-                    } else if stand_in.pane_id == current {
+                    } else if stand_in.pane_id == current && !stand_in.lent {
                         Some(*subject)
                     } else {
                         None
@@ -9693,11 +9751,13 @@ impl Tab {
                                 };
                             if let Some(replaced_pane) = replaced_pane {
                                 let is_scrollback_editor = false;
+                                let lent = false;
                                 self.track_stack_list_member_id_swap(replaced_pane.pid(), pane_id);
                                 self.suppress_pane_behind(
                                     replaced_pane,
                                     pane_id,
                                     is_scrollback_editor,
+                                    lent,
                                 );
                             } else {
                                 log::error!("Could not find pane to replace, aborting.");
@@ -9837,11 +9897,28 @@ impl Tab {
         pane: Box<dyn Pane>,
         stand_in: PaneId,
         is_scrollback_editor: bool,
+        lent: bool,
     ) {
         self.suppressed_panes.insert(
             pane.pid(),
-            SuppressedPane::behind(pane, stand_in, is_scrollback_editor),
+            SuppressedPane::behind(pane, stand_in, is_scrollback_editor, lent),
         );
+    }
+    /// Whether `pane_id` is in the layout - tiled, floating or an overlay - rather than
+    /// suppressed or absent. Only a pane on screen has a slot that a pane opened in its place
+    /// can take: asking a collection to replace any other pane drops the replacement.
+    pub fn pane_holds_a_slot(&self, pane_id: PaneId) -> bool {
+        self.tiled_panes.panes_contain(&pane_id)
+            || self.floating_panes.panes_contain(&pane_id)
+            || self.overlay_panes.panes_contain(&pane_id)
+    }
+    /// Why nothing can open in `pane_id`'s place, for a pane `pane_holds_a_slot` refused.
+    pub fn no_slot_error(&self, pane_id: PaneId) -> anyError {
+        if self.suppressed_panes.contains_key(&pane_id) {
+            anyhow!("pane {pane_id:?} is suppressed, so it has no slot to open a pane in place of")
+        } else {
+            anyhow!("pane {pane_id:?} is not in this tab")
+        }
     }
     /// Take a pane out of the layout with nothing standing in for it.
     ///
@@ -10882,10 +10959,12 @@ impl Tab {
         terminal_pane_id: TerminalId,
     ) {
         let is_scrollback_editor = true;
+        let lent = false;
         self.suppress_pane_behind(
             replaced_pane,
             PaneId::Terminal(terminal_pane_id),
             is_scrollback_editor,
+            lent,
         );
     }
     fn pane_is_stacked(&self, pane_id: PaneId) -> bool {

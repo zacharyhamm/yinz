@@ -639,7 +639,7 @@ fn pty_bytes_buffered_before_replace_pane_are_replayed() {
                 None,
                 None,
                 None,
-                close_replaced_pane,
+                yinz_bus::pty::ReplacedPane::closed_if(close_replaced_pane),
                 ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(TerminalId::new(0))),
                 None,
             ))

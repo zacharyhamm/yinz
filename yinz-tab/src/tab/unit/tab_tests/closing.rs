@@ -1,6 +1,6 @@
 use super::*;
 use yinz_bus::plugins::PluginInstruction;
-use yinz_bus::pty::PtyInstruction;
+use yinz_bus::pty::{PtyInstruction, ReplacedPane};
 use yinz_bus::screen::ScreenInstruction;
 use yinz_types::data::Event;
 
@@ -129,14 +129,26 @@ fn middle_replacement_exit_preserves_restoration_and_explicit_chain_destruction(
                         .unwrap();
                     assert!(tab.pane_is_stack_list_member(&source));
                 }
-                tab.suppress_pane_and_replace_with_pid(source, middle, false, None, None, None)
-                    .unwrap();
+                tab.suppress_pane_and_replace_with_pid(
+                    source,
+                    middle,
+                    ReplacedPane::Suppress,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
                 if scrollback_editor {
                     tab.replace_pane_with_editor_pane(successor, middle)
                         .unwrap();
                 } else {
                     tab.suppress_pane_and_replace_with_pid(
-                        middle, successor, false, None, None, None,
+                        middle,
+                        successor,
+                        ReplacedPane::Suppress,
+                        None,
+                        None,
+                        None,
                     )
                     .unwrap();
                 }
@@ -221,8 +233,15 @@ fn exiting_parked_replacement_parks_every_predecessor_without_dangling_links() {
     let replacement = PaneId::Terminal(TerminalId::new(3));
     tab.vertical_split(other, None, None, ClientId::new(1), None, None)
         .unwrap();
-    tab.suppress_pane_and_replace_with_pid(source, replacement, false, None, None, None)
-        .unwrap();
+    tab.suppress_pane_and_replace_with_pid(
+        source,
+        replacement,
+        ReplacedPane::Suppress,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     tab.suppress_pane(other, None);
     tab.suppressed_panes.get_mut(&other).unwrap().restored_by =
         tab.suppressed_panes[&source].restored_by;
@@ -303,8 +322,15 @@ fn fullscreen_hidden_replacement_survives_natural_exit_and_explicit_close() {
             tab.vertical_split(hidden, None, None, ClientId::new(1), None, None)
                 .unwrap();
             tab.tiled_panes.toggle_pane_fullscreen(owner);
-            tab.suppress_pane_and_replace_with_pid(hidden, replacement, false, None, None, None)
-                .unwrap();
+            tab.suppress_pane_and_replace_with_pid(
+                hidden,
+                replacement,
+                ReplacedPane::Suppress,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             assert!(!tab.tiled_panes.panes_to_hide_contains(hidden));
             assert!(tab.tiled_panes.panes_to_hide_contains(replacement));
             assert_eq!(tab.tiled_panes.fullscreen_pane_id(), Some(owner));
@@ -349,10 +375,24 @@ fn explicit_close_destroys_the_entire_live_replacement_chain() {
         let source = PaneId::Terminal(TerminalId::new(1));
         let view = PaneId::Plugin(crate::PluginId::new(2));
         let helper = PaneId::Terminal(TerminalId::new(3));
-        tab.suppress_pane_and_replace_with_pid(source, view, false, None, None, None)
-            .unwrap();
-        tab.suppress_pane_and_replace_with_pid(view, helper, false, None, None, None)
-            .unwrap();
+        tab.suppress_pane_and_replace_with_pid(
+            source,
+            view,
+            ReplacedPane::Suppress,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        tab.suppress_pane_and_replace_with_pid(
+            view,
+            helper,
+            ReplacedPane::Suppress,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         if let Some(index) = targeted {
             let ids = [source, view, helper];
             assert_eq!(tab.close_pane_explicitly(ids[index], None).len(), 3);
@@ -443,8 +483,15 @@ fn explicit_close_of_any_multipane_replacement_destroys_both_chains() {
         .unwrap();
         for chain in chains {
             for pair in chain.windows(2) {
-                tab.suppress_pane_and_replace_with_pid(pair[0], pair[1], false, None, None, None)
-                    .unwrap();
+                tab.suppress_pane_and_replace_with_pid(
+                    pair[0],
+                    pair[1],
+                    ReplacedPane::Suppress,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
             }
         }
         tab.focus_pane_with_id(chains[0][2], false, false, client)
@@ -515,8 +562,15 @@ fn pane_replacement_keeps_the_original_suppressed_until_explicit_restart() {
         let view = PaneId::Plugin(crate::PluginId::new(2));
         let worker = PaneId::Terminal(TerminalId::new(3));
         tab.hold_pane(source, Some(0), false, RunCommand::default());
-        tab.suppress_pane_and_replace_with_pid(source, view, false, None, None, None)
-            .unwrap();
+        tab.suppress_pane_and_replace_with_pid(
+            source,
+            view,
+            ReplacedPane::Suppress,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             tab.suppressed_panes[&source].restored_by.unwrap().pane_id,
             view
@@ -2976,6 +3030,7 @@ fn navigation_recovers_only_the_lowest_eligible_parked_terminal() {
                         Some(crate::tab::StandIn {
                             pane_id: PaneId::Plugin(crate::PluginId::new(7)),
                             is_scrollback_editor: true,
+                            lent: false,
                         });
                 }
                 if excluded == "stack" {
@@ -3091,4 +3146,314 @@ fn navigation_leaves_editor_restoration_ownership_intact() {
     tab.close_pane(editor, false, None);
     assert!(tab.has_non_suppressed_pane_with_pid(&original));
     assert!(!tab.suppressed_panes.contains_key(&original));
+}
+
+/// The merge-queue stack: an exited agent behind its `agent_exit` hook, and a held command
+/// the hook ran in its own slot. The hook's link to the agent is an ordinary suppression;
+/// the command only borrows the hook's slot.
+struct LentStack {
+    tab: Tab,
+    client: ClientId,
+    agent: PaneId,
+    hook: PaneId,
+    gate: PaneId,
+    closed: Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
+    screen: Receiver<(ScreenInstruction, yinz_types::diagnostics::ErrorContext)>,
+}
+
+fn lent_stack() -> LentStack {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        true,
+    );
+    let (sender, closed) = unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+    let (screen_sender, screen) = unbounded();
+    tab.senders.to_screen = Some(SenderWithContext::new(screen_sender));
+    let client = ClientId::new(1);
+    let agent = PaneId::Terminal(TerminalId::new(1));
+    let hook = PaneId::Plugin(crate::PluginId::new(2));
+    let gate = PaneId::Terminal(TerminalId::new(3));
+    tab.hold_pane(agent, Some(0), false, RunCommand::default());
+    tab.suppress_pane_and_replace_with_pid(agent, hook, ReplacedPane::Suppress, None, None, None)
+        .unwrap();
+    tab.suppress_pane_and_replace_with_pid(hook, gate, ReplacedPane::Lend, None, None, None)
+        .unwrap();
+    let held = RunCommand {
+        hold_on_close: true,
+        ..Default::default()
+    };
+    tab.hold_pane(gate, Some(1), false, held);
+    tab.focus_pane_with_id(gate, false, false, client).unwrap();
+    LentStack {
+        tab,
+        client,
+        agent,
+        hook,
+        gate,
+        closed,
+        screen,
+    }
+}
+
+fn announced_closures(
+    receiver: &Receiver<(PluginInstruction, yinz_types::diagnostics::ErrorContext)>,
+) -> Vec<PaneId> {
+    receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(events) => events
+                .into_iter()
+                .filter_map(|(_, _, event)| match event {
+                    Event::PaneClosed(id) => Some(id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect()
+}
+
+#[test]
+fn ctrl_c_on_a_held_command_in_a_lent_slot_restores_the_hook_over_its_agent() {
+    let LentStack {
+        mut tab,
+        client,
+        agent,
+        hook,
+        gate,
+        closed,
+        screen,
+    } = lent_stack();
+    tab.write_to_active_terminal(&None, vec![3], false, client, None)
+        .unwrap();
+    let closing = screen
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            ScreenInstruction::CloseFocusWithPaneId(id, completion) => Some((id, completion)),
+            _ => None,
+        });
+    let Some((closing, completion)) = closing else {
+        panic!("Ctrl-C on a held pane did not ask to close it");
+    };
+    assert_eq!(closing, gate);
+    // What the screen does with `CloseFocusWithPaneId`.
+    assert_eq!(tab.close_pane_explicitly(closing, completion), vec![gate]);
+    assert!(!tab.has_pane_with_pid(&gate));
+    assert!(tab.pane_holds_a_slot(hook), "the hook is back in its slot");
+    assert_eq!(tab.get_active_pane_id(client), Some(hook));
+    let behind = tab.suppressed_panes[&agent].restored_by.unwrap();
+    assert_eq!(
+        behind.pane_id, hook,
+        "the agent is still suppressed behind it"
+    );
+    assert!(!behind.lent);
+    assert_eq!(announced_closures(&closed), vec![gate]);
+    tab.assert_invariants();
+}
+
+#[test]
+fn explicit_close_keeps_the_hook_cascade_and_closes_a_whole_stack_from_its_bottom() {
+    // (closed explicitly, expected to close, expected to survive in a slot)
+    let cases = [
+        ("gate", vec!["gate"], Some("hook")),
+        ("agent", vec!["agent", "hook", "gate"], None),
+        // A pane behind the lent slot still takes everything in front of it.
+        ("hook", vec!["hook", "agent", "gate"], None),
+    ];
+    for (target, expected, survivor) in cases {
+        let stack = lent_stack();
+        let mut tab = stack.tab;
+        let name = |id: PaneId| match id {
+            id if id == stack.agent => "agent",
+            id if id == stack.hook => "hook",
+            id if id == stack.gate => "gate",
+            _ => "other",
+        };
+        let id = |name: &str| match name {
+            "agent" => stack.agent,
+            "hook" => stack.hook,
+            _ => stack.gate,
+        };
+        let mut closed: Vec<_> = tab
+            .close_pane_explicitly(id(target), None)
+            .into_iter()
+            .map(name)
+            .collect();
+        closed.sort();
+        let mut expected_sorted = expected.clone();
+        expected_sorted.sort();
+        assert_eq!(closed, expected_sorted, "closing {target}");
+        for pane in ["agent", "hook", "gate"] {
+            assert_eq!(
+                tab.has_pane_with_pid(&id(pane)),
+                !expected.contains(&pane),
+                "{pane} after closing {target}"
+            );
+        }
+        if let Some(survivor) = survivor {
+            assert!(tab.pane_holds_a_slot(id(survivor)));
+        }
+        tab.assert_invariants();
+    }
+    // With the gate gone, the user closing the hook closes the agent too, and so does the
+    // builtin `agent_exit` Esc path (`CloseTerminalPane` on the agent, then `CloseSelf`).
+    for esc_path in [false, true] {
+        let LentStack {
+            mut tab,
+            agent,
+            hook,
+            gate,
+            ..
+        } = lent_stack();
+        tab.close_pane_explicitly(gate, None);
+        if esc_path {
+            tab.close_pane_explicitly(agent, None);
+            tab.close_pane(hook, false, None);
+        } else {
+            tab.close_pane_explicitly(hook, None);
+        }
+        for id in [agent, hook, gate] {
+            assert!(!tab.has_pane_with_pid(&id), "esc_path={esc_path}");
+        }
+        tab.assert_invariants();
+    }
+}
+
+#[test]
+fn a_lent_slot_comes_back_on_every_kind_of_close() {
+    for explicit in [false, true] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            true,
+        );
+        let (sender, _receiver) = unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        // A running agent a coordinator covered with its own UI: closing the UI must not
+        // take the agent with it.
+        let agent = PaneId::Terminal(TerminalId::new(1));
+        let cover = PaneId::Plugin(crate::PluginId::new(2));
+        tab.suppress_pane_and_replace_with_pid(agent, cover, ReplacedPane::Lend, None, None, None)
+            .unwrap();
+        assert!(tab.suppressed_panes[&agent].restored_by.unwrap().lent);
+        if explicit {
+            assert_eq!(tab.close_pane_explicitly(cover, None), vec![cover]);
+        } else {
+            tab.close_pane(cover, false, None);
+        }
+        assert!(tab.pane_holds_a_slot(agent), "explicit={explicit}");
+        assert!(!tab.has_pane_with_pid(&cover));
+        tab.assert_invariants();
+    }
+}
+
+#[test]
+fn opening_in_place_of_a_pane_without_a_slot_is_refused_before_anything_is_built() {
+    for replaced in [
+        ReplacedPane::Close,
+        ReplacedPane::Suppress,
+        ReplacedPane::Lend,
+    ] {
+        for missing in [false, true] {
+            let mut tab = create_new_tab(
+                Size {
+                    cols: 121,
+                    rows: 20,
+                },
+                true,
+            );
+            let (sender, _receiver) = unbounded();
+            tab.senders
+                .replace_to_plugin(SenderWithContext::new(sender));
+            let (pty_sender, pty) = unbounded();
+            tab.senders
+                .replace_to_pty(SenderWithContext::new(pty_sender));
+            let agent = PaneId::Terminal(TerminalId::new(1));
+            let hook = PaneId::Plugin(crate::PluginId::new(2));
+            let gate = PaneId::Terminal(TerminalId::new(3));
+            tab.suppress_pane_and_replace_with_pid(
+                agent,
+                hook,
+                ReplacedPane::Suppress,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            // A hidden hook (`HideSelf`) asking to run its gate in its own place, or a pane
+            // that is gone altogether.
+            let target = if missing {
+                PaneId::Terminal(TerminalId::new(99))
+            } else {
+                tab.suppress_pane(hook, None);
+                hook
+            };
+            let before = tab.get_all_pane_ids();
+            let error = tab
+                .suppress_pane_and_replace_with_pid(target, gate, replaced, None, None, None)
+                .unwrap_err();
+            let expected = if missing {
+                "not in this tab"
+            } else {
+                "suppressed"
+            };
+            assert!(format!("{error:#}").contains(expected), "{error:#}");
+            assert_eq!(
+                tab.get_all_pane_ids(),
+                before,
+                "{replaced:?} changed the tab"
+            );
+            assert!(!tab.has_pane_with_pid(&gate));
+            assert!(
+                pty.try_iter().next().is_none(),
+                "the caller, which owns the gate's id, decides what to close"
+            );
+            // The editor in place of a pane has the same rule.
+            let editor = PaneId::Terminal(TerminalId::new(4));
+            assert!(tab.replace_pane_with_editor_pane(editor, target).is_err());
+            assert!(!tab.has_pane_with_pid(&editor));
+            tab.assert_invariants();
+        }
+    }
+}
+
+#[test]
+fn moving_a_pane_into_a_pane_without_a_slot_parks_it_rather_than_dropping_it() {
+    for suppress in [false, true] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            true,
+        );
+        let (sender, _receiver) = unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        let hidden = PaneId::Terminal(TerminalId::new(2));
+        let moving = PaneId::Terminal(TerminalId::new(3));
+        tab.vertical_split(hidden, None, None, ClientId::new(1), None, None)
+            .unwrap();
+        tab.vertical_split(moving, None, None, ClientId::new(1), None, None)
+            .unwrap();
+        tab.suppress_pane(hidden, None);
+        let pane = tab.extract_pane(moving, true).unwrap();
+        if suppress {
+            tab.suppress_pane_and_replace_with_other_pane(hidden, pane, None);
+        } else {
+            tab.close_pane_and_replace_with_other_pane(hidden, pane, None);
+        }
+        assert!(tab.has_pane_with_pid(&moving), "suppress={suppress}");
+        assert!(tab.has_pane_with_pid(&hidden));
+        assert!(tab.suppressed_panes[&moving].restored_by.is_none());
+        tab.assert_invariants();
+    }
 }

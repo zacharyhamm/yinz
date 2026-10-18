@@ -83,6 +83,44 @@ pub enum ClientTabIndexOrPaneId {
     PaneIdOrClient(PaneId, ClientId),
 }
 
+/// What becomes of the pane that a pane opened in place of another replaces.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplacedPane {
+    /// It closes.
+    Close,
+    /// It hides behind the new pane, and comes back when the new pane exits or closes
+    /// itself. An explicit close of either one closes both: they are two halves of one
+    /// thing, such as the `agent_exit` screen over its finished agent.
+    Suppress,
+    /// It hides behind the new pane, which only borrows its slot: every close of the new
+    /// pane, explicit or not, puts it back. This is what a plugin gets when it opens a pane
+    /// in place of another one, so that closing a held command it ran cannot also take the
+    /// plugin and whatever the plugin stands in for with it.
+    Lend,
+}
+
+impl ReplacedPane {
+    /// `Close` or `Suppress`, for the callers that only ever had a boolean.
+    pub fn closed_if(close_replaced_pane: bool) -> Self {
+        if close_replaced_pane {
+            ReplacedPane::Close
+        } else {
+            ReplacedPane::Suppress
+        }
+    }
+    /// `Close` or `Lend`, for the plugin commands that open a pane in place of another.
+    pub fn lent_unless_closed(close_replaced_pane: bool) -> Self {
+        if close_replaced_pane {
+            ReplacedPane::Close
+        } else {
+            ReplacedPane::Lend
+        }
+    }
+    pub fn closes(self) -> bool {
+        self == ReplacedPane::Close
+    }
+}
+
 /// What `Pty::adopt_terminal` hands back so Screen can build the pane.
 #[derive(Debug, Clone)]
 pub struct AdoptedPane {
@@ -420,7 +458,7 @@ pub enum PtyInstruction {
     SpawnInPlaceTerminal(
         Option<TerminalAction>,
         Option<String>,
-        bool, // close replaced pane
+        ReplacedPane,
         ClientTabIndexOrPaneId,
         Option<NotificationEnd>, // completion signal
     ), // String is an optional pane name

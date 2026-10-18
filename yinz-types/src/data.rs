@@ -2926,6 +2926,18 @@ pub enum PluginCommand {
         #[serde(default)]
         context: Context,
     },
+    /// Load `plugin_url` with `configuration` in place of `pane_id`, which stays suppressed
+    /// behind the new pane and comes back when that pane closes, however it closes. Refused
+    /// when `pane_id` is suppressed or missing, and when an instance with this url and
+    /// configuration already exists. `context` is reserved; plugin panes do not echo it.
+    OpenPluginPaneInPlaceOfPaneId {
+        pane_id: PaneId,
+        plugin_url: String,
+        #[serde(default)]
+        configuration: BTreeMap<String, String>,
+        #[serde(default)]
+        context: Context,
+    },
     ResizePaneIdWithDirection(ResizeStrategy, PaneId),
     EditScrollbackForPaneWithId(PaneId),
     GetPaneScrollback {
@@ -3459,6 +3471,7 @@ pub type OpenCommandPaneInPlaceOfPaneIdResponse = Option<PaneId>;
 pub type OpenTerminalPaneInPlaceOfPaneIdResponse = Option<PaneId>;
 pub type OpenEditPaneInPlaceOfPaneIdResponse = Option<PaneId>;
 pub type OpenPluginPaneFloatingResponse = Option<PaneId>;
+pub type OpenPluginPaneInPlaceOfPaneIdResponse = Option<PaneId>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConversionError {

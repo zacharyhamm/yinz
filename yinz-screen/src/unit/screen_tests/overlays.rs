@@ -352,7 +352,7 @@ fn self_sizing_modals_never_paint_the_default_outline() {
                     .send(ScreenInstruction::AddPlugin(
                         Some(true),
                         false,
-                        false,
+                        yinz_bus::pty::ReplacedPane::Suppress,
                         RunPluginOrAlias::RunPlugin(plugin),
                         Some("MODAL".to_owned()),
                         None,
@@ -6874,7 +6874,14 @@ fn multipane_close_self_restores_a_replaced_child_and_only_closes_the_temporary_
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
-        .suppress_pane_and_replace_with_pid(children[0], temporary, false, None, None, None)
+        .suppress_pane_and_replace_with_pid(
+            children[0],
+            temporary,
+            yinz_bus::pty::ReplacedPane::Suppress,
+            None,
+            None,
+            None,
+        )
         .unwrap();
     assert_eq!(
         screen.tabs[&TabId::new(0)].stands_in_for_a_pane(temporary),
@@ -7028,12 +7035,14 @@ fn multipane_replacing_a_child_with_the_last_working_pane_retains_the_tab() {
                     )
                     .unwrap();
             } else {
-                screen.replace_pane_with_existing_pane(
-                    children[0],
-                    terminal,
-                    replacement_path == 2,
-                    None,
-                );
+                screen
+                    .replace_pane_with_existing_pane(
+                        children[0],
+                        terminal,
+                        replacement_path == 2,
+                        None,
+                    )
+                    .unwrap();
             }
             screen.settle_tabs().unwrap();
             assert_eq!(
@@ -7064,7 +7073,9 @@ fn multipane_replacing_a_child_with_the_last_working_pane_retains_the_tab() {
                 popup_coordinates(),
             )
             .1;
-            screen.replace_pane_with_existing_pane(terminal, overlay, false, None);
+            screen
+                .replace_pane_with_existing_pane(terminal, overlay, false, None)
+                .unwrap();
             screen.settle_tabs().unwrap();
             assert_eq!(screen.active_tab_ids[&CLIENT_1], TabId::new(0));
             assert_eq!(
