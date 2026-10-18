@@ -56,8 +56,7 @@ fn mutate_store(yinz: &TestSession, op: &str, args: serde_json::Value) {
 fn wait_for_tab(yinz: &TestSession, name: &str, absent: &[&str]) {
     yinz.wait_until(&format!("the tab shows {name}"), |screen| {
         screen
-            .lines()
-            .first()
+            .tab_bar_line()
             .is_some_and(|bar| bar.contains(name) && absent.iter().all(|old| !bar.contains(old)))
     });
 }
@@ -242,7 +241,7 @@ fn agent_names_follow_moves_to_existing_and_new_tabs() {
     let screen = yinz.wait_until("the new tab retains the moved terminal", |screen| {
         screen.contains("MOVING_AGENT") && !screen.contains("DESTINATION")
     });
-    let bar = &screen.lines()[0];
+    let bar = screen.tab_bar_line().unwrap();
     assert!(
         bar.contains("moves:main") && bar.contains("other:main"),
         "{bar}"
@@ -285,11 +284,10 @@ fn a_tab_is_named_after_the_project_its_agent_is_in() {
     // bar in place of the "Tab #1" the tab was born with.
     let screen = yinz.wait_until("the tab is named after the project", |grid_snapshot| {
         grid_snapshot
-            .lines()
-            .first()
+            .tab_bar_line()
             .is_some_and(|tab_bar| tab_bar.contains("tab-project"))
     });
-    let tab_bar = screen.lines().first().cloned().unwrap_or_default();
+    let tab_bar = screen.tab_bar_line().map(str::to_owned).unwrap_or_default();
     assert!(
         !tab_bar.contains("Tab #1"),
         "the project replaced the default name rather than sitting beside it:\n{screen}"
@@ -415,8 +413,7 @@ fn a_lone_pane_title_takes_priority_over_its_project() {
     shell.output(b"$ ");
     yinz.wait_until("the shell tab has its default name", |screen| {
         screen
-            .lines()
-            .first()
+            .tab_bar_line()
             .is_some_and(|bar| bar.contains("Tab #1"))
     });
 
@@ -432,8 +429,7 @@ fn a_lone_pane_title_takes_priority_over_its_project() {
         "the quiet shell tab takes the newly known project",
         |screen| {
             screen
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_some_and(|bar| bar.contains("quiet-shell-project"))
         },
     );
@@ -803,8 +799,7 @@ fn arrangement_loads_chrome_for_a_new_project_tab() {
                 screen.contains("CHROME_SECOND")
                     && !screen.contains("CHROME_FIRST")
                     && screen
-                        .lines()
-                        .first()
+                        .tab_bar_line()
                         .is_some_and(|bar| bar.contains("chrome-b"))
                     && screen
                         .lines()

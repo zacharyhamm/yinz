@@ -11,6 +11,41 @@ use std::{
 };
 use yinz_types::data::{CommandType, PluginCommand};
 
+pub(super) fn legacy_keybinds() -> yinz_types::data::KeybindsVec {
+    use yinz_types::input::actions::Action;
+    let mut keybinds = yinz_config::config::Config::from_default_assets()
+        .unwrap()
+        .keybinds
+        .to_keybinds_vec();
+    // The recorded engines predate tab groups; replay their original keymap in both guests.
+    for (_, bindings) in &mut keybinds {
+        bindings.retain(|(_, actions)| {
+            !actions.iter().any(|action| {
+                matches!(
+                    action,
+                    Action::NewTabGroup | Action::GoToNextTabGroup | Action::GoToPreviousTabGroup
+                )
+            })
+        });
+        for (_, actions) in bindings {
+            for action in actions {
+                if let Action::GoToTabInGroup { index } = action {
+                    *action = Action::GoToTab { index: *index };
+                }
+            }
+        }
+    }
+    keybinds
+}
+
+pub(super) fn legacy_preset(source: &str) -> String {
+    source
+        .split_inclusive('\n')
+        .filter(|line| !line.contains("TabGroup"))
+        .collect::<String>()
+        .replace("GoToTabInGroup", "GoToTab")
+}
+
 thread_local! {
     static SCENARIO: RefCell<Option<(String, BTreeMap<String, usize>)>> = const { RefCell::new(None) };
 }

@@ -638,6 +638,11 @@ fn tiled_pane_layouts_of_depth(tc: &hegel::TestCase, depth: usize) -> TiledPaneL
         run_instructions_to_ignore: vec![],
         hide_floating_panes: booleans(tc),
         user_named: booleans(tc),
+        tab_group: booleans(tc).then(|| yinz_types::tab_bar::TabGroupInfo {
+            id: u32s(tc),
+            name: strings(tc),
+        }),
+        group_focused: booleans(tc),
         pane_initial_contents: optional_strings(tc),
         default_fg: optional_strings(tc),
         default_bg: optional_strings(tc),
@@ -959,6 +964,18 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         ActionKind::GoToNextTab => Action::GoToNextTab,
         ActionKind::GoToPreviousTab => Action::GoToPreviousTab,
         ActionKind::CloseTab => Action::CloseTab,
+        ActionKind::NewTabGroup => Action::NewTabGroup,
+        ActionKind::GoToNextTabGroup => Action::GoToNextTabGroup,
+        ActionKind::GoToPreviousTabGroup => Action::GoToPreviousTabGroup,
+        ActionKind::GoToTabInGroup => Action::GoToTabInGroup {
+            index: TabNumber::new(u32s(tc)),
+        },
+        ActionKind::SwitchTabGroup => Action::SwitchTabGroup { id: u32s(tc) },
+        ActionKind::RenameTabGroup => Action::RenameTabGroup {
+            id: u32s(tc),
+            name: strings(tc),
+        },
+        ActionKind::CloseTabGroup => Action::CloseTabGroup { id: u32s(tc) },
         ActionKind::GoToTab => Action::GoToTab {
             index: TabNumber::new(tc.draw(generators::integers::<u32>())),
         },

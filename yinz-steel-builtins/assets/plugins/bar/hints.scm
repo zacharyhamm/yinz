@@ -49,6 +49,8 @@
         (hint "Select text" "Text" (doing (bar-switch-mode "Select"))) select))
     ((equal? mode "Tab")
       (list (hint "New" "New" (doing (hash "NewTab" (hash))))
+        (hint "New group" "Group" (doing "NewTabGroup"))
+        (hint "Switch group" "Groups" (each '("GoToPreviousTabGroup" "GoToNextTabGroup")))
         (hint "Change focus" "Move" (append (preferring "GoToPreviousTab" "Left") (preferring "GoToNextTab" "Right")))
         (hint "Close" "Close" (doing "CloseTab"))
         (hint "Rename" "Rename" (doing (bar-switch-mode "RenameTab")))

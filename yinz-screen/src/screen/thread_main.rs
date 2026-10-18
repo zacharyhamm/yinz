@@ -2024,6 +2024,12 @@ pub fn screen_thread_main(
                     }
                     screen.render()?;
                 },
+                ScreenInstruction::TabGroup(action, client, completion) => {
+                    screen
+                        .tab_group_action(action, client, completion, &mut pending.tab_switches)
+                        .non_fatal();
+                    screen.render()?;
+                },
                 ScreenInstruction::GoToTab(
                     tab_index,
                     client_id,

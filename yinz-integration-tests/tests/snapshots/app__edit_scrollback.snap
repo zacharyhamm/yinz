@@ -2,6 +2,7 @@
 source: yinz-integration-tests/tests/app.rs
 expression: normalized(&grid_snapshot)
 ---
+ Default 
  Yinz (test)  [1] EDITING SCROLLBACK  + 
 $ SCROLLBACK_MARKER_ONE
 SCROLLBACK_MARKER_TWO

@@ -79,7 +79,7 @@ fn search_input_jumps_to_a_match() {
     let grid_snapshot = yinz.wait_until("scrolled to the typed match", |grid_snapshot| {
         grid_snapshot.contains("line05")
             && grid_snapshot.contains("ENTERING SEARCH TERM")
-            && grid_snapshot.contains("SCROLL 15/19")
+            && grid_snapshot.contains("SCROLL 16/20")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -97,7 +97,7 @@ fn search_up_to_previous_match() {
     let grid_snapshot = yinz.wait_until("upper match revealed by searching up", |grid_snapshot| {
         grid_snapshot.contains("NEEDLE upper")
             && grid_snapshot.contains("PgDn|PgUp")
-            && grid_snapshot.contains("SCROLL 15/19")
+            && grid_snapshot.contains("SCROLL 16/20")
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -112,7 +112,7 @@ fn search_down_to_next_match() {
     yinz.send_stdin(&keys::key('p'));
     yinz.send_stdin(&keys::key('p'));
     yinz.wait_until("upper match revealed by searching up", |grid_snapshot| {
-        grid_snapshot.contains("NEEDLE upper") && grid_snapshot.contains("SCROLL 15/19")
+        grid_snapshot.contains("NEEDLE upper") && grid_snapshot.contains("SCROLL 16/20")
     });
 
     yinz.send_stdin(&keys::key('n'));
@@ -121,7 +121,7 @@ fn search_down_to_next_match() {
         yinz.wait_until("lower match revealed by searching down", |grid_snapshot| {
             grid_snapshot.contains("NEEDLE lower")
                 && !grid_snapshot.contains("NEEDLE upper")
-                && grid_snapshot.contains("SCROLL 6/19")
+                && grid_snapshot.contains("SCROLL 6/20")
                 && grid_snapshot.contains("PgDn|PgUp")
         });
     assert_snapshot!(normalized(&grid_snapshot));

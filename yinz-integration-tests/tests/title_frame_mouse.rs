@@ -198,15 +198,14 @@ fn mouse_click_new_tab_button_in_tab_bar_opens_a_new_tab() {
 
     let grid_snapshot = yinz.wait_until("tab bar shows the new tab button", |grid_snapshot| {
         grid_snapshot
-            .lines()
-            .first()
+            .tab_bar_line()
             .is_some_and(|tab_bar| tab_bar.contains('+'))
     });
-    let tab_bar = grid_snapshot.lines().first().cloned().unwrap();
+    let tab_bar = grid_snapshot.tab_bar_line().map(str::to_owned).unwrap();
     let new_tab_button_column =
         display_column_of(&tab_bar, "+").expect("new tab button is on the tab bar") + 1;
 
-    yinz.send_stdin(&sgr_left_click(new_tab_button_column, 1));
+    yinz.send_stdin(&sgr_left_click(new_tab_button_column, 2));
     let new_tab_terminal = yinz.expect_pty_spawn();
     new_tab_terminal.output(PROMPT);
 

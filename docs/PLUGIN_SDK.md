@@ -4,6 +4,20 @@ Yinz loads `.scm`, `.ss`, and `.sld` entrypoints in a confined Steel interpreter
 The functions below are available without an import. Use `require` and `provide`
 for your own modules inside the entrypoint directory or Git repository root.
 
+## Tab groups
+
+`TabUpdate` continues to contain every tab in the session. Each tab's optional
+`group` object contains the group's stable session-local `id` and `name`. Sort
+groups by ID for display order and use the active tab's group to filter a tab bar.
+Older hosts omit this field; treat those tabs as one Default group.
+
+Use `RunAction` with `NewTabGroup`, `GoToPreviousTabGroup`, `GoToNextTabGroup`,
+`SwitchTabGroup {id}`, `RenameTabGroup {id, name}`, or `CloseTabGroup {id}`.
+These commands require the existing `RunActionsAsUser` permission. Direct close
+actions close the contents immediately; the built-in palette adds confirmation.
+`GoToTabInGroup {index}` uses a one-based index within the acting client's group.
+Existing tab ID and positional commands keep their session-wide meaning.
+
 ## Scheme language and text
 
 The sandbox uses Steel's raw engine without its macro kernel or full standard library.

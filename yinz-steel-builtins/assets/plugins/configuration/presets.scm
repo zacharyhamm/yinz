@@ -175,20 +175,23 @@ keybinds clear-defaults=true {
         bind \"h\" \"Left\" \"Up\" \"k\" { GoToPreviousTab; }
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Locked\"; }
+        bind \"g\" { NewTabGroup; SwitchToMode \"Locked\"; }
+        bind \"H\" { GoToPreviousTabGroup; }
+        bind \"L\" { GoToNextTabGroup; }
         bind \"x\" { CloseTab; SwitchToMode \"Locked\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Locked\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Locked\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Locked\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Locked\"; }
-        bind \"1\" { GoToTab 1; SwitchToMode \"Locked\"; }
-        bind \"2\" { GoToTab 2; SwitchToMode \"Locked\"; }
-        bind \"3\" { GoToTab 3; SwitchToMode \"Locked\"; }
-        bind \"4\" { GoToTab 4; SwitchToMode \"Locked\"; }
-        bind \"5\" { GoToTab 5; SwitchToMode \"Locked\"; }
-        bind \"6\" { GoToTab 6; SwitchToMode \"Locked\"; }
-        bind \"7\" { GoToTab 7; SwitchToMode \"Locked\"; }
-        bind \"8\" { GoToTab 8; SwitchToMode \"Locked\"; }
-        bind \"9\" { GoToTab 9; SwitchToMode \"Locked\"; }
+        bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Locked\"; }
+        bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Locked\"; }
+        bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Locked\"; }
+        bind \"4\" { GoToTabInGroup 4; SwitchToMode \"Locked\"; }
+        bind \"5\" { GoToTabInGroup 5; SwitchToMode \"Locked\"; }
+        bind \"6\" { GoToTabInGroup 6; SwitchToMode \"Locked\"; }
+        bind \"7\" { GoToTabInGroup 7; SwitchToMode \"Locked\"; }
+        bind \"8\" { GoToTabInGroup 8; SwitchToMode \"Locked\"; }
+        bind \"9\" { GoToTabInGroup 9; SwitchToMode \"Locked\"; }
         bind \"Tab\" { ToggleTab; }
     }
     scroll {
@@ -454,20 +457,23 @@ keybinds clear-defaults=true {
         bind \"h\" \"Left\" \"Up\" \"k\" { GoToPreviousTab; }
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Normal\"; }
+        bind \"g\" { NewTabGroup; SwitchToMode \"Normal\"; }
+        bind \"H\" { GoToPreviousTabGroup; }
+        bind \"L\" { GoToNextTabGroup; }
         bind \"x\" { CloseTab; SwitchToMode \"Normal\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Normal\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
-        bind \"1\" { GoToTab 1; SwitchToMode \"Normal\"; }
-        bind \"2\" { GoToTab 2; SwitchToMode \"Normal\"; }
-        bind \"3\" { GoToTab 3; SwitchToMode \"Normal\"; }
-        bind \"4\" { GoToTab 4; SwitchToMode \"Normal\"; }
-        bind \"5\" { GoToTab 5; SwitchToMode \"Normal\"; }
-        bind \"6\" { GoToTab 6; SwitchToMode \"Normal\"; }
-        bind \"7\" { GoToTab 7; SwitchToMode \"Normal\"; }
-        bind \"8\" { GoToTab 8; SwitchToMode \"Normal\"; }
-        bind \"9\" { GoToTab 9; SwitchToMode \"Normal\"; }
+        bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
+        bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
+        bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }
+        bind \"4\" { GoToTabInGroup 4; SwitchToMode \"Normal\"; }
+        bind \"5\" { GoToTabInGroup 5; SwitchToMode \"Normal\"; }
+        bind \"6\" { GoToTabInGroup 6; SwitchToMode \"Normal\"; }
+        bind \"7\" { GoToTabInGroup 7; SwitchToMode \"Normal\"; }
+        bind \"8\" { GoToTabInGroup 8; SwitchToMode \"Normal\"; }
+        bind \"9\" { GoToTabInGroup 9; SwitchToMode \"Normal\"; }
         bind \"Tab\" { ToggleTab; }
     }
     scroll {
@@ -781,20 +787,23 @@ keybinds clear-defaults=true {
         bind \"h\" \"Left\" \"Up\" \"k\" { GoToPreviousTab; }
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Normal\"; }
+        bind \"g\" { NewTabGroup; SwitchToMode \"Normal\"; }
+        bind \"H\" { GoToPreviousTabGroup; }
+        bind \"L\" { GoToNextTabGroup; }
         bind \"x\" { CloseTab; SwitchToMode \"Normal\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Normal\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
-        bind \"1\" { GoToTab 1; SwitchToMode \"Normal\"; }
-        bind \"2\" { GoToTab 2; SwitchToMode \"Normal\"; }
-        bind \"3\" { GoToTab 3; SwitchToMode \"Normal\"; }
-        bind \"4\" { GoToTab 4; SwitchToMode \"Normal\"; }
-        bind \"5\" { GoToTab 5; SwitchToMode \"Normal\"; }
-        bind \"6\" { GoToTab 6; SwitchToMode \"Normal\"; }
-        bind \"7\" { GoToTab 7; SwitchToMode \"Normal\"; }
-        bind \"8\" { GoToTab 8; SwitchToMode \"Normal\"; }
-        bind \"9\" { GoToTab 9; SwitchToMode \"Normal\"; }
+        bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
+        bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
+        bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }
+        bind \"4\" { GoToTabInGroup 4; SwitchToMode \"Normal\"; }
+        bind \"5\" { GoToTabInGroup 5; SwitchToMode \"Normal\"; }
+        bind \"6\" { GoToTabInGroup 6; SwitchToMode \"Normal\"; }
+        bind \"7\" { GoToTabInGroup 7; SwitchToMode \"Normal\"; }
+        bind \"8\" { GoToTabInGroup 8; SwitchToMode \"Normal\"; }
+        bind \"9\" { GoToTabInGroup 9; SwitchToMode \"Normal\"; }
         bind \"Tab\" { ToggleTab; }
     }
     scroll {
@@ -1065,20 +1074,23 @@ keybinds clear-defaults=true {
         bind \"h\" \"Left\" \"Up\" \"k\" { GoToPreviousTab; }
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Normal\"; }
+        bind \"g\" { NewTabGroup; SwitchToMode \"Normal\"; }
+        bind \"H\" { GoToPreviousTabGroup; }
+        bind \"L\" { GoToNextTabGroup; }
         bind \"x\" { CloseTab; SwitchToMode \"Normal\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Normal\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
-        bind \"1\" { GoToTab 1; SwitchToMode \"Normal\"; }
-        bind \"2\" { GoToTab 2; SwitchToMode \"Normal\"; }
-        bind \"3\" { GoToTab 3; SwitchToMode \"Normal\"; }
-        bind \"4\" { GoToTab 4; SwitchToMode \"Normal\"; }
-        bind \"5\" { GoToTab 5; SwitchToMode \"Normal\"; }
-        bind \"6\" { GoToTab 6; SwitchToMode \"Normal\"; }
-        bind \"7\" { GoToTab 7; SwitchToMode \"Normal\"; }
-        bind \"8\" { GoToTab 8; SwitchToMode \"Normal\"; }
-        bind \"9\" { GoToTab 9; SwitchToMode \"Normal\"; }
+        bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
+        bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
+        bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }
+        bind \"4\" { GoToTabInGroup 4; SwitchToMode \"Normal\"; }
+        bind \"5\" { GoToTabInGroup 5; SwitchToMode \"Normal\"; }
+        bind \"6\" { GoToTabInGroup 6; SwitchToMode \"Normal\"; }
+        bind \"7\" { GoToTabInGroup 7; SwitchToMode \"Normal\"; }
+        bind \"8\" { GoToTabInGroup 8; SwitchToMode \"Normal\"; }
+        bind \"9\" { GoToTabInGroup 9; SwitchToMode \"Normal\"; }
         bind \"Tab\" { ToggleTab; }
     }
     scroll {
@@ -1332,20 +1344,23 @@ keybinds clear-defaults=true {
         bind \"h\" \"Left\" \"Up\" \"k\" { GoToPreviousTab; }
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Normal\"; }
+        bind \"g\" { NewTabGroup; SwitchToMode \"Normal\"; }
+        bind \"H\" { GoToPreviousTabGroup; }
+        bind \"L\" { GoToNextTabGroup; }
         bind \"x\" { CloseTab; SwitchToMode \"Normal\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Normal\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
-        bind \"1\" { GoToTab 1; SwitchToMode \"Normal\"; }
-        bind \"2\" { GoToTab 2; SwitchToMode \"Normal\"; }
-        bind \"3\" { GoToTab 3; SwitchToMode \"Normal\"; }
-        bind \"4\" { GoToTab 4; SwitchToMode \"Normal\"; }
-        bind \"5\" { GoToTab 5; SwitchToMode \"Normal\"; }
-        bind \"6\" { GoToTab 6; SwitchToMode \"Normal\"; }
-        bind \"7\" { GoToTab 7; SwitchToMode \"Normal\"; }
-        bind \"8\" { GoToTab 8; SwitchToMode \"Normal\"; }
-        bind \"9\" { GoToTab 9; SwitchToMode \"Normal\"; }
+        bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
+        bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
+        bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }
+        bind \"4\" { GoToTabInGroup 4; SwitchToMode \"Normal\"; }
+        bind \"5\" { GoToTabInGroup 5; SwitchToMode \"Normal\"; }
+        bind \"6\" { GoToTabInGroup 6; SwitchToMode \"Normal\"; }
+        bind \"7\" { GoToTabInGroup 7; SwitchToMode \"Normal\"; }
+        bind \"8\" { GoToTabInGroup 8; SwitchToMode \"Normal\"; }
+        bind \"9\" { GoToTabInGroup 9; SwitchToMode \"Normal\"; }
         bind \"Tab\" { ToggleTab; }
     }
     scroll {
@@ -1650,20 +1665,23 @@ keybinds clear-defaults=true {
         bind \"h\" \"Left\" \"Up\" \"k\" { GoToPreviousTab; }
         bind \"l\" \"Right\" \"Down\" \"j\" { GoToNextTab; }
         bind \"n\" { NewTab; SwitchToMode \"Normal\"; }
+        bind \"g\" { NewTabGroup; SwitchToMode \"Normal\"; }
+        bind \"H\" { GoToPreviousTabGroup; }
+        bind \"L\" { GoToNextTabGroup; }
         bind \"x\" { CloseTab; SwitchToMode \"Normal\"; }
         bind \"s\" { ToggleActiveSyncTab; SwitchToMode \"Normal\"; }
         bind \"b\" { BreakPane; SwitchToMode \"Normal\"; }
         bind \"]\" { BreakPaneRight; SwitchToMode \"Normal\"; }
         bind \"[\" { BreakPaneLeft; SwitchToMode \"Normal\"; }
-        bind \"1\" { GoToTab 1; SwitchToMode \"Normal\"; }
-        bind \"2\" { GoToTab 2; SwitchToMode \"Normal\"; }
-        bind \"3\" { GoToTab 3; SwitchToMode \"Normal\"; }
-        bind \"4\" { GoToTab 4; SwitchToMode \"Normal\"; }
-        bind \"5\" { GoToTab 5; SwitchToMode \"Normal\"; }
-        bind \"6\" { GoToTab 6; SwitchToMode \"Normal\"; }
-        bind \"7\" { GoToTab 7; SwitchToMode \"Normal\"; }
-        bind \"8\" { GoToTab 8; SwitchToMode \"Normal\"; }
-        bind \"9\" { GoToTab 9; SwitchToMode \"Normal\"; }
+        bind \"1\" { GoToTabInGroup 1; SwitchToMode \"Normal\"; }
+        bind \"2\" { GoToTabInGroup 2; SwitchToMode \"Normal\"; }
+        bind \"3\" { GoToTabInGroup 3; SwitchToMode \"Normal\"; }
+        bind \"4\" { GoToTabInGroup 4; SwitchToMode \"Normal\"; }
+        bind \"5\" { GoToTabInGroup 5; SwitchToMode \"Normal\"; }
+        bind \"6\" { GoToTabInGroup 6; SwitchToMode \"Normal\"; }
+        bind \"7\" { GoToTabInGroup 7; SwitchToMode \"Normal\"; }
+        bind \"8\" { GoToTabInGroup 8; SwitchToMode \"Normal\"; }
+        bind \"9\" { GoToTabInGroup 9; SwitchToMode \"Normal\"; }
         bind \"Tab\" { ToggleTab; }
     }
     scroll {

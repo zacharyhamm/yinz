@@ -2,6 +2,7 @@
 source: yinz-integration-tests/tests/stacked_pane_list.rs
 expression: normalized(&grid_snapshot)
 ---
+ Default 
  Yinz (test)  [2] Tab #1  + 
                                                      │ [0] Pane #1 │
                                                      │ [1] Pane #2 │

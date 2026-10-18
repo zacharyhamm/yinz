@@ -3,5 +3,5 @@ source: yinz-plugin-host/src/./unit/plugin_tests/layout_api.rs
 expression: "format!(\"{:#?}\", plugin_bytes_event)"
 ---
 Some(
-    "Layout dump success: layout {\n\r    pane size=1 borderless=true {\n\r        plugin location=\"tab-bar\"\n\r    }\n\r    pane\n\r    pane size=1 borderless=true {\n\r        plugin location=\"status-bar\"\n\r    }\n\r}\n\r",
+    "Layout dump success: layout {\n\r    pane size=2 borderless=true {\n\r        plugin location=\"tab-bar\"\n\r    }\n\r    pane\n\r    pane size=1 borderless=true {\n\r        plugin location=\"status-bar\"\n\r    }\n\r}\n\r",
 )

@@ -1134,3 +1134,41 @@ fn run_rejects_retired_firecracker_children_regardless_of_value_or_placement() {
         );
     }
 }
+
+#[test]
+fn tab_group_actions_round_trip_kdl_and_default_bindings() {
+    use yinz_types::internal_ids::TabNumber;
+    let actions = [
+        Action::NewTabGroup,
+        Action::GoToNextTabGroup,
+        Action::GoToPreviousTabGroup,
+        Action::GoToTabInGroup {
+            index: TabNumber::new(9),
+        },
+        Action::SwitchTabGroup { id: u32::MAX },
+        Action::RenameTabGroup {
+            id: 7,
+            name: "工程".into(),
+        },
+        Action::CloseTabGroup { id: 7 },
+    ];
+    for action in actions {
+        let node = crate::kdl::action::to_kdl(&action).unwrap();
+        assert_eq!(
+            crate::kdl::action::from_kdl((&node, &Options::default())).unwrap(),
+            action
+        );
+    }
+    let config =
+        Config::from_kdl(include_str!("../../../assets/config/default.kdl"), None).unwrap();
+    let tab = &config.keybinds.0[&InputMode::Tab];
+    assert!(tab
+        .values()
+        .any(|actions| actions.contains(&Action::NewTabGroup)));
+    assert!(tab
+        .values()
+        .any(|actions| actions.contains(&Action::GoToNextTabGroup)));
+    assert!(tab
+        .values()
+        .any(|actions| actions.contains(&Action::GoToPreviousTabGroup)));
+}

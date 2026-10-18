@@ -1,6 +1,5 @@
 ---
 source: yinz-plugin-host/src/./unit/plugin_tests/mode_and_tab_commands.rs
-assertion_line: 268
 expression: "format!(\"{:#?}\", first_new_tab_event)"
 ---
 Some(
@@ -29,6 +28,8 @@ Some(
                         run_instructions_to_ignore: [],
                         hide_floating_panes: false,
                         user_named: false,
+                        tab_group: None,
+                        group_focused: false,
                         pane_initial_contents: None,
                         default_fg: None,
                         default_bg: None,
@@ -49,6 +50,8 @@ Some(
                         run_instructions_to_ignore: [],
                         hide_floating_panes: false,
                         user_named: false,
+                        tab_group: None,
+                        group_focused: false,
                         pane_initial_contents: None,
                         default_fg: None,
                         default_bg: None,
@@ -65,6 +68,8 @@ Some(
                 run_instructions_to_ignore: [],
                 hide_floating_panes: false,
                 user_named: false,
+                tab_group: None,
+                group_focused: false,
                 pane_initial_contents: None,
                 default_fg: None,
                 default_bg: None,

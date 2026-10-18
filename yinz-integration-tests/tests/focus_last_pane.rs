@@ -41,7 +41,7 @@ fn focus_last_pane_toggles_focus_back_to_the_previous_pane() {
     yinz.send_stdin(&keys::alt('m'));
     let grid = yinz.wait_until(
         "focus_last_pane moved focus back to the left pane",
-        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(2).row(2)),
+        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(2).row(3)),
     );
     assert_snapshot!(normalized(&grid));
     yinz.quit();
@@ -57,13 +57,13 @@ fn focus_last_pane_returns_to_earlier_pane_after_closing_focused_pane() {
     bottom_terminal.exit(Some(0));
     yinz.wait_until(
         "closing the bottom pane returns focus to the middle pane",
-        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(2).row(13)),
+        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(2).row(14)),
     );
 
     yinz.send_stdin(&keys::alt('m'));
     yinz.wait_until(
         "focus_last_pane moves focus to the pane active before the closed one",
-        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(2).row(2)),
+        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(2).row(3)),
     );
     yinz.quit();
 }
@@ -82,7 +82,7 @@ fn focus_last_pane_refills_after_cycling_focus() {
     yinz.send_stdin(&keys::alt('m'));
     yinz.wait_until(
         "focus_last_pane returns to the pane focused before cycling",
-        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(62).row(2)),
+        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(62).row(3)),
     );
     yinz.quit();
 }
@@ -146,7 +146,7 @@ fn focus_last_floating_pane_returns_to_earlier_pane_after_closing_focused_pane()
     let first_floating_cursor = yinz
         .wait_until("first floating pane focused with its prompt", |grid| {
             grid.contains("Pane #2")
-                && !grid.cursor_is_at(col(2).row(1))
+                && !grid.cursor_is_at(col(2).row(2))
                 && prompt_cursor_settled(grid)
         })
         .cursor
@@ -196,7 +196,7 @@ fn focus_last_pane_with_floating_visible_leaves_tiled_focus_untouched() {
     yinz.send_stdin(&keys::key('w'));
     yinz.wait_until(
         "the tiled pane focused before opening floating panes stays focused",
-        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(62).row(2)),
+        |grid| grid.status_bar_appears() && grid.cursor_is_at(col(62).row(3)),
     );
     yinz.quit();
 }

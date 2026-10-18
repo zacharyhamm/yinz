@@ -658,6 +658,17 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
             Ok(node)
         },
         Action::NoOp => Ok(KdlNode::new("NoOp")),
+        Action::NewTabGroup => Ok(KdlNode::new("NewTabGroup")),
+        Action::GoToNextTabGroup => Ok(KdlNode::new("GoToNextTabGroup")),
+        Action::GoToPreviousTabGroup => Ok(KdlNode::new("GoToPreviousTabGroup")),
+        Action::GoToTabInGroup { index } => Ok(child("GoToTabInGroup", i64::from(index.get()))),
+        Action::SwitchTabGroup { id } => Ok(child("SwitchTabGroup", i64::from(*id))),
+        Action::CloseTabGroup { id } => Ok(child("CloseTabGroup", i64::from(*id))),
+        Action::RenameTabGroup { id, name } => {
+            let mut node = child("RenameTabGroup", i64::from(*id));
+            node.push(name.clone());
+            Ok(node)
+        },
         Action::GoToNextTab => Ok(KdlNode::new("GoToNextTab")),
         Action::GoToPreviousTab => Ok(KdlNode::new("GoToPreviousTab")),
         Action::CloseTab => Ok(KdlNode::new("CloseTab")),
@@ -1196,6 +1207,9 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
         | "CloseFocus"
         | "UndoRenamePane"
         | "NoOp"
+        | "NewTabGroup"
+        | "GoToNextTabGroup"
+        | "GoToPreviousTabGroup"
         | "GoToNextTab"
         | "GoToPreviousTab"
         | "CloseTab"
@@ -1591,7 +1605,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 })
             }
         },
-        "GoToTab" => {
+        "GoToTab" | "GoToTabInGroup" => {
             // Read as a whole number rather than through the byte-list parser the input
             // actions share, which silently folded `GoToTab 300` into tab 44.
             let index = action_arguments
@@ -1599,7 +1613,7 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 .and_then(|entry| entry.value().as_i64())
                 .ok_or_else(|| {
                     ConfigError::new_kdl_error(
-                        "GoToTab needs a tab number".to_string(),
+                        format!("{action_name} needs a tab number"),
                         kdl_action.span().offset(),
                         kdl_action.span().len(),
                     )
@@ -1611,7 +1625,37 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                     kdl_action.span().len(),
                 )
             })?;
-            Ok(Action::GoToTab { index })
+            Ok(if action_name == "GoToTabInGroup" {
+                Action::GoToTabInGroup { index }
+            } else {
+                Action::GoToTab { index }
+            })
+        },
+        "SwitchTabGroup" | "CloseTabGroup" | "RenameTabGroup" => {
+            let error = || {
+                ConfigError::new_kdl_error(
+                    "Expected a group ID, and a name for RenameTabGroup".into(),
+                    kdl_action.span().offset(),
+                    kdl_action.span().len(),
+                )
+            };
+            let id = action_arguments
+                .first()
+                .and_then(|e| e.value().as_i64())
+                .and_then(|id| u32::try_from(id).ok())
+                .ok_or_else(error)?;
+            Ok(match action_name {
+                "SwitchTabGroup" => Action::SwitchTabGroup { id },
+                "CloseTabGroup" => Action::CloseTabGroup { id },
+                _ => Action::RenameTabGroup {
+                    id,
+                    name: action_arguments
+                        .get(1)
+                        .and_then(|e| e.value().as_string())
+                        .ok_or_else(error)?
+                        .to_owned(),
+                },
+            })
         },
         "TabNameInput" => {
             parse_kdl_action_u8_arguments!(action_name, action_arguments, kdl_action)

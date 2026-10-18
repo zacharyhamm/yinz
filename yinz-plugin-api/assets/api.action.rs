@@ -138,7 +138,19 @@ pub mod pane_run {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TabGroup {
+    #[prost(uint32, tag="1")]
+    pub id: u32,
+    #[prost(string, tag="2")]
+    pub name: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TiledPaneLayout {
+    #[prost(message, optional, tag="16")]
+    pub tab_group: ::core::option::Option<TabGroup>,
+    #[prost(bool, tag="17")]
+    pub group_focused: bool,
     #[prost(string, optional, tag="15")]
     pub pane_tabs_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(enumeration="SplitDirection", tag="1")]
@@ -318,7 +330,7 @@ pub struct OverrideLayoutPayload {
 pub struct Action {
     #[prost(enumeration="ActionName", tag="1")]
     pub name: i32,
-    #[prost(oneof="action::OptionalPayload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 64, 65, 66, 67")]
+    #[prost(oneof="action::OptionalPayload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 64, 65, 66, 67, 68")]
     pub optional_payload: ::core::option::Option<action::OptionalPayload>,
 }
 /// Nested message and enum types in `Action`.
@@ -450,6 +462,8 @@ pub mod action {
         MoveNotificationSelectionPayload(i32),
         #[prost(message, tag="67")]
         KeybindPipePayload(super::KeybindPipePayload),
+        #[prost(message, tag="68")]
+        TabGroupPayload(super::TabGroup),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -1234,6 +1248,13 @@ pub enum ActionName {
     Copy = 122,
     ToggleCommandPalette = 126,
     ActivateLastNotification = 128,
+    NewTabGroup = 129,
+    GoToNextTabGroup = 130,
+    GoToPreviousTabGroup = 131,
+    GoToTabInGroup = 132,
+    SwitchTabGroup = 133,
+    RenameTabGroup = 134,
+    CloseTabGroup = 135,
 }
 impl ActionName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1366,6 +1387,13 @@ impl ActionName {
             ActionName::Copy => "Copy",
             ActionName::ToggleCommandPalette => "ToggleCommandPalette",
             ActionName::ActivateLastNotification => "ActivateLastNotification",
+            ActionName::NewTabGroup => "NewTabGroup",
+            ActionName::GoToNextTabGroup => "GoToNextTabGroup",
+            ActionName::GoToPreviousTabGroup => "GoToPreviousTabGroup",
+            ActionName::GoToTabInGroup => "GoToTabInGroup",
+            ActionName::SwitchTabGroup => "SwitchTabGroup",
+            ActionName::RenameTabGroup => "RenameTabGroup",
+            ActionName::CloseTabGroup => "CloseTabGroup",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1495,6 +1523,13 @@ impl ActionName {
             "Copy" => Some(Self::Copy),
             "ToggleCommandPalette" => Some(Self::ToggleCommandPalette),
             "ActivateLastNotification" => Some(Self::ActivateLastNotification),
+            "NewTabGroup" => Some(Self::NewTabGroup),
+            "GoToNextTabGroup" => Some(Self::GoToNextTabGroup),
+            "GoToPreviousTabGroup" => Some(Self::GoToPreviousTabGroup),
+            "GoToTabInGroup" => Some(Self::GoToTabInGroup),
+            "SwitchTabGroup" => Some(Self::SwitchTabGroup),
+            "RenameTabGroup" => Some(Self::RenameTabGroup),
+            "CloseTabGroup" => Some(Self::CloseTabGroup),
             _ => None,
         }
     }

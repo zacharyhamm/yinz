@@ -15,7 +15,7 @@ pub const PROMPT: &[u8] = b"$ ";
 /// only waits for the grid can snapshot the bar still wearing the marker, a race that looks
 /// like a flake in whichever test hits it.
 pub fn tab_bar_shows_no_lone_pane_id(grid_snapshot: &GridSnapshot) -> bool {
-    let Some(tab_bar) = grid_snapshot.lines().first().cloned() else {
+    let Some(tab_bar) = grid_snapshot.tab_bar_line().map(str::to_owned) else {
         return false;
     };
     // A "[" with a digit behind it, which on the bar's own line is the marker and nothing else.
@@ -37,7 +37,7 @@ pub fn claim_first_terminal_and_wait_for_prompt(yinz: &TestSession) -> FakePtyHa
         |grid_snapshot| {
             grid_snapshot.tab_bar_appears()
                 && grid_snapshot.status_bar_appears()
-                && grid_snapshot.cursor_is_at(col(2).row(1))
+                && grid_snapshot.cursor_is_at(col(2).row(2))
         },
     );
     terminal
@@ -50,7 +50,7 @@ pub fn split_right_and_wait_for_prompt(yinz: &TestSession) -> FakePtyHandle {
     terminal.output(PROMPT);
     yinz.wait_until("right terminal prompt rendered", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(62).row(2))
+            && grid_snapshot.cursor_is_at(col(62).row(3))
             && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     terminal
@@ -63,7 +63,7 @@ pub fn split_down_and_wait_for_prompt(yinz: &TestSession) -> FakePtyHandle {
     terminal.output(PROMPT);
     yinz.wait_until("lower terminal prompt rendered", |grid_snapshot| {
         grid_snapshot.status_bar_appears()
-            && grid_snapshot.cursor_is_at(col(2).row(13))
+            && grid_snapshot.cursor_is_at(col(2).row(14))
             && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     terminal

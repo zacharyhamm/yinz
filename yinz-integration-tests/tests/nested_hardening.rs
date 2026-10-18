@@ -18,7 +18,7 @@ fn last_line_contains(grid_snapshot: &GridSnapshot, needle: &str) -> bool {
 }
 
 fn has_breadcrumb(grid: &GridSnapshot) -> bool {
-    grid.lines().first().is_some_and(|l| l.contains('▸'))
+    grid.tab_bar_line().is_some_and(|l| l.contains('▸'))
 }
 
 fn normal_mode_bar_settled(grid_snapshot: &GridSnapshot) -> bool {
@@ -60,9 +60,8 @@ fn guest_normal_mode_bar_settled(guest_grid: &GridSnapshot) -> bool {
 }
 
 fn guest_ui_settled(guest_grid: &GridSnapshot) -> bool {
-    let lines = guest_grid.lines();
-    lines
-        .first()
+    guest_grid
+        .tab_bar_line()
         .is_some_and(|first_line| first_line.contains("Tab #1"))
         && last_line_contains(guest_grid, "Ctrl +")
         && guest_normal_mode_bar_settled(guest_grid)
@@ -70,8 +69,7 @@ fn guest_ui_settled(guest_grid: &GridSnapshot) -> bool {
 
 fn guest_ascended_ui_settled(guest_grid: &GridSnapshot) -> bool {
     guest_grid
-        .lines()
-        .first()
+        .tab_bar_line()
         .is_some_and(|first_line| first_line.contains("Tab #1"))
         && guest_ascended_bar_settled(guest_grid)
 }

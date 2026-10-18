@@ -1,5 +1,5 @@
 use yinz_runtime::errors::prelude::*;
-use yinz_types::internal_ids::{TabId, TabPosition};
+use yinz_types::internal_ids::TabId;
 
 use super::{BreakPanesToTabOutcome, Screen};
 use crate::background_jobs::BackgroundJob;
@@ -284,6 +284,7 @@ impl Screen {
             self.new_tab(tab_index, swap_layouts, None, Some(client_id))?;
         } else {
             self.new_tab(tab_index, swap_layouts, None, None)?;
+            self.assign_tab_group(tab_index, Some(client_id));
         }
         let tab = self.tabs.get_mut(&tab_index).with_context(err_context)?;
         if let Some(new_tab_name) = new_tab_name {
@@ -336,14 +337,18 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         let err_context = || "failed break pane out of tab".to_string();
-        if self.tabs.len() > 1 {
-            let position = self.get_active_tab(client_id)?.position.get();
-            let destination_position = TabPosition::new(match direction {
-                Direction::Right | Direction::Down => (position + 1) % self.tabs.len(),
-                Direction::Left | Direction::Up => {
-                    (position + self.tabs.len() - 1) % self.tabs.len()
-                },
-            });
+        if self
+            .group_tabs(self.group_for_client(Some(client_id)))
+            .len()
+            > 1
+        {
+            let tab = self.get_active_tab(client_id)?;
+            let destination_position = self
+                .adjacent_group_tab(
+                    tab.id,
+                    matches!(direction, Direction::Right | Direction::Down),
+                )
+                .context("no adjacent tab in group")?;
             let active_tab = self.get_active_tab_mut(client_id)?;
             let active = active_tab
                 .get_active_pane_id(client_id)

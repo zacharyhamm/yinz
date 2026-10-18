@@ -156,8 +156,14 @@ fn action_catalog_covers_parser_spellings() {
         .filter_map(|line| {
             let line = line.strip_prefix("        ")?;
             let line = line.strip_prefix("| ").unwrap_or(line);
-            let line = line.strip_prefix('"')?;
-            Some(line.split('"').next().unwrap())
+            line.starts_with('"').then_some(line)
+        })
+        .flat_map(|line| {
+            line.split(" | ").filter_map(|alternative| {
+                alternative
+                    .strip_prefix('"')
+                    .map(|name| name.split('"').next().unwrap())
+            })
         })
         .collect();
     names.sort_unstable();

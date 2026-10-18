@@ -1,14 +1,13 @@
 ---
 source: yinz-integration-tests/tests/nested_sessions.rs
-assertion_line: 320
 expression: normalized(&host_descended)
 ---
+ Default 
  Yinz (test)  Tab #1  + 
                        [0] Yinz:test-1                     │                         [1] Pane #2
- Yinz (test)  [0] Tab #1  +                          │$
+ Default                                                 │$
+ Yinz (test)  [0] Tab #1  +                          │
 █                                                          │
-                                                           │
-                                                           │
                                                            │
                                                            │
                                                            │

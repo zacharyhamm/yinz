@@ -2475,6 +2475,12 @@ impl TryFrom<ProtobufTabInfo> for TabInfo {
     type Error = &'static str;
     fn try_from(protobuf_tab_info: ProtobufTabInfo) -> Result<Self, &'static str> {
         Ok(TabInfo {
+            group: protobuf_tab_info
+                .group
+                .map(|g| yinz_types::tab_bar::TabGroupInfo {
+                    id: g.id,
+                    name: g.name,
+                }),
             position: TabPosition::new(protobuf_tab_info.position as usize),
             name: protobuf_tab_info.name,
             active: protobuf_tab_info.active,
@@ -2517,6 +2523,12 @@ impl TryFrom<TabInfo> for ProtobufTabInfo {
     type Error = &'static str;
     fn try_from(tab_info: TabInfo) -> Result<Self, &'static str> {
         Ok(ProtobufTabInfo {
+            group: tab_info
+                .group
+                .map(|g| crate::generated_api::api::action::TabGroup {
+                    id: g.id,
+                    name: g.name,
+                }),
             position: u32::try_from(tab_info.position.get())
                 .map_err(|_| "Tab position is outside u32 range")?,
             name: tab_info.name,
@@ -3206,6 +3218,10 @@ fn serialize_tab_update_event_with_non_default_values() {
     use prost::Message;
     let tab_update_event = Event::TabUpdate(vec![
         TabInfo {
+            group: Some(yinz_types::tab_bar::TabGroupInfo {
+                id: 7,
+                name: "Work".into(),
+            }),
             position: TabPosition::new(0),
             name: "First tab".to_owned(),
             active: true,
@@ -3231,6 +3247,10 @@ fn serialize_tab_update_event_with_non_default_values() {
             // agreed
         },
         TabInfo {
+            group: Some(yinz_types::tab_bar::TabGroupInfo {
+                id: 7,
+                name: "Work".into(),
+            }),
             position: TabPosition::new(1),
             name: "Secondtab".to_owned(),
             active: false,
@@ -3422,6 +3442,10 @@ fn serialize_session_update_event_with_non_default_values() {
     use prost::Message;
     let tab_infos = vec![
         TabInfo {
+            group: Some(yinz_types::tab_bar::TabGroupInfo {
+                id: 7,
+                name: "Work".into(),
+            }),
             position: TabPosition::new(0),
             name: "First tab".to_owned(),
             active: true,
@@ -3447,6 +3471,10 @@ fn serialize_session_update_event_with_non_default_values() {
             // agreed
         },
         TabInfo {
+            group: Some(yinz_types::tab_bar::TabGroupInfo {
+                id: 7,
+                name: "Work".into(),
+            }),
             position: TabPosition::new(1),
             name: "Secondtab".to_owned(),
             active: false,
@@ -4117,6 +4145,10 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn tab_position_overflow_is_rejected_without_dropping_session_tabs() {
         let tab = TabInfo {
+            group: Some(yinz_types::tab_bar::TabGroupInfo {
+                id: 7,
+                name: "Work".into(),
+            }),
             position: TabPosition::new(usize::MAX),
             ..Default::default()
         };

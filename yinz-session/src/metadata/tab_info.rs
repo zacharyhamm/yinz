@@ -93,7 +93,16 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         optional_int_node!("selectable_floating_panes_count", usize).unwrap_or(0);
     let tab_id = TabId::try_from(optional_int_node!("tab_id", i64).unwrap_or(0))
         .map_err(|_| "tab_id is outside usize range")?;
+    let group = optional_int_node!("group_id", i64)
+        .map(|id| {
+            Ok::<_, String>(yinz_types::tab_bar::TabGroupInfo {
+                id: u32::try_from(id).map_err(|_| "Group ID is out of range")?,
+                name: optional_string_node!("group_name").unwrap_or_else(|| "Default".into()),
+            })
+        })
+        .transpose()?;
     Ok(TabInfo {
+        group,
         position,
         name,
         active,
@@ -119,6 +128,13 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
 pub fn encode_to_kdl(value: &TabInfo) -> anyhow::Result<KdlDocument> {
     let mut kdl_doucment = KdlDocument::new();
 
+    if let Some(group) = &value.group {
+        let mut id = KdlNode::new("group_id");
+        id.push(i64::from(group.id));
+        let mut name = KdlNode::new("group_name");
+        name.push(group.name.clone());
+        kdl_doucment.nodes_mut().extend([id, name]);
+    }
     let mut position = KdlNode::new("position");
     position.push(i64::try_from(value.position.get())?);
     kdl_doucment.nodes_mut().push(position);

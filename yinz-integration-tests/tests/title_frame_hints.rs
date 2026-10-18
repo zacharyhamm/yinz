@@ -32,7 +32,10 @@ fn sgr_motion(column: usize, line: usize) -> Vec<u8> {
 }
 
 fn tab_bar_line(grid_snapshot: &GridSnapshot) -> String {
-    grid_snapshot.lines().first().cloned().unwrap_or_default()
+    grid_snapshot
+        .tab_bar_line()
+        .map(str::to_owned)
+        .unwrap_or_default()
 }
 
 fn two_pane_session_with_handles() -> (TestSession, FakePtyHandle, FakePtyHandle) {

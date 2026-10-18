@@ -387,6 +387,11 @@ impl Pair {
                         }
                         events.sort_by_key(Value::to_string);
                     }
+                    if let Some(preset) = command.pointer_mut("/Reconfigure/0") {
+                        if let Some(source) = preset.as_str() {
+                            *preset = Value::String(super::reference_trace::legacy_preset(source));
+                        }
+                    }
                     normalize_command_settings(&mut command);
                     command
                 })
@@ -515,10 +520,7 @@ impl Pair {
             }),
             ..Default::default()
         };
-        mode.keybinds = yinz_config::config::Config::from_default_assets()
-            .unwrap()
-            .keybinds
-            .to_keybinds_vec();
+        mode.keybinds = super::reference_trace::legacy_keybinds();
         // The source is a map. Fix its iteration order before either guest sees
         // the event so captures replay the identical input in another process.
         mode.keybinds

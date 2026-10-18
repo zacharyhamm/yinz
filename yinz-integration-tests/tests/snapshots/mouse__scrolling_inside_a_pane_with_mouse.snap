@@ -2,8 +2,9 @@
 source: yinz-integration-tests/tests/mouse.rs
 expression: normalized(&grid_snapshot)
 ---
+ Default 
  Yinz (test)  Tab #1  + 
-                         [0] Pane #1                       │                         [1] Pane #2        [ SCROLL: 1/1 ]
+                         [0] Pane #1                       │                         [1] Pane #2        [ SCROLL: 2/2 ]
 $                                                          │$ line1
                                                            │line2
                                                            │line3
@@ -23,6 +24,5 @@ $                                                          │$ line1
                                                            │line17
                                                            │line18
                                                            │line19
-                                                           │line20
-                                                           │█ine21
+                                                           │█ine20
  Ctrl + <s> SEARCH   s  Search  ↓|↑|PgDn|PgUp|d|u  Scroll  e  Edit  ENTER  Select  []  Commands 

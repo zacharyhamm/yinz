@@ -104,7 +104,14 @@ message PaneRun {
   }
 }
 
+message TabGroup {
+  uint32 id = 1;
+  string name = 2;
+}
+
 message TiledPaneLayout {
+  TabGroup tab_group = 16;
+  bool group_focused = 17;
   optional string pane_tabs_json = 15;
   SplitDirection children_split_direction = 1;
   optional string name = 2;
@@ -266,6 +273,7 @@ message Action {
     resize.ResizeDirection move_text_selection_payload = 65;
     resize.ResizeDirection move_notification_selection_payload = 66;
     KeybindPipePayload keybind_pipe_payload = 67;
+    TabGroup tab_group_payload = 68;
   }
   reserved 63;
 }
@@ -569,6 +577,13 @@ enum ActionName {
     Copy = 122;
     ToggleCommandPalette = 126;
     ActivateLastNotification = 128;
+    NewTabGroup = 129;
+    GoToNextTabGroup = 130;
+    GoToPreviousTabGroup = 131;
+    GoToTabInGroup = 132;
+    SwitchTabGroup = 133;
+    RenameTabGroup = 134;
+    CloseTabGroup = 135;
     reserved 127;
     reserved "ToggleMother";
     reserved 110;

@@ -57,7 +57,7 @@ fn focus_upper_pane(yinz: &TestSession, terminal: &FakePtyHandle) {
         "focus-pane exited cleanly"
     );
     yinz.wait_until("focus moved to the upper pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(3))
     });
 }
 

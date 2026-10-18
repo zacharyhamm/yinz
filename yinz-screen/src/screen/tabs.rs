@@ -120,6 +120,10 @@ impl Screen {
             tab_name.clone(),
             client_id_for_new_tab,
         )?;
+        self.assign_tab_group(tab_index, Some(client_id));
+        if let Some(layout) = &layout {
+            self.restore_tab_group(tab_index, layout);
+        }
         let user_named = Screen::tab_name_is_users(tab_name.as_deref(), layout.as_ref());
         if let Some(tab) = self.tabs.get_mut(&tab_index) {
             tab.set_user_named(user_named);
@@ -201,6 +205,7 @@ impl Screen {
                         layout.tab_name.clone(),
                         None,
                     )?;
+                    self.assign_tab_group(id, Some(client_id));
                     id
                 },
             };
@@ -385,12 +390,15 @@ impl Screen {
             // The tab it was on before, then the first one there is. `active_tab_ids` is written
             // only once a tab has actually taken the client: the two have to agree, and a client
             // pointed at a tab that did not take it receives no frames and reaches nothing.
+            let group_destination = self.closed_tab_group_destination(client_id);
             let client_tab_history = self.tab_history.entry(client_id).or_default();
-            let previous_tab = client_tab_history.pop().filter(|id| {
-                self.tabs
-                    .get(id)
-                    .is_some_and(|tab| !tab.is_pending() && tab.has_selectable_panes())
-            });
+            let previous_tab = group_destination
+                .or_else(|| client_tab_history.pop())
+                .filter(|id| {
+                    self.tabs
+                        .get(id)
+                        .is_some_and(|tab| !tab.is_pending() && tab.has_selectable_panes())
+                });
             let candidates = previous_tab
                 .into_iter()
                 .chain(std::iter::once(first_tab_index));
@@ -405,7 +413,7 @@ impl Screen {
                 }
                 match tab.add_client(client_id, mode_info.clone()) {
                     Ok(()) => {
-                        self.active_tab_ids.insert(client_id, candidate);
+                        self.update_client_tab_focus(client_id, candidate);
                         destination_tab_ids.insert(candidate);
                         landed = true;
                         break;
@@ -618,6 +626,13 @@ impl Screen {
     }
 
     pub(super) fn update_client_tab_focus(&mut self, client_id: ClientId, new_tab_index: TabId) {
+        if let Some(group) = self
+            .tab_group_ids
+            .get(&new_tab_index)
+            .and_then(|id| self.tab_groups.get_mut(id))
+        {
+            group.preferred = Some(new_tab_index);
+        }
         match self.active_tab_ids.remove(&client_id) {
             Some(old_active_index) => {
                 self.active_tab_ids.insert(client_id, new_tab_index);
@@ -791,9 +806,9 @@ impl Screen {
         if let Some(client_id) = client_id {
             match self.get_active_tab(client_id) {
                 Ok(active_tab) => {
-                    let active_tab_pos = active_tab.position;
-                    let new_tab_pos =
-                        TabPosition::new((active_tab_pos.get() + 1) % self.tabs.len());
+                    let new_tab_pos = self
+                        .adjacent_group_tab(active_tab.id, true)
+                        .unwrap_or(active_tab.position);
                     return self.navigate_to_tab(
                         new_tab_pos,
                         should_change_pane_focus,
@@ -825,12 +840,9 @@ impl Screen {
         if let Some(client_id) = client_id {
             match self.get_active_tab(client_id) {
                 Ok(active_tab) => {
-                    let active_tab_pos = active_tab.position;
-                    let new_tab_pos = TabPosition::new(if active_tab_pos.get() == 0 {
-                        self.tabs.len() - 1
-                    } else {
-                        active_tab_pos.get() - 1
-                    });
+                    let new_tab_pos = self
+                        .adjacent_group_tab(active_tab.id, false)
+                        .unwrap_or(active_tab.position);
 
                     return self.navigate_to_tab(
                         new_tab_pos,
@@ -1204,6 +1216,7 @@ impl Screen {
             .with_context(err_context)
             .non_fatal();
         if self.tabs.is_empty() {
+            self.prune_tab_groups();
             self.active_tab_ids.clear();
             self.bus
                 .senders
@@ -1239,6 +1252,7 @@ impl Screen {
             // plugins are still holding the `visible(false)` `Screen::remove_client` gave them when
             // its last client left, and nothing would correct that until the next tab switch.
             self.reconcile_client_tabs().with_context(err_context)?;
+            self.prune_tab_groups();
             let visible_tab_indices: HashSet<TabId> =
                 self.active_tab_ids.values().copied().collect();
             for t in self.tabs.values_mut() {

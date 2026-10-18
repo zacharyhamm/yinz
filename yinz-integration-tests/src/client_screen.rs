@@ -310,6 +310,11 @@ impl GridSnapshot {
     pub fn status_bar_appears(&self) -> bool {
         self.text.contains("Ctrl +") && self.text.contains("LOCK")
     }
+    pub fn tab_bar_line(&self) -> Option<&str> {
+        self.text
+            .lines()
+            .find(|line| line.trim_start().starts_with("Yinz "))
+    }
     pub fn tab_bar_appears(&self) -> bool {
         self.text
             .lines()

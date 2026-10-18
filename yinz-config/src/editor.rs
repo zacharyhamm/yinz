@@ -1305,6 +1305,13 @@ pub const ACTION_NAMES: &[&str] = &[
     "NoOp",
     "GoToNextTab",
     "GoToPreviousTab",
+    "NewTabGroup",
+    "GoToNextTabGroup",
+    "GoToPreviousTabGroup",
+    "GoToTabInGroup",
+    "SwitchTabGroup",
+    "RenameTabGroup",
+    "CloseTabGroup",
     "CloseTab",
     "ToggleTab",
     "UndoRenameTab",
@@ -1397,6 +1404,7 @@ pub fn action_templates(config: &Config) -> Result<Vec<Node>, String> {
                 vec![Value::from("full")],
                 vec![Value::from("CaseSensitivity")],
                 vec![Value::from(1)],
+                vec![Value::from(1), Value::from("Group")],
                 vec![Value::from("")],
             ];
             for args in candidates {

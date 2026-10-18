@@ -100,8 +100,7 @@ fn tab_name_reverts_when_a_second_pane_is_opened() {
         "tab name reverts once a second pane exists",
         |grid_snapshot| {
             grid_snapshot
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_some_and(|tab_bar| tab_bar.contains("Tab #1"))
         },
     );
@@ -149,7 +148,7 @@ fn launch_captions_yield_to_program_and_osc_but_explicit_names_do_not() {
         yinz.wait_until(
             "the single pane lends its program or explicit launch name",
             |screen| {
-                screen.lines().first().is_some_and(|bar| {
+                screen.tab_bar_line().is_some_and(|bar| {
                     bar.contains(name.unwrap_or("vim")) && !bar.contains("main.rs")
                 })
             },
@@ -159,8 +158,7 @@ fn launch_captions_yield_to_program_and_osc_but_explicit_names_do_not() {
             "OSC overrides a generated caption but not an explicit name",
             |screen| {
                 screen
-                    .lines()
-                    .first()
+                    .tab_bar_line()
                     .is_some_and(|bar| bar.contains(name.unwrap_or("editing main.rs")))
             },
         );
@@ -173,8 +171,7 @@ fn launch_captions_yield_to_program_and_osc_but_explicit_names_do_not() {
         );
         yinz.wait_until("clearing the name restores the OSC title", |screen| {
             screen
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_some_and(|bar| bar.contains("editing main.rs"))
         });
         yinz.quit();

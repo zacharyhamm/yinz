@@ -159,6 +159,9 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "exact_panes"
             || property_name == "hide_floating_panes"
             || property_name == "user_named"
+            || property_name == "group_id"
+            || property_name == "group_name"
+            || property_name == "group_focused"
     }
     pub fn is_a_reserved_plugin_property(property_name: &str) -> bool {
         matches!(
@@ -1439,6 +1442,40 @@ impl<'a> KdlLayoutParser<'a> {
 
         Ok(())
     }
+    fn parse_tab_group(
+        &self,
+        kdl_node: &KdlNode,
+    ) -> Result<(Option<yinz_types::tab_bar::TabGroupInfo>, bool), ConfigError> {
+        let group_id = kdl_get_property_or_child!(kdl_node, "group_id")
+            .map(|entry| {
+                entry.value().as_i64().ok_or_else(|| {
+                    ConfigError::new_kdl_error(
+                        "Group ID must be an integer".into(),
+                        entry.span().offset(),
+                        entry.span().len(),
+                    )
+                })
+            })
+            .transpose()?;
+        let tab_group = match group_id {
+            Some(id) => Some(yinz_types::tab_bar::TabGroupInfo {
+                id: u32::try_from(id).map_err(|_| {
+                    ConfigError::new_kdl_error(
+                        "Group ID is out of range".into(),
+                        kdl_node.span().offset(),
+                        kdl_node.span().len(),
+                    )
+                })?,
+                name: kdl_get_string_property_or_child_value!(kdl_node, "group_name")
+                    .unwrap_or("Default")
+                    .to_owned(),
+            }),
+            None => None,
+        };
+        let group_focused =
+            kdl_get_bool_property_or_child_value!(kdl_node, "group_focused").unwrap_or(false);
+        Ok((tab_group, group_focused))
+    }
     fn parse_tab_node(
         &mut self,
         kdl_node: &KdlNode,
@@ -1476,7 +1513,10 @@ impl<'a> KdlLayoutParser<'a> {
             },
             None => vec![],
         };
+        let (tab_group, group_focused) = self.parse_tab_group(kdl_node)?;
         let mut pane_layout = TiledPaneLayout {
+            tab_group,
+            group_focused,
             children_split_direction,
             children,
             hide_floating_panes,
@@ -1895,6 +1935,7 @@ impl<'a> KdlLayoutParser<'a> {
                 floating_pane.add_cwd_to_layout(&cwd_prefix);
             }
         }
+        (tab_layout.tab_group, tab_layout.group_focused) = self.parse_tab_group(kdl_node)?;
         tab_layout.external_children_index = None;
         Ok((
             is_focused,

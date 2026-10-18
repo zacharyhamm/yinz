@@ -125,6 +125,7 @@ fn serialize_and_deserialize_session_info_with_data() {
         name: "my session name".to_owned().into(),
         tabs: vec![
             TabInfo {
+                group: None,
                 position: TabPosition::new(0),
                 name: "tab 1".to_owned(),
                 active: true,
@@ -150,6 +151,7 @@ fn serialize_and_deserialize_session_info_with_data() {
                 has_bell_notification: false,
             },
             TabInfo {
+                group: None,
                 position: TabPosition::new(1),
                 name: "tab 2".to_owned(),
                 active: true,

@@ -118,6 +118,51 @@ impl TryFrom<ProtobufAction> for Action {
     type Error = &'static str;
     fn try_from(protobuf_action: ProtobufAction) -> Result<Self, &'static str> {
         match ProtobufActionName::try_from(protobuf_action.name).ok() {
+            Some(ProtobufActionName::NewTabGroup) if protobuf_action.optional_payload.is_none() => {
+                Ok(Action::NewTabGroup)
+            },
+            Some(ProtobufActionName::GoToNextTabGroup)
+                if protobuf_action.optional_payload.is_none() =>
+            {
+                Ok(Action::GoToNextTabGroup)
+            },
+            Some(ProtobufActionName::GoToPreviousTabGroup)
+                if protobuf_action.optional_payload.is_none() =>
+            {
+                Ok(Action::GoToPreviousTabGroup)
+            },
+            Some(ProtobufActionName::GoToTabInGroup) => match protobuf_action.optional_payload {
+                Some(OptionalPayload::GoToTabPayload(index)) => Ok(Action::GoToTabInGroup {
+                    index: TabNumber::new(index),
+                }),
+                _ => Err("Wrong payload for GoToTabInGroup"),
+            },
+            Some(
+                ProtobufActionName::SwitchTabGroup
+                | ProtobufActionName::CloseTabGroup
+                | ProtobufActionName::RenameTabGroup,
+            ) => match protobuf_action.optional_payload {
+                Some(OptionalPayload::TabGroupPayload(group)) => Ok(
+                    match ProtobufActionName::try_from(protobuf_action.name).ok() {
+                        Some(ProtobufActionName::SwitchTabGroup) => {
+                            Action::SwitchTabGroup { id: group.id }
+                        },
+                        Some(ProtobufActionName::CloseTabGroup) => {
+                            Action::CloseTabGroup { id: group.id }
+                        },
+                        _ => Action::RenameTabGroup {
+                            id: group.id,
+                            name: group.name,
+                        },
+                    },
+                ),
+                _ => Err("Wrong payload for tab group action"),
+            },
+            Some(
+                ProtobufActionName::NewTabGroup
+                | ProtobufActionName::GoToNextTabGroup
+                | ProtobufActionName::GoToPreviousTabGroup,
+            ) => Err("Unexpected tab group payload"),
             Some(ProtobufActionName::Quit) => match protobuf_action.optional_payload {
                 Some(_) => Err("The Quit Action should not have a payload"),
                 None => Ok(Action::Quit),
@@ -1316,6 +1361,40 @@ impl TryFrom<Action> for ProtobufAction {
     type Error = &'static str;
     fn try_from(action: Action) -> Result<Self, &'static str> {
         match action {
+            Action::NewTabGroup => Ok(ProtobufAction {
+                name: ProtobufActionName::NewTabGroup as i32,
+                optional_payload: None,
+            }),
+            Action::GoToNextTabGroup => Ok(ProtobufAction {
+                name: ProtobufActionName::GoToNextTabGroup as i32,
+                optional_payload: None,
+            }),
+            Action::GoToPreviousTabGroup => Ok(ProtobufAction {
+                name: ProtobufActionName::GoToPreviousTabGroup as i32,
+                optional_payload: None,
+            }),
+            Action::GoToTabInGroup { index } => Ok(ProtobufAction {
+                name: ProtobufActionName::GoToTabInGroup as i32,
+                optional_payload: Some(OptionalPayload::GoToTabPayload(index.get())),
+            }),
+            Action::SwitchTabGroup { id } => Ok(ProtobufAction {
+                name: ProtobufActionName::SwitchTabGroup as i32,
+                optional_payload: Some(OptionalPayload::TabGroupPayload(
+                    crate::generated_api::api::action::TabGroup { id, name: String::new() },
+                )),
+            }),
+            Action::CloseTabGroup { id } => Ok(ProtobufAction {
+                name: ProtobufActionName::CloseTabGroup as i32,
+                optional_payload: Some(OptionalPayload::TabGroupPayload(
+                    crate::generated_api::api::action::TabGroup { id, name: String::new() },
+                )),
+            }),
+            Action::RenameTabGroup { id, name } => Ok(ProtobufAction {
+                name: ProtobufActionName::RenameTabGroup as i32,
+                optional_payload: Some(OptionalPayload::TabGroupPayload(
+                    crate::generated_api::api::action::TabGroup { id, name },
+                )),
+            }),
             Action::Quit => Ok(ProtobufAction {
                 name: ProtobufActionName::Quit as i32,
                 optional_payload: None,
@@ -3518,6 +3597,13 @@ impl TryFrom<ProtobufTiledPaneLayout> for TiledPaneLayout {
             run_instructions_to_ignore,
             hide_floating_panes: protobuf.hide_floating_panes,
             user_named: protobuf.user_named,
+            tab_group: protobuf
+                .tab_group
+                .map(|g| yinz_types::tab_bar::TabGroupInfo {
+                    id: g.id,
+                    name: g.name,
+                }),
+            group_focused: protobuf.group_focused,
             pane_initial_contents: protobuf.pane_initial_contents,
             default_fg: None,
             default_bg: None,
@@ -3558,6 +3644,13 @@ impl TryFrom<TiledPaneLayout> for ProtobufTiledPaneLayout {
             exclude_from_sync: internal.exclude_from_sync,
             hide_floating_panes: internal.hide_floating_panes,
             user_named: internal.user_named,
+            tab_group: internal
+                .tab_group
+                .map(|g| crate::generated_api::api::action::TabGroup {
+                    id: g.id,
+                    name: g.name,
+                }),
+            group_focused: internal.group_focused,
             pane_initial_contents: internal.pane_initial_contents,
         })
     }
@@ -4076,7 +4169,14 @@ pub(crate) mod tests {
         /// everywhere else, and a field the payload *does* carry going missing still fails.
         pub(crate) fn as_the_plugin_wire_carries_it(action: Action) -> Option<Action> {
             Some(match action {
-                carried @ (Action::Quit
+                carried @ (Action::NewTabGroup
+                | Action::GoToNextTabGroup
+                | Action::GoToPreviousTabGroup
+                | Action::GoToTabInGroup { .. }
+                | Action::SwitchTabGroup { .. }
+                | Action::RenameTabGroup { .. }
+                | Action::CloseTabGroup { .. }
+                | Action::Quit
                 | Action::Write { .. }
                 | Action::WriteChars { .. }
                 | Action::SwitchToMode { .. }

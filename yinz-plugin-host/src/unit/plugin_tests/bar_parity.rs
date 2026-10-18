@@ -27,6 +27,7 @@ pub(super) struct Pair {
     pub(super) mode: ModeInfo,
     pub(super) cache: tempfile::TempDir,
     status_bar: bool,
+    tab_bar: bool,
 }
 
 impl Pair {
@@ -161,6 +162,7 @@ impl Pair {
             mode: ModeInfo::default(),
             cache,
             status_bar: name == "status-bar",
+            tab_bar: name == "tab-bar",
         };
         pair.reference(json!(["load"]));
         pair.compare_commands();
@@ -274,7 +276,13 @@ impl Pair {
         let (expected, actual) = self.reference(json!(["render", rows, cols]));
         let expected = expected.as_str().unwrap();
         let actual = actual.as_str().unwrap().replace('\n', "\n\r");
-        let steel = self.steel.render(rows, cols).unwrap().replace('\n', "\n\r");
+        // Recorded tab bars have one row; group rows have separate builtin and whole-app tests.
+        let steel_rows = if self.tab_bar { rows.min(1) } else { rows };
+        let steel = self
+            .steel
+            .render(steel_rows, cols)
+            .unwrap()
+            .replace('\n', "\n\r");
         self.compare_commands();
         let cells = |text: &str| -> Vec<Vec<TerminalCharacter>> {
             let mut grid = Grid::new(
@@ -351,10 +359,7 @@ pub(super) fn shipped(mode: InputMode) -> ModeInfo {
         mode,
         ..Default::default()
     };
-    info.keybinds = yinz_config::config::Config::from_default_assets()
-        .unwrap()
-        .keybinds
-        .to_keybinds_vec();
+    info.keybinds = super::reference_trace::legacy_keybinds();
     // Default keybindings originate in maps, whose iteration order changes
     // between test processes. Supply the same ordered input to every guest.
     info.keybinds

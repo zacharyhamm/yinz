@@ -877,6 +877,10 @@ pub struct TiledPaneLayout {
     /// show. Set by a name typed in a command, and by a resurrected session for a rename.
     #[serde(default)]
     pub user_named: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_group: Option<crate::tab_bar::TabGroupInfo>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub group_focused: bool,
     pub pane_initial_contents: Option<String>,
     pub default_fg: Option<String>,
     pub default_bg: Option<String>,
@@ -1598,21 +1602,19 @@ fn adjust_geoms_for_rounding_errors(
             }
         }
     } else if total_pane_size > split_dimension_space.as_usize() {
-        // remove extra space from rounding errors to the last pane
-        let decrease_by = total_pane_size - split_dimension_space.as_usize();
-        let position_of_last_flexible_geom = split_geoms
-            .iter()
-            .rposition(|s_g| s_g.is_flexible_in_direction(children_split_direction));
-        if let Some(mut flexible_geom_and_following_geoms) =
-            position_of_last_flexible_geom.map(|p| split_geoms.iter_mut().skip(p))
-        {
-            if let Some(flexible_geom) = flexible_geom_and_following_geoms.next() {
-                match children_split_direction {
-                    SplitDirection::Vertical => flexible_geom.cols.decrease_inner(decrease_by),
-                    SplitDirection::Horizontal => flexible_geom.rows.decrease_inner(decrease_by),
-                }
+        // Fixed UI rows can leave more rounding excess than the last pane can absorb.
+        let mut remaining = total_pane_size - split_dimension_space.as_usize();
+        for index in (0..split_geoms.len()).rev() {
+            let (dimension, minimum) = match children_split_direction {
+                SplitDirection::Vertical => (&mut split_geoms[index].cols, MIN_TERMINAL_WIDTH),
+                SplitDirection::Horizontal => (&mut split_geoms[index].rows, MIN_TERMINAL_HEIGHT),
+            };
+            if !dimension.is_percent() {
+                continue;
             }
-            for following_geom in flexible_geom_and_following_geoms {
+            let decrease_by = remaining.min(dimension.as_usize().saturating_sub(minimum));
+            dimension.decrease_inner(decrease_by);
+            for following_geom in split_geoms.iter_mut().skip(index + 1) {
                 match children_split_direction {
                     SplitDirection::Vertical => {
                         following_geom.x = following_geom.x.saturating_sub(decrease_by)
@@ -1621,6 +1623,10 @@ fn adjust_geoms_for_rounding_errors(
                         following_geom.y = following_geom.y.saturating_sub(decrease_by)
                     },
                 }
+            }
+            remaining -= decrease_by;
+            if remaining == 0 {
+                break;
             }
         }
     }

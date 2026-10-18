@@ -76,6 +76,20 @@ impl Screen {
             .map(|tab| tab.tab_index)
             .chain(failed_tabs)
             .collect();
+        let group_layouts: Vec<_> = tab_results
+            .iter()
+            .filter(|tab| tab.tiled_layout.tab_group.is_some())
+            .map(|tab| {
+                (
+                    tab.tab_index,
+                    TiledPaneLayout {
+                        tab_group: tab.tiled_layout.tab_group.clone(),
+                        group_focused: tab.tiled_layout.group_focused,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
         for tab_result in tab_results {
             let spawned_panes: Vec<_> = tab_result
                 .new_terminal_pids
@@ -136,6 +150,13 @@ impl Screen {
 
         if !self.has_pending_tabs() {
             self.apply_deferred_tab_switches(&mut pending.tab_switches)?;
+        }
+
+        if result.is_ok() {
+            for (tab, layout) in group_layouts {
+                self.restore_tab_group(tab, &layout);
+            }
+            self.finish_group_restore();
         }
 
         result

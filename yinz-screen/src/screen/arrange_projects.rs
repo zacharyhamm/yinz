@@ -349,6 +349,7 @@ impl Screen {
                             Some(group.name.clone()),
                             None,
                         )?;
+                        self.assign_tab_group(id, Some(client_id));
                         let (mut layout, _) = self.default_layout.new_tab();
                         // Keep plugin slots and their properties, but start no new processes.
                         for run in layout.extract_run_instructions() {

@@ -36,7 +36,7 @@ fn focus_next_pane_via_tmux_mode() {
     yinz.send_stdin(&keys::ENTER);
 
     let grid_snapshot = yinz.wait_until("focus cycled to the other pane", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(2))
+        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(2).row(3))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -133,8 +133,7 @@ fn previous_swap_layout() {
             && !grid_snapshot.contains("BASE")
             // The tab bar is a plugin; wait for it to name the visible stack member.
             && grid_snapshot
-                .lines()
-                .first()
+                .tab_bar_line()
                 .is_some_and(|bar| bar.contains("[1] Tab #1"))
     });
     assert_snapshot!(normalized(&grid_snapshot));

@@ -90,7 +90,7 @@ fn tab_bar_names_the_selected_member(grid_snapshot: &GridSnapshot, title: &str) 
     // A stack sharing its tab with another pane is not the tab's only content pane, so the bar
     // carries no marker at all - settled either way, as long as it is not still naming the
     // member the stack was showing before.
-    lines.first().is_some_and(|tab_bar| {
+    grid_snapshot.tab_bar_line().is_some_and(|tab_bar| {
         tab_bar.contains(&marker)
             || !tab_bar
                 .chars()
@@ -224,7 +224,7 @@ fn disabling_stacked_pane_list_restores_the_classic_stack() {
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
             && !has_selected_entry(grid_snapshot, "Pane #2")
-            && grid_snapshot.cursor_is_at(col(2).row(3))
+            && grid_snapshot.cursor_is_at(col(2).row(4))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -290,12 +290,12 @@ fn navigating_past_the_top_entry_leaves_the_stack() {
 
     yinz.send_stdin(&keys::alt('k'));
     yinz.wait_until("focus left the stack to the pane above", |grid_snapshot| {
-        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(2))
+        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(3))
     });
 
     yinz.send_stdin(&keys::alt('j'));
     yinz.wait_until("focus re-entered the stack", |grid_snapshot| {
-        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(16))
+        has_selected_entry(grid_snapshot, "Pane #2") && grid_snapshot.cursor_is_at(col(2).row(17))
     });
     yinz.quit();
 }
@@ -743,7 +743,7 @@ fn splitting_a_new_pane_reforms_the_list_around_it() {
             && grid_snapshot.contains("Pane #2")
             && has_selected_entry(grid_snapshot, "Pane #3")
             && grid_snapshot.contains("Pane #4")
-            && grid_snapshot.cursor_is_at(col(2).row(13))
+            && grid_snapshot.cursor_is_at(col(2).row(14))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -838,7 +838,7 @@ fn a_stack_list_survives_session_resurrection() {
             && grid_snapshot.contains("Pane #1")
             && grid_snapshot.contains("Pane #2")
             && has_selected_entry(grid_snapshot, "Pane #3")
-            && grid_snapshot.cursor_is_at(col(2).row(5))
+            && grid_snapshot.cursor_is_at(col(2).row(6))
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
