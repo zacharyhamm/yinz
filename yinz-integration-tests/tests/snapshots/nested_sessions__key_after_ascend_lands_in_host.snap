@@ -2,11 +2,11 @@
 source: yinz-integration-tests/tests/nested_sessions.rs
 expression: normalized(&host_end_state)
 ---
- Default 
- Yinz (test)  Tab #1  + 
+ Yinz (test)  Default 
+ Tab #1  + 
                        [0] Yinz:test-1                     │                         [1] Pane #2
- Default                                                 │$
- Yinz (test)  Tab #1  +        Alt <[]>  VERTICAL  │
+ Yinz (test)  Default            Alt <[]>  VERTICAL  │$
+ Tab #1  +                                             │
           [0] Pane #1        │         [1] Pane #2         │
 $                            │                             │
                              │                             │

@@ -24,10 +24,18 @@ fn split_focused_pane_down(yinz: &TestSession) -> FakePtyHandle {
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('d'));
     let terminal = yinz.expect_pty_spawn();
-    terminal.output(PROMPT);
+    terminal.output(b"BOTTOM$ ");
     yinz.wait_until(
         "newly split lower pane focused below the middle pane",
-        |grid| grid.status_bar_appears() && grid.cursor.is_some_and(|cursor| cursor.y > 13),
+        |grid| {
+            // The middle pane already satisfies y > 13 before the new pane renders.
+            grid.status_bar_appears()
+                && grid.cursor.is_some_and(|cursor| {
+                    grid.lines()
+                        .get(cursor.y)
+                        .is_some_and(|line| line.contains("BOTTOM$ █"))
+                })
+        },
     );
     terminal
 }

@@ -2,8 +2,8 @@
 source: yinz-integration-tests/tests/search.rs
 expression: normalized(&grid_snapshot)
 ---
- Default 
- Yinz (test)  Tab #1  + 
+ Yinz (test)  Default 
+ Tab #1  + 
 ┌ SEARCHING: NEEDLE [o] ───────────────────────────────────────────────────────────────────────────────────────────────┐
 │NEEDLE on screen                                                                                                      │
 │█                                                                                                                     │

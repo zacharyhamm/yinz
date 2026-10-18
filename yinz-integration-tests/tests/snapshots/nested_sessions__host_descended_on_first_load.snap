@@ -2,10 +2,10 @@
 source: yinz-integration-tests/tests/nested_sessions.rs
 expression: normalized(&host_descended_on_load)
 ---
- Default 
- Yinz (test)  [0] Yinz:test-1  + 
- Default 
- Yinz (test)  [0] Tab #1  + 
+ Yinz (test)  Default 
+ [0] Yinz:test-1  + 
+ Yinz (test)  Default 
+ [0] Tab #1  + 
 █
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
  Ascend: Ctrl + <o> + <]>

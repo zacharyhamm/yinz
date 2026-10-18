@@ -2,8 +2,8 @@
 source: yinz-integration-tests/tests/cli.rs
 expression: normalized(&watcher_snapshot)
 ---
- Default 
- Yinz (test)  Tab #1  + 
+ Yinz (test)  Default 
+ Tab #1  + 
                          [0] Pane #1                       │                         [1] Pane #2
 $                                                          │$ █
 WATCHER_OUTPUT_1                                           │

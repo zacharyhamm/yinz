@@ -48,7 +48,7 @@
   (cond
     ((hash-contains? event "LeftClick")
       (define col (cadr (hash-ref event "LeftClick")))
-      (cond ((in-range breadcrumb-range col) (yinz-command "FocusHostSession"))
+      (cond ((and (not group-row-visible) (in-range breadcrumb-range col)) (yinz-command "FocusHostSession"))
         ((in-range new-tab-range col) (yinz-command (hash "NewTab" (hash "name" 'json-null "cwd" 'json-null))))
         (else (define tab (tab-at col)) (when tab (switch-to-tab tab)))) #f)
     ((hash-contains? event "Hover")
@@ -68,7 +68,9 @@
   (define point (hash-ref event kind))
   (if (and group-row-visible (list? point) (not (null? point)) (= (car point) 0))
     (cond
-      ((equal? kind "LeftClick") (switch-group (group-at (cadr point))) #f)
+      ((equal? kind "LeftClick")
+        (if (in-range breadcrumb-range (cadr point)) (yinz-command "FocusHostSession")
+          (switch-group (group-at (cadr point)))) #f)
       ((equal? kind "Hover")
         (define next (group-at (cadr point)))
         (define changed (or (not (equal? hovered-group next)) (if (or hovered-tab hovered-button) #t #f)))
@@ -256,7 +258,7 @@
   (if (null? tabs) ""
     (begin
       (define cols (max 0 (- columns 1)))
-      (set! parts (prefix cols))
+      (set! parts (if group-row-visible '() (prefix cols)))
       (set! new-tab-range #f)
       (define budget (max 8 (min 40 (- cols (parts-width parts) (* 4 (yinz-text-width (bar-arrow mi))) 5))))
       (define index -1)
@@ -266,7 +268,7 @@
         (begin (set! parts '()) (set! breadcrumb-range #f) "")
         (begin
           (define active-part (list-ref all (hash-ref active "position")))
-          (define status (or (hint-part (max 0 (- cols (parts-width parts) (hash-ref active-part "len")))) (indicator active)))
+          (define status (and (not group-row-visible) (or (hint-part (max 0 (- cols (parts-width parts) (hash-ref active-part "len")))) (indicator active))))
           (when (and status (> (hash-ref status "len") 0) (> (+ (parts-width parts) (hash-ref active-part "len") (hash-ref status "len")) cols)) (set! status #f))
           (set! parts (append parts (visible-tabs all (hash-ref active "position")
                 (max 0 (- cols (parts-width parts) (if status (hash-ref status "len") 0)))) (list (bar-line (bar-fill mi) 0))))
@@ -285,9 +287,11 @@
           (apply string-append (map (lambda (part) (hash-ref part "part")) parts)))))))
 
 (define (render-groups columns)
+  (define cols (max 0 (- columns 1)))
+  (set! group-parts (prefix cols))
   (define index -1)
   (define active 0)
-  (define budget (max 1 (min 40 (- columns (* 2 (yinz-text-width (bar-arrow mi))) 3))))
+  (define budget (max 1 (min 40 (- cols (parts-width group-parts) (* 2 (yinz-text-width (bar-arrow mi))) 3))))
   (define all (map (lambda (group)
         (set! index (+ index 1))
         (define selected (= (hash-ref group "id") focused-group))
@@ -295,7 +299,17 @@
         (define palette (hash-ref (colors) (if (and selected (not (bar-dimmed? mi))) "ribbon_selected" "ribbon_unselected")))
         (hash-insert (tile (string-append " " (ellipsize (hash-ref group "name") budget) " ")
             (hash-ref palette "base") (hash-ref palette (if (and (not (bar-dimmed? mi)) (equal? hovered-group index)) "emphasis_1" "background"))) "tab" index)) groups))
-  (set! group-parts (visible-tabs all active (max 0 (- columns 1))))
+  (define available (max 0 (- cols (parts-width group-parts) (hash-ref (list-ref all active) "len"))))
+  (define active-tab-info (car (filter (lambda (tab) (hash-ref tab "active")) tabs)))
+  (define status (or (hint-part available) (indicator active-tab-info)))
+  (when (and status (> (hash-ref status "len") available)) (set! status #f))
+  (set! group-parts (append group-parts
+      (visible-tabs all active (max 0 (- cols (parts-width group-parts) (if status (hash-ref status "len") 0))))))
+  (when status
+    (define padding (max 0 (- cols (parts-width group-parts) (hash-ref status "len"))))
+    (define bg (hash-ref (hash-ref (colors) "text_unselected") "background"))
+    (set! group-parts (append group-parts
+        (list (bar-concat (bar-line (bar-paint (make-string padding #\space) bg bg "") padding) status)))))
   (string-append (apply string-append (map (lambda (part) (hash-ref part "part")) group-parts)) (bar-fill mi)))
 
 (define (render rows columns)

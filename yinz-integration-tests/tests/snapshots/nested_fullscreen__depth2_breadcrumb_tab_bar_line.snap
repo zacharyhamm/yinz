@@ -2,4 +2,4 @@
 source: yinz-integration-tests/tests/nested_fullscreen.rs
 expression: normalized(&fullscreened).lines().next().unwrap()
 ---
- Yinz (test-0 ▸ test-1)  [0] Tab #1  + 
+ Yinz (test-0 ▸ test-1)  Default 
