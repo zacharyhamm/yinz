@@ -168,15 +168,13 @@ pub fn rebind_keys_plugin_command() {
         rows: 20,
     };
     let received_screen_instructions = Watched::new(vec![]);
-    let _screen_thread = grant_permissions_and_log_actions_in_thread_naked_variant!(
-        received_screen_instructions,
-        ScreenInstruction::Exit,
+    let screen_thread = permissions_and_log_until_disconnect(
+        &received_screen_instructions,
         screen_receiver,
-        1,
-        &PermissionType::ChangeApplicationState,
         cache_path,
-        plugin_thread_sender,
-        client_id
+        plugin_thread_sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
     );
     let received_server_instruction = Watched::new(vec![]);
     let server_thread = log_actions_in_thread_struct!(
@@ -205,28 +203,30 @@ pub fn rebind_keys_plugin_command() {
         None,
         None,
     ));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    wait_for_permissions(&received_screen_instructions);
 
     let _ = plugin_thread_sender.send(PluginInstruction::Update(vec![(
         None,
         Some(client_id),
         Event::Key(KeyWithModifier::new(BareKey::Char('y')).with_alt_modifier()), // this triggers the enent in the fixture plugin
     )]));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    let rebind_event = received_server_instruction.wait_until(
+        "the fixture's key rebinding reaches the server",
+        default_timeout(),
+        |instructions| {
+            instructions
+                .iter()
+                .find_map(|instruction| match instruction {
+                    ServerInstruction::RebindKeys { client_id: id, .. } if *id == client_id => {
+                        Some(Some(instruction.clone()))
+                    },
+                    _ => None,
+                })
+        },
+    );
     teardown();
-    server_thread.join().unwrap(); // this might take a while if the cache is cold
-    let rebind_event = received_server_instruction
-        .lock()
-        .iter()
-        .rev()
-        .find_map(|i| {
-            if let ServerInstruction::RebindKeys { .. } = i {
-                Some(i.clone())
-            } else {
-                None
-            }
-        })
-        .clone();
+    screen_thread.join().unwrap();
+    server_thread.join().unwrap();
     assert_snapshot!(format!("{:#?}", rebind_event));
 }
 

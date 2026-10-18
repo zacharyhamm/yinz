@@ -2,7 +2,7 @@
 source: yinz-integration-tests/tests/nested_sessions.rs
 expression: normalized(&host_after_new_tab)
 ---
- Yinz (test)  Default 
+ Yinz (test)  Default  + 
  [0] Yinz:test-1  [1] Tab #2  + 
 $ █
  Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

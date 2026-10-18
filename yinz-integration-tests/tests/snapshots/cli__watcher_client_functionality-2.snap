@@ -2,7 +2,7 @@
 source: yinz-integration-tests/tests/cli.rs
 expression: normalized(&watcher_snapshot)
 ---
- Yinz (test)  Default 
+ Yinz (test)  Default  + 
  Tab #1  + 
                          [0] Pane #1                       │                         [1] Pane #2
 $                                                          │$ █

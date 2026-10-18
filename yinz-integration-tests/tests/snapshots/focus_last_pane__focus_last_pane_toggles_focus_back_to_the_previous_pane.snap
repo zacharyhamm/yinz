@@ -2,7 +2,7 @@
 source: yinz-integration-tests/tests/focus_last_pane.rs
 expression: normalized(&grid)
 ---
- Yinz (test)  Default 
+ Yinz (test)  Default  + 
  Tab #1  + 
                          [0] Pane #1                       │                         [1] Pane #2
 $ █                                                        │$

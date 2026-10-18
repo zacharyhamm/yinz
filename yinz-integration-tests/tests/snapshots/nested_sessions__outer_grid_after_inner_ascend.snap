@@ -2,11 +2,11 @@
 source: yinz-integration-tests/tests/nested_sessions.rs
 expression: normalized(&outer_after_inner_ascend)
 ---
- Yinz (test)  Default 
+ Yinz (test)  Default  + 
  [0] Yinz:test-2 | Yinz:test-2  + 
- Yinz (test)  Default 
+ Yinz (test)  Default  + 
  [0] Yinz:test-2  + 
- Yinz (test)  Default 
+ Yinz (test)  Default  + 
  [0] Tab #1  + 
 █
  Descend: Ctrl + <o> + <[>

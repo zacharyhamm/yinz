@@ -9,22 +9,34 @@ fn tab_groups_keyboard_mouse_and_last_pane_lifecycle() {
         .start();
     let default = yinz.expect_pty_spawn();
     default.output(b"DEFAULT_CONTENT");
-    yinz.wait_until("default group and tab ready", |grid| {
-        grid.contains("Default") && grid.contains("DEFAULT_CONTENT") && grid.tab_bar_appears()
+    let grid = yinz.wait_until("default group and buttons ready", |grid| {
+        grid.contains("Default")
+            && grid.contains("DEFAULT_CONTENT")
+            && grid.lines()[0].contains('+')
+            && grid.lines()[1].contains('+')
     });
-    yinz.send_stdin(b"\x14g");
+    let group_row = &grid.lines()[0];
+    let group_button_column = group_row[..group_row.find('+').unwrap()].chars().count() + 1;
+    yinz.send_stdin(
+        format!("\x1b[<0;{group_button_column};1M\x1b[<0;{group_button_column};1m").as_bytes(),
+    );
     let first = yinz.expect_pty_spawn();
     first.output(b"GROUP_FIRST");
-    yinz.wait_until("new group focused", |grid| {
+    let grid = yinz.wait_until("clicked new group focused", |grid| {
         grid.contains("Group 1")
             && grid.contains("GROUP_FIRST")
             && !grid.contains("DEFAULT_CONTENT")
+            && grid.lines()[1].contains('+')
     });
-    yinz.send_stdin(b"\x14n");
+    let tab_row = &grid.lines()[1];
+    let tab_button_column = tab_row[..tab_row.find('+').unwrap()].chars().count() + 1;
+    yinz.send_stdin(
+        format!("\x1b[<0;{tab_button_column};2M\x1b[<0;{tab_button_column};2m").as_bytes(),
+    );
     let second = yinz.expect_pty_spawn();
     second.output(b"GROUP_SECOND");
     yinz.wait_until("new tab in group ready", |grid| {
-        grid.contains("GROUP_SECOND")
+        grid.contains("GROUP_SECOND") && !grid.contains("Group 2")
     });
     yinz.send_stdin(b"\x14H\x1b");
     yinz.wait_until("previous group focused", |grid| {

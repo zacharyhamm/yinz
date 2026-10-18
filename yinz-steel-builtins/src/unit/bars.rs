@@ -378,3 +378,94 @@ fn group_row_filters_tabs_and_mouse_targets_keep_global_addresses() {
         assert!(runtime.render(2, columns).is_ok());
     }
 }
+
+#[test]
+fn group_plus_matches_tab_plus_styling_with_hover_arrows_and_dimming() {
+    let (mut runtime, _) = plugin();
+    event(&mut runtime, Event::TabUpdate(vec![tab(0, "main", true)]));
+    for arrow_fonts in [false, true] {
+        for dimmed in [false, true] {
+            let mut mode = ModeInfo::default();
+            mode.capabilities.arrow_fonts = arrow_fonts;
+            mode.session_dimmed = Some(dimmed);
+            event(&mut runtime, Event::ModeUpdate(mode));
+            runtime.render(2, 80).unwrap();
+            let button_part = |runtime: &mut Runtime, name: &str| {
+                runtime
+                    .value(name)
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|part| part["part"].as_str().unwrap().contains(" + "))
+                    .unwrap()["part"]
+                    .clone()
+            };
+            let plain = button_part(&mut runtime, "group-parts");
+            assert_eq!(plain, button_part(&mut runtime, "parts"));
+            let group_col = runtime.value("new-group-range").unwrap()[0].clone();
+            wire(&mut runtime, json!({"Mouse":{"Hover":[0,group_col]}}));
+            runtime.render(2, 80).unwrap();
+            let hovered = button_part(&mut runtime, "group-parts");
+            assert_eq!(plain == hovered, arrow_fonts || dimmed);
+            let tab_col = runtime.value("new-tab-range").unwrap()[0].clone();
+            wire(&mut runtime, json!({"Mouse":{"Hover":[1,tab_col]}}));
+            runtime.render(2, 80).unwrap();
+            assert_eq!(plain, button_part(&mut runtime, "group-parts"));
+            assert_eq!(hovered, button_part(&mut runtime, "parts"));
+            wire(&mut runtime, json!({"Mouse":{"Hover":[1,79]}}));
+        }
+    }
+}
+
+#[test]
+fn group_items_match_tab_hover_with_arrows_and_dimming() {
+    let (mut runtime, _) = plugin();
+    let mut tabs = vec![
+        tab(0, "inactive", false),
+        tab(1, "selected", true),
+        tab(2, "hidden", false),
+    ];
+    for (index, tab) in tabs.iter_mut().enumerate() {
+        tab.group = Some(yinz_types::tab_bar::TabGroupInfo {
+            id: if index == 2 { 0 } else { 1 },
+            name: if index == 2 { "inactive" } else { "selected" }.into(),
+        });
+    }
+    event(&mut runtime, Event::TabUpdate(tabs));
+    let item = |runtime: &mut Runtime, name: &str, index: usize| {
+        let parts = runtime.value(name).unwrap();
+        let parts = parts.as_array().unwrap();
+        let offset = parts.iter().position(|part| part["tab"] == index).unwrap();
+        let col: u64 = parts[..offset]
+            .iter()
+            .map(|part| part["len"].as_u64().unwrap())
+            .sum();
+        (parts[offset]["part"].clone(), col)
+    };
+    for arrow_fonts in [false, true] {
+        for dimmed in [false, true] {
+            let mut mode = ModeInfo::default();
+            mode.capabilities.arrow_fonts = arrow_fonts;
+            mode.session_dimmed = Some(dimmed);
+            event(&mut runtime, Event::ModeUpdate(mode));
+            for index in [0, 1] {
+                runtime.render(2, 120).unwrap();
+                let (plain, group_col) = item(&mut runtime, "group-parts", index);
+                let (tab_plain, tab_col) = item(&mut runtime, "parts", index);
+                assert_eq!(plain, tab_plain);
+                wire(&mut runtime, json!({"Mouse":{"Hover":[0,group_col]}}));
+                runtime.render(2, 120).unwrap();
+                let (hovered, _) = item(&mut runtime, "group-parts", index);
+                assert_eq!(plain == hovered, index == 1 || arrow_fonts || dimmed);
+                wire(&mut runtime, json!({"Mouse":{"Hover":[1,tab_col]}}));
+                runtime.render(2, 120).unwrap();
+                assert_eq!(plain, item(&mut runtime, "group-parts", index).0);
+                assert_eq!(hovered, item(&mut runtime, "parts", index).0);
+                wire(&mut runtime, json!({"Mouse":{"Hover":[0,119]}}));
+                runtime.render(2, 120).unwrap();
+                assert_eq!(plain, item(&mut runtime, "parts", index).0);
+            }
+        }
+    }
+}
