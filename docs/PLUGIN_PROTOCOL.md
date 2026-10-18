@@ -222,6 +222,7 @@ interface CommandArgs {
   SetPaneTitlePrefix: {pane_id: PaneId; prefix: string | null};
   SetPaneSubtitle: {pane_id: PaneId; subtitle: string | null};
   SetPaneAgent: {pane_id: PaneId; agent: AgentInfo | null}; SetPaneAgentRun: {pane_id: PaneId; run_id: string | null};
+  ResolveProject: {directory: string};
   ProjectConfigRead: {directory: string}; ProjectConfigWrite: {directory: string; source: string; expected: string | null};
   SpawnAgent: {spec: AgentSpawnSpec; source_directory?: string | null; cwd?: string | null; name?: string | null; context?: StringMap; start_suppressed?: boolean};
   SetQuitNotice: {notice: string | null; guard: boolean}; ReloadPluginByUrl: string;
@@ -260,6 +261,7 @@ interface CommandReplies {
   RestartAgentPane: {pane_id: PaneId; session_id: string | null; command: string[]};
   OpenCommandPaneInNewTab: PaneInNewTab; OpenPluginPaneInNewTab: PaneInNewTab; OpenEditorPaneInNewTab: PaneInNewTab;
   InspectConfiguration: ConfigurationSnapshot; EditConfiguration: ConfigurationSnapshot;
+  ResolveProject: ResolvedProject | null;
   ReadPluginLog: string; ProjectConfigRead: ProjectConfigSnapshot; ProjectConfigWrite: ProjectConfigSnapshot;
   FsRead: Bytes; FsList: FsEntry[]; FsMetadata: FileMetadata | null;
   FsWrite: boolean; FsRemove: boolean; FsCreateDir: boolean; FsRename: boolean;
@@ -310,6 +312,7 @@ interface ConnectToSession {name: string | null; tab_position: number | null; pa
 
 type GitCheckout = 'Current' | {NewBranch: {branch: string; base: string}} | {NewWorktree: {branch: string; base: string; path: string}};
 
+interface ResolvedProject {identity: string; name: string; root: string;}
 interface ProjectPaneGroup {identity: string; name: string; configuration_root: string | null; pane_ids: number[];}
 
 type LayoutInfo = {BuiltIn: string} | {File: [string, LayoutMetadata]} | {Stringified: string};
@@ -834,3 +837,34 @@ non-agent command removes the remembered id and disarms `agent_exit`.
 and a message on error. This direct control request retains the held command's
 original plugin routing. Use `RestartAgentPane` to receive exit context in the
 calling hook plugin.
+
+### Directory project resolution
+
+`ResolveProject {directory}` requires `ReadApplicationState`. It resolves a local
+host directory (relative to the plugin working directory when not absolute) with
+the same project model as `ArrangeProjectPanes`. The reply is
+`{identity, name, root}`, or `null` for a folder with no project. Invalid or missing
+directories and failed probes return errors. The host reads the shared registry;
+the plugin does not need `PluginData`, `ReadFiles`, or `RunCommands`.
+
+Remembered roots can contain several repositories. Registered discovered projects,
+subdirectories and linked Git worktrees use the same membership rules as pane
+arrangement. For an unregistered checkout, the arrangement resolver supplies its
+repository identity without registering a project. Published custom-provider
+matches take precedence over Git; this command does not invoke provider plugins
+for directories outside their published snapshot.
+
+`identity` is an opaque persistence key, distinct from the display `name`. For a
+registered project it is `project:<registered-root>`: renaming the display name,
+changing branches, and entering linked worktrees or member repositories do not
+change it. Moving or merging project roots can change it; it is not a permanent
+UUID. Unregistered checkouts use the arrangement key based on provider identity,
+normalized Git remote, or host-qualified Git common directory, in that order.
+Registering such a checkout can change its key. `root` is the local configuration
+root (the primary checkout for Git), not the identity of a multi-repository project.
+Store the returned identity rather than deriving a key from `name` or `root`.
+
+The protobuf command carries `resolve_project_payload` as a directory string.
+Its reply uses the existing `AgentProvidersResponse` JSON result envelope:
+`{"Ok": ResolvedProject | null}` or `{"Err": string}`. The Steel bridge unwraps
+this envelope and raises errors.

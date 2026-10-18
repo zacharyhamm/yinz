@@ -836,6 +836,64 @@ pub fn registered_for_cwd<'a>(
     project_for_cwd(probed, projects, cwd)
 }
 
+/// The primary checkout's configuration root, or the supplied project root.
+pub fn configuration_root(common: Option<&str>, fallback: &str) -> String {
+    common
+        .map(Path::new)
+        .filter(|path| path.file_name().is_some_and(|name| name == ".git"))
+        .and_then(Path::parent)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+/// The arrangement key for a checkout that has no registered project.
+pub fn repository_identity(repository: &Repository) -> Option<String> {
+    repository
+        .provider_identity
+        .as_ref()
+        .map(|id| format!("provider:{id}"))
+        .or_else(|| {
+            repository
+                .remote
+                .as_deref()
+                .filter(|remote| !remote.is_empty())
+                .map(|remote| format!("remote:{}", origin_identity(remote)))
+        })
+        .or_else(|| {
+            repository
+                .common_dir
+                .as_ref()
+                .map(|dir| format!("git:{:?}:{dir}", repository.host))
+        })
+}
+
+/// Resolve the identity, label and configuration root used to arrange project panes.
+pub fn resolve(
+    probed: &Probed,
+    projects: &Registry,
+    cwd: &Location,
+) -> Option<yinz_tile::prelude::ResolvedProject> {
+    if let Some(project) = registered_for_cwd(probed, projects, cwd) {
+        return Some(yinz_tile::prelude::ResolvedProject {
+            identity: format!("project:{}", project.root),
+            name: project.name.clone(),
+            root: Some(configuration_root(
+                project.common_dir.as_deref(),
+                &project.root,
+            )),
+        });
+    }
+    let repository = repository_for_cwd(probed, cwd).filter(|repo| repo.is_checkout())?;
+    Some(yinz_tile::prelude::ResolvedProject {
+        identity: repository_identity(repository)?,
+        name: repository.checkout_name()?,
+        root: repository
+            .host
+            .is_none()
+            .then(|| configuration_root(repository.common_dir.as_deref(), &repository.root)),
+    })
+}
+
 /// What to *call* the project a folder is in, which is a wider question than
 /// which project owns it.
 ///

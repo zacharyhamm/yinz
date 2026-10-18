@@ -490,6 +490,20 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     result.map(|()| serde_json::json!(yinz_types::project_provider::providers())),
                 )?;
             },
+            PluginCommand::ResolveProject { directory } => {
+                let result = agent_control::projects(&env.data_access)
+                    .and_then(|rows| {
+                        crate::project_provider::resolve_directory(
+                            &env.plugin_cwd.join(directory),
+                            &project_data::projects::from_rows(&rows),
+                            crate::project_provider::snapshot(),
+                        )
+                    })
+                    .and_then(|project| {
+                        serde_json::to_value(project).map_err(|error| error.to_string())
+                    });
+                write_project_response(env, result)?;
+            },
             PluginCommand::GetProjectProviders => {
                 write_project_response(
                     env,
@@ -1394,6 +1408,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 command,
                 PluginCommand::RegisterProjectProvider(_)
                     | PluginCommand::GetProjectProviders
+                    | PluginCommand::ResolveProject { .. }
                     | PluginCommand::ValidateProjectMatch(_)
                     | PluginCommand::PublishProjectLocations(_)
             ) {
@@ -9413,7 +9428,8 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::GetSessionList
         | CommandType::ListNotifications
         | CommandType::ListOrphanedPanes
-        | CommandType::CommandPalette => PermissionType::ReadApplicationState,
+        | CommandType::CommandPalette
+        | CommandType::ResolveProject => PermissionType::ReadApplicationState,
         // One permission covers reading and writing the plugin's *own* namespace. Reaching a
         // `shared:` namespace additionally needs `SharedPluginData`, which is checked in the
         // handlers — this match sees only the command, not the namespace it names.

@@ -13,6 +13,47 @@ use std::{
 
 static LOCATIONS: LazyLock<RwLock<(Option<u64>, Probed)>> = LazyLock::new(Default::default);
 
+pub(crate) fn resolve_directory(
+    directory: &Path,
+    registry: &project_data::projects::Registry,
+    mut probed: Probed,
+) -> Result<Option<yinz_types::data::ResolvedProject>, String> {
+    let directory = directory
+        .canonicalize()
+        .map_err(|error| format!("resolve project directory: {error}"))?;
+    if !directory.is_dir() {
+        return Err("project directory must be a directory".into());
+    }
+    let location = Location::local(directory.to_string_lossy());
+    // Remembered folders resolve without Git, just as they do in pane arrangement.
+    if let Some(project) = project_data::projects::resolve(&Probed::new(), registry, &location) {
+        return Ok(Some(project));
+    }
+    // Provider results are owned by agent-service; preserve its precedence over Git.
+    if !project_data::projects::repository_for_cwd(&probed, &location)
+        .is_some_and(|repo| repo.provider_identity.is_some())
+    {
+        let probe = yinz_process::pty_host::remote::status::probe_git(&location.path);
+        let repository = match project_data::git_probe::repository(
+            probe.exit_code,
+            &probe.metadata,
+            &probe.config,
+        ) {
+            project_data::git_probe::ProbeOutcome::Checkout(repository) => repository,
+            project_data::git_probe::ProbeOutcome::NotARepository => {
+                Repository::folder(&location.path)
+            },
+            project_data::git_probe::ProbeOutcome::Failed => {
+                return Err("could not probe project directory".into())
+            },
+        };
+        probed.insert(location.clone(), repository);
+    }
+    Ok(project_data::projects::resolve(
+        &probed, registry, &location,
+    ))
+}
+
 pub(crate) fn invalidate() {
     *LOCATIONS
         .write()

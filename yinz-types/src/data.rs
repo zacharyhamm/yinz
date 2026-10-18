@@ -3291,6 +3291,10 @@ pub enum PluginCommand {
         pane_id: PaneId,
         run_id: Option<String>,
     },
+    /// Resolve local project membership using the pane arrangement resolver.
+    ResolveProject {
+        directory: PathBuf,
+    },
     /// Read validated agent-exit configuration at the Git worktree root.
     ProjectConfigRead {
         directory: PathBuf,
@@ -3502,6 +3506,16 @@ pub struct LayoutDiagnostic {
     pub offset: Option<usize>,
     pub len: Option<usize>,
     pub help_message: Option<String>,
+}
+
+/// Project membership shared by directory resolution and pane arrangement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedProject {
+    /// Opaque arrangement key, independent of the display name.
+    pub identity: String,
+    pub name: String,
+    /// Local configuration root; absent only for unregistered remote checkouts.
+    pub root: Option<String>,
 }
 
 /// A project identity and its terminal panes, in checkout traversal order.

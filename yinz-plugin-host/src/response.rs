@@ -139,7 +139,8 @@ pub enum DecodedResponse {
 /// caller hands the bytes back untouched.
 pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<DecodedResponse>> {
     Some(match command {
-        CommandType::RegisterProjectProvider
+        CommandType::ResolveProject
+        | CommandType::RegisterProjectProvider
         | CommandType::GetProjectProviders
         | CommandType::ValidateProjectMatch
         | CommandType::PublishProjectLocations => decode(bytes).and_then(

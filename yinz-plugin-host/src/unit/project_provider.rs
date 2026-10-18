@@ -53,3 +53,126 @@ fn project_matches_validate_containment_namespaces_and_generation() {
     assert!(snapshot().is_empty());
     unregister_owner(20);
 }
+
+fn git(directory: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(directory)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn resolve_project_primary_subdirectory_linked_worktree_and_unregistered_folder() {
+    use project_data::projects::{self, Registry};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    git(&root, &["init", "-b", "main"]);
+    git(
+        &root,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    );
+    std::fs::create_dir(root.join("src")).unwrap();
+    git(
+        &root,
+        &["worktree", "add", "-b", "topic", ".worktrees/topic"],
+    );
+    let linked = root.join(".worktrees/topic");
+    std::fs::create_dir(linked.join("src")).unwrap();
+    let mut project = projects::validate("Display name", root.to_str().unwrap()).unwrap();
+    project.common_dir = Some(root.join(".git").to_str().unwrap().into());
+    for discovered in [false, true] {
+        project.discovered = discovered;
+        let registry = Registry::from([(project.name.clone(), project.clone())]);
+        for directory in [&root, &root.join("src"), &linked, &linked.join("src")] {
+            let resolved = resolve_directory(directory, &registry, Default::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(resolved.identity, format!("project:{}", root.display()));
+            assert_eq!(resolved.name, "Display name");
+            assert_eq!(resolved.root.as_deref(), root.to_str());
+        }
+        let outside = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_directory(outside.path(), &registry, Default::default()).unwrap(),
+            None
+        );
+    }
+    // Even before discovery persists the checkout, arrangement groups its worktrees together.
+    let primary = resolve_directory(&root, &Registry::new(), Default::default())
+        .unwrap()
+        .unwrap();
+    let worktree = resolve_directory(&linked, &Registry::new(), Default::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(primary, worktree);
+    assert_eq!(primary.root.as_deref(), root.to_str());
+    assert!(
+        resolve_directory(&root.join("missing"), &Registry::new(), Default::default()).is_err()
+    );
+    assert!(resolve_directory(
+        &root.join(".git/HEAD"),
+        &Registry::new(),
+        Default::default()
+    )
+    .is_err());
+}
+
+#[test]
+fn resolve_project_multi_repository_root_and_rename_keep_one_identity() {
+    use project_data::projects::{self, Registry};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let mut project = projects::validate("Both repositories", root.to_str().unwrap()).unwrap();
+    for name in ["first", "second"] {
+        let repository = root.join(name);
+        std::fs::create_dir(&repository).unwrap();
+        git(&repository, &["init", "-b", "main"]);
+    }
+    for name in ["Both repositories", "Renamed"] {
+        project.name = name.into();
+        let registry = Registry::from([(name.into(), project.clone())]);
+        for directory in [&root, &root.join("first"), &root.join("second")] {
+            let resolved = resolve_directory(directory, &registry, Default::default())
+                .unwrap()
+                .unwrap();
+            assert_eq!(resolved.identity, format!("project:{}", root.display()));
+            assert_eq!(resolved.name, name);
+            assert_eq!(resolved.root.as_deref(), root.to_str());
+        }
+    }
+}
+
+#[test]
+fn resolve_project_preserves_published_provider_precedence() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    git(&root, &["init", "-b", "main"]);
+    std::fs::create_dir(root.join("child")).unwrap();
+    let location = Location::local(root.to_string_lossy());
+    let repository = Repository {
+        root: location.path.clone(),
+        provider_identity: Some("provider-id".into()),
+        display_name: Some("Custom project".into()),
+        ..Default::default()
+    };
+    let probed = Probed::from([(location.clone(), repository)]);
+    assert_eq!(
+        resolve_directory(&root.join("child"), &Default::default(), probed.clone()).unwrap(),
+        project_data::projects::resolve(&probed, &Default::default(), &location)
+    );
+}

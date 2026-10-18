@@ -224,3 +224,7 @@
             (lambda (changed) (when (eq? changed #t) (%async-invalidate))) %async-fail))
         #t)
       #f))
+
+(define (yinz-project-resolve directory)
+  (yinz-then json-null
+    (lambda (_) (yinz-command (hash "ResolveProject" (hash "directory" directory))))))
