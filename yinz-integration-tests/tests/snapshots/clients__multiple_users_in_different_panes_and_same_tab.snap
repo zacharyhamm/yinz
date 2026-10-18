@@ -2,7 +2,7 @@
 source: yinz-integration-tests/tests/clients.rs
 expression: normalized(&main_grid)
 ---
- Yinz (test)  Default 
+ Yinz (test)  Default  + 
  Tab #1 [ ] + 
  [ MY FOCUS ]            [0] Pane #1                       │ [ FOCUSED USER:   ]     [1] Pane #2
 $ █                                                        │$

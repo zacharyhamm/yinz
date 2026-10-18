@@ -2,7 +2,7 @@
 source: yinz-integration-tests/tests/search.rs
 expression: normalized(&grid_snapshot)
 ---
- Yinz (test)  Default                                                                              [ SCROLL 16/20 ]
+ Yinz (test)  Default  +                                                                         [ SCROLL 16/20 ]
  [0] Tab #1  + 
 line05 NEEDLE upper
 line06

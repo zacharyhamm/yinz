@@ -2,7 +2,7 @@
 source: yinz-integration-tests/tests/resurrection.rs
 expression: normalized(&grid_snapshot)
 ---
- Yinz (test)  Default 
+ Yinz (test)  Default  + 
  [0] Tab #1  + 
 VIEWPORT_CONTENT_TO_RESTORE
 █

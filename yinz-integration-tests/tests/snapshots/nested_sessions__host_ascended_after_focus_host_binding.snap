@@ -2,10 +2,10 @@
 source: yinz-integration-tests/tests/nested_sessions.rs
 expression: normalized(&host_ascended)
 ---
- Yinz (test)  Default 
+ Yinz (test)  Default  + 
  Tab #1  + 
                        [0] Yinz:test-1                     │                         [1] Pane #2
- Yinz (test)  Default                                  │$
+ Yinz (test)  Default  +                             │$
  [0] Tab #1  +                                         │
 █                                                          │
                                                            │
