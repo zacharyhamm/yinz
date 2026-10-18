@@ -23,7 +23,7 @@ fn provider_metadata_does_not_run_load_or_grant_host_authority() {
 
 #[test]
 fn builtin_provider_preserves_opencode_launch_and_hook_metadata() {
-    let source = yinz_steel_builtins::builtin_steel_plugin("agent-opencode").unwrap();
+    let source = &yinz_steel_builtins::fixture_source("agent-opencode").unwrap();
     let provider = inspect(Path::new("agent-opencode.scm"), source).unwrap();
     assert_eq!(provider.kind, "opencode");
     assert_eq!(provider.launch.prompt_args, ["--prompt", "{value}"]);

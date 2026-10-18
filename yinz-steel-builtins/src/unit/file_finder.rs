@@ -391,12 +391,7 @@ fn finder_project_titles_follow_worktree_gitdir_and_ignore_detached_heads() {
             ("main.scm".into(), source.into()),
             (
                 "common.scm".into(),
-                crate::BUILTIN_STEEL_FILES
-                    .get_file("file-finder/common.scm")
-                    .unwrap()
-                    .contents_utf8()
-                    .unwrap()
-                    .into(),
+                std::fs::read_to_string(crate::asset_dir().join("file-finder/common.scm")).unwrap(),
             ),
         ]),
     )

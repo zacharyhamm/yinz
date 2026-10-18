@@ -226,7 +226,13 @@ fn main() {
     // into a session - so it branches here beside the other two commands that need
     // neither a client nor a server.
     if let Some(Command::Hooks(hooks)) = opts.command.clone() {
-        if let Err(e) = agent_hooks::run(hooks) {
+        if let Err(e) = agent_hooks::run(
+            hooks,
+            &opts
+                .data_dir
+                .clone()
+                .unwrap_or_else(yinz_runtime::home::get_default_data_dir),
+        ) {
             eprintln!("Error: {e:#}");
             std::process::exit(1);
         }

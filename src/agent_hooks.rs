@@ -80,7 +80,7 @@ fn legacy_agent(name: Option<&str>) -> Result<Option<HookAgent>> {
 
 /// Provider metadata is evaluated from Scheme in a worker with no host authority.
 /// The CLI, after explicit install/uninstall, performs only the declared file operations.
-fn provider_command(command: &Hooks) -> Result<bool> {
+fn provider_command(command: &Hooks, data_dir: &Path) -> Result<bool> {
     let (agent, project) = match command {
         Hooks::Install {
             agent,
@@ -111,7 +111,7 @@ fn provider_command(command: &Hooks) -> Result<bool> {
     } else {
         agent
     };
-    let provider = yinz_server::inspect_agent_provider(location)?;
+    let provider = yinz_server::inspect_agent_provider(location, data_dir)?;
     if provider.hooks.is_empty() {
         return Err(anyhow!("{} declares no hook files", provider.kind));
     }
@@ -192,8 +192,8 @@ fn provider_status(
     Ok(())
 }
 
-pub(crate) fn run(hooks: Hooks) -> Result<()> {
-    if provider_command(&hooks)? {
+pub(crate) fn run(hooks: Hooks, data_dir: &Path) -> Result<()> {
+    if provider_command(&hooks, data_dir)? {
         return Ok(());
     }
     // The default/all commands use the same provider-owned paths as an explicit install.
@@ -218,7 +218,7 @@ pub(crate) fn run(hooks: Hooks) -> Result<()> {
                 )?,
                 |agent| {
                     if agent == HookAgent::Opencode {
-                        return provider_command(&opencode_hooks).map(|_| ());
+                        return provider_command(&opencode_hooks, data_dir).map(|_| ());
                     }
                     install(
                         &Files::resolve(agent, project, project_dir.clone())?,
@@ -239,7 +239,7 @@ pub(crate) fn run(hooks: Hooks) -> Result<()> {
             )?,
             |agent| {
                 if agent == HookAgent::Opencode {
-                    return provider_command(&opencode_hooks).map(|_| ());
+                    return provider_command(&opencode_hooks, data_dir).map(|_| ());
                 }
                 uninstall(&Files::resolve(agent, project, project_dir.clone())?)
             },
@@ -255,7 +255,7 @@ pub(crate) fn run(hooks: Hooks) -> Result<()> {
                         status_line(format_args!(""))?;
                     }
                     if agent == HookAgent::Opencode {
-                        return provider_command(&opencode_hooks).map(|_| ());
+                        return provider_command(&opencode_hooks, data_dir).map(|_| ());
                     }
                     let files = if matches!(agent, HookAgent::Claude | HookAgent::Agy) {
                         Files::resolve(agent, true, None)
@@ -525,7 +525,18 @@ exit 0
 
 // OpenCode is a Scheme provider; the compatibility CLI spelling resolves its module.
 fn opencode_provider() -> Result<yinz_types::agent::provider::AgentProvider> {
-    yinz_server::inspect_agent_provider("yinz:agent-opencode")
+    #[cfg(test)]
+    let data = {
+        let data = tempfile::tempdir().expect("provider fixture directory");
+        yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path())
+            .expect("install provider fixture");
+        data
+    };
+    #[cfg(test)]
+    let data_dir = data.path().to_owned();
+    #[cfg(not(test))]
+    let data_dir = yinz_runtime::home::get_default_data_dir();
+    yinz_server::inspect_agent_provider("yinz:agent-opencode", &data_dir)
 }
 
 #[cfg(test)]

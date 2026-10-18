@@ -3,14 +3,11 @@ use std::path::Path;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::provider::AgentProvider;
 /// Read metadata from the same source entrypoint used by the live plugin host.
-pub fn inspect_agent_provider(location: &str) -> Result<AgentProvider> {
+pub fn inspect_agent_provider(location: &str, data_dir: &Path) -> Result<AgentProvider> {
     let (path, source) = if let Some(tag) = location.strip_prefix("yinz:") {
-        let source = yinz_steel_builtins::builtin_steel_plugin(tag)
-            .context("unknown builtin agent provider")?;
-        (
-            Path::new(crate::steel::EMBEDDED_ROOT).join(format!("{tag}.scm")),
-            source.to_owned(),
-        )
+        let path = yinz_steel_builtins::builtin_path(data_dir, tag)?;
+        let source = yinz_steel::modules::SourceRoot::file(&path, None)?.read_entry()?;
+        (path, source)
     } else {
         let path = Path::new(location)
             .canonicalize()
@@ -26,3 +23,7 @@ pub fn inspect_agent_provider(location: &str) -> Result<AgentProvider> {
     };
     yinz_plugin_authoring::worker::agent_provider(&path, &source)
 }
+
+#[cfg(test)]
+#[path = "unit/agent_provider.rs"]
+mod tests;

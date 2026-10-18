@@ -405,6 +405,13 @@ impl RemoteRunner {
         let reader_thread =
             read_from_channel(&channel, &last_snapshot, &cursor_coordinates, &pane_geom);
         wait_for_startup(&last_snapshot);
+        // Pin the title so process-name polling cannot race terminal snapshots.
+        let naming_session = ssh_connect();
+        let mut naming_channel = naming_session.channel_session().unwrap();
+        naming_channel.exec(&format!("{YINZ_EXECUTABLE_LOCATION} --data-dir {YINZ_DATA_DIR} --session {SESSION_NAME} action rename-tab 'Tab #1'")).unwrap();
+        naming_channel.read_to_end(&mut Vec::new()).unwrap();
+        naming_channel.wait_close().unwrap();
+        assert_eq!(naming_channel.exit_status().unwrap(), 0);
         RemoteRunner {
             steps: vec![],
             channel,

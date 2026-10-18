@@ -1,4 +1,4 @@
-//! Check and format embedded Scheme sources with this checkout's native authoring tools.
+//! Check and format shipped Scheme sources with this checkout's native authoring tools.
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use xshell::{cmd, Shell};
@@ -73,7 +73,7 @@ pub fn format(sh: &Shell, check: bool) -> Result<()> {
             .map_err(anyhow::Error::from)
         } else {
             // User-facing formatting keeps backups; repository formatting stages them outside
-            // the source tree so they cannot be embedded as additional builtin assets.
+            // the source tree so they cannot be installed as additional builtin assets.
             let staged = tempfile::tempdir()?;
             let source = staged
                 .path()

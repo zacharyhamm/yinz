@@ -30,7 +30,9 @@ fn command(dir: &Path) -> Command {
     for key in ["YINZ", "YINZ_SESSION_NAME", "YINZ_PANE_ID", "YINZ_PANE_REF"] {
         cmd.env_remove(key);
     }
-    cmd.current_dir(dir)
+    cmd.arg("--data-dir")
+        .arg(dir.join("yinz"))
+        .current_dir(dir)
         .env("SHELL", "/bin/sh")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -165,6 +167,7 @@ impl Session {
     fn start(setup: impl FnOnce(&Path), attach: bool) -> Self {
         let mut session = Self(tempfile::tempdir().unwrap(), String::new(), None);
         let dir = session.0.path();
+        yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &dir.join("yinz")).unwrap();
         assert!(Command::new("git")
             .arg("init")
             .arg("--quiet")

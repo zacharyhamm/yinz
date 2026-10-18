@@ -54,6 +54,7 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
         .and_then(|_| sh.create_dir(&data_dir))
         .context(err_context)?;
 
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data_dir)?;
     let _pd = sh.push_dir(project_root);
     let binary = build_linux_release(sh).context(err_context)?;
     link_e2e_binary(&binary).context(err_context)

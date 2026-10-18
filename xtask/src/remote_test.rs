@@ -109,6 +109,10 @@ fn build(sh: &Shell, native: bool) -> anyhow::Result<()> {
         ));
     }
 
+    yinz_steel_builtins::install(
+        &yinz_steel_builtins::asset_dir(),
+        &remote_test_dir().join("data"),
+    )?;
     generate_credentials(sh).context("failed to generate the test's ssh credentials")?;
 
     // Relative to target/remote-test on both the host and the container's bind mount.

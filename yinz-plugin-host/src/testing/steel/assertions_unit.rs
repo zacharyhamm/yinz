@@ -28,7 +28,14 @@ fn scheme_installed_assert_rejects_checks_deferred_and_synchronous_errors() {
 "#,
     )
     .unwrap();
-    let report = run(&entry, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    let report = run(
+        crate::testing::fixture_data().path(),
+        &entry,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
     assert_eq!(report.tests.len(), 5);
 }
@@ -71,7 +78,14 @@ fn scheme_installed_wait_for_awaits_predicates_and_bounds_pending_deferreds() {
 "#,
     )
     .unwrap();
-    let report = run(&entry, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    let report = run(
+        crate::testing::fixture_data().path(),
+        &entry,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
     assert_eq!(report.tests.len(), 1);
     assert_eq!(report.tests[0].kind, PluginTestKind::Integration);

@@ -4,7 +4,7 @@ Yinz plugins are Scheme modules executed by `yinz-steel`. The user guides are
 `docs/PLUGINS.md`, `docs/PLUGIN_SDK.md`, and `docs/PLUGIN_TESTING.md`.
 
 This directory adapts the interpreter to the plugin host. The engine and guest SDK
-live in `yinz-steel/src`; embedded builtin sources live in
+live in `yinz-steel/src`; builtin source assets live in
 `yinz-steel-builtins/assets/plugins`.
 
 ## Host authority
@@ -45,8 +45,8 @@ callbacks remain on the plugin's pinned executor thread.
 
 A `SourceRoot` resolves explicit relative Scheme imports inside the canonical
 entrypoint directory or pinned repository root. Symlink escapes, special files,
-and unbounded dependency graphs are refused. Embedded imports resolve only in
-the compiled builtin tree, with no filesystem fallback. Loading, checking, and
+and unbounded dependency graphs are refused. Builtin imports resolve inside the installed `plugins/builtins/` directory, with
+no fallback to another data directory. Loading, checking, and
 provider inspection must use the same source resolver. Preserve source filenames
 and line numbers through deferred failures.
 

@@ -50,6 +50,7 @@ fn scheme_installed_tests_load_modules_mock_commands_and_advance_deferred_callba
           (assert-throws (lambda () (test-event "InputReceived")) "unstubbed host operation GetPluginIds")))
     "#).unwrap();
     let report = run(
+        super::super::fixture_data().path(),
         &path,
         &PluginTestOptions::default(),
         None,
@@ -84,6 +85,7 @@ fn scheme_installed_integration_tests_use_the_disposable_session() {
     )
     .unwrap();
     let report = run(
+        super::super::fixture_data().path(),
         &path,
         &PluginTestOptions::default(),
         None,
@@ -130,7 +132,14 @@ fn scheme_installed_locations_work_before_load_and_copy_dependencies() {
     "#,
     )
     .unwrap();
-    let report = run(&unit, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    let report = run(
+        super::super::fixture_data().path(),
+        &unit,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
     let integration = root.path().join("locations.integration.test.scm");
     std::fs::write(
@@ -148,6 +157,7 @@ fn scheme_installed_locations_work_before_load_and_copy_dependencies() {
     )
     .unwrap();
     let report = run(
+        super::super::fixture_data().path(),
         &integration,
         &Default::default(),
         None,
@@ -233,7 +243,14 @@ fn scheme_installed_locations_keep_parent_imports_through_reload_workers_and_ali
     "#
     .replace("COMMAND", &serde_json::to_string(&command).unwrap());
     std::fs::write(&path, script).unwrap();
-    let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    let report = run(
+        super::super::fixture_data().path(),
+        &path,
+        &Default::default(),
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
     assert!(report.passed(), "{report:#?}");
 }
 
@@ -285,6 +302,7 @@ fn scheme_installed_rpc_uses_authenticated_plugins_and_releases_errors_and_timeo
           (test-wait-for-text "rpc ready, calls:2")))
     "#).unwrap();
     let report = run(
+        super::super::fixture_data().path(),
         &path,
         &PluginTestOptions::default(),
         None,
@@ -304,6 +322,7 @@ fn scheme_installed_tests_bound_execution_and_retain_pre_timeout_logs() {
     )
     .unwrap();
     let report = run(
+        super::super::fixture_data().path(),
         &path,
         &PluginTestOptions {
             timeout_ms: 10000,
@@ -366,6 +385,7 @@ fn scheme_test_targets_are_confined_and_preserve_escaped_names() {
     let path = root.path().join("grants.test.scm");
     std::fs::write(&path, "(test \"grants\" (hash \"grants\" '(\"RunCommands\")) (lambda () (error \"must not run\")))").unwrap();
     let report = run(
+        super::super::fixture_data().path(),
         &path,
         &PluginTestOptions::default(),
         Some(&[]),
@@ -476,8 +496,10 @@ macro_rules! builtin_scheme_suites {
     ($kind:ident; $($name:ident => $tag:literal),* $(,)?) => { $(
         #[test]
         fn $name() {
+            let data = tempfile::tempdir().unwrap();
+            yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), data.path()).unwrap();
             let report = super::super::run_named(
-                Path::new(""), $tag,
+                data.path(), Path::new(""), $tag,
                 &PluginTestOptions { kind: PluginTestKind::$kind, timeout_ms: 30000, ..Default::default() },
                 None, &AtomicBool::new(false),
             ).unwrap();

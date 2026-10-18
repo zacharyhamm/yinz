@@ -49,8 +49,10 @@ xflags::xflags! {
             optional -c, --clean
         }
 
-        /// Install a runnable `yinz` executable with embedded plugins
+        /// Install a runnable `yinz` executable and builtin Scheme files
         cmd install {
+            /// Install builtin files into this Yinz data directory (replaces shipped files).
+            optional --data-dir path: PathBuf
             required destination: PathBuf
             /// Cargo profile to build with (e.g. `dev` for a fast, unoptimized install).
             /// Defaults to `release`.
@@ -119,7 +121,7 @@ xflags::xflags! {
             repeated args: OsString
         }
 
-        /// Build the application with embedded Scheme plugins
+        /// Build the application without installing builtin Scheme files
         cmd build {
             /// Build in release mode without debug symbols
             optional -r, --release
@@ -204,6 +206,7 @@ pub struct Make {
 
 #[derive(Debug)]
 pub struct Install {
+    pub data_dir: Option<PathBuf>,
     pub destination: PathBuf,
     pub args: Vec<OsString>,
 

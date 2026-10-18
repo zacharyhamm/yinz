@@ -28,36 +28,11 @@ use crate::yinz_exports::{
 };
 use crate::PluginInstruction;
 
-pub(crate) const EMBEDDED_ROOT: &str = "/__yinz_builtin__";
-
 pub(crate) fn source_root(
     path: &Path,
     repository_root: Option<&Path>,
 ) -> Result<yinz_steel::modules::SourceRoot> {
-    if let Ok(entry) = path.strip_prefix(EMBEDDED_ROOT) {
-        let mut directories = vec![&yinz_steel_builtins::BUILTIN_STEEL_FILES];
-        let mut sources = BTreeMap::new();
-        while let Some(directory) = directories.pop() {
-            directories.extend(directory.dirs());
-            for file in directory.files() {
-                sources.insert(
-                    file.path()
-                        .to_str()
-                        .context("builtin path is not UTF-8")?
-                        .to_owned(),
-                    file.contents_utf8()
-                        .context("builtin source is not UTF-8")?
-                        .to_owned(),
-                );
-            }
-        }
-        yinz_steel::modules::SourceRoot::embedded(
-            entry.to_str().context("builtin entrypoint is not UTF-8")?,
-            sources,
-        )
-    } else {
-        yinz_steel::modules::SourceRoot::file(path, repository_root)
-    }
+    yinz_steel::modules::SourceRoot::file(path, repository_root)
 }
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -135,15 +110,10 @@ impl SteelPlugin {
         if env.cancel.load(Ordering::Acquire) || client_cancel.load(Ordering::Acquire) {
             bail!(CANCELLED_BY_HOST);
         }
-        let source_path = match &env.plugin_config.location {
-            yinz_types::input::layout::RunPluginLocation::Yinz(tag) => {
-                Path::new(EMBEDDED_ROOT).join(format!("{tag}.scm"))
-            },
-            _ => env
-                .resolved_source_path
-                .clone()
-                .unwrap_or_else(|| path.to_owned()),
-        };
+        let source_path = env
+            .resolved_source_path
+            .clone()
+            .unwrap_or_else(|| path.to_owned());
         let mut location = env.plugin_config.location.clone();
         if let yinz_types::input::layout::RunPluginLocation::Git(repository) = &mut location {
             if let Some(commit) = &env.plugin_config.installed_commit {

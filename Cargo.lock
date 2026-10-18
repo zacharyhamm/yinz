@@ -4516,6 +4516,8 @@ dependencies = [
  "which",
  "xflags",
  "xshell",
+ "yinz-runtime",
+ "yinz-steel-builtins",
 ]
 
 [[package]]
@@ -4561,6 +4563,7 @@ dependencies = [
  "yinz-server-os",
  "yinz-session",
  "yinz-steel",
+ "yinz-steel-builtins",
  "yinz-storage",
  "yinz-test-support",
  "yinz-types",
@@ -5174,7 +5177,7 @@ dependencies = [
 name = "yinz-steel-builtins"
 version = "0.1.0"
 dependencies = [
- "include_dir",
+ "anyhow",
  "serde_json",
  "tempfile",
  "yinz-config",

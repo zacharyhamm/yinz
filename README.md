@@ -10,7 +10,20 @@ From this checkout, run:
 cargo x install "$HOME/.local/bin/yinz"
 ```
 
-This builds a release binary and installs the builtin plugins. Choose another destination by changing the path.
+This builds a release binary and installs builtin Scheme files into the default Yinz data directory, under `plugins/builtins/`.
+Choose another binary destination by changing the path. To select a data directory, use:
+
+```sh
+cargo x install "$HOME/.local/bin/yinz" --data-dir /path/to/data
+yinz --data-dir /path/to/data
+```
+
+Reinstalling replaces shipped builtin files, including local edits. It preserves unrelated files and user plugins.
+The sources are installed before the binary. Copying only the binary does not produce a complete installation.
+There is no embedded fallback or automatic runtime installation.
+
+For development, `cargo x run` installs builtin files into its selected data directory.
+Use `cargo x run --quick-run` for `target/dev-data`. `cargo x build` does not install builtin files.
 
 ## Tab groups
 

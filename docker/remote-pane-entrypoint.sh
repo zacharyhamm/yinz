@@ -22,6 +22,9 @@ install -o test -g test -m 600 "$KEY_FILE" /home/test/.ssh/authorized_keys
 # they can be set: `ensure` inherits them here, and the detached `serve` it
 # spawns inherits them in turn.
 YINZ_BIN="/usr/src/yinz/remote-test/yinz"
+mkdir -p /home/test/.local/share/yinz/plugins/builtins
+cp -R /usr/src/yinz/remote-test/data/plugins/builtins/. /home/test/.local/share/yinz/plugins/builtins/
+chown -R test:test /home/test/.local/share/yinz
 {
     echo "#!/bin/sh"
     # Only when set: an empty value is not "unset", it is a value the seam has

@@ -13,6 +13,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+yinz-steel-builtins = { workspace = true }
 yinz-cli = { workspace = true }
 yinz-config = { workspace = true }
 yinz-ipc = { workspace = true }
@@ -37,7 +38,6 @@ vte = { workspace = true }
 url = { workspace = true }
 agent-proto = { path = "../default-plugins/agent-proto" }
 yinz-storage = { workspace = true }
-yinz-steel-builtins = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 tempfile = { workspace = true }

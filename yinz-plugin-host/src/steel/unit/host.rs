@@ -245,8 +245,8 @@ fn migrated_builtins_load_through_the_real_host_dispatcher() {
         .unwrap();
         env.data_owner = url::Url::from(&env.plugin_config.location);
         let mut plugin = SteelPlugin::new(
-            yinz_steel_builtins::builtin_steel_plugin(name).unwrap(),
-            Path::new(name),
+            &yinz_steel_builtins::fixture_source(name).unwrap(),
+            &yinz_steel_builtins::asset_dir().join(format!("{name}.scm")),
             env,
             Arc::default(),
         )
@@ -297,7 +297,13 @@ fn session_repl_keeps_definitions_and_rejects_non_cli_evaluation() {
     .unwrap();
     let (sender, receiver) = channels::unbounded();
     env.senders.to_server = Some(SenderWithContext::new(sender));
-    let mut plugin = SteelPlugin::new("", Path::new("repl"), env, Arc::default()).unwrap();
+    let mut plugin = SteelPlugin::new(
+        "",
+        &yinz_steel_builtins::asset_dir().join("repl.scm"),
+        env,
+        Arc::default(),
+    )
+    .unwrap();
     let evaluate = |plugin: &mut SteelPlugin, source: &str| {
         plugin
             .pipe(&PipeMessage::new(

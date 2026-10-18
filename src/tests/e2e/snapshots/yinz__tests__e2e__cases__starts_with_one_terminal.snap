@@ -2,9 +2,9 @@
 source: src/tests/e2e/cases.rs
 expression: last_snapshot
 ---
- Yinz (e2e-test)  [0] Tab #1  + 
+ Yinz (e2e-test)  Default 
+ [0] Tab #1  + 
 $ █                                                                                                                     
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

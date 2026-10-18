@@ -170,8 +170,7 @@ impl PluginConfig {
         }
         if self.is_builtin() {
             return Err(anyhow!(
-                "'{}' is an embedded builtin; the plugin host compiles its source in, and no file \
-                 may stand in for it",
+                "'{}' is an installed builtin; the plugin host resolves it in the selected data directory",
                 self.path.display()
             ));
         }
@@ -408,7 +407,7 @@ mod tests {
     /// for a file, so a request that reaches here anyway must fail rather than find a same-named
     /// file posing as the builtin.
     #[test]
-    fn an_embedded_builtin_tag_is_never_read_from_a_file() {
+    fn a_builtin_tag_is_never_read_from_the_user_plugin_directory() {
         let plugin_dir = tempdir().unwrap();
         for name in yinz_runtime::consts::BUILTIN_PLUGIN_NAMES {
             fs::write(plugin_dir.path().join(name), "-- impostor").unwrap();
@@ -419,7 +418,7 @@ mod tests {
                 .resolve_source(Some(plugin_dir.path()))
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains("embedded builtin"), "{error}");
+            assert!(error.contains("installed builtin"), "{error}");
         }
         assert!(!file_plugin("context-menu.scm").is_builtin());
     }

@@ -641,7 +641,11 @@ fn oversized_reports_use_the_existing_bounded_payload() {
 #[test]
 fn installed_scripts_keep_neutral_output_after_reporter_failure() {
     let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_yinz"))
+        .arg("--data-dir")
+        .arg(&data)
         .args(["hooks", "install"])
         .env("HOME", dir.path())
         .env("CODEX_HOME", dir.path().join(".codex"))

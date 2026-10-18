@@ -117,7 +117,7 @@ See [command and event shapes](PLUGIN_PROTOCOL.md), also available through
 `(yinz-plugin-resolve relative-path)` resolves an existing Scheme target relative to the entrypoint without executing it.
 Both are available before `load`, including in named workers and mocked plugins.
 File locations are canonical file URLs. Git locations retain their repository and resolved revision.
-Builtin locations resolve only to embedded sources. Root escapes, symlinks, special files,
+Builtin locations resolve only to installed sources in `<data-dir>/plugins/builtins/`. Root escapes, symlinks, special files,
 and unsupported extensions are rejected. These functions do not grant filesystem access.
 
 `(yinz-key-name bare-key)` returns names such as `"PageDown"`, `"Esc"`, `"F1"`, or a Unicode character.

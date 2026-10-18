@@ -1221,11 +1221,30 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             .into_iter()
             .collect::<std::io::Result<Vec<_>>>()?;
         let report = match (name, file) {
-            (_, Some(path)) => yinz_server::plugin_testing::run(&path, &options, None, &cancel)?,
+            (_, Some(path)) => yinz_server::plugin_testing::run(
+                &opts
+                    .data_dir
+                    .clone()
+                    .unwrap_or_else(yinz_runtime::home::get_default_data_dir),
+                &path,
+                &options,
+                None,
+                &cancel,
+            )?,
             (Some(name), None) => {
                 let directory = plugin_dir().ok();
                 let directory = directory.as_deref().unwrap_or(std::path::Path::new(""));
-                yinz_server::plugin_testing::run_named(directory, &name, &options, None, &cancel)?
+                yinz_server::plugin_testing::run_named(
+                    &opts
+                        .data_dir
+                        .clone()
+                        .unwrap_or_else(yinz_runtime::home::get_default_data_dir),
+                    directory,
+                    &name,
+                    &options,
+                    None,
+                    &cancel,
+                )?
             },
             _ => anyhow::bail!("give a plugin name or --file"),
         };

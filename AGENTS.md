@@ -9,7 +9,7 @@ Use `cargo x` (`cargo xtask`). See `cargo x --help` for all commands.
 The toolchain is `stable`, with no MSRV policy. Install `protoc` and `cargo-nextest`.
 
 ```sh
-cargo x build                 # native binary with embedded plugins
+cargo x build                 # native binary (does not install builtin files)
 cargo x test                  # workspace unit tests and doctests
 cargo x integration-test -j 16 # whole-app tests
 cargo x lint                  # deny warnings; --fix applies suggestions
@@ -49,8 +49,13 @@ binary while tests run, causing tests to execute another checkout's code.
 Build the worktree's own binary before testing.
 
 `cargo x install <destination>` defaults to `release`. `--profile dev` leaves
-the host unoptimized. Builtin Scheme sources are embedded from
-`yinz-steel-builtins/assets/plugins/`; no separate plugin installation is needed.
+the host unoptimized. Builtin Scheme files from
+`yinz-steel-builtins/assets/plugins/` must be installed in `<data-dir>/plugins/builtins/`.
+`cargo x install <destination> --data-dir <directory>` installs them before the binary.
+Without `--data-dir`, installation uses Yinz's default data directory. Reinstalling
+replaces shipped files, including local edits, and preserves unrelated files.
+`cargo x run` provisions its selected directory (`target/dev-data` with `--quick-run`).
+Copying only the binary does not produce a complete installation.
 
 ### Arguments and test selection
 
@@ -160,7 +165,7 @@ escalation on the first attempt.
 | `yinz-host-protocol/` | Host-query and desktop-notification (OSC 9/99/777) types shared by terminal, bus and screen |
 | `yinz-config/`, `yinz-plugin-api/`, `yinz-ipc/` | Config, plugin wire API, transport |
 | `yinz-project-config/` | Agent-exit settings in `.yinz/agent-exit.kdl` |
-| `yinz-steel-builtins/` | Embedded Scheme builtin plugin sources |
+| `yinz-steel-builtins/` | Installed Scheme builtin plugin sources |
 | `yinz-session/`, `yinz-cli/` | Session lifecycle, serialization, CLI |
 | `yinz-tile/`, `yinz-tile-utils/` | Plugin-facing API |
 | `yinz-tile-markdown/` | CommonMark to styled terminal lines for plugins |

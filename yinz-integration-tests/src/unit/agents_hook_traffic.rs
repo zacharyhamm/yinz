@@ -30,11 +30,9 @@ fn archive(id: &str, text: String) -> agents::AgentRun {
 }
 
 fn panel_fixture(directory: &std::path::Path, address: std::net::SocketAddr) -> PathBuf {
-    yinz_steel_builtins::BUILTIN_STEEL_FILES
-        .extract(directory)
-        .unwrap();
+    yinz_steel_builtins::copy_tree(&yinz_steel_builtins::asset_dir(), directory).unwrap();
     let path = directory.join("agents.scm");
-    let source = yinz_steel_builtins::builtin_steel_plugin("agents").unwrap();
+    let source = &yinz_steel_builtins::fixture_source("agents").unwrap();
     assert!(source.contains("(define (load configuration)"));
     let mut source = source.replacen(
         "(define (load configuration)",
