@@ -246,6 +246,10 @@ impl StdioAccess for FakeClientOsApi {
 }
 
 impl ServerConnection for FakeClientOsApi {
+    fn spawn_server(&self, _socket_path: &Path, _debug: bool) -> io::Result<()> {
+        Ok(())
+    }
+
     fn send_to_server(&self, msg: ClientToServerMsg) {
         self.sent_to_server.lock().unwrap().push(msg);
     }
