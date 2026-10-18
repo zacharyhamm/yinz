@@ -524,6 +524,10 @@ impl Pair {
         mode.keybinds
             .sort_by_key(|(mode, _)| serde_json::to_string(mode).unwrap());
         for (_, bindings) in &mut mode.keybinds {
+            // Replay the defaults captured before the latest-notification shortcut existed.
+            bindings.retain(|(_, actions)| {
+                !actions.contains(&yinz_types::input::actions::Action::ActivateLastNotification)
+            });
             bindings.sort_by_key(|(key, _)| serde_json::to_string(key).unwrap());
         }
         self.event(Event::ModeUpdate(mode));

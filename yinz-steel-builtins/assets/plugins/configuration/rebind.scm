@@ -61,6 +61,12 @@
       (list (hash "Char" "-") (list (bar-resize "Decrease" json-null)))
       (list (hash "Char" "[") '("PreviousSwapLayout"))
       (list (hash "Char" "]") '("NextSwapLayout"))))
+  (for-each (lambda (mode)
+      (unless (member mode '("Locked" "Select"))
+        (remove-actions! mode '("ActivateLastNotification"))
+        (unless (null? secondary)
+          (bind! mode (bar-char-key "a" secondary) '("ActivateLastNotification")))))
+    (append modes '("EnterSearch" "RenameTab" "RenamePane" "Prompt" "Tmux")))
   (unless locked?
     (for-each bind-primary! '(("Locked" "g") ("Pane" "p") ("Tab" "t") ("Resize" "n") ("Move" "h")
         ("Scroll" "s") ("Session" "o") ("Agent" "e")))

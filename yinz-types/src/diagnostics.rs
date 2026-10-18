@@ -111,6 +111,7 @@ pub enum ScreenContext {
     SwapTextSelectionEnds,
     MoveNotificationSelection,
     ActivateNotification,
+    ActivateLastNotification,
     ToggleNotificationDetail,
     ClearCommandOutputFlash,
     PageScrollUp,

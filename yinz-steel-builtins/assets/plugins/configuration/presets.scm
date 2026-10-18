@@ -76,8 +76,14 @@
     }
 "))
 
-(define (notifications-keybinds exit-mode)
+(define (notifications-keybinds exit-mode secondary-modifier)
   (string-append
+    (if (equal? secondary-modifier "") ""
+      (string-append "
+    shared_except \"locked\" \"select\" {
+        bind \"" secondary-modifier " a\" { ActivateLastNotification; }
+    }
+"))
     "
     notifications {
         bind \"Esc\" { SwitchToMode \""
@@ -92,7 +98,7 @@
 
 (define (template-unlock-first-keybinds primary-modifier secondary-modifier)
   (define agent-fragment (agent-keybinds "e" "Locked" #t))
-  (define notification-fragment (notifications-keybinds "Locked"))
+  (define notification-fragment (notifications-keybinds "Locked" secondary-modifier))
   (string-append
     "
 default_mode \"locked\"
@@ -364,7 +370,7 @@ keybinds clear-defaults=true {
 
 (define (template-default-keybinds primary-modifier secondary-modifier)
   (define agent-fragment (agent-keybinds (string-append primary-modifier " e") "Normal" #f))
-  (define notification-fragment (notifications-keybinds "Normal"))
+  (define notification-fragment (notifications-keybinds "Normal" secondary-modifier))
   (string-append
     "
 default_mode \"normal\"
@@ -707,7 +713,7 @@ keybinds clear-defaults=true {
 
 (define (template-default-keybinds-no-primary-modifier secondary-modifier)
   (define agent-fragment (agent-keybinds "e" "Normal" #t))
-  (define notification-fragment (notifications-keybinds "Normal"))
+  (define notification-fragment (notifications-keybinds "Normal" secondary-modifier))
   (string-append
     "
 default_mode \"normal\"
@@ -975,7 +981,7 @@ keybinds clear-defaults=true {
 
 (define (template-default-keybinds-no-secondary-modifier primary-modifier)
   (define agent-fragment (agent-keybinds (string-append primary-modifier " e") "Normal" #f))
-  (define notification-fragment (notifications-keybinds "Normal"))
+  (define notification-fragment (notifications-keybinds "Normal" ""))
   (string-append
     "
 default_mode \"normal\"
@@ -1242,7 +1248,7 @@ keybinds clear-defaults=true {
 
 (define (template-non-colliding-default-keybinds primary-modifier secondary-modifier)
   (define agent-fragment (agent-keybinds (string-append primary-modifier " e") "Normal" #f))
-  (define notification-fragment (notifications-keybinds "Normal"))
+  (define notification-fragment (notifications-keybinds "Normal" secondary-modifier))
   (string-append
     "
 default_mode \"normal\"
@@ -1587,7 +1593,7 @@ keybinds clear-defaults=true {
   (string-append "
 default_mode \"normal\"
 keybinds clear-defaults=true {
-" (agent-keybinds "e" "Normal" #t) (notifications-keybinds "Normal") "    normal {}
+" (agent-keybinds "e" "Normal" #t) (notifications-keybinds "Normal" "") "    normal {}
     locked {}
     resize {
         bind \"h\" \"Left\" { Resize \"Increase Left\"; }

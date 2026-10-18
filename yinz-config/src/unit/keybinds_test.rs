@@ -7,6 +7,28 @@ use yinz_types::input::actions::*;
 use yinz_types::keys::{BareKey, KeyWithModifier};
 
 #[test]
+fn latest_notification_binding_excludes_locked_and_select_and_roundtrips() {
+    let config = Config::from_default_assets().unwrap();
+    let saved = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
+    for config in [config, saved] {
+        for mode in InputMode::iter() {
+            let expected = if matches!(mode, InputMode::Locked | InputMode::Select) {
+                None
+            } else {
+                Some(vec![Action::ActivateLastNotification])
+            };
+            assert_eq!(
+                config
+                    .keybinds
+                    .get_actions_for_key_in_mode(&mode, &"Alt a".parse().unwrap()),
+                expected.as_ref(),
+                "{mode:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn default_command_palette_binding_is_shared_by_every_mode() {
     let config = Config::from_default_assets().unwrap();
     for mode in InputMode::iter() {

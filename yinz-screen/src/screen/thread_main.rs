@@ -1496,6 +1496,10 @@ pub fn screen_thread_main(
                         screen.render()?;
                     }
                 },
+                ScreenInstruction::ActivateLastNotification(client_id, _completion_tx) => {
+                    screen.activate_last_notification(client_id, Instant::now());
+                    screen.render()?;
+                },
                 ScreenInstruction::ActivateNotification(client_id, _completion_tx) => {
                     screen.activate_selected_notification(client_id, Instant::now());
                     screen.render()?;

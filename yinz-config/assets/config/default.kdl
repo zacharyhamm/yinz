@@ -258,6 +258,7 @@ keybinds {
         bind "Ctrl Alt p" { ToggleCommandPalette; }
     }
     shared_except "locked" "select" {
+        bind "Alt a" { ActivateLastNotification; }
         bind "Ctrl g" { SwitchToMode "Locked"; }
         bind "Ctrl q" { Quit; }
         bind "Alt f" { ToggleFloatingPanes; }

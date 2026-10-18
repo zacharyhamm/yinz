@@ -76,6 +76,29 @@ fn osc(payload: &str, display: Option<(&str, &str)>) -> PendingNotification {
 }
 
 #[test]
+fn latest_activation_uses_committed_history_including_suppressed_entries() {
+    let (mut screen, _server, _plugins, instance) = policy_screen();
+    let client_id = ClientId::new(1);
+    let first = PaneId::Terminal(TerminalId::new(1));
+    let second = PaneId::Terminal(TerminalId::new(2));
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen
+        .receive_toast("first".into(), Some(first), None, None, None)
+        .unwrap();
+    decide(&mut screen, 0, instance, NotificationDecision::Suppress);
+    screen
+        .receive_toast("pending".into(), Some(second), None, None, None)
+        .unwrap();
+
+    screen.activate_last_notification(client_id, Instant::now());
+    assert_eq!(screen.get_active_pane_id(&client_id), Some(first));
+    decide(&mut screen, 1, instance, NotificationDecision::Suppress);
+    assert!(screen.notifications.is_empty());
+    screen.activate_last_notification(client_id, Instant::now());
+    assert_eq!(screen.get_active_pane_id(&client_id), Some(second));
+}
+
+#[test]
 fn arrivals_are_observable_and_resolutions_commit_in_order_without_blocking_rendering() {
     let (mut screen, server, plugins, instance) = policy_screen();
     screen

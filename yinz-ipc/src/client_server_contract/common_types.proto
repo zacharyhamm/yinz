@@ -311,6 +311,7 @@ message Action {
     ActivateNotificationAction activate_notification = 166;
     ToggleNotificationDetailAction toggle_notification_detail = 167;
     ToggleCommandPaletteAction toggle_command_palette = 171;
+    ActivateLastNotificationAction activate_last_notification = 173;
   }
 }
 
@@ -348,6 +349,7 @@ message MoveNotificationSelectionAction {
   Direction direction = 1;
 }
 message ActivateNotificationAction {}
+message ActivateLastNotificationAction {}
 message ToggleNotificationDetailAction {}
 message PageScrollUpAction {}
 message PageScrollDownAction {}
