@@ -152,6 +152,7 @@ pub fn plugin_thread_main(
     // The background plugins below and the first layout's plugins are loaded for the first
     // client before its `AddClient`, and must share its attachment token.
     plugin_bridge.reserve_client(initiating_client_id);
+    let _data_watch_poller = plugin_bridge.start_data_watch_polling()?;
 
     let host_required: Vec<_> = background_plugins
         .iter()

@@ -124,15 +124,16 @@ impl WatchRegistry {
     /// silent — a plugin that re-puts the same row does not wake every watcher.
     pub(super) fn refresh(
         &self,
-        namespace: &str,
-        touched_entities: &BTreeSet<String>,
+        affected: Option<(&str, &BTreeSet<String>)>,
         mut fetch: impl FnMut(&str, &FetchRequest) -> Result<DataRows, DataError>,
     ) -> Result<Vec<WatchChange>, DataError> {
         let mut guard = self.lock()?;
         let (watches, _) = &mut *guard;
         let mut changes = Vec::new();
         for watch in watches.iter_mut() {
-            if watch.namespace != namespace || !touched_entities.contains(&watch.entity) {
+            if affected.is_some_and(|(namespace, entities)| {
+                watch.namespace != namespace || !entities.contains(&watch.entity)
+            }) {
                 continue;
             }
             // A watch whose entity has since been dropped, or whose fetch has become invalid, is
@@ -156,7 +157,6 @@ impl WatchRegistry {
     }
 
     /// How many watches are registered.
-    #[cfg(test)]
     pub(super) fn count(&self) -> usize {
         self.watches.lock().map(|guard| guard.0.len()).unwrap_or(0)
     }

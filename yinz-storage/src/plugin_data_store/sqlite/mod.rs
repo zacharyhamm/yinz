@@ -110,6 +110,14 @@ impl SqlitePluginDataBackend {
 }
 
 impl PluginDataBackend for SqlitePluginDataBackend {
+    fn external_version(&self) -> Result<Option<u64>, DataError> {
+        self.with_conn(|conn| {
+            conn.pragma_query_value(None, "data_version", |row| row.get(0))
+                .map(Some)
+                .ctx("failed to read the plugin data version")
+        })
+    }
+
     fn define_entity(
         &self,
         namespace: &str,

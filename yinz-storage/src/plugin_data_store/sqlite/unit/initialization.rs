@@ -9,7 +9,9 @@ fn concurrent_first_connections_share_wal_and_one_migration() {
         for _ in 0..12 {
             scope.spawn(|| {
                 ready.wait();
-                let connection = open_db(&database).unwrap();
+                // This checks concurrent initialization, not latency under competing disk I/O.
+                let connection =
+                    open_db_before(&database, Instant::now() + Duration::from_secs(30)).unwrap();
                 let mode: String = connection
                     .query_row("PRAGMA journal_mode", [], |row| row.get(0))
                     .unwrap();

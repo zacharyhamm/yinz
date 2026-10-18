@@ -469,6 +469,18 @@ cursors and rejects missing or nonadvancing cursors.
 and calls `(callback rows event)` for each update. It returns `"watch-id"`,
 `"initial"` rows, and a `"dispose"` procedure that unregisters the watch.
 
+Data watches include commits from other local Yinz servers that use the same
+`plugin-data.db`. The host checks for external commits every 250 ms while watches
+exist. Query execution and event delivery can add latency. Plugins do not need
+their own polling timer.
+
+Each event contains the latest result of the watched query, with its original
+filters, selection, ordering, and limit. Writes between refreshes can coalesce
+into one event per watch. Intermediate states can be omitted, including changes
+that revert before the next refresh. Unchanged results produce no event, and
+local commits do not produce duplicate polling events. Events for each watch
+follow refresh order, rather than a global transaction order across servers.
+
 Use the revision read by the value's author as `expect_rev` for read-modify-write
 operations. A conflict rolls back the batch. Shared session-owned data must use
 both the host ID and session name to distinguish owners.

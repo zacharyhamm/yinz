@@ -5,6 +5,71 @@ use yinz_types::{
 };
 
 #[test]
+fn remote_data_changes_use_the_existing_plugin_event_route_once() {
+    use crate::yinz_exports::{notify_data_watchers, poll_data_watchers};
+    use yinz_bus::{plugins::PluginInstruction, thread_bus::ThreadSenders};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::data::Event;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = PluginDataStore::new(dir.path());
+    let other = PluginDataStore::new(dir.path());
+    let namespace = "shared:queue";
+    store
+        .define_entity(
+            namespace,
+            "queue",
+            &EntityDef::new("item", 1).attr(AttrDef::text("text")),
+            false,
+        )
+        .unwrap();
+    let plugin = PluginId::new(4);
+    let client = ClientId::new(1);
+    let query = FetchRequest::entity("item");
+    let watch = store
+        .register_watch(namespace, plugin, client, query.clone(), WatchMode::Rows)
+        .unwrap();
+    let (send, receive) = unbounded();
+    let senders = ThreadSenders {
+        to_plugin: Some(SenderWithContext::new(send)),
+        ..Default::default()
+    };
+    let generations = Default::default();
+    other
+        .apply(
+            namespace,
+            &[Mutation::put("item").set("text", "queued").build()],
+        )
+        .unwrap();
+    poll_data_watchers(&store, &generations, &senders);
+    let (instruction, _) = receive.try_recv().unwrap();
+    let PluginInstruction::Update(events) = instruction else {
+        panic!("wrong event route")
+    };
+    assert_eq!(
+        events,
+        vec![(
+            Some(plugin),
+            Some(client),
+            Event::PluginDataChanged {
+                watch_id: watch.watch_id,
+                truncated: false,
+                rows: store.fetch(namespace, &query).unwrap(),
+            }
+        )]
+    );
+    notify_data_watchers(
+        &store,
+        &generations,
+        &senders,
+        namespace,
+        &BTreeSet::from(["item".into()]),
+    );
+    poll_data_watchers(&store, &generations, &senders);
+    assert!(receive.try_recv().is_err());
+}
+
+#[test]
 fn cli_admin_pages_private_data_and_delivers_only_committed_atomic_changes() {
     let dir = tempfile::tempdir().unwrap();
     let store = PluginDataStore::new(dir.path());
