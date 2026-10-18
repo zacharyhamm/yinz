@@ -695,6 +695,12 @@ impl Screen {
         for kind in &offered_agents {
             for (suffix, label, aliases, action) in [
                 (
+                    "new-project",
+                    format!("Spawn {kind} agent in new project…"),
+                    format!("{kind} new project"),
+                    yinz_bus::command_palette::AgentAction::NewProject { kind: kind.clone() },
+                ),
+                (
                     "worktree",
                     format!("Spawn {kind} agent in worktree…"),
                     format!("{kind} worktree"),
@@ -1276,11 +1282,7 @@ impl Screen {
                 return;
             },
             Builtin::Agent(action) => {
-                self.request_palette_agent(
-                    client,
-                    action,
-                    values.and_then(|v| v.into_iter().next()),
-                );
+                self.request_palette_agent(client, action, values.unwrap_or_default());
                 return;
             },
             Builtin::WarpSource(source, kind) => {
