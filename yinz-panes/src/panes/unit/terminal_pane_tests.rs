@@ -2558,6 +2558,63 @@ fn agent_restart_is_fresh_and_keeps_command_metadata() {
 }
 
 #[test]
+fn same_command_fresh_replacement_clears_remembered_agent_session() {
+    use yinz_types::agent::control::AgentRestartSession;
+    use yinz_types::data::{OriginatingPlugin, AGENT_PANE_CONTEXT};
+
+    for plugin_marker in [false, true] {
+        let command = if plugin_marker {
+            RunCommand {
+                command: "claude".into(),
+                originating_plugin: Some(OriginatingPlugin::new(
+                    yinz_types::internal_ids::PluginId::new(2),
+                    ClientId::new(1),
+                    std::collections::BTreeMap::from([(
+                        AGENT_PANE_CONTEXT.into(),
+                        "claude".into(),
+                    )]),
+                )),
+                ..Default::default()
+            }
+        } else {
+            RunCommand {
+                command: "env".into(),
+                args: vec!["YINZ_AGENT_PANE=1".into(), "claude".into()],
+                ..Default::default()
+            }
+        };
+        let mut pane = agent_pane_with_run(Some(super::Run::Command(command.clone())));
+        let mut reported = pane.agent_info().unwrap().clone();
+        reported.source = AgentSource::Reported;
+        reported.session_id = Some("old".into());
+        pane.set_agent_info(Some(reported.clone()));
+        pane.hold(Some(0), false, command.clone());
+        assert_eq!(pane.last_agent_session_id(), Some("old"));
+        assert_eq!(
+            pane.respawn(Some(command.clone()), false),
+            Some(command.clone())
+        );
+        assert_eq!(pane.agent_info().unwrap().source, AgentSource::Spawned);
+        assert_eq!(pane.agent_info().unwrap().session_id, None);
+        assert_eq!(pane.last_agent_session_id(), None);
+
+        pane.hold(Some(1), false, command);
+        assert_eq!(
+            pane.agent_restart_command(AgentRestartSession::Resume, None)
+                .unwrap_err(),
+            "agent pane has no remembered session id"
+        );
+        reported.session_id = Some("new".into());
+        pane.set_agent_info(Some(reported));
+        assert_eq!(pane.last_agent_session_id(), Some("new"));
+        let resumed = pane
+            .agent_restart_command(AgentRestartSession::Resume, None)
+            .unwrap();
+        assert!(resumed.args.ends_with(&["--resume".into(), "new".into()]));
+    }
+}
+
+#[test]
 fn restart_refusal_keeps_held_state_and_explicit_replacements_work() {
     let mut pane = agent_pane();
     pane.record_agent_input(false);
