@@ -452,12 +452,17 @@ impl Screen {
             if layout.rect.is_empty() {
                 continue;
             }
+            let cursor = state
+                .widget
+                .cursor(&layout)
+                .filter(|(x, y)| !output.cursor_is_covered_by_notification(*x, *y, client));
             output
                 .add_translucent_overlay(
                     client,
                     layout.rect,
                     self.background_opacity,
                     state.widget.chunks(&layout, &self.style),
+                    cursor,
                     *self.terminal_emulator_colors.borrow(),
                     self.style.colors.text_unselected.background,
                     &self.terminal_emulator_color_codes.borrow(),
@@ -468,11 +473,7 @@ impl Screen {
                     },
                 )
                 .context("failed to render command palette")?;
-            if let Some((x, y)) = state
-                .widget
-                .cursor(&layout)
-                .filter(|(x, y)| !output.cursor_is_covered_by_notification(*x, *y, client))
-            {
+            if let Some((x, y)) = cursor {
                 output.add_post_vte_instruction_to_client(
                     client,
                     &format!("\u{1b}[{};{}H\u{1b}[0m\u{1b}[2 q\u{1b}[?25h", y + 1, x + 1),

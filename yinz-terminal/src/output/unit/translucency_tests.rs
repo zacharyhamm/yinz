@@ -115,6 +115,7 @@ fn screen_overlay_composes_fresh_content_and_notifications_in_paint_order() {
                 rect(0, 5),
                 75,
                 vec![chunk("  X  ", 0)],
+                None,
                 yinz_types::style::Palette {
                     fg: FG,
                     bg: BG,
@@ -176,6 +177,7 @@ fn screen_overlay_reuses_untinted_backing_and_resets_it_on_display_clear() {
                 rect(2, 3),
                 75,
                 vec![chunk(over, 2)],
+                None,
                 palette,
                 TINT,
                 &HashMap::new(),
@@ -191,6 +193,74 @@ fn screen_overlay_reuses_untinted_backing_and_resets_it_on_display_clear() {
         );
         if !cleared {
             assert_eq!(*original.get_or_insert(cells[2].clone()), cells[2]);
+        }
+    }
+}
+
+#[test]
+fn screen_overlay_cursor_moves_without_masking_the_cached_backing() {
+    let client = ClientId::new(1);
+    let palette = yinz_types::style::Palette {
+        fg: FG,
+        bg: BG,
+        ..Default::default()
+    };
+    for (under, expected) in [
+        ("abcde", ["a cde", "ab de", "abXde", "abcd ", "abcde"]),
+        ("a界de", ["a  de", "a  de", "a Xde", "a界d ", "a界de"]),
+    ] {
+        let mut backing = TranslucentOverlayBacking::default();
+        for (frame, (cursor, over)) in [
+            (Some(3), "     "),
+            (Some(4), "     "),
+            (Some(4), "  X  "),
+            (Some(6), "     "),
+            (None, "     "),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut output = Output::default();
+            output.add_clients(
+                &HashSet::from([client]),
+                Rc::new(RefCell::new(LinkHandler::new())),
+                None,
+            );
+            // Later frames receive no pane repaint, exercising the cached background.
+            if frame == 0 {
+                output
+                    .add_character_chunks_to_client(client, vec![chunk(under, 2)], None)
+                    .unwrap();
+            }
+            output
+                .add_translucent_overlay(
+                    client,
+                    rect(2, 5),
+                    50,
+                    vec![chunk(over, 2)],
+                    cursor.map(|x| (x, 0)),
+                    palette,
+                    TINT,
+                    &HashMap::new(),
+                    &mut backing,
+                )
+                .unwrap();
+            let chunks = &output.client_character_chunks[&client];
+            assert_eq!(text(chunks), expected[frame]);
+            for chunk in chunks {
+                let mut x = chunk.x;
+                for cell in &chunk.terminal_characters {
+                    assert_eq!(
+                        cell.styles.background,
+                        Some(if Some(x) == cursor || cell.character == 'X' {
+                            TINT.into()
+                        } else {
+                            yinz_types::animation::blend(BG, TINT, 0.5).into()
+                        })
+                    );
+                    x += cell.width();
+                }
+            }
         }
     }
 }
@@ -321,6 +391,7 @@ fn screen_overlay_clips_both_graphics_protocols_and_composes_over_a_translucent_
             rect(1, 3),
             75,
             vec![chunk("   ", 1)],
+            None,
             yinz_types::style::Palette {
                 fg: FG,
                 bg: BG,
