@@ -123,3 +123,23 @@ fn shutdown_keeps_background_jobs_until_plugins_finish() {
         BackgroundJob::Exit
     ));
 }
+
+#[test]
+fn detached_senders_do_not_retain_session_ownership() {
+    use std::sync::Arc;
+    use yinz_ipc::session_ownership::SessionOwnership;
+
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("session");
+    let ownership = Arc::new(SessionOwnership::acquire(&socket).unwrap().unwrap());
+    let senders = ThreadSenders {
+        session_ownership: Some(Arc::downgrade(&ownership)),
+        ..Default::default()
+    };
+    let detached = senders.clone();
+    assert!(SessionOwnership::acquire(&socket).unwrap().is_none());
+    ownership.shutdown().unwrap();
+    drop(ownership);
+    assert!(SessionOwnership::acquire(&socket).unwrap().is_some());
+    assert!(detached.session_ownership.unwrap().upgrade().is_none());
+}

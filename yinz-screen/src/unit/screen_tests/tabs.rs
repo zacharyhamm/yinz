@@ -1412,7 +1412,7 @@ fn rename_session_rejects_unlisted_socket_cache_and_lookup_errors_without_mutati
             .unwrap(),
     );
     let _old = ownership.bind().unwrap();
-    screen.bus.senders.session_ownership = Some(ownership);
+    screen.bus.senders.session_ownership = Some(std::sync::Arc::downgrade(&ownership));
     let cache = session_info_folder_for_session(&old);
     std::fs::create_dir_all(&cache).unwrap();
     std::fs::write(cache.join("sentinel"), "old").unwrap();
@@ -1503,7 +1503,7 @@ fn rename_session_reclaims_stale_destination_despite_cached_live_entry() {
     screen.rename_session(target.clone(), client).unwrap();
     assert_eq!(screen.session_name, old);
     assert!(target_socket.exists());
-    screen.bus.senders.session_ownership = Some(ownership);
+    screen.bus.senders.session_ownership = Some(std::sync::Arc::downgrade(&ownership));
     screen.peer_sessions_cache.insert(
         target.clone(),
         yinz_types::data::SessionInfo::new(target.clone()),
