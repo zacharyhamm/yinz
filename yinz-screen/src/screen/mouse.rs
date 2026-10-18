@@ -87,7 +87,7 @@ impl Screen {
                 usize::try_from(event.position.line())
                     .ok()
                     .is_some_and(|line| {
-                        self.notification_cell_rects(surface, now)
+                        self.notification_cell_rects(surface, now, client_id)
                             .iter()
                             .any(|rect| rect.contains(event.position.column(), line))
                     })

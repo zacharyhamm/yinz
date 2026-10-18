@@ -138,7 +138,7 @@ fn a_second_toast_arriving_mid_glide_never_jumps_the_survivors() {
 
     let painted_row = |screen: &Screen, now: Instant| -> usize {
         screen
-            .notification_layout(viewport, now)
+            .notification_layout(viewport, now, ClientId::new(1))
             .iter()
             .find(|layout| layout.notification.id == NotificationId::new(0))
             .expect("the first toast is still in the stack")
@@ -359,6 +359,7 @@ fn a_toast_covering_the_cursor_hides_it_until_it_leaves() {
                 rows: surface.rows,
             },
             start,
+            ClientId::new(1),
         )
         .first()
         .expect("the toast fits");
@@ -445,7 +446,7 @@ fn notification_movement_and_expiry_repaint_an_agent_margin() {
         cols: size.cols,
         rows: size.rows,
     };
-    let old = screen.notification_cell_rects(viewport, start);
+    let old = screen.notification_cell_rects(viewport, start, ClientId::new(1));
     assert!(old.iter().all(|rect| !rect.intersects_geom(&pane)));
     screen.notifications[0].y_offset = Tween::settled(5.0);
     let moved = render_frame_into(&mut screen, &receiver, client, &mut grid);

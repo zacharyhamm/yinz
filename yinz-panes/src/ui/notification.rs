@@ -435,22 +435,33 @@ fn browser_first_visible(heights: &[usize], rows: usize, hint: usize, selected: 
 
 /// The chunks for one toast, its top-left corner at (`x`, `y`) and `width` columns wide.
 ///
-/// `lines` comes from [`notification_lines`] called with the same `width`.
+/// `lines` comes from [`notification_lines`] called with the same `width`. An optional footer
+/// adds one dim row, truncated to the content width without reducing the message row limit.
 pub fn notification_chunks(
     lines: &[String],
+    footer: Option<&str>,
     x: usize,
     y: usize,
     width: usize,
     style: &Style,
     fade: f32,
 ) -> Vec<CharacterChunk> {
-    notification_box_chunks(lines, x, y, width, style.colors.text_unselected, fade)
+    notification_box_chunks(
+        lines,
+        footer,
+        x,
+        y,
+        width,
+        style.colors.text_unselected,
+        fade,
+    )
 }
 
 /// [`notification_chunks`] painted in an explicit colour declaration, so the notification browser
 /// can draw its selected entry in `text_selected` with the same box everything else uses.
 pub fn notification_box_chunks(
     lines: &[String],
+    footer: Option<&str>,
     x: usize,
     y: usize,
     width: usize,
@@ -492,7 +503,7 @@ pub fn notification_box_chunks(
     };
 
     let text_width = inner_width.saturating_sub(2);
-    let text_row = |line: &str| -> Vec<TerminalCharacter> {
+    let text_row = |line: &str, fill: &RcCharacterStyles| -> Vec<TerminalCharacter> {
         let mut characters = Vec::with_capacity(width);
         characters.push(TerminalCharacter::new_styled('│', border.clone()));
         characters.push(TerminalCharacter::new_singlewidth_styled(' ', fill.clone()));
@@ -516,15 +527,34 @@ pub fn notification_box_chunks(
         characters
     };
 
-    let mut chunks = Vec::with_capacity(lines.len() + NOTIFICATION_BORDER_ROWS);
+    let mut chunks =
+        Vec::with_capacity(lines.len() + usize::from(footer.is_some()) + NOTIFICATION_BORDER_ROWS);
     chunks.push(CharacterChunk::new(border_row('╭', '╮'), x, y));
     for (offset, line) in lines.iter().enumerate() {
-        chunks.push(CharacterChunk::new(text_row(line), x, y + 1 + offset));
+        chunks.push(CharacterChunk::new(
+            text_row(line, &fill),
+            x,
+            y + 1 + offset,
+        ));
+    }
+    if let Some(footer) = footer {
+        let footer = sanitize(footer);
+        let footer = if footer.width() > text_width {
+            ellipsize(&footer, text_width)
+        } else {
+            footer
+        };
+        let subtle: RcCharacterStyles = fill.dim(Some(AnsiCode::On)).into();
+        chunks.push(CharacterChunk::new(
+            text_row(&footer, &subtle),
+            x,
+            y + 1 + lines.len(),
+        ));
     }
     chunks.push(CharacterChunk::new(
         border_row('╰', '╯'),
         x,
-        y + 1 + lines.len(),
+        y + 1 + lines.len() + usize::from(footer.is_some()),
     ));
     chunks
 }
@@ -894,7 +924,7 @@ mod tests {
     #[test]
     fn a_single_line_toast_is_still_three_rows_of_exactly_the_requested_width() {
         let style = Style::default();
-        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style, 1.0);
+        let chunks = notification_chunks(&["hello".to_owned()], None, 4, 9, 20, &style, 1.0);
         assert_eq!(chunks.len(), notification_height(1));
         for (offset, chunk) in chunks.iter().enumerate() {
             assert_eq!(chunk.x, 4);
@@ -916,7 +946,7 @@ mod tests {
     fn every_row_of_a_multi_line_toast_spans_the_full_width() {
         let style = Style::default();
         let lines = notification_lines("one\ntwo three\n  four", 20);
-        let chunks = notification_chunks(&lines, 0, 0, 20, &style, 1.0);
+        let chunks = notification_chunks(&lines, None, 0, 0, 20, &style, 1.0);
 
         assert_eq!(chunks.len(), notification_height(lines.len()));
         for (offset, chunk) in chunks.iter().enumerate() {
@@ -951,7 +981,7 @@ mod tests {
             ]
         );
 
-        let painted = rows(&notification_chunks(&lines, 0, 0, width, &style, 1.0));
+        let painted = rows(&notification_chunks(&lines, None, 0, 0, width, &style, 1.0));
         assert_eq!(painted.len(), notification_height(4));
         assert!(painted[0].starts_with('╭'), "got {:?}", painted[0]);
         assert_eq!(painted[1], "│ agent needs confirmation │");
@@ -962,7 +992,7 @@ mod tests {
     #[test]
     fn a_fully_hidden_reveal_paints_nothing() {
         let style = Style::default();
-        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style, 1.0);
+        let chunks = notification_chunks(&["hello".to_owned()], None, 4, 9, 20, &style, 1.0);
         for position in [
             NotificationPosition::TopLeft,
             NotificationPosition::TopRight,
@@ -982,7 +1012,7 @@ mod tests {
     fn a_fully_shown_reveal_is_identical_to_the_unanimated_chunks() {
         let style = Style::default();
         let lines = notification_lines("one\ntwo three\n  four", 20);
-        let chunks = notification_chunks(&lines, 4, 9, 20, &style, 1.0);
+        let chunks = notification_chunks(&lines, None, 4, 9, 20, &style, 1.0);
         for position in [
             NotificationPosition::TopLeft,
             NotificationPosition::TopRight,
@@ -1006,7 +1036,7 @@ mod tests {
     #[test]
     fn a_left_anchored_reveal_keeps_x_fixed_and_grows_rightward() {
         let style = Style::default();
-        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style, 1.0);
+        let chunks = notification_chunks(&["hello".to_owned()], None, 4, 9, 20, &style, 1.0);
         for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let (revealed, x) =
                 notification_reveal(&chunks, 4, 20, NotificationPosition::TopLeft, progress);
@@ -1025,7 +1055,7 @@ mod tests {
     #[test]
     fn a_right_anchored_reveal_keeps_the_right_edge_fixed_and_grows_leftward() {
         let style = Style::default();
-        let chunks = notification_chunks(&["hello".to_owned()], 4, 9, 20, &style, 1.0);
+        let chunks = notification_chunks(&["hello".to_owned()], None, 4, 9, 20, &style, 1.0);
         let mut previous_x = None;
         for progress in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let (revealed, x) =
@@ -1056,7 +1086,7 @@ mod tests {
         let style = Style::default();
         // 4 double-width glyphs, 8 columns of text, box is CHROME_COLS(4) + 8 = 12 wide
         let lines = notification_lines(&"日".repeat(4), 12);
-        let chunks = notification_chunks(&lines, 0, 0, 12, &style, 1.0);
+        let chunks = notification_chunks(&lines, None, 0, 0, 12, &style, 1.0);
         for progress in 0..=12 {
             let progress = progress as f32 / 12.0;
             let (revealed, _) =
@@ -1228,7 +1258,7 @@ mod tests {
         let text = Some(AnsiCode::from(declaration.base));
 
         let lines = notification_lines("one\ntwo three", 20);
-        let chunks = notification_chunks(&lines, 4, 9, 20, &style, 1.0);
+        let chunks = notification_chunks(&lines, None, 4, 9, 20, &style, 1.0);
         let (border_rows, text_rows) = chunks.split_at(1);
 
         for (foreground, chunk_background) in colors(&border_rows[0]) {
@@ -1257,7 +1287,7 @@ mod tests {
         let declaration = style.colors.text_unselected;
         let background = Some(AnsiCode::from(declaration.background));
         let lines = notification_lines("hidden", 20);
-        for chunk in notification_chunks(&lines, 4, 9, 20, &style, 0.0) {
+        for chunk in notification_chunks(&lines, None, 4, 9, 20, &style, 0.0) {
             for (foreground, chunk_background) in colors(&chunk) {
                 assert_eq!(
                     foreground, background,
@@ -1276,7 +1306,7 @@ mod tests {
         let lines = notification_lines("resolving", 20);
         for step in 1..10 {
             let fade = step as f32 / 10.0;
-            for chunk in notification_chunks(&lines, 4, 9, 20, &style, fade) {
+            for chunk in notification_chunks(&lines, None, 4, 9, 20, &style, fade) {
                 for (foreground, _) in colors(&chunk) {
                     let Some(AnsiCode::RgbCode((r, g, b))) = foreground else {
                         panic!("a mid-fade colour is resolved rgb, got {foreground:?}");
@@ -1420,3 +1450,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "unit/notification_footer.rs"]
+mod footer_tests;

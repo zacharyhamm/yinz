@@ -401,12 +401,19 @@ fn hidden_cursor_memos_settle_and_restore_all_state() {
                 None,
             );
             if reason == "occluded" {
-                output.set_notification_rects(vec![CellRect {
-                    x: 0,
-                    y: 0,
-                    cols: 80,
-                    rows: 24,
-                }]);
+                output.set_notification_rects(
+                    [(
+                        client_id,
+                        vec![CellRect {
+                            x: 0,
+                            y: 0,
+                            cols: 80,
+                            rows: 24,
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                );
             }
             tab.render_cursor_last(&mut output, None);
             let bytes = output

@@ -1198,6 +1198,7 @@ impl ContextMenuItems {
 struct NotificationLayout<'a> {
     notification: &'a Notification,
     lines: Vec<String>,
+    footer: Option<String>,
     x: usize,
     y: usize,
     width: usize,
@@ -1206,6 +1207,14 @@ struct NotificationLayout<'a> {
     reveal: f32,
     revealed_x: usize,
     visible_cols: usize,
+}
+
+impl NotificationLayout<'_> {
+    fn height(&self) -> usize {
+        crate::ui::notification::notification_height(
+            self.lines.len() + usize::from(self.footer.is_some()),
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

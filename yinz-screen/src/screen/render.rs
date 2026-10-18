@@ -284,11 +284,6 @@ impl Screen {
                 rows: surface.rows,
             };
 
-            // The toasts are drawn above every pane, so nothing may put a cursor - real or the
-            // fake one standing in for another client - on a cell they cover. Told to the output
-            // before anything renders, because the fake cursors are decided while the panes draw.
-            output.set_notification_rects(self.notification_occlusion_rects(session_surface, now));
-
             // Wanted twice below - once for the menu geometry, once when the overlays paint - and
             // on almost every frame there is neither a toast nor a menu, so it is not worth
             // walking the client list to find out.
@@ -305,6 +300,29 @@ impl Screen {
             } else {
                 vec![]
             };
+
+            // Set before pane rendering so fake cursors also respect this client's toast geometry.
+            output.set_notification_rects(
+                regular_client_ids
+                    .iter()
+                    .map(|client| {
+                        let size = self
+                            .active_tab_ids
+                            .get(client)
+                            .and_then(|tab| self.tab_surface_size(*tab))
+                            .unwrap_or(surface);
+                        let viewport = Viewport {
+                            cols: size.cols,
+                            rows: size.rows,
+                            ..session_surface
+                        };
+                        (
+                            *client,
+                            self.notification_occlusion_rects(viewport, now, *client),
+                        )
+                    })
+                    .collect(),
+            );
 
             // ...and the same for the menus, which are drawn above even the toasts. Per client,
             // because a menu belongs to the client that opened it.

@@ -2034,6 +2034,7 @@ mod layout_watcher;
 mod mouse;
 mod nested_sessions;
 mod new_pane_placement;
+mod notification_activation;
 mod notification_animation;
 mod notification_browser;
 mod notification_policy;

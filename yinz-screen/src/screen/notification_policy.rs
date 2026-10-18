@@ -638,29 +638,34 @@ impl Screen {
             let id = outcome.original.id;
             let pane = outcome.original.pane_id;
             let text = outcome.message();
-            self.notification_history.push(NotificationRecord {
-                info: NotificationInfo {
-                    id,
-                    received_at_unix_ms: outcome.original.received_at_unix_ms,
-                    message: text.clone(),
-                    outcome: Some(outcome.clone()),
-                },
-                pane_id: pane,
-                on_click: pending.on_click.clone(),
-            });
-            self.notification_browsers_saw_arrival();
-            if !outcome.suppressed {
-                if matches!(
+            let now = Instant::now();
+            let show_toast = !outcome.suppressed
+                && matches!(
                     outcome.delivery,
                     NotificationDelivery::Toast | NotificationDelivery::Both
-                ) && !self.connected_clients.borrow().is_empty()
-                {
-                    let now = Instant::now();
-                    self.with_notification_stack_change(now, |screen| {
-                        screen
-                            .notifications
-                            .insert(0, Notification::new(id, text, pane, pending.on_click, now));
-                    });
+                )
+                && !self.connected_clients.borrow().is_empty();
+            self.with_notification_stack_change(now, |screen| {
+                screen.notification_history.push(NotificationRecord {
+                    info: NotificationInfo {
+                        id,
+                        received_at_unix_ms: outcome.original.received_at_unix_ms,
+                        message: text.clone(),
+                        outcome: Some(outcome.clone()),
+                    },
+                    pane_id: pane,
+                    on_click: pending.on_click.clone(),
+                });
+                if show_toast {
+                    screen
+                        .notifications
+                        .insert(0, Notification::new(id, text, pane, pending.on_click, now));
+                }
+            });
+            self.notification_browsers_saw_arrival();
+            self.sync_animation_clock(now)?;
+            if !outcome.suppressed {
+                if show_toast {
                     self.bus
                         .senders
                         .send_to_background_jobs(BackgroundJob::DismissNotification(
@@ -668,7 +673,6 @@ impl Screen {
                             self.notification_timeout_secs,
                         ))
                         .context("schedule notification dismissal")?;
-                    self.sync_animation_clock(now)?;
                 }
                 if matches!(
                     outcome.delivery,
