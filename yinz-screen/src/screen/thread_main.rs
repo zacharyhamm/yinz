@@ -3477,6 +3477,23 @@ pub fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                     screen.render()?;
                 },
+                ScreenInstruction::RestartAgentPane {
+                    pane_id,
+                    prompt,
+                    session,
+                    originating_plugin,
+                    response,
+                } => {
+                    let result = screen.restart_agent_pane(
+                        pane_id,
+                        prompt.as_deref(),
+                        session,
+                        Some(originating_plugin),
+                    );
+                    let _ = response.send(result);
+                    screen.log_and_report_session_state()?;
+                    screen.render()?;
+                },
                 ScreenInstruction::RunCommandInPane(
                     terminal_pane_id,
                     run_command,

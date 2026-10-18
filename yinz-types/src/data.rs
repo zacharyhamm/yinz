@@ -1235,6 +1235,9 @@ pub struct PaneInfo {
     /// Why this held agent command cannot safely restart, if applicable.
     #[serde(default)]
     pub restart_error: Option<String>,
+    /// Last reported conversation, retained after SessionEnd until a fresh restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_agent_session_id: Option<String>,
     pub pane_x: Column,
     pub pane_content_x: Column,
     pub pane_y: Row,
@@ -2914,6 +2917,13 @@ pub enum PluginCommand {
         context: Context,
         #[serde(default)]
         keep_scrollback: bool,
+    },
+    RestartAgentPane {
+        pane_id: PaneId,
+        prompt: Option<String>,
+        session: crate::agent::control::AgentRestartSession,
+        #[serde(default)]
+        context: Context,
     },
     ResizePaneIdWithDirection(ResizeStrategy, PaneId),
     EditScrollbackForPaneWithId(PaneId),

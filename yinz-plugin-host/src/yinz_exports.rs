@@ -1052,6 +1052,35 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::RerunCommandPane(terminal_pane_id) => {
                 rerun_command_pane(env, terminal_pane_id)
             },
+            PluginCommand::RestartAgentPane {
+                pane_id,
+                prompt,
+                session,
+                context,
+            } => {
+                let (response, receive) = std::sync::mpsc::channel();
+                env.senders
+                    .send_to_screen(ScreenInstruction::RestartAgentPane {
+                        pane_id,
+                        prompt,
+                        session,
+                        originating_plugin: yinz_types::data::OriginatingPlugin::new(
+                            env.plugin_id,
+                            env.client_id,
+                            context,
+                        ),
+                        response,
+                    })
+                    .context("route agent restart")?;
+                let result = receive
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .context("agent restart outcome unknown; inspect the pane before retrying")?;
+                let response = yinz_plugin_api::plugin_command::ProtobufRestartAgentPaneResponse {
+                    json: serde_json::to_string(&result)
+                        .context("encode agent restart response")?,
+                };
+                write_response(env, &response.encode_to_vec())?;
+            },
             PluginCommand::RunCommandInPane {
                 pane_id,
                 command,
@@ -1366,6 +1395,14 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     env,
                     Err(format!("Permission denied: {permission:?}")),
                 );
+            }
+            if matches!(command, PluginCommand::RestartAgentPane { .. }) {
+                let result: Result<yinz_types::agent::control::RestartedAgent, String> =
+                    Err(format!("Permission denied: {permission:?}"));
+                let response = yinz_plugin_api::plugin_command::ProtobufRestartAgentPaneResponse {
+                    json: serde_json::to_string(&result).context("encode agent restart denial")?,
+                };
+                return write_response(env, &response.encode_to_vec());
             }
             if matches!(command, PluginCommand::PaneTabs(_)) {
                 let result: yinz_types::pane_tabs::PaneTabsResponse =
@@ -9119,6 +9156,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::PublishProjectLocations
         | CommandType::RegisterAgentProvider
         | CommandType::GetAgentProviders
+        | CommandType::RestartAgentPane
         | CommandType::RunCommandInPane
         | CommandType::SpawnAgent
         | CommandType::ExecCmd => PermissionType::RunCommands,

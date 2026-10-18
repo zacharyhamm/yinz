@@ -515,3 +515,66 @@ fn cell_pixel_size_dispatch_uses_acting_client_without_permissions() {
     }
     responder.join().unwrap();
 }
+
+#[test]
+fn restart_agent_pane_requires_run_commands_and_returns_the_screen_reply() {
+    let mut env = env();
+    let (to_screen, screen) = channels::unbounded();
+    env.senders.to_screen = Some(SenderWithContext::new(to_screen));
+    let mut plugin = SteelPlugin::new(
+        r#"(define result #f) (define failure #f)
+        (define (load config)
+          (yinz-catch (yinz-then (yinz-agent-restart 7 (hash "session" "resume" "prompt" "P" "context" (hash "job" "fix")))
+            (lambda (reply) (set! result reply))) (lambda (error) (set! failure error))))
+        (define (render rows columns) (yinz-json-string result))"#,
+        Path::new("test.scm"), env, Arc::default(),
+    ).unwrap();
+    // The helper returns a rejected deferred when dispatch is denied.
+    plugin.load(&BTreeMap::new()).unwrap();
+    assert!(screen.try_recv().is_err());
+    assert!(plugin
+        .with_runtime(false, |runtime| runtime.value("failure"))
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .contains("RunCommands"));
+    plugin
+        .env_mut()
+        .set_permissions([PermissionType::RunCommands].into());
+    let handler = std::thread::spawn(move || {
+        let (
+            yinz_bus::screen::ScreenInstruction::RestartAgentPane {
+                pane_id,
+                prompt,
+                session,
+                originating_plugin,
+                response,
+            },
+            _,
+        ) = screen.recv().unwrap()
+        else {
+            panic!("expected restart")
+        };
+        assert_eq!(pane_id.to_string(), "terminal_7");
+        assert_eq!(prompt.as_deref(), Some("P"));
+        assert_eq!(
+            session,
+            yinz_types::agent::control::AgentRestartSession::Resume
+        );
+        assert_eq!(originating_plugin.context["job"], "fix");
+        response
+            .send(Ok(yinz_types::agent::control::RestartedAgent {
+                pane_id,
+                session_id: Some("sid".into()),
+                command: vec!["claude".into(), "P".into()],
+            }))
+            .unwrap();
+    });
+    plugin.load(&BTreeMap::new()).unwrap();
+    handler.join().unwrap();
+    let result: serde_json::Value =
+        serde_json::from_slice(&plugin.render(10, 80).unwrap()).unwrap();
+    assert_eq!(result["pane_id"], json!({"Terminal":7}));
+    assert_eq!(result["session_id"], "sid");
+    assert_eq!(result["command"], json!(["claude", "P"]));
+}

@@ -1009,3 +1009,47 @@ fn new_project_spawn_requires_a_pair_and_rejects_json_and_flag_conflicts() {
         AgentRequest::SpawnNewProject { .. }
     ));
 }
+
+#[test]
+fn restart_cli_requires_session_and_passes_prompt_or_file() {
+    use clap::Parser;
+    use yinz_types::agent::control::AgentRestartSession;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Agent,
+    }
+    for (mode, session) in [
+        ("resume", AgentRestartSession::Resume),
+        ("fresh", AgentRestartSession::Fresh),
+    ] {
+        let cli = Cli::try_parse_from([
+            "agent",
+            "restart",
+            "terminal_7",
+            "--session",
+            mode,
+            "--file",
+            "-",
+            "--json",
+        ])
+        .unwrap();
+        let (request, json, _) = request(cli.command, &mut &b"Fix CI failures"[..]).unwrap();
+        assert!(json);
+        assert_eq!(
+            request,
+            AgentRequest::Restart {
+                pane_id: "terminal_7".parse().unwrap(),
+                prompt: Some("Fix CI failures".into()),
+                session
+            }
+        );
+    }
+    assert!(Cli::try_parse_from(["agent", "restart", "7"]).is_err());
+    assert!(Cli::try_parse_from(["agent", "restart", "7", "--session", "unknown"]).is_err());
+    let cli = Cli::try_parse_from(["agent", "restart", "7", "--session", "fresh"]).unwrap();
+    assert!(matches!(
+        request(cli.command, &mut &b""[..]).unwrap().0,
+        AgentRequest::Restart { prompt: None, .. }
+    ));
+}

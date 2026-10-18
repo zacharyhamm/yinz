@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="243, 242, 236, 237, 238, 233, 234, 235, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 230, 231, 232, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 229, 239, 241, 245, 246, 247, 244, 248, 250, 251")]
+    #[prost(oneof="plugin_command::Payload", tags="243, 242, 236, 237, 238, 233, 234, 235, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 230, 231, 232, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 229, 239, 241, 245, 246, 247, 244, 248, 250, 251, 252")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -448,6 +448,8 @@ pub mod plugin_command {
         ValidateProjectMatchPayload(::prost::alloc::string::String),
         #[prost(string, tag="251")]
         PublishProjectLocationsPayload(::prost::alloc::string::String),
+        #[prost(string, tag="252")]
+        RestartAgentPanePayload(::prost::alloc::string::String),
     }
 }
 // Filesystem access, confined by the server to the plugin's four roots
@@ -3174,6 +3176,12 @@ pub struct GetCellPixelSizeResponse {
     #[prost(message, optional, tag="1")]
     pub size: ::core::option::Option<super::event::CellPixelSize>,
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RestartAgentPaneResponse {
+    #[prost(string, tag="1")]
+    pub json: ::prost::alloc::string::String,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum CommandName {
@@ -3441,6 +3449,7 @@ pub enum CommandName {
     GetProjectProviders = 310,
     ValidateProjectMatch = 311,
     PublishProjectLocations = 312,
+    RestartAgentPane = 313,
 }
 impl CommandName {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3713,6 +3722,7 @@ impl CommandName {
             CommandName::GetProjectProviders => "GetProjectProviders",
             CommandName::ValidateProjectMatch => "ValidateProjectMatch",
             CommandName::PublishProjectLocations => "PublishProjectLocations",
+            CommandName::RestartAgentPane => "RestartAgentPane",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3982,6 +3992,7 @@ impl CommandName {
             "GetProjectProviders" => Some(Self::GetProjectProviders),
             "ValidateProjectMatch" => Some(Self::ValidateProjectMatch),
             "PublishProjectLocations" => Some(Self::PublishProjectLocations),
+            "RestartAgentPane" => Some(Self::RestartAgentPane),
             _ => None,
         }
     }

@@ -9,6 +9,7 @@ Use `yinz --session development agent ...` to select a session. Without
 session, or uses the only active session outside a pane. `--session` is a root
 option and belongs before `agent`. `YINZ_SESSION_NAME` alone is not a selector;
 missing or stale pane context requires an explicit `--session`.
+The separate `agent restart --session MODE` option selects `resume` or `fresh`.
 
 | Command | Result |
 | --- | --- |
@@ -16,6 +17,7 @@ missing or stale pane context requires an explicit `--session`.
 | `agent watch --json` | Normalized lifecycle events, with snapshot and resume cursors |
 | `agent status TARGET` | State, reporting source, readiness, conversation and run IDs |
 | `agent spawn --kind KIND` | Actual pane ID, working directory and branch |
+| `agent restart TARGET --session MODE [TEXT] [--file PATH]` | Restart an exited agent in the same held pane |
 | `agent prompt TARGET TEXT` | Acknowledgement that the agent accepted the prompt |
 | `agent prompt TARGET --file PATH --wait` | Outcome of the submitted turn |
 | `agent wait TARGET --submission ID` | Original prompt's outcome, including failure, after a timeout or dialog |
@@ -25,7 +27,7 @@ missing or stale pane context requires an explicit `--session`.
 | `agent recover TARGET --conversation ID --confirm-empty [--interrupted]` | Restore readiness after inspecting and clearing the draft |
 | `agent send-keys TARGET Esc` | Deliberate input to the agent's terminal UI |
 
-All commands accept `--json`. Targeted commands also accept
+All commands accept `--json`. Targeted commands except `restart` also accept
 `--conversation ID`. Use the conversation ID from `agent status` to require the
 same conversation on a later command. A pane ID alone does not preserve identity
 between separate commands.
@@ -33,6 +35,28 @@ between separate commands.
 `agent register PANE KIND --json` records an existing pane through `agent-service`.
 Registration returns the service's JSON acknowledgement; `--json` also structures
 its errors. It does not establish managed prompt readiness or accept a conversation guard.
+
+## Restart an exited agent
+
+```sh
+yinz agent restart terminal_7 --session resume "Resolve the rebase conflicts"
+yinz agent restart terminal_7 --session fresh "Review this branch against main"
+yinz agent restart terminal_7 --session resume --file failures.txt --json
+```
+
+The pane must be held after exit. Restart preserves its launch flags, cwd and
+target, replaces the original opening prompt, and uses the provider's resume
+and prompt grammar. `--session resume` requires the last reported session id;
+`--session fresh` removes all session selectors. An absent prompt opens the
+agent without an opening task; `--file -` reads one from stdin. Muse refuses
+resume with an opening prompt. Unsafe or ambiguous restart arguments are
+returned as errors.
+
+The JSON response includes `restarted: {pane_id, session_id, command}`. The
+session id is null for fresh launches until the provider reports its new one.
+A successful response confirms acceptance for spawning, not provider startup.
+The same pane fires `agent_exit` on its next exit. A hook plugin covering it
+must close itself to reveal it.
 
 ## Launch and submit work
 

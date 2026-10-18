@@ -691,18 +691,6 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         return Err("managed Codex and Muse require a directly executable agent, not an interpreter command; point command at the agent's executable shim".to_owned());
     }
 
-    // `muse resume` takes no opening prompt - the parser rejects the combination -
-    // so a spec asking for both is refused rather than planned into a command
-    // that dies on launch. Every other kind takes its prompt positionally beside
-    // a resume.
-    if kind.as_deref() == Some("muse")
-        && trimmed(&spec.resume).is_some()
-        && trimmed(&spec.prompt).is_some()
-    {
-        return Err(
-            "a muse resume takes no opening prompt; prompt the pane after it starts".to_owned(),
-        );
-    }
     let (leading, flags) = match &provider {
         Some(provider) => provider_args(provider, spec)?,
         None => builtin_shape_args(kind.as_deref(), spec)?,
@@ -717,26 +705,7 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     // like a flag is still a prompt, and what the agent was asked to do says nothing about
     // how it was asked to run.
     let env = launch_environment(spec, kind.as_deref());
-    // Prompt placement belongs to the provider; argv templates preserve it as one argument.
-    if let Some(prompt) = trimmed(&spec.prompt) {
-        if let Some(provider) = &provider {
-            if provider.launch.prompt_args.is_empty() {
-                return Err(format!(
-                    "{} does not support an opening prompt",
-                    provider.kind
-                ));
-            }
-            args.extend(yinz_types::agent::provider::expand_args(
-                &provider.launch.prompt_args,
-                prompt,
-            ));
-        } else {
-            if kind.as_deref() == Some("agy") {
-                args.push("--prompt-interactive".to_owned());
-            }
-            args.push(prompt.to_owned());
-        }
-    }
+    args.extend(prompt_args(kind.as_deref(), provider.as_deref(), spec)?);
 
     let (program, args) = match kind.as_deref() {
         Some("codex") if spec.hooks.unwrap_or(true) => wrap_codex(program, args),
@@ -804,6 +773,46 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
             path: path.into(),
         },
     ))
+}
+
+/// Opening prompt grammar shared by launches and restarts of held commands.
+pub(crate) fn prompt_args(
+    kind: Option<&str>,
+    provider: Option<&yinz_types::agent::provider::AgentProvider>,
+    spec: &Spec,
+) -> Result<Vec<String>, String> {
+    // `muse resume` takes no opening prompt - the parser rejects the combination -
+    // so a spec asking for both is refused rather than planned into a command
+    // that dies on launch. Every other kind takes its prompt positionally beside
+    // a resume.
+    if kind == Some("muse") && trimmed(&spec.resume).is_some() && trimmed(&spec.prompt).is_some() {
+        return Err(
+            "a muse resume takes no opening prompt; prompt the pane after it starts".to_owned(),
+        );
+    }
+    let mut args = Vec::new();
+    // Prompt placement belongs to the provider; argv templates preserve it as one argument.
+    if let Some(prompt) = trimmed(&spec.prompt) {
+        if let Some(provider) = &provider {
+            if provider.launch.prompt_args.is_empty() {
+                return Err(format!(
+                    "{} does not support an opening prompt",
+                    provider.kind
+                ));
+            }
+            args.extend(yinz_types::agent::provider::expand_args(
+                &provider.launch.prompt_args,
+                prompt,
+            ));
+        } else {
+            if kind == Some("agy") {
+                args.push("--prompt-interactive".to_owned());
+            }
+            args.push(prompt.to_owned());
+        }
+    }
+
+    Ok(args)
 }
 
 /// What resuming a recorded run means: the same agent, the same session, the folder the

@@ -294,6 +294,7 @@ the grace period if the command remains active.
 | `(yinz-agent-wait-for-turn pane [options])` | Wait for Stop, StopFailure, or Interrupt; `"fallback"` can be `"idle"` |
 | `(yinz-agent-send pane text [options])` | Send bracketed paste and Enter; `"enter"` can be false |
 | `(yinz-agent-prompt pane text [options])` | Register a turn waiter, then send text |
+| `(yinz-agent-restart pane options)` | Restart an exited, held agent in its own pane; returns a deferred host reply |
 | `(yinz-agent-control request)` | Send a host agent-control request and await its correlated response |
 | `(yinz-agent-register-provider definition)` | Register a provider |
 | `(yinz-agent-providers)` | Query provider definitions |
@@ -303,6 +304,29 @@ the grace period if the command remains active.
 Agent waits and prompts have no default deadline. Cancel their deferred result
 to release listeners. Agent control uses the host protocol; sending text uses
 terminal input.
+
+`yinz-agent-restart` requires `RunCommands` and an explicit `"session"` option:
+`"resume"` uses the pane's remembered session id, and `"fresh"` starts a new
+conversation. Optional `"prompt"` is a string or `json-null`. `"context"` is a
+string hash echoed in `CommandPaneExited` to this plugin. Original launch flags,
+cwd and target come from the held command. The deferred rejects on refusal,
+including a missing resume id or a provider that cannot resume with a prompt.
+Its result has `"pane_id"` (for example `(hash "Terminal" 7)`), `"session_id"` (null for
+fresh), and `"command"` (executable and argv). Acceptance does not wait for the
+provider to start.
+
+```scheme
+(yinz-then
+  (yinz-agent-restart 7 (hash "session" "resume" "prompt" "Resolve the rebase conflicts"))
+  (lambda (reply) (yinz-command "CloseSelf")))
+```
+
+This works while pane 7 is suppressed behind the hook plugin. Closing the
+plugin reveals the running agent. Its next exit fires `agent_exit` again.
+The hook configuration includes `"agent_session_id"` when known, and later
+`PaneUpdate` observations expose `"last_agent_session_id"` even when `"agent"`
+is null after `SessionEnd`. Fresh restart clears the old id until the new
+conversation reports itself.
 
 ## Workers
 

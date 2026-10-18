@@ -216,6 +216,16 @@ fn test_client_messages() {
     let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
     for expected_session_id in [None, Some("conversation-7".to_owned())] {
         for request in [
+            AgentRequest::Restart {
+                pane_id,
+                prompt: Some("Resolve conflicts".into()),
+                session: yinz_types::agent::control::AgentRestartSession::Resume,
+            },
+            AgentRequest::Restart {
+                pane_id,
+                prompt: None,
+                session: yinz_types::agent::control::AgentRestartSession::Fresh,
+            },
             AgentRequest::List { project: None },
             AgentRequest::Status {
                 pane_id,
@@ -4753,6 +4763,11 @@ fn test_server_messages() {
                 occupied_by: vec![pane_id],
                 tab_id: Some(TabId::new(7)),
                 created_tab_id: Some(TabId::new(7)),
+            }),
+            restarted: Some(yinz_types::agent::control::RestartedAgent {
+                pane_id,
+                session_id: Some("conversation-7".into()),
+                command: vec!["claude".into(), "--resume".into(), "conversation-7".into()],
             }),
             output: Some("Ready\n>".into()),
             launch_resources: None,

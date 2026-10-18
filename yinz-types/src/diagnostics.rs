@@ -273,6 +273,7 @@ pub enum ScreenContext {
     Reconfigure,
     RerunCommandPane,
     RunCommandInPane,
+    RestartAgentPane,
     ResizePaneWithId,
     EditScrollbackForPaneWithId,
     WriteToPaneId,

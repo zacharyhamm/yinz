@@ -784,6 +784,14 @@ pub enum ScreenInstruction {
         config: ScreenConfig,
     },
     RerunCommandPane(TerminalId, Option<NotificationEnd>), // u32 - terminal pane id
+    RestartAgentPane {
+        pane_id: PaneId,
+        prompt: Option<String>,
+        session: yinz_types::agent::control::AgentRestartSession,
+        originating_plugin: yinz_types::data::OriginatingPlugin,
+        response:
+            std::sync::mpsc::Sender<Result<yinz_types::agent::control::RestartedAgent, String>>,
+    },
     RunCommandInPane(TerminalId, RunCommand, bool), // u32 - terminal pane id, bool - keep_scrollback;
     // runs a *different* command in an existing command pane
     ResizePaneWithId(ResizeStrategy, PaneId),

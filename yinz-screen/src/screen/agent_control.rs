@@ -1082,6 +1082,26 @@ impl Screen {
     pub(super) fn agent_control_at(&mut self, request: AgentRequest, client: Reply, now: Instant) {
         use AgentRequest::*;
         let (pane, expected) = match &request {
+            Restart {
+                pane_id,
+                prompt,
+                session,
+            } => {
+                let mut response = AgentResponse::new(AgentOutcome::Ok);
+                match self.restart_agent_pane(*pane_id, prompt.as_deref(), *session, None) {
+                    Ok(restarted) => {
+                        response.restarted = Some(restarted);
+                        self.log_and_report_session_state().non_fatal();
+                        self.render().non_fatal();
+                    },
+                    Err(message) => {
+                        response.outcome = AgentOutcome::Rejected;
+                        response.message = Some(message);
+                    },
+                }
+                self.agent_reply(&client, response);
+                return;
+            },
             SpawnPlacementSupport => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.output = Some("agent-tab-placement-v1".into());
@@ -1795,6 +1815,7 @@ impl Screen {
                 self.refresh_agent_controls();
             },
             List { .. }
+            | Restart { .. }
             | Spawn { .. }
             | SpawnNewProject { .. }
             | SpawnPlacementSupport

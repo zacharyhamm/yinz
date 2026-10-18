@@ -102,6 +102,12 @@
     (%agent-send-target pane text options)
     (%agent-observe-turn operation pane options)
     (yinz-agent-send pane text options))))
+(define (yinz-agent-restart pane options)
+  (%agent-operation (lambda (operation)
+    (%pane-options options "agent restart options")
+    (yinz-resolve! operation (yinz-command (hash "RestartAgentPane" (hash
+      "pane_id" (hash "Terminal" (%pane-id pane)) "prompt" (%async-get options "prompt" json-null)
+      "session" (hash-ref options "session") "context" (%async-get options "context" (hash)))))))))
 (define (yinz-agent-control request)
   (%agent-operation (lambda (operation)
     (define serialized (yinz-json-string request))
