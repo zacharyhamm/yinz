@@ -141,6 +141,16 @@ impl Pair {
                 &mut root,
             )
             .unwrap();
+        if name == "tab-bar" {
+            // Replay the recorded 40-column cap; builtin tests cover the current 45-column cap.
+            steel
+                .eval(
+                    "(define parity-tab-part tab-part)
+                     (set! tab-part (lambda (tab alternate budget)
+                       (parity-tab-part tab alternate (min 40 budget))))",
+                )
+                .unwrap();
+        }
         steel.load(json!(configuration)).unwrap();
         let mut pair = Self {
             deno_commands: vec![],

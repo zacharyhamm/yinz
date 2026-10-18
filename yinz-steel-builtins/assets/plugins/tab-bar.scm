@@ -260,7 +260,7 @@
       (define cols (max 0 (- columns 1)))
       (set! parts (if group-row-visible '() (prefix cols)))
       (set! new-tab-range #f)
-      (define budget (max 8 (min 40 (- cols (parts-width parts) (* 4 (yinz-text-width (bar-arrow mi))) 5))))
+      (define budget (max 8 (min 45 (- cols (parts-width parts) (* 4 (yinz-text-width (bar-arrow mi))) 5))))
       (define index -1)
       (define all (map (lambda (tab) (set! index (+ index 1)) (tab-part tab (= (modulo index 2) 1) budget)) tabs))
       (define active (car (filter (lambda (tab) (hash-ref tab "active")) tabs)))

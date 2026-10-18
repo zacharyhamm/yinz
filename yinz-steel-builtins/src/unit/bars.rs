@@ -194,6 +194,25 @@ fn tab_bar_mouse_targets_visible_tabs_button_and_breadcrumb() {
 }
 
 #[test]
+fn tab_bar_displays_names_up_to_45_columns() {
+    let (mut runtime, _) = plugin();
+    let name = "a".repeat(45);
+    event(&mut runtime, Event::TabUpdate(vec![tab(0, &name, true)]));
+    let frame = runtime.render(1, 200).unwrap();
+    assert!(frame.contains(&name));
+    assert!(!frame.contains('…'));
+
+    let longer_name = "a".repeat(46);
+    event(
+        &mut runtime,
+        Event::TabUpdate(vec![tab(0, &longer_name, true)]),
+    );
+    let frame = runtime.render(1, 200).unwrap();
+    assert!(frame.contains(&format!("{}…", "a".repeat(44))));
+    assert!(!frame.contains(&name));
+}
+
+#[test]
 fn tab_bar_fits_active_tab_unicode_flags_and_collapsed_neighbors() {
     let (mut runtime, _) = plugin();
     let mut tabs = (0..12)
