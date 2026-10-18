@@ -178,6 +178,142 @@ fn status_clipboard_and_live_alt_release_restore_clock_and_mouse_actions() {
 }
 
 #[test]
+fn group_navigation_hint_follows_pane_navigation_and_distinct_group_ids() {
+    use yinz_types::{
+        data::InputMode, input::actions::Action, keys::KeyWithModifier, tab_bar::TabGroupInfo,
+    };
+
+    let config = yinz_config::config::Config::from_kdl(
+        include_str!("../../../yinz-config/assets/config/default.kdl"),
+        None,
+    )
+    .unwrap();
+    let mut mode = ModeInfo {
+        keybinds: config.keybinds.to_keybinds_vec(),
+        ..Default::default()
+    };
+    let mut tabs = vec![
+        TabInfo {
+            active: true,
+            selectable_tiled_panes_count: 1,
+            ..Default::default()
+        },
+        TabInfo::default(),
+    ];
+    let mut status = Status::new(false);
+    status.mode(json!(mode));
+    status.event(json!({"ModifiersHeld":{"modifiers":["Alt"],"is_live":true}}));
+    for (ids, visible) in [([0, 0], false), ([0, 2], true), ([2, 2], false)] {
+        for (tab, id) in tabs.iter_mut().zip(ids) {
+            tab.group = Some(TabGroupInfo {
+                id,
+                name: "same".into(),
+            });
+        }
+        status.event(json!({"TabUpdate":tabs}));
+        let frame = status.render(1, 300);
+        assert_eq!(frame.contains("Switch group"), visible, "{frame}");
+        if visible {
+            assert!(frame.contains("Shift h|Shift l"), "{frame}");
+        }
+    }
+    tabs[1].group.as_mut().unwrap().id = 3;
+    status.event(json!({"TabUpdate":tabs}));
+    for input_mode in [InputMode::Locked, InputMode::Select, InputMode::Tab] {
+        mode.mode = input_mode;
+        status.mode(json!(mode));
+        let frame = status.render(1, 300);
+        assert!(
+            !frame.contains("Switch group") && !frame.contains("Groups"),
+            "{frame}"
+        );
+    }
+
+    mode.mode = InputMode::Normal;
+    let normal = &mut mode
+        .keybinds
+        .iter_mut()
+        .find(|(mode, _)| *mode == InputMode::Normal)
+        .unwrap()
+        .1;
+    for (shortcut, action) in [
+        ("Ctrl Shift j", Action::GoToPreviousTabGroup),
+        ("Ctrl Shift k", Action::GoToNextTabGroup),
+    ] {
+        normal.retain(|(_, actions)| !actions.contains(&action));
+        normal.push((shortcut.parse::<KeyWithModifier>().unwrap(), vec![action]));
+    }
+    status.mode(json!(mode));
+    let frame = status.render(1, 300);
+    assert!(
+        frame.contains("Switch group") && frame.contains("Ctrl-Shift <j|k>"),
+        "{frame}"
+    );
+    let normal = &mut mode
+        .keybinds
+        .iter_mut()
+        .find(|(mode, _)| *mode == InputMode::Normal)
+        .unwrap()
+        .1;
+    normal.retain(|(_, actions)| {
+        !actions.iter().any(|action| {
+            matches!(
+                action,
+                Action::MoveFocusOrTab { .. } | Action::MoveFocus { .. }
+            )
+        })
+    });
+    status.mode(json!(mode));
+    assert!(!status.render(1, 300).contains("Switch group"));
+}
+
+#[test]
+fn classic_and_multi_row_tab_hints_preserve_group_navigation() {
+    use yinz_types::{data::InputMode, input::actions::Action, keys::KeyWithModifier};
+
+    let mut mode = ModeInfo {
+        mode: InputMode::Tab,
+        keybinds: vec![(
+            InputMode::Tab,
+            vec![
+                (
+                    "Ctrl Shift j".parse::<KeyWithModifier>().unwrap(),
+                    vec![Action::GoToPreviousTabGroup],
+                ),
+                (
+                    "Ctrl Shift k".parse::<KeyWithModifier>().unwrap(),
+                    vec![Action::GoToNextTabGroup],
+                ),
+            ],
+        )],
+        ..Default::default()
+    };
+    for (classic, rows, visible) in [
+        (true, 1, true),
+        (true, 2, true),
+        (false, 2, true),
+        (false, 1, false),
+    ] {
+        let mut status = Status::new(classic);
+        status.tab();
+        status.mode(json!(mode));
+        let frame = status.render(rows, 300);
+        assert_eq!(frame.contains("Switch group"), visible, "{frame}");
+        if visible {
+            assert!(frame.contains("Ctrl-Shift + <j|k> Switch group"), "{frame}");
+        }
+        let bindings = std::mem::take(&mut mode.keybinds[0].1);
+        status.mode(json!(mode));
+        let frame = status.render(rows, 300);
+        assert!(
+            !frame.contains("Switch group") && !frame.contains("Groups"),
+            "{frame}"
+        );
+        mode.keybinds[0].1 = bindings;
+    }
+}
+
+#[test]
 fn status_mode_hints_prefer_tab_arrows_and_match_panel_message_name() {
     let mut status = Status::new(true);
     status.tab();
