@@ -462,7 +462,11 @@ fn installed_palette_uses_real_keyboard_discovery_and_execution() {
   (for-each (lambda (entry)
     (define query (car entry)) (define label (cadr entry)) (define marker (caddr entry))
     (test-session "key" "Ctrl Alt p") (test-session "text" query)
-    (test-wait-for-text label) (assert (not (string-contains? (test-session "logs") marker)))
+    ;; Static actions are visible before the typed query has rendered.
+    (test-wait-for "filtered palette action" (lambda ()
+      (define screen (test-session "screen"))
+      (and (string-contains? screen query) (string-contains? screen label))))
+    (assert (not (string-contains? (test-session "logs") marker)))
     (test-session "key" "Enter")
     (test-wait-for "palette action executed" (lambda () (string-contains? (test-session "logs") marker)))
     ;; The callback logs before the screen receives its close reply.
