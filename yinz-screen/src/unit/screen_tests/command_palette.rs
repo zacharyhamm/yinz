@@ -5641,3 +5641,14 @@ fn palette_closes_groups_by_project_name_but_edits_the_fallback() {
     let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
     assert!(frame.contains("Default"), "{frame}");
 }
+
+#[test]
+fn disabled_tab_groups_are_absent_from_the_command_palette() {
+    let mut screen = screen();
+    screen.default_mode_info.tab_groups = Some(false);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "tab group");
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("No matches"), "{frame}");
+}

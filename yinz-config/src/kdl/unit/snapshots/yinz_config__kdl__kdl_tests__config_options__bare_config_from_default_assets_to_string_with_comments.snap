@@ -424,6 +424,9 @@ context_menu {
         CloseFocus
     }
 }
+
+// Enable tab groups. Disable to show all tabs in one bar. Default: true.
+// tab_groups true
  
 // Use a simplified UI without special fonts (arrow glyphs)
 // Options:

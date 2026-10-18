@@ -69,3 +69,68 @@ fn tab_groups_keyboard_mouse_and_last_pane_lifecycle() {
     });
     yinz.quit();
 }
+
+#[test]
+fn tab_groups_can_start_disabled_and_toggle_live_without_losing_groups() {
+    use yinz_types::input::actions::Action;
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("tab_groups false")
+        .start();
+    let first = yinz.expect_pty_spawn();
+    first.output(b"FIRST_CONTENT");
+    let session_name = yinz.session_name().to_owned();
+    yinz.wait_until("single tab row with host/session chrome", |grid| {
+        let lines = grid.lines();
+        grid.contains("FIRST_CONTENT")
+            && lines[0].contains(&session_name)
+            && lines[0].contains("Tab #1")
+            && !grid.contains("Default")
+    });
+    yinz.send_stdin(b"\x14n");
+    let second = yinz.expect_pty_spawn();
+    second.output(b"SECOND_CONTENT");
+    yinz.wait_until("two tabs in the single row", |grid| {
+        grid.contains("SECOND_CONTENT")
+            && grid.lines()[0].contains("Tab #1")
+            && grid.lines()[0].contains("Tab #2")
+    });
+    let configure = |yinz: &yinz_integration_tests::TestSession, enabled| {
+        let (code, output) = yinz.run_actions_reporting(vec![Action::Reconfigure {
+            config: format!("tab_groups {enabled}"),
+            write_to_disk: false,
+        }]);
+        assert_eq!(code, 0, "{output}");
+    };
+    configure(&yinz, true);
+    yinz.wait_until("group row restored", |grid| {
+        grid.lines()[0].contains("Default") && grid.lines()[1].contains("Tab #2")
+    });
+    yinz.send_stdin(b"\x14g");
+    let third = yinz.expect_pty_spawn();
+    third.output(b"THIRD_CONTENT");
+    yinz.wait_until("second group focused", |grid| {
+        grid.contains("Group 1") && grid.contains("THIRD_CONTENT")
+    });
+    configure(&yinz, false);
+    yinz.wait_until("all groups flattened into one row", |grid| {
+        let row = &grid.lines()[0];
+        row.contains("Tab #1")
+            && row.contains("Tab #2")
+            && row.contains("Tab #3")
+            && !grid.contains("Group 1")
+    });
+    let (code, output) = yinz.run_actions_reporting(vec![Action::NewTabGroup]);
+    assert_eq!(code, 0, "{output}");
+    yinz.send_stdin(b"\x141");
+    yinz.wait_until("numbered shortcut crosses stored groups", |grid| {
+        grid.contains("FIRST_CONTENT")
+    });
+    configure(&yinz, true);
+    yinz.wait_until("saved groups return", |grid| {
+        grid.lines()[0].contains("Default")
+            && grid.lines()[0].contains("Group 1")
+            && grid.contains("FIRST_CONTENT")
+            && !grid.lines()[1].contains("Tab #3")
+    });
+    yinz.quit();
+}

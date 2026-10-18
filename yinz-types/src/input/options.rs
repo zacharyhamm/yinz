@@ -218,6 +218,9 @@ pub const DEFAULT_AGENT_PANE_MIN_ROWS: usize = 24;
 /// Shared configuration options. Command-line parsing and conversion live in
 /// `yinz-cli`, keeping this model independent of clap.
 pub struct Options {
+    /// Enable tab groups (default: true).
+    #[serde(default)]
+    pub tab_groups: Option<bool>,
     /// Map managed agent palettes to semantic theme colors.
     #[serde(default)]
     pub agent_theme_mapping: Option<crate::agent::theme::AgentThemeMapping>,
@@ -527,6 +530,7 @@ impl Options {
         let notification_timeout = other.notification_timeout.or(self.notification_timeout);
         let auto_layout = other.auto_layout.or(self.auto_layout);
         let mirror_session = other.mirror_session.or(self.mirror_session);
+        let tab_groups = other.tab_groups.or(self.tab_groups);
         let simplified_ui = other.simplified_ui.or(self.simplified_ui);
         let default_mode = other.default_mode.or(self.default_mode);
         let default_shell = other.default_shell.or_else(|| self.default_shell.clone());
@@ -612,6 +616,7 @@ impl Options {
             .or(self.dangerously_enable_paste_buffer_read);
 
         Options {
+            tab_groups,
             simplified_ui,
             theme,
             theme_dark,

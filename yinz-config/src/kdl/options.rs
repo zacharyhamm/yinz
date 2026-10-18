@@ -58,6 +58,8 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
             })?),
             None => None,
         };
+    let tab_groups =
+        kdl_property_first_arg_as_bool_or_error!(kdl_options, "tab_groups").map(|(v, _)| v);
     let simplified_ui =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "simplified_ui").map(|(v, _)| v);
     let default_shell = kdl_property_first_arg_as_string_or_error!(kdl_options, "default_shell")
@@ -273,6 +275,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     .map(|(v, _)| v);
 
     Ok(Options {
+        tab_groups,
         simplified_ui,
         theme,
         theme_dark,
@@ -2065,6 +2068,19 @@ fn dangerously_enable_paste_buffer_read_to_kdl(
 }
 pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
     let mut nodes = vec![];
+    if value.tab_groups.is_some() || add_comments {
+        let mut node = KdlNode::new("tab_groups");
+        node.push(KdlValue::Bool(value.tab_groups.unwrap_or(true)));
+        if add_comments {
+            let prefix = if value.tab_groups.is_none() {
+                "// "
+            } else {
+                ""
+            };
+            node.set_leading(format!("\n// Enable tab groups. Disable to show all tabs in one bar. Default: true.\n{prefix}"));
+        }
+        nodes.push(node);
+    }
     if let Some(simplified_ui_node) = simplified_ui_to_kdl(value, add_comments) {
         nodes.push(simplified_ui_node);
     }

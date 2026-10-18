@@ -6,6 +6,7 @@ mod copy_command;
 mod mouse_handler;
 mod pane_tabs;
 mod swap_layouts;
+mod tab_groups;
 
 // The pane-layer items that `crate::tab` users name, under the paths they had when they lived in
 // this module.
@@ -302,6 +303,7 @@ pub struct Tab {
     prev_user_named: bool,
     pub size: Size,
     tiled_panes: TiledPanes,
+    collapsed_tab_bars: HashSet<PaneId>,
     floating_panes: FloatingPanes,
     // panes drawn over the whole session surface, above this tab's own panes and chrome - a
     // sibling of the two above rather than a special case of the floating layer, so that "the
@@ -601,6 +603,7 @@ impl Tab {
             should_clear_display_before_rendering: false,
             style,
             mode_info,
+            collapsed_tab_bars: HashSet::new(),
             default_mode_info,
             pane_frame_style,
             auto_layout,
@@ -1665,6 +1668,7 @@ impl Tab {
             }
             return Err(error);
         }
+        self.restore_tab_bar_height()?;
         let should_show_floating_panes = self
             .layout_applier(blocking_terminal)
             .apply_layout(
@@ -1684,6 +1688,7 @@ impl Tab {
         }
         self.tiled_panes.reapply_pane_frames();
         self.is_pending = false;
+        self.sync_tab_bar_height()?;
         self.apply_buffered_instructions().non_fatal();
         self.complete_pending_agent_placements();
         self.refresh_overlay_expansion();
@@ -1733,6 +1738,7 @@ impl Tab {
             }
             return Err(error);
         }
+        self.restore_tab_bar_height()?;
         let should_show_floating_panes = self
             .layout_applier(blocking_terminal)
             .override_layout(
@@ -1770,6 +1776,7 @@ impl Tab {
             &mut self.tiled_panes,
             self.pane_frame_style,
         );
+        self.sync_tab_bar_height()?;
         self.refresh_overlay_expansion();
         self.apply_buffered_instructions().non_fatal();
         self.complete_pending_agent_placements();
@@ -1918,6 +1925,7 @@ impl Tab {
             self.tiled_panes.unset_fullscreen();
         }
         self.dissolve_stack_lists_for_classic_mutation();
+        self.restore_tab_bar_height()?;
         if let Some(layout_candidate) = self
             .swap_layouts
             .swap_tiled_panes(&self.tiled_panes, search_backwards)
@@ -1936,6 +1944,7 @@ impl Tab {
         let display_area = *self.display_area.borrow();
         // we do this so that the new swap layout has a chance to pass through the constraint system
         self.tiled_panes.resize(display_area);
+        self.sync_tab_bar_height()?;
         self.refresh_overlay_expansion();
         self.set_should_clear_display_before_rendering();
         self.senders
@@ -6105,6 +6114,7 @@ impl Tab {
         output: &mut Output,
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
+        self.sync_tab_bar_height()?;
         let transfers: Vec<_> = self
             .get_all_pane_ids()
             .into_iter()

@@ -2554,6 +2554,8 @@ pub struct Options {
     pub agent_theme_mapping: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint64, optional, tag="80")]
     pub max_agent_width: ::core::option::Option<u64>,
+    #[prost(bool, optional, tag="82")]
+    pub tab_groups: ::core::option::Option<bool>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

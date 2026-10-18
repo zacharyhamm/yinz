@@ -23,6 +23,23 @@ pub(super) struct TabGroup {
 }
 
 impl Screen {
+    pub(super) fn tab_groups_enabled(&self) -> bool {
+        self.default_mode_info.tab_groups != Some(false)
+    }
+
+    pub(super) fn navigation_tabs(&self, tab: TabId) -> Vec<TabId> {
+        if self.tab_groups_enabled() {
+            return self
+                .tab_group_ids
+                .get(&tab)
+                .map(|id| self.group_tabs(*id))
+                .unwrap_or_default();
+        }
+        let mut tabs: Vec<_> = self.tabs.values().collect();
+        tabs.sort_by_key(|tab| tab.position);
+        tabs.into_iter().map(|tab| tab.id).collect()
+    }
+
     pub(super) fn tab_group_info(&self, tab: TabId) -> Option<TabGroupInfo> {
         let id = *self.tab_group_ids.get(&tab)?;
         Some(TabGroupInfo {
@@ -169,8 +186,7 @@ impl Screen {
     }
 
     pub(super) fn adjacent_group_tab(&self, tab: TabId, forward: bool) -> Option<TabPosition> {
-        let group = *self.tab_group_ids.get(&tab)?;
-        let tabs = self.group_tabs(group);
+        let tabs = self.navigation_tabs(tab);
         let index = tabs.iter().position(|id| *id == tab)?;
         let next = if forward {
             (index + 1) % tabs.len()
@@ -181,6 +197,24 @@ impl Screen {
     }
 
     pub(super) fn closed_tab_group_destination(&self, client: ClientId) -> Option<TabId> {
+        if !self.tab_groups_enabled() {
+            let valid = |id: &TabId| {
+                self.tabs
+                    .get(id)
+                    .is_some_and(|tab| !tab.is_pending() && tab.has_selectable_panes())
+            };
+            return self
+                .tab_history
+                .get(&client)
+                .and_then(|history| history.iter().rev().find(|id| valid(id)).copied())
+                .or_else(|| {
+                    self.tabs
+                        .values()
+                        .filter(|tab| valid(&tab.id))
+                        .min_by_key(|tab| tab.position)
+                        .map(|tab| tab.id)
+                });
+        }
         let group = self.group_for_client(Some(client));
         self.preferred_group_tab(group, client, true).or_else(|| {
             self.tab_groups
@@ -238,6 +272,16 @@ impl Screen {
         completion: &mut Option<NotificationEnd>,
         tab_switches: &mut HashSet<(TabId, ClientId)>,
     ) -> Result<()> {
+        if !self.tab_groups_enabled()
+            && !matches!(
+                action,
+                Action::ListTabGroups { .. }
+                    | Action::CurrentTabGroupInfo { .. }
+                    | Action::GoToTabInGroup { .. }
+            )
+        {
+            return Ok(());
+        }
         let client = self.client_id(client).unwrap_or(client);
         let action = match action {
             Action::RenameCurrentTabGroup { name } => Action::RenameTabGroup {
@@ -500,7 +544,11 @@ impl Screen {
                 }
             },
             Action::GoToTabInGroup { index } => {
-                let tabs = self.group_tabs(self.group_for_client(Some(client)));
+                let tabs = self
+                    .active_tab_ids
+                    .get(&client)
+                    .map(|tab| self.navigation_tabs(*tab))
+                    .unwrap_or_default();
                 if let Some(tab) = tabs
                     .get(index.position().get())
                     .and_then(|id| self.tabs.get(id))

@@ -971,6 +971,8 @@ pub struct ModeUpdatePayload {
     pub nested_descend_keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(bool, tag="23")]
     pub kitty_graphics_support: bool,
+    #[prost(bool, optional, tag="24")]
+    pub tab_groups: ::core::option::Option<bool>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

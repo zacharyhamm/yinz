@@ -572,6 +572,7 @@ mod scroll_forwarding;
 mod splitting;
 mod stack_hardening;
 mod stack_resize;
+mod tab_groups;
 mod text_selection;
 mod viewport_clamp;
 

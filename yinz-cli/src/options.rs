@@ -10,6 +10,10 @@ use yinz_types::style::ThemeHue;
 /// Command-line option parsing, converted into the shared `Options` model.
 /// CLI fields use strings and numbers where the shared model uses typed IDs and units.
 pub struct CliOptions {
+    /// Enable tab groups (default: true).
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub tab_groups: Option<bool>,
     /// Allow plugins to use a more simplified layout
     /// that is compatible with more fonts (true or false)
     #[clap(long, value_parser)]
@@ -346,6 +350,7 @@ pub struct CliOptions {
 impl From<CliOptions> for Options {
     fn from(value: CliOptions) -> Self {
         Self {
+            tab_groups: value.tab_groups,
             simplified_ui: value.simplified_ui,
             theme: value.theme,
             theme_dark: value.theme_dark,
@@ -421,6 +426,7 @@ impl From<CliOptions> for Options {
 impl From<Options> for CliOptions {
     fn from(value: Options) -> Self {
         Self {
+            tab_groups: value.tab_groups,
             simplified_ui: value.simplified_ui,
             theme: value.theme,
             theme_dark: value.theme_dark,
@@ -502,6 +508,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         }
     };
 
+    let tab_groups = other.tab_groups.or(base.tab_groups);
     let simplified_ui = merge_bool(other.simplified_ui, base.simplified_ui);
     let agent_double_escape = merge_bool(other.agent_double_escape, base.agent_double_escape);
     let mouse_mode = merge_bool(other.mouse_mode, base.mouse_mode);
@@ -598,6 +605,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         .or(base.dangerously_enable_paste_buffer_read);
 
     Options {
+        tab_groups,
         simplified_ui,
         theme,
         theme_dark,
@@ -868,4 +876,26 @@ mod tests {
             "the option is carried over verbatim, not toggled like the boolean options are"
         );
     }
+}
+
+#[test]
+fn tab_groups_cli_value_overrides_instead_of_toggling_config() {
+    let base = Options {
+        tab_groups: Some(true),
+        ..Default::default()
+    };
+    for enabled in [false, true] {
+        let override_options = Options {
+            tab_groups: Some(enabled),
+            ..Default::default()
+        };
+        assert_eq!(
+            merge_from_cli(&base, override_options).tab_groups,
+            Some(enabled)
+        );
+    }
+    assert_eq!(
+        merge_from_cli(&base, Options::default()).tab_groups,
+        Some(true)
+    );
 }

@@ -683,3 +683,32 @@ fn agent_mouse_override_round_trip_and_merge() {
         );
     }
 }
+
+#[test]
+fn tab_groups_default_merge_and_round_trip() {
+    use crate::{config::Config, screen_config::ScreenConfig};
+    assert!(ScreenConfig::from_config(&Config::default()).tab_groups);
+    for enabled in [true, false] {
+        let parsed = crate::kdl::options::from_string(&format!("tab_groups {enabled}")).unwrap();
+        assert_eq!(parsed.tab_groups, Some(enabled));
+        let serialized = crate::kdl::options::to_kdl(&parsed, false);
+        let round_trip = crate::kdl::options::from_string(
+            &serialized
+                .iter()
+                .map(ToString::to_string)
+                .collect::<String>(),
+        )
+        .unwrap();
+        assert_eq!(round_trip.tab_groups, Some(enabled));
+        assert_eq!(
+            parsed.clone().merge(Options::default()).tab_groups,
+            Some(enabled)
+        );
+        let overriding = Options {
+            tab_groups: Some(!enabled),
+            ..Default::default()
+        };
+        assert_eq!(parsed.merge(overriding).tab_groups, Some(!enabled));
+    }
+    assert!(crate::kdl::options::from_string(r#"tab_groups "false""#).is_err());
+}

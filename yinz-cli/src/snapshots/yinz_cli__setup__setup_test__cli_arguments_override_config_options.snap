@@ -3,6 +3,7 @@ source: yinz-cli/src/setup.rs
 expression: "format!(\"{:#?}\", options)"
 ---
 Options {
+    tab_groups: None,
     agent_theme_mapping: None,
     simplified_ui: Some(
         true,

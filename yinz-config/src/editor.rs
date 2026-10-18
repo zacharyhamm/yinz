@@ -285,6 +285,7 @@ pub fn catalog() -> Vec<Setting> {
                     None,
                     None,
                     match name.as_str() {
+                        "tab_groups" => "Group tabs and show a group bar. Disable to show all tabs in one row.",
                         "simplified_ui" => "Use simpler plugin visuals that work with more fonts.",
                         "mouse_mode" => "Let Yinz handle mouse input for pane selection and resizing. Hold Shift to bypass it.",
                         "agent_double_escape" => "Require two plain Escape presses within one second in agent panes.",
@@ -431,6 +432,7 @@ pub fn effective_document(config: &Config) -> Result<Vec<Node>, String> {
     let screen = crate::screen_config::ScreenConfig::from_config(config);
     let mut resolved = config.clone();
     let options = &mut resolved.options;
+    options.tab_groups.get_or_insert(screen.tab_groups);
     options.simplified_ui.get_or_insert(screen.simplified_ui);
     options
         .pane_animations

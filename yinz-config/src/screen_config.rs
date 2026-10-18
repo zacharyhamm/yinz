@@ -51,6 +51,7 @@ pub struct ScreenConfig {
     pub hide_session_name: bool,
     pub pane_frame_style: PaneFrameStyle,
     pub max_agent_width: usize,
+    pub tab_groups: bool,
     pub simplified_ui: bool,
     pub pane_animations: bool,
     pub background_opacity: u8,
@@ -156,6 +157,7 @@ impl ScreenConfig {
             hide_session_name: config.ui.pane_frames.hide_session_name,
             pane_frame_style: PaneFrameStyle::from_options(options),
             max_agent_width: options.max_agent_width.unwrap_or(0),
+            tab_groups: options.tab_groups.unwrap_or(true),
             simplified_ui: options.simplified_ui.unwrap_or(false),
             pane_animations: options.pane_animations.unwrap_or(true),
             background_opacity: options

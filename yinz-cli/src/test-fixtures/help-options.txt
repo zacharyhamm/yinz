@@ -3,6 +3,11 @@ Change the behaviour of yinz
 Usage: yinz options [OPTIONS]
 
 Options:
+      --tab-groups <TAB_GROUPS>
+          Enable tab groups (default: true)
+
+          [possible values: true, false]
+
       --simplified-ui <SIMPLIFIED_UI>
           Allow plugins to use a more simplified layout that is compatible with more fonts (true or
           false)

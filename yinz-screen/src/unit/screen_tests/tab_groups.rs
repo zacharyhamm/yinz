@@ -1125,3 +1125,112 @@ fn cli_group_creation_waits_for_layout_and_reports_group_id() {
     assert_eq!(result.stdout_message, Some(group.to_string()));
     assert_eq!(result.error_message, None);
 }
+
+#[test]
+fn disabled_groups_use_all_tabs_and_preserve_assignments() {
+    let mut screen = grouped_screen();
+    let original = screen.tab_group_ids.clone();
+    let mut config = ScreenConfig::from_config(&Config::default());
+    config.tab_groups = false;
+    screen
+        .reconfigure(config.clone(), Keybinds::default(), CLIENT)
+        .unwrap();
+    screen.switch_tab_next(None, true, CLIENT).unwrap();
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(0));
+    screen.switch_tab_prev(None, true, CLIENT).unwrap();
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    screen
+        .tab_group_action(
+            Action::GoToTabInGroup {
+                index: TabNumber::new(2),
+            },
+            CLIENT,
+            None,
+            &mut HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+    screen.toggle_tab(CLIENT).unwrap();
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    screen.move_active_tab_to_left(CLIENT).unwrap();
+    assert_eq!(screen.tabs[&TabId::new(3)].position, TabPosition::new(2));
+    for action in [
+        Action::NewTabGroup,
+        Action::GoToNextTabGroup,
+        Action::CloseCurrentTabGroup,
+        Action::RenameCurrentTabGroup {
+            name: "ignored".into(),
+        },
+        Action::MovePaneToNextTabGroup,
+    ] {
+        screen
+            .tab_group_action(action, CLIENT, None, &mut HashSet::new())
+            .unwrap();
+        assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+        assert_eq!(screen.tab_group_ids, original);
+        assert_eq!(screen.tabs.len(), 4);
+    }
+    assert_eq!(screen.tab_groups[&1].name, "Group 1");
+    config.tab_groups = true;
+    screen
+        .reconfigure(config, Keybinds::default(), CLIENT)
+        .unwrap();
+    assert_eq!(screen.tab_group_ids, original);
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(3));
+    screen.switch_tab_next(None, true, CLIENT).unwrap();
+    assert_eq!(screen.active_tab_ids[&CLIENT], TabId::new(1));
+}
+
+#[test]
+fn disabled_group_bar_serialization_retains_two_row_layout() {
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    let (sender, _receiver) = yinz_runtime::channels::unbounded();
+    screen
+        .bus
+        .senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+    screen.default_mode_info.tab_groups = Some(false);
+    let layout = yinz_config::kdl::layout::from_kdl(
+        r#"layout { tab {
+        pane size=2 borderless=true { plugin location="yinz:tab-bar"; }
+        pane
+    }; }"#,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+    .tabs
+    .remove(0)
+    .1;
+    let plugin = match layout.children[0].run.as_ref().unwrap() {
+        Run::Plugin(plugin) => plugin.clone(),
+        _ => unreachable!(),
+    };
+    screen
+        .new_tab(TabId::new(0), (vec![], vec![]), None, Some(CLIENT))
+        .unwrap();
+    screen
+        .apply_layout(
+            layout,
+            vec![],
+            vec![(TerminalId::new(1), None)],
+            vec![],
+            HashMap::from([(plugin, vec![PluginId::new(1)])]),
+            TabId::new(0),
+            true,
+            CLIENT,
+            None,
+        )
+        .unwrap();
+    assert_eq!(screen.tabs[&TabId::new(0)].get_viewport().y, 1);
+    let metadata = screen.get_layout_metadata(None, None);
+    let (raw, _) =
+        yinz_session::session_serialization::serialize_session_layout(metadata.into()).unwrap();
+    let layout = yinz_config::kdl::layout::from_kdl(&raw, None, None, None).unwrap();
+    assert_eq!(
+        layout.tabs[0].1.children[0].split_size,
+        Some(yinz_types::geometry::SplitSize::Fixed(2)),
+        "{raw}"
+    );
+}
