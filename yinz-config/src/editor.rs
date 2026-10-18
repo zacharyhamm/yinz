@@ -1279,6 +1279,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "ScrollUp",
     "SwapTextSelectionEnds",
     "ActivateNotification",
+    "ActivateLastNotification",
     "ToggleNotificationDetail",
     "ScrollDown",
     "ScrollToBottom",

@@ -1607,6 +1607,7 @@ impl TryFrom<yinz_types::input::actions::Action>
     fn try_from(action: yinz_types::input::actions::Action) -> Result<Self> {
         use crate::client_server_contract::client_server_contract::{
             action::ActionType,
+            ActivateLastNotificationAction,
             ActivateNotificationAction,
             AdoptPaneAction,
             AreFloatingPanesVisibleAction,
@@ -1946,6 +1947,9 @@ impl TryFrom<yinz_types::input::actions::Action>
             },
             yinz_types::input::actions::Action::ActivateNotification => {
                 ActionType::ActivateNotification(ActivateNotificationAction {})
+            },
+            yinz_types::input::actions::Action::ActivateLastNotification => {
+                ActionType::ActivateLastNotification(ActivateLastNotificationAction {})
             },
             yinz_types::input::actions::Action::ToggleNotificationDetail => {
                 ActionType::ToggleNotificationDetail(ToggleNotificationDetailAction {})
@@ -3038,6 +3042,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ),
             ActionType::ActivateNotification(_) => {
                 Ok(yinz_types::input::actions::Action::ActivateNotification)
+            },
+            ActionType::ActivateLastNotification(_) => {
+                Ok(yinz_types::input::actions::Action::ActivateLastNotification)
             },
             ActionType::ToggleNotificationDetail(_) => {
                 Ok(yinz_types::input::actions::Action::ToggleNotificationDetail)

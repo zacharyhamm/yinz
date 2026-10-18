@@ -243,6 +243,8 @@ pub enum Action {
     /// Activate the notification selected in the browser exactly as clicking its toast would, and
     /// leave `Notifications` mode.
     ActivateNotification,
+    /// Activate the newest notification in session history and leave the notification browser.
+    ActivateLastNotification,
     /// Show or hide the full, unelided text of the notification selected in the browser.
     ToggleNotificationDetail,
     /// Scroll up one page in focus pane.

@@ -428,6 +428,9 @@ fn notifications_mode_browses_dismissed_toasts_in_place() {
     notify(&yinz, "browse older");
     let newest = format!("{} detail tail", "newest ".repeat(20));
     notify(&yinz, &newest);
+    yinz.wait_until("the newest toast appears", |grid_snapshot| {
+        grid_snapshot.contains("newest")
+    });
     yinz.wait_until("the toasts dismiss", |grid_snapshot| {
         !grid_snapshot.contains("browse older") && !grid_snapshot.contains("newest")
     });
@@ -483,6 +486,21 @@ fn notifications_mode_browses_dismissed_toasts_in_place() {
         "the browser reopens with activated history",
         |grid_snapshot| grid_snapshot.contains("newest") && grid_snapshot.contains("browse older"),
     );
+
+    yinz.send_stdin(&keys::alt('a'));
+    yinz.wait_until(
+        "Alt+A activates the latest entry and leaves browsing",
+        |grid_snapshot| {
+            !grid_snapshot.contains("newest")
+                && !grid_snapshot.contains("browse older")
+                && grid_snapshot.status_bar_appears()
+        },
+    );
+    yinz.send_stdin(&keys::ctrl('o'));
+    yinz.send_stdin(&keys::key('n'));
+    yinz.wait_until("Alt+A preserves notification history", |grid_snapshot| {
+        grid_snapshot.contains("newest") && grid_snapshot.contains("browse older")
+    });
 
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("Esc leaves the mode", |grid_snapshot| {

@@ -301,6 +301,8 @@ pub fn route_action(
             config,
             write_to_disk,
         } => {
+            // Disk flushes and plugin startup can outlast the ordinary action timeout.
+            wait_forever = true;
             senders
                 .send_to_server(ServerInstruction::ReconfigureAllClients {
                     config,
@@ -659,6 +661,14 @@ pub fn route_action(
         Action::ActivateNotification => {
             senders
                 .send_to_screen(ScreenInstruction::ActivateNotification(
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::ActivateLastNotification => {
+            senders
+                .send_to_screen(ScreenInstruction::ActivateLastNotification(
                     client_id,
                     Some(NotificationEnd::new(completion_tx)),
                 ))
@@ -2897,6 +2907,10 @@ fn send_output_to_client(
 #[cfg(test)]
 #[path = "unit/pane_completion_tests.rs"]
 mod pane_completion_tests;
+
+#[cfg(test)]
+#[path = "unit/configuration_completion_tests.rs"]
+mod configuration_completion_tests;
 
 #[cfg(test)]
 #[path = "unit/input_barrier_tests.rs"]

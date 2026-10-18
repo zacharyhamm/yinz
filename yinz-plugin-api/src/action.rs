@@ -363,6 +363,12 @@ impl TryFrom<ProtobufAction> for Action {
                     None => Ok(Action::ActivateNotification),
                 }
             },
+            Some(ProtobufActionName::ActivateLastNotification) => {
+                match protobuf_action.optional_payload {
+                    Some(_) => Err("ActivateLastNotification should not have a payload"),
+                    None => Ok(Action::ActivateLastNotification),
+                }
+            },
             Some(ProtobufActionName::ToggleNotificationDetail) => {
                 match protobuf_action.optional_payload {
                     Some(_) => Err("ToggleNotificationDetail should not have a payload"),
@@ -1580,6 +1586,10 @@ impl TryFrom<Action> for ProtobufAction {
             },
             Action::ActivateNotification => Ok(ProtobufAction {
                 name: ProtobufActionName::ActivateNotification as i32,
+                optional_payload: None,
+            }),
+            Action::ActivateLastNotification => Ok(ProtobufAction {
+                name: ProtobufActionName::ActivateLastNotification as i32,
                 optional_payload: None,
             }),
             Action::ToggleNotificationDetail => Ok(ProtobufAction {
@@ -4099,6 +4109,7 @@ pub(crate) mod tests {
                 | Action::SwapTextSelectionEnds
                 | Action::MoveNotificationSelection { .. }
                 | Action::ActivateNotification
+                | Action::ActivateLastNotification
                 | Action::ToggleNotificationDetail
                 | Action::PageScrollUp
                 | Action::PageScrollDown

@@ -206,6 +206,7 @@ keybinds clear-defaults=true {
         bind "Alt =" { Resize "Increase"; }
         bind "Alt [" { PreviousSwapLayout; }
         bind "Alt ]" { NextSwapLayout; }
+        bind "Alt a" { ActivateLastNotification; }
         bind "Alt e" {
             LaunchOrFocusPlugin "file-finder" {
                 floating true

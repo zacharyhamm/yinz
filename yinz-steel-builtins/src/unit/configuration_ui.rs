@@ -107,17 +107,17 @@ fn configuration_load_and_wizard_preserve_pane_setup_contract() {
 }
 
 #[test]
-fn every_preset_matches_original_templates_and_parses_with_agent_selection_and_notifications() {
+fn every_preset_matches_templates_and_parses_with_agent_selection_and_notifications() {
     let mut plugin = Configuration::new(false);
-    // Stable FNV-1a hashes pin exact outputs of the original Rust preset functions.
+    // Stable FNV-1a hashes pin exact preset outputs.
     for (primary, secondary, locked, expected) in [
-        ("Ctrl", "Alt", false, 15979634900085994111u64),
-        ("Ctrl", "Alt", true, 4415833041626967845),
-        ("", "Alt", false, 5362949666509483283),
+        ("Ctrl", "Alt", false, 15960040746295113056u64),
+        ("Ctrl", "Alt", true, 12161722900292792986),
+        ("", "Alt", false, 18290454268979490468),
         ("Ctrl", "", false, 15107899114023689823),
         ("", "", false, 4563540240599315174),
-        ("Ctrl", "Ctrl", false, 7748906304130728288),
-        ("Ctrl Shift", "Alt Super", false, 10194683844020746978),
+        ("Ctrl", "Ctrl", false, 6344144133553793149),
+        ("Ctrl Shift", "Alt Super", false, 981793447407902638),
     ] {
         let source = plugin
             .runtime
@@ -142,6 +142,24 @@ fn every_preset_matches_original_templates_and_parses_with_agent_selection_and_n
         let saved = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
         let key = |s: &str| -> KeyWithModifier { s.parse().unwrap() };
         for config in [&config, &saved] {
+            for mode in config.keybinds.0.keys().copied() {
+                let actions = config
+                    .keybinds
+                    .get_actions_for_key_in_mode(&mode, &key(&format!("{secondary} a")));
+                if secondary.is_empty() || matches!(mode, InputMode::Locked | InputMode::Select) {
+                    assert!(
+                        !actions.is_some_and(
+                            |actions| actions.contains(&Action::ActivateLastNotification)
+                        )
+                    );
+                } else {
+                    assert_eq!(
+                        actions,
+                        Some(&vec![Action::ActivateLastNotification]),
+                        "{mode:?}"
+                    );
+                }
+            }
             assert_eq!(
                 config.keybinds.0[&InputMode::Session][&key("n")],
                 vec![Action::SwitchToMode {
@@ -232,6 +250,76 @@ fn applying_leaders_rebinds_all_modes_preserves_escape_enter_and_unrelated_actio
 }
 
 #[test]
+fn secondary_modifier_changes_move_notification_shortcut_and_preserve_exclusions() {
+    for locked in [false, true] {
+        for secondary in [&["Super"][..], &["Shift", "Super"][..], &[][..]] {
+            let mut plugin = Configuration::new(false);
+            let source = plugin
+                .runtime
+                .invoke(
+                    if locked {
+                        "configuration-unlock-first-keybinds"
+                    } else {
+                        "configuration-default-keybinds"
+                    },
+                    vec![json!("Ctrl"), json!("Alt")],
+                )
+                .unwrap();
+            let config = Config::from_kdl(source.as_str().unwrap(), None).unwrap();
+            let bindings: Vec<_> = config
+                .keybinds
+                .0
+                .iter()
+                .map(|(mode, bindings)| (mode, bindings.iter().collect::<Vec<_>>()))
+                .collect();
+            plugin.mode(locked, json!(bindings));
+            plugin.press("Down");
+            plugin.press("Right");
+            plugin.press("Down");
+            plugin.space(); // Remove Alt.
+            if !secondary.is_empty() {
+                plugin.press("Down");
+                plugin.space(); // Add Super.
+                if secondary.contains(&"Shift") {
+                    plugin.press("Down");
+                    plugin.space();
+                }
+            }
+            assert_eq!(plugin.runtime.value("secondary").unwrap(), json!(secondary));
+            plugin.press("Enter");
+            let plan = plugin.last("RebindKeys");
+            let unbind = plan["keys_to_unbind"].as_array().unwrap();
+            let rebind = plan["keys_to_rebind"].as_array().unwrap();
+            let notification_bindings: Vec<_> = rebind
+                .iter()
+                .filter(|binding| binding[2] == json!(["ActivateLastNotification"]))
+                .collect();
+            assert_eq!(
+                notification_bindings.len(),
+                if secondary.is_empty() { 0 } else { 15 }
+            );
+            for mode in config.keybinds.0.keys() {
+                let excluded = matches!(mode, InputMode::Locked | InputMode::Select);
+                assert_eq!(
+                    unbind.contains(&json!([mode, key("a", &["Alt"])])),
+                    !excluded,
+                    "mode={mode:?}, secondary={secondary:?}, locked={locked}"
+                );
+                assert_eq!(
+                    notification_bindings.contains(&&json!([
+                        mode,
+                        key("a", secondary),
+                        ["ActivateLastNotification"]
+                    ])),
+                    !excluded && !secondary.is_empty(),
+                    "mode={mode:?}, secondary={secondary:?}, locked={locked}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn locked_preset_captures_unlock_key_and_updates_all_modes_without_changing_primary_actions() {
     let mut plugin = Configuration::new(false);
     plugin.mode(true, initial_bindings());
@@ -248,7 +336,7 @@ fn locked_preset_captures_unlock_key_and_updates_all_modes_without_changing_prim
     let plan = plugin.last("RebindKeys");
     assert_eq!(plan["write_config_to_disk"], true);
     let rebind = plan["keys_to_rebind"].as_array().unwrap();
-    assert_eq!(rebind.len(), 46);
+    assert_eq!(rebind.len(), 61);
     for mode in [
         "Locked",
         "Normal",

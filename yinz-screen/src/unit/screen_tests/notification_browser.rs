@@ -424,6 +424,119 @@ fn activating_a_notification_with_no_target_keeps_it_and_leaves_the_mode() {
 }
 
 #[test]
+fn latest_notification_survives_expiry_and_repeated_activation_until_replaced() {
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    let (server_tx, server_rx) = channels::unbounded::<(ServerInstruction, ErrorContext)>();
+    let client_id = ClientId::new(1);
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 30 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+    let pane = |id| PaneId::Terminal(TerminalId::new(id));
+    screen
+        .receive_toast(
+            "first".into(),
+            Some(pane(1)),
+            Some(click_target("first")),
+            None,
+            None,
+        )
+        .unwrap();
+    let id = screen.notification_history.last().unwrap().info.id;
+    screen.dismiss_notification(id, Instant::now()).unwrap();
+    let now = Instant::now() + std::time::Duration::from_secs(1);
+    screen.pinned_now = Some(now);
+    screen.reap_settled_notifications(now);
+    assert!(screen.notifications.is_empty());
+
+    // The second activation has the target pane already focused; both must notify the plugin.
+    for _ in 0..2 {
+        screen.activate_last_notification(client_id, now);
+        assert_eq!(screen.get_active_pane_id(&client_id), Some(pane(1)));
+        let clicks: Vec<_> = plugin_rx
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::NotificationClicked {
+                    plugin_id,
+                    raiser,
+                    clicker,
+                    message,
+                    payload,
+                } => Some((plugin_id, raiser, clicker, message, payload)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            clicks,
+            vec![(
+                crate::PluginId::new(7),
+                client_id,
+                client_id,
+                "agent_toast_click".into(),
+                "first".into()
+            )]
+        );
+        assert_eq!(screen.notification_history.len(), 1);
+    }
+    assert!(mode_changes(&server_rx).is_empty());
+
+    screen
+        .receive_toast(
+            "newer".into(),
+            Some(pane(2)),
+            Some(click_target("newer")),
+            None,
+            None,
+        )
+        .unwrap();
+    screen.open_notification_browser(client_id);
+    screen.move_notification_selection(Direction::Down, client_id);
+    assert_eq!(selected_id(&screen, client_id), id);
+    screen.activate_last_notification(client_id, now);
+    assert_eq!(screen.get_active_pane_id(&client_id), Some(pane(2)));
+    assert!(!screen.notification_browsers.contains_key(&client_id));
+    assert_eq!(mode_changes(&server_rx), vec![InputMode::Normal]);
+    let payloads: Vec<_> = plugin_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::NotificationClicked { payload, .. } => Some(payload),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(payloads, vec!["newer"]);
+
+    screen
+        .receive_toast("information".into(), None, None, None, None)
+        .unwrap();
+    screen
+        .focus_pane_with_id(pane(1), true, false, client_id)
+        .unwrap();
+    screen.activate_last_notification(client_id, now);
+    assert_eq!(screen.get_active_pane_id(&client_id), Some(pane(1)));
+    assert!(!plugin_rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::NotificationClicked { .. }
+    )));
+    assert!(screen.notifications[0].is_dismissing());
+    assert_eq!(screen.notification_history.len(), 3);
+}
+
+#[test]
+fn activating_latest_with_empty_history_only_leaves_an_open_browser() {
+    let (server_tx, server_rx) = channels::unbounded::<(ServerInstruction, ErrorContext)>();
+    let (mut screen, client_id) = browsing(vec![]);
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+    let focused = screen.get_active_pane_id(&client_id);
+    screen.activate_last_notification(client_id, Instant::now());
+    assert!(!screen.notification_browsers.contains_key(&client_id));
+    assert_eq!(mode_changes(&server_rx), vec![InputMode::Normal]);
+    screen.activate_last_notification(client_id, Instant::now());
+    assert!(mode_changes(&server_rx).is_empty());
+    assert_eq!(screen.get_active_pane_id(&client_id), focused);
+}
+
+#[test]
 fn a_toast_with_a_missing_pane_can_be_activated_again_from_history() {
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let (mut screen, client_id) = browsing(vec![record(
@@ -455,6 +568,7 @@ fn a_toast_with_a_missing_pane_can_be_activated_again_from_history() {
         (vec![NotificationId::new(0)], 0)
     );
     screen.activate_selected_notification(client_id, now);
+    screen.activate_last_notification(client_id, now);
 
     let payloads: Vec<_> = plugin_rx
         .try_iter()
@@ -463,7 +577,7 @@ fn a_toast_with_a_missing_pane_can_be_activated_again_from_history() {
             _ => None,
         })
         .collect();
-    assert_eq!(payloads, vec!["gone", "gone"]);
+    assert_eq!(payloads, vec!["gone", "gone", "gone"]);
     assert_eq!(screen.get_active_pane_id(&client_id), focused);
     assert!(!screen.notification_browsers.contains_key(&client_id));
     screen.open_notification_browser(client_id);

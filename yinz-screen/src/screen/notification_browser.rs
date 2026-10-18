@@ -293,6 +293,19 @@ impl Screen {
         }
     }
 
+    pub(super) fn activate_last_notification(&mut self, client_id: ClientId, now: Instant) {
+        let target = self
+            .notification_history
+            .last()
+            .map(|record| (record.info.id, record.pane_id, record.on_click.clone()));
+        if self.notification_browsers.contains_key(&client_id) {
+            self.leave_notification_browser(client_id);
+        }
+        if let Some((id, pane_id, on_click)) = target {
+            self.activate_notification(id, pane_id, on_click, client_id, now);
+        }
+    }
+
     /// Close the browser now and ask the server to put the client back in its base mode.
     ///
     /// Closed here rather than waiting for the mode change to come back round, so the frame the

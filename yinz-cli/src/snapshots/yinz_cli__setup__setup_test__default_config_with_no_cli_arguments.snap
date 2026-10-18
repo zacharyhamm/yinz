@@ -106,6 +106,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -638,6 +648,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -1121,6 +1141,16 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -1928,6 +1958,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {},
@@ -2482,6 +2522,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -2992,6 +3042,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -3447,6 +3507,16 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3971,6 +4041,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -4375,6 +4455,16 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -4804,6 +4894,16 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -5394,6 +5494,16 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
                     'b',
                 ),
                 key_modifiers: {
@@ -5859,6 +5969,16 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6359,6 +6479,16 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6927,6 +7057,16 @@ Config {
                 SwitchToMode {
                     input_mode: Normal,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -7690,6 +7830,16 @@ Config {
                 },
             }: [
                 NextSwapLayout,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'a',
+                ),
+                key_modifiers: {
+                    Alt,
+                },
+            }: [
+                ActivateLastNotification,
             ],
             KeyWithModifier {
                 bare_key: Char(
