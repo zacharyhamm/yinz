@@ -139,6 +139,85 @@ fn shared_bar_defaults_key_normalization_and_selection_match_wire_types() {
 }
 
 #[test]
+fn only_the_first_regular_tab_has_a_flat_left_edge() {
+    let (mut runtime, _) = plugin();
+    for simple in [false, true] {
+        let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
+        mode["capabilities"]["arrow_fonts"] = json!(simple);
+        for (role, color) in [
+            ("text_unselected", 1),
+            ("ribbon_unselected", 2),
+            ("ribbon_selected", 3),
+        ] {
+            mode["style"]["colors"][role]["background"] = json!({"EightBit":color});
+        }
+        wire(&mut runtime, json!({"ModeUpdate":mode}));
+        for active in [0, 1] {
+            for multiplayer in [false, true] {
+                let mut tabs = vec![tab(0, "main", active == 0), tab(1, "other", active == 1)];
+                if multiplayer {
+                    for tab in &mut tabs {
+                        tab.other_focused_clients = vec![ClientId::new(1)];
+                    }
+                }
+                event(&mut runtime, Event::TabUpdate(tabs));
+                for rows in [1, 2] {
+                    runtime.render(rows, 120).unwrap();
+                    let parts = runtime.value("parts").unwrap();
+                    for part in parts.as_array().unwrap() {
+                        let text = part["part"].as_str().unwrap();
+                        if let Some(position) = part["tab"].as_u64() {
+                            let bg = if position == active { 3 } else { 2 };
+                            if simple {
+                                assert!(!text.contains(''), "{text:?}");
+                            } else {
+                                let fg = if position == 0 { bg } else { 1 };
+                                assert!(
+                                    text.starts_with(&format!("\u{1b}[38;5;{fg};48;5;{bg}m")),
+                                    "{text:?}"
+                                );
+                                assert!(
+                                    text.ends_with(&format!("\u{1b}[38;5;{bg};48;5;1m\u{1b}[0m")),
+                                    "{text:?}"
+                                );
+                            }
+                            let title_len = if position == 0 { 4 } else { 5 };
+                            assert_eq!(
+                                part["len"],
+                                json!(
+                                    title_len
+                                        + 2
+                                        + if simple { 0 } else { 2 }
+                                        + if multiplayer { 3 } else { 0 }
+                                )
+                            );
+                        } else if !simple && text.contains(" + ") {
+                            assert!(text.starts_with("\u{1b}[38;5;1;48;5;2m"), "{text:?}");
+                        }
+                    }
+                    if rows == 2 && !simple {
+                        let groups = runtime.value("group-parts").unwrap();
+                        let group = groups
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|part| part["tab"] == 0)
+                            .unwrap();
+                        assert!(group["part"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("\u{1b}[38;5;1;48;5;3m"));
+                    }
+                }
+                for columns in [0, 1, 10, 20] {
+                    runtime.render(1, columns).unwrap();
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn tab_bar_mouse_targets_visible_tabs_button_and_breadcrumb() {
     let (mut runtime, host) = plugin();
     let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
@@ -421,15 +500,18 @@ fn group_plus_matches_tab_plus_styling_with_hover_arrows_and_dimming() {
 #[test]
 fn group_items_match_tab_hover_with_arrows_and_dimming() {
     let (mut runtime, _) = plugin();
+    // Skip the flat first edge while preserving alternating tile colors.
     let mut tabs = vec![
-        tab(0, "inactive", false),
-        tab(1, "selected", true),
-        tab(2, "hidden", false),
+        tab(0, "first", false),
+        tab(1, "second", false),
+        tab(2, "inactive", false),
+        tab(3, "selected", true),
+        tab(4, "hidden", false),
     ];
     for (index, tab) in tabs.iter_mut().enumerate() {
         tab.group = Some(yinz_types::tab_bar::TabGroupInfo {
-            id: if index == 2 { 0 } else { 1 },
-            name: if index == 2 { "inactive" } else { "selected" }.into(),
+            id: if index == 4 { 0 } else { 1 },
+            name: if index == 4 { "inactive" } else { "selected" }.into(),
         });
     }
     event(&mut runtime, Event::TabUpdate(tabs));
@@ -452,7 +534,7 @@ fn group_items_match_tab_hover_with_arrows_and_dimming() {
             for index in [0, 1] {
                 runtime.render(2, 120).unwrap();
                 let (plain, group_col) = item(&mut runtime, "group-parts", index);
-                let (tab_plain, tab_col) = item(&mut runtime, "parts", index);
+                let (tab_plain, tab_col) = item(&mut runtime, "parts", index + 2);
                 assert_eq!(plain, tab_plain);
                 wire(&mut runtime, json!({"Mouse":{"Hover":[0,group_col]}}));
                 runtime.render(2, 120).unwrap();
@@ -461,10 +543,10 @@ fn group_items_match_tab_hover_with_arrows_and_dimming() {
                 wire(&mut runtime, json!({"Mouse":{"Hover":[1,tab_col]}}));
                 runtime.render(2, 120).unwrap();
                 assert_eq!(plain, item(&mut runtime, "group-parts", index).0);
-                assert_eq!(hovered, item(&mut runtime, "parts", index).0);
+                assert_eq!(hovered, item(&mut runtime, "parts", index + 2).0);
                 wire(&mut runtime, json!({"Mouse":{"Hover":[0,119]}}));
                 runtime.render(2, 120).unwrap();
-                assert_eq!(plain, item(&mut runtime, "parts", index).0);
+                assert_eq!(plain, item(&mut runtime, "parts", index + 2).0);
             }
         }
     }
