@@ -8518,6 +8518,7 @@ Config {
         },
     },
     options: Options {
+        tab_groups: None,
         agent_theme_mapping: None,
         simplified_ui: None,
         theme: None,

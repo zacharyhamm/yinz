@@ -992,6 +992,7 @@ impl From<yinz_types::input::options::Options>
         };
 
         Self {
+            tab_groups: options.tab_groups,
             simplified_ui: options.simplified_ui,
             theme: options.theme,
             theme_dark: options.theme_dark,
@@ -1109,6 +1110,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
         };
 
         Ok(Self {
+            tab_groups: options.tab_groups,
             simplified_ui: options.simplified_ui,
             theme: options.theme,
             theme_dark: options.theme_dark,

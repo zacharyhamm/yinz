@@ -836,3 +836,6 @@ background_opacity "85%"
 // Map supported managed Claude/Codex launch palettes through the active Yinz theme.
 // Use "off" to show their original colors. Takes effect immediately, including scrollback.
 // agent_theme_mapping "semantic"
+
+// Enable tab groups (default: true). Disable to show all tabs in a single tab-bar row.
+// tab_groups false

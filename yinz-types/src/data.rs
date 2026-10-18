@@ -896,6 +896,9 @@ pub type KeybindsVec = Vec<(InputMode, Vec<(KeyWithModifier, Vec<Action>)>)>;
 /// Provides information helpful in rendering the Yinz controls for UI bars
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeInfo {
+    /// Missing values preserve the default enabled behavior for older plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_groups: Option<bool>,
     pub mode: InputMode,
     pub base_mode: Option<InputMode>,
     pub keybinds: KeybindsVec,

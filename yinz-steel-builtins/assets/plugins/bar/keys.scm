@@ -1,7 +1,7 @@
 (provide bar-get bar-present? bar-equal? bar-tag bar-key bar-char-key bar-key-label bar-bare-label
   bar-key-separator bar-common-modifiers bar-strip-modifiers bar-mode-keymap bar-switch-mode
   bar-new-pane bar-resize bar-direction bar-action-keys bar-action-group bar-shallow-equal?
-  bar-compare-keys bar-own-key bar-plugin-keys bar-pipe-keys bar-to-char bar-generic-key? bar-modifiers bar-index)
+  bar-tab-groups? bar-compare-keys bar-own-key bar-plugin-keys bar-pipe-keys bar-to-char bar-generic-key? bar-modifiers bar-index)
 
 (define (bar-get object key fallback) (if (hash-contains? object key) (hash-ref object key) fallback))
 (define (bar-present? value) (and value (not (json-null? value))))
@@ -44,10 +44,16 @@
 (define (bar-new-pane direction) (hash "NewPane" (hash "direction" direction "pane_name" 'json-null "start_suppressed" #f)))
 (define (bar-resize size direction) (hash "Resize" (hash "resize" size "direction" direction)))
 (define (bar-direction name direction) (hash name (hash "direction" direction)))
+(define (bar-tab-groups? mi) (not (equal? (bar-get mi "tab_groups" 'json-null) #f)))
+(define group-actions '("NewTabGroup" "NewNamedTabGroup" "SwitchTabGroup" "GoToTabGroupName"
+    "GoToPreviousTabGroup" "GoToNextTabGroup" "RenameTabGroup" "RenameCurrentTabGroup"
+    "CloseTabGroup" "CloseCurrentTabGroup" "MovePaneToPreviousTabGroup" "MovePaneToNextTabGroup"))
 (define (bar-mode-keymap mi . modes)
   (define mode (if (null? modes) (hash-ref mi "mode") (car modes)))
   (let loop ((maps (hash-ref mi "keybinds")))
-    (cond ((null? maps) '()) ((equal? mode (caar maps)) (cadr (car maps))) (else (loop (cdr maps))))))
+    (cond ((null? maps) '()) ((equal? mode (caar maps))
+        (if (bar-tab-groups? mi) (cadr (car maps))
+          (filter (lambda (entry) (not (foldl (lambda (action found) (or found (member (bar-tag action) group-actions))) #f (cadr entry)))) (cadr (car maps))))) (else (loop (cdr maps))))))
 (define (actions-match? actual expected)
   (and (= (length actual) (length expected))
     (or (null? actual) (and (bar-shallow-equal? (car actual) (car expected))

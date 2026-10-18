@@ -2660,6 +2660,7 @@ impl TryFrom<ProtobufModeUpdatePayload> for ModeInfo {
             .collect();
 
         let mode_info = ModeInfo {
+            tab_groups: protobuf_mode_update_payload.tab_groups,
             mode: current_mode,
             keybinds,
             style,
@@ -2738,6 +2739,7 @@ impl TryFrom<ModeInfo> for ProtobufModeUpdatePayload {
             protobuf_input_mode_keybinds.push(input_mode_keybind);
         }
         Ok(ProtobufModeUpdatePayload {
+            tab_groups: mode_info.tab_groups,
             current_mode: current_mode as i32,
             style: Some(style),
             keybinds: protobuf_input_mode_keybinds,
@@ -3108,6 +3110,7 @@ fn serialize_mode_update_event_with_non_default_values() {
         yinz_types::data::ThemeHue,
     };
     let mode_update_event = Event::ModeUpdate(ModeInfo {
+        tab_groups: Some(false),
         mode: InputMode::Locked,
         keybinds: vec![
             (

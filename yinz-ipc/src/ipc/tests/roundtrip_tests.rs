@@ -729,6 +729,7 @@ fn test_client_messages() {
             config_dir: Some(PathBuf::from("/path/to/config/dir")),
             should_ignore_config: true,
             configuration_options: Some(Options {
+                tab_groups: Some(false),
                 agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 simplified_ui: Some(true),
                 theme: Some("theme".to_owned()),
@@ -5639,6 +5640,23 @@ fn agent_mouse_override_options_round_trip() {
     for value in [None, Some(false), Some(true)] {
         let options = Options {
             context_menu_override_agent_mouse: value,
+            ..Default::default()
+        };
+        let wire = WireOptions::from(options.clone()).encode_to_vec();
+        assert_eq!(
+            Options::try_from(WireOptions::decode(wire.as_slice()).unwrap()).unwrap(),
+            options
+        );
+    }
+}
+
+#[test]
+fn tab_groups_options_round_trip() {
+    use crate::client_server_contract::client_server_contract::Options as WireOptions;
+    use yinz_types::input::options::Options;
+    for value in [None, Some(false), Some(true)] {
+        let options = Options {
+            tab_groups: value,
             ..Default::default()
         };
         let wire = WireOptions::from(options.clone()).encode_to_vec();

@@ -338,7 +338,7 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || "failed break pane out of tab".to_string();
         if self
-            .group_tabs(self.group_for_client(Some(client_id)))
+            .navigation_tabs(self.get_active_tab(client_id).with_context(err_context)?.id)
             .len()
             > 1
         {

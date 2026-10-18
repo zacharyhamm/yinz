@@ -1268,7 +1268,7 @@ impl Screen {
         bus: Bus<ScreenInstruction>,
         client_attributes: &ClientAttributes,
         max_panes: Option<usize>,
-        mode_info: ModeInfo,
+        mut mode_info: ModeInfo,
         debug: bool,
         default_layout: Box<Layout>,
         config: ScreenConfig,
@@ -1298,6 +1298,7 @@ impl Screen {
             host_theme_light,
             pane_frame_style,
             max_agent_width,
+            tab_groups,
             simplified_ui,
             pane_animations,
             styled_underlines,
@@ -1339,6 +1340,7 @@ impl Screen {
             notification_position,
             notification_timeout_secs,
         } = config;
+        mode_info.tab_groups = Some(tab_groups);
         let arrow_fonts = !simplified_ui;
         let explicitly_disable_kitty_keyboard_protocol = !support_kitty_keyboard_protocol;
         let default_shell_action = default_shell.clone().map(|shell| {
@@ -1700,9 +1702,10 @@ impl Screen {
             .tab_history
             .get_mut(&client_id)
             .context("missing tab history")?;
-        let previous = history
-            .iter()
-            .rposition(|id| self.tab_group_ids.get(id) == Some(&group));
+        let previous = history.iter().rposition(|id| {
+            self.default_mode_info.tab_groups == Some(false)
+                || self.tab_group_ids.get(id) == Some(&group)
+        });
         Ok(previous.and_then(|index| self.tabs.get(&history.remove(index))))
     }
 
@@ -2718,7 +2721,7 @@ impl Screen {
     }
 
     pub fn move_active_tab_to_left(&mut self, client_id: ClientId) -> Result<()> {
-        if self.tab_groups.len() > 1 {
+        if self.tab_groups_enabled() && self.tab_groups.len() > 1 {
             if let Some(client) = self.client_id(client_id) {
                 if let Some(tab) = self.active_tab_ids.get(&client).copied() {
                     self.move_group_tab(tab, false)?;
@@ -2837,7 +2840,7 @@ impl Screen {
     }
 
     pub fn move_active_tab_to_right(&mut self, client_id: ClientId) -> Result<()> {
-        if self.tab_groups.len() > 1 {
+        if self.tab_groups_enabled() && self.tab_groups.len() > 1 {
             if let Some(client) = self.client_id(client_id) {
                 if let Some(tab) = self.active_tab_ids.get(&client).copied() {
                     self.move_group_tab(tab, true)?;
@@ -2871,7 +2874,10 @@ impl Screen {
     }
 
     pub fn move_tab_by_id(&mut self, tab_id: TabId, direction: Direction) -> Result<()> {
-        if self.tab_groups.len() > 1 && matches!(direction, Direction::Left | Direction::Right) {
+        if self.tab_groups_enabled()
+            && self.tab_groups.len() > 1
+            && matches!(direction, Direction::Left | Direction::Right)
+        {
             return self.move_group_tab(tab_id, direction == Direction::Right);
         }
         if self.tabs.len() < 2 {
@@ -2987,11 +2993,7 @@ impl Screen {
             // tab. Across a multipane's divider the tab has already moved
             // (`Tab::move_focus_to_overlay_sibling`).
             if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
-                if self
-                    .group_tabs(self.group_for_client(Some(client_id)))
-                    .len()
-                    == 1
-                {
+                if self.navigation_tabs(self.active_tab_ids[&client_id]).len() == 1 {
                     self.bubble_focus_to_host(client_id, Direction::Left);
                 } else {
                     self.switch_tab_prev(Some(Direction::Left), true, client_id)
@@ -3036,11 +3038,7 @@ impl Screen {
             // tab. Across a multipane's divider the tab has already moved
             // (`Tab::move_focus_to_overlay_sibling`).
             if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
-                if self
-                    .group_tabs(self.group_for_client(Some(client_id)))
-                    .len()
-                    == 1
-                {
+                if self.navigation_tabs(self.active_tab_ids[&client_id]).len() == 1 {
                     self.bubble_focus_to_host(client_id, Direction::Right);
                 } else {
                     self.switch_tab_next(Some(Direction::Right), true, client_id)
@@ -4037,6 +4035,7 @@ impl Screen {
             hide_session_name,
             pane_frame_style,
             max_agent_width,
+            tab_groups,
             simplified_ui,
             pane_animations,
             styled_underlines,
@@ -4103,6 +4102,7 @@ impl Screen {
         self.plugin_aliases = plugin_aliases;
         // global configuration
         self.style.colors = theme;
+        self.default_mode_info.tab_groups = Some(tab_groups);
         self.default_mode_info.update_theme(theme);
         self.default_mode_info
             .update_rounded_corners(rounded_corners);
@@ -4176,7 +4176,11 @@ impl Screen {
         let kitty_graphics_support_changed =
             self.support_kitty_graphics_protocol != support_kitty_graphics_protocol;
         self.support_kitty_graphics_protocol = support_kitty_graphics_protocol;
+        for mode in self.mode_info.values_mut() {
+            mode.tab_groups = Some(tab_groups);
+        }
         for tab in self.tabs.values_mut() {
+            tab.update_tab_groups(tab_groups)?;
             tab.update_terminal_theme(self.style.terminal);
             tab.update_agent_theme_mapping(self.style.agent_theme_mapping);
             tab.update_theme(theme);
@@ -4836,6 +4840,7 @@ impl Screen {
                     tab.hidden_stack_list_members_for_serialization(false)
                 })
                 .map(|(pane_id, p, geom)| {
+                    let geom = tab.tab_bar_serialization_geom(pane_id, geom);
                     let focused_clients: Vec<ClientId> = active_pane_ids
                         .iter()
                         .filter_map(|(c_id, p_id)| {

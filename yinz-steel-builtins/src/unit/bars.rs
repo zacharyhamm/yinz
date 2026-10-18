@@ -551,3 +551,72 @@ fn group_items_match_tab_hover_with_arrows_and_dimming() {
         }
     }
 }
+
+#[test]
+fn disabled_groups_show_all_tabs_and_move_chrome_on_live_mode_updates() {
+    let (mut runtime, host) = plugin();
+    let mut tabs = vec![tab(0, "other", false), tab(1, "current", true)];
+    for (id, tab) in tabs.iter_mut().enumerate() {
+        tab.group = Some(yinz_types::tab_bar::TabGroupInfo {
+            id: id as u32,
+            name: format!("group-{id}"),
+        });
+    }
+    tabs[1].active_swap_layout_name = Some("vertical".into());
+    event(&mut runtime, Event::TabUpdate(tabs));
+    let mut mode = ModeInfo {
+        session_name: Some("session".into()),
+        tab_groups: Some(true),
+        ..Default::default()
+    };
+    event(&mut runtime, Event::ModeUpdate(mode.clone()));
+    assert!(!runtime.render(2, 180).unwrap().contains("other"));
+    mode.tab_groups = Some(false);
+    event(&mut runtime, Event::ModeUpdate(mode.clone()));
+    let output = runtime.render(2, 180).unwrap();
+    assert!(!output.contains("\r\n"), "{output}");
+    for label in ["host", "session", "other", "current"] {
+        assert!(output.contains(label), "missing {label}: {output}");
+    }
+    assert!(rendered_text(&output).contains("VERTICAL"));
+    assert!(!output.contains("group-"));
+    assert_eq!(runtime.value("new-group-range").unwrap(), json!(false));
+    let parts = runtime.value("parts").unwrap();
+    let col: u64 = parts
+        .as_array()
+        .unwrap()
+        .iter()
+        .take_while(|part| part["tab"] != 0)
+        .map(|part| part["len"].as_u64().unwrap())
+        .sum();
+    wire(&mut runtime, json!({"Mouse":{"LeftClick":[0,col]}}));
+    assert_eq!(
+        host.lock().unwrap().commands.last(),
+        Some(&json!({"SwitchTabTo":1}))
+    );
+    for columns in [1, 2, 8, 20] {
+        assert!(runtime.render(1, columns).is_ok());
+    }
+    mode.tab_groups = Some(true);
+    event(&mut runtime, Event::ModeUpdate(mode));
+    let output = runtime.render(2, 180).unwrap();
+    assert!(output.contains("group-0") && output.contains("group-1"));
+    assert!(!output.contains("other"));
+}
+
+#[test]
+fn disabled_groups_hide_group_shortcuts_but_keep_numbered_tabs() {
+    let (mut runtime, _) = plugin();
+    let key = json!({"bare_key":{"Char":"g"},"key_modifiers":[]});
+    let bindings = json!([[key,["NewTabGroup"]], [key,["MovePaneToNextTabGroup"]], [key,[{"GoToTabInGroup":{"index":2}}]]]);
+    let mut mode = json!({"mode":"Tab", "tab_groups":false, "keybinds":[["Tab",bindings]]});
+    let filtered = runtime
+        .invoke("bar-mode-keymap", vec![mode.clone()])
+        .unwrap();
+    assert_eq!(filtered.as_array().unwrap(), &vec![bindings[2].clone()]);
+    mode["tab_groups"] = json!(null);
+    assert_eq!(
+        runtime.invoke("bar-mode-keymap", vec![mode]).unwrap(),
+        bindings
+    );
+}

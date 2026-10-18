@@ -3,6 +3,7 @@
 (define hostname "")
 (define mi (bar-default-mode))
 (define tabs '())
+(define source-tabs '())
 (define groups '())
 (define focused-group 0)
 (define group-parts '())
@@ -97,9 +98,12 @@
         (unless (null? cached-keybinds) (set! mode (hash-insert mode "keybinds" cached-keybinds)))
         (set! cached-keybinds (hash-ref mode "keybinds")))
       (define changed (not (bar-equal? mi mode)))
-      (set! mi mode) changed)
+      (set! mi mode)
+      (update-state (hash "TabUpdate" source-tabs))
+      changed)
     ((hash-contains? event "TabUpdate")
       (define all-tabs (hash-ref event "TabUpdate"))
+      (set! source-tabs all-tabs)
       (define active (filter (lambda (tab) (hash-ref tab "active")) all-tabs))
       (define group-id (if (null? active) focused-group (hash-ref (tab-group (car active)) "id")))
       (define next-groups (sort
@@ -113,7 +117,7 @@
       (define incoming (map (lambda (tab)
             (set! local-position (+ local-position 1))
             (hash-insert (hash-insert tab "global_position" (hash-ref tab "position")) "position" local-position))
-          (filter (lambda (tab) (= (hash-ref (tab-group tab) "id") group-id)) all-tabs)))
+          (filter (lambda (tab) (or (not (bar-tab-groups? mi)) (= (hash-ref (tab-group tab) "id") group-id))) all-tabs)))
       (define next (let loop ((remaining incoming) (index 1))
           (cond ((null? remaining) 0) ((hash-ref (car remaining) "active") index) (else (loop (cdr remaining) (+ index 1))))))
       (if (or (= next 0) (> next 4294967295)) #f
@@ -326,7 +330,7 @@
 
 (define (render rows columns)
   (set! new-group-range #f)
-  (set! group-row-visible (and (> rows 1) (not (null? groups))))
+  (set! group-row-visible (and (bar-tab-groups? mi) (> rows 1) (not (null? groups))))
   (unless group-row-visible (set! hovered-group #f) (set! hovered-group-button #f))
   (if group-row-visible
     (string-append (render-groups columns) "\r\n" (render-tabs rows columns))

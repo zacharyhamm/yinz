@@ -36,6 +36,7 @@ fn every_field_changed() -> ScreenConfig {
         hide_session_name: true,
         pane_frame_style: PaneFrameStyle::Full,
         max_agent_width: 100,
+        tab_groups: false,
         simplified_ui: true,
         pane_animations: false,
         styled_underlines: false,
@@ -138,6 +139,7 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         hide_session_name,
         pane_frame_style,
         max_agent_width,
+        tab_groups,
         simplified_ui,
         pane_animations,
         styled_underlines,
@@ -211,6 +213,7 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         screen.get_active_tab(client_id).unwrap().max_agent_width,
         max_agent_width
     );
+    assert_eq!(screen.tab_groups_enabled(), tab_groups);
     assert_eq!(screen.arrow_fonts, !simplified_ui);
     assert_eq!(screen.pane_animations, pane_animations);
     assert_eq!(screen.styled_underlines, styled_underlines);

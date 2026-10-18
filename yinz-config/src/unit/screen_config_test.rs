@@ -40,6 +40,7 @@ fn every_option_set() -> Config {
     themes.insert("day".into(), theme(3));
     Config {
         options: Options {
+            tab_groups: Some(false),
             simplified_ui: Some(true),
             theme: Some("main".into()),
             theme_dark: Some("night".into()),
@@ -125,6 +126,7 @@ fn defaults_match_the_documented_fallbacks() {
         hide_session_name,
         pane_frame_style,
         max_agent_width,
+        tab_groups,
         simplified_ui,
         pane_animations,
         styled_underlines,
@@ -176,6 +178,7 @@ fn defaults_match_the_documented_fallbacks() {
     assert!(!hide_session_name);
     assert_eq!(pane_frame_style, PaneFrameStyle::Titles);
     assert_eq!(max_agent_width, 0);
+    assert!(tab_groups);
     assert!(!simplified_ui);
     assert!(pane_animations);
     assert!(styled_underlines);
@@ -252,6 +255,7 @@ fn every_option_reaches_its_field() {
         hide_session_name,
         pane_frame_style,
         max_agent_width,
+        tab_groups,
         simplified_ui,
         pane_animations,
         styled_underlines,
@@ -303,6 +307,7 @@ fn every_option_reaches_its_field() {
     assert!(hide_session_name);
     assert_eq!(pane_frame_style, PaneFrameStyle::Full);
     assert_eq!(max_agent_width, 100);
+    assert!(!tab_groups);
     assert!(simplified_ui);
     assert!(!pane_animations);
     assert!(!styled_underlines);

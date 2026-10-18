@@ -622,31 +622,33 @@ impl Screen {
         ] {
             command(id, label, &[], Builtin::Form(form));
         }
-        command(
-            "new-tab-group",
-            "New tab group",
-            &["create group workspace"],
-            Builtin::Action(NewTabGroup),
-        );
-        command(
-            "switch-tab-group",
-            "Switch tab group…",
-            &["workspace"],
-            Builtin::Picker(EntryKind::TabGroup),
-        );
-        if let Some(group) = self.tab_group_ids.get(&tab_id) {
+        if self.tab_groups_enabled() {
             command(
-                "rename-tab-group",
-                "Rename tab group…",
-                &[],
-                Builtin::Form(FormKind::RenameTabGroup(*group)),
+                "new-tab-group",
+                "New tab group",
+                &["create group workspace"],
+                Builtin::Action(NewTabGroup),
             );
             command(
-                "close-tab-group",
-                "Close tab group…",
-                &[],
-                Builtin::Form(FormKind::CloseTabGroup(*group)),
+                "switch-tab-group",
+                "Switch tab group…",
+                &["workspace"],
+                Builtin::Picker(EntryKind::TabGroup),
             );
+            if let Some(group) = self.tab_group_ids.get(&tab_id) {
+                command(
+                    "rename-tab-group",
+                    "Rename tab group…",
+                    &[],
+                    Builtin::Form(FormKind::RenameTabGroup(*group)),
+                );
+                command(
+                    "close-tab-group",
+                    "Close tab group…",
+                    &[],
+                    Builtin::Form(FormKind::CloseTabGroup(*group)),
+                );
+            }
         }
         for (id, label, action) in [
             (
@@ -758,7 +760,7 @@ impl Screen {
                 Builtin::Picker(kind),
             ));
         }
-        for id in self.tab_groups.keys() {
+        for id in self.tab_groups.keys().filter(|_| self.tab_groups_enabled()) {
             entries.push((
                 Entry {
                     id: format!("tab-group:{id}"),
