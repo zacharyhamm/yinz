@@ -26,7 +26,12 @@ impl Screen {
         if name == self.session_name {
             return Ok(());
         }
-        let ownership = self.bus.senders.session_ownership.clone();
+        let ownership = self
+            .bus
+            .senders
+            .session_ownership
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
         let has_ownership = ownership.is_some();
         {
             let err_context = || "Failed to rename session".to_string();

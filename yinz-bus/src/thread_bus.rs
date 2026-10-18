@@ -100,7 +100,8 @@ pub struct ThreadSenders {
     pub to_server: Option<SenderWithContext<ServerInstruction>>,
     pub to_pty_writer: Option<SenderWithContext<PtyWriteInstruction>>,
     pub to_background_jobs: Option<SenderWithContext<BackgroundJob>>,
-    pub session_ownership: Option<std::sync::Arc<yinz_ipc::session_ownership::SessionOwnership>>,
+    // Detached tasks holding senders must not extend the server's session claim.
+    pub session_ownership: Option<std::sync::Weak<yinz_ipc::session_ownership::SessionOwnership>>,
     pub session_checkpoint: std::sync::Arc<crate::background_jobs::SessionCheckpointWriter>,
     // this is a convenience for the unit tests
     // it's not advisable to set it to true in production code

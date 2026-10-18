@@ -2933,7 +2933,7 @@ fn init_session(
                 Some(os_input.clone()),
             );
             screen_bus.senders.session_checkpoint = session_checkpoint.clone();
-            screen_bus.senders.session_ownership = Some(ownership.clone());
+            screen_bus.senders.session_ownership = Some(Arc::downgrade(&ownership));
             let max_panes = cli_assets.max_panes;
 
             let client_attributes_clone = client_attributes.clone();
@@ -3146,7 +3146,7 @@ fn init_session(
             to_background_jobs: Some(to_background_jobs),
             to_server: Some(to_server),
             session_checkpoint,
-            session_ownership: Some(ownership),
+            session_ownership: Some(Arc::downgrade(&ownership)),
             should_silently_fail: false,
         },
         default_shell,
