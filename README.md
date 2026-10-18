@@ -61,6 +61,19 @@ agent_exit {
 }
 ```
 
-The default is `main`. This file supports only `default_branch`.
+The default is `main`. The `agent_exit` block accepts only `default_branch`.
+Other top-level nodes hold plugin-owned settings, for example:
+
+```kdl
+agent_exit { default_branch "main"; }
+merge_queue { ci_command "cargo x ci check"; review_prompt "Review this branch against main"; merge "ff"; }
+```
+
+Plugins receive these nodes in `config.sections`; Yinz does not execute their
+values. Duplicate top-level names are errors. A file containing only plugin
+sections is valid and retains the `main` default. The historical filename stays
+`.yinz/agent-exit.kdl`. See [per-project configuration](docs/PLUGIN_SDK.md#per-project-configuration)
+for the node shape, permissions, and write semantics.
+
 Managed Swamp commands, plugins, and bundled assets have been removed without compatibility aliases or migration tooling.
 Existing external runtime data and running Swamp processes are not deleted or stopped automatically.

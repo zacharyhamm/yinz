@@ -114,6 +114,59 @@ a deferred result. The predicate receives the event payload.
 See [command and event shapes](PLUGIN_PROTOCOL.md), also available through
 `yinz plugins docs protocol`, for every command payload and synchronous reply.
 
+## Per-project configuration
+
+`ProjectConfigRead {directory}` reads the primary Git checkout's
+`.yinz/agent-exit.kdl`. It returns a hash with `"root"`, `"source"`, `"config"`,
+and `"error"`. Check `"error"` before using the configuration. Reading settings
+does not execute configured commands or grant permissions.
+
+```kdl
+agent_exit { default_branch "main"; }
+merge_queue {
+    ci_command "cargo x ci check"
+    review_prompt "Review this branch against main"
+    merge "ff"
+    push false
+}
+```
+
+The `"config"` hash contains `"default_branch"` and `"sections"`. Each top-level
+node other than `agent_exit` is available under its name in `"sections"`:
+
+```scheme
+(define snapshot
+  (yinz-command (hash "ProjectConfigRead" (hash "directory" "/work/project"))))
+(unless (json-null? (hash-ref snapshot "error"))
+  (error (hash-ref snapshot "error")))
+(define sections (hash-ref (hash-ref snapshot "config") "sections"))
+(define queue (hash-ref sections "merge_queue"))
+(define settings (hash-ref queue "children"))
+```
+
+Each `ConfigurationNode` has `"name"`, `"arguments"` (a list), `"properties"`
+(a hash), and `"children"` (an ordered list of nodes). String, number, boolean,
+and null values retain their types; null becomes `json-null`. Non-finite numbers
+are rejected because the JSON transport cannot represent them. Repeated child
+names are preserved. As with the configuration editor's node model, comments,
+formatting, and KDL type annotations are not included; `"source"` retains the
+original text. Repeated property names use the last value.
+
+Plugins own the meaning and validation of their sections. Yinz does not interpret
+`ci_command`, `review_prompt`, `merge`, or `push`; any execution still needs the
+normal command permissions. Duplicate top-level names are errors, including
+duplicate `agent_exit` blocks. Inside `agent_exit`, only one `default_branch`
+string is allowed. A sections-only file is valid. Missing or empty files, an
+omitted `agent_exit`, and an empty `agent_exit` retain the existing `main` default.
+No plugin sections means an empty `"sections"` hash.
+
+`ProjectConfigWrite {directory, source, expected}` validates and replaces the
+whole file, then returns the same snapshot shape. Preserve other plugins'
+sections and use the previously read `"source"` as `expected` (`json-null` for
+a missing file). Read and write require `ReadFiles` and `WriteFiles`, respectively;
+access outside the plugin directory also requires `FullHdAccess`.
+The historical filename remains unchanged for compatibility.
+
 ## Plugin identity and client geometry
 
 `(yinz-plugin-location)` returns the immutable entrypoint location supplied by the host.

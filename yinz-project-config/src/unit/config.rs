@@ -220,7 +220,6 @@ fn malformed_settings_and_unsafe_branches_are_refused() {
     for source in [
         "agent_exit",
         "agent_exit {",
-        "hooks {}",
         "agent_exit {}\nagent_exit {}",
         "agent_exit \"arg\" {}",
         "(typed)agent_exit {}",
@@ -244,5 +243,71 @@ fn malformed_settings_and_unsafe_branches_are_refused() {
             serde_json::to_string(branch).unwrap()
         );
         assert!(parse(&source).is_err(), "{branch:?}");
+    }
+}
+
+#[test]
+fn plugin_sections_preserve_node_values_and_children() {
+    let source = r#"
+merge_queue "queue" 7 1.5 true null push=false label="daily" {
+    ci_command "cargo x ci check"
+    review_prompt "Review this branch against main"
+    merge "ff" { option "nested"; }
+    merge "commit"
+}
+agent_exit { default_branch "trunk"; }
+other {}
+"#;
+    let config = parse(source).unwrap();
+    assert_eq!(config.default_branch.as_deref(), Some("trunk"));
+    assert_eq!(config.sections.len(), 2);
+    assert_eq!(
+        serde_json::to_value(&config.sections["merge_queue"]).unwrap(),
+        serde_json::json!({
+            "name": "merge_queue",
+            "arguments": ["queue", 7, 1.5, true, null],
+            "properties": {"push": false, "label": "daily"},
+            "children": [
+                {"name": "ci_command", "arguments": ["cargo x ci check"], "properties": {}, "children": []},
+                {"name": "review_prompt", "arguments": ["Review this branch against main"], "properties": {}, "children": []},
+                {"name": "merge", "arguments": ["ff"], "properties": {}, "children": [
+                    {"name": "option", "arguments": ["nested"], "properties": {}, "children": []}
+                ]},
+                {"name": "merge", "arguments": ["commit"], "properties": {}, "children": []}
+            ]
+        })
+    );
+    let wire = serde_json::to_string(&config).unwrap();
+    assert_eq!(
+        serde_json::from_str::<ProjectConfig>(&wire).unwrap(),
+        config
+    );
+}
+
+#[test]
+fn sections_only_keep_the_existing_default_branch() {
+    let config = parse("merge_queue { merge \"ff\"; }").unwrap();
+    assert_eq!(config.default_branch.as_deref(), Some("main"));
+    assert_eq!(config.sections["merge_queue"].children[0].name, "merge");
+    assert!(parse("").unwrap().sections.is_empty());
+    assert!(
+        serde_json::from_str::<ProjectConfig>(r#"{"default_branch":"main"}"#)
+            .unwrap()
+            .sections
+            .is_empty()
+    );
+}
+
+#[test]
+fn duplicate_sections_and_invalid_agent_exit_with_sections_are_refused() {
+    for source in [
+        "merge_queue {}\nmerge_queue {}",
+        "merge_queue 1.0e999",
+        "merge_queue { option value=1.0e999; }",
+        "agent_exit {}\nmerge_queue {}\nagent_exit {}",
+        "merge_queue {}\nagent_exit { unknown \"value\"; }",
+        "agent_exit { default_branch \"main\"; unknown \"value\"; }\nmerge_queue {}",
+    ] {
+        assert!(parse(source).is_err(), "{source}");
     }
 }
