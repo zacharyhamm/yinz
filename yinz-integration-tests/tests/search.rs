@@ -15,8 +15,8 @@ fn start_yinz_with_full_frames() -> TestSession {
 fn enter_search_on_visible_match_with_full_frames(yinz: &TestSession) {
     let terminal = yinz.expect_pty_spawn();
     terminal.output(b"NEEDLE on screen\r\n");
-    yinz.wait_until("match visible on screen", |grid_snapshot| {
-        grid_snapshot.contains("NEEDLE on screen")
+    yinz.wait_until("match and full-frame tab bar visible", |grid_snapshot| {
+        grid_snapshot.contains("NEEDLE on screen") && grid_snapshot.contains(" Tab #1")
     });
     enter_search_for_needle(yinz);
 }
