@@ -274,7 +274,7 @@ fn git_listing_preserves_literal_filenames() {
             runtime
                 .invoke("ff-selection", vec![json!(selection), json!(false)])
                 .unwrap(),
-            json!(repo.join(name))
+            json!(repo.join(name).canonicalize().unwrap())
         );
         fs::remove_file(repo.join(name)).unwrap();
     }

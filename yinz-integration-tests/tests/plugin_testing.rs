@@ -325,10 +325,7 @@ fn installed_integration_server_crash_is_a_failure_and_is_reaped() {
     let report = yinz_server::plugin_testing::run(
         &yinz_integration_tests::test_env::init().join("data"),
         &path,
-        &PluginTestOptions {
-            timeout_ms: 5000,
-            ..Default::default()
-        },
+        &PluginTestOptions::default(),
         None,
         &AtomicBool::new(false),
     )

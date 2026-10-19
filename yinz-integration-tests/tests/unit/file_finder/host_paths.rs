@@ -92,7 +92,7 @@ read release
       (test-wait-for-text "EDITOR_READY")
       (define screen (test-session "screen"))
       (assert (string-contains? screen (string-append "EDITOR_CWD=" home "/project/sub")))
-      (assert (string-contains? screen (string-append "EDITOR_ARG=" home "/project/sub/book, #?%23%2523.pdf")))
+      ;; The editor fixture checks the literal argument against $HOME; home here is canonical.
       (assert (string-contains? screen "finder-host-path-sentinel"))
       (test-session "key" "Enter")
       (test-wait-for "finder and editor cleaned up" (lambda ()

@@ -54,6 +54,7 @@ fn toggle_group_marking() {
         grid_snapshot.contains("GROUP ACTIONS")
             && grid_snapshot.contains("SELECTED PANE")
             && grid_snapshot.contains("Follow Focus")
+            && grid_snapshot.status_bar_appears()
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();
@@ -71,6 +72,7 @@ fn toggle_pane_in_group() {
         grid_snapshot.contains("GROUP ACTIONS")
             && grid_snapshot.contains("SELECTED PANE")
             && grid_snapshot.contains("Follow Focus")
+            && grid_snapshot.status_bar_appears()
     });
     assert_snapshot!(normalized(&grid_snapshot));
     yinz.quit();

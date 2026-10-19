@@ -74,6 +74,8 @@ fn receive_http(listener: &std::net::TcpListener) -> std::net::TcpStream {
             Err(error) => panic!("HTTP accept: {error}"),
         }
     };
+    // macOS inherits the listener's nonblocking mode.
+    socket.set_nonblocking(false).unwrap();
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();

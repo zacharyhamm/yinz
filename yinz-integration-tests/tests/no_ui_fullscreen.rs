@@ -118,7 +118,8 @@ fn resize_terminal_while_no_ui_fullscreen_tracks_display() {
     let grid_snapshot = yinz.wait_until(
         "no-ui fullscreen still covers the resized display",
         |grid_snapshot| {
-            !grid_snapshot.tab_bar_appears()
+            grid_snapshot.contains("$ ")
+                && !grid_snapshot.tab_bar_appears()
                 && !grid_snapshot.status_bar_appears()
                 && grid_snapshot.cursor_is_at(col(2).row(0))
         },

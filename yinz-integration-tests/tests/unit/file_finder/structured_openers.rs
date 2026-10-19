@@ -22,6 +22,8 @@ fn is_reader(pane: &PaneListEntry, url: &str) -> bool {
             .unwrap()
             .to_file_path()
             .unwrap()
+            .canonicalize()
+            .unwrap()
             .display()
     );
     matches!(pane.pane_info.plugin_url.as_deref(), Some("reader"))
