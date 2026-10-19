@@ -6,6 +6,7 @@ use crate::panes::terminal_character::{AnsiCode, CharacterStyles, RESET_STYLES};
 use yinz_types::style::Style;
 
 use unicode_width::UnicodeWidthChar;
+use yinz_runtime::errors::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct NestedListItem {
@@ -17,12 +18,19 @@ pub fn nested_list(
     mut contents: Vec<NestedListItem>,
     style: &Style,
     coordinates: Option<Coordinates>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let mut stringified = String::new();
     let max_width = coordinates
         .as_ref()
         .and_then(|c| c.width)
         .unwrap_or_else(|| max_nested_item_width(&contents));
+    let max_rows = coordinates
+        .as_ref()
+        .and_then(|c| c.height)
+        .unwrap_or(usize::MAX);
+    if max_width.saturating_mul(contents.len().min(max_rows)) > super::MAX_PADDED_CELLS {
+        bail!("list padding exceeds cell budget");
+    }
     for (line_index, line_item) in contents.drain(..).enumerate() {
         if is_too_high(line_index + 1, &coordinates) {
             break;
@@ -86,7 +94,7 @@ pub fn nested_list(
             go_to_row_instruction, text_style, " ", text_style, RESET_STYLES
         ));
     }
-    stringified.as_bytes().to_vec()
+    Ok(stringified.into_bytes())
 }
 
 pub fn parse_nested_list_items<'a>(

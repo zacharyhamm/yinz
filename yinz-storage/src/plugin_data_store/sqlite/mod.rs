@@ -19,6 +19,7 @@ use yinz_types::plugin_data::{
 use super::dialect::Dialect;
 use super::engine;
 use super::executor::Executor;
+use super::registry;
 use super::sql::{storage_err, SqlContext};
 use super::store_migrations;
 
@@ -125,6 +126,18 @@ impl PluginDataBackend for SqlitePluginDataBackend {
         def: &EntityDef,
         allow_destructive: bool,
     ) -> Result<DataSchemaInfo, DataError> {
+        // Repeated declarations must not make readers wait for another server's writer.
+        if !allow_destructive
+            && self.with_conn(|conn| {
+                Ok(
+                    registry::load_entity(&mut SqliteExec(conn), namespace, &def.name)?
+                        .is_some_and(|existing| existing.def == *def),
+                )
+            })?
+        {
+            return Ok(registry::schema_info(namespace, def, false));
+        }
+        // Recheck under the write lock in case another server changed the schema meanwhile.
         self.in_transaction("schema change", |exec| {
             engine::define_entity(exec, namespace, owner_plugin, def, allow_destructive)
         })
@@ -331,3 +344,7 @@ impl Executor for SqliteExec<'_> {
 #[cfg(test)]
 #[path = "unit/snapshots.rs"]
 mod snapshot_tests;
+
+#[cfg(test)]
+#[path = "unit/schema.rs"]
+mod schema_tests;

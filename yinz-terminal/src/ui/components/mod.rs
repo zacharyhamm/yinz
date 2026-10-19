@@ -17,6 +17,9 @@ use ribbon::ribbon;
 use table::table;
 use text::{parse_text, parse_text_params, stringify_text, text, Text};
 
+// Padding must not expand a small DCS payload into an unbounded allocation in the host.
+const MAX_PADDED_CELLS: usize = 1024 * 1024;
+
 macro_rules! parse_next_param {
     ($next_param:expr, $type:ident, $component_name:expr, $item_name:expr) => {{
         $next_param
@@ -92,7 +95,7 @@ impl<'a> UiComponentParser<'a> {
                 stringified_params,
                 &self.style,
                 component_coordinates,
-            );
+            )?;
             parse_vte_bytes!(self, encoded_table);
             Ok(())
         } else if component_name == "ribbon" {
@@ -111,7 +114,7 @@ impl<'a> UiComponentParser<'a> {
         } else if component_name == "nested_list" {
             let nested_list_items = parse_nested_list_items(params_iter);
             let encoded_nested_list =
-                nested_list(nested_list_items, &self.style, component_coordinates);
+                nested_list(nested_list_items, &self.style, component_coordinates)?;
             parse_vte_bytes!(self, encoded_nested_list);
             Ok(())
         } else if component_name == "text" {

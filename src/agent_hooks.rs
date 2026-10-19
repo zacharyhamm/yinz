@@ -25,6 +25,10 @@ use std::path::{Path, PathBuf};
 
 use {yinz_cli::args::HookAgent, yinz_cli::args::Hooks};
 
+#[cfg(test)]
+#[path = "unit/hook_writes.rs"]
+mod hook_writes;
+
 /// The events, the timeout and the handler shape live in `yinz_types::agent`, so that this
 /// installer and a spawned Claude Code pane's inline `--settings` cannot wire different events.
 ///
@@ -1002,26 +1006,9 @@ fn read_settings(path: &Path) -> Result<Value> {
 /// the old file rather than half of the new one. The `.bak` is written first and is
 /// what a person reaches for when this got something wrong.
 fn write_settings(path: &Path, settings: &Value) -> Result<bool> {
-    let folder = path
-        .parent()
-        .ok_or_else(|| anyhow!("{} has no folder to write into", path.display()))?;
-    std::fs::create_dir_all(folder)
-        .with_context(|| format!("cannot create {}", folder.display()))?;
-    let backed_up = path.exists();
-    if backed_up {
-        let backup = path.with_extension("json.bak");
-        std::fs::copy(path, &backup).with_context(|| {
-            format!("cannot back {} up to {}", path.display(), backup.display())
-        })?;
-    }
     let mut text = serde_json::to_string_pretty(settings).context("cannot serialize settings")?;
     text.push('\n');
-    let temporary = path.with_extension("json.yinz-tmp");
-    std::fs::write(&temporary, &text)
-        .with_context(|| format!("cannot write {}", temporary.display()))?;
-    std::fs::rename(&temporary, path)
-        .with_context(|| format!("cannot replace {}", path.display()))?;
-    Ok(backed_up)
+    write_generated(path, &text)
 }
 
 /// The contents of a generated file, or `None` where there is no file.
@@ -1035,33 +1022,84 @@ fn read_generated(path: &Path) -> Result<Option<String>> {
 
 /// Write a generated file, keeping a copy of what was there.
 ///
-/// The same temporary-and-rename as [`write_settings`], because the opencode plugin and
-/// the pi extension are loaded by their own processes: a half-written file would be one
-/// that does not parse.
+/// Settings and hooks share atomic replacement, private new files, and preserved permissions.
 fn write_generated(path: &Path, text: &str) -> Result<bool> {
+    let destination = if path.is_symlink() {
+        path.canonicalize()
+            .with_context(|| format!("cannot resolve {}", path.display()))?
+    } else {
+        path.to_owned()
+    };
+    let metadata = match std::fs::metadata(&destination) {
+        Ok(metadata) => {
+            anyhow::ensure!(
+                metadata.is_file(),
+                "{} is not a regular file",
+                path.display()
+            );
+            Some(metadata)
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot inspect {}", path.display()))
+        },
+    };
+    let backed_up = metadata.is_some();
     let folder = path
         .parent()
         .ok_or_else(|| anyhow!("{} has no folder to write into", path.display()))?;
     std::fs::create_dir_all(folder)
         .with_context(|| format!("cannot create {}", folder.display()))?;
-    let backed_up = path.exists();
     let kind = path
         .extension()
         .and_then(|extension| extension.to_str())
         .unwrap_or("js");
     if backed_up {
         let backup = path.with_extension(format!("{kind}.bak"));
-        std::fs::copy(path, &backup).with_context(|| {
-            format!("cannot back {} up to {}", path.display(), backup.display())
-        })?;
+        let mut saved = tempfile::NamedTempFile::new_in(folder)
+            .with_context(|| format!("cannot stage backup for {}", path.display()))?;
+        let mut original = std::fs::File::open(&destination)
+            .with_context(|| format!("cannot read {} for backup", path.display()))?;
+        std::io::copy(&mut original, &mut saved)
+            .with_context(|| format!("cannot back up {}", path.display()))?;
+        if let Some(metadata) = &metadata {
+            saved
+                .as_file()
+                .set_permissions(metadata.permissions())
+                .context("cannot preserve backup permissions")?;
+        }
+        saved
+            .as_file()
+            .sync_all()
+            .context("cannot sync hook backup")?;
+        saved
+            .persist(&backup)
+            .with_context(|| format!("cannot replace backup {}", backup.display()))?;
     }
-    let mut temporary = tempfile::NamedTempFile::new_in(folder)
-        .with_context(|| format!("cannot create temporary file in {}", folder.display()))?;
+    let destination_folder = destination
+        .parent()
+        .context("hook destination has no folder")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(destination_folder).with_context(|| {
+        format!(
+            "cannot create temporary file in {}",
+            destination_folder.display()
+        )
+    })?;
+    if let Some(metadata) = metadata {
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())
+            .context("cannot preserve hook permissions")?;
+    }
     temporary
         .write_all(text.as_bytes())
         .with_context(|| format!("cannot write {}", path.display()))?;
     temporary
-        .persist(path)
+        .as_file()
+        .sync_all()
+        .context("cannot sync hook file")?;
+    temporary
+        .persist(&destination)
         .with_context(|| format!("cannot replace {}", path.display()))?;
     Ok(backed_up)
 }
@@ -1187,8 +1225,7 @@ pub(crate) fn install(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
     let folder = files.script.parent().expect("the script is in a folder");
     std::fs::create_dir_all(folder)
         .with_context(|| format!("cannot create {}", folder.display()))?;
-    std::fs::write(&files.script, &script)
-        .with_context(|| format!("cannot write {}", files.script.display()))?;
+    write_generated(&files.script, &script)?;
     make_executable(&files.script)?;
     let backed_up = write_settings(&settings_path, &updated)?;
 

@@ -106,8 +106,9 @@ fn force_delete_waits_for_shutdown_before_removing_checkpoint() {
     let (started, received) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     let target = folder.clone();
+    let socket = root.path().join("socket");
     let deletion = std::thread::spawn(move || {
-        delete_session_after_shutdown(&target, Ok(SessionProbe::Alive), || {
+        delete_session_after_shutdown(&target, &socket, Ok(SessionProbe::Alive), || {
             started.send(()).unwrap();
             released.recv().unwrap();
             fs::write(target.join("layout"), "final checkpoint")?;
@@ -129,6 +130,7 @@ fn force_delete_waits_for_shutdown_before_removing_checkpoint() {
 fn force_delete_preserves_checkpoint_on_shutdown_failure() {
     let root = tempfile::tempdir().unwrap();
     let folder = root.path().join("session");
+    let socket = root.path().join("socket");
     fs::create_dir(&folder).unwrap();
     let layout = folder.join("layout");
     fs::write(&layout, "floating-plugin-marker").unwrap();
@@ -139,7 +141,10 @@ fn force_delete_preserves_checkpoint_on_shutdown_failure() {
             io::ErrorKind::TimedOut,
             io::ErrorKind::NotFound,
         ] {
-            assert!(delete_session_after_shutdown(&folder, status, || Err(kind.into())).is_err());
+            assert!(
+                delete_session_after_shutdown(&folder, &socket, status, || Err(kind.into()))
+                    .is_err()
+            );
             assert_eq!(
                 fs::read_to_string(&layout).unwrap(),
                 "floating-plugin-marker"
@@ -151,7 +156,7 @@ fn force_delete_preserves_checkpoint_on_shutdown_failure() {
         Err(io::ErrorKind::PermissionDenied),
     ] {
         assert_eq!(
-            delete_session_after_shutdown(&folder, status, || panic!(
+            delete_session_after_shutdown(&folder, &socket, status, || panic!(
                 "denied probe attempted shutdown"
             ))
             .unwrap_err()
@@ -163,23 +168,78 @@ fn force_delete_preserves_checkpoint_on_shutdown_failure() {
             "floating-plugin-marker"
         );
     }
-    delete_session_after_shutdown(&folder, Ok(SessionProbe::Absent), || {
+    delete_session_after_shutdown(&folder, &socket, Ok(SessionProbe::Absent), || {
         panic!("absent server needs no shutdown")
     })
     .unwrap();
     assert!(!folder.exists());
     assert_eq!(
-        delete_session_after_shutdown(&folder, Ok(SessionProbe::Absent), || unreachable!())
-            .unwrap_err()
-            .kind(),
+        delete_session_after_shutdown(
+            &folder,
+            &socket,
+            Ok(SessionProbe::Absent),
+            || unreachable!()
+        )
+        .unwrap_err()
+        .kind(),
         io::ErrorKind::NotFound
     );
     fs::write(&folder, "not a directory").unwrap();
-    assert!(
-        delete_session_after_shutdown(&folder, Ok(SessionProbe::Absent), || unreachable!())
-            .is_err()
-    );
+    assert!(delete_session_after_shutdown(
+        &folder,
+        &socket,
+        Ok(SessionProbe::Absent),
+        || unreachable!()
+    )
+    .is_err());
     assert_eq!(fs::read_to_string(folder).unwrap(), "not a directory");
+}
+
+#[test]
+fn deletion_preserves_owned_sessions_even_without_a_socket() {
+    use yinz_ipc::session_ownership::SessionOwnership;
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("checkpoint");
+    let socket = root.path().join("socket");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("layout"), "saved panes").unwrap();
+    let owner = SessionOwnership::acquire(&socket).unwrap().unwrap();
+    assert!(delete_session_folder(&folder, &socket, false).is_err());
+    let listener = owner.bind().unwrap();
+    assert!(delete_session_folder(&folder, &socket, false).is_err());
+    owner.shutdown().unwrap();
+    assert!(delete_session_folder(&folder, &socket, false).is_err());
+    assert_eq!(
+        fs::read_to_string(folder.join("layout")).unwrap(),
+        "saved panes"
+    );
+    drop(listener);
+    drop(owner);
+    delete_session_folder(&folder, &socket, false).unwrap();
+    assert!(!folder.exists());
+}
+
+#[test]
+fn deletion_preserves_servers_without_claims_and_replacements_after_shutdown() {
+    use yinz_ipc::session_ownership::SessionOwnership;
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("checkpoint");
+    let socket = root.path().join("socket");
+    fs::create_dir(&folder).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    assert!(delete_session_folder(&folder, &socket, false).is_err());
+    drop(listener);
+    fs::remove_file(&socket).unwrap();
+    let mut replacement = None;
+    let result = delete_session_after_shutdown(&folder, &socket, Ok(SessionProbe::Alive), || {
+        let owner = SessionOwnership::acquire(&socket).unwrap().unwrap();
+        let listener = owner.bind().unwrap();
+        replacement = Some((owner, listener));
+        Ok(())
+    });
+    assert!(result.is_err());
+    assert!(folder.exists());
+    drop(replacement);
 }
 
 #[test]

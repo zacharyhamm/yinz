@@ -100,12 +100,14 @@ pub(super) fn build_count_sql(
     request: &FetchRequest,
     search: Option<&str>,
 ) -> Result<(String, Vec<DataValue>), DataError> {
+    let mut request = request.clone();
+    request.after_id = None;
     let WhereSql {
         clause,
         join,
         params,
         ..
-    } = build_where(dialect, schema, request, search)?;
+    } = build_where(dialect, schema, &request, search)?;
     Ok((
         format!(
             "SELECT COUNT(*) FROM {}{} {}",

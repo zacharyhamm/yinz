@@ -58,6 +58,8 @@ mod pagination;
 mod properties;
 #[path = "queries.rs"]
 mod queries;
+#[path = "../unit/query_guards.rs"]
+mod query_guards;
 #[path = "schema.rs"]
 mod schema;
 #[path = "search.rs"]

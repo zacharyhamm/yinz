@@ -4,6 +4,7 @@ use crate::panes::{
     CharacterStyles,
 };
 use std::collections::BTreeMap;
+use yinz_runtime::errors::prelude::*;
 use {yinz_types::data::Style, yinz_types::text::ansi_len};
 
 pub fn table(
@@ -12,11 +13,11 @@ pub fn table(
     contents: Vec<Text>,
     style: &Style,
     coordinates: Option<Coordinates>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let mut stringified = String::new();
     // we first arrange the data by columns so that we can pad them by the widest one
     let stringified_columns = stringify_table_columns(contents, columns);
-    let stringified_rows = stringify_table_rows(stringified_columns, &coordinates);
+    let stringified_rows = stringify_table_rows(stringified_columns, &coordinates)?;
     for (row_index, (_, row)) in stringified_rows.into_iter().enumerate() {
         let is_title_row = row_index == 0;
         if is_too_high(row_index + 1, &coordinates) {
@@ -61,13 +62,13 @@ pub fn table(
             .unwrap_or_else(|| "\n\r".to_string());
         stringified.push_str(&next_row_instruction);
     }
-    if let Some(coordinates) = coordinates {
+    Ok(if let Some(coordinates) = coordinates {
         format!("{}{}", coordinates, stringified)
             .as_bytes()
             .to_vec()
     } else {
         stringified.as_bytes().to_vec()
-    }
+    })
 }
 
 fn stringify_table_columns(contents: Vec<Text>, columns: usize) -> BTreeMap<usize, Vec<Text>> {
@@ -96,19 +97,29 @@ fn max_table_column_width(column: &Vec<Text>) -> usize {
 fn stringify_table_rows(
     stringified_columns: BTreeMap<usize, Vec<Text>>,
     coordinates: &Option<Coordinates>,
-) -> BTreeMap<usize, Vec<Text>> {
+) -> Result<BTreeMap<usize, Vec<Text>>> {
     let mut stringified_rows: BTreeMap<usize, Vec<Text>> = BTreeMap::new();
     let mut row_width = 0;
+    let mut padded_cells = 0usize;
+    let max_rows = coordinates
+        .as_ref()
+        .and_then(|c| c.height)
+        .unwrap_or(usize::MAX);
     for (_, column) in stringified_columns.into_iter() {
         let max_column_width = max_table_column_width(&column);
         if is_too_wide(max_column_width + 1, row_width, coordinates) {
             break;
         }
         row_width += max_column_width + 1;
-        for (row_index, mut cell) in column.into_iter().enumerate() {
+        padded_cells = padded_cells
+            .saturating_add((max_column_width + 1).saturating_mul(column.len().min(max_rows)));
+        if padded_cells > super::MAX_PADDED_CELLS {
+            bail!("table padding exceeds cell budget");
+        }
+        for (row_index, mut cell) in column.into_iter().take(max_rows).enumerate() {
             cell.pad_text(max_column_width);
             stringified_rows.entry(row_index).or_default().push(cell);
         }
     }
-    stringified_rows
+    Ok(stringified_rows)
 }

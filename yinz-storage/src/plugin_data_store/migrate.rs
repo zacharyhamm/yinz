@@ -27,6 +27,20 @@ pub(super) fn migrate_entity(
             def.name, namespace, existing.owner_plugin
         )));
     }
+    if foreign_owner {
+        for stored in &existing.def.attrs {
+            if def.attr_named(&stored.name).is_some_and(|attr| {
+                (stored.unique && !attr.unique)
+                    || (stored.full_text && !attr.full_text)
+                    || (stored.indexed && !attr.indexed)
+            }) {
+                return Err(DataError::RefusedMigration(format!(
+                    "only `{}` may remove indexes from `{}` of `{}`",
+                    existing.owner_plugin, stored.name, def.name
+                )));
+            }
+        }
+    }
 
     let mut info = schema_info(namespace, def, false);
 
@@ -99,8 +113,6 @@ pub(super) fn migrate_entity(
                 )));
             },
             Some(stored) => {
-                // Indexes are cheap to add and drop, and doing so loses nothing, so they follow
-                // the declaration without needing permission.
                 if attr.indexed != stored.indexed || attr.unique != stored.unique {
                     drop_attr_indexes(exec, existing, &attr.name)?;
                     if create_attr_indexes(exec, existing, attr)? {

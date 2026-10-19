@@ -350,18 +350,22 @@ pub fn session_left(name: &SessionName, within: Duration) -> Result<bool, io::Er
 }
 
 pub fn delete_session(name: &SessionName, force: bool) -> io::Result<()> {
+    validate_session_name(name.as_str())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let folder = session_info_folder_for_session(name);
+    let socket = YINZ_SOCK_DIR.join(name);
     if force {
-        delete_session_after_shutdown(&folder, session_status(name), || {
-            yinz_ipc::ipc::kill_session_with_completion(&YINZ_SOCK_DIR.join(name))
+        delete_session_after_shutdown(&folder, &socket, session_status(name), || {
+            yinz_ipc::ipc::kill_session_with_completion(&socket)
         })
     } else {
-        fs::remove_dir_all(folder)
+        delete_session_folder(&folder, &socket, false)
     }
 }
 
 fn delete_session_after_shutdown(
     folder: &Path,
+    socket: &Path,
     status: Result<SessionProbe, io::ErrorKind>,
     shutdown: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
@@ -379,7 +383,37 @@ fn delete_session_after_shutdown(
             ));
         },
     }
-    fs::remove_dir_all(folder)
+    delete_session_folder(folder, socket, true)
+}
+
+fn delete_session_folder(folder: &Path, socket: &Path, wait_for_shutdown: bool) -> io::Result<()> {
+    use yinz_ipc::session_ownership::SessionOwnership;
+
+    // Retain the name claim through removal so startup and rename cannot reuse it midway.
+    let _ownership = if wait_for_shutdown {
+        SessionOwnership::acquire_for_startup(socket)
+    } else {
+        SessionOwnership::acquire(socket)
+    }
+    .map_err(io::Error::other)?
+    .ok_or_else(|| {
+        io::Error::other("session is still owned; refusing to delete its saved state")
+    })?;
+    // Older servers may not hold a name claim. A failed probe must not authorize deletion.
+    match yinz_ipc::consts::ipc_connect(socket) {
+        Ok(_) => Err(io::Error::other(
+            "session is still running; refusing to delete its saved state",
+        )),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            fs::remove_dir_all(folder)
+        },
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug, Clone)]
