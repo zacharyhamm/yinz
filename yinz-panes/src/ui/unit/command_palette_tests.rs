@@ -390,7 +390,7 @@ fn clicking_uses_scrolled_geometry() {
     palette.set_query(" ".into());
     let surface = Viewport {
         cols: 30,
-        rows: 6,
+        rows: 10,
         ..Default::default()
     };
     key(&mut palette, BareKey::Down);
@@ -455,7 +455,7 @@ fn compact_root_ignores_activation_until_navigation_reveals_results() {
         assert_eq!(palette.layout(surface).rect, compact.rect);
         assert_eq!(palette.handle_key(navigation), Outcome::None);
         let expanded = palette.layout(surface);
-        assert_eq!(expanded.rect.rows, 11);
+        assert_eq!(expanded.rect.rows, 9);
         assert_eq!(expanded.input_y, compact.input_y);
         assert!(rendered_lines(&palette, &expanded)
             .iter()
@@ -568,17 +568,17 @@ fn empty_root_keeps_only_the_framed_input_and_expands_downward() {
     assert_eq!(compact.footer_y, None);
     let lines = rendered_lines(&palette, &compact);
     assert!(lines[0].starts_with('╭') && lines[2].starts_with('╰'));
-    for query in ["New", "no matching command"] {
+    for (query, height) in [("New", 7), ("no matching command", 6)] {
         palette.set_query(query.into());
         let expanded = palette.layout(surface);
-        assert_eq!(expanded.rect.rows, 11);
+        assert_eq!(expanded.rect.rows, height);
         assert_eq!(expanded.rect.y, compact.rect.y);
         assert_eq!(expanded.input_y, compact.input_y);
     }
     palette.set_query(String::new());
     assert_eq!(palette.layout(surface).rect, compact.rect);
     palette.open_picker(EntryKind::Pane);
-    assert_eq!(palette.layout(surface).rect.rows, 11);
+    assert_eq!(palette.layout(surface).rect.rows, 6);
 }
 
 #[test]
@@ -599,7 +599,7 @@ fn compact_three_row_palette_keeps_borders() {
 }
 
 #[test]
-fn expanded_three_row_palettes_keep_selected_results_visible() {
+fn expanded_palettes_with_three_rows_keep_selected_results_visible() {
     for prepare in [
         |palette: &mut CommandPalette| palette.set_query("new".into()),
         |palette: &mut CommandPalette| key(palette, BareKey::Down),
@@ -610,7 +610,7 @@ fn expanded_three_row_palettes_keep_selected_results_visible() {
         for _ in 0..palette.matches.len() {
             let layout = palette.layout(Viewport {
                 cols: 80,
-                rows: 3,
+                rows: 5,
                 ..Default::default()
             });
             assert_eq!(layout.border, 0);
@@ -667,6 +667,9 @@ fn layout_and_cursor_fit_even_the_smallest_surfaces() {
                 assert!(layout.rect.x >= surface.x && layout.rect.y >= surface.y);
                 assert!(layout.rect.x + layout.rect.cols <= surface.x + cols);
                 assert!(layout.rect.y + layout.rect.rows <= surface.y + rows);
+                if !query.is_empty() {
+                    assert!(layout.rect.rows <= (rows * 3 / 5).max(1).min(rows));
+                }
                 for chunk in palette.chunks(&layout, &Style::default()) {
                     assert_eq!(chunk.width(), layout.rect.cols);
                     assert!(chunk.y < surface.y + rows);
@@ -688,7 +691,7 @@ fn layout_and_cursor_fit_even_the_smallest_surfaces() {
             x: 13,
             y: 7,
             cols: 74,
-            rows: 11
+            rows: 6
         }
     );
 }
@@ -1868,7 +1871,7 @@ fn page_navigation_counts_wrapped_rows() {
     ]);
     let surface = Viewport {
         cols: 16,
-        rows: 9,
+        rows: 15,
         ..Default::default()
     };
     let layout = palette.layout(surface);
@@ -1941,7 +1944,7 @@ fn all_result_kinds_wrap_in_root_and_picker_views() {
                 assert!(picker.is_none(), "{kind:?}");
                 continue;
             }
-            for rows in [7, 11] {
+            for rows in [12, 19] {
                 let layout = palette.layout(Viewport {
                     cols: 24,
                     rows,
@@ -1999,9 +2002,10 @@ fn wrapped_shortcuts_and_descriptions_share_the_available_columns() {
     palette.set_entries(vec![result]);
     let layout = palette.layout(Viewport {
         cols: 26,
-        rows: 11,
+        rows: 19,
         ..Default::default()
     });
+    assert_eq!(layout.rect.rows, 7);
     let lines = rendered_lines(&palette, &layout);
     let first = layout.options_y - layout.rect.y;
     assert!(lines[first].contains("› Alpha bravo"));
@@ -2033,7 +2037,7 @@ fn page_navigation_moves_past_two_line_results_without_a_section_heading() {
     );
     let surface = Viewport {
         cols: 16,
-        rows: 7,
+        rows: 12,
         ..Default::default()
     };
     assert_eq!(palette.layout(surface).options_rows, 2);
@@ -2389,7 +2393,7 @@ fn overflowing_view_descriptions_scroll_without_changing_actions_or_forms() {
         }
         let surface = Viewport {
             cols: 32,
-            rows: 10,
+            rows: if form { 10 } else { 17 },
             ..Default::default()
         };
         let first = rendered_lines(&palette, &palette.layout(surface)).join("\n");
@@ -2460,7 +2464,7 @@ fn short_surfaces_keep_controls_visible_with_descriptions() {
             };
             let surface = Viewport {
                 cols: 80,
-                rows,
+                rows: if form { rows } else { (rows * 5).div_ceil(3) },
                 ..Default::default()
             };
             for label in labels {
@@ -2492,9 +2496,12 @@ fn description_scrolling_clamps_on_resize_and_fits_short_surfaces() {
         let layout = palette.layout(surface);
         let available = layout
             .footer_y
-            .unwrap_or(layout.rect.y + rows - layout.border);
+            .unwrap_or(layout.rect.y + layout.rect.rows - layout.border);
         assert!(layout.description_lines.is_empty() || layout.metadata_y <= available);
-        assert_eq!(palette.chunks(&layout, &Style::default()).len(), rows);
+        assert_eq!(
+            palette.chunks(&layout, &Style::default()).len(),
+            layout.rect.rows
+        );
         if available.saturating_sub(layout.description_y) > 1 {
             assert!(!layout.description_lines.is_empty(), "{rows} rows");
             let mut seen = layout.description_lines.clone();
@@ -2509,7 +2516,7 @@ fn description_scrolling_clamps_on_resize_and_fits_short_surfaces() {
     }
     let large = Viewport {
         cols: 80,
-        rows: 24,
+        rows: 40,
         ..Default::default()
     };
     let layout = palette.layout(large);
@@ -2612,4 +2619,108 @@ fn description_scroll_shortcuts_remain_capturable_as_form_values() {
     palette.handle_key(shortcut.clone());
     assert_eq!(palette.form_values().unwrap().1, [shortcut.to_string()]);
     assert_eq!(palette.description_offset.get(), 0);
+}
+
+#[test]
+fn result_height_tracks_content_updates_and_viewport_cap() {
+    let mut palette = CommandPalette::default();
+    let mut surface = Viewport {
+        x: 2,
+        y: 3,
+        cols: 100,
+        rows: 40,
+    };
+    palette.set_query("result".into());
+    assert_eq!(palette.layout(surface).rect.rows, 6);
+    let entries: Vec<_> = (0..40)
+        .map(|i| entry(&i.to_string(), &format!("result {i}"), EntryKind::Command))
+        .collect();
+    palette.set_entries(entries[..8].to_vec());
+    let layout = palette.layout(surface);
+    assert_eq!(layout.rect.rows, 13);
+    assert_eq!(layout.options_rows, 8);
+    assert_eq!(layout.rect.y, 13);
+    palette.set_entries(entries);
+    let layout = palette.layout(surface);
+    assert_eq!(layout.rect.rows, 24);
+    assert_eq!(layout.options_rows, 19);
+    key(&mut palette, BareKey::PageDown);
+    let layout = palette.layout(surface);
+    assert!(layout
+        .result_rows
+        .iter()
+        .any(|row| matches!(row, ResultRow::Entry(i, _) if *i == palette.selected)));
+    surface.rows = 23;
+    assert_eq!(palette.layout(surface).rect.rows, 13);
+    palette.set_query("result 39".into());
+    assert_eq!(palette.layout(surface).rect.rows, 6);
+    palette.set_query("missing".into());
+    let layout = palette.layout(surface);
+    assert_eq!(layout.rect.rows, 6);
+    assert!(rendered_lines(&palette, &layout)
+        .iter()
+        .any(|line| line.contains("No matches")));
+    palette.set_query(String::new());
+    assert_eq!(palette.layout(surface).rect.rows, 3);
+}
+
+#[test]
+fn result_height_counts_headings_wrapping_and_details() {
+    let mut palette = CommandPalette::default();
+    palette.set_entries(vec![
+        entry("one", &"result ".repeat(20), EntryKind::Pane),
+        entry("two", "result two", EntryKind::Tab),
+    ]);
+    palette.set_query("result".into());
+    let surface = Viewport {
+        cols: 50,
+        rows: 60,
+        ..Default::default()
+    };
+    let layout = palette.layout(surface);
+    assert_eq!(layout.rect.rows, 10);
+    assert_eq!(layout.result_rows.len(), 5);
+    assert_eq!(layout.options_rows, 5);
+    palette.description = "Choose a result".into();
+    palette.metadata = Some("Details".into());
+    let layout = palette.layout(surface);
+    assert_eq!(layout.description_lines, ["Choose a result"]);
+    assert_eq!(layout.metadata_lines, ["Details"]);
+    assert_eq!(layout.result_rows.len(), 5);
+    assert!(layout.rect.rows <= 36);
+    assert_eq!(layout.options_rows, layout.result_rows.len());
+}
+
+#[test]
+fn result_height_includes_provider_statuses_and_shrinks_after_refresh() {
+    let mut palette = CommandPalette::default();
+    palette.set_query(" ".into());
+    let surface = Viewport {
+        cols: 80,
+        rows: 40,
+        ..Default::default()
+    };
+    palette.set_sections(
+        (0..4)
+            .map(|i| PluginSection {
+                title: format!("Provider {i}"),
+                entries: vec![],
+                semantic: true,
+                status: Some("Loading…".into()),
+            })
+            .collect(),
+    );
+    let layout = palette.layout(surface);
+    assert_eq!(layout.rect.rows, 13);
+    assert_eq!(layout.result_rows.len(), 8);
+    assert_eq!(
+        layout
+            .result_rows
+            .iter()
+            .filter(|row| matches!(row, ResultRow::Status(_, _)))
+            .count(),
+        4
+    );
+    palette.set_sections(vec![]);
+    assert_eq!(palette.layout(surface).rect.rows, 6);
 }
