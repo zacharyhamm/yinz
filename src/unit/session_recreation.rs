@@ -414,6 +414,8 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
                 IpcRecv::Msg(ClientToServerMsg::KillSessionWithCompletion, _) => {
                     started.send(()).unwrap();
                     released.recv().unwrap();
+                    // Completion must not race the client checking that the listener is closed.
+                    drop(listener);
                     if let Some(reply) = reply {
                         if success {
                             write_checkpoint(

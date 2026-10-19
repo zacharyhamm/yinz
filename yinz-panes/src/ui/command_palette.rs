@@ -485,10 +485,8 @@ impl CommandPalette {
         self.selected_status = None;
     }
 
-    fn scored_section(&self, section: usize) -> bool {
-        self.is_root()
-            && !self.input.get_text().trim().is_empty()
-            && !self.sections[section].semantic
+    fn ranked_root_search(&self) -> bool {
+        self.is_root() && !self.input.get_text().trim().is_empty()
     }
 
     fn rematch(&mut self) {
@@ -513,6 +511,7 @@ impl CommandPalette {
                 self.error = Some(error.clone());
             }
         }
+        let ranked_root_search = self.ranked_root_search();
         let mut buffer = Vec::new();
         let mut matches: Vec<_> = self
             .entries
@@ -542,7 +541,9 @@ impl CommandPalette {
                 if self.picker == Some(EntryKind::Agent) && entry.id == "agent-filters" {
                     return Some((index, u32::MAX));
                 }
-                if self.entry_sections[index].is_some_and(|i| self.sections[i].semantic) {
+                let section = self.entry_sections[index].map(|i| &self.sections[i]);
+                let semantic = section.is_some_and(|s| s.semantic);
+                if semantic && !ranked_root_search {
                     return Some((index, 0));
                 }
                 let pattern = if entry.kind == EntryKind::Agent {
@@ -560,17 +561,19 @@ impl CommandPalette {
                 };
                 std::iter::once(&entry.label)
                     .chain(entry.aliases.iter())
+                    .chain(section.filter(|_| ranked_root_search).map(|s| &s.title))
                     .filter_map(|text| {
                         pattern.score(Utf32Str::new(text, &mut buffer), &mut self.matcher)
                     })
                     .max()
+                    .or_else(|| semantic.then_some(0))
                     .map(|score| (index, score))
             })
             .collect();
         matches.sort_by_key(|(index, score)| {
             let section = self.entry_sections[*index];
             let group = match self.entries[*index].kind {
-                EntryKind::Plugin if section.is_some_and(|i| self.scored_section(i)) => 0,
+                EntryKind::Plugin if ranked_root_search && *score > 0 => 0,
                 EntryKind::Plugin => 3 + section.unwrap_or(0),
                 EntryKind::Session => 1,
                 EntryKind::ExitedSession => 2,
@@ -1097,7 +1100,7 @@ impl CommandPalette {
         for (index, entry_index) in self.matches.iter().enumerate() {
             let entry = &self.entries[*entry_index];
             let section = self.entry_sections[*entry_index];
-            if entry.kind == EntryKind::Plugin && !section.is_some_and(|i| self.scored_section(i)) {
+            if entry.kind == EntryKind::Plugin && !self.ranked_root_search() {
                 continue;
             }
             let label = if let Some(section) = section {
@@ -1128,7 +1131,7 @@ impl CommandPalette {
                     .iter()
                     .enumerate()
                     .filter(|(_, entry)| {
-                        !self.scored_section(section_index)
+                        !self.ranked_root_search()
                             && self.entry_sections[**entry] == Some(section_index)
                     })
                     .map(|(index, _)| ResultRow::Entry(index, 0))
