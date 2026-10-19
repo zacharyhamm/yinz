@@ -63,6 +63,35 @@ fn create_pane() -> TerminalPane {
 }
 
 #[test]
+fn editing_a_search_preserves_options_and_replaces_old_matches() {
+    let mut pane = create_pane();
+    pane.toggle_search_case_sensitivity();
+    pane.toggle_search_whole_words();
+    pane.toggle_search_wrap();
+
+    for input in ["quam", "x", "\u{7f}", "\0", "quam"] {
+        pane.update_search_term(input);
+        let search = &pane.grid.search_results;
+        assert!(search.case_insensitive, "after {input:?}");
+        assert!(search.whole_word_only, "after {input:?}");
+        assert!(search.wrap_search, "after {input:?}");
+        assert!(search.active.is_none());
+        if pane.search_term.is_empty() || pane.search_term.ends_with('x') {
+            assert!(
+                search.selections.is_empty(),
+                "stale matches after {input:?}"
+            );
+        } else {
+            assert!(!search.selections.is_empty(), "no matches after {input:?}");
+        }
+    }
+    pane.clear_search();
+    assert!(pane.grid.search_results.needle.is_empty());
+    assert!(pane.grid.search_results.selections.is_empty());
+    assert!(!pane.grid.search_results.has_modifiers_set());
+}
+
+#[test]
 pub fn searching_inside_a_viewport() {
     let mut terminal_pane = create_pane();
     terminal_pane.update_search_term("tortor");

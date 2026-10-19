@@ -1289,10 +1289,7 @@ impl Pane for TerminalPane {
                 self.search_term.push_str(c);
             },
         }
-        self.grid.clear_search();
-        if !self.search_term.is_empty() {
-            self.grid.set_search_string(&self.search_term);
-        }
+        self.grid.set_search_string(&self.search_term);
         self.set_should_render(true);
     }
     fn search_down(&mut self) {

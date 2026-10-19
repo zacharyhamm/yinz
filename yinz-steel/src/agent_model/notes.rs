@@ -54,6 +54,10 @@ pub(super) fn run(op: &str, input: Value) -> Result<Value> {
                 revision,
             ))
         },
+        "PlanAttach" => {
+            let (note, tags, ids): (notes::Note, Vec<String>, Vec<u64>) = args(input)?;
+            value(notes::plan_attach_to_note(&note, &tags, &ids))
+        },
         "PlanSetTags" => {
             let (note, tags, revision, guard): (
                 notes::Note,

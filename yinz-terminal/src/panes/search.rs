@@ -433,16 +433,25 @@ impl Grid {
     }
 
     pub fn clear_search(&mut self) {
-        // Clearing all previous highlights
-        for res in &self.search_results.selections {
-            self.output_buffer
-                .update_lines(res.start.line() as usize, res.end.line() as usize);
-        }
+        self.clear_search_highlights();
         self.search_results = Default::default();
     }
 
+    fn clear_search_highlights(&mut self) {
+        // Clearing all previous highlights
+        for res in self.search_results.selections.drain(..) {
+            self.output_buffer
+                .update_lines(res.start.line() as usize, res.end.line() as usize);
+        }
+    }
+
     pub fn set_search_string(&mut self, needle: &str) {
+        self.clear_search_highlights();
+        self.search_results.active = None;
         self.search_results.needle = needle.to_string();
+        if needle.is_empty() {
+            return;
+        }
         self.search_viewport();
         // If the current viewport does not contain any hits,
         // we jump around until we find something. Starting
@@ -485,10 +494,7 @@ impl Grid {
 
     pub fn toggle_search_case_sensitivity(&mut self) {
         self.search_results.case_insensitive = !self.search_results.case_insensitive;
-        for line in self.search_results.selections.drain(..) {
-            self.output_buffer
-                .update_lines(line.start.line() as usize, line.end.line() as usize);
-        }
+        self.clear_search_highlights();
         self.search_viewport();
         // Maybe the selection we had is now gone
         self.search_results.unset_active_selection_if_nonexistent();
@@ -500,10 +506,7 @@ impl Grid {
 
     pub fn toggle_search_whole_words(&mut self) {
         self.search_results.whole_word_only = !self.search_results.whole_word_only;
-        for line in self.search_results.selections.drain(..) {
-            self.output_buffer
-                .update_lines(line.start.line() as usize, line.end.line() as usize);
-        }
+        self.clear_search_highlights();
         self.search_results.active = None;
         self.search_viewport();
         // Maybe the selection we had is now gone

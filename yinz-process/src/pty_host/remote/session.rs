@@ -104,7 +104,10 @@ impl OutputRing {
 /// the catch-up and the server sees an `Output` frame where it demanded a
 /// `Resumed`.
 enum WireState {
-    Detached,
+    // The timer and connection state must change atomically across detach and resume.
+    Detached {
+        since: Option<Instant>,
+    },
     /// Accepted, being brought up to date. `is_attached`, but not writable.
     Attaching(u64),
     Attached(super::broker::Wire, u64),
@@ -115,7 +118,7 @@ enum WireState {
 impl WireState {
     fn generation(&self) -> Option<u64> {
         match self {
-            WireState::Detached | WireState::Terminating => None,
+            WireState::Detached { .. } | WireState::Terminating => None,
             WireState::Attaching(gen) | WireState::Attached(_, gen) => Some(*gen),
         }
     }
@@ -167,7 +170,6 @@ pub struct PaneSession {
     /// straight away rather than waiting for its cwd to happen to change.
     git_probe: Mutex<Option<(super::status::GitProbe, Option<String>)>>,
     git_probe_target: Mutex<Option<(String, Option<String>)>>,
-    disconnected_since: Mutex<Option<Instant>>,
     terminated: AtomicBool,
 }
 
@@ -176,7 +178,7 @@ impl PaneSession {
     /// it has been told the pane exists, so nothing can reach the wire ahead of
     /// the `Spawned` that names it.
     ///
-    /// `disconnected_since` starts `None` rather than being set by `detach()`:
+    /// The orphan timer starts `None` rather than being set by `detach_if()`:
     /// that is what keeps the reaper away from a pane in the moment between
     /// being built and being attached.
     pub fn new(
@@ -195,7 +197,7 @@ impl PaneSession {
             master_fd,
             child_pid,
             ring: Mutex::new(OutputRing::new(REPLAY_CAPACITY)),
-            wire: Mutex::new(WireState::Detached),
+            wire: Mutex::new(WireState::Detached { since: None }),
             generation: AtomicU64::new(0),
             child_exit: Mutex::new(None),
             output_drained: AtomicBool::new(false),
@@ -204,7 +206,6 @@ impl PaneSession {
             exit_reported: AtomicBool::new(false),
             git_probe: Mutex::new(None),
             git_probe_target: Mutex::new(None),
-            disconnected_since: Mutex::new(None),
             terminated: AtomicBool::new(false),
         }
     }
@@ -235,7 +236,9 @@ impl PaneSession {
         match self.wire.lock() {
             Ok(slot) => match &*slot {
                 WireState::Attached(wire, gen) => Some((wire.clone(), *gen)),
-                WireState::Attaching(_) | WireState::Detached | WireState::Terminating => None,
+                WireState::Attaching(_) | WireState::Detached { .. } | WireState::Terminating => {
+                    None
+                },
             },
             Err(_) => None,
         }
@@ -247,9 +250,6 @@ impl PaneSession {
         if let Ok(mut slot) = self.wire.lock() {
             *slot = WireState::Attached(wire, gen);
         }
-        if let Ok(mut since) = self.disconnected_since.lock() {
-            *since = None;
-        }
         gen
     }
 
@@ -260,7 +260,7 @@ impl PaneSession {
     pub fn try_begin_attach(&self) -> Result<u64, ResumeRefusal> {
         let mut slot = self.wire.lock().map_err(|_| ResumeRefusal::Unknown)?;
         match &*slot {
-            WireState::Detached => {},
+            WireState::Detached { .. } => {},
             WireState::Terminating => return Err(ResumeRefusal::Unknown),
             WireState::Attaching(_) | WireState::Attached(_, _) => {
                 return Err(ResumeRefusal::AlreadyAttached);
@@ -268,10 +268,6 @@ impl PaneSession {
         }
         let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         *slot = WireState::Attaching(gen);
-        drop(slot);
-        if let Ok(mut since) = self.disconnected_since.lock() {
-            *since = None;
-        }
         Ok(gen)
     }
 
@@ -318,14 +314,9 @@ impl PaneSession {
             if slot.generation() != Some(gen) {
                 return;
             }
-            *slot = WireState::Detached;
-        } else {
-            return;
-        }
-        if let Ok(mut since) = self.disconnected_since.lock() {
-            if since.is_none() {
-                *since = Some(Instant::now());
-            }
+            *slot = WireState::Detached {
+                since: Some(Instant::now()),
+            };
         }
     }
 
@@ -434,23 +425,20 @@ impl PaneSession {
     }
 
     fn orphaned_for(&self) -> Option<Duration> {
-        self.disconnected_since
-            .lock()
-            .ok()
-            .and_then(|since| since.map(|t| t.elapsed()))
+        self.wire.lock().ok().and_then(|slot| match &*slot {
+            WireState::Detached { since } => since.map(|t| t.elapsed()),
+            _ => None,
+        })
     }
 
     fn try_claim_expired_orphan(&self, timeout: Duration) -> bool {
         let Ok(mut slot) = self.wire.lock() else {
             return false;
         };
-        if !matches!(*slot, WireState::Detached) {
-            return false;
-        }
-        let Ok(since) = self.disconnected_since.lock() else {
+        let WireState::Detached { since: Some(since) } = &*slot else {
             return false;
         };
-        if !since.is_some_and(|started| started.elapsed() >= timeout) {
+        if since.elapsed() < timeout {
             return false;
         }
         *slot = WireState::Terminating;
