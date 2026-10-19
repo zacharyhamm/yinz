@@ -2261,3 +2261,66 @@ fn project_trust_override_survives_bridge_and_conversation_reset() {
         );
     }
 }
+
+#[tokio::test]
+async fn bridge_relays_daemon_frames_larger_than_the_default_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let registration = registration(root.path(), "aaaaaaaaaaaa");
+    let (ui_stream, relay_stream) = tokio::net::UnixStream::pair().unwrap();
+    let (backend_stream, server_stream) = tokio::io::duplex(1 << 16);
+    // The daemon's whole `plugin/list` catalog arrives as one frame beyond 16 MiB.
+    let default_limit = WebSocketConfig::default().max_frame_size.unwrap();
+    let padding = "x".repeat(default_limit + (1 << 16));
+    let request = r#"{"id":7,"method":"plugin/list","params":{}}"#;
+    let reply = format!(r#"{{"id":7,"result":{{"plugins":["{padding}"]}}}}"#);
+    let serve = async {
+        let ui =
+            tokio_tungstenite::accept_async_with_config(relay_stream, Some(websocket_config()))
+                .await
+                .unwrap();
+        relay(
+            ui,
+            backend_stream,
+            &registration,
+            Path::new("/usr/bin/true"),
+        )
+        .await
+        .unwrap();
+    };
+    let backend = async {
+        let mut ws = tokio_tungstenite::accept_async(server_stream)
+            .await
+            .unwrap();
+        assert_eq!(ws.next().await.unwrap().unwrap(), Message::text(request));
+        ws.send(Message::text(reply.as_str())).await.unwrap();
+        assert!(matches!(
+            ws.next().await.unwrap().unwrap(),
+            Message::Close(_)
+        ));
+    };
+    let client = async {
+        let (mut ws, _) = tokio_tungstenite::client_async_with_config(
+            "ws://localhost",
+            ui_stream,
+            Some(websocket_config()),
+        )
+        .await
+        .unwrap();
+        ws.send(Message::text(request)).await.unwrap();
+        let Message::Text(received) = ws.next().await.unwrap().unwrap() else {
+            panic!("expected the daemon's text reply");
+        };
+        assert!(received.len() > default_limit);
+        assert!(received.as_str() == reply);
+        ws.close(None).await.unwrap();
+        assert!(matches!(
+            ws.next().await.unwrap().unwrap(),
+            Message::Close(_)
+        ));
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(serve, backend, client)
+    })
+    .await
+    .unwrap();
+}

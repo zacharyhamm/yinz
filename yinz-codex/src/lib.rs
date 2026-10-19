@@ -10,6 +10,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use yinz_runtime::agent::codex::bridge_options;
 use yinz_runtime::errors::prelude::*;
@@ -21,6 +22,15 @@ const ROUTE_ENV: &[&str] = &[
     "YINZ_REMOTE_PANE_TOKEN",
     "YINZ_SOCKET_DIR",
 ];
+
+// Both peers are trusted local Codex processes, and Codex's own UI accepts the daemon's
+// single-frame `plugin/list` reply, which outgrew tungstenite's 16 MiB frame default.
+// Any relay limit would eventually reject traffic that works without the relay.
+fn websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(None)
+        .max_frame_size(None)
+}
 
 fn directory() -> PathBuf {
     // The shared daemon can inherit different TMPDIR and XDG directories from its UIs.
@@ -390,7 +400,7 @@ async fn proxy(
     program: &Path,
     registration: &Registration,
 ) -> Result<()> {
-    let ui = tokio_tungstenite::accept_async(stream)
+    let ui = tokio_tungstenite::accept_async_with_config(stream, Some(websocket_config()))
         .await
         .context("accept Codex UI connection")?;
     let (backend, stream) = daemon_connection(program, registration.backend_socket.as_deref())?;
@@ -478,9 +488,13 @@ async fn verify_capability(program: &Path, hook: &Value, socket: Option<&Path>) 
         .context("cannot locate Codex reporting script")?;
     let script = root.join("yinz/yinz-hook.sh");
     let (_child, stream) = daemon_connection(program, socket)?;
-    let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", stream)
-        .await
-        .context("connect Codex capability WebSocket")?;
+    let (mut ws, _) = tokio_tungstenite::client_async_with_config(
+        "ws://localhost",
+        stream,
+        Some(websocket_config()),
+    )
+    .await
+    .context("connect Codex capability WebSocket")?;
     check_capability(
         &mut ws,
         hook["session_id"]
@@ -600,7 +614,11 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
 ) -> Result<()> {
     let (mut backend, _) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        tokio_tungstenite::client_async("ws://localhost", stream),
+        tokio_tungstenite::client_async_with_config(
+            "ws://localhost",
+            stream,
+            Some(websocket_config()),
+        ),
     )
     .await
     .context("timed out establishing Codex daemon WebSocket connection")?
@@ -876,7 +894,11 @@ async fn register_worktree_trust(
     let (_child, stream) = daemon_connection(program, socket)?;
     let (mut ws, _) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        tokio_tungstenite::client_async("ws://localhost", stream),
+        tokio_tungstenite::client_async_with_config(
+            "ws://localhost",
+            stream,
+            Some(websocket_config()),
+        ),
     )
     .await
     .context("timed out connecting Codex trust WebSocket")?
