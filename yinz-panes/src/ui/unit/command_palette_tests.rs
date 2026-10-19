@@ -244,6 +244,71 @@ fn picker_restores_search_and_updates_preserve_stable_selection() {
 }
 
 #[test]
+fn clearing_searches_preserves_forms_and_navigation_without_restoring_old_queries() {
+    let mut palette = palette();
+    palette.set_query("new".into());
+    palette.select_id("tab");
+    palette.open_picker(EntryKind::Pane);
+    palette.set_query("console".into());
+    palette.open_picker(EntryKind::Command);
+    palette.set_query("tab".into());
+    palette.push_view(1, "Form".into());
+    palette.set_query("form search".into());
+    palette.open_form(Form::new(
+        "submit".into(),
+        "Form".into(),
+        vec![
+            Field::text("Name", "retained"),
+            Field::choice("Placement", &["Tiled", "Floating"]),
+        ],
+        "Submit",
+        false,
+    ));
+    key(&mut palette, BareKey::Tab);
+    key(&mut palette, BareKey::Right);
+    palette.push_view(2, "Results".into());
+    palette.set_sections(vec![PluginSection {
+        title: "Results".into(),
+        entries: vec![
+            entry("first", "First", EntryKind::Plugin),
+            entry("second", "Second", EntryKind::Plugin),
+        ],
+        semantic: false,
+        status: None,
+    }]);
+    palette.set_query("second".into());
+    palette.select_id("second");
+
+    palette.clear_searches();
+    assert_eq!(palette.query(), "");
+    assert_eq!(ids(&palette), ["first", "second"]);
+    assert_eq!(palette.selected_entry().unwrap().id, "first");
+    assert!(!palette.selection_explicit);
+    key(&mut palette, BareKey::Esc);
+    assert_eq!(palette.view, 1);
+    assert_eq!(palette.query(), "");
+    assert_eq!(
+        palette.form_values(),
+        Some(("submit", vec!["retained".into(), "Floating".into()]))
+    );
+    assert_eq!(palette.form.as_ref().unwrap().selected, 1);
+    key(&mut palette, BareKey::Esc);
+    assert_eq!(palette.view, 0);
+    assert_eq!(palette.query(), "");
+    assert_eq!(ids(&palette), ["new", "tab"]);
+    assert_eq!(palette.selected_entry().unwrap().id, "new");
+    key(&mut palette, BareKey::Esc);
+    assert_eq!(palette.query(), "");
+    assert_eq!(ids(&palette), ["pane"]);
+    key(&mut palette, BareKey::Esc);
+    assert!(palette.is_root());
+    assert_eq!(palette.query(), "");
+    assert_eq!(ids(&palette), ["new", "tab", "pane"]);
+    assert_eq!(palette.selected, 0);
+    assert!(!palette.selection_explicit);
+}
+
+#[test]
 fn forms_edit_navigate_preserve_search_and_only_submit_from_button() {
     let mut palette = palette();
     palette.insert_text("new");

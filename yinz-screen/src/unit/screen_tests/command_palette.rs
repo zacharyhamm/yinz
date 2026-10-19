@@ -754,6 +754,15 @@ fn palette_search(screen: &mut Screen, query: &str) {
     assert!(screen.command_palette_handles_input(&None, query.as_bytes(), false, CLIENT));
 }
 
+fn assert_palette_query(snapshot: &str, expected: &str) {
+    let query = snapshot.lines().find_map(|line| {
+        let (_, query) = line.split_once("> ")?;
+        let (query, _) = query.split_once('│')?;
+        Some(query.trim_end())
+    });
+    assert_eq!(query, Some(expected), "{snapshot}");
+}
+
 fn palette_actions_receiver(screen: &mut Screen) -> Receiver<(ScreenInstruction, ErrorContext)> {
     let (sender, receiver) = channels::unbounded();
     screen.bus.senders.to_screen = Some(SenderWithContext::new(sender));
@@ -1716,6 +1725,8 @@ fn palette_session_scan_refreshes_current_age_without_replacing_local_metadata()
 #[test]
 fn project_context_tracks_focus_membership_and_client_lifetime() {
     let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
     let pane = PaneId::Terminal(TerminalId::new(1));
     let other = PaneId::Terminal(TerminalId::new(2));
     screen
@@ -1735,7 +1746,19 @@ fn project_context_tracks_focus_membership_and_client_lifetime() {
     );
     palette_search(&mut screen, "Switch current project");
     palette_key(&mut screen, BareKey::Enter);
+    screen.command_palette_handles_input(&None, b"alpha", false, CLIENT);
+    palette_key(&mut screen, BareKey::Esc);
+    assert_palette_query(
+        &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        "Switch current project",
+    );
     palette_key(&mut screen, BareKey::Enter);
+    screen.command_palette_handles_input(&None, b"alpha", false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    assert_palette_query(
+        &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        "",
+    );
     assert_eq!(
         screen.client_projects[&CLIENT].current.as_deref(),
         Some("alpha")
@@ -1793,12 +1816,19 @@ fn vanished_project_selection_stays_open_with_an_error() {
     screen.projects.insert("gone".into());
     palette_search(&mut screen, "Switch current project");
     palette_key(&mut screen, BareKey::Enter);
+    screen.command_palette_handles_input(&None, b"gone", false, CLIENT);
     screen.projects.clear();
     palette_key(&mut screen, BareKey::Enter);
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert_palette_query(&rendered, "gone");
     assert!(rendered.contains("Project no longer exists"), "{rendered}");
+    palette_key(&mut screen, BareKey::Esc);
+    assert_palette_query(
+        &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        "Switch current project",
+    );
 }
 
 #[test]
@@ -2720,7 +2750,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         result: Ok(Reply::View {
             view: View::Actions {
                 description: "Choose a configuration section.".into(),
-                initial_query: String::new(),
+                initial_query: "nested query".into(),
                 title: "Nested".into(),
                 actions: vec![action("nested")],
                 source: Some("source".into()),
@@ -2748,7 +2778,15 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
         scope,
         result: Err("retry".into()),
     }));
+    assert_palette_query(
+        &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        "nested query",
+    );
     palette_key(&mut screen, BareKey::Esc);
+    assert_palette_query(
+        &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        "zz-no-nativeretry",
+    );
     palette_key(&mut screen, BareKey::Enter);
     let Message::Execute { scope, handle, .. } = next().message else {
         panic!()
@@ -2788,6 +2826,169 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_
     assert!(releases.contains(&vec!["new".to_owned()]));
     assert!(releases.contains(&vec!["nested2".to_owned(), "source2".to_owned()]));
     assert!(releases.iter().all(|handles| !handles.is_empty()));
+}
+
+#[test]
+fn plugin_palette_completion_clears_saved_searches_and_keeps_the_new_initial_query() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    use yinz_bus::command_palette::{Instruction, Owner};
+    use yinz_types::command_palette::{Action as PaletteAction, Command, Message, Reply, View};
+
+    for initial_query in ["", "provided query"] {
+        let mut screen = screen();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let (sender, requests) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        let owner = Owner {
+            plugin_id: PluginId::new(50),
+            generation: 9,
+            client_id: Some(CLIENT),
+        };
+        let unavailable = Arc::new(AtomicBool::new(false));
+        let command = |command| Instruction::Command {
+            owner: owner.clone(),
+            client: CLIENT,
+            unavailable: unavailable.clone(),
+            command,
+        };
+        let next = || {
+            requests
+                .try_iter()
+                .find_map(|(instruction, _)| match instruction {
+                    PluginInstruction::PluginPalette(delivery)
+                        if matches!(
+                            delivery.message,
+                            Message::Discover { .. } | Message::Execute { .. }
+                        ) =>
+                    {
+                        Some(delivery.message)
+                    },
+                    _ => None,
+                })
+                .expect("palette request")
+        };
+        let actions = || {
+            vec![PaletteAction {
+                id: "action".into(),
+                label: "Provider action".into(),
+                description: String::new(),
+                aliases: vec![],
+                handle: "run".into(),
+            }]
+        };
+        let view = |query: &str| View::Actions {
+            title: "Provider results".into(),
+            description: String::new(),
+            actions: actions(),
+            source: Some("source".into()),
+            initial_query: query.into(),
+        };
+        screen.plugin_palette_instruction(command(Command::Register {
+            static_actions: false,
+            id: "provider".into(),
+            title: "Provider".into(),
+            registration: "1".into(),
+        }));
+        screen.toggle_command_palette(CLIENT);
+        let Message::Discover { scope, .. } = next() else {
+            panic!()
+        };
+        screen.plugin_palette_instruction(command(Command::Reply {
+            scope,
+            result: Ok(Reply::Actions { actions: actions() }),
+        }));
+        screen.command_palette_handles_input(&None, b"plugin-search", false, CLIENT);
+        palette_key(&mut screen, BareKey::Enter);
+        let Message::Execute { scope, .. } = next() else {
+            panic!()
+        };
+        screen.plugin_palette_instruction(command(Command::Reply {
+            scope,
+            result: Ok(Reply::View {
+                view: view("nested search"),
+            }),
+        }));
+        let Message::Discover { scope, query, .. } = next() else {
+            panic!()
+        };
+        assert_eq!(query, "nested search");
+        screen.plugin_palette_instruction(command(Command::Reply {
+            scope,
+            result: Ok(Reply::Actions { actions: actions() }),
+        }));
+
+        palette_key(&mut screen, BareKey::Enter);
+        let Message::Execute { scope, .. } = next() else {
+            panic!()
+        };
+        palette_key(&mut screen, BareKey::Esc);
+        assert!(!screen.plugin_palette_instruction(command(Command::Reply {
+            scope,
+            result: Ok(Reply::Complete {
+                notification: "Cancelled completion".into(),
+                view: Some(view(initial_query)),
+            }),
+        })));
+        assert_palette_query(
+            &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+            "nested search",
+        );
+
+        palette_key(&mut screen, BareKey::Enter);
+        let Message::Execute { scope, .. } = next() else {
+            panic!()
+        };
+        screen.plugin_palette_instruction(command(Command::Reply {
+            scope,
+            result: Ok(Reply::Complete {
+                notification: "Completed action".into(),
+                view: Some(view(initial_query)),
+            }),
+        }));
+        assert_palette_query(
+            &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+            initial_query,
+        );
+        let Message::Discover { scope, query, .. } = next() else {
+            panic!()
+        };
+        assert_eq!(query, initial_query);
+        screen.plugin_palette_instruction(command(Command::Reply {
+            scope: scope.clone(),
+            result: Ok(Reply::Actions { actions: actions() }),
+        }));
+        palette_key(&mut screen, BareKey::Esc);
+        assert_palette_query(
+            &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+            "",
+        );
+        if !initial_query.is_empty() {
+            screen.plugin_palette_instruction(Instruction::Discover {
+                client: CLIENT,
+                opening: scope.opening,
+                revision: scope.revision + 1,
+            });
+        }
+        let Message::Discover { scope, query, .. } = next() else {
+            panic!()
+        };
+        assert_eq!(query, "");
+        screen.plugin_palette_instruction(command(Command::Reply {
+            scope,
+            result: Ok(Reply::Actions { actions: actions() }),
+        }));
+        palette_key(&mut screen, BareKey::Esc);
+        assert_palette_query(
+            &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+            "",
+        );
+        let Message::Discover { scope, query, .. } = next() else {
+            panic!()
+        };
+        assert_eq!(scope.view, 0);
+        assert_eq!(query, "");
+    }
 }
 
 #[test]
@@ -4015,7 +4216,13 @@ fn archive_filter_forms_preserve_literal_search_text() {
 }
 
 #[test]
-fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
+fn native_note_palette_rejects_stale_search_and_clears_only_saved_notes() {
+    for result in [Ok(true), Ok(false), Err("Editor failed".into())] {
+        check_note_palette_completion(result);
+    }
+}
+
+fn check_note_palette_completion(result: Result<bool, String>) {
     use yinz_bus::command_palette::{Instruction, NoteAction, NoteChoice, NoteResults};
     use yinz_runtime::channels::{unbounded, SenderWithContext};
     let mut screen = screen();
@@ -4135,30 +4342,50 @@ fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
         |(i, _)| matches!(i, PtyInstruction::OpenNoteEditor { tab, pane_title, .. } if tab == TabId::new(0) && pane_title == "#2 Current title")
     ));
     assert!(!screen.command_palette_handles_input(&None, b"editor input", false, CLIENT));
+    let saved = result == Ok(true);
     screen.plugin_palette_instruction(Instruction::NoteFinished {
         client: CLIENT,
         token: open.token,
         revision: open.revision,
-        result: Ok(true),
+        result,
     });
     let refreshed = next();
-    assert!(matches!(refreshed.action, NoteAction::Search(ref query) if query == "body match"));
+    let expected_query = if saved { "" } else { "body match" };
+    assert!(matches!(refreshed.action, NoteAction::Search(ref query) if query == expected_query));
+    assert_palette_query(
+        &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        expected_query,
+    );
     screen.plugin_palette_instruction(Instruction::NoteSearch {
         client: CLIENT,
         token: refreshed.token,
         revision: refreshed.revision,
         reply: results(),
     });
-    assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("› #2 Second"));
+    let selected = if saved {
+        "› #1 First"
+    } else {
+        "› #2 Second"
+    };
+    assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains(selected));
     screen.command_palette_handles_input(&esc, b"", false, CLIENT);
-    let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(rendered.contains("Search project notes"), "{rendered}");
+    assert_palette_query(
+        &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        if saved { "" } else { "Search project notes" },
+    );
     assert!(!refreshed.active.load(std::sync::atomic::Ordering::Acquire));
+    if saved {
+        screen.command_palette_handles_input(&None, b"Search project notes", false, CLIENT);
+    }
     screen.command_palette_handles_input(&enter, b"", false, CLIENT);
     let pending = next();
     screen.command_palette_handles_input(&esc, b"", false, CLIENT);
     assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("Esc Close"));
     assert!(!pending.active.load(std::sync::atomic::Ordering::Acquire));
+    assert_palette_query(
+        &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
+        "Search project notes",
+    );
 }
 
 #[test]
