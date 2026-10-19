@@ -4534,6 +4534,9 @@ impl Tab {
         bytes: VteBytes,
     ) -> Result<()> {
         if let Some(plugin_pane) = self.get_pane_with_id_mut(PaneId::Plugin(pid)) {
+            let mut loading = LoadingIndication::default();
+            loading.ended = true;
+            plugin_pane.update_loading_indication(loading);
             plugin_pane.handle_plugin_bytes(client_id, bytes);
         }
         Ok(())
