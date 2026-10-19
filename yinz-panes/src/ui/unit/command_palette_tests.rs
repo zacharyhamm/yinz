@@ -425,7 +425,7 @@ fn editor_keys_unicode_and_paste() {
         rows: 24,
         ..Default::default()
     });
-    assert_eq!(palette.cursor(&layout), Some((10, 7)));
+    assert_eq!(palette.cursor(&layout), Some((10, 3)));
     palette.handle_key(KeyWithModifier::new(BareKey::Char('n')).with_alt_modifier());
     assert_eq!(palette.input.get_text(), "日界  text ");
 }
@@ -558,7 +558,7 @@ fn empty_root_keeps_only_the_framed_input_and_expands_downward() {
         compact.rect,
         CellRect {
             x: 15,
-            y: 13,
+            y: 7,
             cols: 74,
             rows: 3
         }
@@ -689,7 +689,7 @@ fn layout_and_cursor_fit_even_the_smallest_surfaces() {
         layout.rect,
         CellRect {
             x: 13,
-            y: 7,
+            y: 3,
             cols: 74,
             rows: 6
         }
@@ -2689,7 +2689,7 @@ fn result_height_tracks_content_updates_and_viewport_cap() {
     let layout = palette.layout(surface);
     assert_eq!(layout.rect.rows, 13);
     assert_eq!(layout.options_rows, 8);
-    assert_eq!(layout.rect.y, 13);
+    assert_eq!(layout.rect.y, 7);
     palette.set_entries(entries);
     let layout = palette.layout(surface);
     assert_eq!(layout.rect.rows, 24);

@@ -266,7 +266,8 @@ fn codex_composer_and_footer_repaint_on_theme_switch_preview_cancel_and_typing()
     let footer = "\x1b[4;1H\x1b[0;38;2;246;226;183mMODEL\x1b[38;2;133;137;143m · \x1b[38;2;171;223;167mDIR\x1b[0m";
     let indexed_footer = "\x1b[5;1H\x1b[0;38;5;223mINDEX\x1b[38;5;245m : \x1b[38;5;151mPATH\x1b[0m";
     let footer_matches = |grid: &GridSnapshot, colors: [(u8, u8, u8); 3]| {
-        ["MODEL", "DIR", "·", "INDEX", "PATH", ":"]
+        // Match footer separators with their suffix so palette chrome cannot match first.
+        ["MODEL", "DIR", "· DIR", "INDEX", "PATH", ": PATH"]
             .into_iter()
             .zip(colors.into_iter().cycle())
             .all(|(label, rgb)| foreground(grid, label) == Some(AnsiCode::RgbCode(rgb)))

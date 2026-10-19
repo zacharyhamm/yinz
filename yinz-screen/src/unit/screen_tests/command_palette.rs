@@ -146,7 +146,7 @@ fn watchers_see_only_the_followed_palette_and_restore_the_floating_background() 
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
     assert!(snapshot.contains("Do · Project:"), "{snapshot}");
     assert!(!snapshot.contains("private"), "{snapshot}");
-    assert_eq!(cursor, Some((6, 7)));
+    assert_eq!(cursor, Some((6, 3)));
     screen.command_palette_handles_input(&None, b"Rename tab", false, CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
@@ -155,7 +155,7 @@ fn watchers_see_only_the_followed_palette_and_restore_the_floating_background() 
         "{snapshot}"
     );
     assert!(!snapshot.contains("New pane"), "{snapshot}");
-    assert_eq!(cursor, Some((16, 7)));
+    assert_eq!(cursor, Some((16, 3)));
 
     screen.close_command_palette(CLIENT);
     let (cursor_after, after) =
@@ -179,7 +179,7 @@ fn a_smaller_watcher_crops_the_palette_cursor_and_restores_it_when_back_in_bound
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
     assert!(snapshot.contains("> "), "{snapshot}");
-    assert_eq!(cursor, Some((6, 7)));
+    assert_eq!(cursor, Some((6, 3)));
     screen.command_palette_handles_input(&None, b"a very long query", false, CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
@@ -196,7 +196,7 @@ fn a_smaller_watcher_crops_the_palette_cursor_and_restores_it_when_back_in_bound
         CLIENT,
     );
     let (cursor, _) = render_frame_and_cursor_into(&mut screen, &receiver, watcher, &mut grid);
-    assert_eq!(cursor, Some((6, 7)));
+    assert_eq!(cursor, Some((6, 3)));
     assert!(!screen.watcher_clients[&watcher].cursor_was_cropped());
     screen.close_command_palette(CLIENT);
     let (cursor, snapshot) =
@@ -215,7 +215,7 @@ fn palette_keeps_focus_owns_input_and_resets_on_reopen() {
     screen.toggle_command_palette(CLIENT);
     let (cursor, snapshot) =
         render_frame_and_cursor_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert_eq!(cursor, Some((6, 7)), "{snapshot}");
+    assert_eq!(cursor, Some((6, 3)), "{snapshot}");
     assert!(snapshot.contains("Do · Project:") && !snapshot.contains("New pane"));
     assert_eq!(screen.get_active_pane_id(&CLIENT), pane);
     // Even an intercepting plugin must not get the palette's keys.
@@ -409,22 +409,22 @@ fn palette_cursor_is_opaque_on_query_idle_and_watcher_frames() {
             for _ in 0..2 {
                 let (cursor, frame) =
                     render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
-                assert_eq!(cursor, Some((expected_x, 7)), "{frame}");
+                assert_eq!(cursor, Some((expected_x, 3)), "{frame}");
                 let cells = grid.as_character_lines();
-                assert_eq!(cells[7][expected_x].character, ' ');
-                assert_eq!(cells[7][expected_x].styles.background, background);
-                assert_eq!(cells[7][expected_x + 1].character, 'w');
-                assert_ne!(cells[7][expected_x + 1].styles.background, background);
+                assert_eq!(cells[3][expected_x].character, ' ');
+                assert_eq!(cells[3][expected_x].styles.background, background);
+                assert_eq!(cells[3][expected_x + 1].character, 'w');
+                assert_ne!(cells[3][expected_x + 1].styles.background, background);
             }
         }
         palette_key(&mut screen, BareKey::Left);
         let (cursor, _) = render_frame_and_cursor_into(&mut screen, &receiver, client, &mut grid);
-        assert_eq!(cursor, Some((9, 7)));
+        assert_eq!(cursor, Some((9, 3)));
         let cells = grid.as_character_lines();
-        assert_eq!(cells[7][9].character, 'e');
-        assert_eq!(cells[7][9].styles.background, background);
-        assert_eq!(cells[7][10].character, 'w');
-        assert_ne!(cells[7][10].styles.background, background);
+        assert_eq!(cells[3][9].character, 'e');
+        assert_eq!(cells[3][9].styles.background, background);
+        assert_eq!(cells[3][10].character, 'w');
+        assert_ne!(cells[3][10].styles.background, background);
     }
 }
 
@@ -438,7 +438,7 @@ fn palette_repaints_its_background_on_frames_without_new_pane_output() {
         screen
             .get_active_tab_mut(CLIENT)
             .unwrap()
-            .handle_pty_bytes(TerminalId::new(1), format!("\x1b[8;40H{text}").into_bytes())
+            .handle_pty_bytes(TerminalId::new(1), format!("\x1b[4;40H{text}").into_bytes())
             .unwrap();
         let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(snapshot.contains(text), "{snapshot}");
@@ -531,7 +531,7 @@ fn palette_backing_refreshes_terminal_colors_and_theme() {
         .unwrap()
         .handle_pty_bytes(
             TerminalId::new(1),
-            b"\x1b[8;40Hdefault \x1b[31mindexed".to_vec(),
+            b"\x1b[4;40Hdefault \x1b[31mindexed".to_vec(),
         )
         .unwrap();
     screen.toggle_command_palette(CLIENT);
@@ -569,7 +569,7 @@ fn palette_backing_refreshes_terminal_colors_and_theme() {
         }
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         let refreshed = grid.as_character_lines();
-        assert_ne!(before[7][39..54], refreshed[7][39..54]);
+        assert_ne!(before[3][39..54], refreshed[3][39..54]);
         screen
             .get_active_tab_mut(CLIENT)
             .unwrap()
@@ -594,7 +594,7 @@ fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
         screen.pinned_now = Some(now);
         screen.toggle_command_palette(CLIENT);
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        let before = grid.as_character_lines()[7][60].clone();
+        let before = grid.as_character_lines()[3][60].clone();
         assert_eq!(before.character, ' ');
 
         let mut notification = crate::screen::Notification::new(
@@ -613,9 +613,9 @@ fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
             rows: SIZE.rows,
         };
         let y = screen.notification_layout(surface, now, ClientId::new(1))[0].y;
-        screen.notifications[0].y_offset = Tween::settled(7.0 - y as f32);
+        screen.notifications[0].y_offset = Tween::settled(3.0 - y as f32);
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        assert_eq!(grid.as_character_lines()[7][60].character, '─');
+        assert_eq!(grid.as_character_lines()[3][60].character, '─');
 
         if moved {
             screen.notifications[0].y_offset = Tween::settled(9.0 - y as f32);
@@ -623,7 +623,7 @@ fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
             screen.notifications.clear();
         }
         render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-        assert_eq!(grid.as_character_lines()[7][60], before, "moved: {moved}");
+        assert_eq!(grid.as_character_lines()[3][60], before, "moved: {moved}");
     }
 }
 
@@ -654,7 +654,7 @@ fn palette_backing_keeps_watcher_notifications_separate() {
         rows: SIZE.rows,
     };
     let y = screen.notification_layout(surface, now, ClientId::new(1))[0].y;
-    screen.notifications[0].y_offset = Tween::settled(7.0 - y as f32);
+    screen.notifications[0].y_offset = Tween::settled(3.0 - y as f32);
     screen.toggle_command_palette(CLIENT);
     let mut grids = [
         grid_for_render_snapshot(SIZE),
@@ -675,7 +675,7 @@ fn palette_backing_keeps_watcher_notifications_separate() {
         }
         let cells = grids
             .each_ref()
-            .map(|grid| grid.as_character_lines()[7][60].clone());
+            .map(|grid| grid.as_character_lines()[3][60].clone());
         assert_ne!(
             cells[0], cells[1],
             "only the regular client's backing contains the toast"
@@ -2021,7 +2021,7 @@ fn global_opacity_reloads_open_palettes_and_applies_when_reopened() {
         let cells = grid.as_character_lines();
         assert_eq!(*control.get_or_insert(cells[5][11].clone()), cells[5][11]);
         // Sample blank palette space, away from the input, choices and border.
-        let (x, y) = (60, 7);
+        let (x, y) = (60, 3);
         let cell = cells[y][x].clone();
         assert_eq!(cell.character, 'w');
         if opacity == 100 {
