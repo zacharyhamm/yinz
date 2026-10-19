@@ -180,9 +180,8 @@ impl Pair {
         };
         let mut actual = app(self.steel.take_commands());
         actual.retain(|command| !steel_only(command));
-        // The frozen original did not guard the note when attaching tags or todos.
-        // Compare every write and reply, excluding only the new metadata lookup and
-        // note assertion. Attachment tests separately check the guard and deletion race.
+        // Adapted traces include revision updates for tags; link-only assertions remain new.
+        // Exclude the metadata lookup and link-only assertion, which attachment tests cover.
         actual.retain(|command| {
             let request = &command["DataFetch"]["request"];
             !(request["entity"] == "note"
@@ -369,13 +368,15 @@ fn project_store_actual_runtimes_match_note_tags_links_search_and_revisions() {
     pair.mutate("project_remember", json!({"name":"work","root":"/work"}));
     pair.mutate("todo_add", json!({"project":"work","text":"First"}));
     pair.mutate("todo_add", json!({"project":"work","text":"Second"}));
-    for args in [
-        json!({}),
+    pair.mutate("note_add", json!({}));
+    pair.mutate(
+        "note_add",
         json!({"global":true,"title":"global","body":"Unicode 雪"}),
+    );
+    let created = pair.mutate(
+        "note_add",
         json!({"project":"work","title":"Decision","body":"We chose Steel.","tags":["ENGINE"," design "],"todo_ids":[1,2]}),
-    ] {
-        pair.mutate("note_add", args);
-    }
+    );
     pair.query("note_list", json!({}));
     pair.query("note_list", json!({"project":"work","tag":"engine"}));
     pair.query("note_get", json!({"id":2}));
@@ -387,7 +388,7 @@ fn project_store_actual_runtimes_match_note_tags_links_search_and_revisions() {
     );
     pair.mutate(
         "note_edit",
-        json!({"id":2,"body":"Updated body","tags":["new"],"expect_rev":1}),
+        json!({"id":2,"body":"Updated body","tags":["new"],"expect_rev":created["data"]["rev"]}),
     );
     pair.mutate("note_link", json!({"note_id":1,"todo_id":1}));
     pair.mutate("note_link", json!({"note_id":2,"todo_id":2,"unlink":true}));

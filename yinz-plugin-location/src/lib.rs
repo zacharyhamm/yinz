@@ -82,25 +82,16 @@ pub fn run_plugin_from_url_with_cwd(
         }),
         "file" => {
             // Preserve the relative spelling for the user-plugin-directory fallback.
-            let mut relative = None;
-            let path = if location.starts_with("file:/") {
-                // Path is absolute, its safe to use URL path.
-                //
-                // This is the case if the scheme and : delimiter are followed by a / slash
+            let (_, raw_path) = location.split_once(':').expect("a valid URL has a scheme");
+            let is_relative = !raw_path.starts_with(['/', '~']);
+            let path = if raw_path.starts_with('/') {
                 PathBuf::from(decoded_path.as_str())
-            } else if location.starts_with("file:~") {
-                // Unwrap is safe here since location is a valid URL
-                PathBuf::from(location.strip_prefix("file:").unwrap())
             } else {
-                // URL dep doesn't handle relative paths with `file` schema properly,
-                // it always makes them absolute. Use raw location string instead.
-                //
-                // Unwrap is safe here since location is a valid URL
-                let stripped = location.strip_prefix("file:").unwrap();
-                relative = Some(expand_plugin_path(PathBuf::from(stripped)));
-                PathBuf::from(stripped)
+                // Relative file locations are literal paths, including percent signs.
+                PathBuf::from(raw_path)
             };
             let path = expand_plugin_path(path);
+            let relative = is_relative.then(|| path.clone());
             let path = cwd.map_or_else(|| path.clone(), |cwd| cwd.join(&path));
             // Wasm plugins parse locations too, without access to the host filesystem.
             #[cfg(not(target_arch = "wasm32"))]

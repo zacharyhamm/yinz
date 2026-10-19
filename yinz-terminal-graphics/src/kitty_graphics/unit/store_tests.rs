@@ -84,6 +84,32 @@ fn single_image_exceeding_quota_is_refused_with_enospc_and_store_unchanged() {
 }
 
 #[test]
+fn quality_pass_placement_scaling_checks_size_before_allocating() {
+    let mut store = KittyImageStore::with_quota(20);
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    store.add_placement_ref(id);
+    assert!(store.ensure_scaled_variant(id, key(2, 2)));
+    for size in [(usize::MAX / 4, 1), (usize::MAX, 2)] {
+        let oversized = ScaledImageKey { size, ..key(1, 1) };
+        assert!(!store.retain_scaled_variants(id, &HashSet::from([oversized]), Some(oversized),));
+        assert_eq!(store.total_bytes(), 20);
+        assert_eq!(store.scaled_variant(id, key(2, 2)).unwrap(), &[0; 16]);
+    }
+}
+
+#[test]
+fn quality_pass_raster_reconstruction_checks_size_before_allocating() {
+    let mut store = KittyImageStore::with_quota(20);
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    for size in [(usize::MAX / 4, 1), (usize::MAX, 2)] {
+        let oversized = ScaledImageKey { size, ..key(1, 1) };
+        assert!(!store.ensure_scaled_variant(id, oversized));
+        assert_eq!(store.total_bytes(), 4);
+        assert!(store.get(id).unwrap().scaled_variants.is_empty());
+    }
+}
+
+#[test]
 fn free_with_positive_refcount_retains_data_and_removes_at_zero() {
     let mut store = KittyImageStore::default();
     let id_a = store.store_image(rgba_image(10, 10)).unwrap();

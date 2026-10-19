@@ -420,6 +420,14 @@ impl EntityDef {
                 if let Err(DataError::InvalidQuery(message)) = reject_nul(&attr.name, default) {
                     return Err(DataError::InvalidSchema(message));
                 }
+                if let (AttrKind::Json, DataValue::Text(text)) = (attr.kind, default) {
+                    serde_json::from_str::<serde_json::Value>(text).map_err(|error| {
+                        DataError::InvalidSchema(format!(
+                            "attribute `{}` has a default that is not valid JSON: {}",
+                            attr.name, error
+                        ))
+                    })?;
+                }
             }
         }
         Ok(())

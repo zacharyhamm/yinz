@@ -2002,6 +2002,31 @@ fn server_termios_argument_distinguishes_defaults_and_invalid_json() {
 }
 
 #[test]
+fn quality_pass_editor_executable_path_preserves_spaces() {
+    let directory = tempfile::tempdir().unwrap();
+    let editor = directory.path().join("my editor");
+    yinz_test_support::write_warm_script(&editor, "printf '%s\\n' \"$@\"\n");
+    let file = directory.path().join("my note.md");
+    let payload = yinz_types::input::command::OpenFilePayload::new(file.clone(), None, None);
+
+    let (command, fallback) =
+        build_command(TerminalAction::OpenFile(payload), Some(editor.clone()));
+
+    assert_eq!(command.command, editor);
+    assert_eq!(command.args, vec![file.to_str().unwrap()]);
+    assert!(fallback.is_none());
+    let output = Command::new(&command.command)
+        .args(&command.args)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{}\n", file.display())
+    );
+}
+
+#[test]
 fn note_file_editor_precedence_and_arguments_use_executable_stubs() {
     const CHILD: &str = "YINZ_TEST_NOTE_EDITOR_PRECEDENCE";
     const NAME: &str = "os_input_output::os_input_output_tests::note_file_editor_precedence_and_arguments_use_executable_stubs";

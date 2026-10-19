@@ -771,11 +771,20 @@ pub fn plan_attach_to_note(note: &Note, tags: &[String], todo_ids: &[u64]) -> Ve
         return Vec::new();
     }
     let note_id = note.id;
-    let mut mutations = vec![Mutation::AssertRows {
-        entity: "note".into(),
-        filter: Pred::eq("id", note_id),
-        rows: vec![(DataRowId::new(note_id as i64), note.rev)],
-    }];
+    let guard = if tags.is_empty() {
+        Mutation::AssertRows {
+            entity: "note".into(),
+            filter: Pred::eq("id", note_id),
+            rows: vec![(DataRowId::new(note_id as i64), note.rev)],
+        }
+    } else {
+        // A tag addition must stale replacements composed before it, as in `plan_set_tags`.
+        Mutation::update("note", Pred::eq("id", note_id))
+            .expect_rev(note.rev)
+            .set("title", note.title.clone())
+            .build()
+    };
+    let mut mutations = vec![guard];
     mutations.extend(
         tags.iter().map(|tag| tag_mutation(note_id, tag)).chain(
             todo_ids
@@ -1285,7 +1294,7 @@ mod tests {
         let attach = plan_attach(&backend, id, &draft.tags, &[a, b]).unwrap();
         assert_eq!(attach.len(), 6);
         assert!(matches!(attach[0], Mutation::AssertRows { .. }));
-        assert!(matches!(attach[1], Mutation::AssertRows { .. }));
+        assert!(matches!(attach[1], Mutation::Update { .. }));
         assert_eq!(attach[2].entity(), "note_tag");
         assert_eq!(attach[5].entity(), "note_link");
         assert!(plan_attach(&backend, id, &[], &[]).unwrap().is_empty());

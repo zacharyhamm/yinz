@@ -2,6 +2,28 @@ use super::*;
 use std::collections::{BTreeSet, HashSet};
 
 #[test]
+fn quality_pass_file_url_schemes_are_case_insensitive() {
+    let cwd = std::env::current_dir().unwrap();
+    for suffix in [
+        "plugin.scm",
+        "plugin%20#?.scm",
+        "/tmp/plugin.scm",
+        "~/plugin.scm",
+    ] {
+        let expected =
+            run_plugin_from_url_with_cwd(&format!("file:{suffix}"), Some(cwd.clone())).unwrap();
+        for scheme in ["FILE", "File"] {
+            let actual =
+                run_plugin_from_url_with_cwd(&format!("{scheme}:{suffix}"), Some(cwd.clone()))
+                    .unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual.relative_path, expected.relative_path);
+            assert_eq!(actual.declared_path, expected.declared_path);
+        }
+    }
+}
+
+#[test]
 fn file_identity_is_resolved_once_and_preserves_relative_fallback() {
     let root = std::env::temp_dir().join(format!("yinz-plugin-identity-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();

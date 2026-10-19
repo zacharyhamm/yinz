@@ -51,8 +51,14 @@ fn shipped_note_attachments_guard_both_endpoints() {
         for (entity, revisions) in [("note", json!([[17, 4]])), ("todo", json!([[9, 8]]))] {
             assert!(
                 mutations.iter().any(|mutation| {
-                    mutation["AssertRows"]["entity"] == entity
-                        && mutation["AssertRows"]["rows"] == revisions
+                    if entity == "note" && operation == "note_add" {
+                        mutation["Update"]["entity"] == "note"
+                            && mutation["Update"]["filter"] == json!({"Eq":["id",{"Int":17}]})
+                            && mutation["Update"]["expect_rev"] == 4
+                    } else {
+                        mutation["AssertRows"]["entity"] == entity
+                            && mutation["AssertRows"]["rows"] == revisions
+                    }
                 }),
                 "{operation} did not guard {entity}: {mutations:?}"
             );

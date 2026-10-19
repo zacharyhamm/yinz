@@ -35,6 +35,10 @@ mod write;
 #[cfg(test)]
 pub(crate) mod tests;
 
+#[cfg(test)]
+#[path = "unit/schema_defaults.rs"]
+mod schema_defaults_tests;
+
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};

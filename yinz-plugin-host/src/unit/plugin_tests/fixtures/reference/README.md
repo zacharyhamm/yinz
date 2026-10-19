@@ -33,6 +33,12 @@ opaque text plus empty rows now apply the semantic theme background across the v
 The original text, coordinates, selection markers, lifecycle inputs, host calls, replies, and source fingerprints remain intact.
 Independent style transformations produced these expectations. The current renderer was checked against them.
 
+Two project-store fixtures include the guarded note revision update for tag attachments.
+Their `adaptation` metadata records this change. The successful attachment advances the note's
+revision by one, and the later edit uses the revision returned by creation. The failed attachment
+still leaves the note unchanged. These expectations were calculated from the recorded mutations,
+not captured from Steel; original source fingerprints and unrelated calls remain intact.
+
 Each fixture records its original source SHA-256, engine, plugin, configuration, and ordered lifecycle steps.
 The Wasm fingerprint covers the original artifact bytes.
 The Deno fingerprint covers the embedded source tree and SDK.
