@@ -1305,23 +1305,23 @@ impl CommandPalette {
             || self.text.is_some()
             || self.agent.is_some();
         let cols = surface.cols.min(if expanded { 110 } else { 74 });
-        let rows = surface.rows.min(if expanded {
-            36
-        } else if self.is_compact() {
-            3
+        let fit_results = !self.is_compact()
+            && self.form.is_none()
+            && self.text.is_none()
+            && self.agent.is_none();
+        let max_rows = if fit_results {
+            (surface.rows * 3 / 5).max(1).min(surface.rows)
         } else {
-            11
-        });
-        let rect = CellRect {
-            x: surface.x + (surface.cols - cols) / 2,
-            y: surface.y + (surface.rows / 4).min(surface.rows - rows),
-            cols,
-            rows,
+            surface.rows.min(if expanded {
+                36
+            } else if self.is_compact() {
+                3
+            } else {
+                11
+            })
         };
-        let border = usize::from(cols >= 3 && (rows >= 4 || (rows == 3 && self.is_compact())));
-        let input_y = rect.y + border;
-        let footer_y = (rows >= 5).then_some(rect.y + rows.saturating_sub(border + 1));
-        let description_y = input_y + 1 + usize::from(rows >= 6);
+        let border =
+            usize::from(cols >= 3 && (max_rows >= 4 || (max_rows == 3 && self.is_compact())));
         let description_lines = if self.description.is_empty() {
             vec![]
         } else {
@@ -1330,17 +1330,60 @@ impl CommandPalette {
                 cols.saturating_sub(2 * border),
             )
         };
-        let description_height = rows
-            .saturating_sub(7)
-            .min(rows / 3)
-            .max(1)
-            .min(
-                footer_y
-                    .unwrap_or(rect.y + rows - border)
-                    .saturating_sub(description_y)
-                    .saturating_sub(1),
-            )
-            .min(description_lines.len());
+        let mut metadata_lines = self
+            .metadata
+            .as_ref()
+            .map(|text| {
+                crate::ui::notification::wrapped_text_lines(text, cols.saturating_sub(2 * border))
+            })
+            .unwrap_or_default();
+        let content_heights = |rows: usize| {
+            let content_end = rows.saturating_sub(border + usize::from(rows >= 5));
+            let description_y = border + 1 + usize::from(rows >= 6);
+            let description_height = rows
+                .saturating_sub(7)
+                .min(rows / 3)
+                .max(1)
+                .min(content_end.saturating_sub(description_y).saturating_sub(1))
+                .min(description_lines.len());
+            let metadata_height = if self.metadata.is_some() {
+                rows.saturating_sub(7 + description_height).min(rows / 3)
+            } else {
+                0
+            };
+            let options_rows =
+                content_end.saturating_sub(description_y + description_height + metadata_height);
+            (description_height, metadata_height, options_rows)
+        };
+        let rows = if fit_results {
+            // Measure at the cap so shrinking does not hide wrapped lines or detail text.
+            let (description_rows, metadata_rows, capacity) = content_heights(max_rows);
+            let required = self
+                .wrapped_result_rows(capacity, cols.saturating_sub(2 * border))
+                .len()
+                .max(1);
+            let metadata_rows = metadata_rows.min(metadata_lines.len());
+            (max_rows.min(6)..=max_rows)
+                .find(|rows| {
+                    let (description_height, metadata_height, capacity) = content_heights(*rows);
+                    required <= capacity
+                        && description_height >= description_rows
+                        && metadata_height >= metadata_rows
+                })
+                .unwrap_or(max_rows)
+        } else {
+            max_rows
+        };
+        let (description_height, metadata_height, options_rows) = content_heights(rows);
+        let rect = CellRect {
+            x: surface.x + (surface.cols - cols) / 2,
+            y: surface.y + (surface.rows / 4).min(surface.rows - rows),
+            cols,
+            rows,
+        };
+        let input_y = rect.y + border;
+        let footer_y = (rows >= 5).then_some(rect.y + rows.saturating_sub(border + 1));
+        let description_y = input_y + 1 + usize::from(rows >= 6);
         self.description_total.set(description_lines.len());
         self.description_rows.set(description_height);
         let offset = self
@@ -1354,19 +1397,6 @@ impl CommandPalette {
             .take(description_height)
             .collect::<Vec<_>>();
         let metadata_y = description_y + description_lines.len();
-        let mut metadata_lines = self
-            .metadata
-            .as_ref()
-            .map(|text| {
-                crate::ui::notification::wrapped_text_lines(text, cols.saturating_sub(2 * border))
-            })
-            .unwrap_or_default();
-        let metadata_height = if self.metadata.is_some() {
-            rows.saturating_sub(7 + description_lines.len())
-                .min(rows / 3)
-        } else {
-            0
-        };
         self.metadata_total.set(metadata_lines.len());
         let offset = self
             .metadata_offset
@@ -1378,9 +1408,6 @@ impl CommandPalette {
             .take(metadata_height)
             .collect();
         let options_y = metadata_y + metadata_height;
-        let options_rows = footer_y
-            .unwrap_or(rect.y + rows - border)
-            .saturating_sub(options_y);
         let text_lines = self
             .text
             .as_ref()
