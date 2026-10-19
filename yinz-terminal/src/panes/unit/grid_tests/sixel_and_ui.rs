@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn quality_component_padding_rejects_expansion_before_touching_the_grid() {
+    for component in ["table;1;20001", "nested_list"] {
+        let mut grid = create_grid_with_content("");
+        let cells = format!("{}{}", vec!["120"; 60].join(","), ";".repeat(20_000));
+        let payload = format!("{component};{cells}");
+        assert!(payload.len() < MAX_DCS_PAYLOAD_BYTES);
+        let result =
+            crate::ui::components::UiComponentParser::new(&mut grid, Style::default(), false)
+                .parse(payload.into_bytes());
+        assert!(result.unwrap_err().to_string().contains("padding"));
+        assert!(viewport_texts(&grid)
+            .iter()
+            .all(|row| row.trim().is_empty()));
+        feed_bytes(&mut grid, b"recovered");
+        assert_eq!(viewport_texts(&grid)[0].trim_end(), "recovered");
+    }
+}
+
+#[test]
+fn quality_component_padding_only_expands_visible_rows() {
+    for component in ["table;0/0/80/1;1;20001", "nested_list;0/0/80/1"] {
+        let mut grid = create_grid_with_content("");
+        let cells = format!("{}{}", vec!["120"; 60].join(","), ";".repeat(20_000));
+        crate::ui::components::UiComponentParser::new(&mut grid, Style::default(), false)
+            .parse(format!("{component};{cells}").into_bytes())
+            .unwrap();
+        let rows = viewport_texts(&grid);
+        assert!(rows[0].contains(&"x".repeat(60)));
+        assert!(rows[1..].iter().all(|row| row.trim().is_empty()));
+    }
+}
+
+#[test]
 fn oversized_sixel_dcs_is_discarded_and_terminal_output_recovers() {
     let mut grid = create_grid_with_content("");
     *grid.character_cell_size.borrow_mut() = Some(SizeInPixels {

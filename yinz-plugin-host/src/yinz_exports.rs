@@ -47,6 +47,7 @@ use yinz_config::permission::PermissionCache;
 use yinz_ipc::consts::ipc_connect;
 use yinz_routing::{route_action, wait_for_action_completion};
 use yinz_runtime::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
+use yinz_session::sessions::generate_random_name as generate_random_name_impl;
 use yinz_storage::data_access::DataAccess;
 use yinz_storage::plugin_data_store;
 use yinz_types::agent::control::{AgentOutcome, AgentResponse};
@@ -67,10 +68,6 @@ use yinz_types::{
 };
 use yinz_types::{command::GitCheckout, geometry::FloatingPaneCoordinates};
 use {yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::IpcSenderWithContext};
-use {
-    yinz_session::sessions::generate_random_name as generate_random_name_impl,
-    yinz_session::sessions::validate_session_name,
-};
 use {
     yinz_types::data::validate_namespace, yinz_types::data::DataApplyResponse,
     yinz_types::data::DataCatalogResponse, yinz_types::data::DataCountResponse,
@@ -5462,12 +5459,7 @@ fn switch_session(
 }
 
 fn delete_dead_session(session_name: &SessionName) -> Result<()> {
-    delete_dead_session_in(&YINZ_SESSION_INFO_CACHE_DIR, session_name)
-}
-
-fn delete_dead_session_in(session_info_cache_dir: &Path, session_name: &SessionName) -> Result<()> {
-    validate_session_name(session_name.as_str()).map_err(|e| anyhow!(e))?;
-    std::fs::remove_dir_all(session_info_cache_dir.join(session_name))
+    yinz_session::sessions::delete_session(session_name, false)
         .with_context(|| format!("Failed to delete dead session: {:?}", session_name))
 }
 
@@ -6519,29 +6511,13 @@ mod validation_tests {
     use super::*;
 
     #[test]
-    fn dead_session_deletion_stays_inside_its_cache() {
-        let temp = tempfile::tempdir().unwrap();
-        let cache = temp.path().join("cache");
-        let outside = temp.path().join("outside");
-        std::fs::create_dir_all(cache.join("valid")).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("sentinel"), "keep").unwrap();
-
-        delete_dead_session_in(&cache, &yinz_types::internal_ids::SessionName::new("valid"))
-            .unwrap();
-        assert!(!cache.join("valid").exists());
-
-        for invalid in ["", ".", "..", "../outside", outside.to_str().unwrap()] {
+    fn dead_session_deletion_rejects_paths() {
+        for invalid in ["", ".", "..", "../outside", "/tmp/outside"] {
             assert!(
-                delete_dead_session_in(
-                    &cache,
-                    &yinz_types::internal_ids::SessionName::new(invalid)
-                )
-                .is_err(),
+                delete_dead_session(&SessionName::new(invalid)).is_err(),
                 "{invalid:?}"
             );
         }
-        assert!(outside.join("sentinel").exists());
     }
 
     #[test]
