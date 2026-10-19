@@ -15,6 +15,16 @@ pub struct ScaledImageKey {
     pub size: (usize, usize),
 }
 
+impl ScaledImageKey {
+    fn byte_len(self) -> Option<usize> {
+        self.size
+            .0
+            .checked_mul(self.size.1)?
+            .checked_mul(4)
+            .filter(|bytes| *bytes <= isize::MAX as usize)
+    }
+}
+
 /// One frame of an image's animation, beyond the root frame.
 ///
 /// Spec, "Animation": frames are numbered from 1 and "the first frame is the base image", so this
@@ -206,6 +216,15 @@ impl KittyImageStore {
         if self.scaled_variant(id, key).is_some() {
             return true;
         }
+        if !self.images.contains_key(&id) {
+            return false;
+        }
+        let Some(incoming) = key.byte_len() else {
+            return false;
+        };
+        if !self.make_room(incoming, Some(id)) {
+            return false;
+        }
         let Some(bytes) = self.scaled_variant_pixels(id, key) else {
             return false;
         };
@@ -254,13 +273,14 @@ impl KittyImageStore {
             .filter(|(key, _)| key.is_some_and(|key| !live.contains(&key)))
             .map(|(_, bytes)| bytes.len())
             .sum();
-        let staged = required
-            .filter(|key| !stored.image.scaled_variants.contains_key(key))
-            .and_then(|key| {
-                self.scaled_variant_pixels(id, key)
-                    .map(|bytes| (key, bytes))
-            });
-        let incoming = staged.as_ref().map_or(0, |(_, bytes)| bytes.len());
+        let required = required.filter(|key| !stored.image.scaled_variants.contains_key(key));
+        let incoming = match required {
+            Some(key) => match key.byte_len() {
+                Some(bytes) => bytes,
+                None => return false,
+            },
+            None => 0,
+        };
         let extra = incoming.saturating_sub(obsolete_pixels + obsolete_caches);
         if !self.has_room(extra) {
             // Preflight before make_room drops caches, so a failed placement keeps its encodings.
@@ -290,6 +310,13 @@ impl KittyImageStore {
                 return false;
             }
         }
+        let staged = match required {
+            Some(key) => match self.scaled_variant_pixels(id, key) {
+                Some(bytes) => Some((key, bytes)),
+                None => return false,
+            },
+            None => None,
+        };
         let Some(stored) = self.images.get_mut(&id) else {
             return false;
         };
@@ -432,12 +459,7 @@ impl KittyImageStore {
                 .map(Vec::len)
                 .sum::<usize>();
             for key in variants {
-                let Some(bytes) = key
-                    .size
-                    .0
-                    .checked_mul(key.size.1)
-                    .and_then(|n| n.checked_mul(4))
-                else {
+                let Some(bytes) = key.byte_len() else {
                     return false;
                 };
                 let Some(total) = incoming.checked_add(bytes) else {

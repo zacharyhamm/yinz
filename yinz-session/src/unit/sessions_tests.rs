@@ -2,6 +2,23 @@ use super::*;
 use std::os::unix::net::UnixListener;
 
 #[test]
+fn quality_pass_session_candidates_ignore_non_utf8_names() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let sockets = tempfile::tempdir().unwrap();
+    let _session = UnixListener::bind(sockets.path().join("valid-session")).unwrap();
+    let invalid_file = std::ffi::OsString::from_vec(b"unrelated-\xff".to_vec());
+    fs::write(sockets.path().join(invalid_file), "unrelated").unwrap();
+    let invalid_socket = std::ffi::OsString::from_vec(b"socket-\xfe".to_vec());
+    let _invalid = UnixListener::bind(sockets.path().join(invalid_socket)).unwrap();
+
+    let candidates = session_socket_candidates_in(sockets.path()).unwrap();
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].0.as_str(), "valid-session");
+}
+
+#[test]
 fn the_pty_broker_socket_is_not_a_session_candidate() {
     let sock_dir = tempfile::tempdir().unwrap();
     let broker_name = yinz_ipc::consts::pty_broker_socket_name(8);

@@ -86,6 +86,36 @@ fn three_chunk_upload_concatenates_payloads_and_completes_on_m0() {
 }
 
 #[test]
+fn quality_pass_chunked_upload_is_bounded_and_recovers_after_overflow() {
+    let encoded_limit = MAX_DECODED_BYTES.div_ceil(3) * 4;
+    let chunk = format!("m=1;{}", "A".repeat(4096)).into_bytes();
+    for final_chunk in [b"m=1;AAAA".as_slice(), b"m=0;AAAA".as_slice()] {
+        let mut parser = KittyCommandParser::new();
+        assert!(parser.parse(b"a=t,f=24,s=1,v=1,i=17,m=1;").is_none());
+        // Reserve the boundary once so the regression does not double a large Vec allocation.
+        parser
+            .pending
+            .as_mut()
+            .unwrap()
+            .payload_b64
+            .reserve_exact(encoded_limit + 4);
+        for _ in 0..encoded_limit / 4096 {
+            assert!(parser.parse(&chunk).is_none());
+        }
+        let remainder = encoded_limit % 4096;
+        assert!(parser.parse(&chunk[..4 + remainder]).is_none());
+
+        let error = parse_one(&mut parser, final_chunk).unwrap_err();
+        assert_eq!(error.code, KittyErrorCode::Einval);
+        assert_eq!(error.image_id, Some(17));
+        assert!(!parser.has_pending());
+        let next = parse_one(&mut parser, b"a=t,f=24,s=1,v=1,i=18;AAAA").unwrap();
+        assert_eq!(next.image_id, Some(18));
+        assert_eq!(next.image.unwrap().bytes, vec![0; 3]);
+    }
+}
+
+#[test]
 fn delete_between_chunks_aborts_upload_and_returns_the_delete() {
     let raster = raster_12_bytes();
     let full_b64 = b64(&raster);

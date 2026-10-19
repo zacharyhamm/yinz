@@ -2,6 +2,7 @@ use std::io::{Read, Seek};
 use std::path::Path;
 
 pub const MAX_DECODED_BYTES: usize = 104_857_600;
+const MAX_ENCODED_BYTES: usize = MAX_DECODED_BYTES.div_ceil(3) * 4;
 pub const MAX_DIMENSION: u32 = 10_000;
 
 /// How deep a chain of relative placements may go before the terminal refuses with `ETOODEEP`.
@@ -321,6 +322,12 @@ impl KittyCommandParser {
                     }
                 }
                 let pending = self.pending.as_mut().unwrap();
+                if payload.len() > MAX_ENCODED_BYTES.saturating_sub(pending.payload_b64.len()) {
+                    let error = EchoFields::from_command(&pending.command)
+                        .error(KittyErrorCode::Einval, "image too large");
+                    self.pending = None;
+                    return Some(Err(error));
+                }
                 pending.payload_b64.extend_from_slice(payload);
                 if more_chunks {
                     return None;
@@ -346,6 +353,10 @@ impl KittyCommandParser {
             | KittyAction::Transmit
             | KittyAction::TransmitAndDisplay
             | KittyAction::Query => {
+                if payload.len() > MAX_ENCODED_BYTES {
+                    return Some(Err(EchoFields::from_command(&command)
+                        .error(KittyErrorCode::Einval, "image too large")));
+                }
                 if command.more_chunks {
                     self.pending = Some(PendingUpload {
                         command,

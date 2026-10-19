@@ -82,7 +82,9 @@ fn session_socket_candidates_in(
             let mut candidates = Vec::new();
             files.for_each(|file| {
                 if let Ok(file) = file {
-                    let file_name = file.file_name().into_string().unwrap();
+                    let Ok(file_name) = file.file_name().into_string() else {
+                        return;
+                    };
                     // try to get creation time, fall back to modification time on platforms where it's not supported (e.g., musl)
                     // for session creation time these are almost always identical (notable
                     // exceptions are session name changes)
@@ -92,7 +94,7 @@ fn session_socket_candidates_in(
                         .and_then(|d| d.elapsed().ok())
                         .unwrap_or_default();
                     let duration = Duration::from_secs(ctime.as_secs());
-                    if is_ipc_socket(&file.file_type().unwrap())
+                    if file.file_type().is_ok_and(|kind| is_ipc_socket(&kind))
                         && is_session_socket_name(&file_name)
                     {
                         candidates.push((SessionName::new(file_name), duration));
@@ -202,7 +204,9 @@ pub fn get_sessions_sorted_by_mtime() -> anyhow::Result<Vec<SessionName>> {
             let mut candidates: Vec<(SessionName, SystemTime)> = Vec::new();
             for file in files {
                 let file = file?;
-                let file_name = file.file_name().into_string().unwrap();
+                let Ok(file_name) = file.file_name().into_string() else {
+                    continue;
+                };
                 let file_modified_at = file.metadata()?.modified()?;
                 if is_ipc_socket(&file.file_type()?) && is_session_socket_name(&file_name) {
                     candidates.push((SessionName::new(file_name), file_modified_at));

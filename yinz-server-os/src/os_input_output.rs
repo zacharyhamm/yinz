@@ -93,7 +93,7 @@ fn build_command(
 
             let mut args = vec![];
 
-            if !command.is_dir() {
+            if !command.exists() {
                 separate_command_arguments(&mut command, &mut args);
             }
             let file_to_open = payload

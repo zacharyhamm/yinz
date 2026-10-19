@@ -2,6 +2,35 @@ use super::*;
 use crate::store::{self, Backend};
 
 #[test]
+fn quality_pass_tag_attachment_invalidates_stale_tag_replacement() {
+    let backend = store::Local::shared("agents");
+    backend.define_all(&store::shared_defs()).unwrap();
+    let id = backend
+        .apply(
+            plan_add(0, None, "title", "body", "user", &[], &[])
+                .unwrap()
+                .0,
+        )
+        .unwrap()
+        .ids[0]
+        .get() as u64;
+    let before = fetch_note(&backend, id).unwrap().unwrap();
+    let replacement = plan_set_tags(&before, &["replacement".into()], Some(before.rev), true)
+        .unwrap()
+        .0;
+    backend
+        .apply(plan_attach(&backend, id, &["attached".into()], &[]).unwrap())
+        .unwrap();
+
+    let error = backend.apply(replacement).unwrap_err();
+    assert!(error.is_conflict(), "{error:?}");
+    assert_eq!(
+        fetch_note(&backend, id).unwrap().unwrap().tags,
+        ["attached"]
+    );
+}
+
+#[test]
 fn attachments_cannot_recreate_side_rows_after_note_deletion() {
     for delete_first in [false, true] {
         let backend = store::Local::shared("agents");
