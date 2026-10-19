@@ -46,6 +46,12 @@ struct ActiveWebRequestStream {
 }
 
 const OUTPUT_TRUNCATED: &[u8] = b"\n[truncated]";
+// Bound each captured stream even when a plugin omits or inflates its requested limit.
+const MAX_COMMAND_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(test)]
+#[path = "unit/command_output_limits.rs"]
+mod command_output_limits;
 
 async fn read_command_stream<R>(
     mut stream: R,
@@ -55,6 +61,9 @@ async fn read_command_stream<R>(
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    let limit = max_output_bytes
+        .unwrap_or(MAX_COMMAND_OUTPUT_BYTES)
+        .min(MAX_COMMAND_OUTPUT_BYTES);
     let mut output = vec![];
     let mut buffer = [0; 8192];
     let mut truncated = false;
@@ -64,17 +73,11 @@ where
             break;
         }
         on_chunk(&buffer[..read]);
-        match max_output_bytes {
-            Some(limit) => {
-                let keep = limit.saturating_sub(output.len()).min(read);
-                output.extend_from_slice(&buffer[..keep]);
-                truncated |= keep < read;
-            },
-            None => output.extend_from_slice(&buffer[..read]),
-        }
+        let keep = limit.saturating_sub(output.len()).min(read);
+        output.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < read;
     }
     if truncated {
-        let limit = max_output_bytes.unwrap_or_default();
         output.truncate(limit.saturating_sub(OUTPUT_TRUNCATED.len()));
         output.extend_from_slice(&OUTPUT_TRUNCATED[..OUTPUT_TRUNCATED.len().min(limit)]);
     }
@@ -147,7 +150,7 @@ mod command_output_tests {
     }
 
     #[tokio::test]
-    async fn unbounded_command_output_is_unchanged() {
+    async fn small_command_output_without_a_requested_limit_is_unchanged() {
         let (mut writer, reader) = tokio::io::duplex(8);
         let write = tokio::spawn(async move {
             writer.write_all(b"complete output").await.unwrap();
@@ -1403,6 +1406,23 @@ async fn send_web_request(
         if status == 303 || (matches!(status, 301 | 302) && verb == HttpVerb::Post) {
             verb = HttpVerb::Get;
             body.clear();
+            // RFC 9110 section 15.4: body metadata cannot describe the rewritten GET.
+            headers.retain(|name, _| {
+                !matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "content-encoding"
+                        | "content-language"
+                        | "content-location"
+                        | "content-type"
+                        | "content-length"
+                        | "content-range"
+                        | "digest"
+                        | "last-modified"
+                        | "transfer-encoding"
+                        | "trailer"
+                        | "expect"
+                )
+            });
         }
         url = next_url;
     }
@@ -2747,15 +2767,25 @@ mod web_request_stream_tests {
             ("307 Temporary Redirect", HttpVerb::Post, "POST"),
         ] {
             let (url, redirected_request) = serve_redirect(status, "/final".to_owned()).await;
-            buffered_web_request(
-                url,
-                verb,
-                BTreeMap::new(),
-                b"payload".to_vec(),
-                web_http_client().unwrap(),
-                None,
+            tokio::time::timeout(
+                yinz_test_support::default_timeout(),
+                buffered_web_request(
+                    url,
+                    verb,
+                    BTreeMap::from([
+                        ("Content-Length".into(), "7".into()),
+                        ("Content-Type".into(), "text/plain".into()),
+                        ("Content-Encoding".into(), "identity".into()),
+                        ("Content-Language".into(), "en".into()),
+                        ("Content-Location".into(), "/original".into()),
+                    ]),
+                    b"payload".to_vec(),
+                    web_http_client().unwrap(),
+                    None,
+                ),
             )
             .await
+            .expect("a redirected request must not wait for a discarded body")
             .unwrap();
 
             let request = String::from_utf8(redirected_request.await.unwrap()).unwrap();
@@ -2770,12 +2800,26 @@ mod web_request_stream_tests {
                     "{case}: a rewritten request must not announce a body:\n{request}"
                 );
                 assert_eq!(request_body(&request), "", "{case}: body replayed as GET");
+                for header in [
+                    "content-type",
+                    "content-encoding",
+                    "content-language",
+                    "content-location",
+                ] {
+                    assert!(
+                        header_line(&request, header).is_none(),
+                        "{case}: stale {header}: {request}"
+                    );
+                }
             } else {
                 assert_eq!(
                     request_body(&request),
                     "payload",
                     "{case}: the body must survive a redirect that keeps the verb"
                 );
+                assert!(header_line(&request, "content-type")
+                    .unwrap()
+                    .ends_with(": text/plain"));
             }
         }
     }

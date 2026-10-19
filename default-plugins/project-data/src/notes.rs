@@ -738,15 +738,44 @@ pub fn plan_add(
 
 /// The tag and link rows for a note that now has an id. Empty for a note with
 /// neither, so a caller can skip the second apply.
-/// Revalidate the todos after note creation and assert their revisions before
-/// writing any side rows, so deletion cannot leave dangling links or partial tags.
+/// Assert both the note and todo revisions before writing side rows, so deletion
+/// cannot leave dangling links or partial tags.
 pub fn plan_attach(
     backend: &impl Backend,
     note_id: u64,
     tags: &[String],
     todo_ids: &[u64],
 ) -> Result<Vec<Mutation>, String> {
+    if tags.is_empty() && todo_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = backend.fetch(
+        &FetchRequest::entity("note")
+            .select(LIST_COLUMNS.iter().copied())
+            .filter(Pred::eq("id", note_id))
+            .limit(1),
+    )?;
+    let note = from_rows(&rows)
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("no note {note_id}; call note_list"))?;
     let mut mutations = require_todos(backend, todo_ids)?;
+    mutations.extend(plan_attach_to_note(&note, tags, todo_ids));
+    Ok(mutations)
+}
+
+/// The pure attachment plan shared by native callers and the Scheme store.
+/// Callers prepend [`require_todos`]'s assertions for the linked todo rows.
+pub fn plan_attach_to_note(note: &Note, tags: &[String], todo_ids: &[u64]) -> Vec<Mutation> {
+    if tags.is_empty() && todo_ids.is_empty() {
+        return Vec::new();
+    }
+    let note_id = note.id;
+    let mut mutations = vec![Mutation::AssertRows {
+        entity: "note".into(),
+        filter: Pred::eq("id", note_id),
+        rows: vec![(DataRowId::new(note_id as i64), note.rev)],
+    }];
     mutations.extend(
         tags.iter().map(|tag| tag_mutation(note_id, tag)).chain(
             todo_ids
@@ -754,7 +783,7 @@ pub fn plan_attach(
                 .map(|todo_id| link_mutation(note_id, *todo_id)),
         ),
     );
-    Ok(mutations)
+    mutations
 }
 
 fn tag_mutation(note_id: u64, tag: &str) -> Mutation {
@@ -905,6 +934,10 @@ pub fn plan_move_root(old: &str, new: &str) -> Result<Vec<Mutation>, String> {
 }
 
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[path = "unit/notes_attachments.rs"]
+mod attachment_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1248,15 +1281,17 @@ mod tests {
         let backend = backend();
         let a = todo(&backend, "/work", "a");
         let b = todo(&backend, "/other", "b");
-        let attach = plan_attach(&backend, 12, &draft.tags, &[a, b]).unwrap();
-        assert_eq!(attach.len(), 5);
+        let id = add(&backend, None, "note", "body", &[], &[]);
+        let attach = plan_attach(&backend, id, &draft.tags, &[a, b]).unwrap();
+        assert_eq!(attach.len(), 6);
         assert!(matches!(attach[0], Mutation::AssertRows { .. }));
-        assert_eq!(attach[1].entity(), "note_tag");
-        assert_eq!(attach[4].entity(), "note_link");
-        assert!(plan_attach(&backend, 12, &[], &[]).unwrap().is_empty());
+        assert!(matches!(attach[1], Mutation::AssertRows { .. }));
+        assert_eq!(attach[2].entity(), "note_tag");
+        assert_eq!(attach[5].entity(), "note_link");
+        assert!(plan_attach(&backend, id, &[], &[]).unwrap().is_empty());
         assert_eq!(
-            plan_attach(&backend, 12, &draft.tags, &[]).unwrap(),
-            vec![tag_mutation(12, "a"), tag_mutation(12, "b")]
+            plan_attach(&backend, id, &draft.tags, &[]).unwrap()[1..],
+            vec![tag_mutation(id, "a"), tag_mutation(id, "b")]
         );
     }
 

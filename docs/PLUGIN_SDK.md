@@ -300,6 +300,11 @@ value; do not block the interpreter waiting for a host response.
 `"on-output"` callback for streamed output.
 Its result has `"exit-code"`, `"stdout"`, `"stderr"`, and `"context"`.
 Output is a bytevector. The context key `"__yinz_async"` is reserved.
+The host captures at most 8 MiB each for stdout and stderr. `"max-bytes"` can
+reduce this limit. Truncated captures include a `\n[truncated]` marker, shortened
+if the limit cannot hold it.
+The host continues to drain both streams. `"on-output"` receives all output,
+including bytes beyond the capture limit.
 
 `(yinz-web-request options)` returns a deferred hash with `"status"`, `"headers"`,
 `"body"` (bytevector), and `"context"`. Options are `"url"`, `"verb"` (`"Get"`,

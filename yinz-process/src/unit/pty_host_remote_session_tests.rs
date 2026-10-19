@@ -236,6 +236,42 @@ mod attaching {
         Arc::new(Mutex::new(a))
     }
 
+    #[test]
+    fn a_disconnect_racing_a_new_attachment_cannot_leave_an_orphan_clock() {
+        use std::sync::Barrier;
+        let (session, _control, _master) = test_session();
+        let recipient = wire();
+        let phase = Barrier::new(3);
+        let old_generation = AtomicU64::new(0);
+        let mut orphaned_attachments = 0;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..2000 {
+                    phase.wait();
+                    session.detach_if(old_generation.load(Ordering::Acquire));
+                    phase.wait();
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..2000 {
+                    phase.wait();
+                    session.attach(recipient.clone());
+                    phase.wait();
+                }
+            });
+            for _ in 0..2000 {
+                old_generation.store(session.attach(recipient.clone()), Ordering::Release);
+                phase.wait();
+                phase.wait();
+                orphaned_attachments += usize::from(session.orphaned_for().is_some());
+            }
+        });
+        assert_eq!(
+            orphaned_attachments, 0,
+            "a live connection inherited the old disconnect's timer"
+        );
+    }
+
     /// A connection that has already been replaced must not clear its
     /// successor's wire. Notice of a disconnect can arrive long after a
     /// reconnect has taken over — the control pump only learns of it when its

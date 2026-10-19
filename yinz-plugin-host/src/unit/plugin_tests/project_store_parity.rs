@@ -180,6 +180,31 @@ impl Pair {
         };
         let mut actual = app(self.steel.take_commands());
         actual.retain(|command| !steel_only(command));
+        // The frozen original did not guard the note when attaching tags or todos.
+        // Compare every write and reply, excluding only the new metadata lookup and
+        // note assertion. Attachment tests separately check the guard and deletion race.
+        actual.retain(|command| {
+            let request = &command["DataFetch"]["request"];
+            !(request["entity"] == "note"
+                && request["select"] == json!(agent_proto::notes::LIST_COLUMNS)
+                && request["limit"] == 1
+                && request["filter"]["Eq"][0] == "id")
+        });
+        for command in &mut actual {
+            if let Some(mutations) = command
+                .pointer_mut("/DataApply/mutations")
+                .and_then(Value::as_array_mut)
+            {
+                if mutations.iter().any(|mutation| {
+                    matches!(
+                        mutation["Put"]["entity"].as_str(),
+                        Some("note_tag" | "note_link")
+                    )
+                }) {
+                    mutations.retain(|mutation| mutation["AssertRows"]["entity"] != "note");
+                }
+            }
+        }
         assert_eq!(
             normalize(actual),
             normalize(expected.clone()),

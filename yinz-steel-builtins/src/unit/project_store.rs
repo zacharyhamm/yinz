@@ -3,6 +3,67 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 #[test]
+fn shipped_note_attachments_guard_both_endpoints() {
+    use std::sync::{Arc, Mutex};
+    use yinz_steel::{modules::SourceRoot, Runtime};
+    let batches = Arc::new(Mutex::new(Vec::new()));
+    let recorded = batches.clone();
+    let mut runtime = Runtime::new(move |command: serde_json::Value| {
+        yinz_steel::binary::decode_command(command.clone()).unwrap();
+        if let Some(request) = command.get("DataFetch") {
+            let (columns, rows) = match request["request"]["entity"].as_str().unwrap() {
+                "note" => (
+                    json!(["id", "rev", "title"]),
+                    json!([[{"Int":17}, {"Int":4}, {"Text":"note"}]]),
+                ),
+                "todo" => (json!(["id", "rev"]), json!([[{"Int":9}, {"Int":8}]])),
+                _ => (json!([]), json!([])),
+            };
+            Ok(json!({"columns":columns,"rows":rows,"truncated":false,"next_cursor":null}))
+        } else if let Some(request) = command.get("DataApply") {
+            recorded.lock().unwrap().push(request["mutations"].clone());
+            Ok(json!({"rows_written":1,"rows_deleted":0,"ids":[17],"per_mutation":[1]}))
+        } else if command.get("DataCount").is_some() {
+            Ok(json!(0))
+        } else {
+            Ok(json!(null))
+        }
+    })
+    .unwrap();
+    let mut root = SourceRoot::file(&crate::asset_dir().join("project-store.scm"), None).unwrap();
+    runtime
+        .eval_with_source_root("(require \"./project-store/notes.scm\")", &mut root)
+        .unwrap();
+    runtime.load(json!({})).unwrap();
+    for (operation, args) in [
+        ("note_link", json!({"note_id":17,"todo_id":9})),
+        (
+            "note_add",
+            json!({"global":true,"title":"note","body":"body","tags":["tag"],"todo_ids":[9]}),
+        ),
+    ] {
+        batches.lock().unwrap().clear();
+        runtime
+            .invoke("ps-note-mutate", vec![json!(operation), args])
+            .unwrap();
+        let batches = batches.lock().unwrap();
+        let mutations = batches.last().unwrap().as_array().unwrap();
+        for (entity, revisions) in [("note", json!([[17, 4]])), ("todo", json!([[9, 8]]))] {
+            assert!(
+                mutations.iter().any(|mutation| {
+                    mutation["AssertRows"]["entity"] == entity
+                        && mutation["AssertRows"]["rows"] == revisions
+                }),
+                "{operation} did not guard {entity}: {mutations:?}"
+            );
+        }
+        assert!(mutations
+            .iter()
+            .any(|mutation| mutation["Put"]["entity"] == "note_link"));
+    }
+}
+
+#[test]
 fn project_store_modules_compile_in_the_confined_graph() {
     let _ = plugin_with_source("project-store", "(require \"./project-store/ops.scm\" \"./project-store/import.scm\" \"./project-store/arrangement.scm\")", json!({}), BTreeMap::new(), "");
 }
