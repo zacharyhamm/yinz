@@ -74,6 +74,8 @@ fn non_utf8_environment_survives_resolution_and_terminal_launch() {
 }
 
 #[test]
+// APFS rejects the non-UTF-8 directory name before the resolver runs.
+#[cfg(not(target_os = "macos"))]
 fn claude_resolves_non_utf8_configuration_paths() {
     use std::os::unix::ffi::OsStringExt;
 

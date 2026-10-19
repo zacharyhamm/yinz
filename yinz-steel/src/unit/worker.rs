@@ -307,6 +307,7 @@ fn worker_deadline_bounds_recursive_macro_expansion() {
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn worker_memory_limit_contains_single_huge_native_allocation() {
     let mut worker = super::WorkerRuntime::new(&binary(), Ok).unwrap();
     let error = worker.eval("(make-string 1073741824 #\\x)").unwrap_err();

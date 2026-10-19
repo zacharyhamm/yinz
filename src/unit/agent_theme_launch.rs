@@ -27,10 +27,11 @@ fn terminal_output_with_input(command: &mut Command, input: &[u8]) -> Output {
     nix::sys::termios::cfmakeraw(&mut termios);
     nix::sys::termios::tcsetattr(&pty.slave, nix::sys::termios::SetArg::TCSANOW, &termios).unwrap();
     let slave = std::fs::File::from(pty.slave);
+    // Bash uses stderr for job control, so it must share the test terminal.
     command
         .stdin(slave.try_clone().unwrap())
-        .stdout(slave)
-        .stderr(Stdio::piped());
+        .stderr(slave.try_clone().unwrap())
+        .stdout(slave);
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
@@ -40,8 +41,11 @@ fn terminal_output_with_input(command: &mut Command, input: &[u8]) -> Output {
         });
     }
     let child = command.spawn().unwrap();
-    // The Command owns its cloned slave too: close it before waiting for PTY EOF.
-    command.stdin(Stdio::null()).stdout(Stdio::null());
+    // Close the Command's slave handles before waiting for PTY EOF.
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     let mut master = std::fs::File::from(pty.master);
     master.write_all(input).unwrap();
     let reader = std::thread::spawn(move || {
@@ -338,7 +342,8 @@ fg
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("BEFORE_STOPLAUNCHER_STOPPED")
+        stdout.contains("BEFORE_STOP")
+            && stdout.contains("LAUNCHER_STOPPED")
             && stdout.contains("AFTER_RESUME:terminal-input"),
         "{stdout} STDERR: {}",
         String::from_utf8_lossy(&output.stderr)

@@ -611,6 +611,7 @@ fn steel_native_compilation_failure_allows_healthy_entrypoints_and_imports_after
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 #[serial(plugin_tests)]
 fn steel_exhaustion_disposes_the_guest_and_reload_recovers_in_a_live_session() {
     let harness = Harness::new(

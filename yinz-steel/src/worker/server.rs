@@ -117,6 +117,8 @@ pub fn confine_process() -> Result<()> {
         }
     }
     for (resource, amount) in [
+        // macOS rejects this cap when existing mappings already exceed it.
+        #[cfg(not(target_os = "macos"))]
         (libc::RLIMIT_AS, 1024 * 1024 * 1024),
         (libc::RLIMIT_STACK, 64 * 1024 * 1024),
         (libc::RLIMIT_CORE, 0),

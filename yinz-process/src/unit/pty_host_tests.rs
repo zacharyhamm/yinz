@@ -2131,7 +2131,7 @@ fn agent_theme_retention_clears_on_end_and_dedicated_child_exit() {
     for teardown in [false, true] {
         let (mut host, _, socket) = TestHost::start();
         let socket = socket.unwrap();
-        let (_, mut master) = host.spawn(sh("read -r finish"));
+        let (_, mut master) = host.spawn(sh("read -r finish; printf done"));
         let snapshot = AgentThemeSnapshot {
             version: SNAPSHOT_VERSION,
             provider: "fixture".into(),
@@ -2162,6 +2162,8 @@ fn agent_theme_retention_clears_on_end_and_dedicated_child_exit() {
         report(Some(snapshot.clone()));
         if teardown {
             master.write_all(b"finish\n").unwrap();
+            // macOS waits for pending terminal output to drain before closing the slave.
+            read_until(&mut master, "done");
             assert!(matches!(host.recv(), HostToServerMsg::ChildExited { .. }));
         } else {
             report(None);
