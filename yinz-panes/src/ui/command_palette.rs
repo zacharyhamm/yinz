@@ -1380,7 +1380,7 @@ impl CommandPalette {
         let (description_height, metadata_height, options_rows) = content_heights(rows);
         let rect = CellRect {
             x: surface.x + (surface.cols - cols) / 2,
-            y: surface.y + (surface.rows / 4).min(surface.rows - rows),
+            y: surface.y + (surface.rows / 10).min(surface.rows - rows),
             cols,
             rows,
         };
