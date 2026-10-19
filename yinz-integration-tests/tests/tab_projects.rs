@@ -909,11 +909,13 @@ fn registry_updates_palette_and_switching_project_preserves_focus() {
     });
     yinz.send_stdin(b"beta");
     yinz.send_stdin(&keys::ENTER);
-    yinz.wait_until("selection returns to previous search", |screen| {
-        screen.contains("Project: beta") && screen.contains("> Switch current project")
+    yinz.wait_until("selection clears the previous search", |screen| {
+        screen.contains("Project: beta")
+            && !screen.contains("Switch current project")
+            && !screen.contains("> beta")
     });
     yinz.send_stdin(&keys::ESC);
-    yinz.wait_until("palette closed", |screen| !screen.contains("Esc Close"));
+    yinz.wait_until("palette closed", |screen| !screen.contains("Do · Project:"));
     yinz.send_stdin(b"still focused");
     shell.wait_for_stdin("input reaches original pane", |bytes| {
         bytes.ends_with(b"still focused")

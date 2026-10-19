@@ -436,6 +436,17 @@ impl CommandPalette {
         self.rematch_query();
     }
 
+    pub fn clear_searches(&mut self) {
+        self.set_query(String::new());
+        for (_, input, selected) in &mut self.saved_search {
+            *input = TextInput::default();
+            *selected = None;
+        }
+        for previous in &mut self.history {
+            previous.clear_searches();
+        }
+    }
+
     pub fn theme_picker(&self) -> bool {
         self.picker == Some(EntryKind::Theme)
     }

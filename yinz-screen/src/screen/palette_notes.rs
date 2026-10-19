@@ -372,6 +372,9 @@ impl Screen {
                 }
                 return;
             }
+            if result == Ok(true) {
+                state.widget.clear_searches();
+            }
             state.notes.recovery = result.err();
             state.widget.busy = false;
             self.command_palettes.insert(client, state);

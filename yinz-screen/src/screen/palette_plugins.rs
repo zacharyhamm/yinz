@@ -1006,6 +1006,7 @@ impl Screen {
                     .non_fatal();
             }
             if let Ok(Reply::Complete { view, .. }) = result {
+                state.widget.clear_searches();
                 result = Ok(view
                     .map(|view| Reply::View { view })
                     .unwrap_or(Reply::Close));

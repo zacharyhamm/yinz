@@ -1055,8 +1055,10 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
     std::fs::write(&replacement, "# Updated note\n\nUpdated needle body\n").unwrap();
     std::fs::rename(replacement, &path).unwrap();
     editor.exit(Some(0));
-    yinz.wait_until("previous note search restored", |grid| {
-        grid.contains("> needle") && grid.contains(&format!("› #{id} Updated note"))
+    yinz.wait_until("saved note search has an empty query", |grid| {
+        grid.contains(&format!("› #{id} Updated note"))
+            && !grid.contains("> needle")
+            && !grid.contains("Loading…")
     });
     assert!(!path.exists());
     let after = request(NotesTodos::NoteGet { id });
@@ -1065,6 +1067,12 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
     for key in ["tags", "todo_ids", "author", "project", "archived"] {
         assert_eq!(after[key], original[key], "{key}");
     }
+    yinz.send_stdin(b"needle");
+    yinz.wait_until("fresh search before failed edits", |grid| {
+        grid.contains("> needle")
+            && grid.contains(&format!("› #{id} Updated note"))
+            && !grid.contains("Loading…")
+    });
     for outcome in ["invalid", "failed", "closed", "conflict"] {
         yinz.send_stdin(&keys::ENTER);
         let editor = yinz.expect_pty_spawn();
@@ -1147,8 +1155,10 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
     yinz.send_stdin(&keys::ESC);
-    yinz.wait_until("Escape returns to root", |grid| {
-        grid.contains("> Search project notes") && !grid.contains("> needle")
+    yinz.wait_until("Escape returns to root with an empty query", |grid| {
+        grid.contains("Do · Project:")
+            && !grid.contains("Search project notes")
+            && !grid.contains("> needle")
     });
     yinz.quit();
 }

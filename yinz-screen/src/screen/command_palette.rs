@@ -1316,6 +1316,7 @@ impl Screen {
                     self.client_projects.entry(client).or_default().current = Some(name);
                     if let Some(state) = self.command_palettes.get_mut(&client) {
                         state.widget.back();
+                        state.widget.clear_searches();
                     }
                 } else if let Some(state) = self.command_palettes.get_mut(&client) {
                     state.widget.set_error("Project no longer exists".into());
