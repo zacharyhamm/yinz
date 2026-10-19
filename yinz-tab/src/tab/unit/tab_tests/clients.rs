@@ -5,6 +5,55 @@ use yinz_types::data::Event;
 use yinz_types::position::Position;
 
 #[test]
+fn plugin_output_survives_late_loading_animation_ticks_and_stage_updates() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        false,
+    );
+    let (sender, _receiver) = unbounded();
+    tab.senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+    let client = ClientId::new(1);
+    let plugin = crate::PluginId::new(2);
+    let pane_id = PaneId::Plugin(plugin);
+    tab.new_pane(
+        pane_id,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+
+    for text in ["first plugin frame", "reloaded plugin frame"] {
+        tab.start_plugin_loading_indication(plugin, LoadingIndication::new("test".into()));
+        assert!(!tab
+            .get_pane_with_id(pane_id)
+            .unwrap()
+            .dump_screen(false, Some(client))
+            .contains("plugin frame"));
+        tab.handle_plugin_bytes(plugin, client, text.as_bytes().to_vec())
+            .unwrap();
+        tab.progress_plugin_loading_offset(plugin);
+        tab.update_plugin_loading_stage(
+            plugin,
+            LoadingIndication::new("late loading stage".into()),
+        );
+        assert!(tab
+            .get_pane_with_id(pane_id)
+            .unwrap()
+            .dump_screen(false, Some(client))
+            .contains(text));
+    }
+}
+
+#[test]
 fn joining_clients_see_plugin_errors_without_plugin_bytes() {
     for (placement, suppressed) in [
         (NewPanePlacement::default(), false),
