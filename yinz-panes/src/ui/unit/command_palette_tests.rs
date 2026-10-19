@@ -1178,7 +1178,11 @@ fn provider_status_focus_shares_mouse_geometry_and_survives_view_history() {
     assert_eq!(palette.selected_status, Some(0));
     palette.insert_text("Second");
     assert_eq!(palette.selected_status, None);
+    assert_eq!(palette.selected_entry().unwrap().id, "second");
     key(&mut palette, BareKey::Down);
+    assert_eq!(palette.selected_entry().unwrap().id, "inserted");
+    key(&mut palette, BareKey::Down);
+    assert_eq!(palette.selected_entry().unwrap().id, "first");
     key(&mut palette, BareKey::Down);
     assert_eq!(palette.selected_status, Some(0));
     palette.open_picker(EntryKind::Pane);
@@ -1504,12 +1508,9 @@ fn static_palette_aliases_use_native_matching_at_root_and_nested() {
             palette.set_query(query.into());
             assert_eq!(ids(&palette), ["pdf"], "{query}");
         }
-        for query in [
-            "unrelated",
-            "descriptiononly",
-            "provideronly",
-            "reader document",
-        ] {
+        palette.set_query("provideronly".into());
+        assert_eq!(ids(&palette), if nested { vec![] } else { vec!["pdf"] });
+        for query in ["unrelated", "descriptiononly", "reader document"] {
             palette.set_query(query.into());
             assert!(ids(&palette).is_empty(), "{query}");
             assert!(palette.result_rows(10).is_empty());
@@ -1518,14 +1519,45 @@ fn static_palette_aliases_use_native_matching_at_root_and_nested() {
 }
 
 #[test]
-fn static_palette_scores_interleave_with_native_and_preserve_ties_and_geometry() {
-    for aliases in [false, true] {
+fn provider_titles_rank_static_and_dynamic_results_with_commands() {
+    for semantic in [false, true] {
+        let mut palette = CommandPalette::default();
+        palette.set_entries(vec![
+            entry("weak", "n--------p", EntryKind::Command),
+            entry("equal", "np", EntryKind::Command),
+        ]);
+        palette.set_sections(vec![PluginSection {
+            title: "np".into(),
+            entries: vec![
+                entry("first", "Unrelated", EntryKind::Plugin),
+                entry("second", "Other", EntryKind::Plugin),
+            ],
+            semantic,
+            status: None,
+        }]);
+        palette.set_query("np".into());
+        assert_eq!(ids(&palette), ["equal", "first", "second", "weak"]);
+        palette.set_query("other".into());
+        assert_eq!(
+            ids(&palette),
+            if semantic {
+                vec!["second", "first"]
+            } else {
+                vec!["second"]
+            }
+        );
+    }
+}
+
+#[test]
+fn plugin_palette_scores_interleave_with_native_and_preserve_ties_and_geometry() {
+    for (aliases, semantic) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut palette = CommandPalette::default();
         palette.set_entries(vec![
             entry("native-low", "n--------p", EntryKind::Command),
             entry("native-high", "np", EntryKind::Command),
         ]);
-        let static_entry = |id, label| {
+        let plugin_entry = |id, label| {
             let mut value = entry(id, label, EntryKind::Plugin);
             if aliases {
                 value.aliases.push(label.into());
@@ -1536,20 +1568,20 @@ fn static_palette_scores_interleave_with_native_and_preserve_ties_and_geometry()
         palette.set_sections(vec![
             PluginSection {
                 title: "A".into(),
-                semantic: false,
+                semantic,
                 status: None,
                 entries: vec![
-                    static_entry("a-low", "n--------p"),
-                    static_entry("a-high", "np"),
+                    plugin_entry("a-low", "n--------p"),
+                    plugin_entry("a-high", "np"),
                 ],
             },
             PluginSection {
                 title: "B".into(),
-                semantic: false,
+                semantic,
                 status: Some("Loading…".into()),
                 entries: vec![
-                    static_entry("b-high", "np"),
-                    static_entry("b-low", "n--------p"),
+                    plugin_entry("b-high", "np"),
+                    plugin_entry("b-low", "n--------p"),
                 ],
             },
             PluginSection {
@@ -1663,11 +1695,29 @@ fn static_palette_scores_interleave_with_native_and_preserve_ties_and_geometry()
         palette.set_sections(sections);
         assert_eq!(palette.selected_entry().unwrap().id, "a-high");
         palette.set_query("no-match".into());
-        assert_eq!(ids(&palette), ["dynamic-z", "dynamic-a", "dynamic-new"]);
-        assert!(!palette
-            .result_rows(20)
-            .iter()
-            .any(|r| matches!(r, ResultRow::Heading(t) if t == "A")));
+        if semantic {
+            assert_eq!(
+                ids(&palette),
+                [
+                    "a-low",
+                    "a-high",
+                    "b-high",
+                    "b-low",
+                    "dynamic-z",
+                    "dynamic-a",
+                    "dynamic-new"
+                ]
+            );
+        } else {
+            assert_eq!(ids(&palette), ["dynamic-z", "dynamic-a", "dynamic-new"]);
+        }
+        assert_eq!(
+            palette
+                .result_rows(20)
+                .iter()
+                .any(|r| matches!(r, ResultRow::Heading(t) if t == "A")),
+            semantic
+        );
     }
 }
 
