@@ -568,16 +568,39 @@ fn tab_groups_follow_separately_pulled_tabs() {
             receiver.wait_until("pulled tab content", |grid| grid.contains(marker));
             type_and_confirm(&receiver, &arrived, marker.as_bytes());
             let groups = tab_groups(&receiver);
-            let group = groups.iter().find(|group| group["name"] == "Work").unwrap();
+            let group = groups
+                .iter()
+                .find(|group| {
+                    group["name"]
+                        == if destination_id.is_none() {
+                            "Work"
+                        } else {
+                            "Arrived"
+                        }
+                })
+                .unwrap();
             let id = group["id"].as_u64().unwrap();
             assert_ne!(id, source_id, "the source ID collides with Destination");
             assert_eq!(*destination_id.get_or_insert(id), id);
             assert!(groups.iter().any(|group| group["name"] == "Destination"));
+            if marker == "FIRST_GROUP_MEMBER" {
+                for (session, id, name) in [
+                    (&sender, source_id, "Remaining"),
+                    (&receiver, id, "Arrived"),
+                ] {
+                    let (code, output) =
+                        session.run_cli_action_reporting(CliAction::RenameTabGroupById {
+                            id: id as u32,
+                            name: name.into(),
+                        });
+                    assert_eq!(code, 0, "{output}");
+                }
+            }
         }
         let groups = tab_groups(&receiver);
         let work = groups
             .iter()
-            .filter(|group| group["name"] == "Work")
+            .filter(|group| group["name"] == "Arrived")
             .collect::<Vec<_>>();
         assert_eq!(work.len(), 1);
         assert_eq!(
@@ -586,7 +609,7 @@ fn tab_groups_follow_separately_pulled_tabs() {
         );
         assert!(tab_groups(&sender)
             .iter()
-            .all(|group| group["name"] != "Work"));
+            .all(|group| group["name"] != "Remaining"));
     }
 }
 
@@ -1537,6 +1560,52 @@ fn palette_pulls_one_tab_and_all_tabs_through_source_shutdown() {
 }
 
 #[test]
+fn palette_all_tabs_keeps_multiple_source_groups() {
+    let ((mut sender, first), (receiver, _)) = palette_sessions();
+    type_and_confirm(&sender, &first, b"default-before");
+    let _ = new_group_with_output(&receiver, "Work", "EXISTING_WORK");
+    let destination_groups = tab_groups(&receiver);
+    let first_work = new_group_with_output(&sender, "Work", "WORK_FIRST");
+    type_and_confirm(&sender, &first_work, b"work-first-before");
+    sender.send_stdin(&keys::ctrl('t'));
+    sender.send_stdin(&keys::key('n'));
+    let second_work = sender.expect_pty_spawn();
+    second_work.output(b"WORK_SECOND\r\n");
+    sender.wait_until("second work tab ready", |grid| grid.contains("WORK_SECOND"));
+    type_and_confirm(&sender, &second_work, b"work-second-before");
+
+    palette_pull(&receiver, &sender, "Warp tab", "All tabs", Some(3));
+    let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
+    receiver.wait_until("last work tab arrives", |grid| grid.contains("WORK_SECOND"));
+    let groups = tab_groups(&receiver);
+    assert_eq!(groups.len(), 2);
+    for before in destination_groups {
+        let group = groups
+            .iter()
+            .find(|group| group["id"] == before["id"])
+            .unwrap();
+        assert_eq!(group["name"], before["name"]);
+        assert_eq!(
+            group["tab_ids"].as_array().unwrap().len(),
+            if group["name"] == "Work" { 3 } else { 2 }
+        );
+    }
+    for marker in [
+        b"default-before".as_slice(),
+        b"work-first-before",
+        b"work-second-before",
+    ] {
+        assert!(!adopted_with_marker(&adopted, marker).is_exited());
+    }
+    type_and_confirm(
+        &receiver,
+        adopted_with_marker(&adopted, b"work-second-before"),
+        b"work-second-after",
+    );
+    sender.wait_for_exit();
+}
+
+#[test]
 fn palette_pulls_a_visible_stack_with_its_hidden_editor_subject() {
     let ((sender, _), (receiver, _)) = palette_sessions();
     let first = split_off_a_pane(&sender, "PALETTE_STACK_FIRST");
@@ -1596,6 +1665,7 @@ fn palette_all_tabs_failure_retains_completed_and_unattempted_tabs() {
         sender.wait_until("batch tab ready", |grid| grid.contains(marker));
         panes.push(pane);
     }
+    let source_group = tab_groups(&sender).remove(0);
     panes[0].fail_warp(WarpFailure::UnadoptableOnce);
     palette_pull(&receiver, &sender, "Warp tab", "All tabs", Some(3));
     let arrived = receiver.expect_adopted_pty();
@@ -1639,6 +1709,19 @@ fn palette_all_tabs_failure_retains_completed_and_unattempted_tabs() {
     assert!(listed
         .iter()
         .any(|pane| pane["id"] == restored.terminal_id().get()));
+    let remaining_groups = tab_groups(&sender);
+    assert_eq!(remaining_groups.len(), 1);
+    assert_eq!(remaining_groups[0]["id"], source_group["id"]);
+    let remaining_tabs = remaining_groups[0]["tab_ids"].as_array().unwrap();
+    assert_eq!(remaining_tabs.len(), 2);
+    assert!(remaining_tabs.contains(&source_group["tab_ids"][2]));
+    let destination_groups = tab_groups(&receiver);
+    assert_eq!(destination_groups.len(), 1);
+    assert_eq!(
+        destination_groups[0]["tab_ids"].as_array().unwrap().len(),
+        2
+    );
+    type_and_confirm(&sender, &restored, b"batch-rollback-after");
     receiver.send_stdin(&keys::ESC);
     type_and_confirm(&receiver, &arrived, b"batch-first-after");
     assert!(!panes[1].is_exited());

@@ -1282,6 +1282,7 @@ fn warped_tab_to_protobuf(
     payload: &yinz_types::data::WarpedTab,
 ) -> crate::client_server_contract::client_server_contract::AdoptTabAction {
     crate::client_server_contract::client_server_contract::AdoptTabAction {
+        source_instance_id: payload.source_instance_id.clone(),
         name: payload.name.clone(),
         user_named: payload.user_named,
         tiled_layout: Some(payload.tiled_layout.clone().into()),
@@ -1311,6 +1312,7 @@ fn warped_tab_from_protobuf(
     adopt_tab_action: crate::client_server_contract::client_server_contract::AdoptTabAction,
 ) -> Result<yinz_types::data::WarpedTab> {
     let payload = yinz_types::data::WarpedTab {
+        source_instance_id: adopt_tab_action.source_instance_id,
         relationships: adopt_tab_action
             .relationships
             .map(warp_relationships_from_protobuf),

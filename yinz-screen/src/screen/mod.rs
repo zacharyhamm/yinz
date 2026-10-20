@@ -575,6 +575,7 @@ type PaneOutputSubscriber = (PluginId, ClientId, Option<u64>);
 type LayoutPanes = Vec<(PaneId, PaneLayoutMetadata)>;
 
 pub(crate) struct Screen {
+    instance_id: uuid::Uuid,
     agent_events: agent_events::AgentEvents,
     agent_worktrees: agent_worktrees::Worktrees,
     agent_controls: Vec<agent_control::Pending>,
@@ -686,6 +687,7 @@ pub(crate) struct Screen {
     tab_history: BTreeMap<ClientId, Vec<TabId>>,
     tab_groups: BTreeMap<u32, tab_groups::TabGroup>,
     tab_group_ids: HashMap<TabId, u32>,
+    warped_tab_groups: HashMap<(String, u32), u32>,
     next_tab_group_id: u64,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
     mode_info: BTreeMap<ClientId, ModeInfo>,
@@ -1366,6 +1368,7 @@ impl Screen {
         let current_pane_group = PaneGroups::new(bus.senders.clone());
         let character_cell_size = Rc::new(RefCell::new(None));
         Screen {
+            instance_id: uuid::Uuid::new_v4(),
             agent_events: Default::default(),
             agent_worktrees: Default::default(),
             agent_controls: Vec::new(),
@@ -1427,6 +1430,7 @@ impl Screen {
             tab_history: BTreeMap::new(),
             tab_groups: BTreeMap::new(),
             tab_group_ids: HashMap::new(),
+            warped_tab_groups: HashMap::new(),
             next_tab_group_id: 1,
             pane_history: BTreeMap::new(),
             mode_info: BTreeMap::new(),

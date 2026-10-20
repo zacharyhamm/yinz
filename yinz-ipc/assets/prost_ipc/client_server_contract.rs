@@ -1830,6 +1830,8 @@ pub struct WarpRelationships {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdoptTabAction {
+    #[prost(string, optional, tag="9")]
+    pub source_instance_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="7")]
     pub relationships: ::core::option::Option<WarpRelationships>,
     #[prost(string, optional, tag="1")]

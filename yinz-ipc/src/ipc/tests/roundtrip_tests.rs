@@ -1392,6 +1392,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptTab {
             payload: Box::new(WarpedTab {
+                source_instance_id: Some("c77b3964-7a21-4981-9da9-c18614d7eb89".into()),
                 relationships: None,
                 name: Some("build".to_owned()),
                 user_named: true,
@@ -5342,6 +5343,40 @@ fn agent_double_escape_ipc_round_trip() {
         let decoded = ProtoOptions::decode(wire.as_slice()).unwrap();
         assert_eq!(Options::try_from(decoded).unwrap(), options);
     }
+}
+
+#[test]
+fn warped_tab_source_identity_roundtrips_and_is_optional() {
+    for source_instance_id in [None, Some("c77b3964-7a21-4981-9da9-c18614d7eb89".into())] {
+        let payload = WarpedTab {
+            source_instance_id,
+            tiled_layout: TiledPaneLayout {
+                tab_group: Some(yinz_types::tab_bar::TabGroupInfo {
+                    id: 7,
+                    name: "alpha + beta".into(),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        test_client_roundtrip!(ClientToServerMsg::Action {
+            action: Action::AdoptTab {
+                payload: Box::new(payload)
+            },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true,
+        });
+    }
+    let mut legacy_json = serde_json::to_value(WarpedTab::default()).unwrap();
+    legacy_json
+        .as_object_mut()
+        .unwrap()
+        .remove("source_instance_id");
+    assert!(serde_json::from_value::<WarpedTab>(legacy_json)
+        .unwrap()
+        .source_instance_id
+        .is_none());
 }
 
 #[test]

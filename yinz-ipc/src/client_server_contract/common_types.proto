@@ -1108,6 +1108,7 @@ message WarpRelationships {
   repeated WarpStackList stacks = 2;
 }
 message AdoptTabAction {
+  optional string source_instance_id = 9;
   optional WarpRelationships relationships = 7;
   optional string name = 1;
   TiledPaneLayout tiled_layout = 2;

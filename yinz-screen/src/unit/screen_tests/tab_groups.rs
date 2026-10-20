@@ -283,6 +283,142 @@ fn warped_tabs_carry_their_groups_displayed_name() {
 }
 
 #[test]
+fn warped_groups_stay_together_when_project_labels_change() {
+    for existing in [false, true] {
+        let mut source = grouped_screen();
+        for (terminal, project) in [(1, "alpha"), (3, "beta")] {
+            source
+                .pane_projects
+                .insert(PaneId::Terminal(TerminalId::new(terminal)), project.into());
+        }
+        let mut destination = grouped_screen();
+        if existing {
+            destination.tab_groups.get_mut(&1).unwrap().name = "alpha + beta".into();
+        }
+        let mut arrivals = vec![];
+        for (tab, project) in [(0, "alpha"), (2, "beta")] {
+            let tab = TabId::new(tab);
+            let (_, _, prepared) = source.check_tab_can_be_warped(Some(tab), CLIENT).unwrap();
+            assert_eq!(
+                prepared.tiled_layout.tab_group.as_ref().unwrap().name,
+                if arrivals.is_empty() {
+                    "alpha + beta"
+                } else {
+                    "beta"
+                }
+            );
+            let payload = source
+                .take_released_tab_for_warp(tab, vec![], prepared)
+                .unwrap();
+            assert_eq!(
+                payload.source_instance_id,
+                Some(source.instance_id.to_string())
+            );
+            let arrived = adopt_grouped_tab(&mut destination, *payload);
+            let terminal = destination.tabs[&arrived].get_all_pane_ids()[0];
+            destination.pane_projects.insert(terminal, project.into());
+            arrivals.push(arrived);
+            assert_eq!(
+                destination
+                    .tab_group_name(destination.tab_group_ids[&arrivals[0]])
+                    .as_deref(),
+                Some(if arrivals.len() == 1 {
+                    "alpha"
+                } else {
+                    "alpha + beta"
+                })
+            );
+        }
+        let group = destination.tab_group_ids[&arrivals[0]];
+        assert_eq!(destination.tab_group_ids[&arrivals[1]], group);
+        assert_eq!(group, if existing { 1 } else { 2 });
+    }
+}
+
+#[test]
+fn warped_group_identity_includes_the_source_instance_and_expires_with_the_group() {
+    let source = grouped_screen();
+    let other_source = grouped_screen();
+    assert_ne!(source.instance_id, other_source.instance_id);
+    let source = source.instance_id.to_string();
+    let other_source = other_source.instance_id.to_string();
+    let payload = |instance: &str, id, name: &str| yinz_types::data::WarpedTab {
+        source_instance_id: Some(instance.into()),
+        tiled_layout: TiledPaneLayout {
+            tab_group: Some(TabGroupInfo {
+                id,
+                name: name.into(),
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut destination = grouped_screen();
+    for (instance, id, name, expected) in [
+        (&source, 0, "first", 2),
+        (&source, 1, "second", 3),
+        (&other_source, 0, "other", 4),
+        (&source, 0, "Group 1", 2),
+        (&source, 1, "other", 3),
+        (&other_source, 0, "first", 4),
+    ] {
+        let tab = adopt_grouped_tab(&mut destination, payload(instance, id, name));
+        assert_eq!(destination.tab_group_ids[&tab], expected);
+    }
+    assert_eq!(destination.warped_tab_groups.len(), 3);
+    for tab in destination.group_tabs(2) {
+        destination.close_tab_by_id(tab).unwrap();
+    }
+    assert_eq!(destination.warped_tab_groups.len(), 2);
+    assert!(!destination
+        .warped_tab_groups
+        .contains_key(&(source.clone(), 0)));
+    let tab = adopt_grouped_tab(&mut destination, payload(&source, 0, "Group 1"));
+    assert_eq!(destination.tab_group_ids[&tab], 1);
+}
+
+fn adopt_grouped_tab(screen: &mut Screen, payload: yinz_types::data::WarpedTab) -> TabId {
+    let (to_plugin, receiver) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    let tab = screen.get_new_tab_id();
+    screen
+        .place_adopted_tab(
+            payload,
+            crate::pty::AdoptedTabPanes {
+                tiled: vec![],
+                floating: vec![],
+            },
+            CLIENT,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let layout = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::NewTab(_, _, layout, _, _, _, _, _, _, _) => layout,
+            _ => None,
+        })
+        .unwrap();
+    screen
+        .apply_layout(
+            layout,
+            vec![],
+            vec![(TerminalId::new(tab.get() as u32 + 10), None)],
+            vec![],
+            HashMap::new(),
+            tab,
+            true,
+            CLIENT,
+            None,
+        )
+        .unwrap();
+    tab
+}
+
+#[test]
 fn adopted_tabs_match_group_labels_using_destination_ids() {
     for (name, project, duplicate, expected_group) in [
         (Some("Group 1"), false, false, 1),
@@ -340,6 +476,7 @@ fn adopted_tabs_match_group_labels_using_destination_ids() {
             )
             .unwrap();
         assert_eq!(screen.tab_group_ids[&tab], expected_group, "{name:?}");
+        assert!(screen.warped_tab_groups.is_empty());
         assert_eq!(
             screen.tab_groups[&expected_group].name,
             saved_name.unwrap_or_else(|| name.unwrap().to_owned()),
@@ -410,9 +547,12 @@ fn rolled_back_tabs_restore_group_identity_and_existing_names() {
         let (to_plugin, receiver) = channels::unbounded();
         screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
         let restored = screen.get_new_tab_id();
+        let source = (screen.instance_id.to_string(), group.id);
+        screen.warped_tab_groups.insert(source.clone(), 0);
         screen
             .place_adopted_tab(
                 yinz_types::data::WarpedTab {
+                    source_instance_id: Some(source.0.clone()),
                     tiled_layout: prepared.tiled_layout,
                     ..Default::default()
                 },
@@ -428,6 +568,7 @@ fn rolled_back_tabs_restore_group_identity_and_existing_names() {
             )
             .unwrap();
         assert_eq!(screen.tab_group_ids[&restored], group.id);
+        assert_eq!(screen.warped_tab_groups[&source], 0);
         let expected_name = if pruned {
             group.name.as_str()
         } else {
