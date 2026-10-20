@@ -2,7 +2,12 @@
 (require "./service.scm")
 (require "../shared/archive.scm")
 (provide a-clear-search! a-clear-waiting! a-clear-predecessors! a-toggle-waiting!
-  a-begin-search! a-search-key! a-cancel-search! a-paste! a-begin-predecessors! a-expire-search!)
+  a-begin-search! a-search-key! a-cancel-search! a-paste! a-begin-predecessors! a-expire-search!
+  a-search-prompts-only?)
+(define (a-search-prompts-only?) (starts-with? (trim (a-get "search_query")) "prompt:"))
+(define (search-text)
+  (define query (trim (a-get "search_query")))
+  (if (a-search-prompts-only?) (trim (substring query 7)) query))
 (define (strip) (hash "rows" (a-get "rows") "focused" (a-none (a-get "focused")) "summaries" (a-get "summaries")))
 (define (a-clear-waiting!)
   (define base (a-get "waiting_base"))
@@ -87,7 +92,7 @@
       (define id (hash-ref hit "run_id")) (define header (a-field (hash-ref found "runs") id #f))
       (when header
         (set! revisions (hash-insert revisions id (hash-ref hit "revision")))
-        (define snippet (hit-first (hash-ref hit "snippet") (a-get "search_query")))
+        (define snippet (hit-first (hash-ref hit "snippet") (search-text)))
         (set! rows (append rows (list (hash "Run" (hash "run_id" id "kind" (hash-ref header "kind")
                   "title" (if (equal? snippet "") (hash-ref header "title") (string-append snippet " — " (hash-ref header "title")))
                   "worktree" (a-model "WorktreeCell" (list header)) "started_at_ms" (hash-ref header "started_at_ms") "continuation" #f))))))) (hash-ref found "hits"))
@@ -97,11 +102,11 @@
     (unless (equal? revision (a-selected-revision)) (a-leave-row!) (a-set! "pending_history_revision" (a-selected-revision))))
   (when (a-get "pending_history_revision") (a-set! "run" #f)) #t)
 (define (search!)
-  (unless (or (equal? (trim (a-get "search_query")) "") (a-get "search_pending"))
+  (unless (or (equal? (search-text) "") (a-get "search_pending"))
     (a-inc! "search_request") (a-set! "search_pending" #t)
     (a-set! "search_deadline_ms" (+ (yinz-wall-clock-ms) 15000)) (a-set! "search_error" #f)
     (with-handler (lambda (e) (a-set! "search_pending" #f) (a-set! "search_error" (trim (error-object-message e))))
-      (apply-search! (archive-search-runs (a-get "search_query"))))) #t)
+      (apply-search! (archive-search-runs (search-text) (a-search-prompts-only?))))) #t)
 ;; Tab is handled by the caller after cancelling, so the normal focus ring stays in one place.
 (define (a-search-key! key)
   (define bare (hash-ref key "bare_key")) (define char (a-char key))

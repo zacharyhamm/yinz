@@ -326,6 +326,63 @@ fn state(plugin: &mut SteelReference, key: &str) -> serde_json::Value {
 }
 
 #[test]
+fn agents_search_labels_keep_queries_and_cursors_visible_in_narrow_panes() {
+    let mut plugin = plugin();
+    let style = themes()[0];
+    plugin.runtime.eval("(a-begin-search!)").unwrap();
+    for (cols, labels) in [
+        (24, ["All: ", "User: "]),
+        (16, ["All: ", "User: "]),
+        (8, ["/", "/"]),
+        (40, ["Search [All messages]: ", "Search [User prompts]: "]),
+    ] {
+        for (prefix, label) in ["", "prompt: "].into_iter().zip(labels) {
+            for text in ["history", "a long search query ending in xyz"] {
+                let query = format!("{prefix}{text}");
+                plugin
+                    .runtime
+                    .invoke("a-set!", vec![json!("search_query"), json!(query)])
+                    .unwrap();
+                for editing in [true, false] {
+                    plugin
+                        .runtime
+                        .invoke("a-set!", vec![json!("search_editing"), json!(editing)])
+                        .unwrap();
+                    plugin.take_commands();
+                    let lines = render_at_width(&mut plugin, style, cols);
+                    let line: String = lines[0].iter().map(|cell| cell.character).collect();
+                    let commands = plugin.take_commands();
+                    let cursor = commands
+                        .iter()
+                        .find_map(|command| command.get("ShowCursor"))
+                        .unwrap();
+                    if editing {
+                        let visible = line.trim_end().strip_prefix(label).unwrap_or_else(|| {
+                            panic!("{cols} columns: missing {label:?} in {line:?}")
+                        });
+                        assert!(!visible.is_empty(), "{cols} columns: {line:?}");
+                        assert!(query.ends_with(visible), "{cols} columns: {line:?}");
+                        if label.len() + query.len() < cols {
+                            assert_eq!(visible, query);
+                        } else {
+                            assert!(visible.len() < query.len());
+                        }
+                        assert!(visible.ends_with(if text == "history" { "story" } else { "xyz" }));
+                        assert_eq!(cursor, &json!([line.trim_end().len(), 0]));
+                        assert!(cursor[0].as_u64().unwrap() < cols as u64);
+                    } else {
+                        let expected: String =
+                            format!("{label}{query}").chars().take(cols).collect();
+                        assert_eq!(line.trim_end(), expected.trim_end());
+                        assert!(cursor.is_null());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn agents_clipped_remote_hosts_preserve_status_and_waiting_emphasis() {
     for style in themes() {
         let mut plugin = plugin();
