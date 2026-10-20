@@ -296,8 +296,7 @@ impl Screen {
 
     pub(super) fn activate_last_notification(&mut self, client_id: ClientId, now: Instant) {
         let target = self
-            .notification_history
-            .last()
+            .pending_notification()
             .map(|record| (record.info.id, record.pane_id, record.on_click.clone()));
         if self.notification_browsers.contains_key(&client_id) {
             self.leave_notification_browser(client_id);

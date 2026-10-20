@@ -67,16 +67,24 @@ fn decide(
 }
 
 fn osc(payload: &str, display: Option<(&str, &str)>) -> PendingNotification {
+    osc_with_report(payload, display, true)
+}
+
+fn osc_with_report(
+    payload: &str,
+    display: Option<(&str, &str)>,
+    wants_report: bool,
+) -> PendingNotification {
     PendingNotification::Osc99 {
         payload: payload.into(),
         terminator: "\x1b\\".into(),
-        wants_report: true,
+        wants_report,
         display: display.map(|(title, body)| (title.into(), body.into())),
     }
 }
 
 #[test]
-fn latest_activation_uses_committed_history_including_suppressed_entries() {
+fn pending_activation_skips_unresolved_and_suppressed_entries() {
     let (mut screen, _server, _plugins, instance) = policy_screen();
     let client_id = ClientId::new(1);
     let first = PaneId::Terminal(TerminalId::new(1));
@@ -85,7 +93,7 @@ fn latest_activation_uses_committed_history_including_suppressed_entries() {
     screen
         .receive_toast("first".into(), Some(first), None, None, None)
         .unwrap();
-    decide(&mut screen, 0, instance, NotificationDecision::Suppress);
+    decide(&mut screen, 0, instance, NotificationDecision::Pass);
     screen
         .receive_toast("pending".into(), Some(second), None, None, None)
         .unwrap();
@@ -93,9 +101,172 @@ fn latest_activation_uses_committed_history_including_suppressed_entries() {
     screen.activate_last_notification(client_id, Instant::now());
     assert_eq!(screen.get_active_pane_id(&client_id), Some(first));
     decide(&mut screen, 1, instance, NotificationDecision::Suppress);
-    assert!(screen.notifications.is_empty());
+    assert_eq!(screen.notifications.len(), 1);
     screen.activate_last_notification(client_id, Instant::now());
-    assert_eq!(screen.get_active_pane_id(&client_id), Some(second));
+    assert_eq!(screen.get_active_pane_id(&client_id), Some(first));
+    assert!(screen.pending_notification().is_none());
+    assert_eq!(screen.notification_history.len(), 2);
+    assert!(!screen.notification_history[1].pending);
+}
+
+#[test]
+fn desktop_only_entries_require_a_live_pane_or_callback_and_suppression_never_targets_them() {
+    for (pane, callback, actionable) in [
+        (None, false, false),
+        (Some(PaneId::Terminal(TerminalId::new(1))), false, true),
+        (None, true, true),
+        (Some(PaneId::Terminal(TerminalId::new(99))), false, false),
+    ] {
+        let (mut screen, _, _, instance) = policy_screen();
+        let client = ClientId::new(1);
+        screen
+            .receive_toast("older".into(), None, None, None, None)
+            .unwrap();
+        decide(&mut screen, 0, instance, NotificationDecision::Pass);
+        let click = callback.then(|| crate::screen::NotificationClick {
+            plugin_id: PluginId::new(7),
+            client_id: client,
+            message: "clicked".into(),
+            payload: "desktop".into(),
+        });
+        screen
+            .receive_toast("desktop".into(), pane, click.clone(), None, None)
+            .unwrap();
+        decide(
+            &mut screen,
+            1,
+            instance,
+            NotificationDecision::Replace {
+                title: None,
+                body: None,
+                delivery: Some(NotificationDelivery::Desktop),
+            },
+        );
+        screen
+            .receive_toast("suppressed".into(), pane, click, None, None)
+            .unwrap();
+        decide(&mut screen, 2, instance, NotificationDecision::Suppress);
+        assert_eq!(screen.notifications.len(), 1);
+        assert_eq!(screen.notification_history.len(), 3);
+        assert_eq!(
+            screen.pending_notification().unwrap().info.id,
+            NotificationId::new(u64::from(actionable))
+        );
+        screen.activate_last_notification(client, Instant::now());
+        if actionable {
+            assert_eq!(
+                screen.pending_notification().unwrap().info.id,
+                NotificationId::new(0)
+            );
+            screen.activate_last_notification(client, Instant::now());
+        }
+        assert!(screen.pending_notification().is_none());
+        assert!(!screen.notification_history[2].pending);
+    }
+}
+
+#[test]
+fn forwarded_desktop_clicks_consume_only_the_latest_matching_pane_and_forwarded_id() {
+    let (mut screen, _, _, _) = policy_screen();
+    screen.set_notification_policy(None, None).unwrap();
+    for (pane, metadata) in [
+        (1, "i=build"),
+        (2, "i=build"),
+        (1, "i=other"),
+        (1, "i=build"),
+        (1, ""),
+    ] {
+        screen
+            .receive_desktop_notifications(
+                vec![osc(&format!("{metadata};done"), Some(("done", "")))],
+                TerminalId::new(pane),
+            )
+            .unwrap();
+    }
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let now = Instant::now();
+    for _ in 0..2 {
+        screen.consume_pane_desktop_notification(pane, b"i=p1r.build;", now);
+    }
+    screen.consume_pane_desktop_notification(pane, b"i=p1r.;", now);
+    screen.consume_pane_desktop_notification(pane, b"i=p1.unknown;", now);
+    assert_eq!(
+        screen
+            .notification_history
+            .iter()
+            .map(|record| record.pending)
+            .collect::<Vec<_>>(),
+        [true, true, true, false, false]
+    );
+    assert_eq!(
+        screen.pending_notification().unwrap().info.id,
+        NotificationId::new(2)
+    );
+}
+
+#[test]
+fn forwarded_desktop_clicks_distinguish_report_flags_and_dismiss_only_the_matching_toast() {
+    for (older_report, older_id, newer_id) in [
+        (false, "p1.build", "p1r.build"),
+        (true, "p1r.build", "p1.build"),
+    ] {
+        let (mut screen, server, _, instance) = policy_screen();
+        for (id, wants_report) in [(0, older_report), (1, !older_report)] {
+            let action = if wants_report { "report" } else { "focus" };
+            screen
+                .receive_desktop_notifications(
+                    vec![PendingNotification::Osc99 {
+                        payload: format!("i=build:a={action};done"),
+                        terminator: "\x1b\\".into(),
+                        wants_report,
+                        display: Some(("done".into(), String::new())),
+                    }],
+                    TerminalId::new(1),
+                )
+                .unwrap();
+            decide(
+                &mut screen,
+                id,
+                instance,
+                NotificationDecision::Replace {
+                    title: Some(format!("notification {id}")),
+                    body: None,
+                    delivery: Some(NotificationDelivery::Both),
+                },
+            );
+        }
+        let output = desktop_output(&server);
+        assert!(output.contains(&format!("i={older_id}:")));
+        assert!(output.contains(&format!("i={newer_id}:")));
+        assert_eq!(screen.notifications.len(), 2);
+
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        let now = Instant::now();
+        for _ in 0..2 {
+            screen.consume_pane_desktop_notification(
+                pane,
+                format!("i={older_id};").as_bytes(),
+                now,
+            );
+            assert!(!screen.notification_history[0].pending);
+            assert!(screen.notification_history[1].pending);
+            assert_eq!(
+                screen
+                    .notifications
+                    .iter()
+                    .filter(|notification| notification.is_dismissing())
+                    .map(|notification| notification.id)
+                    .collect::<Vec<_>>(),
+                [NotificationId::new(0)]
+            );
+        }
+        screen.consume_pane_desktop_notification(pane, format!("i={newer_id};").as_bytes(), now);
+        assert!(screen.pending_notification().is_none());
+        assert!(screen
+            .notifications
+            .iter()
+            .all(|notification| notification.is_dismissing()));
+    }
 }
 
 #[test]
@@ -371,29 +542,72 @@ fn osc99_rewrite_preserves_application_metadata_and_sanitizes_controls() {
 
 #[test]
 fn overflow_falls_back_for_the_entire_assembly_and_records_why() {
-    let (mut screen, server, _, _) = policy_screen();
-    let huge = format!("i=a:d=0;{}", "x".repeat(65536));
-    screen
-        .receive_desktop_notifications(vec![osc(&huge, None)], TerminalId::new(1))
-        .unwrap();
-    assert!(desktop_output(&server).contains(&"x".repeat(65536)));
-    screen
-        .receive_desktop_notifications(
-            vec![osc("i=a:p=body;tail", Some(("x", "tail")))],
-            TerminalId::new(1),
-        )
-        .unwrap();
-    assert!(desktop_output(&server).contains("tail"));
-    assert_eq!(
-        screen.notification_history[0]
-            .info
-            .outcome
-            .as_ref()
-            .unwrap()
-            .fallback_reason
-            .as_deref(),
-        Some("assembly_overflow")
-    );
+    for wants_report in [false, true] {
+        let (mut screen, server, _, _) = policy_screen();
+        let (forwarded_id, mismatched_id) = if wants_report {
+            ("p1r.a", "p1.a")
+        } else {
+            ("p1.a", "p1r.a")
+        };
+        let body = "x".repeat(65536);
+        let huge = format!("i=a:d=0;{body}");
+        screen
+            .receive_desktop_notifications(
+                vec![osc_with_report(&huge, None, wants_report)],
+                TerminalId::new(1),
+            )
+            .unwrap();
+        let mut output = desktop_output(&server);
+        assert_eq!(output.matches(&body).count(), 1);
+        screen
+            .receive_desktop_notifications(
+                vec![osc_with_report(
+                    "i=a:p=body;tail",
+                    Some(("x", "tail")),
+                    wants_report,
+                )],
+                TerminalId::new(1),
+            )
+            .unwrap();
+        output.push_str(&desktop_output(&server));
+        assert_eq!(output.matches(&body).count(), 1);
+        assert_eq!(
+            output
+                .matches(&format!("i={forwarded_id}:p=body:a=focus,report;tail"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            screen.notification_history[0]
+                .info
+                .outcome
+                .as_ref()
+                .unwrap()
+                .fallback_reason
+                .as_deref(),
+            Some("assembly_overflow")
+        );
+        assert_eq!(
+            screen.notification_history[0].forwarded_id.as_deref(),
+            Some(forwarded_id)
+        );
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        let now = Instant::now();
+        screen.consume_pane_desktop_notification(
+            pane,
+            format!("i={mismatched_id};").as_bytes(),
+            now,
+        );
+        assert!(screen.notification_history[0].pending);
+        assert!(screen.pending_notification().is_some());
+        screen.consume_pane_desktop_notification(
+            pane,
+            format!("i={forwarded_id};").as_bytes(),
+            now,
+        );
+        assert!(!screen.notification_history[0].pending);
+        assert!(screen.pending_notification().is_none());
+    }
 }
 
 #[test]
@@ -545,6 +759,12 @@ fn completion_waiters_and_synthesized_desktop_clicks_preserve_the_plugin_callbac
     events(&plugins);
     assert!(screen.activate_policy_desktop(b"i=yinz-notification-0;", ClientId::new(1)));
     assert!(plugins.try_iter().any(|(instruction, _)| matches!(instruction, PluginInstruction::NotificationClicked { plugin_id, message, payload, .. } if plugin_id == PluginId::new(7) && message == "clicked" && payload == "context")));
+    screen.activate_last_notification(ClientId::new(1), Instant::now());
+    assert!(!plugins.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::NotificationClicked { .. }
+    )));
+    assert!(!screen.notification_history[0].pending);
 }
 
 #[test]
@@ -660,8 +880,20 @@ fn missing_policy_loads_and_unbound_hooks_use_immediate_original_delivery() {
 
 #[test]
 fn unavailable_osc99_assemblies_stay_bypassed_after_policy_enablement_and_reload() {
-    for reason in [None, Some("policy_load_failed"), Some("policy_crashed")] {
+    for (reason, wants_report) in [
+        (None, false),
+        (None, true),
+        (Some("policy_load_failed"), false),
+        (Some("policy_load_failed"), true),
+        (Some("policy_crashed"), false),
+        (Some("policy_crashed"), true),
+    ] {
         let (mut screen, server, plugins, instance) = policy_screen();
+        let (forwarded_id, mismatched_id) = if wants_report {
+            ("p1r.a", "p1.a")
+        } else {
+            ("p1.a", "p1r.a")
+        };
         if reason == Some("policy_crashed") {
             screen
                 .notification_policy_unavailable(POLICY, reason.unwrap().into(), true)
@@ -672,11 +904,16 @@ fn unavailable_osc99_assemblies_stay_bypassed_after_policy_enablement_and_reload
                 .unwrap();
         }
         screen
-            .receive_desktop_notifications(vec![osc("i=a:d=0;title", None)], TerminalId::new(1))
+            .receive_desktop_notifications(
+                vec![osc_with_report("i=a:d=0;title", None, wants_report)],
+                TerminalId::new(1),
+            )
             .unwrap();
         let mut output = desktop_output(&server);
         assert_eq!(
-            output.matches("i=p1r.a:d=0:a=focus,report;title").count(),
+            output
+                .matches(&format!("i={forwarded_id}:d=0:a=focus,report;title"))
+                .count(),
             1
         );
         assert!(events(&plugins).is_empty());
@@ -689,18 +926,24 @@ fn unavailable_osc99_assemblies_stay_bypassed_after_policy_enablement_and_reload
         }
         screen
             .receive_desktop_notifications(
-                vec![osc("i=a:p=body:d=1;tail", Some(("title", "tail")))],
+                vec![osc_with_report(
+                    "i=a:p=body:d=1;tail",
+                    Some(("title", "tail")),
+                    wants_report,
+                )],
                 TerminalId::new(1),
             )
             .unwrap();
         output.push_str(&desktop_output(&server));
         assert_eq!(
-            output.matches("i=p1r.a:d=0:a=focus,report;title").count(),
+            output
+                .matches(&format!("i={forwarded_id}:d=0:a=focus,report;title"))
+                .count(),
             1
         );
         assert_eq!(
             output
-                .matches("i=p1r.a:p=body:d=1:a=focus,report;tail")
+                .matches(&format!("i={forwarded_id}:p=body:d=1:a=focus,report;tail"))
                 .count(),
             1
         );
@@ -726,6 +969,26 @@ fn unavailable_osc99_assemblies_stay_bypassed_after_policy_enablement_and_reload
             Some(reason.unwrap_or("policy_unavailable"))
         );
         assert!(!outcome.suppressed);
+        assert_eq!(
+            screen.notification_history[0].forwarded_id.as_deref(),
+            Some(forwarded_id)
+        );
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        let now = Instant::now();
+        screen.consume_pane_desktop_notification(
+            pane,
+            format!("i={mismatched_id};").as_bytes(),
+            now,
+        );
+        assert!(screen.notification_history[0].pending);
+        assert!(screen.pending_notification().is_some());
+        screen.consume_pane_desktop_notification(
+            pane,
+            format!("i={forwarded_id};").as_bytes(),
+            now,
+        );
+        assert!(!screen.notification_history[0].pending);
+        assert!(screen.pending_notification().is_none());
 
         // Completion removes the bypass marker, so the application can reuse its ID.
         screen
@@ -923,7 +1186,7 @@ fn osc99_rewriting_keeps_non_text_chunks() {
 }
 
 #[test]
-fn a_new_suppressed_or_desktop_only_target_removes_the_older_toasts_hint() {
+fn suppressed_or_informational_desktop_entries_preserve_the_older_toasts_hint() {
     for decision in [
         NotificationDecision::Suppress,
         NotificationDecision::Replace {
@@ -961,6 +1224,6 @@ fn a_new_suppressed_or_desktop_only_target_removes_the_older_toasts_hint() {
         );
         let layouts = screen.notification_layout(viewport, now, client);
         assert_eq!(layouts.len(), 1);
-        assert!(layouts[0].footer.is_none());
+        assert_eq!(layouts[0].footer.as_deref(), Some("Alt+a to dismiss"));
     }
 }

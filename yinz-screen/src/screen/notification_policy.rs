@@ -12,7 +12,8 @@ use crate::{
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use yinz_host_protocol::notifications::{
-    parse_osc99_metadata, split_osc99_payload, Osc99PayloadType, PendingNotification,
+    namespace_notification_id, parse_osc99_metadata, split_osc99_payload, Osc99PayloadType,
+    PendingNotification,
 };
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::{
@@ -49,7 +50,7 @@ struct Assembly {
 struct Pending {
     original: NotificationData,
     desktop: Vec<PendingNotification>,
-    application_id: Option<String>,
+    osc99_identity: Option<(String, bool)>,
     on_click: Option<NotificationClick>,
     _completion: Option<NotificationEnd>,
     policy: Option<PluginId>,
@@ -267,7 +268,7 @@ impl Screen {
         &mut self,
         original: NotificationData,
         desktop: Vec<PendingNotification>,
-        application_id: Option<String>,
+        osc99_identity: Option<(String, bool)>,
         on_click: Option<NotificationClick>,
         completion: Option<NotificationEnd>,
         fallback: Option<String>,
@@ -288,7 +289,7 @@ impl Screen {
         let mut pending = Pending {
             original,
             desktop,
-            application_id,
+            osc99_identity,
             on_click,
             _completion: completion,
             policy,
@@ -361,10 +362,13 @@ impl Screen {
             };
             let (title, body) = notification.title_and_body();
             let mut chunks = vec![];
-            let mut application_id = None;
+            let mut osc99_identity = None;
             let mut fallback = None;
             if let PendingNotification::Osc99 {
-                payload, display, ..
+                payload,
+                display,
+                wants_report,
+                ..
             } = &notification
             {
                 let (metadata, _) = split_osc99_payload(payload);
@@ -380,7 +384,10 @@ impl Screen {
                         self.notification_policy.assemblies.remove(&key);
                         for pending in &mut self.notification_policy.pending {
                             if pending.original.pane_id == Some(PaneId::Terminal(pane))
-                                && pending.application_id.as_ref() == Some(&id)
+                                && pending
+                                    .osc99_identity
+                                    .as_ref()
+                                    .is_some_and(|(pending_id, _)| pending_id == &id)
                             {
                                 pending.decision = Some(NotificationDecision::Suppress);
                                 pending.fallback = Some("application_closed".into());
@@ -529,13 +536,13 @@ impl Screen {
                     self.deliver_desktop_notifications(chunks, pane);
                     continue;
                 }
-                application_id = Some(id);
+                osc99_identity = Some((id, *wants_report));
             } else {
                 chunks.push(notification);
             }
             let original =
                 self.notification_data(source, Some(PaneId::Terminal(pane)), None, title, body);
-            self.queue_notification(original, chunks, application_id, None, None, fallback)?;
+            self.queue_notification(original, chunks, osc99_identity, None, None, fallback)?;
         }
         Ok(())
     }
@@ -617,6 +624,42 @@ impl Screen {
         true
     }
 
+    pub(super) fn consume_pane_desktop_notification(
+        &mut self,
+        pane_id: PaneId,
+        raw: &[u8],
+        now: Instant,
+    ) {
+        let Ok(raw) = std::str::from_utf8(raw) else {
+            return;
+        };
+        let (metadata, _) = split_osc99_payload(raw);
+        let metadata = parse_osc99_metadata(metadata);
+        let Some(forwarded_id) = metadata.get("i") else {
+            return;
+        };
+        let target = self
+            .notification_history
+            .iter()
+            .rev()
+            .find(|record| {
+                record.pane_id == Some(pane_id)
+                    && record.forwarded_id.as_deref() == Some(*forwarded_id)
+                    && record.info.outcome.as_ref().is_some_and(|outcome| {
+                        !outcome.suppressed
+                            && matches!(
+                                outcome.delivery,
+                                NotificationDelivery::Desktop | NotificationDelivery::Both
+                            )
+                    })
+            })
+            .map(|record| record.info.id);
+        if let Some(id) = target {
+            self.consume_notification(id, now);
+            self.dismiss_notification(id, now).non_fatal();
+        }
+    }
+
     fn commit_notifications(&mut self) -> Result<()> {
         let mut changed = false;
         while self
@@ -637,6 +680,21 @@ impl Screen {
                 NotificationResolution::from_decision(pending.original, decision, pending.fallback);
             let id = outcome.original.id;
             let pane = outcome.original.pane_id;
+            let desktop = if replaced && outcome.original.source == NotificationSource::Osc99 {
+                rewrite_desktop(&pending.desktop, &outcome)
+            } else {
+                pending.desktop
+            };
+            let forwarded_id = match (pane, pending.osc99_identity) {
+                (Some(PaneId::Terminal(terminal)), Some((id, wants_report))) => {
+                    let metadata =
+                        namespace_notification_id(&format!("i={id}"), terminal, wants_report);
+                    parse_osc99_metadata(&metadata)
+                        .get("i")
+                        .map(|id| (*id).to_owned())
+                },
+                _ => None,
+            };
             let text = outcome.message();
             let now = Instant::now();
             let show_toast = !outcome.suppressed
@@ -655,6 +713,8 @@ impl Screen {
                     },
                     pane_id: pane,
                     on_click: pending.on_click.clone(),
+                    pending: !outcome.suppressed,
+                    forwarded_id,
                 });
                 if show_toast {
                     screen
@@ -682,11 +742,6 @@ impl Screen {
                         outcome.original.source != NotificationSource::Toast
                             && (!replaced || outcome.original.source == NotificationSource::Osc99)
                     }) {
-                        let desktop = if replaced {
-                            rewrite_desktop(&pending.desktop, &outcome)
-                        } else {
-                            pending.desktop
-                        };
                         self.deliver_desktop_notifications(desktop, terminal);
                     } else {
                         self.deliver_policy_desktop(&outcome);

@@ -35,6 +35,8 @@ fn record(
         },
         pane_id,
         on_click,
+        pending: true,
+        forwarded_id: None,
     }
 }
 
@@ -424,7 +426,7 @@ fn activating_a_notification_with_no_target_keeps_it_and_leaves_the_mode() {
 }
 
 #[test]
-fn latest_notification_survives_expiry_and_repeated_activation_until_replaced() {
+fn pending_notification_survives_expiry_and_is_consumed_once() {
     let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
     let (server_tx, server_rx) = channels::unbounded::<(ServerInstruction, ErrorContext)>();
     let client_id = ClientId::new(1);
@@ -450,8 +452,7 @@ fn latest_notification_survives_expiry_and_repeated_activation_until_replaced() 
     screen.reap_settled_notifications(now);
     assert!(screen.notifications.is_empty());
 
-    // The second activation has the target pane already focused; both must notify the plugin.
-    for _ in 0..2 {
+    for attempt in 0..2 {
         screen.activate_last_notification(client_id, now);
         assert_eq!(screen.get_active_pane_id(&client_id), Some(pane(1)));
         let clicks: Vec<_> = plugin_rx
@@ -467,16 +468,18 @@ fn latest_notification_survives_expiry_and_repeated_activation_until_replaced() 
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            clicks,
+        let expected = if attempt == 0 {
             vec![(
                 crate::PluginId::new(7),
                 client_id,
                 client_id,
                 "agent_toast_click".into(),
-                "first".into()
+                "first".into(),
             )]
-        );
+        } else {
+            vec![]
+        };
+        assert_eq!(clicks, expected);
         assert_eq!(screen.notification_history.len(), 1);
     }
     assert!(mode_changes(&server_rx).is_empty());
@@ -577,7 +580,7 @@ fn a_toast_with_a_missing_pane_can_be_activated_again_from_history() {
             _ => None,
         })
         .collect();
-    assert_eq!(payloads, vec!["gone", "gone", "gone"]);
+    assert_eq!(payloads, vec!["gone", "gone"]);
     assert_eq!(screen.get_active_pane_id(&client_id), focused);
     assert!(!screen.notification_browsers.contains_key(&client_id));
     screen.open_notification_browser(client_id);
