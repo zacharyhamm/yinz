@@ -1,6 +1,0 @@
----
-source: yinz-screen/src/./unit/screen_tests.rs
-assertion_line: 2775
-expression: "format!(\"{}\", snapshot_count)"
----
-1

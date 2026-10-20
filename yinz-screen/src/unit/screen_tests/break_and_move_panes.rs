@@ -281,37 +281,272 @@ pub fn screen_can_break_pane_to_a_new_tab() {
 }
 
 #[test]
-pub fn screen_cannot_break_last_selectable_pane_to_a_new_tab() {
-    let size = Size { cols: 80, rows: 20 };
-    let initial_layout = TiledPaneLayout::default();
-    let mut mock_screen = MockScreen::new(size);
-    let screen_thread = mock_screen.run(Some(initial_layout), vec![]);
-    let received_server_instructions = Watched::new(vec![]);
-    let server_receiver = mock_screen.server_receiver.take().unwrap();
-    let server_thread = log_actions_in_thread!(
-        received_server_instructions,
-        ServerInstruction::KillSession,
-        server_receiver
-    );
+fn screen_can_break_last_selectable_pane_to_a_new_tab() {
+    for break_count in [1, 2] {
+        let size = Size { cols: 80, rows: 20 };
+        let client_id = ClientId::new(1);
+        let mut mock_screen = MockScreen::new(size);
+        let screen_thread = mock_screen.run(Some(TiledPaneLayout::default()), vec![]);
+        let received_server_instructions = Watched::new(vec![]);
+        let server_receiver = mock_screen.server_receiver.take().unwrap();
+        let server_thread = log_actions_in_thread!(
+            received_server_instructions,
+            ServerInstruction::KillSession,
+            server_receiver
+        );
+        let received_plugin_instructions = Watched::new(vec![]);
+        let plugin_receiver = mock_screen.plugin_receiver.take().unwrap();
+        let plugin_thread = log_actions_in_thread!(
+            received_plugin_instructions,
+            PluginInstruction::Exit,
+            plugin_receiver
+        );
 
-    let _ = mock_screen.to_screen.send(ScreenInstruction::BreakPane(
-        Default::default(),
-        crate::ClientId::new(1),
-        None,
-    ));
-    std::thread::sleep(std::time::Duration::from_millis(100));
+        for _ in 0..break_count {
+            mock_screen
+                .to_screen
+                .send(ScreenInstruction::BreakPane(None, client_id, None))
+                .unwrap();
+        }
+        let layout = received_plugin_instructions.wait_until(
+            "the broken pane's destination layout",
+            yinz_test_support::default_timeout(),
+            |instructions| {
+                instructions
+                    .iter()
+                    .find_map(|instruction| match instruction {
+                        PluginInstruction::NewTab(_, _, Some(layout), _, tab_id, ..)
+                            if *tab_id == TabId::new(1) =>
+                        {
+                            Some(layout.clone())
+                        },
+                        _ => None,
+                    })
+            },
+        );
+        // This FIFO query must succeed after every breakout, before the layout is ready.
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::GetTabInfo {
+                tab_id: TabId::new(1),
+                response_channel: tx,
+            })
+            .unwrap();
+        assert!(rx
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+            .is_some());
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::ApplyLayout(
+                layout,
+                vec![],
+                vec![], // The existing pane supplies the layout's terminal.
+                vec![],
+                vec![],
+                HashMap::new(),
+                TabId::new(1),
+                true,
+                client_id,
+                None,
+                None,
+            ))
+            .unwrap();
+        // Queries follow ApplyLayout and settlement on the same FIFO.
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::GetFocusedPaneInfo {
+                client_id,
+                response_channel: tx,
+            })
+            .unwrap();
+        assert_eq!(
+            rx.recv_timeout(yinz_test_support::default_timeout())
+                .unwrap(),
+            yinz_types::data::GetFocusedPaneInfoResponse::Ok {
+                tab_id: TabId::new(1),
+                pane_id: PaneId::Terminal(TerminalId::new(0)),
+            }
+        );
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        mock_screen
+            .to_screen
+            .send(ScreenInstruction::GetTabInfo {
+                tab_id: TabId::new(0),
+                response_channel: tx,
+            })
+            .unwrap();
+        assert!(rx
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+            .is_none());
 
-    mock_screen.teardown(vec![server_thread, screen_thread]);
-
-    let snapshots = take_snapshots_and_cursor_coordinates_from_render_events(
-        received_server_instructions.lock().iter(),
-        size,
-    );
-    let snapshot_count = snapshots.len();
-    for (_cursor_coordinates, snapshot) in snapshots {
-        assert_snapshot!(snapshot.to_string());
+        mock_screen.teardown(vec![server_thread, plugin_thread, screen_thread]);
+        assert_eq!(
+            received_plugin_instructions
+                .lock()
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    PluginInstruction::NewTab(_, _, _, _, tab_id, ..)
+                        if *tab_id != TabId::new(0) =>
+                    {
+                        Some(*tab_id)
+                    },
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![TabId::new(1)],
+            "only one breakout destination is requested"
+        );
+        assert!(!received_server_instructions
+            .lock()
+            .iter()
+            .any(|instruction| { matches!(instruction, ServerInstruction::Render(None)) }));
+        assert!(!mock_screen
+            .pty_receiver
+            .as_ref()
+            .unwrap()
+            .try_iter()
+            .any(|(instruction, _)| match instruction {
+                PtyInstruction::ClosePane(_, _) => true,
+                PtyInstruction::CloseTab(ids) => !ids.is_empty(),
+                _ => false,
+            }));
     }
-    assert_snapshot!(format!("{}", snapshot_count));
+}
+
+#[test]
+fn breaking_last_selectable_pane_preserves_work_while_its_layout_loads() {
+    for (another_tab, hidden_work) in [(false, false), (true, false), (false, true), (true, true)] {
+        let client_id = ClientId::new(1);
+        let source = TabId::new(1);
+        let moved = PaneId::Terminal(TerminalId::new(1));
+        let hidden = PaneId::Terminal(TerminalId::new(2));
+        let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 20 });
+        let server_receiver = screen_wired_to_server(&mut screen);
+        let (pty_tx, pty_rx) = channels::unbounded();
+        screen.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+        let (screen_tx, screen_rx) = channels::unbounded();
+        screen.bus.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+        let (plugin_tx, plugin_rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        if another_tab {
+            new_tab(&mut screen, 3, TabId::new(0));
+        }
+        new_tab(&mut screen, 1, source);
+        screen.set_quit_notice(crate::PluginId::new(7), None, true);
+        if hidden_work {
+            add_pane_to_tab(&mut screen, source, hidden, false);
+            screen
+                .tabs
+                .get_mut(&source)
+                .unwrap()
+                .suppress_pane(hidden, None);
+        }
+        let respawn = (RunCommand::default(), true);
+        screen
+            .tabs
+            .get_mut(&source)
+            .unwrap()
+            .restore_pending_respawn(moved, respawn.clone());
+        let destination = screen.get_new_tab_id();
+
+        screen
+            .break_pane(None, screen.default_layout.clone(), client_id)
+            .unwrap();
+        assert!(screen.tabs[&destination].is_pending());
+        assert!(screen.tabs[&destination].has_pane_with_pid(&moved));
+        assert!(!screen.tabs[&source].has_pane_with_pid(&moved));
+        screen.settle_tabs().unwrap();
+        assert!(screen.tabs[&destination].is_pending());
+        if !another_tab {
+            assert!(
+                screen.tabs.contains_key(&source),
+                "wait for a usable destination"
+            );
+            assert_eq!(screen.active_tab_ids[&client_id], source);
+            assert_eq!(screen.active_pane_id(client_id), None);
+            let tab_count = screen.tabs.len();
+            for direction in [Direction::Right, Direction::Left] {
+                screen.break_pane_to_new_tab(direction, client_id).unwrap();
+                assert_eq!(screen.active_tab_ids[&client_id], source);
+                assert_eq!(screen.active_pane_id(client_id), None);
+                assert_eq!(screen.tabs.len(), tab_count);
+                assert!(screen.tabs[&destination].is_pending());
+                assert!(screen.tabs[&destination].has_pane_with_pid(&moved));
+            }
+        }
+        assert!(!screen.replacement_pending);
+        assert!(screen.replacement_tab.is_none());
+        let requests: Vec<_> = plugin_rx
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::NewTab(_, _, Some(layout), _, tab_id, ..) => {
+                    Some((tab_id, layout))
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            requests.len(),
+            1,
+            "only the requested breakout tab is spawned"
+        );
+        let (tab_id, layout) = requests.into_iter().next().unwrap();
+        assert_eq!(tab_id, destination);
+        assert_eq!(layout.run_instructions_to_ignore.len(), 1);
+        screen
+            .apply_layout(
+                layout,
+                vec![],
+                vec![],
+                vec![],
+                HashMap::new(),
+                destination,
+                true,
+                client_id,
+                None,
+            )
+            .unwrap();
+        screen.settle_tabs().unwrap();
+
+        assert_eq!(screen.active_tab_ids[&client_id], destination);
+        assert_eq!(screen.active_pane_id(client_id), Some(moved));
+        assert_eq!(screen.tabs.contains_key(&source), hidden_work);
+        assert_eq!(screen.tabs.contains_key(&TabId::new(0)), another_tab);
+        assert_eq!(
+            screen.tabs.len(),
+            1 + usize::from(another_tab) + usize::from(hidden_work)
+        );
+        assert_eq!(
+            screen
+                .tabs
+                .get_mut(&destination)
+                .unwrap()
+                .take_pending_respawn(moved),
+            Some(respawn)
+        );
+        if hidden_work {
+            assert!(screen.tabs[&source].has_pane_with_pid(&hidden));
+        }
+        assert!(!server_receiver
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
+        assert!(!screen_rx
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, ScreenInstruction::LaunchPlugin(..))));
+        for (instruction, _) in pty_rx.try_iter() {
+            match instruction {
+                PtyInstruction::ClosePane(id, _) => assert!(id != moved && id != hidden),
+                PtyInstruction::CloseTab(ids) => {
+                    assert!(!ids.contains(&moved) && !ids.contains(&hidden))
+                },
+                _ => {},
+            }
+        }
+    }
 }
 
 #[test]
