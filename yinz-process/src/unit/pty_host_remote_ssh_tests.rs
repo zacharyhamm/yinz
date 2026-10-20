@@ -5,6 +5,7 @@
 //! are easy to break silently and expensive to debug over a network.
 
 use super::*;
+use std::process::Stdio;
 
 use std::os::unix::net::UnixStream;
 
@@ -15,7 +16,8 @@ fn bootstrap_captures_output_larger_than_both_pipe_buffers() {
         "-c",
         "head -c 1048576 /dev/zero; printf '\nendpoint\n'; head -c 1048576 /dev/zero >&2; printf 'diagnostic\n' >&2; exit 7",
     ]);
-    let output = bootstrap_output(&mut command, yinz_test_support::default_timeout()).unwrap();
+    let output =
+        bootstrap_output(&mut command, yinz_test_support::default_timeout(), None).unwrap();
     assert_eq!(output.status.code(), Some(7));
     assert_eq!(output.stdout.len(), SSH_OUTPUT_CAPACITY);
     assert!(output.stdout.ends_with(b"\nendpoint\n"));

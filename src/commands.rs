@@ -746,6 +746,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                         .clone()
                         .map(SessionName::into_string),
                     create: true,
+                    remote: None,
                     create_background: false,
                     force_run_commands: false,
                     index: None,
@@ -781,6 +782,7 @@ pub(crate) fn start_client(opts: CliArgs) {
             force_run_commands,
             index,
             options,
+            remote: _,
         })) = opts.command.clone()
         {
             let config_options = match options.as_deref() {

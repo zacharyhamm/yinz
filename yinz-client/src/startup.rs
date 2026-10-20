@@ -142,6 +142,22 @@ impl<'a> StartupContext<'a> {
         focus: AttachFocus,
     ) -> (ClientToServerMsg, PathBuf) {
         match info {
+            ClientInfo::Remote { name, socket, .. } => {
+                envs::set_session_name(name.clone());
+                os_input.update_session_name(name);
+                (
+                    ClientToServerMsg::AttachClient {
+                        cli_assets: CliAssets {
+                            terminal_window_size: self.terminal_window_size,
+                            host_terminal_env: host_terminal_env(),
+                            ..Default::default()
+                        },
+                        tab_number_to_focus: focus.tab_number,
+                        pane_to_focus: focus.pane,
+                    },
+                    socket,
+                )
+            },
             ClientInfo::Attach(name, config_options) => {
                 envs::set_session_name(name.clone());
                 let ipc_pipe = ipc_pipe_for_session(&name, self.teardown);

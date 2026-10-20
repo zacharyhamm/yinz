@@ -4,6 +4,7 @@ mod agent_hooks;
 mod agent_report;
 mod commands;
 mod portable_skills;
+mod remote_session;
 mod repl;
 mod session_menu;
 #[cfg(test)]
@@ -115,6 +116,42 @@ fn main() {
     }
 
     let opts = CliArgs::parse();
+    if let Some(Command::RemoteSession {
+        client_version,
+        contract_version,
+        create,
+        session_name,
+    }) = &opts.command
+    {
+        let result =
+            remote_session::bootstrap(session_name, *create, client_version, *contract_version);
+        if let Err(error) = result {
+            eprintln!("Error: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(Command::Sessions(Sessions::Attach {
+        remote: Some(host),
+        session_name,
+        create,
+        ..
+    })) = &opts.command
+    {
+        let result = remote_session::attach(
+            &opts,
+            host,
+            session_name.as_deref().unwrap_or_default(),
+            *create,
+        );
+        match result {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                std::process::exit(1);
+            },
+        }
+    }
     if let Some(Command::Repl { eval }) = &opts.command {
         if let Err(error) = repl::run(&opts, eval.as_deref()) {
             eprintln!("Error: {error:#}");

@@ -14,6 +14,10 @@ use yinz_runtime::session_checkpoint::{write_checkpoint, SessionCheckpoint};
 
 const NAME: &str = "recreation";
 const MARKER: &str = "floating-plugin-marker";
+
+#[path = "remote_startup.rs"]
+mod remote_startup;
+
 struct Session(tempfile::TempDir);
 impl Session {
     fn new() -> Self {
@@ -457,4 +461,126 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
             assert_eq!(session.checkpoint(), before);
         }
     }
+}
+
+impl Session {
+    fn remote_bootstrap(&self, create: bool) -> Command {
+        let mut command = self.command();
+        command.env("YINZ_CONFIG_FILE", self.0.path().join("config.kdl"));
+        command.env("YINZ_CONFIG_DIR", self.0.path().join("config"));
+        command.args([
+            "remote-session",
+            "--client-version",
+            yinz_runtime::consts::VERSION,
+            "--contract-version",
+            &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+        ]);
+        if create {
+            command.arg("--create");
+        }
+        command.arg(NAME);
+        command
+    }
+    fn remote_endpoint(&self, create: bool) -> serde_json::Value {
+        let out = self.remote_bootstrap(create).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let endpoint: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(endpoint["session_name"], NAME);
+        assert_eq!(
+            PathBuf::from(endpoint["socket"].as_str().unwrap()),
+            self.socket().canonicalize().unwrap()
+        );
+        endpoint
+    }
+    fn remote_layout(&self) {
+        let layout = self.0.path().join("remote.kdl");
+        fs::write(
+            &layout,
+            format!(
+                "layout {{ pane cwd=\"{}\"; }}",
+                self.0.path().join("home").display()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            self.0.path().join("config.kdl"),
+            format!(
+                "detachable_panes false\nload_plugins clear-defaults=true\ndefault_layout \"{}\"\n",
+                layout.display()
+            ),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn remote_bootstrap_missing_existing_create_and_resurrection() {
+    let session = Session::new();
+    session.remote_layout();
+    let missing = session.remote_bootstrap(false).output().unwrap();
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("does not exist"));
+    session.remote_endpoint(true);
+    session.wait_for_panes(false);
+    let panes = session.success(&["--session", NAME, "action", "list-panes", "--json"]);
+    assert!(String::from_utf8_lossy(&panes.stdout)
+        .contains(session.0.path().join("home").to_str().unwrap()));
+    let pid = server_pid(&session);
+    session.remote_endpoint(false);
+    session.remote_endpoint(true);
+    assert_eq!(pid, server_pid(&session));
+    session.success(&["--session", NAME, "action", "save-session"]);
+    session.success(&["kill-session", NAME]);
+    assert!(!session
+        .remote_bootstrap(false)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    session.remote_endpoint(true);
+    session.wait_for_panes(false);
+    assert!(session.checkpoint().contains("pane"));
+}
+
+#[test]
+fn simultaneous_remote_bootstraps_share_one_session() {
+    let session = Session::new();
+    session.remote_layout();
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| session.remote_endpoint(true));
+        let second = scope.spawn(|| session.remote_endpoint(true));
+        assert_eq!(first.join().unwrap(), second.join().unwrap());
+    });
+    session.wait_for_panes(false);
+}
+
+#[test]
+fn remote_bootstrap_refuses_unresponsive_session_without_replacing_socket() {
+    use std::os::unix::fs::MetadataExt;
+    let session = Session::new();
+    let _listener = std::os::unix::net::UnixListener::bind(session.socket()).unwrap();
+    let inode = fs::metadata(session.socket()).unwrap().ino();
+    let out = session.remote_bootstrap(true).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unresponsive"));
+    assert_eq!(inode, fs::metadata(session.socket()).unwrap().ino());
+    fs::remove_file(session.socket()).unwrap();
+}
+
+#[test]
+fn remote_bootstrap_version_mismatch_cannot_create_a_session() {
+    let session = Session::new();
+    let out = session
+        .remote_bootstrap(true)
+        .args(["--client-version", "incompatible"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains("incompatible") && error.contains(yinz_runtime::consts::VERSION));
+    assert!(!session.socket().exists());
 }

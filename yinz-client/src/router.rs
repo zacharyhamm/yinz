@@ -32,7 +32,7 @@ const MALFORMED_MESSAGE_BACKOFF: Duration = Duration::from_millis(1);
 /// The server sends one on every shutdown path, so reaching this means it went
 /// away without saying goodbye.
 const SERVER_HUNG_UP: &str =
-    "The yinz server exited without notifying this client.\nRun `yinz ls` to see whether the session is still there.";
+    "The connection to the yinz server closed unexpectedly.\nFor a remote session, retry your `yinz attach --remote HOST SESSION` command. For a local session, run `yinz ls`.";
 
 #[derive(Default)]
 pub(crate) struct SlowWarnings {

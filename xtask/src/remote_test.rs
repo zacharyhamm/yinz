@@ -170,6 +170,10 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
     let _pd = sh.push_dir(crate::project_root());
     let cargo = crate::cargo()?;
 
+    cmd!(sh, "{cargo} build --bin yinz")
+        .run()
+        .context("build the local interactive client for the SSH suite")?;
+
     // `--ignored` (not `--include-ignored`) runs *only* these tests, exactly as
     // the e2e phase does.
     //
