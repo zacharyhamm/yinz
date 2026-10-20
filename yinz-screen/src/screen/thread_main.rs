@@ -4236,6 +4236,13 @@ pub fn screen_thread_main(
                         screen.render()?;
                     } else if let Some(response) = denormalize_notification_response(&raw_bytes) {
                         let pane_id = PaneId::Terminal(response.terminal_id);
+                        if response.focus_pane {
+                            screen.consume_pane_desktop_notification(
+                                pane_id,
+                                &raw_bytes,
+                                Instant::now(),
+                            );
+                        }
                         if response.forward_to_pane {
                             if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
                                 tab.write_to_pane_id(

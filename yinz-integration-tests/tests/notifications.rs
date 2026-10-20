@@ -133,6 +133,44 @@ fn notification_appears_top_right_and_dismisses_itself() {
 }
 
 #[test]
+fn alt_a_dismisses_newest_first_and_shares_consumption_between_clients() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("notification_timeout 30")
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&yinz);
+    notify(&yinz, "older pending");
+    notify(&yinz, "newer pending");
+    wait_for_toasts(&yinz, "both pending toasts are settled", 2);
+    let other = yinz.attach_client(TERMINAL_SIZE);
+    other.wait_until("second client sees the activation stack", |grid| {
+        grid.contains("older pending") && grid.contains("newer pending")
+    });
+
+    yinz.send_stdin(&keys::alt('a'));
+    other.wait_until(
+        "hint transfers to the older toast for both clients",
+        |grid| {
+            grid.contains("older pending")
+                && grid.contains("Alt+a to dismiss")
+                && !grid.contains("newer pending")
+        },
+    );
+    other.send_stdin(&keys::alt('a'));
+    yinz.wait_until("second client consumes the remaining toast", |grid| {
+        !grid.contains("older pending")
+            && !grid.contains("newer pending")
+            && !grid.contains("Alt+a to dismiss")
+    });
+    yinz.send_stdin(&keys::ctrl('o'));
+    yinz.send_stdin(&keys::key('n'));
+    yinz.wait_until("consumed notifications remain in history", |grid| {
+        grid.contains("older pending") && grid.contains("newer pending")
+    });
+    other.quit();
+    yinz.quit();
+}
+
+#[test]
 fn notifications_stack_downwards_from_a_top_corner() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config("notification_position \"top-left\"\nnotification_timeout 30")
@@ -161,7 +199,7 @@ fn notifications_stack_downwards_from_a_top_corner() {
         snapshot
             .lines()
             .iter()
-            .filter(|line| line.contains("Alt+a to activate"))
+            .filter(|line| line.contains("Alt+a to dismiss"))
             .count(),
         1
     );
@@ -500,7 +538,7 @@ fn notifications_mode_browses_dismissed_toasts_in_place() {
 
     yinz.send_stdin(&keys::alt('a'));
     yinz.wait_until(
-        "Alt+A activates the latest entry and leaves browsing",
+        "Alt+A leaves browsing with no pending entries",
         |grid_snapshot| {
             !grid_snapshot.contains("newest")
                 && !grid_snapshot.contains("browse older")
@@ -588,12 +626,8 @@ fn multi_line_notification_text_wraps_into_a_taller_box() {
         "one taller box, not one box per line, got {}",
         snapshot
     );
-    assert_eq!(
-        bottom - top,
-        4,
-        "two message rows and the activation footer"
-    );
-    assert!(lines[top + 3].contains("Alt+a to activate"));
+    assert_eq!(bottom - top, 4, "two message rows and the dismissal footer");
+    assert!(lines[top + 3].contains("Alt+a to dismiss"));
     assert!(lines[top + 1].contains("agent needs confirmation"));
     assert!(
         lines[top + 2].contains("  pane_id: 3"),

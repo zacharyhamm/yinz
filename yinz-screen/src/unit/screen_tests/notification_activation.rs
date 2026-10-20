@@ -137,20 +137,244 @@ fn activation_hint_uses_current_clients_direct_binding_in_stable_order() {
 }
 
 #[test]
-fn activation_footer_stays_with_history_target_after_expiry() {
+fn informational_footer_transfers_when_dismissal_begins() {
     let (mut screen, client, viewport, now) = setup();
     screen
         .receive_toast("newest".into(), None, None, None, None)
         .unwrap();
     let layouts = screen.notification_layout(viewport, now, client);
-    assert!(layouts[0].footer.is_some());
+    assert_eq!(layouts[0].footer.as_deref(), Some("Alt+a to dismiss"));
     assert!(layouts[1].footer.is_none());
     let target = layouts[0].notification.id;
     screen.dismiss_notification(target, now).unwrap();
+    let layouts = screen.notification_layout(viewport, now, client);
+    assert!(layouts[0].footer.is_none());
+    assert_eq!(layouts[1].footer.as_deref(), Some("Alt+a to activate"));
     screen.reap_settled_notifications(now + Duration::from_secs(1));
     let layouts = screen.notification_layout(viewport, now + Duration::from_secs(2), client);
     assert_eq!(layouts.len(), 1);
-    assert!(layouts[0].footer.is_none());
+    assert_eq!(layouts[0].footer.as_deref(), Some("Alt+a to activate"));
+}
+
+#[test]
+fn expired_actionable_target_keeps_the_hint_off_older_toasts_until_consumed() {
+    let (mut screen, client, viewport, now) = setup();
+    screen
+        .receive_toast(
+            "newer".into(),
+            Some(PaneId::Terminal(TerminalId::new(1))),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    screen
+        .dismiss_notification(NotificationId::new(1), now)
+        .unwrap();
+    screen.reap_settled_notifications(now + Duration::from_secs(1));
+    assert!(screen.notification_layout(viewport, now, client)[0]
+        .footer
+        .is_none());
+    screen.activate_last_notification(client, now);
+    assert_eq!(
+        screen.notification_layout(viewport, now, client)[0]
+            .footer
+            .as_deref(),
+        Some("Alt+a to activate")
+    );
+}
+
+#[test]
+fn pending_activation_consumes_newest_first_across_clients_during_exit() {
+    let (mut screen, client, viewport, now) = setup();
+    new_tab(&mut screen, 2, TabId::new(1));
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    screen
+        .receive_toast(
+            "second".into(),
+            Some(PaneId::Terminal(TerminalId::new(2))),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    screen
+        .receive_toast("information".into(), None, None, None, None)
+        .unwrap();
+
+    for (id, clicker) in [(2, client), (1, other), (0, client)] {
+        assert_eq!(
+            screen.pending_notification().unwrap().info.id,
+            NotificationId::new(id)
+        );
+        screen.activate_last_notification(clicker, now);
+        assert!(!screen.notification_history[id as usize].pending);
+        assert!(screen
+            .notification_layout(viewport, now, client)
+            .iter()
+            .find(|layout| layout.notification.id == NotificationId::new(id))
+            .unwrap()
+            .footer
+            .is_none());
+    }
+    assert_eq!(
+        screen.get_active_pane_id(&other),
+        Some(PaneId::Terminal(TerminalId::new(2)))
+    );
+    assert_eq!(
+        screen.get_active_pane_id(&client),
+        Some(PaneId::Terminal(TerminalId::new(1)))
+    );
+    assert!(screen.pending_notification().is_none());
+    assert!(screen.notifications.iter().all(|n| n.is_dismissing()));
+    screen.activate_last_notification(other, now);
+    assert_eq!(
+        screen.get_active_pane_id(&other),
+        Some(PaneId::Terminal(TerminalId::new(2)))
+    );
+    assert_eq!(screen.notification_history.len(), 3);
+}
+
+#[test]
+fn expired_callbacks_and_pane_targets_remain_pending_but_information_does_not() {
+    let (mut screen, client, _, now) = setup();
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    for (text, pane) in [
+        ("callback only", None),
+        (
+            "closed pane callback",
+            Some(PaneId::Terminal(TerminalId::new(99))),
+        ),
+    ] {
+        screen
+            .receive_toast(
+                text.into(),
+                pane,
+                Some(crate::screen::NotificationClick {
+                    plugin_id: crate::PluginId::new(7),
+                    client_id: client,
+                    message: "clicked".into(),
+                    payload: text.into(),
+                }),
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    screen
+        .receive_toast("information".into(), None, None, None, None)
+        .unwrap();
+    for id in 0..4 {
+        screen
+            .dismiss_notification(NotificationId::new(id), now)
+            .unwrap();
+    }
+    let expired = now + Duration::from_secs(3600);
+    screen.pinned_now = Some(expired);
+    screen.reap_settled_notifications(expired);
+    assert!(screen.notifications.is_empty());
+    for id in (0..3).rev() {
+        assert_eq!(
+            screen.pending_notification().unwrap().info.id,
+            NotificationId::new(id)
+        );
+        screen.activate_last_notification(client, expired);
+    }
+    screen.activate_last_notification(client, expired);
+    let payloads: Vec<_> = rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::NotificationClicked { payload, .. } => Some(payload),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(payloads, ["closed pane callback", "callback only"]);
+    assert!(screen.pending_notification().is_none());
+    assert_eq!(screen.notification_history.len(), 4);
+}
+
+#[test]
+fn closing_a_source_pane_makes_its_notification_informational() {
+    for expired in [false, true] {
+        let (mut screen, client, viewport, now) = setup();
+        new_tab(&mut screen, 2, TabId::new(1));
+        let pane = PaneId::Terminal(TerminalId::new(2));
+        screen
+            .receive_toast("closing".into(), Some(pane), None, None, None)
+            .unwrap();
+        if expired {
+            screen
+                .dismiss_notification(NotificationId::new(1), now)
+                .unwrap();
+            screen.reap_settled_notifications(now + Duration::from_secs(1));
+        }
+        screen.close_pane_explicitly(pane, None);
+        if !expired {
+            assert_eq!(
+                screen.notification_layout(viewport, now, client)[0]
+                    .footer
+                    .as_deref(),
+                Some("Alt+a to dismiss")
+            );
+            screen.activate_last_notification(client, now);
+        }
+        assert_eq!(
+            screen.pending_notification().unwrap().info.id,
+            NotificationId::new(0)
+        );
+        screen.activate_last_notification(client, now);
+        assert!(screen.pending_notification().is_none());
+    }
+}
+
+#[test]
+fn clicking_or_browsing_an_older_notification_consumes_only_that_entry() {
+    for mouse in [false, true] {
+        let (mut screen, client, viewport, now) = setup();
+        new_tab(&mut screen, 2, TabId::new(1));
+        screen
+            .receive_toast(
+                "newer".into(),
+                Some(PaneId::Terminal(TerminalId::new(2))),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        if mouse {
+            let layout = screen.notification_layout(viewport, now, client);
+            let older = layout
+                .iter()
+                .find(|n| n.notification.id == NotificationId::new(0))
+                .unwrap();
+            let click = MouseEvent::new_left_press_event(Position::new(
+                (older.y + 1) as i32,
+                (older.x + 1) as u16,
+            ));
+            assert!(screen.handle_pane_notification_click(&click, viewport, client, now));
+        } else {
+            screen.open_notification_browser(client);
+            screen.move_notification_selection(Direction::Down, client);
+            screen.activate_selected_notification(client, now);
+        }
+        assert!(!screen.notification_history[0].pending);
+        assert_eq!(
+            screen.pending_notification().unwrap().info.id,
+            NotificationId::new(1)
+        );
+        screen.activate_last_notification(client, now);
+        assert!(screen.pending_notification().is_none());
+        screen.open_notification_browser(client);
+        screen.move_notification_selection(Direction::Down, client);
+        screen.activate_selected_notification(client, now);
+        assert_eq!(
+            screen.get_active_pane_id(&client),
+            Some(PaneId::Terminal(TerminalId::new(1)))
+        );
+        assert_eq!(screen.notification_history.len(), 2);
+    }
 }
 
 #[test]
@@ -209,6 +433,53 @@ fn mode_change_repairs_cells_uncovered_by_footer() {
         .set_force_render();
     let fresh = render_frame_into(&mut screen, &receiver, client, &mut grid);
     assert_eq!(changed, fresh);
+}
+
+#[test]
+fn consuming_a_toast_transfers_hint_without_jumping_and_repairs_exposed_cells() {
+    for corner in [
+        NotificationPosition::TopLeft,
+        NotificationPosition::TopRight,
+        NotificationPosition::BottomLeft,
+        NotificationPosition::BottomRight,
+    ] {
+        let (mut screen, client, viewport, now) = setup();
+        screen.notification_position = corner;
+        screen
+            .receive_toast("newer".into(), None, None, None, None)
+            .unwrap();
+        for notification in &mut screen.notifications {
+            notification.y_offset = Tween::settled(0.0);
+        }
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(screen.surface_size());
+        assert!(render_frame_into(&mut screen, &receiver, client, &mut grid).contains("to dismiss"));
+        let before: Vec<_> = screen
+            .notification_layout(viewport, now, client)
+            .iter()
+            .map(|layout| layout.y)
+            .collect();
+        screen.activate_last_notification(client, now);
+        let layouts = screen.notification_layout(viewport, now, client);
+        assert_eq!(
+            layouts.iter().map(|layout| layout.y).collect::<Vec<_>>(),
+            before
+        );
+        assert!(layouts[0].footer.is_none());
+        assert_eq!(layouts[1].footer.as_deref(), Some("Alt+a to activate"));
+        let changed = render_frame_into(&mut screen, &receiver, client, &mut grid);
+        assert!(!changed.contains("to dismiss"));
+        screen
+            .get_active_tab_mut(client)
+            .unwrap()
+            .set_should_clear_display_before_rendering();
+        screen
+            .get_active_tab_mut(client)
+            .unwrap()
+            .set_force_render();
+        let fresh = render_frame_into(&mut screen, &receiver, client, &mut grid);
+        assert_eq!(changed, fresh, "{corner:?}");
+    }
 }
 
 #[test]

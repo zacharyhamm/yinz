@@ -243,7 +243,9 @@ pub enum Action {
     /// Activate the notification selected in the browser exactly as clicking its toast would, and
     /// leave `Notifications` mode.
     ActivateNotification,
-    /// Activate the newest notification in session history and leave the notification browser.
+    /// Consume the newest pending notification and leave the notification browser. Focus its
+    /// source pane or invoke its plugin callback, even after toast expiry; dismiss a live
+    /// informational toast. Repeated activations work backwards through eligible history.
     ActivateLastNotification,
     /// Show or hide the full, unelided text of the notification selected in the browser.
     ToggleNotificationDetail,

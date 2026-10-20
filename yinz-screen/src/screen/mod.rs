@@ -1090,6 +1090,9 @@ struct NotificationRecord {
     info: NotificationInfo,
     pane_id: Option<PaneId>,
     on_click: Option<NotificationClick>,
+    pending: bool,
+    /// Keep the complete forwarded OSC 99 identifier, including its report flag.
+    forwarded_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

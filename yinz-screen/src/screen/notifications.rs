@@ -5,7 +5,7 @@ use yinz_types::internal_ids::TabId;
 
 use yinz_runtime::errors::prelude::*;
 
-use super::{NotificationClick, NotificationLayout, Screen};
+use super::{NotificationClick, NotificationLayout, NotificationRecord, Screen};
 use crate::output::Output;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
@@ -23,7 +23,40 @@ use yinz_types::pane_size::{Size, Viewport};
 use yinz_types::position::Position;
 
 impl Screen {
-    fn notification_activation_hint(&self, client_id: ClientId) -> Option<String> {
+    fn notification_is_actionable(&self, record: &NotificationRecord) -> bool {
+        record.on_click.is_some()
+            || record
+                .pane_id
+                .is_some_and(|pane| self.tab_containing_pane(pane).is_some())
+    }
+
+    pub(super) fn pending_notification(&self) -> Option<&NotificationRecord> {
+        self.notification_history.iter().rev().find(|record| {
+            record.pending
+                && (self.notification_is_actionable(record)
+                    || self.notifications.iter().any(|notification| {
+                        notification.id == record.info.id && !notification.is_dismissing()
+                    }))
+        })
+    }
+
+    pub(super) fn consume_notification(&mut self, id: NotificationId, now: Instant) {
+        self.with_notification_stack_change(now, |screen| {
+            if let Some(record) = screen
+                .notification_history
+                .iter_mut()
+                .find(|record| record.info.id == id)
+            {
+                record.pending = false;
+            }
+        });
+    }
+
+    fn notification_activation_hint(
+        &self,
+        client_id: ClientId,
+        target: &NotificationRecord,
+    ) -> Option<String> {
         let mode_info = self
             .mode_info
             .get(&client_id)
@@ -44,18 +77,24 @@ impl Screen {
             .chain(std::iter::once(key.bare_key.to_string()))
             .collect::<Vec<_>>()
             .join("+");
-        Some(format!("{shortcut} to activate"))
+        let action = if self.notification_is_actionable(target) {
+            "activate"
+        } else {
+            "dismiss"
+        };
+        Some(format!("{shortcut} to {action}"))
     }
 
-    fn notification_stack_width(&self, cols: usize, footer: Option<&str>) -> Option<usize> {
+    fn notification_stack_width(
+        &self,
+        cols: usize,
+        target: Option<NotificationId>,
+        footer: Option<&str>,
+    ) -> Option<usize> {
         self.notifications
             .iter()
             .flat_map(|notification| {
-                let footer = footer.filter(|_| {
-                    self.notification_history
-                        .last()
-                        .is_some_and(|record| record.info.id == notification.id)
-                });
+                let footer = footer.filter(|_| target == Some(notification.id));
                 std::iter::once(notification.text.as_str()).chain(footer)
             })
             .filter_map(|text| notification_width(text, cols))
@@ -86,12 +125,11 @@ impl Screen {
         now: Instant,
         client_id: ClientId,
     ) -> Vec<NotificationLayout<'_>> {
-        let hint = self.notification_activation_hint(client_id);
-        let target = self
-            .notification_history
-            .last()
-            .map(|record| record.info.id);
-        let Some(width) = self.notification_stack_width(viewport.cols, hint.as_deref()) else {
+        let target = self.pending_notification();
+        let hint = target.and_then(|target| self.notification_activation_hint(client_id, target));
+        let target = target.map(|record| record.info.id);
+        let Some(width) = self.notification_stack_width(viewport.cols, target, hint.as_deref())
+        else {
             return vec![];
         };
         let wrapped: Vec<(Vec<String>, Option<String>)> = self
@@ -148,17 +186,17 @@ impl Screen {
     /// and is never out at rest. The widest active hint supplies the canonical footer geometry.
     fn canonical_stack_heights(&self) -> Vec<(NotificationId, usize)> {
         let cols = self.surface_size().cols;
+        let target = self.pending_notification();
         let hint = self
             .connected_clients
             .borrow()
             .iter()
-            .filter_map(|client| self.notification_activation_hint(*client))
+            .filter_map(|client| {
+                target.and_then(|target| self.notification_activation_hint(*client, target))
+            })
             .max_by_key(|hint| notification_width(hint, cols));
-        let target = self
-            .notification_history
-            .last()
-            .map(|record| record.info.id);
-        let Some(width) = self.notification_stack_width(cols, hint.as_deref()) else {
+        let target = target.map(|record| record.info.id);
+        let Some(width) = self.notification_stack_width(cols, target, hint.as_deref()) else {
             return vec![];
         };
         self.notifications
@@ -447,13 +485,18 @@ impl Screen {
             })
     }
 
-    /// Start a toast sliding back out. It stays in the stack, shrinking, until
-    /// `reap_settled_notifications` sees its reveal reach zero.
+    /// Start a toast sliding back out. Informational entries stop being pending immediately;
+    /// actionable entries remain pending. The toast stays until its reveal reaches zero.
     ///
     /// The exit is re-aimed from wherever the toast currently is and given a duration proportional
     /// to how much of it is showing, so one dismissed a third of the way in leaves in about a third
     /// of the time rather than snapping to full width and sliding back out from there.
     pub(super) fn dismiss_notification(&mut self, id: NotificationId, now: Instant) -> Result<()> {
+        if self.notification_history.iter().any(|record| {
+            record.info.id == id && record.pending && !self.notification_is_actionable(record)
+        }) {
+            self.consume_notification(id, now);
+        }
         if let Some(notification) = self.notifications.iter_mut().find(|n| n.id == id) {
             if !notification.is_dismissing() {
                 let revealed = notification.reveal.value(now);
@@ -496,8 +539,8 @@ impl Screen {
         true
     }
 
-    /// Do what clicking a notification's toast does: dismiss the toast if it is still up, bring
-    /// back the pane it names, and tell the plugin that raised it. It stays in session history.
+    /// Consume the pending entry, dismiss its toast, bring back the pane it names, and tell the
+    /// plugin that raised it. History remains available for explicit repeat activation.
     ///
     /// Shared by a click on a toast and by the notification browser, which is what makes Enter on
     /// an entry "exactly a click". A notification with neither a pane nor a plugin is only
@@ -510,6 +553,7 @@ impl Screen {
         client_id: ClientId,
         now: Instant,
     ) {
+        self.consume_notification(notification_id, now);
         self.dismiss_notification(notification_id, now).non_fatal();
         if let Some(pane_id) =
             pane_id.filter(|pane_id| self.tab_containing_pane(*pane_id).is_some())
