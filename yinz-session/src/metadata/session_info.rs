@@ -104,34 +104,34 @@ pub fn from_string(
                     .and_then(|c| c.entries().iter().next().and_then(|e| e.value().as_i64()))
             }) {
                 let mut history = vec![];
-                if let Some(history_node) = client_node.children().and_then(|c| c.get("history")) {
-                    if let Some(history_children) = history_node.children() {
-                        for pane_id_node in history_children.nodes() {
-                            if pane_id_node.name().value() == "pane_id" {
-                                let pane_type = pane_id_node
-                                    .entries()
-                                    .iter()
-                                    .find(|e| e.name().map(|n| n.value()) == Some("type"))
-                                    .and_then(|e| e.value().as_string());
-                                let id = pane_id_node
-                                    .entries()
-                                    .iter()
-                                    .find(|e| e.name().is_none())
-                                    .and_then(|e| e.value().as_i64())
-                                    .map(|i| i as u32);
-                                if let (Some(pane_type), Some(id)) = (pane_type, id) {
-                                    let pane_id = match pane_type {
-                                        "terminal" => Some(PaneId::Terminal(
-                                            yinz_types::internal_ids::TerminalId::new(id),
-                                        )),
-                                        "plugin" => Some(PaneId::Plugin(
-                                            yinz_types::internal_ids::PluginId::new(id),
-                                        )),
-                                        _ => None,
-                                    };
-                                    if let Some(pane_id) = pane_id {
-                                        history.push(pane_id);
-                                    }
+                if let Some(history_node) = client_node.children().and_then(|c| c.get("history"))
+                    && let Some(history_children) = history_node.children()
+                {
+                    for pane_id_node in history_children.nodes() {
+                        if pane_id_node.name().value() == "pane_id" {
+                            let pane_type = pane_id_node
+                                .entries()
+                                .iter()
+                                .find(|e| e.name().map(|n| n.value()) == Some("type"))
+                                .and_then(|e| e.value().as_string());
+                            let id = pane_id_node
+                                .entries()
+                                .iter()
+                                .find(|e| e.name().is_none())
+                                .and_then(|e| e.value().as_i64())
+                                .map(|i| i as u32);
+                            if let (Some(pane_type), Some(id)) = (pane_type, id) {
+                                let pane_id = match pane_type {
+                                    "terminal" => Some(PaneId::Terminal(
+                                        yinz_types::internal_ids::TerminalId::new(id),
+                                    )),
+                                    "plugin" => Some(PaneId::Plugin(
+                                        yinz_types::internal_ids::PluginId::new(id),
+                                    )),
+                                    _ => None,
+                                };
+                                if let Some(pane_id) = pane_id {
+                                    history.push(pane_id);
                                 }
                             }
                         }

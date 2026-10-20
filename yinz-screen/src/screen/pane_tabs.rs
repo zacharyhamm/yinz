@@ -134,16 +134,21 @@ impl Screen {
         if self.pending_overlay_tab_loaded(id, &result)? {
             return Ok(());
         }
-        if let Ok(tab) = self.pane_tabs_tab_mut(id) {
-            tab.pane_tab_loaded(id, index, generation, result)?;
-            self.report_pane_tabs()?;
-            self.log_and_report_session_state()
-                .context("failed to report loaded pane tab")?;
-        } else if let Ok((plugin_id, _)) = result {
-            self.bus
-                .senders
-                .send_to_plugin(PluginInstruction::Unload(plugin_id))
-                .context("failed to unload closed pane tabs child")?;
+        match self.pane_tabs_tab_mut(id) {
+            Ok(tab) => {
+                tab.pane_tab_loaded(id, index, generation, result)?;
+                self.report_pane_tabs()?;
+                self.log_and_report_session_state()
+                    .context("failed to report loaded pane tab")?;
+            },
+            _ => {
+                if let Ok((plugin_id, _)) = result {
+                    self.bus
+                        .senders
+                        .send_to_plugin(PluginInstruction::Unload(plugin_id))
+                        .context("failed to unload closed pane tabs child")?;
+                }
+            },
         }
         Ok(())
     }

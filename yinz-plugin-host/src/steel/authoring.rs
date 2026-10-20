@@ -128,19 +128,16 @@ fn describe(analysis: yinz_steel::analysis::Analysis) -> PluginCheckReport {
     for command in data_commands {
         if let Some(argument) = &command.argument {
             namespaces(argument, command.line, &mut report);
-            if command.name == "DataDefineEntity" {
-                if let Some(attributes) = argument
+            if command.name == "DataDefineEntity"
+                && let Some(attributes) = argument
                     .pointer("/def/attrs")
                     .and_then(serde_json::Value::as_array)
-                {
-                    for attribute in attributes {
-                        if let Some(name) =
-                            attribute.get("name").and_then(serde_json::Value::as_str)
-                        {
-                            if RESERVED_ATTR_NAMES.contains(&name) {
-                                report.warnings.push(format!("line {}: {name:?} is a reserved attribute already present on every row", command.line));
-                            }
-                        }
+            {
+                for attribute in attributes {
+                    if let Some(name) = attribute.get("name").and_then(serde_json::Value::as_str)
+                        && RESERVED_ATTR_NAMES.contains(&name)
+                    {
+                        report.warnings.push(format!("line {}: {name:?} is a reserved attribute already present on every row", command.line));
                     }
                 }
             }

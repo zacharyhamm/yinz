@@ -42,29 +42,27 @@ impl SessionLayoutMetadata {
         }
         for tab in self.tabs.iter_mut() {
             for tiled_pane in tab.tiled_panes.iter_mut() {
-                if let Some(Run::Command(run_command)) = tiled_pane.run.as_mut() {
-                    if !run_command.target.is_bubblewrap()
-                        && Self::is_default_shell(
-                            self.default_shell.as_ref(),
-                            &run_command.command.display().to_string(),
-                            &run_command.args,
-                        )
-                    {
-                        tiled_pane.run = None;
-                    }
+                if let Some(Run::Command(run_command)) = tiled_pane.run.as_mut()
+                    && !run_command.target.is_bubblewrap()
+                    && Self::is_default_shell(
+                        self.default_shell.as_ref(),
+                        &run_command.command.display().to_string(),
+                        &run_command.args,
+                    )
+                {
+                    tiled_pane.run = None;
                 }
             }
             for floating_pane in tab.floating_panes.iter_mut() {
-                if let Some(Run::Command(run_command)) = floating_pane.run.as_mut() {
-                    if !run_command.target.is_bubblewrap()
-                        && Self::is_default_shell(
-                            self.default_shell.as_ref(),
-                            &run_command.command.display().to_string(),
-                            &run_command.args,
-                        )
-                    {
-                        floating_pane.run = None;
-                    }
+                if let Some(Run::Command(run_command)) = floating_pane.run.as_mut()
+                    && !run_command.target.is_bubblewrap()
+                    && Self::is_default_shell(
+                        self.default_shell.as_ref(),
+                        &run_command.command.display().to_string(),
+                        &run_command.args,
+                    )
+                {
+                    floating_pane.run = None;
                 }
             }
         }
@@ -297,19 +295,18 @@ impl SessionLayoutMetadata {
             {
                 return;
             }
-            if let PaneId::Terminal(id) = pane_layout_metadata.id {
-                if let Some(command) = terminal_ids_to_commands.remove(&id) {
-                    let mut command_line = command.iter();
-                    if let Some(command_name) = command_line.next() {
-                        let args: Vec<String> = command_line.map(|c| c.to_owned()).collect();
-                        if Self::is_default_shell(self.default_shell.as_ref(), command_name, &args)
-                        {
-                            pane_layout_metadata.run = None;
-                        } else {
-                            let mut run_command = RunCommand::new(PathBuf::from(command_name));
-                            run_command.args = args;
-                            pane_layout_metadata.run = Some(Run::Command(run_command));
-                        }
+            if let PaneId::Terminal(id) = pane_layout_metadata.id
+                && let Some(command) = terminal_ids_to_commands.remove(&id)
+            {
+                let mut command_line = command.iter();
+                if let Some(command_name) = command_line.next() {
+                    let args: Vec<String> = command_line.map(|c| c.to_owned()).collect();
+                    if Self::is_default_shell(self.default_shell.as_ref(), command_name, &args) {
+                        pane_layout_metadata.run = None;
+                    } else {
+                        let mut run_command = RunCommand::new(PathBuf::from(command_name));
+                        run_command.args = args;
+                        pane_layout_metadata.run = Some(Run::Command(run_command));
                     }
                 }
             }
@@ -335,10 +332,10 @@ impl SessionLayoutMetadata {
             self.global_cwd = Some(common_path_between_cwds);
         }
         let mut update_cwd_in_pane_metadata = |pane_layout_metadata: &mut PaneLayoutMetadata| {
-            if let PaneId::Terminal(id) = pane_layout_metadata.id {
-                if let Some(cwd) = terminal_ids_to_cwds.remove(&id) {
-                    pane_layout_metadata.cwd = Some(cwd);
-                }
+            if let PaneId::Terminal(id) = pane_layout_metadata.id
+                && let Some(cwd) = terminal_ids_to_cwds.remove(&id)
+            {
+                pane_layout_metadata.cwd = Some(cwd);
             }
         };
         for tab in self.tabs.iter_mut() {
@@ -355,11 +352,11 @@ impl SessionLayoutMetadata {
         mut plugin_ids_to_run_plugins: HashMap<PluginId, RunPlugin>,
     ) {
         let mut update_cmd_in_pane_metadata = |pane_layout_metadata: &mut PaneLayoutMetadata| {
-            if let PaneId::Plugin(id) = pane_layout_metadata.id {
-                if let Some(run_plugin) = plugin_ids_to_run_plugins.remove(&id) {
-                    pane_layout_metadata.run =
-                        Some(Run::Plugin(RunPluginOrAlias::RunPlugin(run_plugin)));
-                }
+            if let PaneId::Plugin(id) = pane_layout_metadata.id
+                && let Some(run_plugin) = plugin_ids_to_run_plugins.remove(&id)
+            {
+                pane_layout_metadata.run =
+                    Some(Run::Plugin(RunPluginOrAlias::RunPlugin(run_plugin)));
             }
         };
         for tab in self.tabs.iter_mut() {

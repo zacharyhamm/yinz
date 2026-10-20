@@ -576,10 +576,10 @@ fn watcher_frame(
     screen.render_to_clients().expect("TEST");
     let mut bytes = String::new();
     while let Ok((instruction, _)) = receiver.try_recv() {
-        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
-            if let Some(client_output) = rendered_clients.remove(&watcher) {
-                bytes.push_str(&client_output);
-            }
+        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction
+            && let Some(client_output) = rendered_clients.remove(&watcher)
+        {
+            bytes.push_str(&client_output);
         }
     }
     take_snapshot_and_cursor_coordinates(&bytes, grid);

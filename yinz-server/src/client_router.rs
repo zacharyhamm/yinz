@@ -57,7 +57,7 @@ fn wait_for_session_to_be_ready(session_data: &Arc<RwLock<Option<SessionMetaData
 }
 
 macro_rules! send_to_screen_or_retry_queue {
-    ($senders:expr, $message:expr, $instruction: expr, $retry_queue:expr) => {{
+    ($senders:expr_2021, $message:expr_2021, $instruction: expr_2021, $retry_queue:expr_2021) => {{
         match $senders.as_ref() {
             Some(senders) => senders.send_to_screen($message),
             None => {
@@ -405,15 +405,14 @@ pub(crate) fn route_thread_main(
                             .context("tracking active client")?
                             .set_last_active_client(client_id);
                     }
-                    if let ClientToServerMsg::Key { key, .. } = &instruction {
-                        if key.bare_key != yinz_types::keys::BareKey::Esc || !key.has_no_modifiers()
-                        {
-                            if let Some(senders) = &senders {
-                                senders
-                                    .send_to_screen(ScreenInstruction::ResetAgentEscape(client_id))
-                                    .non_fatal();
-                            }
-                        }
+                    if let ClientToServerMsg::Key { key, .. } = &instruction
+                        && (key.bare_key != yinz_types::keys::BareKey::Esc
+                            || !key.has_no_modifiers())
+                        && let Some(senders) = &senders
+                    {
+                        senders
+                            .send_to_screen(ScreenInstruction::ResetAgentEscape(client_id))
+                            .non_fatal();
                     }
                     let Some(instruction) = crate::locked_escape::prepare_input(
                         instruction,
@@ -1014,8 +1013,8 @@ pub(crate) fn route_thread_main(
                             }
                         },
                         ClientToServerMsg::RequestSessionList => {
-                            if let Some(senders) = senders.as_ref() {
-                                if let Some(scan_state) =
+                            if let Some(senders) = senders.as_ref()
+                                && let Some(scan_state) =
                                     crate::background_jobs::session_scan_state()
                                 {
                                     let (session_name, available_layouts, plugin_list) = {
@@ -1043,7 +1042,6 @@ pub(crate) fn route_thread_main(
                                         ),
                                     );
                                 }
-                            }
                         },
                         ClientToServerMsg::ModifiersHeld { modifiers } => {
                             // Straight to the plugins, with no `ScreenInstruction` hop: unlike

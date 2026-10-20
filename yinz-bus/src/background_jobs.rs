@@ -997,15 +997,14 @@ pub fn background_jobs_main(
                             let _ = senders.send_to_screen(ScreenInstruction::RenderToClients);
                             {
                                 let mut last_render_request = last_render_request.lock().unwrap();
-                                if let Some(last_render_request) = *last_render_request {
-                                    if last_render_request > task_start_time {
-                                        // another render request was received while we were
-                                        // sleeping, schedule this job again so that we can also
-                                        // render that request
-                                        let _ = senders.send_to_background_jobs(
-                                            BackgroundJob::RenderToClients,
-                                        );
-                                    }
+                                if let Some(last_render_request) = *last_render_request
+                                    && last_render_request > task_start_time
+                                {
+                                    // another render request was received while we were
+                                    // sleeping, schedule this job again so that we can also
+                                    // render that request
+                                    let _ = senders
+                                        .send_to_background_jobs(BackgroundJob::RenderToClients);
                                 }
                                 // reset the last_render_request so that the task will be spawned
                                 // again once a new request is received

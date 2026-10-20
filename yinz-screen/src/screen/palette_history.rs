@@ -136,10 +136,10 @@ impl Screen {
                     metadata.insert(k.into(), v.clone());
                 }
             }
-            if session == &self.session_name {
-                if let Some(project) = self.pane_projects.get(&pane.id) {
-                    metadata.insert("project".into(), project.clone());
-                }
+            if session == &self.session_name
+                && let Some(project) = self.pane_projects.get(&pane.id)
+            {
+                metadata.insert("project".into(), project.clone());
             }
             agents.push(LiveAgent {
                 session: session.clone(),
@@ -290,24 +290,20 @@ impl Screen {
             return;
         };
         // A newest-page reply can arrive after the user has scrolled back.
-        if let HistoryReply::Run { events, .. } = &reply {
-            if let HistoryAction::Run { from, .. } = &mut browser.action {
-                if browser.live.is_some()
-                    && matches!(request, Some(HistoryAction::Run { from: None, ref query, .. }) if query.is_empty())
-                    && !state.widget.agent_following()
-                {
-                    if let Some(first) = state
-                        .widget
-                        .agent_first_revision()
-                        .filter(|first| events.first().is_some_and(|e| e.revision > *first))
-                    {
-                        *from = Some(first);
-                        let action = browser.action.clone();
-                        self.request_palette_agent(client, AgentAction::History(action), vec![]);
-                        return;
-                    }
-                }
-            }
+        if let HistoryReply::Run { events, .. } = &reply
+            && let HistoryAction::Run { from, .. } = &mut browser.action
+            && browser.live.is_some()
+            && matches!(request, Some(HistoryAction::Run { from: None, ref query, .. }) if query.is_empty())
+            && !state.widget.agent_following()
+            && let Some(first) = state
+                .widget
+                .agent_first_revision()
+                .filter(|first| events.first().is_some_and(|e| e.revision > *first))
+        {
+            *from = Some(first);
+            let action = browser.action.clone();
+            self.request_palette_agent(client, AgentAction::History(action), vec![]);
+            return;
         }
         match reply {
             HistoryReply::Reader {
@@ -515,12 +511,12 @@ impl Screen {
             return;
         };
         if let Some(current) = live.into_iter().find(|a| old.same(a)) {
-            if current.run() != old.run() {
-                if let HistoryAction::Run { id, from, .. } = &mut browser.action {
-                    *id = current.run().unwrap_or_default();
-                    *from = None;
-                    state.widget.agent_page_request(true);
-                }
+            if current.run() != old.run()
+                && let HistoryAction::Run { id, from, .. } = &mut browser.action
+            {
+                *id = current.run().unwrap_or_default();
+                *from = None;
+                state.widget.agent_page_request(true);
             }
             browser.live = Some(current);
         } else {
@@ -547,14 +543,14 @@ impl Screen {
             );
         } else {
             let mut action = browser.action.clone();
-            if let HistoryAction::Run { from, query, .. } = &mut action {
-                if query.is_empty() {
-                    *from = if state.widget.agent_following() {
-                        None
-                    } else {
-                        state.widget.agent_first_revision().or(*from)
-                    };
-                }
+            if let HistoryAction::Run { from, query, .. } = &mut action
+                && query.is_empty()
+            {
+                *from = if state.widget.agent_following() {
+                    None
+                } else {
+                    state.widget.agent_first_revision().or(*from)
+                };
             }
             self.request_palette_agent(client, AgentAction::History(action), vec![]);
         }
@@ -637,32 +633,32 @@ impl Screen {
         let Some(state) = self.command_palettes.get_mut(&client) else {
             return false;
         };
-        if let Outcome::Submit { id, values } = outcome {
-            if id == "archive-filter-form" || id == "live-filter-form" {
-                let fields = if id == "archive-filter-form" {
-                    ARCHIVE_FIELDS
-                } else {
-                    LIVE_FIELDS
-                };
-                let query = AgentQuery {
-                    text: values.first().cloned().unwrap_or_default(),
-                    filters: fields
-                        .iter()
-                        .zip(values.iter().skip(1))
-                        .filter(|(_, v)| !v.is_empty())
-                        .map(|(k, v)| ((*k).into(), v.clone()))
-                        .collect(),
-                };
-                if let Err(error) = AgentQuery::parse(&query.tokens(), fields) {
-                    state.widget.set_error(error);
-                    return true;
-                }
-                state.widget.back();
-                state.widget.set_query(query.tokens());
-                self.refresh_palette_history(client, true);
-                self.refresh_plugin_palette(client, false);
+        if let Outcome::Submit { id, values } = outcome
+            && (id == "archive-filter-form" || id == "live-filter-form")
+        {
+            let fields = if id == "archive-filter-form" {
+                ARCHIVE_FIELDS
+            } else {
+                LIVE_FIELDS
+            };
+            let query = AgentQuery {
+                text: values.first().cloned().unwrap_or_default(),
+                filters: fields
+                    .iter()
+                    .zip(values.iter().skip(1))
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, v)| ((*k).into(), v.clone()))
+                    .collect(),
+            };
+            if let Err(error) = AgentQuery::parse(&query.tokens(), fields) {
+                state.widget.set_error(error);
                 return true;
             }
+            state.widget.back();
+            state.widget.set_query(query.tokens());
+            self.refresh_palette_history(client, true);
+            self.refresh_plugin_palette(client, false);
+            return true;
         }
         if let Outcome::FocusAgent(id) = outcome {
             if let Some(Builtin::Inspect(agent)) = state.actions.get(id) {

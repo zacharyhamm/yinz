@@ -488,7 +488,7 @@ pub fn parse_osc7_path(raw: &[u8]) -> Option<std::path::PathBuf> {
 }
 
 macro_rules! dump_screen {
-    ($lines:expr) => {{
+    ($lines:expr_2021) => {{
         let mut is_first = true;
         let lines = $lines;
         let mut buf = String::with_capacity(lines.clone().map(|l| l.len()).sum());
@@ -508,7 +508,7 @@ macro_rules! dump_screen {
 }
 
 macro_rules! dump_screen_with_ansi {
-    ($lines:expr) => {{
+    ($lines:expr_2021) => {{
         use std::fmt::Write;
         let mut is_first = true;
         let mut buf = String::new();
@@ -1932,11 +1932,11 @@ impl Grid {
             self.horizontal_tabstops = create_horizontal_tabstops(new_columns);
             // Erasing scrollback can leave the viewport starting in a wrapped line. Its
             // visible remainder is now a new line, including for cursor bookkeeping.
-            if self.lines_above.is_empty() {
-                if let Some(first_row) = self.viewport.front_mut() {
-                    first_row.writing(&self.agent_theme);
-                    first_row.is_canonical = true;
-                }
+            if self.lines_above.is_empty()
+                && let Some(first_row) = self.viewport.front_mut()
+            {
+                first_row.writing(&self.agent_theme);
+                first_row.is_canonical = true;
             }
             let mut cursor_canonical_line_index = self.cursor_canonical_line_index();
             let cursor_index_in_canonical_line = self.cursor_index_in_canonical_line(&self.cursor);
@@ -2469,26 +2469,26 @@ impl Grid {
                     }
                 }
             }
-            if let Some(command_output_flash) = self.command_output_flash {
-                if command_output_flash.contains_row(character_chunk.y) {
-                    let foreground_color = match style.colors.text_unselected.emphasis_0 {
-                        PaletteColor::Rgb(rgb) => AnsiCode::RgbCode(rgb),
-                        PaletteColor::EightBit(col) => AnsiCode::ColorIndex(col),
-                    };
-                    character_chunk.add_selection_and_colors(
-                        HighlightSelection {
-                            selection: command_output_flash,
-                            bg: None,
-                            fg: Some(foreground_color),
-                            bold: false,
-                            italic: false,
-                            underline: false,
-                            layer: HighlightLayer::ActionFeedback,
-                        },
-                        0,
-                        0,
-                    );
-                }
+            if let Some(command_output_flash) = self.command_output_flash
+                && command_output_flash.contains_row(character_chunk.y)
+            {
+                let foreground_color = match style.colors.text_unselected.emphasis_0 {
+                    PaletteColor::Rgb(rgb) => AnsiCode::RgbCode(rgb),
+                    PaletteColor::EightBit(col) => AnsiCode::ColorIndex(col),
+                };
+                character_chunk.add_selection_and_colors(
+                    HighlightSelection {
+                        selection: command_output_flash,
+                        bg: None,
+                        fg: Some(foreground_color),
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                        layer: HighlightLayer::ActionFeedback,
+                    },
+                    0,
+                    0,
+                );
             }
             // Apply pre-computed plugin highlight selections to this chunk.
             for hs in &plugin_highlight_selections {
@@ -3182,15 +3182,15 @@ impl Grid {
         if let Some(current_row) = self.viewport.get_mut(self.cursor.y) {
             current_row.writing(&self.agent_theme);
             let mut effective_pad = pad_character;
-            if let Some(bg_color) = current_row.bg_color {
-                if matches!(
+            if let Some(bg_color) = current_row.bg_color
+                && matches!(
                     effective_pad.styles.background,
                     Some(AnsiCode::Reset) | None
-                ) {
-                    effective_pad
-                        .styles
-                        .update(|styles| styles.background = Some(bg_color));
-                }
+                )
+            {
+                effective_pad
+                    .styles
+                    .update(|styles| styles.background = Some(bg_color));
             }
             for _ in current_row.width()..position {
                 let column = current_row.width();
@@ -3511,29 +3511,15 @@ impl Grid {
         let slot = self.plugin_highlights.entry(plugin_id).or_default();
         for h in highlights {
             let (fg, bg) = resolve_highlight_colors(&h.style, style);
-            if let Ok(regex) = regex::Regex::new(&h.pattern) {
-                // Upsert: replace existing entry with same pattern and on_hover flag, or push new
-                let on_hover = h.on_hover;
-                if let Some(existing) = slot
-                    .iter_mut()
-                    .find(|(p, c)| p == &h.pattern && c.on_hover == on_hover)
-                {
-                    existing.1 = CompiledHighlight {
-                        regex,
-                        fg,
-                        bg,
-                        context: h.context,
-                        on_hover: h.on_hover,
-                        bold: h.bold,
-                        italic: h.italic,
-                        underline: h.underline,
-                        tooltip_text: h.tooltip_text.clone(),
-                        layer: h.layer,
-                    };
-                } else {
-                    slot.push((
-                        h.pattern,
-                        CompiledHighlight {
+            match regex::Regex::new(&h.pattern) {
+                Ok(regex) => {
+                    // Upsert: replace existing entry with same pattern and on_hover flag, or push new
+                    let on_hover = h.on_hover;
+                    if let Some(existing) = slot
+                        .iter_mut()
+                        .find(|(p, c)| p == &h.pattern && c.on_hover == on_hover)
+                    {
+                        existing.1 = CompiledHighlight {
                             regex,
                             fg,
                             bg,
@@ -3542,17 +3528,34 @@ impl Grid {
                             bold: h.bold,
                             italic: h.italic,
                             underline: h.underline,
-                            tooltip_text: h.tooltip_text,
+                            tooltip_text: h.tooltip_text.clone(),
                             layer: h.layer,
-                        },
-                    ));
-                }
-            } else {
-                log::warn!(
-                    "Plugin {} supplied invalid regex: {:?}",
-                    plugin_id,
-                    h.pattern
-                );
+                        };
+                    } else {
+                        slot.push((
+                            h.pattern,
+                            CompiledHighlight {
+                                regex,
+                                fg,
+                                bg,
+                                context: h.context,
+                                on_hover: h.on_hover,
+                                bold: h.bold,
+                                italic: h.italic,
+                                underline: h.underline,
+                                tooltip_text: h.tooltip_text,
+                                layer: h.layer,
+                            },
+                        ));
+                    }
+                },
+                _ => {
+                    log::warn!(
+                        "Plugin {} supplied invalid regex: {:?}",
+                        plugin_id,
+                        h.pattern
+                    );
+                },
             }
         }
         self.output_buffer.update_all_lines();
@@ -3586,23 +3589,22 @@ impl Grid {
                 for mat in highlight_matches(&compiled.regex, &logical_text) {
                     if let Some((_sel, start_row, start_col, end_row, end_col)) =
                         match_to_selection(&mat, &boundaries, &self.viewport)
-                    {
-                        if position_in_span(
+                        && position_in_span(
                             click_row, click_col, start_row, start_col, end_row, end_col,
-                        ) {
-                            let dominated = match &best {
-                                Some((best_layer, ..)) => compiled.layer > *best_layer,
-                                None => true,
-                            };
-                            if dominated {
-                                best = Some((
-                                    compiled.layer,
-                                    *plugin_id,
-                                    pattern.clone(),
-                                    mat.as_str().to_string(),
-                                    compiled.context.clone(),
-                                ));
-                            }
+                        )
+                    {
+                        let dominated = match &best {
+                            Some((best_layer, ..)) => compiled.layer > *best_layer,
+                            None => true,
+                        };
+                        if dominated {
+                            best = Some((
+                                compiled.layer,
+                                *plugin_id,
+                                pattern.clone(),
+                                mat.as_str().to_string(),
+                                compiled.context.clone(),
+                            ));
                         }
                     }
                 }
@@ -3684,18 +3686,17 @@ impl Grid {
                 for mat in highlight_matches(&compiled.regex, &logical_text) {
                     if let Some((_sel, start_row, start_col, end_row, end_col)) =
                         match_to_selection(&mat, &boundaries, &self.viewport)
-                    {
-                        if position_in_span(
+                        && position_in_span(
                             hover_row, hover_col, start_row, start_col, end_row, end_col,
-                        ) {
-                            let dominated = match best_layer {
-                                Some(bl) => compiled.layer > bl,
-                                None => true,
-                            };
-                            if dominated {
-                                best_layer = Some(compiled.layer);
-                                best_tooltip = compiled.tooltip_text.clone();
-                            }
+                        )
+                    {
+                        let dominated = match best_layer {
+                            Some(bl) => compiled.layer > bl,
+                            None => true,
+                        };
+                        if dominated {
+                            best_layer = Some(compiled.layer);
+                            best_tooltip = compiled.tooltip_text.clone();
                         }
                     }
                 }
@@ -3726,37 +3727,36 @@ impl Grid {
             // style when the cursor overlaps the match.  They are suppressed
             // when mouse tracking is active (events pass through to the app)
             // and on unfocused panes (hover_position is not set for those).
-            if self.mouse_tracking == MouseTracking::Off {
-                if let Some(hover_pos) = self.hover_position {
-                    let hover_row = hover_pos.line.get() as usize;
-                    let group_end_row = ridx + group_len - 1;
-                    if hover_row >= ridx && hover_row <= group_end_row {
-                        let hover_col = hover_pos.column.get();
-                        for pattern_map in self.plugin_highlights.values() {
-                            for (_pattern, compiled) in pattern_map {
-                                if !compiled.on_hover || !compiled.has_visual_effect() {
-                                    continue;
-                                }
-                                for mat in highlight_matches(&compiled.regex, &logical_text) {
-                                    if let Some((sel, start_row, start_col, end_row, end_col)) =
-                                        match_to_selection(&mat, &boundaries, &self.viewport)
-                                    {
-                                        if position_in_span(
-                                            hover_row, hover_col, start_row, start_col, end_row,
-                                            end_col,
-                                        ) {
-                                            selections.push(HighlightSelection {
-                                                selection: sel,
-                                                bg: compiled.bg,
-                                                fg: compiled.fg,
-                                                bold: compiled.bold,
-                                                italic: compiled.italic,
-                                                underline: compiled.underline,
-                                                layer: compiled.layer,
-                                            });
-                                            break; // only one match per pattern per hover
-                                        }
-                                    }
+            if self.mouse_tracking == MouseTracking::Off
+                && let Some(hover_pos) = self.hover_position
+            {
+                let hover_row = hover_pos.line.get() as usize;
+                let group_end_row = ridx + group_len - 1;
+                if hover_row >= ridx && hover_row <= group_end_row {
+                    let hover_col = hover_pos.column.get();
+                    for pattern_map in self.plugin_highlights.values() {
+                        for (_pattern, compiled) in pattern_map {
+                            if !compiled.on_hover || !compiled.has_visual_effect() {
+                                continue;
+                            }
+                            for mat in highlight_matches(&compiled.regex, &logical_text) {
+                                if let Some((sel, start_row, start_col, end_row, end_col)) =
+                                    match_to_selection(&mat, &boundaries, &self.viewport)
+                                    && position_in_span(
+                                        hover_row, hover_col, start_row, start_col, end_row,
+                                        end_col,
+                                    )
+                                {
+                                    selections.push(HighlightSelection {
+                                        selection: sel,
+                                        bg: compiled.bg,
+                                        fg: compiled.fg,
+                                        bold: compiled.bold,
+                                        italic: compiled.italic,
+                                        underline: compiled.underline,
+                                        layer: compiled.layer,
+                                    });
+                                    break; // only one match per pattern per hover
                                 }
                             }
                         }
@@ -4381,13 +4381,11 @@ impl Grid {
             };
             for marker in row.osc133_markers.iter().rev() {
                 let marker_position = Self::osc133_marker_position(line, marker.column);
-                if marker.kind == Osc133MarkerKind::Output {
-                    if let Some(output_end) = command_boundary {
-                        if let Some(output) = self.command_output_text(marker_position, output_end)
-                        {
-                            return Some((output, marker_position, output_end));
-                        }
-                    }
+                if marker.kind == Osc133MarkerKind::Output
+                    && let Some(output_end) = command_boundary
+                    && let Some(output) = self.command_output_text(marker_position, output_end)
+                {
+                    return Some((output, marker_position, output_end));
                 }
                 command_boundary = Some(marker_position);
             }
@@ -4455,10 +4453,7 @@ impl Grid {
             subtract_isize_from_usize(self.scrollback_buffer_lines, transferred_rows_count);
     }
     fn move_cursor_down_by_pixels(&mut self, pixel_count: usize) {
-        if let Some(character_cell_size) = {
-            let c = *self.character_cell_size.borrow();
-            c
-        } {
+        if let Some(character_cell_size) = { *self.character_cell_size.borrow() } {
             // thanks borrow checker
             let pixel_height = character_cell_size.height;
             let to_move = (pixel_count as f64 / pixel_height as f64).ceil() as usize;
@@ -4469,14 +4464,15 @@ impl Grid {
     }
     fn current_cursor_pixel_coordinates(&self) -> Option<(usize, usize)> {
         // (x, y)
-        if let Some(character_cell_size) = *self.character_cell_size.borrow() {
-            let line_count_in_scrollback = self.lines_above.len();
-            let y_coordinates =
-                (line_count_in_scrollback + self.cursor.y) * character_cell_size.height;
-            let x_coordinates = self.cursor.x * character_cell_size.width;
-            Some((x_coordinates, y_coordinates))
-        } else {
-            None
+        match *self.character_cell_size.borrow() {
+            Some(character_cell_size) => {
+                let line_count_in_scrollback = self.lines_above.len();
+                let y_coordinates =
+                    (line_count_in_scrollback + self.cursor.y) * character_cell_size.height;
+                let x_coordinates = self.cursor.x * character_cell_size.width;
+                Some((x_coordinates, y_coordinates))
+            },
+            _ => None,
         }
     }
     fn create_sixel_image(&mut self) {
@@ -4685,13 +4681,10 @@ impl Grid {
                         // virtual one, which draws nothing until placeholder cells instantiate it,
                         // and a relative one, which is positioned from its parent and so must
                         // leave the cursor alone whatever `C` says.
-                        if let Some((cols, rows)) = dest_cells {
-                            if !command.suppress_cursor_movement {
-                                self.advance_cursor_after_kitty_placement(
-                                    cols as usize,
-                                    rows as usize,
-                                );
-                            }
+                        if let Some((cols, rows)) = dest_cells
+                            && !command.suppress_cursor_movement
+                        {
+                            self.advance_cursor_after_kitty_placement(cols as usize, rows as usize);
                         }
                         self.kitty_reanchor_all_from_pixels();
                         self.render_full_viewport();
@@ -4994,10 +4987,10 @@ impl Grid {
         let Some((_, palette)) = self.agent_color_queries.remove(index) else {
             return;
         };
-        if palette.ptr_eq(&Rc::downgrade(&self.agent_theme)) {
-            if let Some(rgb) = crate::agent_theme::terminal_color_reply(code, reply) {
-                self.observe_agent_terminal_color(code, rgb);
-            }
+        if palette.ptr_eq(&Rc::downgrade(&self.agent_theme))
+            && let Some(rgb) = crate::agent_theme::terminal_color_reply(code, reply)
+        {
+            self.observe_agent_terminal_color(code, rgb);
         }
     }
     fn recompile_agent_theme(&mut self) {
@@ -5063,11 +5056,12 @@ impl Grid {
                 lines_above_viewport.push(s);
             }
             // Truncate to last N lines if max specified (Some(0) means "all" — no truncation)
-            if let Some(max) = max_scrollback_lines {
-                if max > 0 && lines_above_viewport.len() > max {
-                    let start = lines_above_viewport.len() - max;
-                    lines_above_viewport = lines_above_viewport.split_off(start);
-                }
+            if let Some(max) = max_scrollback_lines
+                && max > 0
+                && lines_above_viewport.len() > max
+            {
+                let start = lines_above_viewport.len() - max;
+                lines_above_viewport = lines_above_viewport.split_off(start);
             }
             let mut lines_below_viewport: Vec<String> = Vec::with_capacity(self.lines_below.len());
             for row in &self.lines_below {
@@ -5135,11 +5129,12 @@ impl Grid {
             for row in &self.lines_above {
                 lines_above_viewport.push(extract_row_with_ansi(row));
             }
-            if let Some(max) = max_scrollback_lines {
-                if max > 0 && lines_above_viewport.len() > max {
-                    let start = lines_above_viewport.len() - max;
-                    lines_above_viewport = lines_above_viewport.split_off(start);
-                }
+            if let Some(max) = max_scrollback_lines
+                && max > 0
+                && lines_above_viewport.len() > max
+            {
+                let start = lines_above_viewport.len() - max;
+                lines_above_viewport = lines_above_viewport.split_off(start);
             }
             let mut lines_below_viewport: Vec<String> = Vec::with_capacity(self.lines_below.len());
             for row in &self.lines_below {
@@ -5336,10 +5331,10 @@ impl Perform for Grid {
             },
 
             b"7" => {
-                if let Some(raw) = params.get(1) {
-                    if let Some(path) = parse_osc7_path(raw) {
-                        self.pending_osc7_cwd = Some(path);
-                    }
+                if let Some(raw) = params.get(1)
+                    && let Some(path) = parse_osc7_path(raw)
+                {
+                    self.pending_osc7_cwd = Some(path);
                 }
                 // Keep the original URI for the host, including semicolons and percent encoding.
                 if params.len() >= 2 {
@@ -5365,32 +5360,28 @@ impl Perform for Grid {
                         }
                         self.changed_colors.as_mut().unwrap()[i as usize] = Some(c);
                         self.output_buffer.update_all_lines();
-                    } else if chunk.get(1).as_ref().and_then(|c| c.first()) == Some(&b'?') {
-                        if let Some(index) = index {
-                            if let Some(rgb) = self
-                                .effective_colors()
-                                .and_then(|colors| colors[index as usize])
-                                .and_then(rgb_of_ansi_code)
-                            {
-                                self.pending_messages_to_pty.push(
-                                    format!(
-                                        "\x1b]4;{index};{}{terminator}",
-                                        osc_color_reply_body(rgb)
-                                    )
+                    } else if chunk.get(1).as_ref().and_then(|c| c.first()) == Some(&b'?')
+                        && let Some(index) = index
+                    {
+                        if let Some(rgb) = self
+                            .effective_colors()
+                            .and_then(|colors| colors[index as usize])
+                            .and_then(rgb_of_ansi_code)
+                        {
+                            self.pending_messages_to_pty.push(
+                                format!("\x1b]4;{index};{}{terminator}", osc_color_reply_body(rgb))
                                     .into_bytes(),
-                                );
-                                continue;
-                            }
-                            self.pending_forwarded_queries.push(
-                                crate::host_query::HostQuery::PaletteRegister {
-                                    index,
-                                    terminator:
-                                        crate::host_query::OscTerminator::from_bell_terminated(
-                                            bell_terminated,
-                                        ),
-                                },
                             );
+                            continue;
                         }
+                        self.pending_forwarded_queries.push(
+                            crate::host_query::HostQuery::PaletteRegister {
+                                index,
+                                terminator: crate::host_query::OscTerminator::from_bell_terminated(
+                                    bell_terminated,
+                                ),
+                            },
+                        );
                     }
                 }
             },
@@ -5402,84 +5393,81 @@ impl Perform for Grid {
 
             // Get/set Foreground (b"10") or background (b"11") colors
             b"10" | b"11" => {
-                if params.len() >= 2 {
-                    if let Some(mut dynamic_code) = parse_number(params[0]) {
-                        for param in &params[1..] {
-                            if param == b"?" {
-                                // If this pane has a local override for
-                                // the channel being queried (set via
-                                // `yinz action set-pane-color` or via
-                                // a prior OSC 10;<rgb> / 11;<rgb> from
-                                // inside the pane), answer with that
-                                // override directly instead of
-                                // forwarding to the host. Apps inside
-                                // the pane must see the colors Yinz
-                                // is actually rendering for them, not
-                                // the host terminal's background.
-                                let local_override = match dynamic_code {
-                                    10 => self.effective_foreground(),
-                                    11 => self.effective_background(),
-                                    _ => None,
-                                };
-                                if let Some(rgb) = local_override {
-                                    self.observe_agent_terminal_color(dynamic_code, rgb);
-                                    let reply = format!(
-                                        "\u{1b}]{};{}{}",
-                                        dynamic_code,
-                                        osc_color_reply_body(rgb),
-                                        terminator
-                                    );
-                                    self.pending_messages_to_pty.push(reply.as_bytes().to_vec());
-                                } else {
-                                    // No local override — forward to
-                                    // the host so the app observes the
-                                    // terminal's actual color. Yinz's
-                                    // cached copy is refreshed via the
-                                    // double-dispatch on the reply.
-                                    let term =
-                                        crate::host_query::OscTerminator::from_bell_terminated(
-                                            bell_terminated,
-                                        );
-                                    let query = match dynamic_code {
-                                        10 => crate::host_query::HostQuery::DefaultForeground {
-                                            terminator: term,
-                                        },
-                                        11 => crate::host_query::HostQuery::DefaultBackground {
-                                            terminator: term,
-                                        },
-                                        _ => {
-                                            // Out-of-range dynamic_code
-                                            // (shouldn't happen since
-                                            // the outer match pins it to
-                                            // 10 or 11): skip.
-                                            dynamic_code += 1;
-                                            continue;
-                                        },
-                                    };
-                                    self.agent_color_queries.push_back((
-                                        dynamic_code,
-                                        Rc::downgrade(&self.agent_theme),
-                                    ));
-                                    self.pending_forwarded_queries.push(query);
-                                }
+                if params.len() >= 2
+                    && let Some(mut dynamic_code) = parse_number(params[0])
+                {
+                    for param in &params[1..] {
+                        if param == b"?" {
+                            // If this pane has a local override for
+                            // the channel being queried (set via
+                            // `yinz action set-pane-color` or via
+                            // a prior OSC 10;<rgb> / 11;<rgb> from
+                            // inside the pane), answer with that
+                            // override directly instead of
+                            // forwarding to the host. Apps inside
+                            // the pane must see the colors Yinz
+                            // is actually rendering for them, not
+                            // the host terminal's background.
+                            let local_override = match dynamic_code {
+                                10 => self.effective_foreground(),
+                                11 => self.effective_background(),
+                                _ => None,
+                            };
+                            if let Some(rgb) = local_override {
+                                self.observe_agent_terminal_color(dynamic_code, rgb);
+                                let reply = format!(
+                                    "\u{1b}]{};{}{}",
+                                    dynamic_code,
+                                    osc_color_reply_body(rgb),
+                                    terminator
+                                );
+                                self.pending_messages_to_pty.push(reply.as_bytes().to_vec());
                             } else {
-                                // Set: parse color and store as pane
-                                // default. Only literal RGB is stored;
-                                // palette-indexed / named variants (or
-                                // a parse failure) are silently dropped
-                                // to keep the pane-default fields
-                                // narrow.
-                                if let Some(rgb) = xparse_color(param).and_then(rgb_of_ansi_code) {
-                                    if dynamic_code == 10 {
-                                        self.application_fg = Some(rgb);
-                                    } else if dynamic_code == 11 {
-                                        self.application_bg = Some(rgb);
-                                    }
-                                    self.output_buffer.update_all_lines();
-                                }
+                                // No local override — forward to
+                                // the host so the app observes the
+                                // terminal's actual color. Yinz's
+                                // cached copy is refreshed via the
+                                // double-dispatch on the reply.
+                                let term = crate::host_query::OscTerminator::from_bell_terminated(
+                                    bell_terminated,
+                                );
+                                let query = match dynamic_code {
+                                    10 => crate::host_query::HostQuery::DefaultForeground {
+                                        terminator: term,
+                                    },
+                                    11 => crate::host_query::HostQuery::DefaultBackground {
+                                        terminator: term,
+                                    },
+                                    _ => {
+                                        // Out-of-range dynamic_code
+                                        // (shouldn't happen since
+                                        // the outer match pins it to
+                                        // 10 or 11): skip.
+                                        dynamic_code += 1;
+                                        continue;
+                                    },
+                                };
+                                self.agent_color_queries
+                                    .push_back((dynamic_code, Rc::downgrade(&self.agent_theme)));
+                                self.pending_forwarded_queries.push(query);
                             }
-                            dynamic_code += 1;
+                        } else {
+                            // Set: parse color and store as pane
+                            // default. Only literal RGB is stored;
+                            // palette-indexed / named variants (or
+                            // a parse failure) are silently dropped
+                            // to keep the pane-default fields
+                            // narrow.
+                            if let Some(rgb) = xparse_color(param).and_then(rgb_of_ansi_code) {
+                                if dynamic_code == 10 {
+                                    self.application_fg = Some(rgb);
+                                } else if dynamic_code == 11 {
+                                    self.application_bg = Some(rgb);
+                                }
+                                self.output_buffer.update_all_lines();
+                            }
                         }
+                        dynamic_code += 1;
                     }
                 }
             },
@@ -5539,10 +5527,10 @@ impl Perform for Grid {
                         );
                     },
                     base64 => {
-                        if let Ok(bytes) = BASE64_DECODER.decode(base64) {
-                            if let Ok(string) = String::from_utf8(bytes) {
-                                self.pending_clipboard_update = Some(string);
-                            }
+                        if let Ok(bytes) = BASE64_DECODER.decode(base64)
+                            && let Ok(string) = String::from_utf8(bytes)
+                        {
+                            self.pending_clipboard_update = Some(string);
                         };
                     },
                 }
@@ -5677,29 +5665,25 @@ impl Perform for Grid {
                     Some(b"begin") => {
                         self.history_replay = None;
                         if let Some(encoded) = params.get(3).filter(|v| v.len() <= 8 * 1024 * 1024)
+                            && let Ok(bytes) = BASE64_DECODER.decode(encoded)
+                            && let Ok(metadata) =
+                                serde_json::from_slice::<AgentThemeHandoff>(&bytes)
+                            && metadata.valid("")
                         {
-                            if let Ok(bytes) = BASE64_DECODER.decode(encoded) {
-                                if let Ok(metadata) =
-                                    serde_json::from_slice::<AgentThemeHandoff>(&bytes)
-                                {
-                                    if metadata.valid("") {
-                                        let palettes: Vec<_> = metadata
-                                            .snapshots
-                                            .iter()
-                                            .map(|s| {
-                                                Rc::new(crate::agent_theme::SourcePalette::new(
-                                                    Some(s.clone()),
-                                                    self.style,
-                                                ))
-                                            })
-                                            .collect();
-                                        self.agent_palettes
-                                            .extend(palettes.iter().map(Rc::downgrade));
-                                        self.begin_agent_run();
-                                        self.history_replay = Some((metadata, palettes));
-                                    }
-                                }
-                            }
+                            let palettes: Vec<_> = metadata
+                                .snapshots
+                                .iter()
+                                .map(|s| {
+                                    Rc::new(crate::agent_theme::SourcePalette::new(
+                                        Some(s.clone()),
+                                        self.style,
+                                    ))
+                                })
+                                .collect();
+                            self.agent_palettes
+                                .extend(palettes.iter().map(Rc::downgrade));
+                            self.begin_agent_run();
+                            self.history_replay = Some((metadata, palettes));
                         }
                     },
                     Some(b"select") => {
@@ -5737,12 +5721,11 @@ impl Perform for Grid {
                     .filter(|value| value.len() <= yinz_types::agent::theme::MAX_SNAPSHOT_BYTES * 2)
                 {
                     use base64::Engine;
-                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
-                        if bytes.len() <= yinz_types::agent::theme::MAX_SNAPSHOT_BYTES {
-                            if let Ok(event) = serde_json::from_slice(&bytes) {
-                                self.apply_agent_theme_event(event);
-                            }
-                        }
+                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded)
+                        && bytes.len() <= yinz_types::agent::theme::MAX_SNAPSHOT_BYTES
+                        && let Ok(event) = serde_json::from_slice(&bytes)
+                    {
+                        self.apply_agent_theme_event(event);
                     }
                 }
             },
@@ -5750,13 +5733,13 @@ impl Perform for Grid {
                 if !bell_terminated
                     && params == [b"777".as_slice(), b"yinz", b"implicit-blank"] =>
             {
-                if let Some(x) = self.cursor.x.checked_sub(1) {
-                    if let Some(row) = self.viewport.get_mut(self.cursor.y) {
-                        row.writing(&self.agent_theme);
-                        let index = row.absolute_character_index(x);
-                        if let Some(character) = row.columns.get_mut(index) {
-                            character.mark_implicit_blank();
-                        }
+                if let Some(x) = self.cursor.x.checked_sub(1)
+                    && let Some(row) = self.viewport.get_mut(self.cursor.y)
+                {
+                    row.writing(&self.agent_theme);
+                    let index = row.absolute_character_index(x);
+                    if let Some(character) = row.columns.get_mut(index) {
+                        character.mark_implicit_blank();
                     }
                 }
             },
@@ -6202,16 +6185,18 @@ impl Perform for Grid {
                                 let response = "\u{1b}[?2;3;0S";
                                 self.pending_messages_to_pty
                                     .push(response.as_bytes().to_vec());
-                            } else if let Some(character_cell_size) =
-                                *self.character_cell_size.borrow()
-                            {
-                                let sixel_area_geometry = format!(
-                                    "\u{1b}[?2;0;{};{}S",
-                                    character_cell_size.width * self.width,
-                                    character_cell_size.height * self.height,
-                                );
-                                self.pending_messages_to_pty
-                                    .push(sixel_area_geometry.as_bytes().to_vec());
+                            } else {
+                                if let Some(character_cell_size) =
+                                    *self.character_cell_size.borrow()
+                                {
+                                    let sixel_area_geometry = format!(
+                                        "\u{1b}[?2;0;{};{}S",
+                                        character_cell_size.width * self.width,
+                                        character_cell_size.height * self.height,
+                                    );
+                                    self.pending_messages_to_pty
+                                        .push(sixel_area_geometry.as_bytes().to_vec());
+                                }
                             }
                         },
                         _ => {
@@ -6945,13 +6930,13 @@ impl Row {
                         // (eg. we added a wide emoji in place of an English character)
                         // we remove the character after it to make room
                         let position_to_remove = absolute_x_index + 1;
-                        if let Some(removed) = self.columns.remove(position_to_remove) {
-                            if removed.width() > 1 {
-                                // the character we removed is a wide character itself, so we add
-                                // padding
-                                self.columns
-                                    .insert(position_to_remove, EMPTY_TERMINAL_CHARACTER);
-                            }
+                        if let Some(removed) = self.columns.remove(position_to_remove)
+                            && removed.width() > 1
+                        {
+                            // the character we removed is a wide character itself, so we add
+                            // padding
+                            self.columns
+                                .insert(position_to_remove, EMPTY_TERMINAL_CHARACTER);
                         }
                     },
                     Ordering::Less => {
@@ -7243,10 +7228,11 @@ impl Row {
         if !current_part.is_empty() {
             parts.push(Row::from_columns(current_part).with_bg_color(self.bg_color))
         };
-        if !parts.is_empty() && self.is_canonical {
-            if let Some(part) = parts.get_mut(0) {
-                part.is_canonical = true;
-            }
+        if !parts.is_empty()
+            && self.is_canonical
+            && let Some(part) = parts.get_mut(0)
+        {
+            part.is_canonical = true;
         }
         if parts.is_empty() {
             parts.push(self.clone());

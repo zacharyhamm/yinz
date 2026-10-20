@@ -31,7 +31,7 @@ use yinz_types::style::{Style, Styling};
 
 #[macro_export]
 macro_rules! resize_pty {
-    ($pane:expr, $os_input:expr, $senders:expr, $character_cell_size:expr) => {{
+    ($pane:expr_2021, $os_input:expr_2021, $senders:expr_2021, $character_cell_size:expr_2021) => {{
         let (width_in_pixels, height_in_pixels) = {
             let character_cell_size = $character_cell_size.borrow();
             match *character_cell_size {

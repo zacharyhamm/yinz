@@ -286,10 +286,10 @@ impl Screen {
             if let Some(c) = completion_tx.as_mut() {
                 c.set_affected_pane_id(PaneId::Terminal(first_terminal_pane.0))
             }
-        } else if let Some(plugin_id) = new_plugin_ids.values().next().and_then(|v| v.first()) {
-            if let Some(c) = completion_tx.as_mut() {
-                c.set_affected_pane_id(PaneId::Plugin(*plugin_id))
-            }
+        } else if let Some(plugin_id) = new_plugin_ids.values().next().and_then(|v| v.first())
+            && let Some(c) = completion_tx.as_mut()
+        {
+            c.set_affected_pane_id(PaneId::Plugin(*plugin_id))
         }
         // Set the affected tab ID for plugin API return value
         if let Some(c) = completion_tx.as_mut() {
@@ -407,10 +407,11 @@ impl Screen {
         }
         if !self.has_pending_tabs() {
             self.apply_deferred_tab_switches(&mut pending.tab_switches)?;
-            if should_change_focus_to_new_tab && !layout_failed {
-                if let Some(tab_position) = self.get_tab_position_by_id(tab_id) {
-                    self.switch_active_tab(tab_position, None, true, client_id)?;
-                }
+            if should_change_focus_to_new_tab
+                && !layout_failed
+                && let Some(tab_position) = self.get_tab_position_by_id(tab_id)
+            {
+                self.switch_active_tab(tab_position, None, true, client_id)?;
             }
         } else if should_change_focus_to_new_tab && !layout_failed {
             let client_id_to_switch = if self.active_tab_ids.contains_key(&client_id) {
@@ -479,11 +480,11 @@ impl Screen {
         let Some(tab_size) = self.tab_surface_size(tab_id) else {
             return Ok(());
         };
-        if let Some(tab) = self.tabs.get_mut(&tab_id) {
-            if tab.get_display_area() != tab_size {
-                tab.resize_whole_tab_to(tab_size)?;
-                tab.set_force_render();
-            }
+        if let Some(tab) = self.tabs.get_mut(&tab_id)
+            && tab.get_display_area() != tab_size
+        {
+            tab.resize_whole_tab_to(tab_size)?;
+            tab.set_force_render();
         }
         Ok(())
     }

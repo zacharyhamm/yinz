@@ -337,15 +337,16 @@ fn serialize_pane_title_and_attributes(
             .entries_mut()
             .push(KdlEntry::new_prop("focus", KdlValue::Bool(true)));
     }
-    if let Some(initial_pane_contents) = initial_pane_contents.as_ref() {
-        if command.is_none() && edit.is_none() {
-            let file_name = format!("initial_contents_{}", pane_contents.keys().len() + 1);
-            kdl_node
-                .entries_mut()
-                .push(KdlEntry::new_prop("contents_file", file_name.clone()));
+    if let Some(initial_pane_contents) = initial_pane_contents.as_ref()
+        && command.is_none()
+        && edit.is_none()
+    {
+        let file_name = format!("initial_contents_{}", pane_contents.keys().len() + 1);
+        kdl_node
+            .entries_mut()
+            .push(KdlEntry::new_prop("contents_file", file_name.clone()));
 
-            pane_contents.insert(file_name, initial_pane_contents.clone());
-        }
+        pane_contents.insert(file_name, initial_pane_contents.clone());
     }
 }
 
@@ -3112,7 +3113,8 @@ mod tests {
 
     fn get_dim(dim_hm: &Value) -> Dimension {
         let constr_str = dim_hm["constraint"].to_string();
-        let dim = if constr_str.contains("Fixed") {
+
+        if constr_str.contains("Fixed") {
             let value = &constr_str[7..constr_str.len() - 2];
             Dimension::fixed(value.parse().unwrap())
         } else if constr_str.contains("Percent") {
@@ -3122,7 +3124,6 @@ mod tests {
             dim
         } else {
             panic!("Constraint is nor a percent nor fixed");
-        };
-        dim
+        }
     }
 }

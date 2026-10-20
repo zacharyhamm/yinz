@@ -5,7 +5,7 @@ use yinz_types::position::{ColumnCount, RowCount};
 
 pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
     macro_rules! int_node {
-        ($name:expr, $type:ident) => {{
+        ($name:expr_2021, $type:ident) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())
@@ -15,7 +15,7 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         }};
     }
     macro_rules! string_node {
-        ($name:expr) => {{
+        ($name:expr_2021) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())
@@ -25,7 +25,7 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         }};
     }
     macro_rules! optional_string_node {
-        ($name:expr) => {{
+        ($name:expr_2021) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())
@@ -34,7 +34,7 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         }};
     }
     macro_rules! optional_int_node {
-        ($name:expr, $type:ident) => {{
+        ($name:expr_2021, $type:ident) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())
@@ -43,7 +43,7 @@ pub fn decode_from_kdl(kdl_document: &KdlDocument) -> Result<TabInfo, String> {
         }};
     }
     macro_rules! bool_node {
-        ($name:expr) => {{
+        ($name:expr_2021) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())

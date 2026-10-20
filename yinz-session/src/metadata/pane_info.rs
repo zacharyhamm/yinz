@@ -6,7 +6,7 @@ pub fn decode_from_kdl(
     kdl_document: &KdlDocument,
 ) -> Result<(Option<TabPosition>, PaneInfo), String> {
     macro_rules! int_node {
-        ($name:expr, $type:ident) => {{
+        ($name:expr_2021, $type:ident) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())
@@ -16,7 +16,7 @@ pub fn decode_from_kdl(
         }};
     }
     macro_rules! optional_int_node {
-        ($name:expr, $type:ident) => {{
+        ($name:expr_2021, $type:ident) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())
@@ -25,7 +25,7 @@ pub fn decode_from_kdl(
         }};
     }
     macro_rules! bool_node {
-        ($name:expr) => {{
+        ($name:expr_2021) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())
@@ -34,7 +34,7 @@ pub fn decode_from_kdl(
         }};
     }
     macro_rules! string_node {
-        ($name:expr) => {{
+        ($name:expr_2021) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())
@@ -44,7 +44,7 @@ pub fn decode_from_kdl(
         }};
     }
     macro_rules! optional_string_node {
-        ($name:expr) => {{
+        ($name:expr_2021) => {{
             kdl_document
                 .get($name)
                 .and_then(|n| n.entries().iter().next())
@@ -152,21 +152,21 @@ pub fn decode_from_kdl(
 pub fn encode_to_kdl(value: &PaneInfo) -> anyhow::Result<KdlDocument> {
     let mut kdl_doucment = KdlDocument::new();
     macro_rules! int_node {
-        ($name:expr, $val:expr) => {{
+        ($name:expr_2021, $val:expr_2021) => {{
             let mut att = KdlNode::new($name);
             att.push(i64::try_from($val)?);
             kdl_doucment.nodes_mut().push(att);
         }};
     }
     macro_rules! bool_node {
-        ($name:expr, $val:expr) => {{
+        ($name:expr_2021, $val:expr_2021) => {{
             let mut att = KdlNode::new($name);
             att.push($val);
             kdl_doucment.nodes_mut().push(att);
         }};
     }
     macro_rules! string_node {
-        ($name:expr, $val:expr) => {{
+        ($name:expr_2021, $val:expr_2021) => {{
             let mut att = KdlNode::new($name);
             att.push($val);
             kdl_doucment.nodes_mut().push(att);

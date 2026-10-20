@@ -58,15 +58,14 @@ impl TranslucentOverlayBacking {
             tint,
             host_colors(terminal_emulator_color_codes),
         );
-        if let Some(current) = &self.composition {
-            if current.overlays == next.overlays
-                && current.fg == next.fg
-                && current.bg == next.bg
-                && current.tint == next.tint
-                && current.host_colors == next.host_colors
-            {
-                return current.layers.is_empty();
-            }
+        if let Some(current) = &self.composition
+            && current.overlays == next.overlays
+            && current.fg == next.fg
+            && current.bg == next.bg
+            && current.tint == next.tint
+            && current.host_colors == next.host_colors
+        {
+            return current.layers.is_empty();
         }
         self.composition = Some(next);
         true
@@ -259,18 +258,18 @@ impl Composition {
             bg = self.tint;
         }
         styles.background = Some(bg.into());
-        if let Some(underline) = styles.underline_color {
-            if !matches!(underline, AnsiCode::Reset) {
-                styles.underline_color = Some(
-                    color(
-                        Some(underline),
-                        fg,
-                        chunk.changed_colors.as_ref(),
-                        &self.host_colors,
-                    )
-                    .into(),
-                );
-            }
+        if let Some(underline) = styles.underline_color
+            && !matches!(underline, AnsiCode::Reset)
+        {
+            styles.underline_color = Some(
+                color(
+                    Some(underline),
+                    fg,
+                    chunk.changed_colors.as_ref(),
+                    &self.host_colors,
+                )
+                .into(),
+            );
         }
         (default_background, styles.into())
     }

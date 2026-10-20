@@ -79,12 +79,13 @@ fn parse_provider_hook_event(kind: &str, json: String) -> serde_json::Result<(Ho
         event.messages_omitted = true;
         raw["messages_omitted"] = true.into();
     }
-    if event.hook_event_name == "PermissionRequest" && event.approvals_reviewer.is_none() {
-        if let Some(reviewer) = transcript_reviewer(&raw, start, &tail, &mut transcript) {
-            raw["approvals_reviewer"] = reviewer.clone().into();
-            event.approvals_reviewer = Some(reviewer);
-            changed = true;
-        }
+    if event.hook_event_name == "PermissionRequest"
+        && event.approvals_reviewer.is_none()
+        && let Some(reviewer) = transcript_reviewer(&raw, start, &tail, &mut transcript)
+    {
+        raw["approvals_reviewer"] = reviewer.clone().into();
+        event.approvals_reviewer = Some(reviewer);
+        changed = true;
     }
     let messages = transcript_messages(&event.session_id, start, &tail);
     if !messages.is_empty() {
@@ -329,19 +330,19 @@ fn enrich_agy_transcript(event: &mut HookEvent, path: &str) {
         return;
     }
 
-    if event.hook_event_name == "UserPromptSubmit" && event.prompt.is_none() {
-        if let Some(prompt) = extract_agy_prompt(&tail, event.turn_id.as_deref()) {
-            event.prompt_sha256 = Some(yinz_types::agent::control::prompt_sha256(&prompt));
-            event.prompt = Some(prompt);
-        }
+    if event.hook_event_name == "UserPromptSubmit"
+        && event.prompt.is_none()
+        && let Some(prompt) = extract_agy_prompt(&tail, event.turn_id.as_deref())
+    {
+        event.prompt_sha256 = Some(yinz_types::agent::control::prompt_sha256(&prompt));
+        event.prompt = Some(prompt);
     }
 
     if matches!(event.hook_event_name.as_str(), "Stop" | "StopFailure")
         && event.last_assistant_message.is_none()
+        && let Some(last_msg) = extract_agy_last_assistant_message(&tail)
     {
-        if let Some(last_msg) = extract_agy_last_assistant_message(&tail) {
-            event.last_assistant_message = Some(last_msg);
-        }
+        event.last_assistant_message = Some(last_msg);
     }
 }
 

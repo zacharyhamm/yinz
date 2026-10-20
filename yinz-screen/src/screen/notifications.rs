@@ -497,18 +497,18 @@ impl Screen {
         }) {
             self.consume_notification(id, now);
         }
-        if let Some(notification) = self.notifications.iter_mut().find(|n| n.id == id) {
-            if !notification.is_dismissing() {
-                let revealed = notification.reveal.value(now);
-                notification.reveal.redirect(
-                    now,
-                    revealed,
-                    0.0,
-                    scaled_duration(revealed, 1.0, EXIT_DURATION),
-                    EXIT_EASING,
-                );
-                self.sync_animation_clock(now)?;
-            }
+        if let Some(notification) = self.notifications.iter_mut().find(|n| n.id == id)
+            && !notification.is_dismissing()
+        {
+            let revealed = notification.reveal.value(now);
+            notification.reveal.redirect(
+                now,
+                revealed,
+                0.0,
+                scaled_duration(revealed, 1.0, EXIT_DURATION),
+                EXIT_EASING,
+            );
+            self.sync_animation_clock(now)?;
         }
         Ok(())
     }

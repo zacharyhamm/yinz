@@ -97,13 +97,13 @@ impl Screen {
         // the pty with no client and no completion; explicit ID-targeted actions carry
         // a completion. A plugin's `close_self` also has neither, but no command. This is the `pane_exit`
         // hook's moment for a pane that is not held.
-        if client_id.is_none() && completion_tx.is_none() {
-            if let Some(run_command) = self
+        if client_id.is_none()
+            && completion_tx.is_none()
+            && let Some(run_command) = self
                 .tab_containing_pane(id)
                 .and_then(|tab| tab.pane_run_command(id))
-            {
-                self.fire_pane_exit_hook(id, exit_status, &run_command, false);
-            }
+        {
+            self.fire_pane_exit_hook(id, exit_status, &run_command, false);
         }
         if self.destroyed_panes.contains(&id) && self.tab_containing_pane(id).is_none() {
             drop(completion_tx);
@@ -521,20 +521,20 @@ impl Screen {
             }
             return Err(error);
         }
-        if let Some(completion) = completion_tx.take() {
-            if let Some(tab) = placed_in.and_then(|id| self.tabs.get_mut(&id)) {
-                if tab.has_pane_with_pid(&pid) {
-                    tab.complete_agent_placement(pid, completion);
-                } else {
-                    self.forget_unplaced_pane(pid, "destination could not accept the pane".into());
-                }
+        if let Some(completion) = completion_tx.take()
+            && let Some(tab) = placed_in.and_then(|id| self.tabs.get_mut(&id))
+        {
+            if tab.has_pane_with_pid(&pid) {
+                tab.complete_agent_placement(pid, completion);
+            } else {
+                self.forget_unplaced_pane(pid, "destination could not accept the pane".into());
             }
         }
-        if let (Some(hold_for_command), Some(tab_id)) = (hold_for_command, placed_in) {
-            if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                let is_first_run = true;
-                tab.hold_pane(pid, None, is_first_run, hold_for_command);
-            }
+        if let (Some(hold_for_command), Some(tab_id)) = (hold_for_command, placed_in)
+            && let Some(tab) = self.tabs.get_mut(&tab_id)
+        {
+            let is_first_run = true;
+            tab.hold_pane(pid, None, is_first_run, hold_for_command);
         }
         // A `TabIndex` target places without a client, so a pane redirected to a tab
         // that already exists is brought to its client here. A tab made for the pane
@@ -580,26 +580,24 @@ impl Screen {
                         if let Some(yinz_types::input::layout::Run::Command(command)) = tab
                             .get_pane_with_id(PaneId::Terminal(pid))
                             .and_then(|p| p.invoked_with().as_ref())
+                            && let Some(origin) = &command.originating_plugin
                         {
-                            if let Some(origin) = &command.originating_plugin {
-                                for ((plugin, client, generation), filter) in
-                                    &self.pane_output_subscriptions
-                                {
-                                    if filter.iter().all(|(k, v)| origin.context.get(k) == Some(v))
-                                    {
-                                        let _ = self.bus.senders.send_to_plugin(
-                                            PluginInstruction::for_plugin_event(
-                                                *plugin,
-                                                *client,
-                                                *generation,
-                                                Event::PaneOutput {
-                                                    pane_id: pid.get(),
-                                                    data: bytes.clone(),
-                                                    context: origin.context.clone(),
-                                                },
-                                            ),
-                                        );
-                                    }
+                            for ((plugin, client, generation), filter) in
+                                &self.pane_output_subscriptions
+                            {
+                                if filter.iter().all(|(k, v)| origin.context.get(k) == Some(v)) {
+                                    let _ = self.bus.senders.send_to_plugin(
+                                        PluginInstruction::for_plugin_event(
+                                            *plugin,
+                                            *client,
+                                            *generation,
+                                            Event::PaneOutput {
+                                                pane_id: pid.get(),
+                                                data: bytes.clone(),
+                                                context: origin.context.clone(),
+                                            },
+                                        ),
+                                    );
                                 }
                             }
                         }

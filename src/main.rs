@@ -122,12 +122,12 @@ fn main() {
         }
         return;
     }
-    if let Some(Command::Action(action)) = &opts.command {
-        if matches!(action.as_ref(), CliAction::AgentReport { .. }) {
-            let result = agent_report::run(*action.clone(), opts.session.clone(), process_started);
-            // Errors are recorded without echoing hook input or other sensitive arguments.
-            std::process::exit(if result.is_ok() { 0 } else { 1 });
-        }
+    if let Some(Command::Action(action)) = &opts.command
+        && matches!(action.as_ref(), CliAction::AgentReport { .. })
+    {
+        let result = agent_report::run(*action.clone(), opts.session.clone(), process_started);
+        // Errors are recorded without echoing hook input or other sensitive arguments.
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
     if matches!(
         &opts.command,
@@ -212,14 +212,14 @@ fn main() {
     // session, so it goes through the ordinary CLI-action path below rather than
     // exiting here.
     #[cfg(unix)]
-    if let Some(Command::PtyHosts(pty_hosts)) = opts.command.clone() {
-        if !matches!(pty_hosts, yinz_cli::args::PtyHosts::Adopt { .. }) {
-            if let Err(e) = commands::pty_hosts(pty_hosts) {
-                eprintln!("Error: {e:#}");
-                std::process::exit(1);
-            }
-            std::process::exit(0);
+    if let Some(Command::PtyHosts(pty_hosts)) = opts.command.clone()
+        && !matches!(pty_hosts, yinz_cli::args::PtyHosts::Adopt { .. })
+    {
+        if let Err(e) = commands::pty_hosts(pty_hosts) {
+            eprintln!("Error: {e:#}");
+            std::process::exit(1);
         }
+        std::process::exit(0);
     }
 
     // Local file work only - a hook is installed into Claude Code's settings, not
@@ -454,10 +454,10 @@ fn main() {
         {
             let mut file = file;
             let cwd = cwd.or_else(|| std::env::current_dir().ok());
-            if file.is_relative() {
-                if let Some(cwd) = cwd.as_ref() {
-                    file = cwd.join(file);
-                }
+            if file.is_relative()
+                && let Some(cwd) = cwd.as_ref()
+            {
+                file = cwd.join(file);
             }
             let command_cli_action = CliAction::Edit {
                 file,

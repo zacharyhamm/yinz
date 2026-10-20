@@ -92,7 +92,7 @@ impl LoadingIndication {
 }
 
 macro_rules! style {
-    ($fg:expr) => {
+    ($fg:expr_2021) => {
         ansi_term::Style::new().fg(match $fg {
             PaletteColor::Rgb((r, g, b)) => ansi_term::Color::RGB(r, g, b),
             PaletteColor::EightBit(color) => ansi_term::Color::Fixed(color),

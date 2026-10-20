@@ -601,12 +601,15 @@ impl<'a> LayoutApplier<'a> {
         // look for matches according to the logical position in the layout
         let mut positions_left = vec![];
         for (layout, position_and_size) in positions_left_without_exact_matches {
-            if let Some(pane) = existing_tab_state.find_and_extract_pane_with_same_logical_position(
+            match existing_tab_state.find_and_extract_pane_with_same_logical_position(
                 position_and_size.logical_position,
             ) {
-                placements.push((pane, position_and_size, layout));
-            } else {
-                positions_left.push((layout, position_and_size));
+                Some(pane) => {
+                    placements.push((pane, position_and_size, layout));
+                },
+                _ => {
+                    positions_left.push((layout, position_and_size));
+                },
             }
         }
 

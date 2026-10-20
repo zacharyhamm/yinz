@@ -115,14 +115,13 @@ impl SteelPlugin {
             .clone()
             .unwrap_or_else(|| path.to_owned());
         let mut location = env.plugin_config.location.clone();
-        if let yinz_types::input::layout::RunPluginLocation::Git(repository) = &mut location {
-            if let Some(commit) = &env.plugin_config.installed_commit {
-                if !repository.is_local() {
-                    repository.revision = Some(yinz_types::input::git_plugin::GitRevision::Commit(
-                        commit.clone(),
-                    ));
-                }
-            }
+        if let yinz_types::input::layout::RunPluginLocation::Git(repository) = &mut location
+            && let Some(commit) = &env.plugin_config.installed_commit
+            && !repository.is_local()
+        {
+            repository.revision = Some(yinz_types::input::git_plugin::GitRevision::Commit(
+                commit.clone(),
+            ));
         }
         let sources = source_root(&source_path, env.plugin_config.repository_root.as_deref())?
             .with_location(location);
@@ -336,10 +335,10 @@ impl SteelPlugin {
 
     pub fn update(&mut self, event: &Event) -> Result<bool> {
         let completions = if matches!(event, Event::PermissionRequestResult(_)) {
-            if let Some(workers) = &self.env().workers {
-                if workers.parent_generation == self.generation {
-                    workers.permissions(self.env().client_id, event);
-                }
+            if let Some(workers) = &self.env().workers
+                && workers.parent_generation == self.generation
+            {
+                workers.permissions(self.env().client_id, event);
             }
             self.permission_completions()?
         } else {
@@ -362,10 +361,10 @@ impl SteelPlugin {
         if self.env().cancel.load(Ordering::Acquire) {
             bail!(CANCELLED_BY_HOST);
         }
-        if let Some(workers) = self.env().workers.clone() {
-            if workers.parent_generation == self.generation {
-                return workers.take_permission_completions(self.env_mut());
-            }
+        if let Some(workers) = self.env().workers.clone()
+            && workers.parent_generation == self.generation
+        {
+            return workers.take_permission_completions(self.env_mut());
         }
         Ok(vec![])
     }
@@ -415,14 +414,14 @@ impl SteelPlugin {
                 .render(rows, columns)
                 .map(|frame| frame.replace('\n', "\n\r").into_bytes())
         })?;
-        if !self.is_disposed() {
-            if let Some(startup) = self.first_render_started.take() {
-                log::info!(
+        if !self.is_disposed()
+            && let Some(startup) = self.first_render_started.take()
+        {
+            log::info!(
                     "startup: {} plugin={} client={} generation={} phase=first_render elapsed={:?} total={:?}",
                     self.env().log_identity(), self.env().plugin_id, self.env().client_id,
                     self.generation, started.elapsed(), startup.elapsed()
                 );
-            }
         }
         Ok(frame)
     }

@@ -30,15 +30,13 @@ pub(crate) fn dispatch(env: &mut PluginEnv, mut command: PickCommand) -> Result<
             options.validate().map_err(|error| anyhow!(error))?;
             if options.kind == PickKind::Directory
                 && matches!(&env.plugin_config.location, RunPluginLocation::Yinz(tag) if tag.to_string() == "session-palette")
-            {
-                if let Some(roots) = &mut options.roots {
+                && let Some(roots) = &mut options.roots {
                     for root in roots {
                         *root = crate::yinz_exports::resolve_host_directory(env, root)?
                             .to_string_lossy()
                             .into_owned();
                     }
                 }
-            }
             let (response_channel, receive) = crossbeam::channel::bounded(1);
             env.senders
                 .send_to_screen(ScreenInstruction::GetFocusedPaneInfo {
@@ -137,18 +135,18 @@ pub(crate) fn attach_opened_pane(env: &PluginEnv, pane: Option<PaneId>) -> Resul
     if let Some(opening) = &env.pick_opening {
         opening.store(false, Ordering::SeqCst);
     }
-    if result.is_err() {
-        if let Some(pane) = pane {
-            env.senders
-                .send_to_screen(ScreenInstruction::ClosePane(
-                    pane,
-                    Some(env.client_id),
-                    None,
-                    None,
-                ))
-                .context("close rejected picker pane")
-                .non_fatal();
-        }
+    if result.is_err()
+        && let Some(pane) = pane
+    {
+        env.senders
+            .send_to_screen(ScreenInstruction::ClosePane(
+                pane,
+                Some(env.client_id),
+                None,
+                None,
+            ))
+            .context("close rejected picker pane")
+            .non_fatal();
     }
     result.map(|_| ())
 }

@@ -3093,15 +3093,18 @@ fn env_var_expansion() {
     // set environment variables for test, keeping track of existing values.
     for (key, value) in env_vars {
         old_vars.push((key, std::env::var(key).ok()));
-        std::env::set_var(key, value);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var(key, value) };
     }
     let layout =
         crate::kdl::layout::from_kdl(raw_layout, Some("layout_file_name".into()), None, None);
     // restore environment.
     for (key, opt) in old_vars {
         match opt {
-            Some(value) => std::env::set_var(key, &value),
-            None => std::env::remove_var(key),
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            Some(value) => unsafe { std::env::set_var(key, &value) },
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            None => unsafe { std::env::remove_var(key) },
         }
     }
     let layout = layout.unwrap();
@@ -3110,7 +3113,8 @@ fn env_var_expansion() {
 
 #[test]
 fn env_var_missing() {
-    std::env::remove_var("SOME_UNIQUE_VALUE");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("SOME_UNIQUE_VALUE") };
     let kdl_layout = r#"
         layout {
             cwd "$SOME_UNIQUE_VALUE"

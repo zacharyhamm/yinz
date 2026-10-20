@@ -393,13 +393,13 @@ impl RemoteConn {
         drop(out);
         self.restore_received(received, resumed.dropped);
         self.transport_lost.store(false, Ordering::SeqCst);
-        if let Ok(target) = self.git_probe_target.lock() {
-            if let Some((cwd, refresh_token)) = target.as_ref() {
-                self.send_control(&ServerToBrokerMsg::GetGitProbe {
-                    cwd: cwd.clone(),
-                    refresh_token: refresh_token.clone(),
-                })?;
-            }
+        if let Ok(target) = self.git_probe_target.lock()
+            && let Some((cwd, refresh_token)) = target.as_ref()
+        {
+            self.send_control(&ServerToBrokerMsg::GetGitProbe {
+                cwd: cwd.clone(),
+                refresh_token: refresh_token.clone(),
+            })?;
         }
         Ok((resumed.read_socket, resumed.dropped))
     }
@@ -611,12 +611,11 @@ impl RemoteConn {
     }
 
     pub fn set_git_probe(&self, probe: RemoteGitProbe) {
-        if let Ok(target) = self.git_probe_target.lock() {
-            if let Some((cwd, Some(token))) = target.as_ref() {
-                if probe.cwd != *cwd || probe.refresh_token.as_ref() != Some(token) {
-                    return;
-                }
-            }
+        if let Ok(target) = self.git_probe_target.lock()
+            && let Some((cwd, Some(token))) = target.as_ref()
+            && (probe.cwd != *cwd || probe.refresh_token.as_ref() != Some(token))
+        {
+            return;
         }
         if let Ok(mut slot) = self.git_probe.lock() {
             *slot = Some(probe);
@@ -666,10 +665,10 @@ impl RemoteConn {
     }
 
     pub fn set_child_exit(&self, status: Option<i32>) {
-        if let Ok(mut slot) = self.child_exit.lock() {
-            if slot.is_none() {
-                *slot = Some(status);
-            }
+        if let Ok(mut slot) = self.child_exit.lock()
+            && slot.is_none()
+        {
+            *slot = Some(status);
         }
     }
 

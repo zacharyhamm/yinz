@@ -190,49 +190,47 @@ impl LoadingContext {
             && self.plugin_config.repository_root.is_none();
         let spawn_senders = senders.clone();
         let enqueue = move || {
-            if let RunPluginLocation::Git(source) = &self.plugin_config.location {
-                if self.plugin_config.repository_root.is_none() {
-                    let entries = self
-                        .plugin_aliases
-                        .lock()
-                        .unwrap()
-                        .aliases
-                        .values()
-                        .filter_map(|plugin| match &plugin.location {
-                            RunPluginLocation::Git(other)
-                                if other.repo == source.repo
-                                    && other.revision == source.revision =>
-                            {
-                                Some(other.clone())
-                            },
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>();
-                    match yinz_plugin_authoring::git::resolve(
-                        &self.yinz_data_dir,
-                        source,
-                        &entries,
-                        &self.cancel,
-                    ) {
-                        Ok(installed) => {
-                            self.plugin_config.path = installed.entrypoint;
-                            self.plugin_config.repository_root = Some(installed.root);
-                            self.plugin_config.installed_commit = installed.commit;
+            if let RunPluginLocation::Git(source) = &self.plugin_config.location
+                && self.plugin_config.repository_root.is_none()
+            {
+                let entries = self
+                    .plugin_aliases
+                    .lock()
+                    .unwrap()
+                    .aliases
+                    .values()
+                    .filter_map(|plugin| match &plugin.location {
+                        RunPluginLocation::Git(other)
+                            if other.repo == source.repo && other.revision == source.revision =>
+                        {
+                            Some(other.clone())
                         },
-                        Err(error) => {
-                            failure.report(
-                                &senders,
-                                load_id,
-                                plugin_id,
-                                error.context(
-                                    crate::plugin_authoring::LogIdentity::repository(source)
-                                        .marker(),
-                                ),
-                                Some(self.client_id),
-                            );
-                            return true;
-                        },
-                    }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                match yinz_plugin_authoring::git::resolve(
+                    &self.yinz_data_dir,
+                    source,
+                    &entries,
+                    &self.cancel,
+                ) {
+                    Ok(installed) => {
+                        self.plugin_config.path = installed.entrypoint;
+                        self.plugin_config.repository_root = Some(installed.root);
+                        self.plugin_config.installed_commit = installed.commit;
+                    },
+                    Err(error) => {
+                        failure.report(
+                            &senders,
+                            load_id,
+                            plugin_id,
+                            error.context(
+                                crate::plugin_authoring::LogIdentity::repository(source).marker(),
+                            ),
+                            Some(self.client_id),
+                        );
+                        return true;
+                    },
                 }
             }
             let work = move |senders, map, clients| job(self, senders, map, clients);
@@ -1100,8 +1098,8 @@ impl PluginBridge {
             let shared = self.plugin_is_shared(&plugin_id);
             if let Some(cache) = self.cached_events_for_pending_plugins.get_mut(&plugin_id) {
                 cache.retain(|message| {
-                    if let EventOrPipeMessage::PipeMessage(client, _, request, load) = message {
-                        if !instances.iter().any(|((id, owner, _, _), _)| {
+                    if let EventOrPipeMessage::PipeMessage(client, _, request, load) = message
+                        && !instances.iter().any(|((id, owner, _, _), _)| {
                             Self::message_is_directed_at_plugin(
                                 Some(plugin_id),
                                 *client,
@@ -1109,17 +1107,17 @@ impl PluginBridge {
                                 owner,
                                 shared,
                             )
-                        }) {
-                            if let Some(request) = request {
-                                self.pending_pipes.finish_cached(
-                                    *request,
-                                    plugin_id,
-                                    *load,
-                                    Err(error.clone()),
-                                );
-                            }
-                            return false;
+                        })
+                    {
+                        if let Some(request) = request {
+                            self.pending_pipes.finish_cached(
+                                *request,
+                                plugin_id,
+                                *load,
+                                Err(error.clone()),
+                            );
                         }
+                        return false;
                     }
                     true
                 });
@@ -1159,12 +1157,12 @@ impl PluginBridge {
                     .with_context(|| format!("run deferred reload of plugin {plugin_id}"))
                     .non_fatal();
             }
-            if let Some(run_plugin) = run_plugin {
-                if self.pending_plugin_reloads.remove(&run_plugin) {
-                    self.reload_plugin(&run_plugin)
-                        .with_context(|| format!("run deferred reload of {}", run_plugin.location))
-                        .non_fatal();
-                }
+            if let Some(run_plugin) = run_plugin
+                && self.pending_plugin_reloads.remove(&run_plugin)
+            {
+                self.reload_plugin(&run_plugin)
+                    .with_context(|| format!("run deferred reload of {}", run_plugin.location))
+                    .non_fatal();
             }
         }
         Ok(())
@@ -2138,21 +2136,21 @@ impl PluginBridge {
         // The screen owns pane state but has no plugin map. Fill the current session's
         // plugin identities here, before forwarding or caching its manifest.
         for (_, _, event) in &mut updates {
-            if let Event::SessionUpdate(sessions, _) = event {
-                if let Some(current) = sessions
+            if let Event::SessionUpdate(sessions, _) = event
+                && let Some(current) = sessions
                     .iter_mut()
                     .find(|session| session.is_current_session)
-                {
-                    current.populate_plugin_list(self.plugin_map.lock().unwrap().list_plugins());
-                }
+            {
+                current.populate_plugin_list(self.plugin_map.lock().unwrap().list_plugins());
             }
         }
         self.forward_events_to_cli_subscribers(&updates);
         for (plugin_id, client_id, event) in updates.iter() {
-            if plugin_id.is_none() && client_id.is_none() {
-                if let Event::HostTerminalThemeChanged(mode) = event {
-                    self.last_host_terminal_theme_mode = Some(*mode);
-                }
+            if plugin_id.is_none()
+                && client_id.is_none()
+                && let Event::HostTerminalThemeChanged(mode) = event
+            {
+                self.last_host_terminal_theme_mode = Some(*mode);
             }
         }
         // Pending plugins replay these updates after initialization.
@@ -3100,12 +3098,11 @@ impl PluginBridge {
     pub fn wait_for_cleanup(mut self, deadline: Instant) {
         let done = self.temporary_cleanup_done.take();
         drop(self);
-        if let Some(done) = done {
-            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+        if let Some(done) = done
+            && let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
                 done.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            {
-                log::warn!("plugin temporary data still in use at the shutdown deadline");
-            }
+        {
+            log::warn!("plugin temporary data still in use at the shutdown deadline");
         }
     }
 
@@ -3322,20 +3319,18 @@ impl PluginBridge {
                         }
                         if let EventOrPipeMessage::PluginEvent(client, generation, event, reply) =
                             &message
+                            && let Some(workers) = &plugin.env().workers
+                            && workers.contains(*generation)
                         {
-                            if let Some(workers) = &plugin.env().workers {
-                                if workers.contains(*generation) {
-                                    workers.send(
-                                        *generation,
-                                        crate::background_worker::Message::Event(
-                                            *client,
-                                            event.clone(),
-                                            *reply,
-                                        ),
-                                    );
-                                    continue;
-                                }
-                            }
+                            workers.send(
+                                *generation,
+                                crate::background_worker::Message::Event(
+                                    *client,
+                                    event.clone(),
+                                    *reply,
+                                ),
+                            );
+                            continue;
                         }
                         let Some(client) = message.client_for_replay(
                             plugin.env().owner_client_id,
@@ -4273,10 +4268,10 @@ pub(crate) fn check_event_permission(
         | EventType::FileSystemDelete => return (PermissionStatus::Granted, None),
     };
 
-    if let Some(permissions) = plugin_env.permissions.lock().unwrap().as_ref() {
-        if permissions.contains(&permission) {
-            return (PermissionStatus::Granted, None);
-        }
+    if let Some(permissions) = plugin_env.permissions.lock().unwrap().as_ref()
+        && permissions.contains(&permission)
+    {
+        return (PermissionStatus::Granted, None);
     }
 
     (PermissionStatus::Denied, Some(permission))

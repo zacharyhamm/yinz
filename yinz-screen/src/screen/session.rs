@@ -78,13 +78,13 @@ impl Screen {
                                 .non_fatal();
                         })
                     });
-                if result.is_err() {
-                    if let Some(os_input) = &self.bus.os_input {
-                        os_input
-                            .rename_pty_host_session(&name, &old_session_name)
-                            .context("restore session ownership after rename failed")
-                            .non_fatal();
-                    }
+                if result.is_err()
+                    && let Some(os_input) = &self.bus.os_input
+                {
+                    os_input
+                        .rename_pty_host_session(&name, &old_session_name)
+                        .context("restore session ownership after rename failed")
+                        .non_fatal();
                 }
                 result
             };

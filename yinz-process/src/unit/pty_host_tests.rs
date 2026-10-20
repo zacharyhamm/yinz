@@ -1727,8 +1727,10 @@ fn a_login_session_is_told_its_own_pty() {
 fn a_local_pane_is_spawned_exactly_as_before() {
     // This supervisor is forked from the test process, so what is set here is
     // what a local pane would inherit in production.
-    std::env::set_var("SSH_CONNECTION", "10.0.0.1 4242 10.0.0.2 22");
-    std::env::set_var("SSH_TTY", "/dev/pts/inherited");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("SSH_CONNECTION", "10.0.0.1 4242 10.0.0.2 22") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("SSH_TTY", "/dev/pts/inherited") };
     let (mut host, _host_id, _sock) = TestHost::start();
     let (_child_pid, mut master) = host.spawn(sh("echo conn=[$SSH_CONNECTION] tty=[$SSH_TTY]"));
 
@@ -1747,8 +1749,10 @@ fn a_local_pane_is_spawned_exactly_as_before() {
 
     host.send(&ServerToHostMsg::Terminate);
     host.join();
-    std::env::remove_var("SSH_CONNECTION");
-    std::env::remove_var("SSH_TTY");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("SSH_CONNECTION") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("SSH_TTY") };
 }
 
 /// A pane keeps this reference in its process environment while its per-session
@@ -1781,7 +1785,8 @@ fn a_local_pane_inherits_its_stable_supervisor_reference() {
 #[test]
 fn a_pane_does_not_inherit_an_outer_panes_broker_token() {
     let token = crate::pty_host::remote::broker::PANE_TOKEN_ENV;
-    std::env::set_var(token, "an-outer-panes-token");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(token, "an-outer-panes-token") };
     let (mut host, _host_id, _sock) = TestHost::start();
     let (_child_pid, mut master) = host.spawn(sh(&format!("echo token=[${token}]")));
 
@@ -1793,13 +1798,15 @@ fn a_pane_does_not_inherit_an_outer_panes_broker_token() {
 
     host.send(&ServerToHostMsg::Terminate);
     host.join();
-    std::env::remove_var(token);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(token) };
 }
 
 #[test]
 fn panes_clear_inherited_inline_hooks_but_keep_launch_assignments() {
     let marker = "YINZ_CLAUDE_INLINE_HOOKS";
-    std::env::set_var(marker, "1");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(marker, "1") };
     for login_session in [false, true] {
         for inline in [false, true] {
             let (mut host, _host_id, _sock) = TestHost::start();
@@ -1821,7 +1828,8 @@ fn panes_clear_inherited_inline_hooks_but_keep_launch_assignments() {
             host.join();
         }
     }
-    std::env::remove_var(marker);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(marker) };
 }
 
 /// The other half of that: a real remote pane is *given* its token by the broker, which
@@ -1830,7 +1838,8 @@ fn panes_clear_inherited_inline_hooks_but_keep_launch_assignments() {
 #[test]
 fn a_spawn_that_names_a_broker_token_keeps_it() {
     let token = crate::pty_host::remote::broker::PANE_TOKEN_ENV;
-    std::env::set_var(token, "an-outer-panes-token");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(token, "an-outer-panes-token") };
     let (mut host, _host_id, _sock) = TestHost::start();
     let (_child_pid, mut master) = host.spawn_with_env(
         sh(&format!("echo token=[${token}]")),
@@ -1849,7 +1858,8 @@ fn a_spawn_that_names_a_broker_token_keeps_it() {
 
     host.send(&ServerToHostMsg::Terminate);
     host.join();
-    std::env::remove_var(token);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(token) };
 }
 
 /// The frozen `SSH_*` of whichever ssh session started the broker are inherited
@@ -1857,13 +1867,19 @@ fn a_spawn_that_names_a_broker_token_keeps_it() {
 /// part in, so a remote login drops them rather than passing them on.
 #[test]
 fn a_login_session_scrubs_the_brokers_frozen_ssh_variables() {
-    std::env::set_var("SSH_CLIENT", "10.0.0.1 4242 22");
-    std::env::set_var("SSH_AUTH_SOCK", "/tmp/agent-from-the-bootstrap");
-    std::env::set_var("YINZ_SESSION_NAME", "a-session-on-the-asking-machine");
-    std::env::set_var(
-        crate::pty_host::PANE_REF_ENV_KEY,
-        "an-outer-panes-reference",
-    );
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("SSH_CLIENT", "10.0.0.1 4242 22") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("SSH_AUTH_SOCK", "/tmp/agent-from-the-bootstrap") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("YINZ_SESSION_NAME", "a-session-on-the-asking-machine") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe {
+        std::env::set_var(
+            crate::pty_host::PANE_REF_ENV_KEY,
+            "an-outer-panes-reference",
+        )
+    };
     let (mut host, _host_id, _sock) = TestHost::start();
     let (_child_pid, mut master) = host.spawn_with_env(
         sh("echo client=[$SSH_CLIENT] agent=[$SSH_AUTH_SOCK] \
@@ -1885,10 +1901,14 @@ fn a_login_session_scrubs_the_brokers_frozen_ssh_variables() {
 
     host.send(&ServerToHostMsg::Terminate);
     host.join();
-    std::env::remove_var("SSH_CLIENT");
-    std::env::remove_var("SSH_AUTH_SOCK");
-    std::env::remove_var("YINZ_SESSION_NAME");
-    std::env::remove_var(crate::pty_host::PANE_REF_ENV_KEY);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("SSH_CLIENT") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("YINZ_SESSION_NAME") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(crate::pty_host::PANE_REF_ENV_KEY) };
 }
 
 /// `^Z` in a command pane stops the pane's root process, and nothing inside the

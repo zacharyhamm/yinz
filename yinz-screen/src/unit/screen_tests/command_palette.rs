@@ -5845,10 +5845,9 @@ fn dynamic_palette_refresh_recovers_after_execution_error_and_stops_after_close(
             .expect("execution error must re-arm dynamic refresh");
         if let ScreenInstruction::CommandPalette(instruction @ Instruction::Refresh { .. }) =
             instruction
+            && screen.plugin_palette_instruction(instruction)
         {
-            if screen.plugin_palette_instruction(instruction) {
-                break;
-            }
+            break;
         }
     }
     let Message::Discover {

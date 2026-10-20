@@ -280,12 +280,16 @@ fn spawn_and_read_output() {
 
     let server = make_server();
     let test_message = "hello_yinz_test";
-    std::env::set_var(
-        crate::pty_host::PANE_REF_ENV_KEY,
-        "an-outer-panes-reference",
-    );
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe {
+        std::env::set_var(
+            crate::pty_host::PANE_REF_ENV_KEY,
+            "an-outer-panes-reference",
+        )
+    };
     let token = crate::pty_host::remote::broker::PANE_TOKEN_ENV;
-    std::env::set_var(token, "an-outer-panes-token");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(token, "an-outer-panes-token") };
 
     let cmd = RunCommand {
         command: PathBuf::from("sh"),
@@ -360,14 +364,17 @@ fn spawn_and_read_output() {
         output_str.contains("token=[]"),
         "an in-process pane reused an outer pane's broker token: {output_str:?}"
     );
-    std::env::remove_var(crate::pty_host::PANE_REF_ENV_KEY);
-    std::env::remove_var(token);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(crate::pty_host::PANE_REF_ENV_KEY) };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(token) };
 }
 
 #[test]
 fn fallback_panes_clear_inherited_inline_hooks_but_keep_launch_assignments() {
     let marker = "YINZ_CLAUDE_INLINE_HOOKS";
-    std::env::set_var(marker, "1");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(marker, "1") };
     let server = make_server();
     for inline in [false, true] {
         let expected = if inline { "1" } else { "unset" };
@@ -395,7 +402,8 @@ fn fallback_panes_clear_inherited_inline_hooks_but_keep_launch_assignments() {
         assert_eq!(rx.recv_timeout(AMPLE_TIMEOUT).unwrap(), Some(0));
         server.clear_terminal_id(terminal_id).unwrap();
     }
-    std::env::remove_var(marker);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(marker) };
 }
 
 #[cfg(unix)]

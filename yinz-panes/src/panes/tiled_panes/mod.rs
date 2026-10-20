@@ -459,15 +459,14 @@ impl TiledPanes {
                 }
             })
             .copied()
+            && let Some(mut pane) = self.panes.remove(&pane_id)
         {
-            if let Some(mut pane) = self.panes.remove(&pane_id) {
-                // we must strip the logical position here because it's likely a straggler from
-                // this pane's previous tab and would cause chaos if considered in the new one
-                let mut pane_geom = pane.position_and_size();
-                pane_geom.logical_position = None;
-                pane.set_geom(pane_geom);
-                self.add_pane_with_existing_geom(pane.pid(), pane);
-            }
+            // we must strip the logical position here because it's likely a straggler from
+            // this pane's previous tab and would cause chaos if considered in the new one
+            let mut pane_geom = pane.position_and_size();
+            pane_geom.logical_position = None;
+            pane.set_geom(pane_geom);
+            self.add_pane_with_existing_geom(pane.pid(), pane);
         }
     }
     /// As [`insert_pane`](Self::insert_pane), including handing the pane back.
@@ -531,15 +530,11 @@ impl TiledPanes {
         }
         let stacked_resize = { *self.stacked_resize.borrow() };
 
-        if let Some(client_id) = client_id {
-            if stacked_resize && self.is_connected(&client_id) {
-                return self.add_pane_with_stacked_resize(
-                    pane_id,
-                    pane,
-                    should_relayout,
-                    client_id,
-                );
-            }
+        if let Some(client_id) = client_id
+            && stacked_resize
+            && self.is_connected(&client_id)
+        {
+            return self.add_pane_with_stacked_resize(pane_id, pane, should_relayout, client_id);
         }
         self.add_pane_without_stacked_resize(pane_id, pane, should_relayout)
     }
@@ -1210,15 +1205,14 @@ impl TiledPanes {
                 for client_id in connected_clients {
                     if let Some(focused_pane_id_for_client) =
                         self.active_panes.get(&client_id).copied()
+                        && all_panes_in_stack.contains(&focused_pane_id_for_client)
                     {
-                        if all_panes_in_stack.contains(&focused_pane_id_for_client) {
-                            if focused_pane_id_for_client != pane_id {
-                                self.active_panes
-                                    .set_last_pane(client_id, focused_pane_id_for_client);
-                            }
-                            self.active_panes.insert(client_id, pane_id, &self.panes);
-                            self.set_pane_active_at(pane_id);
+                        if focused_pane_id_for_client != pane_id {
+                            self.active_panes
+                                .set_last_pane(client_id, focused_pane_id_for_client);
                         }
+                        self.active_panes.insert(client_id, pane_id, &self.panes);
+                        self.set_pane_active_at(pane_id);
                     }
                 }
                 self.set_force_render();
@@ -1241,10 +1235,10 @@ impl TiledPanes {
             log::error!("Cannot focus pane {:?} as it is not selectable!", pane_id);
             return;
         }
-        if let Some(focused_pane) = self.active_panes.get(&client_id).copied() {
-            if pane_id != focused_pane {
-                self.active_panes.set_last_pane(client_id, focused_pane);
-            }
+        if let Some(focused_pane) = self.active_panes.get(&client_id).copied()
+            && pane_id != focused_pane
+        {
+            self.active_panes.set_last_pane(client_id, focused_pane);
         }
         if self.panes_to_hide.contains(&pane_id) {
             // this means there is a fullscreen pane that is not the current pane, let's unset it
@@ -1286,25 +1280,22 @@ impl TiledPanes {
             .iter()
             .find(|(_pid, pane)| pane.position_and_size() == position_and_size)
             .map(|(pid, _p)| *pid)
+            && let Some(currently_active_pane_id) = self.active_panes.get(&client_id)
         {
-            if let Some(currently_active_pane_id) = self.active_panes.get(&client_id) {
-                let prev_geom = {
-                    if let Some(currently_focused_pane) =
-                        self.panes.get_mut(currently_active_pane_id)
-                    {
-                        let prev_geom = currently_focused_pane.position_and_size();
-                        currently_focused_pane.set_geom(position_and_size);
-                        Some(prev_geom)
-                    } else {
-                        None
-                    }
-                };
-                if let Some(prev_geom) = prev_geom {
-                    if let Some(previous_pane) = self.panes.get_mut(&pane_id) {
-                        previous_pane.set_geom(prev_geom);
-                        self.reset_boundaries();
-                    }
+            let prev_geom = {
+                if let Some(currently_focused_pane) = self.panes.get_mut(currently_active_pane_id) {
+                    let prev_geom = currently_focused_pane.position_and_size();
+                    currently_focused_pane.set_geom(position_and_size);
+                    Some(prev_geom)
+                } else {
+                    None
                 }
+            };
+            if let Some(prev_geom) = prev_geom
+                && let Some(previous_pane) = self.panes.get_mut(&pane_id)
+            {
+                previous_pane.set_geom(prev_geom);
+                self.reset_boundaries();
             }
         }
     }
@@ -1523,12 +1514,12 @@ impl TiledPanes {
                         .mode;
                     let err_context =
                         || format!("failed to render tiled panes for client {client_id}");
-                    if let PaneId::Plugin(..) = kind {
-                        if !pane_is_one_liner_in_stack {
-                            pane_contents_and_ui
-                                .render_pane_contents_for_client(*client_id)
-                                .with_context(err_context)?;
-                        }
+                    if let PaneId::Plugin(..) = kind
+                        && !pane_is_one_liner_in_stack
+                    {
+                        pane_contents_and_ui
+                            .render_pane_contents_for_client(*client_id)
+                            .with_context(err_context)?;
                     }
                     let is_floating = false;
                     if pane_is_no_ui_fullscreen {
@@ -1583,34 +1574,34 @@ impl TiledPanes {
                         .render_fake_cursor_if_needed(*client_id)
                         .with_context(err_context)?;
                 }
-                if let PaneId::Terminal(..) = kind {
-                    if !pane_is_one_liner_in_stack {
-                        if pane_has_guest_modal {
-                            let (modal_clients, plain_clients): (Vec<ClientId>, Vec<ClientId>) =
-                                connected_clients.iter().copied().partition(|client_id| {
-                                    pane_contents_and_ui.client_has_guest_modal(*client_id)
-                                });
-                            if !plain_clients.is_empty() {
-                                pane_contents_and_ui
-                                    .render_pane_contents_to_multiple_clients(
-                                        plain_clients.iter().copied(),
-                                    )
-                                    .with_context(err_context)?;
-                            } else {
-                                pane_contents_and_ui.drain_pane_render_state();
-                            }
-                            for client_id in modal_clients {
-                                pane_contents_and_ui
-                                    .render_guest_modal_for_client(client_id)
-                                    .with_context(err_context)?;
-                            }
-                        } else {
+                if let PaneId::Terminal(..) = kind
+                    && !pane_is_one_liner_in_stack
+                {
+                    if pane_has_guest_modal {
+                        let (modal_clients, plain_clients): (Vec<ClientId>, Vec<ClientId>) =
+                            connected_clients.iter().copied().partition(|client_id| {
+                                pane_contents_and_ui.client_has_guest_modal(*client_id)
+                            });
+                        if !plain_clients.is_empty() {
                             pane_contents_and_ui
                                 .render_pane_contents_to_multiple_clients(
-                                    connected_clients.iter().copied(),
+                                    plain_clients.iter().copied(),
                                 )
                                 .with_context(err_context)?;
+                        } else {
+                            pane_contents_and_ui.drain_pane_render_state();
                         }
+                        for client_id in modal_clients {
+                            pane_contents_and_ui
+                                .render_guest_modal_for_client(client_id)
+                                .with_context(err_context)?;
+                        }
+                    } else {
+                        pane_contents_and_ui
+                            .render_pane_contents_to_multiple_clients(
+                                connected_clients.iter().copied(),
+                            )
+                            .with_context(err_context)?;
                     }
                 }
             }

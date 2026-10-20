@@ -332,12 +332,12 @@ fn breadcrumb_is_present_only_while_fullscreened() {
         "the guest's own name is present in the breadcrumb"
     );
 
-    let ancestor_column = column_of(&first_line, &host_session_name);
+    let ancestor_column = column_of(first_line, &host_session_name);
     assert!(
         fullscreened.char_is_italic(ancestor_column, 0),
         "the ancestor segment of the breadcrumb is styled italic"
     );
-    let name_column = column_of(&first_line, &guest_session_name);
+    let name_column = column_of(first_line, &guest_session_name);
     assert!(
         fullscreened.char_is_bold(name_column, 0),
         "the guest's own name in the breadcrumb is styled bold"
@@ -925,12 +925,12 @@ fn clicking_the_ancestor_breadcrumb_segment_ascends_out_of_the_guest() {
         },
     );
     let first_line = fullscreen_grid.project_bar_line().unwrap();
-    let (ancestor_start, ancestor_end) = ancestor_segment_range(&first_line);
+    let (ancestor_start, ancestor_end) = ancestor_segment_range(first_line);
 
     let non_ascend_before = nested
         .guest_to_host()
         .count(|message| matches!(message, NestedSessionMessage::FocusHost { direction: None }));
-    let name_column = column_of(&first_line, &guest_session_name) + 1;
+    let name_column = column_of(first_line, &guest_session_name) + 1;
     nested.host.send_stdin(&sgr_mouse_report(name_column, 1, 0));
     nested
         .host
@@ -1116,7 +1116,7 @@ fn fullscreen_breadcrumb_has_no_nested_marker_and_an_emphasized_own_name() {
         "the breadcrumb shows the guest's own name closed by a paren after the arrow"
     );
 
-    let ancestor_column = column_of(&first_line, &host_session_name);
+    let ancestor_column = column_of(first_line, &host_session_name);
     assert!(
         fullscreened.char_is_italic(ancestor_column, 0),
         "the ancestor breadcrumb segment is italic while descended"
@@ -1126,7 +1126,7 @@ fn fullscreen_breadcrumb_has_no_nested_marker_and_an_emphasized_own_name() {
         "the descended guest breadcrumb ancestor segment is not dimmed"
     );
 
-    let name_column = column_of(&first_line, &guest_session_name);
+    let name_column = column_of(first_line, &guest_session_name);
     assert!(
         fullscreened.char_is_bold(name_column, 0),
         "the guest's own name in the breadcrumb is bold while descended"

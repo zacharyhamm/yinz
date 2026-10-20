@@ -742,11 +742,11 @@ impl Environment {
                 .arg(&*yinz_runtime::consts::YINZ_SOCK_DIR)
                 .arg(destination);
             setenv("YINZ_SOCKET_DIR", "/run/yinz-control")?;
-            if let Ok(reference) = std::env::var("YINZ_PANE_REF") {
-                if reference.len() != 12 || !reference.bytes().all(|byte| byte.is_ascii_hexdigit())
-                {
-                    bail!("invalid YINZ_PANE_REF");
-                }
+            if let Ok(reference) = std::env::var("YINZ_PANE_REF")
+                && (reference.len() != 12
+                    || !reference.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            {
+                bail!("invalid YINZ_PANE_REF");
             }
 
             for name in [
@@ -1014,11 +1014,11 @@ fn wait_status(command: &mut Command, deadline: Instant) -> Result<std::process:
     let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
     let kill_error = (killed == -1).then(std::io::Error::last_os_error);
     let reaped = child.wait().context("reap failed check");
-    if let Some(error) = kill_error {
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            reaped?;
-            return Err(error).context(format!("{failure:#}; terminate check process group"));
-        }
+    if let Some(error) = kill_error
+        && error.raw_os_error() != Some(libc::ESRCH)
+    {
+        reaped?;
+        return Err(error).context(format!("{failure:#}; terminate check process group"));
     }
     reaped?;
     Err(failure)

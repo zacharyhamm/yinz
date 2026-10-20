@@ -530,22 +530,20 @@ pub fn read_live_session_states(
     let mut session_infos_on_machine = BTreeMap::new();
     if let Ok(files) = fs::read_dir(sock_dir) {
         files.for_each(|file| {
-            if let Ok(file) = file {
-                if let Ok(file_name) = file.file_name().into_string() {
-                    if is_session_socket_name(&file_name)
-                        && file
-                            .file_type()
-                            .map(|file_type| is_ipc_socket(&file_type))
-                            .unwrap_or(false)
-                    {
-                        let creation_time = std::fs::metadata(file.path())
-                            .ok()
-                            .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
-                            .and_then(|d| d.elapsed().ok())
-                            .unwrap_or_default();
-                        other_session_names.push((SessionName::new(file_name), creation_time));
-                    }
-                }
+            if let Ok(file) = file
+                && let Ok(file_name) = file.file_name().into_string()
+                && is_session_socket_name(&file_name)
+                && file
+                    .file_type()
+                    .map(|file_type| is_ipc_socket(&file_type))
+                    .unwrap_or(false)
+            {
+                let creation_time = std::fs::metadata(file.path())
+                    .ok()
+                    .and_then(|f| f.created().ok().or_else(|| f.modified().ok()))
+                    .and_then(|d| d.elapsed().ok())
+                    .unwrap_or_default();
+                other_session_names.push((SessionName::new(file_name), creation_time));
             }
         });
     }
@@ -556,13 +554,13 @@ pub fn read_live_session_states(
         .map(|(session_name, creation_time)| {
             let socket_path = sock_dir.join(&session_name);
             std::thread::spawn(move || {
-                if let Err(error) = yinz_ipc::consts::ipc_connect(&socket_path) {
-                    if matches!(
+                if let Err(error) = yinz_ipc::consts::ipc_connect(&socket_path)
+                    && matches!(
                         error.kind(),
                         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                    ) {
-                        return None;
-                    }
+                    )
+                {
+                    return None;
                 }
                 Some((session_name, creation_time))
             })
@@ -577,13 +575,12 @@ pub fn read_live_session_states(
                 fs::read_to_string(checkpoint.metadata_path())
                     .context("failed to read session checkpoint metadata")
             });
-        if let Ok(raw_session_info) = raw_session_info {
-            if let Ok(mut session_info) =
+        if let Ok(raw_session_info) = raw_session_info
+            && let Ok(mut session_info) =
                 crate::metadata::session_info::from_string(&raw_session_info, current_session_name)
-            {
-                session_info.creation_time = creation_time;
-                session_infos_on_machine.insert(session_name, session_info);
-            }
+        {
+            session_info.creation_time = creation_time;
+            session_infos_on_machine.insert(session_name, session_info);
         }
     }
     session_infos_on_machine

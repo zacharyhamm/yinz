@@ -440,12 +440,12 @@ impl TextInput {
         // Ctrl+Shift is checked first: has_modifiers is a subset test, so
         // Ctrl-Shift-Z also satisfies the plain-Ctrl block below, which now
         // swallows every Char it doesn't recognize.
-        if key.has_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) {
-            if let BareKey::Char('Z') = key.bare_key {
-                // Ctrl-Shift-Z: Redo (alternative)
-                self.redo();
-                return InputAction::Continue;
-            }
+        if key.has_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift])
+            && let BareKey::Char('Z') = key.bare_key
+        {
+            // Ctrl-Shift-Z: Redo (alternative)
+            self.redo();
+            return InputAction::Continue;
         }
 
         // Check for Ctrl modifiers

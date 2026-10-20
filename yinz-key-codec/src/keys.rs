@@ -323,10 +323,10 @@ pub fn parse_keys(input_bytes: &[u8]) -> Vec<KeyWithModifier> {
     let mut input_parser = InputParser::new(); // this is the termwiz InputParser
     let maybe_more = false;
     let parse_input_event = |input_event: InputEvent| {
-        if let InputEvent::Key(key_event) = input_event {
-            if let Some(key) = cast_termwiz_key(key_event, input_bytes, |_| false) {
-                ret.push(key);
-            }
+        if let InputEvent::Key(key_event) = input_event
+            && let Some(key) = cast_termwiz_key(key_event, input_bytes, |_| false)
+        {
+            ret.push(key);
         }
     };
     input_parser.parse(input_bytes, parse_input_event, maybe_more);

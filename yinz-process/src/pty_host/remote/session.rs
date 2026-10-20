@@ -119,7 +119,9 @@ impl WireState {
     fn generation(&self) -> Option<u64> {
         match self {
             WireState::Detached { .. } | WireState::Terminating => None,
-            WireState::Attaching(gen) | WireState::Attached(_, gen) => Some(*gen),
+            WireState::Attaching(generation) | WireState::Attached(_, generation) => {
+                Some(*generation)
+            },
         }
     }
 }
@@ -235,7 +237,7 @@ impl PaneSession {
     pub fn wire_and_generation(&self) -> Option<(super::broker::Wire, u64)> {
         match self.wire.lock() {
             Ok(slot) => match &*slot {
-                WireState::Attached(wire, gen) => Some((wire.clone(), *gen)),
+                WireState::Attached(wire, generation) => Some((wire.clone(), *generation)),
                 WireState::Attaching(_) | WireState::Detached { .. } | WireState::Terminating => {
                     None
                 },
@@ -246,11 +248,11 @@ impl PaneSession {
 
     /// Attach a connection that has nothing to catch up on.
     pub fn attach(&self, wire: super::broker::Wire) -> u64 {
-        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut slot) = self.wire.lock() {
-            *slot = WireState::Attached(wire, gen);
+            *slot = WireState::Attached(wire, generation);
         }
-        gen
+        generation
     }
 
     /// Claim the pane for a connection that still owes it a replay.
@@ -266,9 +268,9 @@ impl PaneSession {
                 return Err(ResumeRefusal::AlreadyAttached);
             },
         }
-        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        *slot = WireState::Attaching(gen);
-        Ok(gen)
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        *slot = WireState::Attaching(generation);
+        Ok(generation)
     }
 
     /// The next thing a resuming connection owes, or the news that it is done.
@@ -281,7 +283,12 @@ impl PaneSession {
     /// No socket write happens under that lock. The connection this replaces may
     /// be blocked writing to a peer that has gone away without saying so, and
     /// that write must never be able to hold up the reconnect replacing it.
-    pub fn resume_step(&self, sent_upto: u64, wire: &super::broker::Wire, gen: u64) -> ResumeStep {
+    pub fn resume_step(
+        &self,
+        sent_upto: u64,
+        wire: &super::broker::Wire,
+        generation: u64,
+    ) -> ResumeStep {
         let Ok(ring) = self.ring.lock() else {
             return ResumeStep::Superseded;
         };
@@ -291,8 +298,8 @@ impl PaneSession {
         }
         match self.wire.lock() {
             Ok(mut slot) => match slot.generation() {
-                Some(current) if current == gen => {
-                    *slot = WireState::Attached(wire.clone(), gen);
+                Some(current) if current == generation => {
+                    *slot = WireState::Attached(wire.clone(), generation);
                     ResumeStep::Attached
                 },
                 _ => ResumeStep::Superseded,
@@ -309,9 +316,9 @@ impl PaneSession {
     /// successor's wire — that would silence a healthy pane and, worse, start
     /// an orphan clock that reaps it out from under a server that is right
     /// there watching it.
-    pub fn detach_if(&self, gen: u64) {
+    pub fn detach_if(&self, generation: u64) {
         if let Ok(mut slot) = self.wire.lock() {
-            if slot.generation() != Some(gen) {
+            if slot.generation() != Some(generation) {
                 return;
             }
             *slot = WireState::Detached {
@@ -335,10 +342,10 @@ impl PaneSession {
     }
 
     pub fn set_child_exit(&self, status: Option<i32>) {
-        if let Ok(mut slot) = self.child_exit.lock() {
-            if slot.is_none() {
-                *slot = Some(status);
-            }
+        if let Ok(mut slot) = self.child_exit.lock()
+            && slot.is_none()
+        {
+            *slot = Some(status);
         }
     }
 

@@ -569,7 +569,8 @@ fn plugin_agent_launch_waits_for_checks_and_rejects_errors_with_pane_ids() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
-    std::env::set_var("XDG_DATA_HOME", temp.path().join("data"));
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("XDG_DATA_HOME", temp.path().join("data")) };
     let root = temp.path().join("repo");
     let cwd = root.join("task");
     std::fs::create_dir_all(&cwd).unwrap();

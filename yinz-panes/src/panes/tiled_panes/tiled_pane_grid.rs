@@ -467,23 +467,22 @@ impl<'a> TiledPaneGrid<'a> {
                         if self
                             .change_pane_size(pane_id, &sub_strategy, change_by)
                             .with_context(err_context)?
+                            && let Some(aligned_pane) = aligned_panes[adjust_pane]
                         {
-                            if let Some(aligned_pane) = aligned_panes[adjust_pane] {
-                                match self.change_pane_size(
-                                    &aligned_pane,
-                                    &ResizeStrategy {
-                                        direction: adjust_dir,
-                                        invert_on_boundaries: false,
-                                        resize: strategy.resize.invert(),
-                                    },
-                                    change_by,
-                                ) {
-                                    Ok(_) => {},
-                                    Err(err) => match err.downcast_ref::<YinzError>() {
-                                        Some(YinzError::PaneSizeUnchanged) => {},
-                                        _ => return Err(err).with_context(err_context),
-                                    },
-                                }
+                            match self.change_pane_size(
+                                &aligned_pane,
+                                &ResizeStrategy {
+                                    direction: adjust_dir,
+                                    invert_on_boundaries: false,
+                                    resize: strategy.resize.invert(),
+                                },
+                                change_by,
+                            ) {
+                                Ok(_) => {},
+                                Err(err) => match err.downcast_ref::<YinzError>() {
+                                    Some(YinzError::PaneSizeUnchanged) => {},
+                                    _ => return Err(err).with_context(err_context),
+                                },
                             }
                         }
                         // The main resize succeeded even if subsequent adjustments were blocked.
@@ -1127,11 +1126,8 @@ impl<'a> TiledPaneGrid<'a> {
         let next_pane_is_stacked = next_pane
             .map(|p| p.current_geom().is_stacked())
             .unwrap_or(false);
-        if next_pane_is_stacked {
-            if let Some(next_pane_id) = next_pane.map(|p| p.pid()) {
-                return StackedPanes::new(self.panes.clone())
-                    .flexible_pane_id_in_stack(&next_pane_id);
-            }
+        if next_pane_is_stacked && let Some(next_pane_id) = next_pane.map(|p| p.pid()) {
+            return StackedPanes::new(self.panes.clone()).flexible_pane_id_in_stack(&next_pane_id);
         }
         next_pane.map(|p| p.pid())
     }
@@ -1148,7 +1144,8 @@ impl<'a> TiledPaneGrid<'a> {
                 .filter(|(_, p)| p.selectable())
                 .map(|(p_id, p)| (*p_id, p))
                 .collect();
-            let destination_pane_id = pane_list
+
+            pane_list
                 .iter()
                 .enumerate()
                 .filter(|(_, (_, c))| {
@@ -1166,8 +1163,7 @@ impl<'a> TiledPaneGrid<'a> {
                 })
                 .max_by_key(|(_, (_, c))| c.active_at())
                 .map(|(_, (pid, _))| pid)
-                .copied();
-            destination_pane_id
+                .copied()
         };
 
         match destination_pane_id_in_stack {
@@ -1193,7 +1189,8 @@ impl<'a> TiledPaneGrid<'a> {
                 .filter(|(_, p)| p.selectable())
                 .map(|(p_id, p)| (*p_id, p))
                 .collect();
-            let destination_pane_id = pane_list
+
+            pane_list
                 .iter()
                 .enumerate()
                 .filter(|(_, (_, c))| {
@@ -1211,8 +1208,7 @@ impl<'a> TiledPaneGrid<'a> {
                 })
                 .max_by_key(|(_, (_, c))| c.active_at())
                 .map(|(_, (pid, _))| pid)
-                .copied();
-            destination_pane_id
+                .copied()
         };
 
         match destination_pane_id_in_stack {
@@ -1238,7 +1234,8 @@ impl<'a> TiledPaneGrid<'a> {
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p))
             .collect();
-        let next_index = panes
+
+        panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
@@ -1260,8 +1257,7 @@ impl<'a> TiledPaneGrid<'a> {
             })
             .max_by_key(|(_, (_, c))| c.active_at())
             .map(|(_, (pid, _))| pid)
-            .copied();
-        next_index
+            .copied()
     }
     pub fn pane_id_on_edge(&self, direction: Direction) -> Option<PaneId> {
         let panes = self.panes.borrow();
@@ -1270,7 +1266,8 @@ impl<'a> TiledPaneGrid<'a> {
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p))
             .collect();
-        let next_index = panes
+
+        panes
             .iter()
             .enumerate()
             .max_by(|(_, (_, a)), (_, (_, b))| match direction {
@@ -1304,8 +1301,7 @@ impl<'a> TiledPaneGrid<'a> {
                 },
             })
             .map(|(_, (pid, _))| pid)
-            .copied();
-        next_index
+            .copied()
     }
     pub fn next_selectable_pane_id_above(
         &self,
@@ -1320,7 +1316,8 @@ impl<'a> TiledPaneGrid<'a> {
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p))
             .collect();
-        let next_index = panes
+
+        panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
@@ -1342,8 +1339,7 @@ impl<'a> TiledPaneGrid<'a> {
             })
             .max_by_key(|(_, (_, c))| c.active_at())
             .map(|(_, (pid, _))| pid)
-            .copied();
-        next_index
+            .copied()
     }
     pub fn next_selectable_pane_id_to_the_right(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
@@ -1366,11 +1362,8 @@ impl<'a> TiledPaneGrid<'a> {
         let next_pane_is_stacked = next_pane
             .map(|p| p.current_geom().is_stacked())
             .unwrap_or(false);
-        if next_pane_is_stacked {
-            if let Some(next_pane_id) = next_pane.map(|p| p.pid()) {
-                return StackedPanes::new(self.panes.clone())
-                    .flexible_pane_id_in_stack(&next_pane_id);
-            }
+        if next_pane_is_stacked && let Some(next_pane_id) = next_pane.map(|p| p.pid()) {
+            return StackedPanes::new(self.panes.clone()).flexible_pane_id_in_stack(&next_pane_id);
         }
         next_pane.map(|p| p.pid())
     }

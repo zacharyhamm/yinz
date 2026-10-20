@@ -310,34 +310,34 @@ fn spawn_new_project(
         prepare_automation_agent(spec, Some(root), None, None, data)
     });
     let mut response = finish_spawn(result, senders);
-    if response.outcome != AgentOutcome::Ok {
-        if let Some(root) = retained {
-            response.outcome = AgentOutcome::Failed;
-            if response.spawned.is_none() {
-                response
-                    .launch_resources
-                    .get_or_insert_with(Default::default)
-                    .cwd = Some(root.clone());
-            }
-            let registration = if registered {
-                "succeeded"
-            } else {
-                "did not succeed"
-            };
-            let retry = if registered {
-                format!(
-                    "; retry with --project '{}' --allow-outside-worktree",
-                    name.trim().replace('\'', "'\\''")
-                )
-            } else {
-                String::new()
-            };
-            response.message = Some(format!(
-                "{}; retained project directory {}; registration {registration}{retry}",
-                response.message.as_deref().unwrap_or("agent launch failed"),
-                root.display()
-            ));
+    if response.outcome != AgentOutcome::Ok
+        && let Some(root) = retained
+    {
+        response.outcome = AgentOutcome::Failed;
+        if response.spawned.is_none() {
+            response
+                .launch_resources
+                .get_or_insert_with(Default::default)
+                .cwd = Some(root.clone());
         }
+        let registration = if registered {
+            "succeeded"
+        } else {
+            "did not succeed"
+        };
+        let retry = if registered {
+            format!(
+                "; retry with --project '{}' --allow-outside-worktree",
+                name.trim().replace('\'', "'\\''")
+            )
+        } else {
+            String::new()
+        };
+        response.message = Some(format!(
+            "{}; retained project directory {}; registration {registration}{retry}",
+            response.message.as_deref().unwrap_or("agent launch failed"),
+            root.display()
+        ));
     }
     response
 }
@@ -387,20 +387,19 @@ fn filter_project(
         let rows = assignments
             .get(&(status.host_id.clone(), status.session.clone()))
             .and_then(Option::as_ref);
-        if let (Some(rows), Some(tab)) = (rows, status.tab_id) {
-            if let Some(row) = rows
+        if let (Some(rows), Some(tab)) = (rows, status.tab_id)
+            && let Some(row) = rows
                 .rows
                 .iter()
                 .find(|row| rows.get(row, "tab_id") == Some(&DataValue::Int(tab.get() as i64)))
-            {
-                return rows.get(row, "project_id").is_some_and(|id| {
-                    id == &DataValue::Int(project_id.get())
-                        || project
-                            .replaced_ids
-                            .iter()
-                            .any(|old| id == &DataValue::Int(old.get()))
-                });
-            }
+        {
+            return rows.get(row, "project_id").is_some_and(|id| {
+                id == &DataValue::Int(project_id.get())
+                    || project
+                        .replaced_ids
+                        .iter()
+                        .any(|old| id == &DataValue::Int(old.get()))
+            });
         }
         let cwd = match &status.target {
             yinz_types::command::PaneTarget::Ssh { host } => {

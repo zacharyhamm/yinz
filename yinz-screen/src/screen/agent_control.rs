@@ -584,12 +584,11 @@ impl Screen {
                         })
                         .waits
                         .insert(id.clone(), waiting_detail(hook));
-                } else if hook_state_for(&report.kind, hook).is_some()
-                    || matches!(hook.hook_event_name.as_str(), "SubagentStop" | "SessionEnd")
+                } else if (hook_state_for(&report.kind, hook).is_some()
+                    || matches!(hook.hook_event_name.as_str(), "SubagentStop" | "SessionEnd"))
+                    && let Some(workers) = &mut workers
                 {
-                    if let Some(workers) = &mut workers {
-                        workers.waits.remove(id);
-                    }
+                    workers.waits.remove(id);
                 }
             }
             Some(parent)
@@ -673,10 +672,8 @@ impl Screen {
             .flatten();
         let result = super::thread_main::apply_pane_agent_report(self, pane, visible)
             .context("apply parent state and worker waits")?;
-        if result {
-            if let Some(wait) = permission_wait {
-                self.claude_permission_waits.insert(pane, wait);
-            }
+        if result && let Some(wait) = permission_wait {
+            self.claude_permission_waits.insert(pane, wait);
         }
         if let Some(input) = startup_input {
             self.agent_dialog_inputs.insert(pane, input);
@@ -1178,13 +1175,12 @@ impl Screen {
         };
         let reject = |screen: &Self, outcome, message: &str| {
             let mut response = screen.agent_result(pane, outcome, Some(message.into()));
-            if outcome == AgentOutcome::StatusUnavailable {
-                if let Some(readiness) = response.agents.first().and_then(|s| s.readiness.as_ref())
-                {
-                    let failures = readiness.failures();
-                    if !failures.is_empty() {
-                        response.message = Some(format!("{message}: {}", failures.join(", ")));
-                    }
+            if outcome == AgentOutcome::StatusUnavailable
+                && let Some(readiness) = response.agents.first().and_then(|s| s.readiness.as_ref())
+            {
+                let failures = readiness.failures();
+                if !failures.is_empty() {
+                    response.message = Some(format!("{message}: {}", failures.join(", ")));
                 }
             }
             screen.agent_reply(&client, response);
@@ -1977,19 +1973,18 @@ impl Screen {
             if matches!(outcome, AgentOutcome::Completed | AgentOutcome::Ok) {
                 response.background_tasks = background_tasks;
             }
-            if pending.prompt.is_none() {
-                if let Some(submission) = pending
+            if pending.prompt.is_none()
+                && let Some(submission) = pending
                     .submission_id
                     .as_deref()
                     .and_then(|id| self.submission(pending.pane, id))
-                {
-                    response.acknowledged = submission.acknowledged;
-                    response.turn_id = submission.turn_id.clone();
-                    if let Some(result) = &submission.result {
-                        response.outcome = result.outcome;
-                        response.message = result.message.clone();
-                        response.background_tasks = result.background_tasks.clone();
-                    }
+            {
+                response.acknowledged = submission.acknowledged;
+                response.turn_id = submission.turn_id.clone();
+                if let Some(result) = &submission.result {
+                    response.outcome = result.outcome;
+                    response.message = result.message.clone();
+                    response.background_tasks = result.background_tasks.clone();
                 }
             }
             if let Some(prompt) = &pending.prompt {
@@ -2199,13 +2194,13 @@ impl Screen {
                 },
                 _ => None,
             };
-            if pending.kind == "claude" {
-                if let (Some(enter), Some(output)) = (
+            if pending.kind == "claude"
+                && let (Some(enter), Some(output)) = (
                     pending.enter_at,
                     self.pane_output_activity.get(&pending.pane),
-                ) {
-                    pending.enter_at = Some(enter.max(*output + Duration::from_millis(100)));
-                }
+                )
+            {
+                pending.enter_at = Some(enter.max(*output + Duration::from_millis(100)));
             }
             if outcome.is_none() && pending.enter_at.is_some_and(|enter| now >= enter) {
                 pending.enter_at = None;
@@ -2222,28 +2217,30 @@ impl Screen {
                             && !self.muse_composer(pending.pane, false))
                     {
                         outcome = Some(AgentOutcome::Interrupted);
-                    } else if let Err(error) =
-                        self.agent_write_key(pending.pane, pending.submit_key.clone())
-                    {
-                        delivery_error = Some(error.to_string());
-                        outcome = Some(AgentOutcome::Failed);
                     } else {
-                        pending.input_revision = self.agent_input_revision(pending.pane);
-                        if pending.clear {
-                            if let (Some(conversation), Some(deadline)) =
-                                (&pending.conversation, pending.deadline)
-                            {
-                                self.agent_clear_inputs.insert(
-                                    pending.pane,
-                                    ClearInput {
-                                        kind: pending.kind.clone(),
-                                        conversation: conversation.clone(),
-                                        input_revision: pending.input_revision,
-                                        deadline,
-                                        session_ended: false,
-                                    },
-                                );
-                            }
+                        match self.agent_write_key(pending.pane, pending.submit_key.clone()) {
+                            Err(error) => {
+                                delivery_error = Some(error.to_string());
+                                outcome = Some(AgentOutcome::Failed);
+                            },
+                            _ => {
+                                pending.input_revision = self.agent_input_revision(pending.pane);
+                                if pending.clear
+                                    && let (Some(conversation), Some(deadline)) =
+                                        (&pending.conversation, pending.deadline)
+                                {
+                                    self.agent_clear_inputs.insert(
+                                        pending.pane,
+                                        ClearInput {
+                                            kind: pending.kind.clone(),
+                                            conversation: conversation.clone(),
+                                            input_revision: pending.input_revision,
+                                            deadline,
+                                            session_ended: false,
+                                        },
+                                    );
+                                }
+                            },
                         }
                     }
                 }
@@ -2363,18 +2360,16 @@ impl Screen {
             && event.kind == "claude"
             && !claude_notification_stop
             && hook.is_some_and(|hook| hook.claude_turn_complete == Some(false))
+            && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane)
         {
-            if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
-                lifecycle.claude_confirmation = Some(false);
-            }
+            lifecycle.claude_confirmation = Some(false);
         }
         if parent
             && event.kind == "agy"
             && hook.is_some_and(|hook| hook.agy_turn_complete == Some(false))
+            && let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane)
         {
-            if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
-                lifecycle.agy_confirmation = Some(false);
-            }
+            lifecycle.agy_confirmation = Some(false);
         }
         let mut clear_revision = None;
         let clear_started = self.get_pane_info(pane).is_some_and(|info| {
@@ -2384,19 +2379,16 @@ impl Screen {
                     && agent.session_id == event.session_id
             })
         });
-        if parent {
-            if let Some(input) = self.agent_clear_inputs.get_mut(&pane) {
-                if event.kind == input.kind
-                    && hook.is_some_and(|hook| {
-                        event.session_id.as_deref() == Some(hook.session_id.as_str())
-                    })
-                {
-                    if event.hook == "SessionEnd" {
-                        input.session_ended = true;
-                    } else if event.hook == "SessionStart" && clear_started {
-                        clear_revision = Some(input.input_revision);
-                    }
-                }
+        if parent
+            && let Some(input) = self.agent_clear_inputs.get_mut(&pane)
+            && event.kind == input.kind
+            && hook
+                .is_some_and(|hook| event.session_id.as_deref() == Some(hook.session_id.as_str()))
+        {
+            if event.hook == "SessionEnd" {
+                input.session_ended = true;
+            } else if event.hook == "SessionStart" && clear_started {
+                clear_revision = Some(input.input_revision);
             }
         }
         if clear_revision.is_some() {
@@ -2423,38 +2415,33 @@ impl Screen {
         // Reconcile before replying to completion, so both prompt and wait replies see the
         // consumed dialog revision. A newer manual draft is never consumed with it.
         let mut dialog_revision = None;
-        if let Some(input) = self.agent_dialog_inputs.get_mut(&pane) {
-            if event.kind == input.kind
-                && hook.is_some_and(|hook| {
-                    event.session_id.as_deref() == Some(hook.session_id.as_str())
-                        && !hook.session_id.is_empty()
-                        && hook.codex_hooks_ready != Some(false)
-                        && input
-                            .conversation
-                            .as_deref()
-                            .is_none_or(|conversation| conversation == hook.session_id)
-                })
-            {
-                let state =
-                    hook.and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook));
-                if state == Some(AgentState::Waiting) {
-                    input.fresh_waiting = true;
-                } else if (input.startup
+        if let Some(input) = self.agent_dialog_inputs.get_mut(&pane)
+            && event.kind == input.kind
+            && hook.is_some_and(|hook| {
+                event.session_id.as_deref() == Some(hook.session_id.as_str())
+                    && !hook.session_id.is_empty()
+                    && hook.codex_hooks_ready != Some(false)
+                    && input
+                        .conversation
+                        .as_deref()
+                        .is_none_or(|conversation| conversation == hook.session_id)
+            })
+        {
+            let state = hook.and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook));
+            if state == Some(AgentState::Waiting) {
+                input.fresh_waiting = true;
+            } else if (input.startup
+                && parent
+                && ((event.hook == "SessionStart" && state == Some(AgentState::Idle))
+                    || (input.kind == "agy"
+                        && matches!(event.hook.as_str(), "UserPromptSubmit" | "PreInvocation")
+                        && matches!(state, Some(AgentState::Busy | AgentState::Idle)))))
+                || (!input.startup
                     && parent
-                    && ((event.hook == "SessionStart" && state == Some(AgentState::Idle))
-                        || (input.kind == "agy"
-                            && matches!(
-                                event.hook.as_str(),
-                                "UserPromptSubmit" | "PreInvocation"
-                            )
-                            && matches!(state, Some(AgentState::Busy | AgentState::Idle)))))
-                    || (!input.startup
-                        && parent
-                        && event.hook != "SessionStart"
-                        && matches!(state, Some(AgentState::Busy | AgentState::Idle)))
-                {
-                    dialog_revision = Some(input.input_revision);
-                }
+                    && event.hook != "SessionStart"
+                    && matches!(state, Some(AgentState::Busy | AgentState::Idle)))
+            {
+                dialog_revision = Some(input.input_revision);
             }
         }
         if let Some(revision) = dialog_revision {
@@ -3309,12 +3296,12 @@ impl Screen {
                     },
                     (DraftStage::PromptCleared { since }, _) => {
                         let since = since.get_or_insert(now);
-                        if now.saturating_duration_since(*since) >= Duration::from_millis(250) {
-                            if let Some((mut pending, prefix, paste)) = operation.prompt.take() {
-                                pending.input_revision = operation.revision;
-                                self.deliver_agent_prompt(pending, prefix, paste);
-                                continue;
-                            }
+                        if now.saturating_duration_since(*since) >= Duration::from_millis(250)
+                            && let Some((mut pending, prefix, paste)) = operation.prompt.take()
+                        {
+                            pending.input_revision = operation.revision;
+                            self.deliver_agent_prompt(pending, prefix, paste);
+                            continue;
                         }
                     },
                     // A provider can hide its cursor between chunks of a redraw.
@@ -3353,10 +3340,10 @@ impl Screen {
                 }
             }
             if let Some((outcome, message)) = &operation.failure {
-                if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
-                    if lifecycle.input_revision == Some(operation.revision) {
-                        lifecycle.input_revision = None;
-                    }
+                if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane)
+                    && lifecycle.input_revision == Some(operation.revision)
+                {
+                    lifecycle.input_revision = None;
                 }
                 if let Some((mut pending, _, _)) = operation.prompt.take() {
                     pending.client = operation.client.take();

@@ -131,13 +131,18 @@ fn test_env() -> &'static TestEnv {
             },
             None => shim_dir.clone().into_os_string(),
         };
-        std::env::set_var("PATH", path);
-        std::env::set_var("YINZ_SOCKET_DIR", &sockets);
-        std::env::set_var("YINZ_REMOTE_RECONNECT_ATTEMPTS", RECONNECT_ATTEMPTS);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("PATH", path) };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("YINZ_SOCKET_DIR", &sockets) };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("YINZ_REMOTE_RECONNECT_ATTEMPTS", RECONNECT_ATTEMPTS) };
         // Nothing here starts a yinz session, but a stray `YINZ` in the
         // developer's shell would make the binary under test think otherwise.
-        std::env::remove_var("YINZ");
-        std::env::remove_var("YINZ_SESSION_NAME");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("YINZ") };
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("YINZ_SESSION_NAME") };
 
         let env = TestEnv { sockets };
         sweep_leftover_panes();
@@ -1423,10 +1428,10 @@ fn a_branch_switched_in_place_on_the_far_machine_is_reported() {
     let wait_for_branch = |want: &str| {
         let deadline = Instant::now() + Duration::from_secs(configured * 3);
         loop {
-            if let Some(probe) = pane.git_probe(&dir) {
-                if branch_of(&probe).as_deref() == Some(want) {
-                    return;
-                }
+            if let Some(probe) = pane.git_probe(&dir)
+                && branch_of(&probe).as_deref() == Some(want)
+            {
+                return;
             }
             assert!(
                 Instant::now() < deadline,

@@ -590,7 +590,8 @@ impl MockScreen {
         let screen_thread = std::thread::Builder::new()
             .name("screen_thread".to_string())
             .spawn(move || {
-                set_var("YINZ_SESSION_NAME", "yinz-test");
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                unsafe { set_var("YINZ_SESSION_NAME", "yinz-test") };
                 screen_thread_main(
                     screen_bus,
                     None,
@@ -688,7 +689,8 @@ impl MockScreen {
         let screen_thread = std::thread::Builder::new()
             .name("screen_thread".to_string())
             .spawn(move || {
-                set_var("YINZ_SESSION_NAME", "yinz-test");
+                // FIXME: Audit that the environment access only happens in single-threaded code.
+                unsafe { set_var("YINZ_SESSION_NAME", "yinz-test") };
                 screen_thread_main(
                     screen_bus,
                     None,
@@ -1023,7 +1025,7 @@ impl MockScreen {
 }
 
 macro_rules! log_actions_in_thread {
-    ( $arc_mutex_log:expr, $exit_event:path, $receiver:expr ) => {
+    ( $arc_mutex_log:expr_2021, $exit_event:path, $receiver:expr_2021 ) => {
         std::thread::Builder::new()
             .name("pty_writer_thread".to_string())
             .spawn({
@@ -1539,10 +1541,10 @@ fn render_frame_into(
     screen.render_to_clients().expect("TEST");
     let mut snapshot = String::new();
     while let Ok((instruction, _)) = receiver.try_recv() {
-        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction {
-            if let Some(client_output) = rendered_clients.remove(&client_id) {
-                snapshot = take_snapshot_and_cursor_coordinates(&client_output, grid).1;
-            }
+        if let ServerInstruction::Render(Some(mut rendered_clients)) = instruction
+            && let Some(client_output) = rendered_clients.remove(&client_id)
+        {
+            snapshot = take_snapshot_and_cursor_coordinates(&client_output, grid).1;
         }
     }
     snapshot

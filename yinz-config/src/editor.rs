@@ -672,10 +672,10 @@ pub fn normalize_patch(patch: &mut Patch) -> Result<(), String> {
         Ok(())
     }
     normalize_path(&mut patch.path)?;
-    if patch.path.first().is_some_and(|root| root == "keybinds") {
-        if let Some(node) = &mut patch.node {
-            normalize_node(node)?;
-        }
+    if patch.path.first().is_some_and(|root| root == "keybinds")
+        && let Some(node) = &mut patch.node
+    {
+        normalize_node(node)?;
     }
     Ok(())
 }
@@ -683,22 +683,22 @@ pub fn normalize_patch(patch: &mut Patch) -> Result<(), String> {
 pub fn expand_binding_paths(path: &[String]) -> Result<Vec<Vec<String>>, String> {
     let mut path = path.to_vec();
     normalize_path(&mut path)?;
-    if path.len() >= 3 && path[0] == "keybinds" {
-        if let Some((name @ ("bind" | "unbind"), arguments)) = path[2].split_once(':') {
-            let arguments: Vec<Value> =
-                serde_json::from_str(arguments).map_err(|e| e.to_string())?;
-            if arguments.len() <= 1 {
-                return Ok(vec![path]);
-            }
-            return arguments
-                .into_iter()
-                .map(|argument| {
-                    let mut single = path.clone();
-                    single[2] = format!("{name}:{}", serde_json::json!([argument]));
-                    Ok(single)
-                })
-                .collect();
+    if path.len() >= 3
+        && path[0] == "keybinds"
+        && let Some((name @ ("bind" | "unbind"), arguments)) = path[2].split_once(':')
+    {
+        let arguments: Vec<Value> = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
+        if arguments.len() <= 1 {
+            return Ok(vec![path]);
         }
+        return arguments
+            .into_iter()
+            .map(|argument| {
+                let mut single = path.clone();
+                single[2] = format!("{name}:{}", serde_json::json!([argument]));
+                Ok(single)
+            })
+            .collect();
     }
     Ok(vec![path])
 }
@@ -708,20 +708,21 @@ pub fn normalize_patches(patches: &[Patch]) -> Result<Vec<Patch>, String> {
     for patch in patches {
         let mut patch = patch.clone();
         normalize_patch(&mut patch)?;
-        if patch.path.len() == 3 && patch.path[0] == "keybinds" {
-            if let Some(node) = &patch.node {
-                if node_key(node) != patch.path[2] {
-                    return Err("Replacement name must match its target".into());
-                }
-            }
+        if patch.path.len() == 3
+            && patch.path[0] == "keybinds"
+            && let Some(node) = &patch.node
+            && node_key(node) != patch.path[2]
+        {
+            return Err("Replacement name must match its target".into());
         }
         for path in expand_binding_paths(&patch.path)? {
             let mut single = patch.clone();
-            if path.len() == 3 && path != patch.path {
-                if let Some(node) = &mut single.node {
-                    let (_, arguments) = path[2].split_once(':').ok_or("Invalid binding path")?;
-                    node.arguments = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
-                }
+            if path.len() == 3
+                && path != patch.path
+                && let Some(node) = &mut single.node
+            {
+                let (_, arguments) = path[2].split_once(':').ok_or("Invalid binding path")?;
+                node.arguments = serde_json::from_str(arguments).map_err(|e| e.to_string())?;
             }
             single.path = path;
             expanded.push(single);
@@ -1431,10 +1432,10 @@ pub fn action_templates(config: &Config) -> Result<Vec<Node>, String> {
             ];
             for args in candidates {
                 node.arguments = args;
-                if let Ok(kdl) = to_kdl(&node, 0, None) {
-                    if crate::kdl::action::from_kdl((&kdl, &config.options)).is_ok() {
-                        return node;
-                    }
+                if let Ok(kdl) = to_kdl(&node, 0, None)
+                    && crate::kdl::action::from_kdl((&kdl, &config.options)).is_ok()
+                {
+                    return node;
                 }
             }
             if *name == "SwitchSession" {
@@ -1576,15 +1577,13 @@ pub fn templates(config: &Config) -> Result<std::collections::BTreeMap<String, V
             if !components
                 .iter()
                 .any(|node| node.name == "frame_unselected")
-            {
-                if let Some(mut frame) = components
+                && let Some(mut frame) = components
                     .iter()
                     .find(|node| node.name == "frame_selected")
                     .cloned()
-                {
-                    frame.name = "frame_unselected".into();
-                    components.push(frame);
-                }
+            {
+                frame.name = "frame_unselected".into();
+                components.push(frame);
             }
             for component in &components {
                 result.insert(

@@ -197,10 +197,11 @@ impl Screen {
     pub(super) fn cancel_permission_modal(&mut self, token: u64) {
         let old_len = self.permission_modals.len();
         for modal in &self.permission_modals {
-            if modal.request.request_id == token && modal.pressed.is_some() {
-                if let Some(client) = modal.client {
-                    self.permission_mouse_captures.insert(client);
-                }
+            if modal.request.request_id == token
+                && modal.pressed.is_some()
+                && let Some(client) = modal.client
+            {
+                self.permission_mouse_captures.insert(client);
             }
         }
         self.permission_modals
@@ -339,14 +340,15 @@ impl Screen {
         }
         if event.event_type == MouseEventType::Release {
             let pressed = modal.pressed.take();
-            if let (Some(hit), Some(surface)) = (hit, surface) {
-                if event.left && Some(hit) == pressed {
-                    let item_count = modal.items(surface).len();
-                    let allow = hit == item_count - 1;
-                    if allow || hit == item_count - 2 {
-                        self.answer_permission_modal(client, allow);
-                        self.render().non_fatal();
-                    }
+            if let (Some(hit), Some(surface)) = (hit, surface)
+                && event.left
+                && Some(hit) == pressed
+            {
+                let item_count = modal.items(surface).len();
+                let allow = hit == item_count - 1;
+                if allow || hit == item_count - 2 {
+                    self.answer_permission_modal(client, allow);
+                    self.render().non_fatal();
                 }
             }
         }

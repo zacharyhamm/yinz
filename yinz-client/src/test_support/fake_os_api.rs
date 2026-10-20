@@ -150,10 +150,10 @@ struct FakeStdout(
 
 impl Write for FakeStdout {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if let Some(error) = self.1 {
-            if self.2.as_deref().is_none_or(|bytes| bytes == buf) {
-                return Err(error.into());
-            }
+        if let Some(error) = self.1
+            && self.2.as_deref().is_none_or(|bytes| bytes == buf)
+        {
+            return Err(error.into());
         }
         if let Some(sink) = &self.0 {
             sink.lock().unwrap().extend_from_slice(buf);

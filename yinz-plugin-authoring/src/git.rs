@@ -180,13 +180,11 @@ pub fn install(
             Err(error) => return Err(anyhow!("cannot lock plugin repository: {error}")),
         }
     }
-    if !update {
-        if let Some(installed) = status(data_dir, plugin)? {
-            for entry in entries {
-                entrypoint(&installed.root, entry, installed.commit.clone())?;
-            }
-            return Ok(installed);
+    if !update && let Some(installed) = status(data_dir, plugin)? {
+        for entry in entries {
+            entrypoint(&installed.root, entry, installed.commit.clone())?;
         }
+        return Ok(installed);
     }
     let repository = directory.join("repository.git");
     let retry = repository.exists() && !directory.join("current").exists();

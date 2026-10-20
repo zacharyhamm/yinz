@@ -40,10 +40,10 @@ impl State {
         }
     }
     pub(super) fn save_form(&mut self, widget: &crate::ui::command_palette::CommandPalette) {
-        if let Some((id, values)) = widget.form_values() {
-            if let Some(action) = self.actions.get(id) {
-                self.values.insert(format!("{action:?}"), values);
-            }
+        if let Some((id, values)) = widget.form_values()
+            && let Some(action) = self.actions.get(id)
+        {
+            self.values.insert(format!("{action:?}"), values);
         }
     }
     pub(super) fn owns_view(&self, view: u64) -> bool {
@@ -298,21 +298,21 @@ impl Screen {
                 {
                     state.agents.submitted = false;
                 }
-                if response.outcome == AgentOutcome::Ok {
-                    if let Some(spawned) = response.spawned {
-                        super::notify(&self.bus.senders, format!("Completed: {label}"));
-                        self.close_command_palette(client);
-                        self.focus_pane_with_id(spawned.pane_id, false, false, client)
-                            .context("focusing palette agent")
-                            .non_fatal();
-                        self.sync_scroll_mode_on_focus(client)
-                            .context("syncing palette agent focus")
-                            .non_fatal();
-                        self.log_and_report_session_state()
-                            .context("reporting palette agent focus")
-                            .non_fatal();
-                        return;
-                    }
+                if response.outcome == AgentOutcome::Ok
+                    && let Some(spawned) = response.spawned
+                {
+                    super::notify(&self.bus.senders, format!("Completed: {label}"));
+                    self.close_command_palette(client);
+                    self.focus_pane_with_id(spawned.pane_id, false, false, client)
+                        .context("focusing palette agent")
+                        .non_fatal();
+                    self.sync_scroll_mode_on_focus(client)
+                        .context("syncing palette agent focus")
+                        .non_fatal();
+                    self.log_and_report_session_state()
+                        .context("reporting palette agent focus")
+                        .non_fatal();
+                    return;
                 }
                 let mut message = response
                     .message

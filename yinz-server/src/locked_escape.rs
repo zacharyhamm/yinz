@@ -124,20 +124,20 @@ pub(crate) fn prepare_input(
             return Ok(Some(instruction));
         }
         let pending = session.locked_escapes.get(&client_id).copied();
-        if let (Some(pending), ClientToServerMsg::Key { key, .. }) = (pending, &instruction) {
-            if pending.completes(key, Instant::now()) {
-                session.locked_escapes.remove(&client_id);
-                return Ok(Some(ClientToServerMsg::Action {
-                    action: Action::Write {
-                        key_with_modifier: None,
-                        bytes: vec![7],
-                        is_kitty_keyboard_protocol: false,
-                    },
-                    terminal_id: None,
-                    client_id: None,
-                    is_cli_client: false,
-                }));
-            }
+        if let (Some(pending), ClientToServerMsg::Key { key, .. }) = (pending, &instruction)
+            && pending.completes(key, Instant::now())
+        {
+            session.locked_escapes.remove(&client_id);
+            return Ok(Some(ClientToServerMsg::Action {
+                action: Action::Write {
+                    key_with_modifier: None,
+                    bytes: vec![7],
+                    is_kitty_keyboard_protocol: false,
+                },
+                terminal_id: None,
+                client_id: None,
+                is_cli_client: false,
+            }));
         }
         if let Some(pending) = pending {
             session.resolve_locked_escape(client_id, pending.token)?;

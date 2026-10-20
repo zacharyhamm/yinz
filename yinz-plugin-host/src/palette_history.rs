@@ -108,10 +108,9 @@ pub(super) fn execute(
                     ]);
                 if let Some(location) =
                     agent_proto::agents::checkout_location(h.host.as_deref(), h.cwd.as_deref())
+                    && let Some(p) = project_data::projects::for_cwd(&projects, &location)
                 {
-                    if let Some(p) = project_data::projects::for_cwd(&projects, &location) {
-                        metadata.insert("project".into(), p.name.clone());
-                    }
+                    metadata.insert("project".into(), p.name.clone());
                 }
                 query.filters.iter().all(|(k, v)| {
                     if k == "since" {

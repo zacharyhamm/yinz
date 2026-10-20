@@ -244,17 +244,17 @@ impl Text {
         const SUCCESS_COLOR_LEVEL: usize = 7;
 
         // Check error color first (highest precedence)
-        if let Some(indices) = self.indices.get(ERROR_COLOR_LEVEL) {
-            if indices.contains(&index) {
-                return Some(styling.exit_code_error.base);
-            }
+        if let Some(indices) = self.indices.get(ERROR_COLOR_LEVEL)
+            && indices.contains(&index)
+        {
+            return Some(styling.exit_code_error.base);
         }
 
         // Check success color (second highest precedence)
-        if let Some(indices) = self.indices.get(SUCCESS_COLOR_LEVEL) {
-            if indices.contains(&index) {
-                return Some(styling.exit_code_success.base);
-            }
+        if let Some(indices) = self.indices.get(SUCCESS_COLOR_LEVEL)
+            && indices.contains(&index)
+        {
+            return Some(styling.exit_code_success.base);
         }
 
         // Check regular emphasis levels (existing code)
@@ -267,10 +267,10 @@ impl Text {
         for i in (0..=3).rev() {
             // we do this in reverse to give precedence to the last applied
             // style
-            if let Some(indices) = self.indices.get(i) {
-                if indices.contains(&index) {
-                    return Some(index_variant_styles[i]);
-                }
+            if let Some(indices) = self.indices.get(i)
+                && indices.contains(&index)
+            {
+                return Some(index_variant_styles[i]);
             }
         }
         Some(style.base)

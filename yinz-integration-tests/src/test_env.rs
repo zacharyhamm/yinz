@@ -151,27 +151,43 @@ fn remove_roots_of_dead_test_processes(parent: &Path) {
 }
 
 fn isolate_process_environment(test_root: &Path) {
-    std::env::set_var("TMPDIR", test_root.join("tmp"));
-    std::env::set_var("YINZ_SOCKET_DIR", test_root.join("sock"));
-    std::env::set_var("HOME", test_root.join("home"));
-    std::env::set_var("XDG_CACHE_HOME", test_root.join("cache"));
-    std::env::set_var("XDG_DATA_HOME", test_root.join("data"));
-    std::env::set_var("XDG_CONFIG_HOME", test_root.join("config"));
-    std::env::set_var("XDG_RUNTIME_DIR", test_root.join("runtime"));
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("TMPDIR", test_root.join("tmp")) };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("YINZ_SOCKET_DIR", test_root.join("sock")) };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("HOME", test_root.join("home")) };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("XDG_CACHE_HOME", test_root.join("cache")) };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("XDG_DATA_HOME", test_root.join("data")) };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", test_root.join("config")) };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("XDG_RUNTIME_DIR", test_root.join("runtime")) };
     // The tab bar and the terminal title print the machine's hostname. Without this every
     // snapshot of them would only match on the machine that recorded it.
-    std::env::set_var("YINZ_HOSTNAME", TEST_HOSTNAME);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("YINZ_HOSTNAME", TEST_HOSTNAME) };
     // Fake hosts need an identity, not a fresh durable file before every startup deadline.
-    std::env::set_var("YINZ_HOST_ID", "yinz-integration-test");
-    std::env::remove_var("YINZ");
-    std::env::remove_var("YINZ_SESSION_NAME");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("YINZ_HOST_ID", "yinz-integration-test") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("YINZ") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("YINZ_SESSION_NAME") };
     // An outer yinz pane would otherwise make CLI requests claim that pane as their caller
     // once the in-process server sets YINZ_SESSION_NAME to the test session.
-    std::env::remove_var("YINZ_PANE_ID");
-    std::env::remove_var("YINZ_PANE_REF");
-    std::env::remove_var("YINZ_AGENT_PANE");
-    std::env::remove_var("YINZ_CONFIG_FILE");
-    std::env::remove_var("YINZ_CONFIG_DIR");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("YINZ_PANE_ID") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("YINZ_PANE_REF") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("YINZ_AGENT_PANE") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("YINZ_CONFIG_FILE") };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("YINZ_CONFIG_DIR") };
     std::env::set_current_dir(test_root.join("cwd")).unwrap();
 }
 

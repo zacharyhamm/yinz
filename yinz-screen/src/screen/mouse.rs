@@ -114,17 +114,17 @@ impl Screen {
                     self.request_context_menu(*context, client_id);
                     should_render = true;
                 }
-                if let Some(pane_id) = mouse_effect.group_toggle {
-                    if self.advanced_mouse_actions {
-                        self.toggle_pane_id_in_group(pane_id, &client_id);
-                        should_render = true;
-                    }
+                if let Some(pane_id) = mouse_effect.group_toggle
+                    && self.advanced_mouse_actions
+                {
+                    self.toggle_pane_id_in_group(pane_id, &client_id);
+                    should_render = true;
                 }
-                if let Some(pane_id) = mouse_effect.group_add {
-                    if self.advanced_mouse_actions {
-                        self.add_pane_id_to_group(pane_id, &client_id);
-                        should_render = true;
-                    }
+                if let Some(pane_id) = mouse_effect.group_add
+                    && self.advanced_mouse_actions
+                {
+                    self.add_pane_id_to_group(pane_id, &client_id);
+                    should_render = true;
                 }
                 if mouse_effect.ungroup && self.advanced_mouse_actions {
                     self.clear_pane_group(&client_id);

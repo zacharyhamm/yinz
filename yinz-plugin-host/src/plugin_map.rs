@@ -260,16 +260,15 @@ impl PluginMap {
                 if key.0 != plugin || instance.is_some_and(|expected| expected != *id) {
                     return None;
                 }
-                if let Some(generation) = generation {
-                    if !self
+                if let Some(generation) = generation
+                    && !self
                         .client_cancellations
                         .get(key)
                         .is_some_and(|(current, cancel)| {
                             *current == Some(generation) && !cancel.load(Ordering::Acquire)
                         })
-                    {
-                        return None;
-                    }
+                {
+                    return None;
                 }
                 self.availability[key].store(true, Ordering::Release);
                 Some((*id, self.plugin_assets[key].0.clone()))
@@ -305,10 +304,10 @@ impl PluginMap {
         let ids_in_plugin_map: Vec<(PluginId, ClientId)> =
             self.plugin_assets.keys().copied().collect();
         for (plugin_id, client_id) in ids_in_plugin_map {
-            if pid == plugin_id {
-                if let Some(plugin_asset) = self.plugin_assets.remove(&(plugin_id, client_id)) {
-                    removed.insert((plugin_id, client_id), plugin_asset);
-                }
+            if pid == plugin_id
+                && let Some(plugin_asset) = self.plugin_assets.remove(&(plugin_id, client_id))
+            {
+                removed.insert((plugin_id, client_id), plugin_asset);
             }
         }
         for (_, client) in removed.keys() {

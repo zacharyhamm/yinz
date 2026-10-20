@@ -1374,11 +1374,10 @@ impl OverlayPanes {
         if let Some((last_pane_id, initial_position)) = self
             .pane_being_moved_with_mouse
             .map(|(pane_id, initial_position, _)| (pane_id, initial_position))
+            && last_pane_id == pane_id
         {
-            if last_pane_id == pane_id {
-                self.pane_being_moved_with_mouse = Some((pane_id, initial_position, last_position));
-                return;
-            }
+            self.pane_being_moved_with_mouse = Some((pane_id, initial_position, last_position));
+            return;
         }
         self.pane_being_moved_with_mouse = Some((pane_id, last_position, last_position));
     }

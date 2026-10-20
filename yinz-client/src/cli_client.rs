@@ -474,8 +474,8 @@ pub fn start_events_client(
                 // parsed and re-serialized. A write that fails is a reader that went away
                 // (`yinz events | head`), which is how this stream ends.
                 if events_cli.text {
-                    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event_json) {
-                        if writeln!(
+                    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event_json)
+                        && writeln!(
                             stdout,
                             "{} {} {}",
                             payload["pane_id"].as_str().unwrap_or("session"),
@@ -484,9 +484,8 @@ pub fn start_events_client(
                         )
                         .and_then(|_| stdout.flush())
                         .is_err()
-                        {
-                            break;
-                        }
+                    {
+                        break;
                     }
                     continue;
                 }

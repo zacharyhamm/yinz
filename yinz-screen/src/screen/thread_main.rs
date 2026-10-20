@@ -970,15 +970,15 @@ pub fn screen_thread_main(
                         let old_pane_id = screen.get_active_pane_id(&client_id);
                         screen.move_focus_left_or_previous_tab(client_id)?;
                         let new_pane_id = screen.get_active_pane_id(&client_id);
-                        if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
-                            if old != new {
-                                screen.report_key_passthrough_state_with_direction(
-                                    client_id,
-                                    old,
-                                    new,
-                                    Some(Direction::Left),
-                                );
-                            }
+                        if let (Some(old), Some(new)) = (old_pane_id, new_pane_id)
+                            && old != new
+                        {
+                            screen.report_key_passthrough_state_with_direction(
+                                client_id,
+                                old,
+                                new,
+                                Some(Direction::Left),
+                            );
                         }
                         screen.clear_bell_for_focused_pane(client_id);
                         screen.add_active_pane_to_group_if_marking(&client_id);
@@ -1026,15 +1026,15 @@ pub fn screen_thread_main(
                         let old_pane_id = screen.get_active_pane_id(&client_id);
                         screen.move_focus_right_or_next_tab(client_id)?;
                         let new_pane_id = screen.get_active_pane_id(&client_id);
-                        if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
-                            if old != new {
-                                screen.report_key_passthrough_state_with_direction(
-                                    client_id,
-                                    old,
-                                    new,
-                                    Some(Direction::Right),
-                                );
-                            }
+                        if let (Some(old), Some(new)) = (old_pane_id, new_pane_id)
+                            && old != new
+                        {
+                            screen.report_key_passthrough_state_with_direction(
+                                client_id,
+                                old,
+                                new,
+                                Some(Direction::Right),
+                            );
                         }
                         screen.clear_bell_for_focused_pane(client_id);
                         screen.add_active_pane_to_group_if_marking(&client_id);
@@ -2061,12 +2061,11 @@ pub fn screen_thread_main(
                             screen.render()?;
                         },
                         _ => {
-                            if let Some(client_id) = client_id {
-                                if let Some(tab_id) =
+                            if let Some(client_id) = client_id
+                                && let Some(tab_id) =
                                     screen.get_tab_id_at_position(tab_index.position())
-                                {
-                                    pending.tab_switches.insert((tab_id, client_id));
-                                }
+                            {
+                                pending.tab_switches.insert((tab_id, client_id));
                             }
                         },
                     }
@@ -2473,10 +2472,10 @@ pub fn screen_thread_main(
                 ScreenInstruction::FlashPaneFrameColor(pane_ids) => {
                     let now = Instant::now();
                     for pane_id in pane_ids {
-                        if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                            if tab.flash_pane_frame_color_override(pane_id, now) {
-                                screen.fading_frame_panes.insert(pane_id);
-                            }
+                        if let Some(tab) = screen.tab_containing_pane_mut(pane_id)
+                            && tab.flash_pane_frame_color_override(pane_id, now)
+                        {
+                            screen.fading_frame_panes.insert(pane_id);
                         }
                     }
                     screen.sync_animation_clock(now)?;
@@ -4179,10 +4178,10 @@ pub fn screen_thread_main(
                 ScreenInstruction::RemoveWatcherClient(client_id) => {
                     let departed = screen.departed_follow_source();
                     screen.remove_watcher_client(client_id);
-                    if screen.followed_client_id.is_none() {
-                        if let Some((source, _)) = departed {
-                            pending.remove_client_plugin_output(source);
-                        }
+                    if screen.followed_client_id.is_none()
+                        && let Some((source, _)) = departed
+                    {
+                        pending.remove_client_plugin_output(source);
                     }
                 },
                 ScreenInstruction::SetFollowedClient(client_id) => {
@@ -4243,18 +4242,11 @@ pub fn screen_thread_main(
                                 Instant::now(),
                             );
                         }
-                        if response.forward_to_pane {
-                            if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
-                                tab.write_to_pane_id(
-                                    &None,
-                                    response.bytes,
-                                    false,
-                                    pane_id,
-                                    None,
-                                    None,
-                                )
+                        if response.forward_to_pane
+                            && let Some(tab) = screen.tab_containing_pane_mut(pane_id)
+                        {
+                            tab.write_to_pane_id(&None, response.bytes, false, pane_id, None, None)
                                 .non_fatal();
-                            }
                         }
                         if response.focus_pane {
                             screen

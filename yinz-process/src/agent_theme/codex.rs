@@ -263,10 +263,10 @@ fn read_configuration(context: &LaunchContext, cwd: &Path, overrides: &[String])
                 let Ok(line) = line else {
                     break;
                 };
-                if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                    if tx.send(value).is_err() {
-                        break;
-                    }
+                if let Ok(value) = serde_json::from_str::<Value>(&line)
+                    && tx.send(value).is_err()
+                {
+                    break;
                 }
             }
         });

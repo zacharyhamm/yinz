@@ -303,10 +303,10 @@ impl Pane for TerminalPane {
     }
     fn cursor_coordinates(&self, client_id: Option<ClientId>) -> Option<(usize, usize, bool)> {
         // (x, y, is_visible)
-        if let Some(client_id) = client_id {
-            if self.guest_modal.contains_key(&client_id) {
-                return None;
-            }
+        if let Some(client_id) = client_id
+            && self.guest_modal.contains_key(&client_id)
+        {
+            return None;
         }
         if self.pane_tabs.as_ref().is_some_and(|tabs| {
             tabs.tabs[tabs.active].pane_id() != Some(PaneId::Terminal(self.pid))
@@ -559,37 +559,35 @@ impl Pane for TerminalPane {
             match self.grid.render(content_x, content_y, &self.style) {
                 Ok(rendered_assets) => {
                     let mut rendered_assets = rendered_assets;
-                    if let Some(tabs) = &self.pane_tabs {
-                        if tabs.tabs[tabs.active].pane_id() != Some(PaneId::Terminal(self.pid)) {
-                            let message = match &tabs.tabs[tabs.active].state {
-                                yinz_types::pane_tabs::PaneTabLoadState::Failed(error) => {
-                                    format!("{error} (r: retry; select Conversation to return)")
-                                },
-                                _ => "Loading Overview… Select Conversation to return.".into(),
-                            };
-                            let chunks = &mut rendered_assets
-                                .get_or_insert_with(|| (vec![], None, vec![], vec![]))
-                                .0;
-                            chunks.clear();
-                            for row in 0..rows {
-                                let mut characters: Vec<_> = if row == 0 {
-                                    yinz_types::text::clean_string_from_control_and_linebreak(
-                                        &message,
-                                    )
+                    if let Some(tabs) = &self.pane_tabs
+                        && tabs.tabs[tabs.active].pane_id() != Some(PaneId::Terminal(self.pid))
+                    {
+                        let message = match &tabs.tabs[tabs.active].state {
+                            yinz_types::pane_tabs::PaneTabLoadState::Failed(error) => {
+                                format!("{error} (r: retry; select Conversation to return)")
+                            },
+                            _ => "Loading Overview… Select Conversation to return.".into(),
+                        };
+                        let chunks = &mut rendered_assets
+                            .get_or_insert_with(|| (vec![], None, vec![], vec![]))
+                            .0;
+                        chunks.clear();
+                        for row in 0..rows {
+                            let mut characters: Vec<_> = if row == 0 {
+                                yinz_types::text::clean_string_from_control_and_linebreak(&message)
                                     .chars()
                                     .take(columns)
                                     .map(TerminalCharacter::new)
                                     .collect()
-                                } else {
-                                    vec![]
-                                };
-                                characters.resize(columns, EMPTY_TERMINAL_CHARACTER);
-                                chunks.push(CharacterChunk::new(
-                                    characters,
-                                    content_x,
-                                    content_y + row,
-                                ));
-                            }
+                            } else {
+                                vec![]
+                            };
+                            characters.resize(columns, EMPTY_TERMINAL_CHARACTER);
+                            chunks.push(CharacterChunk::new(
+                                characters,
+                                content_x,
+                                content_y + row,
+                            ));
                         }
                     }
                     self.set_should_render(false);
@@ -1339,17 +1337,17 @@ impl Pane for TerminalPane {
             agent.state = AgentState::Exited;
             agent.detail = None;
         }
-        if let Some(notification_end) = self.notification_end.as_mut() {
-            if let Some(exit_status) = exit_status {
-                notification_end.set_exit_status(exit_status);
+        if let Some(notification_end) = self.notification_end.as_mut()
+            && let Some(exit_status) = exit_status
+        {
+            notification_end.set_exit_status(exit_status);
 
-                // Check if unblock condition is met
-                if let Some(condition) = notification_end.unblock_condition() {
-                    if condition.is_met(exit_status) {
-                        // Condition met - drop the NotificationEnd now to unblock
-                        drop(self.notification_end.take());
-                    }
-                }
+            // Check if unblock condition is met
+            if let Some(condition) = notification_end.unblock_condition()
+                && condition.is_met(exit_status)
+            {
+                // Condition met - drop the NotificationEnd now to unblock
+                drop(self.notification_end.take());
             }
         }
         if is_first_run {
@@ -1863,13 +1861,12 @@ impl Pane for TerminalPane {
     fn intercept_mouse_event_on_frame(&mut self, event: &MouseEvent, client_id: ClientId) -> bool {
         if self.position_is_on_frame(&event.position) {
             let relative_position = self.relative_position(&event.position);
-            if let MouseEventType::Press = event.event_type {
-                if let Some(client_frame) = self.frame.get_mut(&client_id) {
-                    if client_frame.clicked_on_pinned(relative_position) {
-                        self.toggle_pinned();
-                        return true;
-                    }
-                }
+            if let MouseEventType::Press = event.event_type
+                && let Some(client_frame) = self.frame.get_mut(&client_id)
+                && client_frame.clicked_on_pinned(relative_position)
+            {
+                self.toggle_pinned();
+                return true;
             }
         }
         false
@@ -1899,11 +1896,11 @@ impl Pane for TerminalPane {
         if let Some(notification_end) = self.notification_end.as_mut() {
             notification_end.set_exit_status(exit_status);
             // Check if unblock condition is met
-            if let Some(condition) = notification_end.unblock_condition() {
-                if condition.is_met(exit_status) {
-                    // Condition met - drop the NotificationEnd now to unblock
-                    drop(self.notification_end.take());
-                }
+            if let Some(condition) = notification_end.unblock_condition()
+                && condition.is_met(exit_status)
+            {
+                // Condition met - drop the NotificationEnd now to unblock
+                drop(self.notification_end.take());
             }
         }
     }
@@ -2126,14 +2123,14 @@ impl TerminalPane {
             osc8_hyperlinks,
             explicitly_disable_keyboard_protocol,
         );
-        if let Some(Run::Command(command)) = &invoked_with {
-            if let Some(snapshot) = &command.agent_theme {
-                grid.apply_agent_theme_event(yinz_types::agent::theme::AgentThemeEvent {
-                    version: yinz_types::agent::theme::EVENT_VERSION,
-                    launch_id: snapshot.launch_id.clone(),
-                    snapshot: Some(snapshot.snapshot.clone()),
-                });
-            }
+        if let Some(Run::Command(command)) = &invoked_with
+            && let Some(snapshot) = &command.agent_theme
+        {
+            grid.apply_agent_theme_event(yinz_types::agent::theme::AgentThemeEvent {
+                version: yinz_types::agent::theme::EVENT_VERSION,
+                launch_id: snapshot.launch_id.clone(),
+                snapshot: Some(snapshot.snapshot.clone()),
+            });
         }
         if let Some(notification_end) = notification_end.as_mut() {
             notification_end.set_affected_pane_id(PaneId::Terminal(pid));

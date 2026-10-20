@@ -438,14 +438,14 @@ impl EntityDef {
 ///
 /// Text is for text; a plugin with bytes to keep has `Blob`.
 fn reject_nul(attr: &str, value: &DataValue) -> Result<(), DataError> {
-    if let DataValue::Text(text) = value {
-        if text.contains('\0') {
-            return Err(DataError::InvalidQuery(format!(
-                "the text for `{}` contains a NUL byte, which the store does not hold in text; \
+    if let DataValue::Text(text) = value
+        && text.contains('\0')
+    {
+        return Err(DataError::InvalidQuery(format!(
+            "the text for `{}` contains a NUL byte, which the store does not hold in text; \
                  use a Blob attribute for bytes",
-                attr
-            )));
-        }
+            attr
+        )));
     }
     Ok(())
 }

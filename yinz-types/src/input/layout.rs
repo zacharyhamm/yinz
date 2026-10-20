@@ -190,10 +190,10 @@ impl RunPluginOrAlias {
     }
     pub fn add_initial_cwd(&mut self, initial_cwd: &Path) {
         match self {
-            RunPluginOrAlias::RunPlugin(ref mut run_plugin) => {
+            RunPluginOrAlias::RunPlugin(run_plugin) => {
                 run_plugin.initial_cwd = Some(initial_cwd.to_path_buf());
             },
-            RunPluginOrAlias::Alias(ref mut alias) => {
+            RunPluginOrAlias::Alias(alias) => {
                 alias.initial_cwd = Some(initial_cwd.to_path_buf());
             },
         }
@@ -355,30 +355,29 @@ impl Run {
     pub fn add_args(&mut self, args: Option<Vec<String>>) {
         // overrides the args of a Run::Command if they are Some
         // and not empty
-        if let Some(args) = args {
-            if let Run::Command(run_command) = self {
-                if !args.is_empty() {
-                    run_command.args = args.clone();
-                }
-            }
+        if let Some(args) = args
+            && let Run::Command(run_command) = self
+            && !args.is_empty()
+        {
+            run_command.args = args.clone();
         }
     }
     pub fn add_close_on_exit(&mut self, close_on_exit: Option<bool>) {
         // overrides the hold_on_close of a Run::Command if it is Some
         // and not empty
-        if let Some(close_on_exit) = close_on_exit {
-            if let Run::Command(run_command) = self {
-                run_command.hold_on_close = !close_on_exit;
-            }
+        if let Some(close_on_exit) = close_on_exit
+            && let Run::Command(run_command) = self
+        {
+            run_command.hold_on_close = !close_on_exit;
         }
     }
     pub fn add_start_suspended(&mut self, start_suspended: Option<bool>) {
         // overrides the hold_on_start of a Run::Command if they are Some
         // and not empty
-        if let Some(start_suspended) = start_suspended {
-            if let Run::Command(run_command) = self {
-                run_command.hold_on_start = start_suspended;
-            }
+        if let Some(start_suspended) = start_suspended
+            && let Run::Command(run_command) = self
+        {
+            run_command.hold_on_start = start_suspended;
         }
     }
     pub fn is_same_category(first: &Option<Run>, second: &Option<Run>) -> bool {
@@ -441,10 +440,10 @@ impl RunPlugin {
     pub fn location_for_serialization(&self) -> String {
         if let RunPluginLocation::File(path) = &self.location {
             let path = self.declared_path.as_ref().unwrap_or(path);
-            if let Some(relative_path) = &self.relative_path {
-                if matches!(path.try_exists(), Ok(false)) {
-                    return format!("file:{}", relative_path.display());
-                }
+            if let Some(relative_path) = &self.relative_path
+                && matches!(path.try_exists(), Ok(false))
+            {
+                return format!("file:{}", relative_path.display());
             }
             return Url::from_file_path(path)
                 .map(|url| url.to_string())
@@ -527,18 +526,17 @@ impl PluginAlias {
         // want to pass the "caller" cwd for the plugin the alias resolves into (eg. a
         // filepicker that has access to the whole filesystem but wants to start in a specific
         // folder)
-        if let Some(caller_cwd) = caller_cwd {
-            if self
+        if let Some(caller_cwd) = caller_cwd
+            && self
                 .configuration
                 .as_ref()
                 .map(|c| c.inner().get("caller_cwd").is_none())
                 .unwrap_or(true)
-            {
-                let configuration = self
-                    .configuration
-                    .get_or_insert_with(|| PluginUserConfiguration::new(BTreeMap::new()));
-                configuration.insert("caller_cwd", caller_cwd.display().to_string());
-            }
+        {
+            let configuration = self
+                .configuration
+                .get_or_insert_with(|| PluginUserConfiguration::new(BTreeMap::new()));
+            configuration.insert("caller_cwd", caller_cwd.display().to_string());
         }
     }
     pub fn set_caller_terminal_pane_id_if_not_set(
@@ -828,12 +826,12 @@ impl FloatingPaneLayout {
                 self.run = Some(Run::Cwd(cwd.to_path_buf()));
             },
         }
-        if let (Some(tabs), Some(Run::Plugin(plugin))) = (&self.pane_tabs, &mut self.run) {
-            if let Some(selected) = tabs.tabs.get(tabs.active) {
-                *plugin = plugin
-                    .clone()
-                    .with_initial_cwd(selected.initial_cwd.clone());
-            }
+        if let (Some(tabs), Some(Run::Plugin(plugin))) = (&self.pane_tabs, &mut self.run)
+            && let Some(selected) = tabs.tabs.get(tabs.active)
+        {
+            *plugin = plugin
+                .clone()
+                .with_initial_cwd(selected.initial_cwd.clone());
         }
     }
     pub fn add_start_suspended(&mut self, start_suspended: Option<bool>) {
@@ -978,10 +976,11 @@ impl TiledPaneLayout {
                                 .unwrap_or(false),
                         );
                     let mut extra_children = vec![TiledPaneLayout::default(); children_count];
-                    if !layout_to_split.has_focused_node() && focus_layout_if_not_focused {
-                        if let Some(last_child) = extra_children.last_mut() {
-                            last_child.focus = Some(true);
-                        }
+                    if !layout_to_split.has_focused_node()
+                        && focus_layout_if_not_focused
+                        && let Some(last_child) = extra_children.last_mut()
+                    {
+                        last_child.focus = Some(true);
                     }
                     let _ = layout_to_split.insert_children_nodes(&mut extra_children);
                 } else {
@@ -1134,12 +1133,12 @@ impl TiledPaneLayout {
                 self.run = Some(Run::Cwd(cwd.to_path_buf()));
             },
         }
-        if let (Some(tabs), Some(Run::Plugin(plugin))) = (&self.pane_tabs, &mut self.run) {
-            if let Some(selected) = tabs.tabs.get(tabs.active) {
-                *plugin = plugin
-                    .clone()
-                    .with_initial_cwd(selected.initial_cwd.clone());
-            }
+        if let (Some(tabs), Some(Run::Plugin(plugin))) = (&self.pane_tabs, &mut self.run)
+            && let Some(selected) = tabs.tabs.get(tabs.active)
+        {
+            *plugin = plugin
+                .clone()
+                .with_initial_cwd(selected.initial_cwd.clone());
         }
         for child in self.children.iter_mut() {
             child.add_cwd_to_layout(cwd);

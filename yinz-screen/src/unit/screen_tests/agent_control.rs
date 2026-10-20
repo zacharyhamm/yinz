@@ -8271,10 +8271,10 @@ fn pi_prompt_clear_waits_after_marker_delivery_and_honors_cancellation() {
         report_kind(&mut screen, "pi", hook("SessionStart"));
         let now = Instant::now();
         let mut request = prompt(false);
-        if cancellation == "timeout" {
-            if let AgentRequest::Prompt { timeout_ms, .. } = &mut request {
-                *timeout_ms = 1500;
-            }
+        if cancellation == "timeout"
+            && let AgentRequest::Prompt { timeout_ms, .. } = &mut request
+        {
+            *timeout_ms = 1500;
         }
         screen.agent_control_at(
             request,

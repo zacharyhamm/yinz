@@ -452,10 +452,8 @@ impl Screen {
         }
         let pane_id = PaneId::Plugin(plugin_id);
         let plugin_exists = self.tabs.values().any(|tab| tab.has_plugin(plugin_id));
-        if plugin_exists {
-            if let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
-                replay_pending_plugin_events(self, pending_events)?;
-            }
+        if plugin_exists && let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
+            replay_pending_plugin_events(self, pending_events)?;
         }
         Ok(true)
     }

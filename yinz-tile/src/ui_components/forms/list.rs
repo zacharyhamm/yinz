@@ -124,16 +124,16 @@ mod tests {
             max_rows
         );
         assert_eq!(reported, selected);
-        if let Some(selected) = selected {
-            if max_rows > 0 {
-                assert!(
-                    start <= selected && selected < end,
-                    "selection {} fell outside the window {}..{}",
-                    selected,
-                    start,
-                    end
-                );
-            }
+        if let Some(selected) = selected
+            && max_rows > 0
+        {
+            assert!(
+                start <= selected && selected < end,
+                "selection {} fell outside the window {}..{}",
+                selected,
+                start,
+                end
+            );
         }
     }
 

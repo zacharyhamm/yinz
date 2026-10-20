@@ -66,20 +66,17 @@ fn clean_restart_args(
     managed_codex: bool,
 ) -> Result<(Vec<String>, Option<usize>), String> {
     let name = program.file_name().and_then(|name| name.to_str());
-    if matches!(name, Some("yinz" | "sh")) {
-        if let Some((inner, inner_args)) = crate::agent::unwrapped_program_and_args(program, args) {
-            if inner != program {
-                let mut result = args[..args.len() - inner_args.len()].to_vec();
-                let managed_codex = managed_codex
-                    || (name == Some("yinz")
-                        && args.get(1).is_some_and(|launcher| launcher == "codex"));
-                let (cleaned, separator) =
-                    clean_restart_args(inner, inner_args, resuming, managed_codex)?;
-                let separator = separator.map(|index| result.len() + index);
-                result.extend(cleaned);
-                return Ok((result, separator));
-            }
-        }
+    if matches!(name, Some("yinz" | "sh"))
+        && let Some((inner, inner_args)) = crate::agent::unwrapped_program_and_args(program, args)
+        && inner != program
+    {
+        let mut result = args[..args.len() - inner_args.len()].to_vec();
+        let managed_codex = managed_codex
+            || (name == Some("yinz") && args.get(1).is_some_and(|launcher| launcher == "codex"));
+        let (cleaned, separator) = clean_restart_args(inner, inner_args, resuming, managed_codex)?;
+        let separator = separator.map(|index| result.len() + index);
+        result.extend(cleaned);
+        return Ok((result, separator));
     }
     if name == Some("env") {
         let mut index = 0;

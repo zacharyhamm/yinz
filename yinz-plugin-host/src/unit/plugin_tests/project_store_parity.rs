@@ -168,12 +168,11 @@ impl Pair {
                         output[1] = value;
                     }
                 }
-                if let Some(message) = command.get_mut("MessageToPlugin") {
-                    if message["message_name"] == "yinz_rpc_reply" {
-                        message["message_payload"] =
-                            serde_json::from_str(message["message_payload"].as_str().unwrap())
-                                .unwrap();
-                    }
+                if let Some(message) = command.get_mut("MessageToPlugin")
+                    && message["message_name"] == "yinz_rpc_reply"
+                {
+                    message["message_payload"] =
+                        serde_json::from_str(message["message_payload"].as_str().unwrap()).unwrap();
                 }
             }
             commands
@@ -193,15 +192,14 @@ impl Pair {
             if let Some(mutations) = command
                 .pointer_mut("/DataApply/mutations")
                 .and_then(Value::as_array_mut)
-            {
-                if mutations.iter().any(|mutation| {
+                && mutations.iter().any(|mutation| {
                     matches!(
                         mutation["Put"]["entity"].as_str(),
                         Some("note_tag" | "note_link")
                     )
-                }) {
-                    mutations.retain(|mutation| mutation["AssertRows"]["entity"] != "note");
-                }
+                })
+            {
+                mutations.retain(|mutation| mutation["AssertRows"]["entity"] != "note");
             }
         }
         assert_eq!(

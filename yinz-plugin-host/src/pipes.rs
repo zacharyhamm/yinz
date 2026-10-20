@@ -64,12 +64,11 @@ impl PendingPipes {
         load: u64,
         result: Result<(), String>,
     ) {
-        if let Some(pipe) = self.requests.get_mut(&request) {
-            if pipe.queued.remove(&(plugin, load)) {
-                if let Err(error) = result {
-                    pipe.failure.get_or_insert(error);
-                }
-            }
+        if let Some(pipe) = self.requests.get_mut(&request)
+            && pipe.queued.remove(&(plugin, load))
+            && let Err(error) = result
+        {
+            pipe.failure.get_or_insert(error);
         }
     }
 
@@ -96,15 +95,13 @@ impl PendingPipes {
                 }
             }
         }
-        if let Some((request, result)) = completion.callback {
-            if let Some(pipe) = self.requests.get_mut(&request) {
-                if pipe.callbacks.remove(&owner) {
-                    if let Err(error) = result {
-                        pipe.holds.remove(&owner);
-                        pipe.failure.get_or_insert(error);
-                    }
-                }
-            }
+        if let Some((request, result)) = completion.callback
+            && let Some(pipe) = self.requests.get_mut(&request)
+            && pipe.callbacks.remove(&owner)
+            && let Err(error) = result
+        {
+            pipe.holds.remove(&owner);
+            pipe.failure.get_or_insert(error);
         }
     }
 
@@ -186,10 +183,10 @@ pub fn report_pipe_changes(
             resolved.insert(request, change);
         }
     }
-    if let Some((request, result)) = &callback {
-        if result.is_err() || !matches!(resolved.get(request), Some(PipeStateChange::Block)) {
-            plugin.pipe_requests.retain(|_, id| id != request);
-        }
+    if let Some((request, result)) = &callback
+        && (result.is_err() || !matches!(resolved.get(request), Some(PipeStateChange::Block)))
+    {
+        plugin.pipe_requests.retain(|_, id| id != request);
     }
     if callback.is_some() || !resolved.is_empty() {
         senders

@@ -315,10 +315,10 @@ impl KittyCommandParser {
                     }
                 }
                 for (key, value) in &pairs {
-                    if *key == b"q" {
-                        if let Some(q @ 0..=2) = parse_u32(value) {
-                            self.pending.as_mut().unwrap().command.quiet = q as u8;
-                        }
+                    if *key == b"q"
+                        && let Some(q @ 0..=2) = parse_u32(value)
+                    {
+                        self.pending.as_mut().unwrap().command.quiet = q as u8;
                     }
                 }
                 let pending = self.pending.as_mut().unwrap();

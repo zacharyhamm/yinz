@@ -100,11 +100,11 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
             match event {
                 PtyWriteInstruction::Write(bytes, terminal_id, mut completion) => {
                     // Preserve a failure across a multi-chunk paste until its final barrier.
-                    if let Some(error) = failed.get(&terminal_id) {
-                        if let Some(completion) = &mut completion {
-                            completion.set_error_message(error.clone());
-                            failed.remove(&terminal_id);
-                        }
+                    if let Some(error) = failed.get(&terminal_id)
+                        && let Some(completion) = &mut completion
+                    {
+                        completion.set_error_message(error.clone());
+                        failed.remove(&terminal_id);
                     }
                     let queue = pending.entry(terminal_id).or_default();
                     let queued: usize = queue

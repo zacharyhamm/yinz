@@ -2419,27 +2419,26 @@ pub fn route_action(
         result.error_message = Some(format!("Action {action_name} completed without a pane ID"));
     }
     if let Some(error_message) = &result.error_message {
-        if let Some(cli_client_id) = cli_client_id {
-            if let Some(ref os_input) = os_input {
-                let _ = os_input.send_to_client(
-                    cli_client_id,
-                    ServerToClientMsg::LogError {
-                        lines: vec![error_message.clone()],
-                    },
-                );
-            }
+        if let Some(cli_client_id) = cli_client_id
+            && let Some(ref os_input) = os_input
+        {
+            let _ = os_input.send_to_client(
+                cli_client_id,
+                ServerToClientMsg::LogError {
+                    lines: vec![error_message.clone()],
+                },
+            );
         }
-    } else if let Some(stdout_message) = &result.stdout_message {
-        if let Some(cli_client_id) = cli_client_id {
-            if let Some(ref os_input) = os_input {
-                let _ = os_input.send_to_client(
-                    cli_client_id,
-                    ServerToClientMsg::Log {
-                        lines: vec![stdout_message.clone()],
-                    },
-                );
-            }
-        }
+    } else if let Some(stdout_message) = &result.stdout_message
+        && let Some(cli_client_id) = cli_client_id
+        && let Some(ref os_input) = os_input
+    {
+        let _ = os_input.send_to_client(
+            cli_client_id,
+            ServerToClientMsg::Log {
+                lines: vec![stdout_message.clone()],
+            },
+        );
     }
     // A group's first tab also produces tab/pane IDs; group commands return only the group ID.
     if creates_group {
@@ -2447,47 +2446,44 @@ pub fn route_action(
         result.affected_pane_id = None;
     }
     // Return tab ID to CLI clients as plain text
-    if let Some(tab_id) = result.affected_tab_id {
-        if let Some(cli_client_id) = cli_client_id {
-            if let Some(ref os_input) = os_input {
-                let _ = os_input.send_to_client(
-                    cli_client_id,
-                    ServerToClientMsg::Log {
-                        lines: vec![tab_id.to_string()],
-                    },
-                );
-            }
-        }
+    if let Some(tab_id) = result.affected_tab_id
+        && let Some(cli_client_id) = cli_client_id
+        && let Some(ref os_input) = os_input
+    {
+        let _ = os_input.send_to_client(
+            cli_client_id,
+            ServerToClientMsg::Log {
+                lines: vec![tab_id.to_string()],
+            },
+        );
     }
     // Return pane ID to CLI clients as plain text
-    if let Some(pane_id) = result.affected_pane_id {
-        if let Some(cli_client_id) = cli_client_id {
-            if let Some(ref os_input) = os_input {
-                let _ = os_input.send_to_client(
-                    cli_client_id,
-                    ServerToClientMsg::Log {
-                        lines: vec![pane_id.to_string()],
-                    },
-                );
-            }
-        }
+    if let Some(pane_id) = result.affected_pane_id
+        && let Some(cli_client_id) = cli_client_id
+        && let Some(ref os_input) = os_input
+    {
+        let _ = os_input.send_to_client(
+            cli_client_id,
+            ServerToClientMsg::Log {
+                lines: vec![pane_id.to_string()],
+            },
+        );
     }
     // A blocking pane's exit status, last: the client stops reading at `Exit`, so the ids above
     // have to be on the wire before it. Not sent alongside an error or a stdout message, which
     // already ended the client's wait.
-    if result.error_message.is_none() && result.stdout_message.is_none() {
-        if let Some(exit_status) = result.exit_status {
-            if let Some(cli_client_id) = cli_client_id {
-                if let Some(ref os_input) = os_input {
-                    let _ = os_input.send_to_client(
-                        cli_client_id,
-                        ServerToClientMsg::Exit {
-                            exit_reason: ExitReason::CustomExitStatus(exit_status),
-                        },
-                    );
-                }
-            }
-        }
+    if result.error_message.is_none()
+        && result.stdout_message.is_none()
+        && let Some(exit_status) = result.exit_status
+        && let Some(cli_client_id) = cli_client_id
+        && let Some(ref os_input) = os_input
+    {
+        let _ = os_input.send_to_client(
+            cli_client_id,
+            ServerToClientMsg::Exit {
+                exit_reason: ExitReason::CustomExitStatus(exit_status),
+            },
+        );
     }
     Ok((should_break, Some(result)))
 }
@@ -2908,15 +2904,15 @@ fn send_error_to_client(
     os_input: Option<&dyn ServerOsApi>,
     error_message: &str,
 ) {
-    if let Some(cli_client_id) = cli_client_id {
-        if let Some(os_input) = os_input {
-            let _ = os_input.send_to_client(
-                cli_client_id,
-                ServerToClientMsg::LogError {
-                    lines: vec![error_message.to_string()],
-                },
-            );
-        }
+    if let Some(cli_client_id) = cli_client_id
+        && let Some(os_input) = os_input
+    {
+        let _ = os_input.send_to_client(
+            cli_client_id,
+            ServerToClientMsg::LogError {
+                lines: vec![error_message.to_string()],
+            },
+        );
     }
 }
 
@@ -2925,15 +2921,15 @@ fn send_output_to_client(
     os_input: Option<&dyn ServerOsApi>,
     output_lines: Vec<String>,
 ) {
-    if let Some(cli_client_id) = cli_client_id {
-        if let Some(os_input) = os_input {
-            let _ = os_input.send_to_client(
-                cli_client_id,
-                ServerToClientMsg::Log {
-                    lines: output_lines,
-                },
-            );
-        }
+    if let Some(cli_client_id) = cli_client_id
+        && let Some(os_input) = os_input
+    {
+        let _ = os_input.send_to_client(
+            cli_client_id,
+            ServerToClientMsg::Log {
+                lines: output_lines,
+            },
+        );
     }
 }
 

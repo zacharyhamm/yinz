@@ -182,10 +182,10 @@ impl FromStr for BareKey {
                 if let Some(index) = other.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
                     return Ok(BareKey::F(index));
                 }
-                if key_str.chars().count() == 1 {
-                    if let Some(character) = key_str.chars().next() {
-                        return Ok(BareKey::Char(character));
-                    }
+                if key_str.chars().count() == 1
+                    && let Some(character) = key_str.chars().next()
+                {
+                    return Ok(BareKey::Char(character));
                 }
                 Err("unsupported key".into())
             },

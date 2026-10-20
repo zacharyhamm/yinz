@@ -636,10 +636,10 @@ fn crop_replacement_withdraws_obsolete_host_rasters_and_emits_the_new_pixels() {
     let mut decoder = KittyCommandParser::new();
     let mut decoded = None;
     for command in extract_kitty_commands(&first_frame.unwrap()) {
-        if action_of(&command) == "t" {
-            if let Some(command) = decoder.parse(&command) {
-                decoded = command.unwrap().image;
-            }
+        if action_of(&command) == "t"
+            && let Some(command) = decoder.parse(&command)
+        {
+            decoded = command.unwrap().image;
         }
     }
     assert_eq!(&decoded.unwrap().bytes[..4], &[0, 0, 0, 255]);

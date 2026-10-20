@@ -122,10 +122,10 @@ pub struct CliArgs {
 
 impl CliArgs {
     pub fn is_setup_clean(&self) -> bool {
-        if let Some(Command::Setup(ref setup)) = &self.command {
-            if setup.clean {
-                return true;
-            }
+        if let Some(Command::Setup(setup)) = &self.command
+            && setup.clean
+        {
+            return true;
         }
         false
     }

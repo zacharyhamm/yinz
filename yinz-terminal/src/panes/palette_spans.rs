@@ -31,14 +31,13 @@ impl PaletteSpans {
         if self.0.is_empty() && palette.is_none() {
             return;
         }
-        if let (Some(last), Some(palette)) = (self.0.last_mut(), palette) {
-            if Rc::ptr_eq(&last.palette, palette)
-                && range.start >= last.range.start
-                && range.start <= last.range.end
-            {
-                last.range.end = last.range.end.max(range.end);
-                return;
-            }
+        if let (Some(last), Some(palette)) = (self.0.last_mut(), palette)
+            && Rc::ptr_eq(&last.palette, palette)
+            && range.start >= last.range.start
+            && range.start <= last.range.end
+        {
+            last.range.end = last.range.end.max(range.end);
+            return;
         }
         let mut spans = Vec::with_capacity(self.0.len() + 2);
         for span in self.0.drain(..) {
@@ -67,11 +66,12 @@ impl PaletteSpans {
         }
         spans.sort_by_key(|s| s.range.start);
         for span in spans {
-            if let Some(last) = self.0.last_mut() {
-                if last.range.end == span.range.start && Rc::ptr_eq(&last.palette, &span.palette) {
-                    last.range.end = span.range.end;
-                    continue;
-                }
+            if let Some(last) = self.0.last_mut()
+                && last.range.end == span.range.start
+                && Rc::ptr_eq(&last.palette, &span.palette)
+            {
+                last.range.end = span.range.end;
+                continue;
             }
             self.0.push(span);
         }

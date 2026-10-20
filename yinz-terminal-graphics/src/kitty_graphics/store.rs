@@ -402,11 +402,11 @@ impl KittyImageStore {
         };
         // This cache is an optimization, not image data. Do not evict or reject anything merely
         // to retain a second representation of pixels that can be encoded again later.
-        if self.has_room(encoded.len()) {
-            if let Some(stored) = self.images.get_mut(&id) {
-                stored.base64_cache.insert(variant, encoded.clone());
-                self.total_bytes += encoded.len();
-            }
+        if self.has_room(encoded.len())
+            && let Some(stored) = self.images.get_mut(&id)
+        {
+            stored.base64_cache.insert(variant, encoded.clone());
+            self.total_bytes += encoded.len();
         }
         Ok(Some(encoded))
     }
@@ -683,11 +683,11 @@ impl KittyImageStore {
         ) {
             return Err(Self::quota_error("animation frame exceeds storage quota"));
         }
-        if snapshot_bytes > 0 {
-            if let Some(stored) = self.images.get_mut(&id) {
-                stored.completed_rgba = Some(stored.image.displayed_rgba().to_vec());
-                self.total_bytes += snapshot_bytes;
-            }
+        if snapshot_bytes > 0
+            && let Some(stored) = self.images.get_mut(&id)
+        {
+            stored.completed_rgba = Some(stored.image.displayed_rgba().to_vec());
+            self.total_bytes += snapshot_bytes;
         }
         Ok(())
     }

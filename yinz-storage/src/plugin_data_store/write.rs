@@ -40,15 +40,15 @@ pub(super) fn check_values(
         }
         // A Json attribute is worth having as a distinct kind only if it is actually JSON when it
         // comes back out, so it is validated on the way in.
-        if declared.kind == AttrKind::Json {
-            if let DataValue::Text(text) = value {
-                serde_json::from_str::<serde_json::Value>(text).map_err(|e| {
-                    DataError::InvalidQuery(format!(
-                        "attribute `{}` of `{}` is Json but was set to something that isn't: {}",
-                        attr, schema.def.name, e
-                    ))
-                })?;
-            }
+        if declared.kind == AttrKind::Json
+            && let DataValue::Text(text) = value
+        {
+            serde_json::from_str::<serde_json::Value>(text).map_err(|e| {
+                DataError::InvalidQuery(format!(
+                    "attribute `{}` of `{}` is Json but was set to something that isn't: {}",
+                    attr, schema.def.name, e
+                ))
+            })?;
         }
     }
     Ok(())

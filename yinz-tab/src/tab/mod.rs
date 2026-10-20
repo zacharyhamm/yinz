@@ -1087,10 +1087,10 @@ impl Tab {
             // only ever standing in for it.
             let substitute_member = self.hidden_behind(id);
             let removed = self.suppressed_panes.remove(&id).map(|s| s.pane);
-            if let Some(substitute_member) = substitute_member {
-                if let Some(suppressed) = self.suppressed_panes.get_mut(&substitute_member) {
-                    suppressed.restored_by = None;
-                }
+            if let Some(substitute_member) = substitute_member
+                && let Some(suppressed) = self.suppressed_panes.get_mut(&substitute_member)
+            {
+                suppressed.restored_by = None;
             }
             self.stack_list_of_member.remove(&id);
             self.reserved_top_rows.borrow_mut().remove(&id);
@@ -1190,11 +1190,13 @@ impl Tab {
                     .get_pane(*member)
                     .and_then(|p| p.position_and_size().logical_position);
                 self.tiled_panes.set_geom_for_pane_with_id(member, geom);
-            } else if let Some(mut suppressed) = self.suppressed_panes.remove(member) {
-                geom.logical_position = suppressed.pane.position_and_size().logical_position;
-                suppressed.pane.set_geom(geom);
-                self.tiled_panes
-                    .add_pane_with_existing_geom(*member, suppressed.pane);
+            } else {
+                if let Some(mut suppressed) = self.suppressed_panes.remove(member) {
+                    geom.logical_position = suppressed.pane.position_and_size().logical_position;
+                    suppressed.pane.set_geom(geom);
+                    self.tiled_panes
+                        .add_pane_with_existing_geom(*member, suppressed.pane);
+                }
             }
         }
         self.drop_stack_list_ledger(stack_list_id, &members);
@@ -1304,21 +1306,21 @@ impl Tab {
     fn resize_stack_list_hidden_members(&mut self, stack_list_id: StackListId) {
         if let Some(list) = self.stack_lists.get(&stack_list_id) {
             let headers_visible = self.floating_stack_headers_visible(list);
-            if self.floating_panes.fullscreen_pane_id() != Some(list.visible) {
-                if let Some(pane) = self.floating_panes.get_pane_mut(list.visible) {
-                    let mut offset = if pane.borderless() {
-                        Offset::default()
-                    } else {
-                        Offset::frame(1)
-                    };
-                    if headers_visible {
-                        offset.top = list.members.len() + 1;
-                    }
-                    if pane.get_content_offset() != offset {
-                        pane.set_content_offset(offset);
-                        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
-                            .non_fatal();
-                    }
+            if self.floating_panes.fullscreen_pane_id() != Some(list.visible)
+                && let Some(pane) = self.floating_panes.get_pane_mut(list.visible)
+            {
+                let mut offset = if pane.borderless() {
+                    Offset::default()
+                } else {
+                    Offset::frame(1)
+                };
+                if headers_visible {
+                    offset.top = list.members.len() + 1;
+                }
+                if pane.get_content_offset() != offset {
+                    pane.set_content_offset(offset);
+                    resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                        .non_fatal();
                 }
             }
         }
@@ -2092,10 +2094,10 @@ impl Tab {
     fn resolve_hint_text(&self, client_id: ClientId) -> BTreeMap<usize, StyledText> {
         let focused_pane_id = self.get_active_pane_id(client_id);
         let hovered_pane_id = self.mouse_hover_pane_id.get(&client_id).copied();
-        if let Some(hovered_pane_id) = hovered_pane_id {
-            if Some(hovered_pane_id) != focused_pane_id {
-                return hover_hint_variants();
-            }
+        if let Some(hovered_pane_id) = hovered_pane_id
+            && Some(hovered_pane_id) != focused_pane_id
+        {
+            return hover_hint_variants();
         }
         if let Some(focused_pane) = self.get_active_pane(client_id) {
             if focused_pane.is_suspended() {
@@ -2599,22 +2601,22 @@ impl Tab {
             self.tiled_panes.unset_fullscreen();
         }
         if self.floating_panes.panes_are_visible() {
-            if let Some(focused_floating_pane_id) = self.floating_panes.active_pane_id(client_id) {
-                if self.tiled_panes.has_room_for_new_pane() {
-                    let floating_pane_to_embed = self
+            if let Some(focused_floating_pane_id) = self.floating_panes.active_pane_id(client_id)
+                && self.tiled_panes.has_room_for_new_pane()
+            {
+                let floating_pane_to_embed = self
                         .extract_pane(focused_floating_pane_id, true)
                         .with_context(|| format!(
                         "failed to find floating pane (ID: {focused_floating_pane_id:?}) to embed for client {client_id}",
                     ))
                         .with_context(err_context)?;
-                    self.hide_floating_panes();
-                    self.add_tiled_pane(
-                        floating_pane_to_embed,
-                        focused_floating_pane_id,
-                        false,
-                        Some(client_id),
-                    )?;
-                }
+                self.hide_floating_panes();
+                self.add_tiled_pane(
+                    floating_pane_to_embed,
+                    focused_floating_pane_id,
+                    false,
+                    Some(client_id),
+                )?;
             }
         } else if let Some(focused_pane_id) = self.tiled_panes.focused_pane_id(client_id) {
             if self.get_selectable_tiled_panes().count() <= 1
@@ -4440,12 +4442,11 @@ impl Tab {
         self.overlay_panes.forget_client(client_id);
         self.forget_host_cursor_state(client_id);
         self.invalidate_boundaries(client_id);
-        if let Some(pane_id) = self.mouse_hover_pane_id.remove(&client_id) {
-            if !self.mouse_hover_pane_id.values().any(|id| *id == pane_id) {
-                if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                    pane.set_hover_position(None);
-                }
-            }
+        if let Some(pane_id) = self.mouse_hover_pane_id.remove(&client_id)
+            && !self.mouse_hover_pane_id.values().any(|id| *id == pane_id)
+            && let Some(pane) = self.get_pane_with_id_mut(pane_id)
+        {
+            pane.set_hover_position(None);
         }
         self.plugin_hover_pane_id.remove(&client_id);
         self.keyboard_text_selection.remove(&client_id);
@@ -4896,29 +4897,30 @@ impl Tab {
             return Ok(should_update_ui);
         }
 
-        if self.agent_double_escape && matches!(pane_id, PaneId::Terminal(_)) {
-            if let (Some(client_id), Some(key)) = (client_id, key_with_modifier) {
-                let target = (client_id, pane_id);
-                if active_pane.agent_info().is_some()
-                    && !active_pane.is_held()
-                    && !active_pane.is_suspended()
-                    && active_pane.guest_modal_selection(client_id).is_none()
-                    && key.bare_key == yinz_types::keys::BareKey::Esc
-                    && key.has_no_modifiers()
+        if self.agent_double_escape
+            && matches!(pane_id, PaneId::Terminal(_))
+            && let (Some(client_id), Some(key)) = (client_id, key_with_modifier)
+        {
+            let target = (client_id, pane_id);
+            if active_pane.agent_info().is_some()
+                && !active_pane.is_held()
+                && !active_pane.is_suspended()
+                && active_pane.guest_modal_selection(client_id).is_none()
+                && key.bare_key == yinz_types::keys::BareKey::Esc
+                && key.has_no_modifiers()
+            {
+                let now = Instant::now();
+                if !self
+                    .pending_agent_escapes
+                    .remove(&target)
+                    .is_some_and(|first| now.duration_since(first) < Duration::from_secs(1))
                 {
-                    let now = Instant::now();
-                    if !self
-                        .pending_agent_escapes
-                        .remove(&target)
-                        .is_some_and(|first| now.duration_since(first) < Duration::from_secs(1))
-                    {
-                        self.pending_agent_escapes.insert(target, now);
-                        return Ok(true);
-                    }
-                    should_update_ui = true;
-                } else {
-                    should_update_ui |= self.pending_agent_escapes.remove(&target).is_some();
+                    self.pending_agent_escapes.insert(target, now);
+                    return Ok(true);
                 }
+                should_update_ui = true;
+            } else {
+                should_update_ui |= self.pending_agent_escapes.remove(&target).is_some();
             }
         }
 
@@ -5029,12 +5031,13 @@ impl Tab {
                             Event::Key(key_with_modifier),
                         )]))
                         .with_context(err_context)?;
-                    if wait_for_plugin_input && active_pane.pane_tabs().is_some() {
-                        if let Some(completion) = completion_tx {
-                            self.senders
-                                .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
-                                .with_context(err_context)?;
-                        }
+                    if wait_for_plugin_input
+                        && active_pane.pane_tabs().is_some()
+                        && let Some(completion) = completion_tx
+                    {
+                        self.senders
+                            .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
+                            .with_context(err_context)?;
                     }
                 },
                 Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
@@ -5045,12 +5048,13 @@ impl Tab {
                     self.senders
                         .send_to_plugin(PluginInstruction::Update(plugin_updates))
                         .with_context(err_context)?;
-                    if wait_for_plugin_input && active_pane.pane_tabs().is_some() {
-                        if let Some(completion) = completion_tx {
-                            self.senders
-                                .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
-                                .with_context(err_context)?;
-                        }
+                    if wait_for_plugin_input
+                        && active_pane.pane_tabs().is_some()
+                        && let Some(completion) = completion_tx
+                    {
+                        self.senders
+                            .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
+                            .with_context(err_context)?;
                     }
                 },
                 Some(_) => {},
@@ -5522,12 +5526,12 @@ impl Tab {
         }
         // Validation precedes all extraction, including validation of existing overlay kinds.
         for child in children {
-            if let Some(kind) = self.overlay_panes.kind_of(&child) {
-                if kind != placement.kind {
-                    return Err(anyhow!(
-                        "multipane children must have the requested overlay kind"
-                    ));
-                }
+            if let Some(kind) = self.overlay_panes.kind_of(&child)
+                && kind != placement.kind
+            {
+                return Err(anyhow!(
+                    "multipane children must have the requested overlay kind"
+                ));
             }
         }
         // Adopting the tab's working panes must not make settlement destroy them. A panel
@@ -6139,13 +6143,13 @@ impl Tab {
                 changed |= pane.render_width() != widths.get(&id).copied();
                 pane.set_render_width(widths.get(&id).copied());
             }
-            if let Some(pane) = self.get_pane_with_id(id) {
-                if let Some((geom, cols, rows)) = before.get(&id) {
-                    changed |= *geom != pane.render_geom();
-                    if (*cols, *rows) != (pane.get_content_columns(), pane.get_content_rows()) {
-                        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
-                            .context("failed to resize agent pane")?;
-                    }
+            if let Some(pane) = self.get_pane_with_id(id)
+                && let Some((geom, cols, rows)) = before.get(&id)
+            {
+                changed |= *geom != pane.render_geom();
+                if (*cols, *rows) != (pane.get_content_columns(), pane.get_content_rows()) {
+                    resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+                        .context("failed to resize agent pane")?;
                 }
             }
         }
@@ -6337,19 +6341,18 @@ impl Tab {
 
             // Fullscreen margins occlude tiled output, so clear them at their own layer.
             let mut fullscreen_layers = Vec::new();
-            if let Some(id) = self.floating_panes.fullscreen_pane_id() {
-                if let Some(index) = self.floating_panes.get_pane_z_index(id) {
-                    if let Some(pane) = self.floating_panes.get_pane(id) {
-                        fullscreen_layers.push((index, pane.render_geom()));
-                    }
-                }
+            if let Some(id) = self.floating_panes.fullscreen_pane_id()
+                && let Some(index) = self.floating_panes.get_pane_z_index(id)
+                && let Some(pane) = self.floating_panes.get_pane(id)
+            {
+                fullscreen_layers.push((index, pane.render_geom()));
             }
             if self.overlays_are_rendered() {
                 for id in self.overlay_panes.fullscreen_pane_ids() {
-                    if let Some(index) = self.overlay_panes.get_pane_z_index(id) {
-                        if let Some(geom) = self.overlay_panes.outer_geom(id) {
-                            fullscreen_layers.push((index + self.floating_layer_count(), geom));
-                        }
+                    if let Some(index) = self.overlay_panes.get_pane_z_index(id)
+                        && let Some(geom) = self.overlay_panes.outer_geom(id)
+                    {
+                        fullscreen_layers.push((index + self.floating_layer_count(), geom));
                     }
                 }
             }
@@ -7119,22 +7122,22 @@ impl Tab {
             &mut self.tiled_panes,
             self.pane_frame_style,
         );
-        if let Some(pane_id) = fullscreen_pane_to_restore {
-            if self.tiled_panes.panes_contain(&pane_id) {
-                if fullscreen_covered_ui {
-                    self.tiled_panes.toggle_pane_no_ui_fullscreen(pane_id);
-                } else {
-                    self.tiled_panes.toggle_pane_fullscreen(pane_id);
-                }
+        if let Some(pane_id) = fullscreen_pane_to_restore
+            && self.tiled_panes.panes_contain(&pane_id)
+        {
+            if fullscreen_covered_ui {
+                self.tiled_panes.toggle_pane_no_ui_fullscreen(pane_id);
+            } else {
+                self.tiled_panes.toggle_pane_fullscreen(pane_id);
             }
         }
-        if let Some(pane_id) = floating_fullscreen_pane_to_restore {
-            if self.floating_panes.panes_contain(&pane_id) {
-                if floating_fullscreen_covered_ui {
-                    self.floating_panes.toggle_pane_no_ui_fullscreen(pane_id);
-                } else {
-                    self.floating_panes.toggle_pane_fullscreen(pane_id);
-                }
+        if let Some(pane_id) = floating_fullscreen_pane_to_restore
+            && self.floating_panes.panes_contain(&pane_id)
+        {
+            if floating_fullscreen_covered_ui {
+                self.floating_panes.toggle_pane_no_ui_fullscreen(pane_id);
+            } else {
+                self.floating_panes.toggle_pane_fullscreen(pane_id);
             }
         }
         // `reapply_coordinates` above re-derived any expansion against `self.viewport` as it was
@@ -7820,10 +7823,10 @@ impl Tab {
     pub fn get_plugin_ids_including_suppressed(&self) -> Vec<PluginId> {
         let mut plugin_ids = self.get_plugin_ids();
         for pane_id in self.suppressed_panes.keys() {
-            if let PaneId::Plugin(plugin_id) = pane_id {
-                if !plugin_ids.contains(plugin_id) {
-                    plugin_ids.push(*plugin_id);
-                }
+            if let PaneId::Plugin(plugin_id) = pane_id
+                && !plugin_ids.contains(plugin_id)
+            {
+                plugin_ids.push(*plugin_id);
             }
         }
         plugin_ids
@@ -7922,23 +7925,21 @@ impl Tab {
         ignore_suppressed_panes: bool,
         exit_status: Option<i32>,
     ) {
-        if !ignore_suppressed_panes {
-            if let Some(tabs_id) = self.pane_tabs_of(id) {
-                if matches!(id, PaneId::Terminal(_)) {
-                    if let Some(command) = self.pane_run_command(id) {
-                        self.hold_pane(id, exit_status, false, command);
-                    }
-                    return;
+        if !ignore_suppressed_panes && let Some(tabs_id) = self.pane_tabs_of(id) {
+            if matches!(id, PaneId::Terminal(_)) {
+                if let Some(command) = self.pane_run_command(id) {
+                    self.hold_pane(id, exit_status, false, command);
                 }
-                if let Some(index) = self.pane_tabs[&tabs_id]
-                    .info
-                    .tabs
-                    .iter()
-                    .position(|slot| slot.pane_id() == Some(id))
-                {
-                    self.close_pane_tab_child(tabs_id, index).non_fatal();
-                    return;
-                }
+                return;
+            }
+            if let Some(index) = self.pane_tabs[&tabs_id]
+                .info
+                .tabs
+                .iter()
+                .position(|slot| slot.pane_id() == Some(id))
+            {
+                self.close_pane_tab_child(tabs_id, index).non_fatal();
+                return;
             }
         }
         let id_stands_in_for_a_pane = self.stands_in_for_a_pane(id).is_some();
@@ -7981,25 +7982,23 @@ impl Tab {
         }
         // A suppressed intermediate owns no layout slot. Its predecessors inherit the
         // complete surviving restoration link, or stay parked if it had no successor.
-        if !ignore_suppressed_panes {
-            if let Some(mut removed) = self.suppressed_panes.remove(&id) {
-                let successor = removed
+        if !ignore_suppressed_panes && let Some(mut removed) = self.suppressed_panes.remove(&id) {
+            let successor = removed
+                .restored_by
+                .filter(|stand_in| self.has_pane_with_pid(&stand_in.pane_id));
+            for predecessor in self.suppressed_panes.values_mut() {
+                if predecessor
                     .restored_by
-                    .filter(|stand_in| self.has_pane_with_pid(&stand_in.pane_id));
-                for predecessor in self.suppressed_panes.values_mut() {
-                    if predecessor
-                        .restored_by
-                        .is_some_and(|stand_in| stand_in.pane_id == id)
-                    {
-                        predecessor.restored_by = successor;
-                    }
+                    .is_some_and(|stand_in| stand_in.pane_id == id)
+                {
+                    predecessor.restored_by = successor;
                 }
-                if let Some(exit_status) = exit_status {
-                    removed.pane.update_exit_status(exit_status);
-                }
-                self.announce_pane_closed(id);
-                return;
             }
+            if let Some(exit_status) = exit_status {
+                removed.pane.update_exit_status(exit_status);
+            }
+            self.announce_pane_closed(id);
+            return;
         }
         let closed_pane = if self.overlay_panes.panes_contain(&id) {
             // nothing to unset, hide or relayout: an overlay is not on a layer and does not tile
@@ -8086,13 +8085,12 @@ impl Tab {
         let id_stands_in_for_a_pane = self.stands_in_for_a_pane(id).is_some();
         if self.pane_is_stack_list_member(&id)
             && (dont_swap_if_suppressed || !id_stands_in_for_a_pane)
+            && let StackListRemoval::Removed(removed) = self.remove_stack_list_member(id)
         {
-            if let StackListRemoval::Removed(removed) = self.remove_stack_list_member(id) {
-                return removed.map(|mut pane| {
-                    pane.reset_logical_position();
-                    pane
-                });
-            }
+            return removed.map(|mut pane| {
+                pane.reset_logical_position();
+                pane
+            });
         }
         if !dont_swap_if_suppressed && id_stands_in_for_a_pane {
             // this is done for the scrollback editor
@@ -8167,11 +8165,14 @@ impl Tab {
                 closed_pane.reset_logical_position();
             }
             closed_pane
-        } else if let Some(mut suppressed) = self.suppressed_panes.remove(&id) {
-            suppressed.pane.reset_logical_position();
-            Some(suppressed.pane)
         } else {
-            None
+            match self.suppressed_panes.remove(&id) {
+                Some(mut suppressed) => {
+                    suppressed.pane.reset_logical_position();
+                    Some(suppressed.pane)
+                },
+                _ => None,
+            }
         }
     }
     /// Returns a replacement command that arrived while this one was still running, so the
@@ -8335,21 +8336,21 @@ impl Tab {
         let mut index = 0;
         while index < closed.len() {
             let current = closed[index];
-            if let Some(tabs_id) = self.pane_tabs_of(current) {
-                if let Some(tabs) = self.pane_tabs.remove(&tabs_id) {
-                    for pane in tabs
-                        .info
-                        .tabs
-                        .iter()
-                        .filter_map(|tab| tab.pane_id())
-                        .chain([tabs.info.pane_id])
-                    {
-                        if !closed.contains(&pane) {
-                            closed.push(pane);
-                        }
-                        if let Some(child) = self.get_pane_with_id_mut(pane) {
-                            child.set_pane_tabs(None);
-                        }
+            if let Some(tabs_id) = self.pane_tabs_of(current)
+                && let Some(tabs) = self.pane_tabs.remove(&tabs_id)
+            {
+                for pane in tabs
+                    .info
+                    .tabs
+                    .iter()
+                    .filter_map(|tab| tab.pane_id())
+                    .chain([tabs.info.pane_id])
+                {
+                    if !closed.contains(&pane) {
+                        closed.push(pane);
+                    }
+                    if let Some(child) = self.get_pane_with_id_mut(pane) {
+                        child.set_pane_tabs(None);
                     }
                 }
             }
@@ -8375,10 +8376,11 @@ impl Tab {
                     } else {
                         None
                     };
-                    if let Some(related) = related {
-                        if !closed.contains(&related) && self.has_pane_with_pid(&related) {
-                            closed.push(related);
-                        }
+                    if let Some(related) = related
+                        && !closed.contains(&related)
+                        && self.has_pane_with_pid(&related)
+                    {
+                        closed.push(related);
                     }
                 }
             }
@@ -8660,11 +8662,11 @@ impl Tab {
 
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             active_pane.scroll_down(1, Some(client_id));
-            if !active_pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = active_pane.pid() {
-                    self.process_pending_vte_events(raw_fd)
-                        .with_context(err_context)?;
-                }
+            if !active_pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = active_pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd)
+                    .with_context(err_context)?;
             }
         }
         Ok(())
@@ -8726,11 +8728,11 @@ impl Tab {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             let scroll_rows = active_pane.get_content_rows();
             active_pane.scroll_down(scroll_rows, Some(client_id));
-            if !active_pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = active_pane.pid() {
-                    self.process_pending_vte_events(raw_fd)
-                        .with_context(err_context)?;
-                }
+            if !active_pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = active_pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd)
+                    .with_context(err_context)?;
             }
         }
         Ok(())
@@ -8741,10 +8743,10 @@ impl Tab {
             // Terminal panes ignore the client ID required by the shared Pane interface.
             let scroll_rows = terminal_pane.get_content_rows();
             terminal_pane.scroll_down(scroll_rows, None);
-            if !terminal_pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = terminal_pane.pid() {
-                    self.process_pending_vte_events(raw_fd).non_fatal()
-                }
+            if !terminal_pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = terminal_pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd).non_fatal()
             }
         }
     }
@@ -8764,11 +8766,11 @@ impl Tab {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             let scroll_rows = (active_pane.rows().max(1) - 1) / 2;
             active_pane.scroll_down(scroll_rows, Some(client_id));
-            if !active_pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = active_pane.pid() {
-                    self.process_pending_vte_events(raw_fd)
-                        .with_context(err_context)?;
-                }
+            if !active_pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = active_pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd)
+                    .with_context(err_context)?;
             }
         }
         Ok(())
@@ -8780,11 +8782,11 @@ impl Tab {
 
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             active_pane.clear_scroll();
-            if !active_pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = active_pane.pid() {
-                    self.process_pending_vte_events(raw_fd)
-                        .with_context(err_context)?;
-                }
+            if !active_pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = active_pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd)
+                    .with_context(err_context)?;
             }
         }
         Ok(())
@@ -8793,10 +8795,10 @@ impl Tab {
     pub fn scroll_terminal_to_bottom(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
             terminal_pane.clear_scroll();
-            if !terminal_pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = terminal_pane.pid() {
-                    self.process_pending_vte_events(raw_fd).non_fatal();
-                }
+            if !terminal_pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = terminal_pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd).non_fatal();
             }
         }
     }
@@ -8918,11 +8920,11 @@ impl Tab {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
             was_scrolled = active_pane.is_scrolled();
             active_pane.clear_scroll();
-            if !active_pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = active_pane.pid() {
-                    self.process_pending_vte_events(raw_fd)
-                        .with_context(err_context)?;
-                }
+            if !active_pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = active_pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd)
+                    .with_context(err_context)?;
             }
         }
         Ok(was_scrolled)
@@ -9639,19 +9641,17 @@ impl Tab {
         should_be_in_place: bool,
         client_id: ClientId,
     ) -> Result<()> {
-        if let Some(id) = self.pane_tabs_of(pane_id) {
+        if let Some(id) = self.pane_tabs_of(pane_id)
+            && self.pane_tabs[&id].info.pane_id != pane_id
+            && let Some(index) = self.pane_tabs[&id]
+                .info
+                .tabs
+                .iter()
+                .position(|slot| slot.pane_id() == Some(pane_id))
+        {
+            self.select_pane_tab(id, index, client_id)?;
             if self.pane_tabs[&id].info.pane_id != pane_id {
-                if let Some(index) = self.pane_tabs[&id]
-                    .info
-                    .tabs
-                    .iter()
-                    .position(|slot| slot.pane_id() == Some(pane_id))
-                {
-                    self.select_pane_tab(id, index, client_id)?;
-                    if self.pane_tabs[&id].info.pane_id != pane_id {
-                        return Ok(());
-                    }
-                }
+                return Ok(());
             }
         }
         // Revealing a suppressed pane explicitly makes it selectable below. Hidden stack
@@ -10982,10 +10982,10 @@ impl Tab {
     pub fn scroll_down_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.scroll_down(1, None);
-            if !pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = pane.pid() {
-                    self.process_pending_vte_events(raw_fd)?;
-                }
+            if !pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd)?;
             }
         }
         Ok(())
@@ -11002,10 +11002,10 @@ impl Tab {
     pub fn scroll_to_bottom_by_pane_id(&mut self, pane_id: PaneId) -> Result<()> {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.clear_scroll();
-            if !pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = pane.pid() {
-                    self.process_pending_vte_events(raw_fd)?;
-                }
+            if !pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd)?;
             }
         }
         Ok(())
@@ -11020,10 +11020,10 @@ impl Tab {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = pane.get_content_rows();
             pane.scroll_down(scroll_rows, None);
-            if !pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = pane.pid() {
-                    self.process_pending_vte_events(raw_fd)?;
-                }
+            if !pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd)?;
             }
         }
         Ok(())
@@ -11038,10 +11038,10 @@ impl Tab {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             let scroll_rows = (pane.rows().max(1).saturating_sub(1)) / 2;
             pane.scroll_down(scroll_rows, None);
-            if !pane.is_scrolled() {
-                if let PaneId::Terminal(raw_fd) = pane.pid() {
-                    self.process_pending_vte_events(raw_fd)?;
-                }
+            if !pane.is_scrolled()
+                && let PaneId::Terminal(raw_fd) = pane.pid()
+            {
+                self.process_pending_vte_events(raw_fd)?;
             }
         }
         Ok(())

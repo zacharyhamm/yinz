@@ -734,12 +734,11 @@ impl TestSession {
                 yinz_runtime::session_checkpoint::SessionCheckpoint::read(&session_dir)
             {
                 let layout_path = checkpoint.layout_path();
-                if let Ok(layout) = std::fs::read_to_string(&layout_path) {
-                    if referenced_contents_files(&layout)
+                if let Ok(layout) = std::fs::read_to_string(&layout_path)
+                    && referenced_contents_files(&layout)
                         .all(|name| layout_path.parent().unwrap().join(name).exists())
-                    {
-                        return;
-                    }
+                {
+                    return;
                 }
             }
             if std::time::Instant::now() >= deadline {

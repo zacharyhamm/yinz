@@ -77,15 +77,14 @@ impl Compact {
                     .next()
                     .unwrap()
                     .trim_start_matches(['x', 'z', 'd']);
-                if text.contains(',') {
-                    if let Ok(bytes) = text
+                if text.contains(',')
+                    && let Ok(bytes) = text
                         .split(',')
                         .map(str::parse::<u8>)
                         .collect::<Result<Vec<_>, _>>()
-                    {
-                        output.push_str(&String::from_utf8(bytes).unwrap());
-                        output.push('\n');
-                    }
+                {
+                    output.push_str(&String::from_utf8(bytes).unwrap());
+                    output.push('\n');
                 }
             }
         }

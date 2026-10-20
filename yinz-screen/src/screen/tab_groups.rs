@@ -268,10 +268,10 @@ impl Screen {
         tab_switches: &mut HashSet<(TabId, ClientId)>,
     ) -> Result<()> {
         let result = self.tab_group_action_inner(action, client, &mut completion, tab_switches);
-        if let Err(error) = &result {
-            if let Some(completion) = completion.as_mut() {
-                completion.set_error_message(format!("{error:#}"));
-            }
+        if let Err(error) = &result
+            && let Some(completion) = completion.as_mut()
+        {
+            completion.set_error_message(format!("{error:#}"));
         }
         result
     }

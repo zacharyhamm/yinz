@@ -197,25 +197,25 @@ pub fn denormalize_notification_response(payload: &[u8]) -> Option<NotificationR
     let mut restored_parts = Vec::new();
 
     for kv in metadata.split(':') {
-        if let Some(namespaced_value) = kv.strip_prefix("i=p") {
-            if let Some(dot_pos) = namespaced_value.find('.') {
-                let flags_part = namespaced_value.get(..dot_pos).unwrap_or_default();
-                let original_id = namespaced_value.get(dot_pos + 1..).unwrap_or_default();
-                let digits = flags_part
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(flags_part.len());
-                let pane_id_str = flags_part.get(..digits).unwrap_or_default();
-                let flag_chars = flags_part.get(digits..).unwrap_or_default();
-                if let Ok(pid) = pane_id_str.parse::<u32>() {
-                    terminal_id = Some(pid);
-                    app_wants_report = flag_chars.contains('r');
-                    if original_id.is_empty() {
-                        restored_parts.push("i=0".to_owned());
-                    } else {
-                        restored_parts.push(format!("i={}", original_id));
-                    }
-                    continue;
+        if let Some(namespaced_value) = kv.strip_prefix("i=p")
+            && let Some(dot_pos) = namespaced_value.find('.')
+        {
+            let flags_part = namespaced_value.get(..dot_pos).unwrap_or_default();
+            let original_id = namespaced_value.get(dot_pos + 1..).unwrap_or_default();
+            let digits = flags_part
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(flags_part.len());
+            let pane_id_str = flags_part.get(..digits).unwrap_or_default();
+            let flag_chars = flags_part.get(digits..).unwrap_or_default();
+            if let Ok(pid) = pane_id_str.parse::<u32>() {
+                terminal_id = Some(pid);
+                app_wants_report = flag_chars.contains('r');
+                if original_id.is_empty() {
+                    restored_parts.push("i=0".to_owned());
+                } else {
+                    restored_parts.push(format!("i={}", original_id));
                 }
+                continue;
             }
         }
         if let Some(payload_value) = kv.strip_prefix("p=") {

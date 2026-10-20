@@ -57,10 +57,9 @@ fn observe(
                 contains: Some(literal),
                 ..
             } = request
+                && viewport.join("\n").contains(literal)
             {
-                if viewport.join("\n").contains(literal) {
-                    return Some(Ok(json!({"pane_id":target,"viewport":viewport})));
-                }
+                return Some(Ok(json!({"pane_id":target,"viewport":viewport})));
             }
         },
         ServerToClientMsg::SubscribedPaneClosed { pane_id } if pane_id == target => {

@@ -79,10 +79,10 @@ fn build_command(
     let mut failover_cmd_args = None;
     let cmd = match terminal_action {
         TerminalAction::OpenFile(mut payload) => {
-            if payload.path.is_relative() {
-                if let Some(cwd) = payload.cwd.as_ref() {
-                    payload.path = cwd.join(payload.path);
-                }
+            if payload.path.is_relative()
+                && let Some(cwd) = payload.cwd.as_ref()
+            {
+                payload.path = cwd.join(payload.path);
             }
             let mut command = default_editor.unwrap_or_else(|| {
                 PathBuf::from(
@@ -445,10 +445,10 @@ impl CoalescingSendQueue {
                 queued_renders: state.queued_renders + state.pending_pane_renders.len(),
             }
         };
-        if backlog.queued_renders >= threshold {
-            if let Some(ready) = ready {
-                state.render_ready = Some((threshold, ready.clone()));
-            }
+        if backlog.queued_renders >= threshold
+            && let Some(ready) = ready
+        {
+            state.render_ready = Some((threshold, ready.clone()));
         }
         let ready = state.take_render_ready();
         drop(state);
@@ -1319,10 +1319,10 @@ impl ServerOsApi for ServerOsInputOutput {
             refresh_kind,
         );
 
-        if let Some(process) = system_info.process(sysinfo_pid) {
-            if let Some(cwd) = process.cwd() {
-                return Some(cwd.to_path_buf());
-            }
+        if let Some(process) = system_info.process(sysinfo_pid)
+            && let Some(cwd) = process.cwd()
+        {
+            return Some(cwd.to_path_buf());
         }
         None
     }
@@ -1375,12 +1375,12 @@ impl ServerOsApi for ServerOsInputOutput {
     ) -> HashMap<TerminalId, Vec<String>> {
         let mut terminal_to_fg_pid: HashMap<TerminalId, ProcessId> = HashMap::new();
         for &(terminal_id, shell_pid) in panes {
-            if let Some(fpgid) = self.pty_backend.tcgetpgrp(terminal_id) {
-                if let Ok(fpgid) = ProcessId::try_from(fpgid) {
-                    if fpgid.get() > 0 && fpgid != shell_pid {
-                        terminal_to_fg_pid.insert(terminal_id, fpgid);
-                    }
-                }
+            if let Some(fpgid) = self.pty_backend.tcgetpgrp(terminal_id)
+                && let Ok(fpgid) = ProcessId::try_from(fpgid)
+                && fpgid.get() > 0
+                && fpgid != shell_pid
+            {
+                terminal_to_fg_pid.insert(terminal_id, fpgid);
             }
         }
         if terminal_to_fg_pid.is_empty() {

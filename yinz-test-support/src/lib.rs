@@ -308,7 +308,8 @@ mod tests {
             assert_eq!(std::env::var_os("YINZ_ISOLATION_SENTINEL"), original);
             return;
         }
-        std::env::set_var("YINZ_ISOLATION_SENTINEL", "child-only");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("YINZ_ISOLATION_SENTINEL", "child-only") };
     }
 
     #[test]

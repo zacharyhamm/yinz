@@ -96,17 +96,17 @@ fn adjust_styles_for_custom_bg_fg(
     pane_default_bg: Option<AnsiCode>,
 ) -> CharacterStyles {
     let mut character_styles = character_styles;
-    if character_styles.foreground.is_none() || character_styles.foreground == Some(AnsiCode::Reset)
+    if (character_styles.foreground.is_none()
+        || character_styles.foreground == Some(AnsiCode::Reset))
+        && let Some(fg) = pane_default_fg
     {
-        if let Some(fg) = pane_default_fg {
-            character_styles.foreground = Some(fg);
-        }
+        character_styles.foreground = Some(fg);
     }
-    if character_styles.background.is_none() || character_styles.background == Some(AnsiCode::Reset)
+    if (character_styles.background.is_none()
+        || character_styles.background == Some(AnsiCode::Reset))
+        && let Some(bg) = pane_default_bg
     {
-        if let Some(bg) = pane_default_bg {
-            character_styles.background = Some(bg);
-        }
+        character_styles.background = Some(bg);
     }
     character_styles
 }
@@ -193,10 +193,10 @@ fn serialize_chunks_with_newlines(
         let mut chunk_width = character_chunk.x;
         for t_character in character_chunk.terminal_characters.iter() {
             // Stop rendering if the next character would exceed max_size.cols
-            if let Some(size) = max_size {
-                if chunk_width + t_character.width() > size.cols {
-                    break; // Stop rendering this chunk
-                }
+            if let Some(size) = max_size
+                && chunk_width + t_character.width() > size.cols
+            {
+                break; // Stop rendering this chunk
             }
 
             if padding_start == Some(chunk_width) {
@@ -289,10 +289,10 @@ fn serialize_chunks(
         let mut previous_styles: Option<&RcCharacterStyles> = None;
         for t_character in character_chunk.terminal_characters.iter() {
             // Stop rendering if the next character would exceed max_size.cols
-            if let Some(size) = max_size {
-                if chunk_width + t_character.width() > size.cols {
-                    break; // Stop rendering this chunk
-                }
+            if let Some(size) = max_size
+                && chunk_width + t_character.width() > size.cols
+            {
+                break; // Stop rendering this chunk
             }
 
             let styles_unchanged = !has_selections
@@ -327,32 +327,32 @@ fn serialize_chunks(
             }
         }
     }
-    if let Some(sixel_image_store) = sixel_image_store {
-        if let Some(sixel_chunks) = sixel_chunks {
-            for sixel_chunk in sixel_chunks {
-                // Skip sixel chunks that are completely outside the size bounds
-                if let Some(size) = max_size {
-                    if sixel_chunk.cell_y >= size.rows {
-                        continue; // Sixel chunk is below visible area
-                    }
-                    if sixel_chunk.cell_x >= size.cols {
-                        continue; // Sixel chunk starts outside visible area
-                    }
+    if let Some(sixel_image_store) = sixel_image_store
+        && let Some(sixel_chunks) = sixel_chunks
+    {
+        for sixel_chunk in sixel_chunks {
+            // Skip sixel chunks that are completely outside the size bounds
+            if let Some(size) = max_size {
+                if sixel_chunk.cell_y >= size.rows {
+                    continue; // Sixel chunk is below visible area
                 }
+                if sixel_chunk.cell_x >= size.cols {
+                    continue; // Sixel chunk starts outside visible area
+                }
+            }
 
-                let serialized_sixel_image = sixel_image_store.serialize_image(
-                    sixel_chunk.sixel_image_id,
-                    sixel_chunk.sixel_image_pixel_x,
-                    sixel_chunk.sixel_image_pixel_y,
-                    sixel_chunk.sixel_image_pixel_width,
-                    sixel_chunk.sixel_image_pixel_height,
-                );
-                if let Some(serialized_sixel_image) = serialized_sixel_image {
-                    let sixel_vte = sixel_vte.get_or_insert_with(Default::default);
-                    vte_goto_instruction(sixel_chunk.cell_x, sixel_chunk.cell_y, sixel_vte)
-                        .with_context(err_context)?;
-                    sixel_vte.push_str(&serialized_sixel_image);
-                }
+            let serialized_sixel_image = sixel_image_store.serialize_image(
+                sixel_chunk.sixel_image_id,
+                sixel_chunk.sixel_image_pixel_x,
+                sixel_chunk.sixel_image_pixel_y,
+                sixel_chunk.sixel_image_pixel_width,
+                sixel_chunk.sixel_image_pixel_height,
+            );
+            if let Some(serialized_sixel_image) = serialized_sixel_image {
+                let sixel_vte = sixel_vte.get_or_insert_with(Default::default);
+                vte_goto_instruction(sixel_chunk.cell_x, sixel_chunk.cell_y, sixel_vte)
+                    .with_context(err_context)?;
+                sixel_vte.push_str(&serialized_sixel_image);
             }
         }
     }
@@ -1373,11 +1373,11 @@ impl Output {
             }
 
             // Check if cursor was cropped and hide it if necessary
-            if let Some(max_size) = max_size {
-                if cursor_is_cropped(self.cursor_coordinates.get(&client_id).copied(), max_size) {
-                    vte_hide_cursor_instruction(&mut client_serialized_render_instructions)
-                        .with_context(err_context)?;
-                }
+            if let Some(max_size) = max_size
+                && cursor_is_cropped(self.cursor_coordinates.get(&client_id).copied(), max_size)
+            {
+                vte_hide_cursor_instruction(&mut client_serialized_render_instructions)
+                    .with_context(err_context)?;
             }
 
             if !client_serialized_render_instructions.is_empty() {
@@ -2093,7 +2093,7 @@ impl CharacterChunk {
         }
         width
     }
-    pub fn drain_by_width(&mut self, x: usize) -> impl Iterator<Item = TerminalCharacter> {
+    pub fn drain_by_width(&mut self, x: usize) -> impl Iterator<Item = TerminalCharacter> + use<> {
         let mut remaining_width = x;
         let end = self
             .terminal_characters
@@ -2109,18 +2109,18 @@ impl CharacterChunk {
             .count();
         // Move the suffix once, rather than once per drained character.
         let mut drained_part: Vec<_> = self.terminal_characters.drain(..end).collect();
-        if remaining_width > 0 {
-            if let Some(character) = self.terminal_characters.first() {
-                let retained_width = character.width() - remaining_width;
-                self.terminal_characters.splice(
-                    ..1,
-                    std::iter::repeat_n(EMPTY_TERMINAL_CHARACTER, retained_width),
-                );
-                drained_part.extend(std::iter::repeat_n(
-                    EMPTY_TERMINAL_CHARACTER,
-                    remaining_width,
-                ));
-            }
+        if remaining_width > 0
+            && let Some(character) = self.terminal_characters.first()
+        {
+            let retained_width = character.width() - remaining_width;
+            self.terminal_characters.splice(
+                ..1,
+                std::iter::repeat_n(EMPTY_TERMINAL_CHARACTER, retained_width),
+            );
+            drained_part.extend(std::iter::repeat_n(
+                EMPTY_TERMINAL_CHARACTER,
+                remaining_width,
+            ));
         }
         drained_part.into_iter()
     }

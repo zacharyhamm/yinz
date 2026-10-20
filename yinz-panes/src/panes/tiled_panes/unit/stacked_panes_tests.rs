@@ -18,7 +18,7 @@ use std::time::Instant;
 use {yinz_types::data::InputMode, yinz_types::data::PaletteColor, yinz_types::data::PaneContents};
 
 macro_rules! mock_pane {
-    ($pane_id:expr, $dimension:expr, $inner:expr, $x:expr, $y:expr, $logical_position:expr, $mock_panes:expr) => {
+    ($pane_id:expr_2021, $dimension:expr_2021, $inner:expr_2021, $x:expr_2021, $y:expr_2021, $logical_position:expr_2021, $mock_panes:expr_2021) => {
         let mut mock_pane_rows = $dimension;
         mock_pane_rows.set_inner($inner);
         let mut mock_pane: Box<dyn Pane> = Box::new(MockPane::new(PaneGeom {
@@ -34,7 +34,7 @@ macro_rules! mock_pane {
 }
 
 macro_rules! mock_pane_with_cols {
-    ($pane_id:expr, $rows_dimension:expr, $rows_inner:expr, $cols_dimension:expr, $cols_inner:expr, $x:expr, $y:expr, $logical_position:expr, $mock_panes:expr) => {
+    ($pane_id:expr_2021, $rows_dimension:expr_2021, $rows_inner:expr_2021, $cols_dimension:expr_2021, $cols_inner:expr_2021, $x:expr_2021, $y:expr_2021, $logical_position:expr_2021, $mock_panes:expr_2021) => {
         let mut mock_pane_rows = $rows_dimension;
         mock_pane_rows.set_inner($rows_inner);
         let mut mock_pane_cols = $cols_dimension;
@@ -51,7 +51,7 @@ macro_rules! mock_pane_with_cols {
     };
 }
 macro_rules! mock_stacked_pane {
-    ($pane_id:expr, $dimension:expr, $inner:expr, $x:expr, $y:expr, $logical_position:expr, $mock_panes:expr) => {
+    ($pane_id:expr_2021, $dimension:expr_2021, $inner:expr_2021, $x:expr_2021, $y:expr_2021, $logical_position:expr_2021, $mock_panes:expr_2021) => {
         let mut mock_pane_rows = $dimension;
         mock_pane_rows.set_inner($inner);
         let mut mock_pane: Box<dyn Pane> = Box::new(MockPane::new(PaneGeom {
@@ -68,7 +68,7 @@ macro_rules! mock_stacked_pane {
 }
 
 macro_rules! mock_stacked_pane_with_id {
-    ($pane_id:expr, $dimension:expr, $inner:expr, $x:expr, $y:expr, $logical_position:expr, $mock_panes:expr, $stack_id:expr) => {
+    ($pane_id:expr_2021, $dimension:expr_2021, $inner:expr_2021, $x:expr_2021, $y:expr_2021, $logical_position:expr_2021, $mock_panes:expr_2021, $stack_id:expr_2021) => {
         let mut mock_pane_rows = $dimension;
         mock_pane_rows.set_inner($inner);
         let mut mock_pane: Box<dyn Pane> = Box::new(MockPane::new(PaneGeom {
@@ -85,7 +85,7 @@ macro_rules! mock_stacked_pane_with_id {
 }
 
 macro_rules! mock_stacked_pane_with_cols_and_id {
-    ($pane_id:expr, $rows_dimension:expr, $rows_inner:expr, $cols_dimension:expr, $cols_inner:expr, $x:expr, $y:expr, $logical_position:expr, $mock_panes:expr, $stack_id:expr) => {
+    ($pane_id:expr_2021, $rows_dimension:expr_2021, $rows_inner:expr_2021, $cols_dimension:expr_2021, $cols_inner:expr_2021, $x:expr_2021, $y:expr_2021, $logical_position:expr_2021, $mock_panes:expr_2021, $stack_id:expr_2021) => {
         let mut mock_pane_rows = $rows_dimension;
         mock_pane_rows.set_inner($rows_inner);
         let mut mock_pane_cols = $cols_dimension;

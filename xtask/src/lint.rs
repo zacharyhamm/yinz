@@ -174,7 +174,7 @@ fn suppressions_in(body: &str) -> Vec<Suppression> {
 }
 
 /// The lints in `args`, the inside of an `allow(..)` or `expect(..)`, tagged with `kind`.
-fn lints<'a>(kind: &str, args: &'a str) -> impl Iterator<Item = Suppression> + 'a {
+fn lints<'a>(kind: &str, args: &'a str) -> impl Iterator<Item = Suppression> + 'a + use<'a> {
     let kind = if kind == "allow" { "allow" } else { "expect" };
     split_top_level(args)
         .map(|arg| code_only(arg).trim().to_owned())

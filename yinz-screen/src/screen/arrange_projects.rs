@@ -292,14 +292,12 @@ impl Screen {
                                 if let Some(stack) = stacks
                                     .iter()
                                     .find(|stack| stack.visible == *pane && stack.members.len() > 1)
-                                {
-                                    if geom.rows.as_usize()
+                                    && geom.rows.as_usize()
                                         < stack.members.len() + 1 + crate::tab::MIN_TERMINAL_HEIGHT
-                                    {
-                                        return Err(anyhow!(
-                                            "project stack headers do not fit this tab"
-                                        ));
-                                    }
+                                {
+                                    return Err(anyhow!(
+                                        "project stack headers do not fit this tab"
+                                    ));
                                 }
                             }
                             Ok(layout)

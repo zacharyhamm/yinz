@@ -615,11 +615,11 @@ impl Screen {
             if self.get_active_pane_id(&client_id) != Some(pane_id) {
                 continue;
             }
-            if let Some(mode_info) = self.mode_info.get_mut(&client_id) {
-                if mode_info.nested_ascend_keys != keys {
-                    mode_info.nested_ascend_keys = keys.clone();
-                    clients_to_update.push((client_id, mode_info.clone()));
-                }
+            if let Some(mode_info) = self.mode_info.get_mut(&client_id)
+                && mode_info.nested_ascend_keys != keys
+            {
+                mode_info.nested_ascend_keys = keys.clone();
+                clients_to_update.push((client_id, mode_info.clone()));
             }
         }
         if clients_to_update.is_empty() {
@@ -715,10 +715,10 @@ impl Screen {
         let mut terminal_ids = vec![];
         for tab in self.tabs.values() {
             for pane_id in tab.nested_guest_pane_ids() {
-                if let PaneId::Terminal(terminal_id) = pane_id {
-                    if self.nested_guest_tracker.is_tracked(pane_id) {
-                        terminal_ids.push(terminal_id);
-                    }
+                if let PaneId::Terminal(terminal_id) = pane_id
+                    && self.nested_guest_tracker.is_tracked(pane_id)
+                {
+                    terminal_ids.push(terminal_id);
                 }
             }
         }
@@ -750,11 +750,10 @@ impl Screen {
             if fullscreen && !currently_fullscreen {
                 if let Some(existing_fullscreen) =
                     tab.tiled_or_floating_fullscreen().map(|(id, _)| id)
+                    && existing_fullscreen != pane_id
                 {
-                    if existing_fullscreen != pane_id {
-                        displaced_pane_id = Some(existing_fullscreen);
-                        tab.toggle_pane_no_ui_fullscreen(existing_fullscreen);
-                    }
+                    displaced_pane_id = Some(existing_fullscreen);
+                    tab.toggle_pane_no_ui_fullscreen(existing_fullscreen);
                 }
                 tab.toggle_pane_no_ui_fullscreen(pane_id);
             } else if !fullscreen && currently_fullscreen {
@@ -842,10 +841,9 @@ impl Screen {
                 .tabs
                 .get(tab_id)
                 .and_then(|t| t.get_active_pane_id(*client_id))
+                && focused == pane_id
             {
-                if focused == pane_id {
-                    clients.push(*client_id);
-                }
+                clients.push(*client_id);
             }
         }
         clients

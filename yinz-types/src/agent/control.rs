@@ -41,10 +41,10 @@ pub enum AgentPlacement {
 
 impl AgentPlacement {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if let Self::NewTab(Some(name)) = self {
-            if name.trim().is_empty() || name.chars().any(char::is_control) {
-                return Err("new tab name must be nonblank and contain no control characters");
-            }
+        if let Self::NewTab(Some(name)) = self
+            && (name.trim().is_empty() || name.chars().any(char::is_control))
+        {
+            return Err("new tab name must be nonblank and contain no control characters");
         }
         Ok(())
     }
@@ -765,10 +765,10 @@ pub fn is_command_prompt(kind: &str, prompt: &str) -> bool {
     } else {
         text.trim_start()
     };
-    if let Some(provider) = super::provider::provider(kind) {
-        if let Some(input) = &provider.input {
-            return input.is_command_prompt(text);
-        }
+    if let Some(provider) = super::provider::provider(kind)
+        && let Some(input) = &provider.input
+    {
+        return input.is_command_prompt(text);
     }
     text.starts_with('/') || (matches!(kind, "claude" | "pi") && text.starts_with('!'))
 }

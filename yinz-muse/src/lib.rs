@@ -221,10 +221,10 @@ fn binding_for(root: &Path, session_id: &str) -> Result<Option<Binding>> {
             Ok(Some((modified, binding)))
         };
         // Registrations are created and removed concurrently with hooks.
-        if let Ok(Some(candidate)) = read() {
-            if latest.as_ref().is_none_or(|(time, _)| candidate.0 > *time) {
-                latest = Some(candidate);
-            }
+        if let Ok(Some(candidate)) = read()
+            && latest.as_ref().is_none_or(|(time, _)| candidate.0 > *time)
+        {
+            latest = Some(candidate);
         }
     }
     Ok(latest.map(|(_, binding)| binding))

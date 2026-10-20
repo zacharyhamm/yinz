@@ -526,15 +526,15 @@ fn terminal_quit_callback(
         TerminalAction::OpenFile(payload) => (false, None, payload.originating_plugin.clone()),
     };
     Box::new(move |pane_id, exit_status, command| {
-        if let PaneId::Terminal(terminal_id) = pane_id {
-            if let Some(plugin) = edit_plugin.as_ref() {
-                let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
-                    plugin.plugin_id,
-                    plugin.client_id,
-                    plugin.generation,
-                    Event::EditPaneExited(terminal_id, exit_status, plugin.context.clone()),
-                ));
-            }
+        if let PaneId::Terminal(terminal_id) = pane_id
+            && let Some(plugin) = edit_plugin.as_ref()
+        {
+            let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+                plugin.plugin_id,
+                plugin.client_id,
+                plugin.generation,
+                Event::EditPaneExited(terminal_id, exit_status, plugin.context.clone()),
+            ));
         }
         let _ = senders.send_to_screen(terminal_exit_instruction(
             pane_id,
@@ -542,15 +542,15 @@ fn terminal_quit_callback(
             command,
             hold_on_close,
         ));
-        if let PaneId::Terminal(terminal_id) = pane_id {
-            if let Some(plugin) = command_plugin.as_ref() {
-                let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
-                    plugin.plugin_id,
-                    plugin.client_id,
-                    plugin.generation,
-                    Event::CommandPaneExited(terminal_id, exit_status, plugin.context.clone()),
-                ));
-            }
+        if let PaneId::Terminal(terminal_id) = pane_id
+            && let Some(plugin) = command_plugin.as_ref()
+        {
+            let _ = senders.send_to_plugin(PluginInstruction::for_plugin_event(
+                plugin.plugin_id,
+                plugin.client_id,
+                plugin.generation,
+                Event::CommandPaneExited(terminal_id, exit_status, plugin.context.clone()),
+            ));
         }
     })
 }
@@ -1424,10 +1424,10 @@ impl Pty {
         target_host.as_deref() == self.host_of_pane(source).as_deref()
     }
     fn fill_cwd(&self, terminal_action: &mut TerminalAction, client_id: ClientId) {
-        if let Some(active_pane) = self.active_panes.get(&client_id) {
-            if !self.cwd_may_be_inherited(terminal_action, active_pane) {
-                return;
-            }
+        if let Some(active_pane) = self.active_panes.get(&client_id)
+            && !self.cwd_may_be_inherited(terminal_action, active_pane)
+        {
+            return;
         }
         let cwd = match terminal_action {
             TerminalAction::RunCommand(run_command) => &mut run_command.cwd,
@@ -1950,20 +1950,20 @@ impl Pty {
     }
 
     fn note_editor_exited(&mut self, pane: PaneId, status: Option<i32>) {
-        if let PaneId::Terminal(id) = pane {
-            if let Some(editor) = self.note_editors.remove(&id) {
-                self.bus
-                    .senders
-                    .send_to_screen(ScreenInstruction::ClosePane(pane, None, None, status))
-                    .context("closing note editor")
-                    .non_fatal();
-                let result = match editor.pending_error {
-                    Some(error) => Err(error),
-                    None if status == Some(0) => Ok(()),
-                    None => Err(format!("Note editor exited unsuccessfully ({status:?})")),
-                };
-                let _ = editor.exit.send(result);
-            }
+        if let PaneId::Terminal(id) = pane
+            && let Some(editor) = self.note_editors.remove(&id)
+        {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::ClosePane(pane, None, None, status))
+                .context("closing note editor")
+                .non_fatal();
+            let result = match editor.pending_error {
+                Some(error) => Err(error),
+                None if status == Some(0) => Ok(()),
+                None => Err(format!("Note editor exited unsuccessfully ({status:?})")),
+            };
+            let _ = editor.exit.send(result);
         }
     }
 
@@ -2117,15 +2117,15 @@ impl Pty {
                         log::warn!("More initial_panes provided than empty slots available");
                         break;
                     }
-                } else if let CommandOrPlugin::File(file_to_open) = initial_pane {
-                    if !layout.replace_next_empty_slot_with_run(Run::EditFile(
+                } else if let CommandOrPlugin::File(file_to_open) = initial_pane
+                    && !layout.replace_next_empty_slot_with_run(Run::EditFile(
                         file_to_open.path.clone(),
                         file_to_open.line_number,
                         file_to_open.cwd.clone(),
-                    )) {
-                        log::warn!("More initial_panes provided than empty slots available");
-                        break;
-                    }
+                    ))
+                {
+                    log::warn!("More initial_panes provided than empty slots available");
+                    break;
                 }
                 // Skip CommandOrPlugin::Plugin entries (already handled by plugin thread)
             }
@@ -2306,16 +2306,17 @@ impl Pty {
                         ))
                         .with_context(err_context)?;
                 }
-                if terminal.child_exit_status.is_none() && terminal.held.is_none() {
-                    if let Some(input) = terminal.agent_input {
-                        self.bus
-                            .senders
-                            .send_to_screen(ScreenInstruction::RestoreWarpedAgentInput(
-                                PaneId::Terminal(terminal.terminal_id),
-                                input,
-                            ))
-                            .with_context(err_context)?;
-                    }
+                if terminal.child_exit_status.is_none()
+                    && terminal.held.is_none()
+                    && let Some(input) = terminal.agent_input
+                {
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::RestoreWarpedAgentInput(
+                            PaneId::Terminal(terminal.terminal_id),
+                            input,
+                        ))
+                        .with_context(err_context)?;
                 }
                 if let Some(caption) = terminal.caption {
                     self.bus
@@ -2748,10 +2749,11 @@ impl Pty {
                 let starts_held = command.hold_on_start;
                 // The default shell's cwd is a path on *this* machine; a command
                 // that runs elsewhere must not inherit it.
-                if command.cwd.is_none() && !command.target.is_remote() {
-                    if let TerminalAction::RunCommand(cmd) = default_shell {
-                        command.cwd = cmd.cwd;
-                    }
+                if command.cwd.is_none()
+                    && !command.target.is_remote()
+                    && let TerminalAction::RunCommand(cmd) = default_shell
+                {
+                    command.cwd = cmd.cwd;
                 }
                 let cmd = TerminalAction::RunCommand(command.clone());
                 if starts_held {
@@ -2984,10 +2986,10 @@ impl Pty {
                 let note_editor = self.note_editors.remove(&id);
                 let child_pid = self.id_to_child_pid.get(&id).copied();
                 self.pending_remote_spawns.remove(&id);
-                if let Some(mut agent) = self.pending_agent_spawns.remove(&id) {
-                    if let Some(completion) = agent.completion_tx.as_mut() {
-                        completion.set_error_message("pane closed during agent startup".into());
-                    }
+                if let Some(mut agent) = self.pending_agent_spawns.remove(&id)
+                    && let Some(completion) = agent.completion_tx.as_mut()
+                {
+                    completion.set_error_message("pane closed during agent startup".into());
                 }
                 // Dropping a queued rerun's completion notifies its waiter; the
                 // pane it asked about is gone.

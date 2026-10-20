@@ -118,12 +118,12 @@ members = [
 ]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/zacharyhamm/yinz"
 version = "0.1.0"
-# NOTE: When updating this, modify `channel` in `rust-toolchain.toml` accordingly
-rust-version = "1.97"
+# Keep this aligned with the stable compiler used to validate the workspace.
+rust-version = "1.99.1"
 
 [workspace.lints.clippy]
 # The gate is `-D warnings` (see `cargo x lint`), so everything not named here must be fixed

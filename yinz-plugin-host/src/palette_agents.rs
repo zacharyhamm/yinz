@@ -19,10 +19,9 @@ pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &
                 response_channel: tx,
             })
             .is_ok()
+            && let Ok(GetPaneCwdResponse::Ok(cwd)) = rx.recv_timeout(Duration::from_secs(5))
         {
-            if let Ok(GetPaneCwdResponse::Ok(cwd)) = rx.recv_timeout(Duration::from_secs(5)) {
-                request.source.cwd = Some(cwd.to_string_lossy().into_owned());
-            }
+            request.source.cwd = Some(cwd.to_string_lossy().into_owned());
         }
     }
     let reply = execute(&request, senders, data);
@@ -178,19 +177,18 @@ fn execute(
                     )
                 })
                 .collect();
-            if !request.source.target.is_remote() {
-                if let Some(cwd) = request.source.cwd.as_deref() {
-                    if let Ok(root) = primary_worktree(Path::new(cwd)) {
-                        entries.push(choice(
-                            "Caller’s repository".into(),
-                            root.display().to_string(),
-                            Worktrees {
-                                kind: kind.clone(),
-                                project: AgentProject::Repository(root),
-                            },
-                        ));
-                    }
-                }
+            if !request.source.target.is_remote()
+                && let Some(cwd) = request.source.cwd.as_deref()
+                && let Ok(root) = primary_worktree(Path::new(cwd))
+            {
+                entries.push(choice(
+                    "Caller’s repository".into(),
+                    root.display().to_string(),
+                    Worktrees {
+                        kind: kind.clone(),
+                        project: AgentProject::Repository(root),
+                    },
+                ));
             }
             choices("Choose project".into(), entries)
         },

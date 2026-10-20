@@ -570,10 +570,10 @@ impl SharedPtys {
 
     pub(crate) fn write_output(&self, terminal_id: TerminalId, bytes: &[u8]) {
         self.read(|fake_pty_registry| {
-            if let Some(fake_pty_state) = fake_pty_registry.fake_pty_states.get(&terminal_id) {
-                if let Some(output_tx) = fake_pty_state.output_tx.as_ref() {
-                    let _ = output_tx.send(bytes.to_vec());
-                }
+            if let Some(fake_pty_state) = fake_pty_registry.fake_pty_states.get(&terminal_id)
+                && let Some(output_tx) = fake_pty_state.output_tx.as_ref()
+            {
+                let _ = output_tx.send(bytes.to_vec());
             }
         });
     }
@@ -583,10 +583,10 @@ impl SharedPtys {
             match fake_pty_registry.fake_pty_states.get_mut(&terminal_id) {
                 Some(fake_pty_state) => {
                     fake_pty_state.stdin.extend_from_slice(bytes);
-                    if fake_pty_state.echo {
-                        if let Some(output_tx) = fake_pty_state.output_tx.as_ref() {
-                            let _ = output_tx.send(bytes.to_vec());
-                        }
+                    if fake_pty_state.echo
+                        && let Some(output_tx) = fake_pty_state.output_tx.as_ref()
+                    {
+                        let _ = output_tx.send(bytes.to_vec());
                     }
                     if let Some(stdin_tap) = fake_pty_state.stdin_tap.as_ref() {
                         let _ = stdin_tap.send(bytes.to_vec());
@@ -638,10 +638,10 @@ impl SharedPtys {
         loop {
             {
                 let fake_pty_state = fake_pty_registry.fake_pty_states.get(&terminal_id)?;
-                if let Some((cols, rows)) = fake_pty_state.size {
-                    if (cols, rows) != last_seen {
-                        return Some((cols, rows));
-                    }
+                if let Some((cols, rows)) = fake_pty_state.size
+                    && (cols, rows) != last_seen
+                {
+                    return Some((cols, rows));
                 }
             }
             let (guard, _) = self

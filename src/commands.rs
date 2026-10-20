@@ -846,10 +846,10 @@ pub(crate) fn start_client(opts: CliArgs) {
                 }
             };
 
-            if let Some(val) = current_session() {
-                if &val == client.get_session_name() {
-                    panic!("You are trying to attach to the current session (\"{}\"). This is not supported.", val);
-                }
+            if let Some(val) = current_session()
+                && &val == client.get_session_name()
+            {
+                panic!("You are trying to attach to the current session (\"{}\"). This is not supported.", val);
             }
 
             if let Some(layout_info) = layout_info {
@@ -1524,31 +1524,30 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             Ok(())
         },
         PluginsCli::Check { name, file, json } => {
-            if file.is_none() {
-                if let Some(yinz_types::input::layout::RunPluginLocation::Git(source)) = name
+            if file.is_none()
+                && let Some(yinz_types::input::layout::RunPluginLocation::Git(source)) = name
                     .as_ref()
                     .and_then(|name| config.as_ref()?.plugins.aliases.get(name))
                     .map(|plugin| &plugin.location)
-                {
-                    let data_dir = opts
-                        .data_dir
-                        .clone()
-                        .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
-                    let installed = yinz_server::plugin_authoring::git::status(&data_dir, source)?
-                        .context("repository is not installed; use plugins install")?;
-                    let report = yinz_server::plugin_authoring::check_repository(&installed)?;
-                    if json {
-                        println!("{}", serde_json::to_string(&report)?);
-                    }
-                    if !report.diagnostics.is_empty() {
-                        anyhow::bail!("{}", report.diagnostics.join("\n"));
-                    }
-                    if !json {
-                        println!("{} checks successfully", installed.entrypoint.display());
-                        print_plugin_findings(&report.warnings);
-                    }
-                    return Ok(());
+            {
+                let data_dir = opts
+                    .data_dir
+                    .clone()
+                    .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
+                let installed = yinz_server::plugin_authoring::git::status(&data_dir, source)?
+                    .context("repository is not installed; use plugins install")?;
+                let report = yinz_server::plugin_authoring::check_repository(&installed)?;
+                if json {
+                    println!("{}", serde_json::to_string(&report)?);
                 }
+                if !report.diagnostics.is_empty() {
+                    anyhow::bail!("{}", report.diagnostics.join("\n"));
+                }
+                if !json {
+                    println!("{} checks successfully", installed.entrypoint.display());
+                    print_plugin_findings(&report.warnings);
+                }
+                return Ok(());
             }
 
             let path = match (name, file) {

@@ -856,22 +856,22 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
                 }
                 let probe = super::status::probe(session.master_fd(), session.child_pid);
 
-                if let Some((cwd, refresh_token)) = session.git_probe_target() {
-                    if let Some(ran) = git.tick_with_refresh(
+                if let Some((cwd, refresh_token)) = session.git_probe_target()
+                    && let Some(ran) = git.tick_with_refresh(
                         &cwd,
                         refresh_token.as_deref(),
                         STATUS_INTERVAL,
                         super::status::probe_git,
-                    ) {
-                        // Cached whether or not it is sent: this cache is what
-                        // `catch_up_and_attach` replays to a server that has
-                        // just reconnected and has no probe of its own.
-                        session.set_git_probe(ran.probe.clone(), refresh_token.clone());
-                        if ran.changed {
-                            if let Some(wire) = session.wire() {
-                                let _ = send(&wire, &git_report(&ran.probe, refresh_token));
-                            }
-                        }
+                    )
+                {
+                    // Cached whether or not it is sent: this cache is what
+                    // `catch_up_and_attach` replays to a server that has
+                    // just reconnected and has no probe of its own.
+                    session.set_git_probe(ran.probe.clone(), refresh_token.clone());
+                    if ran.changed
+                        && let Some(wire) = session.wire()
+                    {
+                        let _ = send(&wire, &git_report(&ran.probe, refresh_token));
                     }
                 }
 
@@ -880,11 +880,11 @@ fn start_status_pump(session: Arc<PaneSession>) -> Result<()> {
                 if last.as_ref() == Some(&probe) {
                     continue;
                 }
-                if let Some((wire, generation)) = session.wire_and_generation() {
-                    if send(&wire, &probe.clone().into_report()).is_err() {
-                        session.detach_if(generation);
-                        continue;
-                    }
+                if let Some((wire, generation)) = session.wire_and_generation()
+                    && send(&wire, &probe.clone().into_report()).is_err()
+                {
+                    session.detach_if(generation);
+                    continue;
                 }
                 if probe.child_group_terminated && session.child_exit().is_some() {
                     return;
@@ -912,12 +912,12 @@ fn start_output_pump(session: Arc<PaneSession>) -> Result<()> {
                         // Buffer first, always. If the send fails or there is
                         // nobody to send to, these are exactly the bytes a
                         // reconnect will need.
-                        if let Some((wire, generation)) = session.append_output(chunk) {
-                            if send_output(&wire, chunk).is_err() {
-                                // The server went away mid-write. Not a
-                                // teardown: keep the pane and keep buffering.
-                                session.detach_if(generation);
-                            }
+                        if let Some((wire, generation)) = session.append_output(chunk)
+                            && send_output(&wire, chunk).is_err()
+                        {
+                            // The server went away mid-write. Not a
+                            // teardown: keep the pane and keep buffering.
+                            session.detach_if(generation);
                         }
                     },
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,

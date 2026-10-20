@@ -265,13 +265,12 @@ fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Tur
         }) {
             return Err(anyhow!("{kind} process exited"));
         }
-        if let Some(marker) = &observation.conversation_file {
-            if std::fs::read_to_string(marker)
+        if let Some(marker) = &observation.conversation_file
+            && std::fs::read_to_string(marker)
                 .with_context(|| format!("{kind} conversation ended"))?
                 != conversation_marker(kind, &observation.hook)
-            {
-                return Err(anyhow!("{kind} conversation replaced"));
-            }
+        {
+            return Err(anyhow!("{kind} conversation replaced"));
         }
         Ok(())
     };
@@ -350,17 +349,19 @@ fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Tur
                 return Ok(turn);
             }
         }
-        if let Some(api) = &api {
-            if turn.found && line.is_empty() && api.idle(&turn)? {
-                // A process exit or a newer submission during the request invalidates Idle.
-                alive(&mut system)?;
-                if std::fs::metadata(path)
-                    .context("inspect AGY transcript after Idle")?
-                    .len()
-                    == offset
-                {
-                    return Ok(turn);
-                }
+        if let Some(api) = &api
+            && turn.found
+            && line.is_empty()
+            && api.idle(&turn)?
+        {
+            // A process exit or a newer submission during the request invalidates Idle.
+            alive(&mut system)?;
+            if std::fs::metadata(path)
+                .context("inspect AGY transcript after Idle")?
+                .len()
+                == offset
+            {
+                return Ok(turn);
             }
         }
         // Regular files cannot wake a condition variable; poll only while this exact process lives.
@@ -409,14 +410,14 @@ impl Turn {
             {
                 return Err(anyhow!("Claude conversation replaced"));
             }
-            if record["type"] == "user" {
-                if let Some(prompt) = record["promptId"].as_str() {
-                    if self.found && prompt != self.prompt {
-                        return Err(anyhow!("Claude prompt replaced"));
-                    }
-                    if prompt == self.prompt {
-                        self.found = true;
-                    }
+            if record["type"] == "user"
+                && let Some(prompt) = record["promptId"].as_str()
+            {
+                if self.found && prompt != self.prompt {
+                    return Err(anyhow!("Claude prompt replaced"));
+                }
+                if prompt == self.prompt {
+                    self.found = true;
                 }
             }
             if !self.found {
@@ -432,25 +433,23 @@ impl Turn {
             if let Some(id) = record["uuid"].as_str() {
                 self.ancestors.insert(id.to_owned());
             }
-            if record["type"] == "user" {
-                if let Some(task) = background_task(&record["toolUseResult"]) {
-                    if !self.background_tasks.iter().any(|known| known == task)
-                        && self.background_tasks.len() < yinz_types::agent::MAX_BACKGROUND_TASKS
-                    {
-                        self.background_tasks.push(task.to_owned());
-                    }
-                }
+            if record["type"] == "user"
+                && let Some(task) = background_task(&record["toolUseResult"])
+                && !self.background_tasks.iter().any(|known| known == task)
+                && self.background_tasks.len() < yinz_types::agent::MAX_BACKGROUND_TASKS
+            {
+                self.background_tasks.push(task.to_owned());
             }
-            if record["type"] == "assistant" {
-                if let Some(content) = record["message"]["content"].as_array() {
-                    let text: String = content
-                        .iter()
-                        .filter(|part| part["type"] == "text")
-                        .filter_map(|part| part["text"].as_str())
-                        .collect();
-                    if !text.is_empty() {
-                        self.last_text = Some(text);
-                    }
+            if record["type"] == "assistant"
+                && let Some(content) = record["message"]["content"].as_array()
+            {
+                let text: String = content
+                    .iter()
+                    .filter(|part| part["type"] == "text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect();
+                if !text.is_empty() {
+                    self.last_text = Some(text);
                 }
             }
             return Ok(record["type"] == "system" && record["subtype"] == "turn_duration");
@@ -486,12 +485,12 @@ impl Turn {
                 return Err(anyhow!("AGY turn failed"));
             }
 
-            if record.get("type").and_then(Value::as_str) == Some("PLANNER_RESPONSE") {
-                if let Some(content) = record.get("content").and_then(Value::as_str) {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        self.last_text = Some(trimmed.to_owned());
-                    }
+            if record.get("type").and_then(Value::as_str) == Some("PLANNER_RESPONSE")
+                && let Some(content) = record.get("content").and_then(Value::as_str)
+            {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    self.last_text = Some(trimmed.to_owned());
                 }
             }
             return Ok(false);

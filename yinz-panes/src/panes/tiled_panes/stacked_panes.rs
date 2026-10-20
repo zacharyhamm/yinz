@@ -829,12 +829,11 @@ impl<'a> StackedPanes<'a> {
         let panes = self.panes.borrow();
         let mut positions_and_sizes_of_all_stacks = HashMap::new();
         for pane in panes.values() {
-            if let Some(stack_id) = pane.current_geom().stacked {
-                if let std::collections::hash_map::Entry::Vacant(e) =
+            if let Some(stack_id) = pane.current_geom().stacked
+                && let std::collections::hash_map::Entry::Vacant(e) =
                     positions_and_sizes_of_all_stacks.entry(stack_id)
-                {
-                    e.insert(self.position_and_size_of_stack(&pane.pid())?);
-                }
+            {
+                e.insert(self.position_and_size_of_stack(&pane.pid())?);
             }
         }
         Some(positions_and_sizes_of_all_stacks)
@@ -1141,7 +1140,7 @@ impl<'a> StackedPanes<'a> {
                 .get(position_of_flexible_pane)
                 .map(|(_pid, p)| p.rows)
                 .with_context(err_context)?;
-            let (lowest_pane_id, mut lowest_pane_geom) = all_stacked_pane_positions
+            let &mut (ref mut lowest_pane_id, mut lowest_pane_geom) = all_stacked_pane_positions
                 .last_mut()
                 .with_context(err_context)?;
             lowest_pane_geom.rows = height_of_flexible_pane;
@@ -1149,7 +1148,7 @@ impl<'a> StackedPanes<'a> {
                 .get_mut(lowest_pane_id)
                 .with_context(err_context)?
                 .set_geom(lowest_pane_geom);
-            let (flexible_pane_id, mut flexible_pane_geom) = all_stacked_pane_positions
+            let &(ref flexible_pane_id, mut flexible_pane_geom) = all_stacked_pane_positions
                 .get(position_of_flexible_pane)
                 .with_context(err_context)?;
             flexible_pane_geom.rows = Dimension::fixed(1);
@@ -1181,7 +1180,7 @@ impl<'a> StackedPanes<'a> {
                 .get(position_of_flexible_pane)
                 .map(|(_pid, p)| p.rows)
                 .with_context(err_context)?;
-            let (highest_pane_id, mut highest_pane_geom) = all_stacked_pane_positions
+            let &mut (ref mut highest_pane_id, mut highest_pane_geom) = all_stacked_pane_positions
                 .first_mut()
                 .with_context(err_context)?;
             let y_of_whole_stack = highest_pane_geom.y;
@@ -1190,7 +1189,7 @@ impl<'a> StackedPanes<'a> {
                 .get_mut(highest_pane_id)
                 .with_context(err_context)?
                 .set_geom(highest_pane_geom);
-            let (flexible_pane_id, mut flexible_pane_geom) = all_stacked_pane_positions
+            let &(ref flexible_pane_id, mut flexible_pane_geom) = all_stacked_pane_positions
                 .get(position_of_flexible_pane)
                 .with_context(err_context)?;
             flexible_pane_geom.rows = Dimension::fixed(1);

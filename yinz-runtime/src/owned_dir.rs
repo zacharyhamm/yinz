@@ -177,13 +177,13 @@ impl Drop for OwnedDir {
             // Leave the marker so a later startup can retry this cleanup.
             return;
         }
-        if self.lease.is_some() {
-            if let Err(error) = remove_file(&self.path.with_extension("lease")) {
-                eprintln!(
-                    "failed to remove temporary directory lease for {}: {error}",
-                    self.path.display()
-                );
-            }
+        if self.lease.is_some()
+            && let Err(error) = remove_file(&self.path.with_extension("lease"))
+        {
+            eprintln!(
+                "failed to remove temporary directory lease for {}: {error}",
+                self.path.display()
+            );
         }
     }
 }
