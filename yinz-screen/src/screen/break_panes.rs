@@ -138,9 +138,9 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || "failed break pane out of tab".to_string();
         let active_tab = self.get_active_tab_mut(client_id)?;
-        let active_pane_id = active_tab
-            .get_active_pane_id(client_id)
-            .with_context(err_context)?;
+        let Some(active_pane_id) = active_tab.get_active_pane_id(client_id) else {
+            return Ok(());
+        };
         if active_tab.pane_is_overlay(active_pane_id) {
             let tab_id = self.break_multiple_panes_to_new_tab(
                 vec![active_pane_id],
@@ -156,87 +156,70 @@ impl Screen {
         }
         // read before the extraction, which forgets that this was an overlay
         let placement = active_tab.placement_for_extraction(active_pane_id);
-        let pane_is_overlay = matches!(placement, ExtractedPanePlacement::Overlay(..));
-        // an overlay is not on a layer and does not tile, so taking it out cannot leave this tab
-        // without a pane - how many panes sit underneath it has no say in whether it may leave
-        if pane_is_overlay
-            || active_tab.get_selectable_tiled_panes_count() > 1
-            || active_tab.get_visible_selectable_floating_panes_count() > 0
-            || active_tab.pane_is_stack_list_member(&active_pane_id)
-        {
-            let carried_respawn = active_tab.take_pending_respawn(active_pane_id);
-            let active_pane = active_tab
-                .extract_pane(active_pane_id, false)
-                .with_context(err_context)?;
-            let active_pane_run_instruction = active_pane.invoked_with().clone();
-            let tab_index = self.get_new_tab_id();
-            let swap_layouts = (
-                default_layout.swap_tiled_layouts.clone(),
-                default_layout.swap_floating_layouts.clone(),
-            );
-            self.new_tab(tab_index, swap_layouts, None, Some(client_id))?;
-            let tab = self.tabs.get_mut(&tab_index).with_context(err_context)?;
-            let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
-            let without_relayout = true;
-            match placement {
-                ExtractedPanePlacement::Overlay(overlay_placement, carry) => {
-                    // no geom: an overlay's geometry is resolved from its coordinates against the
-                    // new tab's surface, which is exactly what carrying the placement is for.
-                    //
-                    // The run instruction is deliberately *not* ignored here: an overlay does not
-                    // tile, so ignoring it would leave the new tab with nothing underneath the
-                    // overlay at all.
-                    tab.add_overlay_pane(
-                        active_pane,
-                        active_pane_id,
-                        overlay_placement,
-                        // this breaks out the *active* pane, and `hide_pane` moves clients off
-                        // what it hides - so the pane reaching here cannot be a hidden one
-                        OverlayCarry {
-                            hidden: false,
-                            ..carry
-                        },
-                        true,
-                        Some(client_id),
-                    )?;
-                },
-                _ => {
-                    tab.add_tiled_pane(
-                        active_pane,
-                        active_pane_id,
-                        without_relayout,
-                        Some(client_id),
-                    )?;
-                    tiled_panes_layout.ignore_run_instruction(active_pane_run_instruction.clone());
-                },
-            }
-            if let Some(entry) = carried_respawn {
-                if let Some(tab) = self.tabs.get_mut(&tab_index) {
-                    tab.restore_pending_respawn(active_pane_id, entry);
-                }
-            }
-            let should_change_focus_to_new_tab = true;
-            self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
-                None,
-                default_shell,
-                Some(tiled_panes_layout),
-                (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
-                tab_index,
-                None,  // initial_panes
-                false, // block_on_first_terminal
-                should_change_focus_to_new_tab,
-                client_id,
-                None,
-            ))?;
-        } else {
-            self.bus
-                .senders
-                .send_to_background_jobs(BackgroundJob::DisplayPaneError(
-                    vec![active_pane_id],
-                    "Cannot break single pane out!".into(),
-                ))
-                .with_context(err_context)?;
+        let carried_respawn = active_tab.take_pending_respawn(active_pane_id);
+        let active_pane = active_tab
+            .extract_pane(active_pane_id, false)
+            .with_context(err_context)?;
+        let active_pane_run_instruction = active_pane.invoked_with().clone();
+        let tab_index = self.get_new_tab_id();
+        let swap_layouts = (
+            default_layout.swap_tiled_layouts.clone(),
+            default_layout.swap_floating_layouts.clone(),
+        );
+        self.new_tab(tab_index, swap_layouts, None, Some(client_id))?;
+        let tab = self.tabs.get_mut(&tab_index).with_context(err_context)?;
+        let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
+        let without_relayout = true;
+        match placement {
+            ExtractedPanePlacement::Overlay(overlay_placement, carry) => {
+                // no geom: an overlay's geometry is resolved from its coordinates against the
+                // new tab's surface, which is exactly what carrying the placement is for.
+                //
+                // The run instruction is deliberately *not* ignored here: an overlay does not
+                // tile, so ignoring it would leave the new tab with nothing underneath the
+                // overlay at all.
+                tab.add_overlay_pane(
+                    active_pane,
+                    active_pane_id,
+                    overlay_placement,
+                    // this breaks out the *active* pane, and `hide_pane` moves clients off
+                    // what it hides - so the pane reaching here cannot be a hidden one
+                    OverlayCarry {
+                        hidden: false,
+                        ..carry
+                    },
+                    true,
+                    Some(client_id),
+                )?;
+            },
+            _ => {
+                tab.add_tiled_pane(
+                    active_pane,
+                    active_pane_id,
+                    without_relayout,
+                    Some(client_id),
+                )?;
+                tiled_panes_layout.ignore_run_instruction(active_pane_run_instruction.clone());
+            },
         }
+        if let Some(entry) = carried_respawn {
+            if let Some(tab) = self.tabs.get_mut(&tab_index) {
+                tab.restore_pending_respawn(active_pane_id, entry);
+            }
+        }
+        let should_change_focus_to_new_tab = true;
+        self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
+            None,
+            default_shell,
+            Some(tiled_panes_layout),
+            (!floating_panes_layout.is_empty()).then_some(floating_panes_layout),
+            tab_index,
+            None,  // initial_panes
+            false, // block_on_first_terminal
+            should_change_focus_to_new_tab,
+            client_id,
+            None,
+        ))?;
         Ok(())
     }
     pub fn break_multiple_panes_to_new_tab(
@@ -337,11 +320,12 @@ impl Screen {
         client_id: ClientId,
     ) -> Result<()> {
         let err_context = || "failed break pane out of tab".to_string();
-        if self
-            .navigation_tabs(self.get_active_tab(client_id).with_context(err_context)?.id)
-            .len()
-            > 1
-        {
+        let active_tab = self.get_active_tab(client_id).with_context(err_context)?;
+        // The source can be empty while a last-pane breakout waits for its layout.
+        if active_tab.get_active_pane_id(client_id).is_none() {
+            return Ok(());
+        }
+        if self.navigation_tabs(active_tab.id).len() > 1 {
             let tab = self.get_active_tab(client_id)?;
             let destination_position = self
                 .adjacent_group_tab(
