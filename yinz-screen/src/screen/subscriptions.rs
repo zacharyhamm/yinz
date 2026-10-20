@@ -142,15 +142,13 @@ impl Screen {
                 }
             }
 
-            if !found {
-                if let Some(os_input) = &self.bus.os_input {
-                    let _ = os_input.send_to_client(
-                        subscriber_client_id,
-                        ServerToClientMsg::LogError {
-                            lines: vec![format!("Pane {} not found", pane_id)],
-                        },
-                    );
-                }
+            if !found && let Some(os_input) = &self.bus.os_input {
+                let _ = os_input.send_to_client(
+                    subscriber_client_id,
+                    ServerToClientMsg::LogError {
+                        lines: vec![format!("Pane {} not found", pane_id)],
+                    },
+                );
             }
         }
 
@@ -246,13 +244,12 @@ impl Screen {
 
         // Send updates and track dead subscribers
         for (subscriber_id, msg) in &updates_to_send {
-            if let Some(os_input) = &self.bus.os_input {
-                if os_input
+            if let Some(os_input) = &self.bus.os_input
+                && os_input
                     .send_to_client(*subscriber_id, msg.clone())
                     .is_err()
-                {
-                    dead_subscribers.push(*subscriber_id);
-                }
+            {
+                dead_subscribers.push(*subscriber_id);
             }
         }
 
@@ -264,10 +261,9 @@ impl Screen {
             if let ServerToClientMsg::PaneRenderUpdate {
                 pane_id, viewport, ..
             } = msg
+                && let Some(subscription) = self.pane_render_subscribers.get_mut(&subscriber_id)
             {
-                if let Some(subscription) = self.pane_render_subscribers.get_mut(&subscriber_id) {
-                    subscription.previous_viewports.insert(pane_id, viewport);
-                }
+                subscription.previous_viewports.insert(pane_id, viewport);
             }
         }
 

@@ -382,10 +382,10 @@ pub enum ClientInfo {
 impl ClientInfo {
     pub fn get_session_name(&self) -> &SessionName {
         match self {
-            Self::Attach(ref name, _) => name,
-            Self::New(ref name, _layout_info, _layout_cwd) => name,
-            Self::Resurrect(ref name, _, _, _) => name,
-            Self::Watch(ref name, _) => name,
+            Self::Attach(name, _) => name,
+            Self::New(name, _layout_info, _layout_cwd) => name,
+            Self::Resurrect(name, _, _, _) => name,
+            Self::Watch(name, _) => name,
         }
     }
     pub fn set_layout_info(&mut self, new_layout_info: LayoutInfo) {

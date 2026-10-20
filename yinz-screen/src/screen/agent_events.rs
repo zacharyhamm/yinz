@@ -603,13 +603,14 @@ impl Screen {
                     }
                 })
             });
-            if !repeated && primary.as_deref().is_some_and(|id| !id.is_empty()) {
-                if let Some(state) = self.agent_events.panes.get_mut(&pane).filter(|state| {
+            if !repeated
+                && primary.as_deref().is_some_and(|id| !id.is_empty())
+                && let Some(state) = self.agent_events.panes.get_mut(&pane).filter(|state| {
                     state["kind"] == event.kind && state["conversation_id"] == hook.session_id
-                }) {
-                    state["submission_id"] = json!(submission);
-                    state["turn_id"] = json!(hook.turn_id.as_deref().filter(|id| !id.is_empty()));
-                }
+                })
+            {
+                state["submission_id"] = json!(submission);
+                state["turn_id"] = json!(hook.turn_id.as_deref().filter(|id| !id.is_empty()));
             }
         }
         self.refresh_agent_events();

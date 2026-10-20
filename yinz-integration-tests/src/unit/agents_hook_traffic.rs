@@ -241,10 +241,10 @@ keybinds {{
                 .into_iter()
                 .find(|title| selected(&frame, title));
             let mut observed = observed.lock();
-            if let Some(selection) = selection {
-                if observed.2.last().is_none_or(|(_, old)| old != selection) {
-                    observed.2.push((at, selection.into()));
-                }
+            if let Some(selection) = selection
+                && observed.2.last().is_none_or(|(_, old)| old != selection)
+            {
+                observed.2.push((at, selection.into()));
             }
             observed.0 = at;
             observed.1 = frame;

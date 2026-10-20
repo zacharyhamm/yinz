@@ -500,10 +500,10 @@ impl KittyGrid {
             .ok_or_else(|| enoent(command, "unknown image id"))?;
         let (image_width, image_height) = (stored.width as usize, stored.height as usize);
         let edit = command.frame_target();
-        if let Some(edit) = edit {
-            if stored.frame_rgba(edit).is_none() {
-                return Err(enoent(command, "no such frame"));
-            }
+        if let Some(edit) = edit
+            && stored.frame_rgba(edit).is_none()
+        {
+            return Err(enoent(command, "no such frame"));
         }
         // The canvas the payload is drawn onto: a copy of the base frame, or the background colour.
         let mut canvas = match command.base_frame() {
@@ -1419,10 +1419,8 @@ impl KittyGrid {
                             .virtual_placements
                             .iter()
                             .any(|virtual_placement| virtual_placement.image_id == target);
-                    if no_surviving {
-                        if let Some(internal) = self.image_ids.get(&target).copied() {
-                            self.kitty_image_store.borrow_mut().free(internal);
-                        }
+                    if no_surviving && let Some(internal) = self.image_ids.get(&target).copied() {
+                        self.kitty_image_store.borrow_mut().free(internal);
                     }
                 },
                 'r' => {

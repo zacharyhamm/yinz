@@ -517,58 +517,58 @@ impl Pane for PluginPane {
                 ));
             }
         }
-        if self.tab_bar_rows() > 0 {
-            if let Some(tabs) = &self.pane_tabs {
-                let view = self
-                    .pane_tabs_views
-                    .get(&client_id)
-                    .copied()
-                    .unwrap_or_default();
-                let characters = crate::pane_tabs::render_bar(
-                    tabs,
-                    view,
-                    tabs.bar_focused.contains(&client_id),
-                    columns,
-                    &self.style,
-                );
+        if self.tab_bar_rows() > 0
+            && let Some(tabs) = &self.pane_tabs
+        {
+            let view = self
+                .pane_tabs_views
+                .get(&client_id)
+                .copied()
+                .unwrap_or_default();
+            let characters = crate::pane_tabs::render_bar(
+                tabs,
+                view,
+                tabs.bar_focused.contains(&client_id),
+                columns,
+                &self.style,
+            );
+            rendered
+                .0
+                .push(CharacterChunk::new(characters, content_x, content_y - 1));
+            if selected_here
+                && rows > 0
+                && matches!(
+                    tabs.tabs[tabs.active].state,
+                    yinz_types::pane_tabs::PaneTabLoadState::Failed(_)
+                )
+            {
+                let mut hint: Vec<_> = "r: retry"
+                    .chars()
+                    .take(columns)
+                    .map(crate::panes::TerminalCharacter::new)
+                    .collect();
+                hint.resize(columns, EMPTY_TERMINAL_CHARACTER);
                 rendered
                     .0
-                    .push(CharacterChunk::new(characters, content_x, content_y - 1));
-                if selected_here
-                    && rows > 0
-                    && matches!(
-                        tabs.tabs[tabs.active].state,
-                        yinz_types::pane_tabs::PaneTabLoadState::Failed(_)
-                    )
-                {
-                    let mut hint: Vec<_> = "r: retry"
+                    .push(CharacterChunk::new(hint, content_x, content_y + rows - 1));
+            }
+            if !selected_here && rows > 0 {
+                let text = match &tabs.tabs[tabs.active].state {
+                    yinz_types::pane_tabs::PaneTabLoadState::Loading => "Loading…".to_owned(),
+                    yinz_types::pane_tabs::PaneTabLoadState::Failed(error) => {
+                        format!("{error} (r: retry)")
+                    },
+                    _ => "Closed (r: reopen)".to_owned(),
+                };
+                rendered.0.push(CharacterChunk::new(
+                    yinz_types::text::clean_string_from_control_and_linebreak(&text)
                         .chars()
                         .take(columns)
                         .map(crate::panes::TerminalCharacter::new)
-                        .collect();
-                    hint.resize(columns, EMPTY_TERMINAL_CHARACTER);
-                    rendered
-                        .0
-                        .push(CharacterChunk::new(hint, content_x, content_y + rows - 1));
-                }
-                if !selected_here && rows > 0 {
-                    let text = match &tabs.tabs[tabs.active].state {
-                        yinz_types::pane_tabs::PaneTabLoadState::Loading => "Loading…".to_owned(),
-                        yinz_types::pane_tabs::PaneTabLoadState::Failed(error) => {
-                            format!("{error} (r: retry)")
-                        },
-                        _ => "Closed (r: reopen)".to_owned(),
-                    };
-                    rendered.0.push(CharacterChunk::new(
-                        yinz_types::text::clean_string_from_control_and_linebreak(&text)
-                            .chars()
-                            .take(columns)
-                            .map(crate::panes::TerminalCharacter::new)
-                            .collect(),
-                        content_x,
-                        content_y,
-                    ));
-                }
+                        .collect(),
+                    content_x,
+                    content_y,
+                ));
             }
         }
         self.should_render.insert(client_id, false);
@@ -775,11 +775,11 @@ impl Pane for PluginPane {
         }
     }
     fn start_selection(&mut self, start: &Position, client_id: ClientId) {
-        if self.supports_mouse_selection {
-            if let Some(grid) = self.grids.get_mut(&client_id) {
-                grid.start_selection(start);
-                self.set_should_render(true);
-            }
+        if self.supports_mouse_selection
+            && let Some(grid) = self.grids.get_mut(&client_id)
+        {
+            grid.start_selection(start);
+            self.set_should_render(true);
         }
         self.send_plugin_instructions
             .send(PluginInstruction::Update(vec![(
@@ -790,11 +790,11 @@ impl Pane for PluginPane {
             .unwrap();
     }
     fn update_selection(&mut self, position: &Position, client_id: ClientId) {
-        if self.supports_mouse_selection {
-            if let Some(grid) = self.grids.get_mut(&client_id) {
-                grid.update_selection(position);
-                self.set_should_render(true);
-            }
+        if self.supports_mouse_selection
+            && let Some(grid) = self.grids.get_mut(&client_id)
+        {
+            grid.update_selection(position);
+            self.set_should_render(true);
         }
         self.send_plugin_instructions
             .send(PluginInstruction::Update(vec![(
@@ -805,14 +805,14 @@ impl Pane for PluginPane {
             .unwrap();
     }
     fn end_selection(&mut self, end: &Position, client_id: ClientId) {
-        if self.supports_mouse_selection {
-            if let Some(grid) = self.grids.get_mut(&client_id) {
-                grid.end_selection(end);
-                // The grid only marks lines dirty; nothing else flips the pane's own
-                // flag, and a selection finished by a double-click has no later
-                // `update_selection` to do it.
-                self.set_should_render(true);
-            }
+        if self.supports_mouse_selection
+            && let Some(grid) = self.grids.get_mut(&client_id)
+        {
+            grid.end_selection(end);
+            // The grid only marks lines dirty; nothing else flips the pane's own
+            // flag, and a selection finished by a double-click has no later
+            // `update_selection` to do it.
+            self.set_should_render(true);
         }
         self.send_plugin_instructions
             .send(PluginInstruction::Update(vec![(
@@ -836,27 +836,27 @@ impl Pane for PluginPane {
             .flatten()
             .map(|(column, line)| Position::new(line as i32, column as u16))
             .unwrap_or_else(|| Position::new(self.get_content_rows().saturating_sub(1) as i32, 0));
-        if self.supports_mouse_selection {
-            if let Some(grid) = self.grids.get_mut(&client_id) {
-                grid.start_text_selection(position);
-                self.set_should_render(true);
-            }
+        if self.supports_mouse_selection
+            && let Some(grid) = self.grids.get_mut(&client_id)
+        {
+            grid.start_text_selection(position);
+            self.set_should_render(true);
         }
     }
     fn move_text_selection(&mut self, direction: Direction, client_id: ClientId) {
-        if self.supports_mouse_selection {
-            if let Some(grid) = self.grids.get_mut(&client_id) {
-                grid.move_text_selection(direction);
-                self.set_should_render(true);
-            }
+        if self.supports_mouse_selection
+            && let Some(grid) = self.grids.get_mut(&client_id)
+        {
+            grid.move_text_selection(direction);
+            self.set_should_render(true);
         }
     }
     fn swap_text_selection_ends(&mut self, client_id: ClientId) {
-        if self.supports_mouse_selection {
-            if let Some(grid) = self.grids.get_mut(&client_id) {
-                grid.swap_text_selection_ends();
-                self.set_should_render(true);
-            }
+        if self.supports_mouse_selection
+            && let Some(grid) = self.grids.get_mut(&client_id)
+        {
+            grid.swap_text_selection_ends();
+            self.set_should_render(true);
         }
     }
     fn remember_copied_text_selection(&mut self, client_id: ClientId) {
@@ -1203,13 +1203,12 @@ impl Pane for PluginPane {
     fn intercept_mouse_event_on_frame(&mut self, event: &MouseEvent, client_id: ClientId) -> bool {
         if self.position_is_on_frame(&event.position) {
             let relative_position = self.relative_position(&event.position);
-            if let MouseEventType::Press = event.event_type {
-                if let Some(client_frame) = self.frame.get_mut(&client_id) {
-                    if client_frame.clicked_on_pinned(relative_position) {
-                        self.toggle_pinned();
-                        return true;
-                    }
-                }
+            if let MouseEventType::Press = event.event_type
+                && let Some(client_frame) = self.frame.get_mut(&client_id)
+                && client_frame.clicked_on_pinned(relative_position)
+            {
+                self.toggle_pinned();
+                return true;
             }
         }
         false

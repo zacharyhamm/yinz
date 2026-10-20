@@ -94,18 +94,18 @@ impl Screen {
         if self.command_palette_handles_input(&key_with_modifier, &raw_bytes, false, client_id) {
             return Ok(false);
         }
-        if let Some(plugin_id) = keybind_intercepts.get(&client_id) {
-            if let Some(key_with_modifier) = key_with_modifier {
-                let _ = self
-                    .bus
-                    .senders
-                    .send_to_plugin(PluginInstruction::Update(vec![(
-                        Some(*plugin_id),
-                        Some(client_id),
-                        Event::InterceptedKeyPress(key_with_modifier),
-                    )]));
-                return Ok(false);
-            }
+        if let Some(plugin_id) = keybind_intercepts.get(&client_id)
+            && let Some(key_with_modifier) = key_with_modifier
+        {
+            let _ = self
+                .bus
+                .senders
+                .send_to_plugin(PluginInstruction::Update(vec![(
+                    Some(*plugin_id),
+                    Some(client_id),
+                    Event::InterceptedKeyPress(key_with_modifier),
+                )]));
+            return Ok(false);
         }
         // An open context menu takes the keys it uses - arrows, Enter, Esc - before any
         // pane sees them. Anything else falls through and reaches the pane as usual; the
@@ -244,20 +244,18 @@ impl Screen {
             if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
                 active_tab.start_rename();
             }
-        } else if previous_mode == InputMode::RenameTab && mode_info.mode != InputMode::RenameTab {
-            if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
-                active_tab.finish_rename();
-            }
+        } else if previous_mode == InputMode::RenameTab
+            && mode_info.mode != InputMode::RenameTab
+            && let Ok(active_tab) = self.get_active_tab_mut(client_id)
+        {
+            active_tab.finish_rename();
         }
 
-        if mode_info.mode == InputMode::RenamePane {
-            if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
-                if let Some(active_pane) =
-                    active_tab.get_active_pane_or_floating_pane_mut(client_id)
-                {
-                    active_pane.store_pane_name();
-                }
-            }
+        if mode_info.mode == InputMode::RenamePane
+            && let Ok(active_tab) = self.get_active_tab_mut(client_id)
+            && let Some(active_pane) = active_tab.get_active_pane_or_floating_pane_mut(client_id)
+        {
+            active_pane.store_pane_name();
         }
 
         self.style = yinz_types::style::Style {
@@ -376,10 +374,10 @@ impl Screen {
     ) -> Vec<PluginId> {
         let mut plugin_ids = Vec::new();
         // Active-tab plugins
-        if let Some(active_tab_id) = self.active_tab_ids.get(&client_id) {
-            if let Some(tab) = self.tabs.get(active_tab_id) {
-                plugin_ids.extend(tab.get_plugin_ids_including_suppressed());
-            }
+        if let Some(active_tab_id) = self.active_tab_ids.get(&client_id)
+            && let Some(tab) = self.tabs.get(active_tab_id)
+        {
+            plugin_ids.extend(tab.get_plugin_ids_including_suppressed());
         }
         // An overlay follows the client between tabs under its own steam - agent moves itself on
         // `TabUpdate` - so a client's active tab is not necessarily where the overlay is right

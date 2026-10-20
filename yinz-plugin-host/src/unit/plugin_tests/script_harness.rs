@@ -174,8 +174,8 @@ impl Harness {
 
     pub(super) fn finish(mut self) -> Vec<ScreenInstruction> {
         self.stop();
-        let log = self.log.lock().clone();
-        log
+
+        self.log.lock().clone()
     }
 
     fn stop(&mut self) {

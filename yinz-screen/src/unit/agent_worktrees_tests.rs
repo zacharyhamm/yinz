@@ -91,7 +91,8 @@ fn same_worktree_lookup_times_out_a_stalled_git_process() {
     let temp = tempfile::tempdir().unwrap();
     yinz_test_support::write_warm_script(&temp.path().join("git"), "exec /bin/sleep 60");
     let previous_path = std::env::var_os("PATH");
-    std::env::set_var("PATH", temp.path());
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("PATH", temp.path()) };
     let (sender, receiver) = channels::unbounded();
     let mut cache = Worktrees::default();
     cache.refresh(
@@ -100,9 +101,11 @@ fn same_worktree_lookup_times_out_a_stalled_git_process() {
     );
     let completion = receiver.recv_timeout(Duration::from_secs(15));
     if let Some(previous_path) = previous_path {
-        std::env::set_var("PATH", previous_path);
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("PATH", previous_path) };
     } else {
-        std::env::remove_var("PATH");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("PATH") };
     }
     assert!(matches!(
         completion.unwrap().0,

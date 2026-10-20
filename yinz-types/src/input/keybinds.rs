@@ -148,13 +148,12 @@ pub fn shortcut_for_action(
                     if let Action::SwitchToMode {
                         input_mode: next_mode,
                     } = action
+                        && !visited.contains(next_mode)
                     {
-                        if !visited.contains(next_mode) {
-                            visited.push(*next_mode);
-                            let mut next_path = path.clone();
-                            next_path.push(key.clone());
-                            next_queue.push((*next_mode, next_path));
-                        }
+                        visited.push(*next_mode);
+                        let mut next_path = path.clone();
+                        next_path.push(key.clone());
+                        next_queue.push((*next_mode, next_path));
                     }
                 }
             }

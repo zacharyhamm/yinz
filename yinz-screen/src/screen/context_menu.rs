@@ -703,23 +703,23 @@ impl Screen {
                                     .filter(|status| *status != 0)
                                     .map(|status| format!("action exited with status {status}"))
                             });
-                            if error.is_none() {
-                                if let Some(pane_id) = pane_to_focus {
-                                    route_action(
-                                        Action::FocusPaneByPaneId { pane_id },
-                                        client_id,
-                                        None,
-                                        Some(pane_id),
-                                        senders.clone(),
-                                        default_shell.clone(),
-                                        None,
-                                        default_mode,
-                                        None,
-                                        false,
-                                        true,
-                                    )
-                                    .non_fatal();
-                                }
+                            if error.is_none()
+                                && let Some(pane_id) = pane_to_focus
+                            {
+                                route_action(
+                                    Action::FocusPaneByPaneId { pane_id },
+                                    client_id,
+                                    None,
+                                    Some(pane_id),
+                                    senders.clone(),
+                                    default_shell.clone(),
+                                    None,
+                                    default_mode,
+                                    None,
+                                    false,
+                                    true,
+                                )
+                                .non_fatal();
                             }
                             error
                         },

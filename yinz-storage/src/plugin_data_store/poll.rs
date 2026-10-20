@@ -99,10 +99,10 @@ impl Drop for DataWatchPoller {
             self.stopped.store(true, Ordering::Release);
             self.activity.changed.notify_all();
         }
-        if let Some(thread) = self.thread.take() {
-            if thread.join().is_err() {
-                log::error!("data watch polling worker panicked");
-            }
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            log::error!("data watch polling worker panicked");
         }
     }
 }

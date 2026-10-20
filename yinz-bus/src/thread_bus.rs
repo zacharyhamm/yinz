@@ -321,12 +321,10 @@ impl ThreadSenders {
             .context("reconcile background plugins")
             .non_fatal();
         }
-        if was_written_to_disk {
-            if let Some(new_plugins) = new_plugin_config {
-                self.send_to_plugin(PluginInstruction::DetectPluginConfigChanges(new_plugins))
-                    .context("reporting plugin config changes")
-                    .non_fatal();
-            }
+        if was_written_to_disk && let Some(new_plugins) = new_plugin_config {
+            self.send_to_plugin(PluginInstruction::DetectPluginConfigChanges(new_plugins))
+                .context("reporting plugin config changes")
+                .non_fatal();
         }
     }
 

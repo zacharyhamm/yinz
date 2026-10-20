@@ -21,7 +21,7 @@ use text::{parse_text, parse_text_params, stringify_text, text, Text};
 const MAX_PADDED_CELLS: usize = 1024 * 1024;
 
 macro_rules! parse_next_param {
-    ($next_param:expr, $type:ident, $component_name:expr, $item_name:expr) => {{
+    ($next_param:expr_2021, $type:ident, $component_name:expr_2021, $item_name:expr_2021) => {{
         $next_param
             .and_then(|stringified_param| stringified_param.parse::<$type>().ok())
             .with_context(|| format!("{} must have {}", $component_name, $item_name))?
@@ -29,7 +29,7 @@ macro_rules! parse_next_param {
 }
 
 macro_rules! parse_vte_bytes {
-    ($self:expr, $encoded_component:expr) => {{
+    ($self:expr_2021, $encoded_component:expr_2021) => {{
         let mut vte_parser = vte::Parser::new();
         vte_parser.advance($self.grid, &$encoded_component);
     }};
@@ -138,41 +138,42 @@ impl<'a> UiComponentParser<'a> {
         lazy_static! {
             static ref RE: Regex = Regex::new(r"^(\d*)/(\d*)/(\d*)/(\d*)$").unwrap();
         }
-        if let Some(captures) = RE.captures_iter(coordinates).next() {
-            let x = captures[1].parse::<usize>().with_context(|| {
-                format!(
-                    "Failed to parse x coordinates for string: {:?}",
-                    coordinates
-                )
-            })?;
-            let y = captures[2].parse::<usize>().with_context(|| {
-                format!(
-                    "Failed to parse y coordinates for string: {:?}",
-                    coordinates
-                )
-            })?;
-            // Clamped to the room left in the pane. A component placed with
-            // coordinates is absolute, and the host pads it out to the width it
-            // was given: a full-width run asked for at an indented `x` would
-            // otherwise spill past the right edge, wrap, and - on the bottom row
-            // - scroll the pane's whole frame up by one line underneath the
-            // plugin, which then hit-tests a row off.
-            let width = captures[3]
-                .parse::<usize>()
-                .ok()
-                .map(|width| width.min(self.grid.width.saturating_sub(x)));
-            let height = captures[4]
-                .parse::<usize>()
-                .ok()
-                .map(|height| height.min(self.grid.height.saturating_sub(y)));
-            Ok(Some(Coordinates {
-                x,
-                y,
-                width,
-                height,
-            }))
-        } else {
-            Ok(None)
+        match RE.captures_iter(coordinates).next() {
+            Some(captures) => {
+                let x = captures[1].parse::<usize>().with_context(|| {
+                    format!(
+                        "Failed to parse x coordinates for string: {:?}",
+                        coordinates
+                    )
+                })?;
+                let y = captures[2].parse::<usize>().with_context(|| {
+                    format!(
+                        "Failed to parse y coordinates for string: {:?}",
+                        coordinates
+                    )
+                })?;
+                // Clamped to the room left in the pane. A component placed with
+                // coordinates is absolute, and the host pads it out to the width it
+                // was given: a full-width run asked for at an indented `x` would
+                // otherwise spill past the right edge, wrap, and - on the bottom row
+                // - scroll the pane's whole frame up by one line underneath the
+                // plugin, which then hit-tests a row off.
+                let width = captures[3]
+                    .parse::<usize>()
+                    .ok()
+                    .map(|width| width.min(self.grid.width.saturating_sub(x)));
+                let height = captures[4]
+                    .parse::<usize>()
+                    .ok()
+                    .map(|height| height.min(self.grid.height.saturating_sub(y)));
+                Ok(Some(Coordinates {
+                    x,
+                    y,
+                    width,
+                    height,
+                }))
+            },
+            _ => Ok(None),
         }
     }
 }

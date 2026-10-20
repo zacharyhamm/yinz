@@ -77,13 +77,12 @@ impl Screen {
                 .tabs
                 .values()
                 .find_map(|tab| tab.get_pane_with_id(PaneId::Terminal(*id)))
+                && let Some(state) = pane.held_for_warp()
             {
-                if let Some(state) = pane.held_for_warp() {
-                    if !supported {
-                        return Err(format!("terminal_{id} ({:?}, held): destination does not support held terminal transfers", pane.current_title()));
-                    }
-                    held.insert(*id, state);
+                if !supported {
+                    return Err(format!("terminal_{id} ({:?}, held): destination does not support held terminal transfers", pane.current_title()));
                 }
+                held.insert(*id, state);
             }
         }
         for id in held.keys() {
@@ -356,18 +355,18 @@ impl Screen {
                 "pane {terminal_id} was released for a warp nobody was waiting on; it is \
              still running and can be recovered with `yinz pty-host adopt <id>`"
             );
-            if let Ok(released) = released {
-                if !matches!(released, ReleasedPane::Held(_)) {
-                    self.bus
-                        .senders
-                        .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
-                            terminal_id,
-                            why: "this pane was moved to another session, but nothing took it"
-                                .to_owned(),
-                            recovery: Some(released.recovery_command()),
-                        })
-                        .non_fatal();
-                }
+            if let Ok(released) = released
+                && !matches!(released, ReleasedPane::Held(_))
+            {
+                self.bus
+                    .senders
+                    .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
+                        terminal_id,
+                        why: "this pane was moved to another session, but nothing took it"
+                            .to_owned(),
+                        recovery: Some(released.recovery_command()),
+                    })
+                    .non_fatal();
             }
         }
         self.finish_held_warp([terminal_id]);
@@ -1080,26 +1079,24 @@ impl Screen {
             }
         }
         for (terminal_id, result) in &released {
-            if let Ok(pane) = result {
-                if let Err(reason) = self.validate_held_release(*terminal_id, pane) {
-                    // Keep every release address until validation finishes: live peers
-                    // before and after this held pane have already been detached.
-                    for (terminal_id, result) in &released {
-                        if let Ok(pane @ (ReleasedPane::Local(_) | ReleasedPane::Remote(_))) =
-                            result
-                        {
-                            self.bus
-                                .senders
-                                .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
-                                    terminal_id: *terminal_id,
-                                    why: reason.clone(),
-                                    recovery: Some(pane.recovery_command()),
-                                })
-                                .non_fatal();
-                        }
+            if let Ok(pane) = result
+                && let Err(reason) = self.validate_held_release(*terminal_id, pane)
+            {
+                // Keep every release address until validation finishes: live peers
+                // before and after this held pane have already been detached.
+                for (terminal_id, result) in &released {
+                    if let Ok(pane @ (ReleasedPane::Local(_) | ReleasedPane::Remote(_))) = result {
+                        self.bus
+                            .senders
+                            .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
+                                terminal_id: *terminal_id,
+                                why: reason.clone(),
+                                recovery: Some(pane.recovery_command()),
+                            })
+                            .non_fatal();
                     }
-                    return Err(reason);
                 }
+                return Err(reason);
             }
         }
         let mut addresses: HashMap<TerminalId, WarpAddress> = HashMap::new();
@@ -1381,13 +1378,13 @@ impl Screen {
             .with_context(err_context)?;
         // A supervisor's replayed exit must override the agent's pre-handoff state.
         // Already-held panes instead restore their metadata after held state below.
-        if payload.held.is_none() {
-            if let Some(agent) = payload.agent.take() {
-                self.bus
-                    .senders
-                    .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
-                    .with_context(err_context)?;
-            }
+        if payload.held.is_none()
+            && let Some(agent) = payload.agent.take()
+        {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
+                .with_context(err_context)?;
         }
         if let Some(exit_status) = child_exit_status {
             let hold_on_close = cmd.hold_on_close;

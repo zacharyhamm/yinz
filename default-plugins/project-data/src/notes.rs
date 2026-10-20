@@ -880,15 +880,13 @@ pub fn plan_set_tags(
 ) -> Result<(Vec<Mutation>, Vec<String>), String> {
     let tags = normalize_tags(tags)?;
     let mut mutations = Vec::new();
-    if guard {
-        if let Some(rev) = crate::store::guarded_rev(expect_rev, note.rev) {
-            mutations.push(
-                Mutation::update("note", Pred::eq("id", note.id))
-                    .expect_rev(rev)
-                    .set("title", note.title.clone())
-                    .build(),
-            );
-        }
+    if guard && let Some(rev) = crate::store::guarded_rev(expect_rev, note.rev) {
+        mutations.push(
+            Mutation::update("note", Pred::eq("id", note.id))
+                .expect_rev(rev)
+                .set("title", note.title.clone())
+                .build(),
+        );
     }
     mutations.push(Mutation::delete("note_tag", Pred::eq("note_id", note.id)));
     mutations.extend(tags.iter().map(|tag| tag_mutation(note.id, tag)));

@@ -641,22 +641,22 @@ impl Display for CharacterStyles {
                 _ => {},
             }
         }
-        if self.styled_underlines_enabled {
-            if let Some(ansi_code) = self.underline_color {
-                match ansi_code {
-                    AnsiCode::RgbCode((r, g, b)) => {
-                        write!(f, "\u{1b}[58:2::{}:{}:{}m", r, g, b)?;
-                    },
-                    AnsiCode::ColorIndex(color_index) => {
-                        write!(f, "\u{1b}[58:5:{}m", color_index)?;
-                    },
-                    AnsiCode::Reset => {
-                        write!(f, "\u{1b}[59m")?;
-                    },
-                    _ => {},
-                }
-            };
-        }
+        if self.styled_underlines_enabled
+            && let Some(ansi_code) = self.underline_color
+        {
+            match ansi_code {
+                AnsiCode::RgbCode((r, g, b)) => {
+                    write!(f, "\u{1b}[58:2::{}:{}:{}m", r, g, b)?;
+                },
+                AnsiCode::ColorIndex(color_index) => {
+                    write!(f, "\u{1b}[58:5:{}m", color_index)?;
+                },
+                AnsiCode::Reset => {
+                    write!(f, "\u{1b}[59m")?;
+                },
+                _ => {},
+            }
+        };
         if let Some(ansi_code) = self.strike {
             match ansi_code {
                 AnsiCode::On => {

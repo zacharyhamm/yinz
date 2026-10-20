@@ -12,7 +12,7 @@ use yinz_types::plugin_data::*;
 /// Takes a pattern rather than a variant so that a test which accepts either of two errors can say
 /// so: `assert_err!(err, DataError::InvalidName(_) | DataError::InvalidQuery(_))`.
 macro_rules! assert_err {
-    ($err:expr, $($pattern:tt)+) => {
+    ($err:expr_2021, $($pattern:tt)+) => {
         assert!(
             matches!($err, $($pattern)+),
             "expected {}, got {:?}",

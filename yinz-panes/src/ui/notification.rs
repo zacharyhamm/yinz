@@ -116,10 +116,8 @@ pub fn notification_lines_capped(text: &str, width: usize, max_rows: usize) -> V
         }
     }
 
-    if overflowed {
-        if let Some(last) = rows.last_mut() {
-            *last = ellipsize(last, text_width);
-        }
+    if overflowed && let Some(last) = rows.last_mut() {
+        *last = ellipsize(last, text_width);
     }
     if rows.is_empty() {
         rows.push(String::new());

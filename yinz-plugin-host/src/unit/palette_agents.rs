@@ -354,7 +354,8 @@ fn palette_current_directory_and_fresh_duplicate_targets() {
     }
     let (repo, data) = repository();
     let storage = tempfile::tempdir().unwrap();
-    std::env::set_var("XDG_DATA_HOME", storage.path());
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("XDG_DATA_HOME", storage.path()) };
     let metadata = yinz_runtime::home::xdg_data_dir()
         .join("bubblewrap/environments")
         .join(yinz_config::project_config::root_key(

@@ -360,51 +360,58 @@ impl Screen {
                 },
             );
         }
-        if let Some((_, mut state)) = self.note_edit_palettes.remove(&token) {
-            if self.active_tab_ids.get(&client) != Some(&state.context.tab_id)
-                || !self.tabs.contains_key(&state.context.tab_id)
-                || self.command_palettes.contains_key(&client)
-            {
-                self.dismiss_plugin_palette(client, &mut state);
-                self.release_palette_input(client);
-                if let Err(error) = result {
-                    log::error!("{error}");
+        match self.note_edit_palettes.remove(&token) {
+            Some((_, mut state)) => {
+                if self.active_tab_ids.get(&client) != Some(&state.context.tab_id)
+                    || !self.tabs.contains_key(&state.context.tab_id)
+                    || self.command_palettes.contains_key(&client)
+                {
+                    self.dismiss_plugin_palette(client, &mut state);
+                    self.release_palette_input(client);
+                    if let Err(error) = result {
+                        log::error!("{error}");
+                    }
+                    return;
                 }
-                return;
-            }
-            if result == Ok(true) {
-                state.widget.clear_searches();
-            }
-            state.notes.recovery = result.err();
-            state.widget.busy = false;
-            self.command_palettes.insert(client, state);
-            self.bus
-                .senders
-                .send_to_server(ServerInstruction::SetCommandPaletteOpen(client, true))
-                .context("restoring note search input")
-                .non_fatal();
-            if self.command_palettes.len() == 1 {
+                if result == Ok(true) {
+                    state.widget.clear_searches();
+                }
+                state.notes.recovery = result.err();
+                state.widget.busy = false;
+                self.command_palettes.insert(client, state);
                 self.bus
                     .senders
-                    .send_to_background_jobs(
-                        yinz_bus::background_jobs::BackgroundJob::WatchCommandPaletteSessions(true),
-                    )
-                    .context("restoring palette session watch")
+                    .send_to_server(ServerInstruction::SetCommandPaletteOpen(client, true))
+                    .context("restoring note search input")
                     .non_fatal();
-            }
-            self.refresh_note_search(client, false);
-        } else if let Some(state) = self
-            .command_palettes
-            .get_mut(&client)
-            .filter(|state| state.notes.accepts(token, revision))
-        {
-            state.notes.cancel();
-            state.widget.busy = false;
-            if let Err(error) = result {
-                state.widget.set_error(error);
-            }
-        } else if let Err(error) = result {
-            log::error!("{error}");
+                if self.command_palettes.len() == 1 {
+                    self.bus
+                        .senders
+                        .send_to_background_jobs(
+                            yinz_bus::background_jobs::BackgroundJob::WatchCommandPaletteSessions(
+                                true,
+                            ),
+                        )
+                        .context("restoring palette session watch")
+                        .non_fatal();
+                }
+                self.refresh_note_search(client, false);
+            },
+            _ => {
+                if let Some(state) = self
+                    .command_palettes
+                    .get_mut(&client)
+                    .filter(|state| state.notes.accepts(token, revision))
+                {
+                    state.notes.cancel();
+                    state.widget.busy = false;
+                    if let Err(error) = result {
+                        state.widget.set_error(error);
+                    }
+                } else if let Err(error) = result {
+                    log::error!("{error}");
+                }
+            },
         }
     }
 }

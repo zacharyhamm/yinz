@@ -40,13 +40,14 @@ impl Screen {
         let tab = self.tabs.get_mut(&source)?;
         let original = tab.placement_for_extraction(pane_id);
         let respawn = tab.take_pending_respawn(pane_id);
-        if let Some(pane) = tab.extract_pane(pane_id, true) {
-            Some((source, original, pane, respawn))
-        } else {
-            if let Some(entry) = respawn {
-                tab.restore_pending_respawn(pane_id, entry);
-            }
-            None
+        match tab.extract_pane(pane_id, true) {
+            Some(pane) => Some((source, original, pane, respawn)),
+            _ => {
+                if let Some(entry) = respawn {
+                    tab.restore_pending_respawn(pane_id, entry);
+                }
+                None
+            },
         }
     }
 
@@ -102,10 +103,10 @@ impl Screen {
                         "Tab {tab_id} had no room for pane {pane_id:?}; returned it to tab {source_tab_id}"
                     );
                     outcome.returned_to_source.push(pane_id);
-                    if let Some(entry) = carried_respawn {
-                        if let Some(source) = self.get_tab_by_id_mut(source_tab_id) {
-                            source.restore_pending_respawn(pane_id, entry);
-                        }
+                    if let Some(entry) = carried_respawn
+                        && let Some(source) = self.get_tab_by_id_mut(source_tab_id)
+                    {
+                        source.restore_pending_respawn(pane_id, entry);
                     }
                 },
                 AcceptedPane::NoRoom(..) | AcceptedPane::LostInAdd => {
@@ -202,10 +203,10 @@ impl Screen {
                 tiled_panes_layout.ignore_run_instruction(active_pane_run_instruction.clone());
             },
         }
-        if let Some(entry) = carried_respawn {
-            if let Some(tab) = self.tabs.get_mut(&tab_index) {
-                tab.restore_pending_respawn(active_pane_id, entry);
-            }
+        if let Some(entry) = carried_respawn
+            && let Some(tab) = self.tabs.get_mut(&tab_index)
+        {
+            tab.restore_pending_respawn(active_pane_id, entry);
         }
         let should_change_focus_to_new_tab = true;
         self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
@@ -248,11 +249,16 @@ impl Screen {
                 let carried_respawn = tab.take_pending_respawn(pane_id);
                 // here we pass None instead of the client_id we have because we do not need to
                 // necessarily trigger a relayout for this tab
-                if let Some(pane) = tab.extract_pane(pane_id, true) {
-                    extracted_panes.push((placement, pane, carried_respawn));
-                    break;
-                } else if let Some(entry) = carried_respawn {
-                    tab.restore_pending_respawn(pane_id, entry);
+                match tab.extract_pane(pane_id, true) {
+                    Some(pane) => {
+                        extracted_panes.push((placement, pane, carried_respawn));
+                        break;
+                    },
+                    _ => {
+                        if let Some(entry) = carried_respawn {
+                            tab.restore_pending_respawn(pane_id, entry);
+                        }
+                    },
                 }
             }
         }
@@ -582,10 +588,13 @@ impl Screen {
                 source.placement_for_extraction(pane_id)
             };
             let source = source.id;
-            if let Some(pane) = self.extract_pane_for_transfer(source, pane_id) {
-                extracted.push((pane, destination_placement));
-            } else {
-                outcome.not_found.push(pane_id);
+            match self.extract_pane_for_transfer(source, pane_id) {
+                Some(pane) => {
+                    extracted.push((pane, destination_placement));
+                },
+                _ => {
+                    outcome.not_found.push(pane_id);
+                },
             }
         }
 
@@ -595,11 +604,11 @@ impl Screen {
         outcome.closed = transferred.closed;
 
         // focus last, so the destination renders with the panes already in it
-        if should_change_focus_to_target_tab {
-            if let Some(position) = self.get_tab_position_by_id(tab_id) {
-                self.switch_active_tab(position, None, true, client_id)
-                    .with_context(err_context)?;
-            }
+        if should_change_focus_to_target_tab
+            && let Some(position) = self.get_tab_position_by_id(tab_id)
+        {
+            self.switch_active_tab(position, None, true, client_id)
+                .with_context(err_context)?;
         }
         self.log_and_report_session_state()?;
         Ok(outcome)

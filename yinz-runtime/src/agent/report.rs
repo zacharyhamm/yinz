@@ -17,12 +17,11 @@ pub fn validate_report(report: &AgentReport) -> Result<()> {
     if uuid::Uuid::parse_str(&report.report_id).is_err() {
         return Err(anyhow!("invalid report id"));
     }
-    if let Some(event) = &report.event {
-        if report.pane_id != PaneId::Terminal(event.pane_id)
-            || event.raw.len() > super::HOOK_BROADCAST_MAX_BYTES
-        {
-            return Err(anyhow!("invalid report event target or size"));
-        }
+    if let Some(event) = &report.event
+        && (report.pane_id != PaneId::Terminal(event.pane_id)
+            || event.raw.len() > super::HOOK_BROADCAST_MAX_BYTES)
+    {
+        return Err(anyhow!("invalid report event target or size"));
     }
     Ok(())
 }
@@ -145,10 +144,9 @@ fn append_diagnostic(line: &str) {
         .mode(0o600)
         .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
         .open(&*crate::consts::YINZ_TMP_LOG_FILE)
+        && file.metadata().map(|m| m.is_file()).unwrap_or(false)
     {
-        if file.metadata().map(|m| m.is_file()).unwrap_or(false) {
-            let _ = file.write_all(line.as_bytes());
-        }
+        let _ = file.write_all(line.as_bytes());
     }
 }
 

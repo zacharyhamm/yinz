@@ -240,10 +240,10 @@ fn permission_input(
     };
     // The prompt's own metadata is kept when it already names what the tool summary
     // reads; an empty or unrelated object is not allowed to hide the title behind it.
-    if let Some(Value::Object(fields)) = metadata {
-        if key.map_or(!fields.is_empty(), |key| fields.contains_key(key)) {
-            return metadata.cloned();
-        }
+    if let Some(Value::Object(fields)) = metadata
+        && key.map_or(!fields.is_empty(), |key| fields.contains_key(key))
+    {
+        return metadata.cloned();
     }
     let title = title.and_then(Value::as_str).filter(|t| !t.is_empty())?;
     match key {

@@ -1140,13 +1140,13 @@ fn install_opencode(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
 /// copy reports nothing, which is why the install never has to say "choose one".
 fn install_pi(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
     let extension = pi_extension(yinz);
-    if let Some(existing) = read_generated(&files.script)? {
-        if !existing.contains(yinz_runtime::agent::pi::PI_EXTENSION_MARKER) {
-            return Err(anyhow!(
-                "{} exists and was not written by yinz; move it aside first",
-                files.script.display()
-            ));
-        }
+    if let Some(existing) = read_generated(&files.script)?
+        && !existing.contains(yinz_runtime::agent::pi::PI_EXTENSION_MARKER)
+    {
+        return Err(anyhow!(
+            "{} exists and was not written by yinz; move it aside first",
+            files.script.display()
+        ));
     }
     if dry_run {
         println!("would write {}:\n", files.script.display());
@@ -2261,7 +2261,8 @@ mod tests {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
-        std::env::set_var("CLAUDE_CONFIG_DIR", temp.path());
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", temp.path()) };
         let files = Files::resolve(HookAgent::Claude, false, None).unwrap();
         assert_eq!(files.script, temp.path().join("yinz").join(MARKER));
         assert_eq!(files.user_settings, temp.path().join("settings.json"));

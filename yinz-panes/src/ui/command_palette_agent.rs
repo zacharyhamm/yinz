@@ -463,19 +463,19 @@ impl AgentView {
             self.total = lines.len();
             if self.following {
                 self.offset = self.total.saturating_sub(page);
-            } else if let Some((revision, line)) = self.anchor {
-                if let Some(i) = self.events.iter().position(|e| e.data.revision == revision) {
-                    self.offset =
-                        self.spans[i].start + line.min(self.spans[i].len().saturating_sub(1));
-                }
+            } else if let Some((revision, line)) = self.anchor
+                && let Some(i) = self.events.iter().position(|e| e.data.revision == revision)
+            {
+                self.offset = self.spans[i].start + line.min(self.spans[i].len().saturating_sub(1));
             }
-            if self.reveal && !self.following {
-                if let Some(span) = self.spans.get(self.selected) {
-                    if span.start < self.offset || span.start >= self.offset + page {
-                        self.offset = span.start;
-                    } else if span.end > self.offset + page {
-                        self.offset = span.end.saturating_sub(page).min(span.start);
-                    }
+            if self.reveal
+                && !self.following
+                && let Some(span) = self.spans.get(self.selected)
+            {
+                if span.start < self.offset || span.start >= self.offset + page {
+                    self.offset = span.start;
+                } else if span.end > self.offset + page {
+                    self.offset = span.end.saturating_sub(page).min(span.start);
                 }
             }
             self.offset = self.offset.min(self.total.saturating_sub(page));

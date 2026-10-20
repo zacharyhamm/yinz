@@ -108,7 +108,8 @@ fn account_for_races_in_snapshot(snapshot: String) -> String {
     // single-digit day consumes the extra alignment space and preserves the line's width.
     let clock =
         Regex::new(r"(?m)( *\d{2}:\d{2}  [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2})( *)$").unwrap();
-    let snapshot = clock
+
+    clock
         .replace_all(&snapshot, |captures: &regex::Captures| {
             format!(
                 "{:>width$}{}",
@@ -117,9 +118,7 @@ fn account_for_races_in_snapshot(snapshot: String) -> String {
                 width = captures[1].len()
             )
         })
-        .to_string();
-
-    snapshot
+        .to_string()
 }
 
 // All the E2E tests are marked as "ignored" so that they can be run separately from the normal

@@ -122,19 +122,18 @@ impl Screen {
             browser.expanded,
             browser.first,
         )?;
-        if !entries.is_empty() {
-            if let Some(entry) = layout
+        if !entries.is_empty()
+            && let Some(entry) = layout
                 .entries
                 .iter_mut()
                 .find(|entry| entry.index == selected)
-            {
-                // Keep both one-column viewport margins without changing width or wrapping.
-                let shift = viewport.cols.saturating_sub(layout.width + 2).min(2);
-                if self.notification_position.is_left() {
-                    entry.x += shift;
-                } else {
-                    entry.x -= shift;
-                }
+        {
+            // Keep both one-column viewport margins without changing width or wrapping.
+            let shift = viewport.cols.saturating_sub(layout.width + 2).min(2);
+            if self.notification_position.is_left() {
+                entry.x += shift;
+            } else {
+                entry.x -= shift;
             }
         }
         Some(BrowserFrame {
@@ -371,10 +370,10 @@ impl Screen {
             && !event.alt
             && !event.ctrl;
         if is_plain_left_press {
-            if let Some(id) = frame.ids.get(hit.index).copied() {
-                if let Some(browser) = self.notification_browsers.get_mut(&client_id) {
-                    browser.selected = Some(id);
-                }
+            if let Some(id) = frame.ids.get(hit.index).copied()
+                && let Some(browser) = self.notification_browsers.get_mut(&client_id)
+            {
+                browser.selected = Some(id);
             }
             self.activate_selected_notification(client_id, now);
         }

@@ -417,14 +417,14 @@ impl StdinAnsiParser {
                     } else if let Some(reply) = HostReply::from_osc_payload(&payload) {
                         out.replies.push(reply);
                     }
-                    if payload.starts_with(b"52;") {
-                        if let Some(slot) = self.active_clipboard_forward.take() {
-                            let mut bytes = b"\x1b]".to_vec();
-                            bytes.extend_from_slice(&payload);
-                            bytes.extend_from_slice(b"\x1b\\");
-                            out.completed_clipboard_forward = Some((slot.token, bytes));
-                            continue;
-                        }
+                    if payload.starts_with(b"52;")
+                        && let Some(slot) = self.active_clipboard_forward.take()
+                    {
+                        let mut bytes = b"\x1b]".to_vec();
+                        bytes.extend_from_slice(&payload);
+                        bytes.extend_from_slice(b"\x1b\\");
+                        out.completed_clipboard_forward = Some((slot.token, bytes));
+                        continue;
                     }
                     if let Some(slot) = self.active_forward.as_mut() {
                         // Re-serialize so the pane's pty sees a legal OSC.
@@ -484,10 +484,9 @@ impl StdinAnsiParser {
                     if self.active_clipboard_forward.is_some()
                         && is_user_input(&other)
                         && out.completed_clipboard_forward.is_none()
+                        && let Some(slot) = self.active_clipboard_forward.take()
                     {
-                        if let Some(slot) = self.active_clipboard_forward.take() {
-                            out.completed_clipboard_forward = Some((slot.token, Vec::new()));
-                        }
+                        out.completed_clipboard_forward = Some((slot.token, Vec::new()));
                     }
                 },
             }
@@ -696,13 +695,15 @@ impl StdinAnsiParser {
                 i += 1;
                 continue;
             }
-            if rest.len() >= 2 && rest[0] == 0x1b && rest[1] == b'[' {
-                if let MarkerMatch::Complete = marker_match(rest, PASTE_START_MARKER) {
-                    out.extend_from_slice(PASTE_START_MARKER);
-                    self.in_bracketed_paste = true;
-                    i += PASTE_START_MARKER.len();
-                    continue;
-                }
+            if rest.len() >= 2
+                && rest[0] == 0x1b
+                && rest[1] == b'['
+                && let MarkerMatch::Complete = marker_match(rest, PASTE_START_MARKER)
+            {
+                out.extend_from_slice(PASTE_START_MARKER);
+                self.in_bracketed_paste = true;
+                i += PASTE_START_MARKER.len();
+                continue;
             }
             // OSC: ESC ] ... (BEL | ESC \)
             if rest.len() >= 2 && rest[0] == 0x1b && rest[1] == b']' {

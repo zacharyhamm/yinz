@@ -344,19 +344,18 @@ fn command_cwd(
     default_to_plugin_cwd: bool,
 ) -> Option<PathBuf> {
     if command.target.is_remote() {
-        if let Some(cwd) = command.cwd.as_deref() {
-            if ["/host", "/data", "/cache"]
+        if let Some(cwd) = command.cwd.as_deref()
+            && ["/host", "/data", "/cache"]
                 .iter()
                 .any(|mount| cwd.starts_with(mount))
-            {
-                Err::<(), _>(anyhow!(
-                    "plugin {} sent the plugin-mount path {} as the cwd of a remote command; \
+        {
+            Err::<(), _>(anyhow!(
+                "plugin {} sent the plugin-mount path {} as the cwd of a remote command; \
                      remote cwds are paths on the remote machine",
-                    env.name(),
-                    cwd.display()
-                ))
-                .non_fatal();
-            }
+                env.name(),
+                cwd.display()
+            ))
+            .non_fatal();
         }
         command.cwd.clone()
     } else {
@@ -416,23 +415,22 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         );
                     },
                     yinz_types::command_palette::Command::Reply { result, .. } => {
-                        if let Ok(reply) = result {
-                            if let Err(error) = reply.validate() {
-                                env.senders
-                                    .send_to_plugin(PluginInstruction::PluginPalette(
-                                        yinz_bus::command_palette::Delivery {
-                                            owner: owner.clone(),
-                                            client: env.client_id,
-                                            message:
-                                                yinz_types::command_palette::Message::Release {
-                                                    handles: reply.handles(),
-                                                },
-                                            active: None,
+                        if let Ok(reply) = result
+                            && let Err(error) = reply.validate()
+                        {
+                            env.senders
+                                .send_to_plugin(PluginInstruction::PluginPalette(
+                                    yinz_bus::command_palette::Delivery {
+                                        owner: owner.clone(),
+                                        client: env.client_id,
+                                        message: yinz_types::command_palette::Message::Release {
+                                            handles: reply.handles(),
                                         },
-                                    ))
-                                    .context("releasing invalid palette reply")?;
-                                *result = Err(error);
-                            }
+                                        active: None,
+                                    },
+                                ))
+                                .context("releasing invalid palette reply")?;
+                            *result = Err(error);
                         }
                         if let Err(error) = result {
                             *error = error
@@ -557,13 +555,11 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 let mut request: yinz_types::agent::control::AgentRequest =
                     serde_json::from_str(&request).context("decode agent request")?;
                 if let yinz_types::agent::control::AgentRequest::SpawnNewProject {
-                    destination,
-                    ..
+                    destination, ..
                 } = &mut request
+                    && destination.is_relative()
                 {
-                    if destination.is_relative() {
-                        *destination = translate_plugin_path(env, destination.clone());
-                    }
+                    *destination = translate_plugin_path(env, destination.clone());
                 }
                 if let yinz_types::agent::control::AgentRequest::Spawn {
                     cwd,
@@ -572,10 +568,10 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     ..
                 } = &mut request
                 {
-                    if remote_host.is_none() {
-                        if let Some(path) = cwd.as_mut().filter(|path| path.is_relative()) {
-                            *path = translate_plugin_path(env, path.clone());
-                        }
+                    if remote_host.is_none()
+                        && let Some(path) = cwd.as_mut().filter(|path| path.is_relative())
+                    {
+                        *path = translate_plugin_path(env, path.clone());
                     }
                     if cwd.is_none() && project.is_none() && remote_host.is_none() {
                         *cwd = Some(env.plugin_cwd.clone());
@@ -3926,10 +3922,10 @@ struct PreparedCheckout {
 impl PreparedCheckout {
     fn agent_command(&self, spec: &AgentSpawnSpec) -> Result<CommandToRun, String> {
         let mut spec = spec.clone();
-        if self.reused_worktree {
-            if let Some(prompt) = spec.reuse_prompt.take() {
-                spec.prompt = Some(prompt);
-            }
+        if self.reused_worktree
+            && let Some(prompt) = spec.reuse_prompt.take()
+        {
+            spec.prompt = Some(prompt);
         }
         yinz_runtime::agent::launch::plan(&spec).map(|(command, _)| command)
     }
@@ -4352,13 +4348,13 @@ fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
                     branch: None,
                 });
             }
-        } else if let Some(reference) = line.strip_prefix("branch ") {
-            if let Some(worktree) = worktrees.last_mut() {
-                worktree.branch = reference
-                    .strip_prefix("refs/heads/")
-                    .filter(|branch| !branch.is_empty())
-                    .map(str::to_owned);
-            }
+        } else if let Some(reference) = line.strip_prefix("branch ")
+            && let Some(worktree) = worktrees.last_mut()
+        {
+            worktree.branch = reference
+                .strip_prefix("refs/heads/")
+                .filter(|branch| !branch.is_empty())
+                .map(str::to_owned);
         }
     }
     worktrees
@@ -4985,10 +4981,9 @@ fn register_default_keybindings(env: &PluginEnv, keybindings: String) -> Result<
                     plugin_id,
                     ..
                 } = action
+                    && name.starts_with("__yinz_default_keybinding:")
                 {
-                    if name.starts_with("__yinz_default_keybinding:") {
-                        *plugin_id = Some(env.plugin_id);
-                    }
+                    *plugin_id = Some(env.plugin_id);
                 }
             }
             keys_to_rebind.push((mode, key, actions));
@@ -5468,14 +5463,12 @@ fn delete_all_dead_sessions() -> Result<()> {
     let mut live_sessions = vec![];
     if let Ok(files) = std::fs::read_dir(&*YINZ_SOCK_DIR) {
         files.for_each(|file| {
-            if let Ok(file) = file {
-                if let Ok(file_name) = file.file_name().into_string() {
-                    if is_ipc_socket(&file.file_type().unwrap())
-                        && is_session_socket_name(&file_name)
-                    {
-                        live_sessions.push(SessionName::new(file_name));
-                    }
-                }
+            if let Ok(file) = file
+                && let Ok(file_name) = file.file_name().into_string()
+                && is_ipc_socket(&file.file_type().unwrap())
+                && is_session_socket_name(&file_name)
+            {
+                live_sessions.push(SessionName::new(file_name));
             }
         });
     }
@@ -7552,12 +7545,10 @@ fn fs_write(
         FsPathResolution::FollowSymlink,
     )
     .and_then(|real| {
-        if create_dirs {
-            if let Some(parent) = real.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create the folders above '{}'", path.display())
-                })?;
-            }
+        if create_dirs && let Some(parent) = real.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create the folders above '{}'", path.display())
+            })?;
         }
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -9117,13 +9108,11 @@ pub(crate) fn check_command_permission(
     if matches!(
         command,
         PluginCommand::SaveLayout { .. } | PluginCommand::RenameLayout { .. }
-    ) {
-        if let Some(permission) = LAYOUT_FILE_PERMISSIONS
-            .into_iter()
-            .find(|permission| !has_permission(plugin_env, *permission))
-        {
-            return (PermissionStatus::Denied, Some(permission));
-        }
+    ) && let Some(permission) = LAYOUT_FILE_PERMISSIONS
+        .into_iter()
+        .find(|permission| !has_permission(plugin_env, *permission))
+    {
+        return (PermissionStatus::Denied, Some(permission));
     }
     let children: &[yinz_types::multipane::MultipaneChild] = match command {
         PluginCommand::CreateMultipane(request) => &request.children,
@@ -9163,10 +9152,10 @@ pub(crate) fn check_command_permission(
         return (PermissionStatus::Granted, None);
     };
 
-    if let Some(permissions) = plugin_env.permissions.lock().unwrap().as_ref() {
-        if permissions.contains(&permission) {
-            return (PermissionStatus::Granted, None);
-        }
+    if let Some(permissions) = plugin_env.permissions.lock().unwrap().as_ref()
+        && permissions.contains(&permission)
+    {
+        return (PermissionStatus::Granted, None);
     }
 
     (PermissionStatus::Denied, Some(permission))

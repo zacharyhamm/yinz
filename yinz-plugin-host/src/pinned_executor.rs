@@ -368,14 +368,13 @@ impl PinnedExecutor {
                         let Some((tag, enqueued_at, work)) = pending.remove(index) else {
                             continue;
                         };
-                        if tag.is_input {
-                            if let Some(count) = pending_input_jobs.get_mut(&tag.plugin_id) {
+                        if tag.is_input
+                            && let Some(count) = pending_input_jobs.get_mut(&tag.plugin_id) {
                                 *count -= 1;
                                 if *count == 0 {
                                     pending_input_jobs.remove(&tag.plugin_id);
                                 }
                             }
-                        }
                         let waited = enqueued_at.elapsed();
                         if tag.is_input && waited >= INPUT_WAIT_WARNING {
                             log::info!(

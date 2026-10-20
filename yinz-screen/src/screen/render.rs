@@ -106,15 +106,14 @@ impl Screen {
         if connected_clients.len() == 1
             && self.watcher_clients.is_empty()
             && self.pane_render_subscribers.is_empty()
+            && let Some(&client) = connected_clients.iter().next()
         {
-            if let Some(&client) = connected_clients.iter().next() {
-                let blocked = self.client_render_is_blocked(client, ready);
-                if !blocked {
-                    self.deferred_subscriber_renders = false;
-                    return &self.deferred_render_tabs;
-                }
-                blocked_client = Some(client);
+            let blocked = self.client_render_is_blocked(client, ready);
+            if !blocked {
+                self.deferred_subscriber_renders = false;
+                return &self.deferred_render_tabs;
             }
+            blocked_client = Some(client);
         }
         let mut known = HashMap::new();
         if let Some(client) = blocked_client {
@@ -271,10 +270,10 @@ impl Screen {
             // removed. Narrowed to the panes actually overlapping the damage, and empty on every
             // frame where the toasts only grew, so an arriving toast costs nothing.
             for (tab_id, damage) in self.prepare_notification_damage(now, surface) {
-                if let Some(tab_id) = tab_id {
-                    if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                        tab.force_render_panes_intersecting(&damage);
-                    }
+                if let Some(tab_id) = tab_id
+                    && let Some(tab) = self.tabs.get_mut(&tab_id)
+                {
+                    tab.force_render_panes_intersecting(&damage);
                 }
             }
 
@@ -577,148 +576,144 @@ impl Screen {
         // === PHASE 2: Render for watchers ===
         if has_watchers
             && watched_tab_id.is_some_and(|tab_id| !self.deferred_render_tabs.contains(&tab_id))
-        {
-            if let (Some(followed_client_id), Some(focused_tab_index_of_followed_client_id)) =
+            && let (Some(followed_client_id), Some(focused_tab_index_of_followed_client_id)) =
                 (self.followed_client_id, watched_tab_id)
-            {
-                // Create fresh output for watchers
-                let mut watcher_output = Output::new(
-                    self.sixel_image_store.clone(),
-                    self.character_cell_size.clone(),
-                    self.styled_underlines,
-                    self.osc8_hyperlinks,
-                    self.kitty_image_store.clone(),
-                    self.kitty_host_capabilities.clone(),
-                    self.client_kitty_host_state.clone(),
-                    self.sixel_host_capabilities.clone(),
-                    self.synchronized_output_capabilities.clone(),
+        {
+            // Create fresh output for watchers
+            let mut watcher_output = Output::new(
+                self.sixel_image_store.clone(),
+                self.character_cell_size.clone(),
+                self.styled_underlines,
+                self.osc8_hyperlinks,
+                self.kitty_image_store.clone(),
+                self.kitty_host_capabilities.clone(),
+                self.client_kitty_host_state.clone(),
+                self.sixel_host_capabilities.clone(),
+                self.synchronized_output_capabilities.clone(),
+            );
+
+            // This frame carries the followed client's id but goes to the watchers' terminals,
+            // so what that client's host can do says nothing about it. One stream serves every
+            // watcher, so anything short of unanimity keeps hiding the cursor while the frame
+            // paints: a hide nobody needed costs a `?25h`, a missing one is a cursor visibly
+            // chasing the repaint.
+            let every_watcher_presents_frames_atomically = {
+                let capabilities = self.synchronized_output_capabilities.borrow();
+                self.watcher_clients
+                    .keys()
+                    .all(|watcher_id| capabilities.get(watcher_id).copied().unwrap_or(false))
+            };
+            watcher_output
+                .set_host_presents_frames_atomically(every_watcher_presents_frames_atomically);
+
+            let any_watcher_needs_force_render = self
+                .watcher_clients
+                .values()
+                .any(|state| state.should_force_render());
+
+            // A watcher is watching a particular client's screen, so it sees that client's
+            // menu too - otherwise the watcher would see a pane the followed user is plainly
+            // interacting with and no sign of what they are interacting with it through.
+            let watcher_surface =
+                self.session_surface_for_tab(focused_tab_index_of_followed_client_id);
+            // Before the tab renders, for the reason the regular path gives: the cursor this
+            // output places is the followed client's, and it must not be placed on a cell that
+            // client's own menu is about to cover.
+            if let Some(watcher_surface) = watcher_surface {
+                watcher_output.set_context_menu_rects(
+                    self.context_menu_cell_rects(&[followed_client_id], watcher_surface),
                 );
-
-                // This frame carries the followed client's id but goes to the watchers' terminals,
-                // so what that client's host can do says nothing about it. One stream serves every
-                // watcher, so anything short of unanimity keeps hiding the cursor while the frame
-                // paints: a hide nobody needed costs a `?25h`, a missing one is a cursor visibly
-                // chasing the repaint.
-                let every_watcher_presents_frames_atomically = {
-                    let capabilities = self.synchronized_output_capabilities.borrow();
-                    self.watcher_clients
-                        .keys()
-                        .all(|watcher_id| capabilities.get(watcher_id).copied().unwrap_or(false))
-                };
-                watcher_output
-                    .set_host_presents_frames_atomically(every_watcher_presents_frames_atomically);
-
-                let any_watcher_needs_force_render = self
+            }
+            watcher_output.set_input_overlay_clients(
+                self.command_palettes
+                    .keys()
+                    .copied()
+                    .filter(|client| self.palette_owns_input(*client)),
+            );
+            if let Some(tab) = self
+                .tabs
+                .get_mut(&focused_tab_index_of_followed_client_id)
+                .as_mut()
+            {
+                let repaint_whole = any_watcher_needs_force_render
+                    || replay_clear
+                    || tab.should_clear_display_before_rendering();
+                if repaint_whole {
+                    // A watcher about to be repainted whole has not necessarily seen this
+                    // screen before - it may have just attached, resized, or changed which
+                    // client it follows, none of which the tab's memo (which is keyed by the
+                    // followed client, one entry for every watcher) can tell apart. State the
+                    // cursor from scratch for it.
+                    tab.forget_watcher_host_cursor_state(followed_client_id);
+                    tab.set_force_render();
+                    // A forced pane repaint cannot erase overlays outside the panes.
+                    watcher_output
+                        .add_pre_vte_instruction_to_client(followed_client_id, "\u{1b}[m\u{1b}[2J");
+                    watcher_output.mark_host_display_cleared_for_client(followed_client_id);
+                } else {
+                    tab.prepare_margin_replay(&replay_margin_damage);
+                    if replay_boundaries {
+                        tab.invalidate_boundaries(followed_client_id);
+                    }
+                    for pane_id in &replay_contents {
+                        if let Some(pane) = tab.get_pane_with_id_mut(*pane_id) {
+                            pane.prepare_content_replay(followed_client_id);
+                        }
+                    }
+                    for pane_id in &replay_frames {
+                        if let Some(pane) = tab.get_pane_with_id_mut(*pane_id) {
+                            pane.invalidate_frame(followed_client_id);
+                        }
+                    }
+                }
+                // A watcher whose last frame ended in a serialization-time `?25l` has a host
+                // cursor the memo does not describe: it is down, and the goto that "placed" it
+                // was clamped to that watcher's edge. Say so before the cursor pass, so the
+                // frame that brings the cursor back into range is itself the frame that says
+                // `?25h` and where - rather than a goto to an already-hidden cursor, with the
+                // correction deferred to a frame nothing will schedule.
+                //
+                // Stated whatever this frame is about to do, rather than only when the cursor
+                // is coming back: where it will land is not knowable here, since `render_panes`
+                // may still groupify a stack and move the active pane out from under it. A
+                // frame that is still cropped pays a `?25h` and a goto that the `?25l` appended
+                // after them undoes - and only ever on a host that presents frames atomically,
+                // which is the only kind that can reach this at all: a watcher whose frame is
+                // painted incrementally has its cursor hidden for the frame, which makes
+                // `must_show` true on its own.
+                let a_watchers_cursor_was_cropped = self
                     .watcher_clients
                     .values()
-                    .any(|state| state.should_force_render());
-
-                // A watcher is watching a particular client's screen, so it sees that client's
-                // menu too - otherwise the watcher would see a pane the followed user is plainly
-                // interacting with and no sign of what they are interacting with it through.
-                let watcher_surface =
-                    self.session_surface_for_tab(focused_tab_index_of_followed_client_id);
-                // Before the tab renders, for the reason the regular path gives: the cursor this
-                // output places is the followed client's, and it must not be placed on a cell that
-                // client's own menu is about to cover.
-                if let Some(watcher_surface) = watcher_surface {
-                    watcher_output.set_context_menu_rects(
-                        self.context_menu_cell_rects(&[followed_client_id], watcher_surface),
-                    );
+                    .any(|watcher_state| watcher_state.cursor_was_cropped());
+                if a_watchers_cursor_was_cropped {
+                    tab.mark_watcher_host_cursor_cropped(followed_client_id);
                 }
-                watcher_output.set_input_overlay_clients(
-                    self.command_palettes
-                        .keys()
-                        .copied()
-                        .filter(|client| self.palette_owns_input(*client)),
-                );
-                if let Some(tab) = self
-                    .tabs
-                    .get_mut(&focused_tab_index_of_followed_client_id)
-                    .as_mut()
-                {
-                    let repaint_whole = any_watcher_needs_force_render
-                        || replay_clear
-                        || tab.should_clear_display_before_rendering();
-                    if repaint_whole {
-                        // A watcher about to be repainted whole has not necessarily seen this
-                        // screen before - it may have just attached, resized, or changed which
-                        // client it follows, none of which the tab's memo (which is keyed by the
-                        // followed client, one entry for every watcher) can tell apart. State the
-                        // cursor from scratch for it.
-                        tab.forget_watcher_host_cursor_state(followed_client_id);
-                        tab.set_force_render();
-                        // A forced pane repaint cannot erase overlays outside the panes.
-                        watcher_output.add_pre_vte_instruction_to_client(
-                            followed_client_id,
-                            "\u{1b}[m\u{1b}[2J",
-                        );
-                        watcher_output.mark_host_display_cleared_for_client(followed_client_id);
-                    } else {
-                        tab.prepare_margin_replay(&replay_margin_damage);
-                        if replay_boundaries {
-                            tab.invalidate_boundaries(followed_client_id);
-                        }
-                        for pane_id in &replay_contents {
-                            if let Some(pane) = tab.get_pane_with_id_mut(*pane_id) {
-                                pane.prepare_content_replay(followed_client_id);
-                            }
-                        }
-                        for pane_id in &replay_frames {
-                            if let Some(pane) = tab.get_pane_with_id_mut(*pane_id) {
-                                pane.invalidate_frame(followed_client_id);
-                            }
-                        }
-                    }
-                    // A watcher whose last frame ended in a serialization-time `?25l` has a host
-                    // cursor the memo does not describe: it is down, and the goto that "placed" it
-                    // was clamped to that watcher's edge. Say so before the cursor pass, so the
-                    // frame that brings the cursor back into range is itself the frame that says
-                    // `?25h` and where - rather than a goto to an already-hidden cursor, with the
-                    // correction deferred to a frame nothing will schedule.
-                    //
-                    // Stated whatever this frame is about to do, rather than only when the cursor
-                    // is coming back: where it will land is not knowable here, since `render_panes`
-                    // may still groupify a stack and move the active pane out from under it. A
-                    // frame that is still cropped pays a `?25h` and a goto that the `?25l` appended
-                    // after them undoes - and only ever on a host that presents frames atomically,
-                    // which is the only kind that can reach this at all: a watcher whose frame is
-                    // painted incrementally has its cursor hidden for the frame, which makes
-                    // `must_show` true on its own.
-                    let a_watchers_cursor_was_cropped = self
-                        .watcher_clients
-                        .values()
-                        .any(|watcher_state| watcher_state.cursor_was_cropped());
-                    if a_watchers_cursor_was_cropped {
-                        tab.mark_watcher_host_cursor_cropped(followed_client_id);
-                    }
-                    tab.render_panes(&mut watcher_output, Some(followed_client_id))
-                        .context(err_context)?;
-                }
-                if let Some(watcher_surface) = watcher_surface {
-                    self.render_context_menus(
-                        &mut watcher_output,
-                        watcher_surface,
-                        &[followed_client_id],
-                    )
+                tab.render_panes(&mut watcher_output, Some(followed_client_id))
                     .context(err_context)?;
-                }
-                if let Some(tab) = self.tabs.get_mut(&focused_tab_index_of_followed_client_id) {
-                    tab.render_cursor_last(&mut watcher_output, Some(followed_client_id));
-                    watcher_output
-                        .set_kitty_visible_panes(followed_client_id, tab.kitty_visible_pane_ids());
-                }
-                self.render_command_palettes(
+            }
+            if let Some(watcher_surface) = watcher_surface {
+                self.render_context_menus(
                     &mut watcher_output,
-                    std::iter::once(followed_client_id),
-                    true,
+                    watcher_surface,
+                    &[followed_client_id],
                 )
                 .context(err_context)?;
+            }
+            if let Some(tab) = self.tabs.get_mut(&focused_tab_index_of_followed_client_id) {
+                tab.render_cursor_last(&mut watcher_output, Some(followed_client_id));
+                watcher_output
+                    .set_kitty_visible_panes(followed_client_id, tab.kitty_visible_pane_ids());
+            }
+            self.render_command_palettes(
+                &mut watcher_output,
+                std::iter::once(followed_client_id),
+                true,
+            )
+            .context(err_context)?;
 
-                // Send the rendered output to all watcher clients
-                if watcher_output.is_dirty() {
-                    self.render_watcher_output(&watcher_output, followed_client_id)?;
-                }
+            // Send the rendered output to all watcher clients
+            if watcher_output.is_dirty() {
+                self.render_watcher_output(&watcher_output, followed_client_id)?;
             }
         }
         if trace_attach {

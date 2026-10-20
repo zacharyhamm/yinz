@@ -417,7 +417,8 @@ fn environment_arguments_are_private_and_preserve_values() {
 
     let (_temp, env) = fixture();
     let inherited = "inherited-secret \t\n=a=b";
-    std::env::set_var("BWRAP_TEST_INHERITED", inherited);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("BWRAP_TEST_INHERITED", inherited) };
     let declaration = Declaration {
         env: BTreeMap::from([
             ("DECLARED".into(), "declared-secret \t\n=a=b".into()),
@@ -428,7 +429,8 @@ fn environment_arguments_are_private_and_preserve_values() {
         ..Default::default()
     };
     let command = env.command(&declaration, &env.root, false).unwrap();
-    std::env::remove_var("BWRAP_TEST_INHERITED");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("BWRAP_TEST_INHERITED") };
     let args: Vec<_> = command
         .get_args()
         .map(|arg| arg.to_str().unwrap())
@@ -495,7 +497,8 @@ fn environment_arguments_reject_nuls_and_missing_inherited_variables() {
         inherit: vec!["BWRAP_TEST_MISSING_VARIABLE".into()],
         ..Default::default()
     };
-    std::env::remove_var("BWRAP_TEST_MISSING_VARIABLE");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("BWRAP_TEST_MISSING_VARIABLE") };
     assert!(env
         .command(&declaration, &env.root, false)
         .unwrap_err()
@@ -517,7 +520,8 @@ fn real_bubblewrap_delivers_environment_without_secrets_in_argv() {
     env.prepare(None).unwrap();
     let declared = "declared-sentinel-secret \t\n=a=b";
     let inherited = "inherited-sentinel-secret \t\n=c=d";
-    std::env::set_var("BWRAP_TEST_LIVE_INHERITED", inherited);
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("BWRAP_TEST_LIVE_INHERITED", inherited) };
     let declaration = Declaration {
         env: BTreeMap::from([
             ("DECLARED".into(), declared.into()),
@@ -527,7 +531,8 @@ fn real_bubblewrap_delivers_environment_without_secrets_in_argv() {
         ..Default::default()
     };
     let mut command = env.command(&declaration, &env.root, false).unwrap();
-    std::env::remove_var("BWRAP_TEST_LIVE_INHERITED");
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("BWRAP_TEST_LIVE_INHERITED") };
     command.env("BWRAP_TEST_UNDECLARED", "host-only-secret");
     command.args([
         "--", "sh", "-eu", "-c",

@@ -105,10 +105,10 @@ pub(super) fn resolve(context: &LaunchContext, snapshot: &mut AgentThemeSnapshot
         ("project", context.cwd.join(".claude/settings.json")),
         ("local", context.cwd.join(".claude/settings.local.json")),
     ] {
-        if sources.contains(&source) {
-            if let Some(value) = read_json(&path)? {
-                apply(&value, &mut theme)?;
-            }
+        if sources.contains(&source)
+            && let Some(value) = read_json(&path)?
+        {
+            apply(&value, &mut theme)?;
         }
     }
     if let Some(settings) = settings {

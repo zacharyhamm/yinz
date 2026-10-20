@@ -711,10 +711,10 @@ impl MarkdownRenderer {
         // A cell or a row still open belongs to the table: `parse` calls this on a stream
         // that ended mid-table, and losing the last row would make a streaming reply flicker
         // a row shorter than the one before it.
-        if let Some(cell) = self.cell.take() {
-            if state.row.len() < MAX_TABLE_COLUMNS {
-                state.row.push(cell);
-            }
+        if let Some(cell) = self.cell.take()
+            && state.row.len() < MAX_TABLE_COLUMNS
+        {
+            state.row.push(cell);
         }
         if !state.row.is_empty() {
             let row = std::mem::take(&mut state.row);
@@ -909,10 +909,10 @@ impl MarkdownRenderer {
                     self.pop_style();
                 }
                 let cell = self.cell.take().unwrap_or_default();
-                if let Some(table) = self.table.as_mut() {
-                    if table.row.len() < MAX_TABLE_COLUMNS {
-                        table.row.push(cell);
-                    }
+                if let Some(table) = self.table.as_mut()
+                    && table.row.len() < MAX_TABLE_COLUMNS
+                {
+                    table.row.push(cell);
                 }
             },
             Event::Start(Tag::Strikethrough) => self.push_style(|style| style.strike = true),

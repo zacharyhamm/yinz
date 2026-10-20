@@ -661,42 +661,42 @@ impl UnixPtyBackend {
         // otherwise be orphaned with nobody left holding its control channel.
         self.terminate_host(terminal_id);
 
-        if self.pty_host_enabled.load(Ordering::Relaxed) {
-            if let Some(host_bin) = self.host_bin.as_ref() {
-                match self.spawn_via_pty_host(host_bin, &cmd, &failover_cmd, terminal_id) {
-                    Ok(pending) => {
-                        let spawned =
-                            pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
-                        let master_fd = Arc::new(spawned.master);
-                        let async_reader = Box::new(
-                            RawFdAsyncReader::new(master_fd.clone())
-                                .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
-                        ) as Box<dyn AsyncReader>;
-                        self.terminal_id_to_transport
-                            .lock()
-                            .to_anyhow()?
-                            .insert(terminal_id, PaneTransport::Local(master_fd));
-                        self.terminal_id_to_host
-                            .lock()
-                            .to_anyhow()?
-                            .insert(terminal_id, spawned.handle);
-                        return Ok((async_reader, spawned.child_pid));
-                    },
-                    Err(e) => {
-                        if e.downcast_ref::<YinzError>().is_some() {
-                            // CommandNotFound and friends are real answers, not
-                            // supervisor trouble; do not paper over them.
-                            return Err(e);
-                        }
-                        // Anything else — an upgraded binary, a protocol mismatch,
-                        // a supervisor that would not start — should cost the user
-                        // detachability, not the pane.
-                        log::warn!(
-                            "could not start a pty-host for pane {terminal_id} ({e:#}); \
+        if self.pty_host_enabled.load(Ordering::Relaxed)
+            && let Some(host_bin) = self.host_bin.as_ref()
+        {
+            match self.spawn_via_pty_host(host_bin, &cmd, &failover_cmd, terminal_id) {
+                Ok(pending) => {
+                    let spawned =
+                        pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
+                    let master_fd = Arc::new(spawned.master);
+                    let async_reader = Box::new(
+                        RawFdAsyncReader::new(master_fd.clone())
+                            .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
+                    ) as Box<dyn AsyncReader>;
+                    self.terminal_id_to_transport
+                        .lock()
+                        .to_anyhow()?
+                        .insert(terminal_id, PaneTransport::Local(master_fd));
+                    self.terminal_id_to_host
+                        .lock()
+                        .to_anyhow()?
+                        .insert(terminal_id, spawned.handle);
+                    return Ok((async_reader, spawned.child_pid));
+                },
+                Err(e) => {
+                    if e.downcast_ref::<YinzError>().is_some() {
+                        // CommandNotFound and friends are real answers, not
+                        // supervisor trouble; do not paper over them.
+                        return Err(e);
+                    }
+                    // Anything else — an upgraded binary, a protocol mismatch,
+                    // a supervisor that would not start — should cost the user
+                    // detachability, not the pane.
+                    log::warn!(
+                        "could not start a pty-host for pane {terminal_id} ({e:#}); \
                              falling back to an in-process pty"
-                        );
-                    },
-                }
+                    );
+                },
             }
         }
 
@@ -1554,7 +1554,8 @@ mod tests {
         let published = envs::get_session_name().unwrap();
         match previous_name {
             Some(name) => envs::set_session_name(name),
-            None => std::env::remove_var(envs::SESSION_NAME_ENV_KEY),
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            None => unsafe { std::env::remove_var(envs::SESSION_NAME_ENV_KEY) },
         }
         result.unwrap();
         assert!(rejected.is_err(), "a stale old name must reject rename");

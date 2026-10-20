@@ -106,10 +106,10 @@ fn rgb(color: PaletteColor, style: Style) -> (u8, u8, u8) {
     match color {
         PaletteColor::Rgb(rgb) => rgb,
         PaletteColor::EightBit(index) => {
-            if let Some(terminal) = style.terminal {
-                if let Some(rgb) = terminal.ansi.get(usize::from(index)) {
-                    return *rgb;
-                }
+            if let Some(terminal) = style.terminal
+                && let Some(rgb) = terminal.ansi.get(usize::from(index))
+            {
+                return *rgb;
             }
             yinz_types::colors::eightbit_to_rgb(index)
         },

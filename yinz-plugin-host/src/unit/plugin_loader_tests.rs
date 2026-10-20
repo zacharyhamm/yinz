@@ -665,10 +665,10 @@ fn peer_cloning_skips_clients_disconnected_after_its_snapshot() {
     let mut subscribed = Vec::new();
     for (instruction, _) in test.receiver::<PluginInstruction>().try_iter() {
         if let PluginInstruction::PluginSubscribedToEvents(plugin, client, events, _) = instruction
+            && plugin == id
+            && events.contains(&EventType::InitialKeybinds)
         {
-            if plugin == id && events.contains(&EventType::InitialKeybinds) {
-                subscribed.push(client);
-            }
+            subscribed.push(client);
         }
     }
     subscribed.sort();

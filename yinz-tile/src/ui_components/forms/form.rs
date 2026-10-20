@@ -517,10 +517,10 @@ impl Form {
     /// one requires focus, and moving focus closes the one being left.
     fn close_open_dropdown(&mut self) {
         for field in self.fields.iter_mut() {
-            if let Some(dropdown) = field.dropdown_mut() {
-                if dropdown.is_open() {
-                    dropdown.close();
-                }
+            if let Some(dropdown) = field.dropdown_mut()
+                && dropdown.is_open()
+            {
+                dropdown.close();
             }
         }
     }
@@ -721,12 +721,11 @@ impl Form {
                 return FormEvent::Ignored;
             }
             self.editing = !editing;
-            if self.editing {
-                if let Some(combo) = self.fields[i].combo_mut() {
-                    if !combo.suggestions().is_empty() {
-                        combo.open();
-                    }
-                }
+            if self.editing
+                && let Some(combo) = self.fields[i].combo_mut()
+                && !combo.suggestions().is_empty()
+            {
+                combo.open();
             }
             return FormEvent::FocusMoved;
         }

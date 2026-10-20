@@ -67,7 +67,7 @@ fn recv_from_fake_screen<T>(
 }
 
 macro_rules! log_actions_in_thread {
-    ( $arc_mutex_log:expr, $exit_event:path, $receiver:expr, $exit_after_count:expr ) => {
+    ( $arc_mutex_log:expr_2021, $exit_event:path, $receiver:expr_2021, $exit_after_count:expr_2021 ) => {
         std::thread::Builder::new()
             .name("logger thread".to_string())
             .spawn({
@@ -95,7 +95,7 @@ macro_rules! log_actions_in_thread {
 }
 
 macro_rules! log_actions_in_thread_struct {
-    ( $arc_mutex_log:expr, $exit_event:path, $receiver:expr, $exit_after_count:expr ) => {
+    ( $arc_mutex_log:expr_2021, $exit_event:path, $receiver:expr_2021, $exit_after_count:expr_2021 ) => {
         std::thread::Builder::new()
             .name("logger thread".to_string())
             .spawn({
@@ -123,7 +123,7 @@ macro_rules! log_actions_in_thread_struct {
 }
 
 macro_rules! grant_permissions_and_log_actions_in_thread {
-    ( $arc_mutex_log:expr, $exit_event:path, $receiver:expr, $exit_after_count:expr, $permission_type:expr, $cache_path:expr, $plugin_thread_sender:expr, $client_id:expr ) => {
+    ( $arc_mutex_log:expr_2021, $exit_event:path, $receiver:expr_2021, $exit_after_count:expr_2021, $permission_type:expr_2021, $cache_path:expr_2021, $plugin_thread_sender:expr_2021, $client_id:expr_2021 ) => {
         std::thread::Builder::new()
             .name("fake_screen_thread".to_string())
             .spawn({
@@ -400,7 +400,7 @@ fn wait_for_plugin_to_handle(
 }
 
 macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
-    ( $arc_mutex_log:expr, $exit_event:path, $receiver:expr, $exit_after_count:expr, $permission_type:expr, $cache_path:expr, $plugin_thread_sender:expr, $client_id:expr ) => {
+    ( $arc_mutex_log:expr_2021, $exit_event:path, $receiver:expr_2021, $exit_after_count:expr_2021, $permission_type:expr_2021, $cache_path:expr_2021, $plugin_thread_sender:expr_2021, $client_id:expr_2021 ) => {
         std::thread::Builder::new()
             .name("fake_screen_thread".to_string())
             .spawn({
@@ -449,7 +449,7 @@ macro_rules! grant_permissions_and_log_actions_in_thread_naked_variant {
 }
 
 macro_rules! grant_permissions_and_log_actions_in_thread_struct_variant {
-    ( $arc_mutex_log:expr, $exit_event:path, $receiver:expr, $exit_after_count:expr, $permission_type:expr, $cache_path:expr, $plugin_thread_sender:expr, $client_id:expr ) => {
+    ( $arc_mutex_log:expr_2021, $exit_event:path, $receiver:expr_2021, $exit_after_count:expr_2021, $permission_type:expr_2021, $cache_path:expr_2021, $plugin_thread_sender:expr_2021, $client_id:expr_2021 ) => {
         std::thread::Builder::new()
             .name("fake_screen_thread".to_string())
             .spawn({

@@ -1657,13 +1657,10 @@ fn plugin_palette_scores_interleave_with_native_and_preserve_ties_and_geometry()
                     match result {
                         ResultRow::Heading(title) => heading = Some(title.as_str()),
                         ResultRow::Entry(index, _) => {
-                            if let Some(section) = palette.entry_sections[palette.matches[*index]] {
-                                if layout.result_rows.len() > 1 {
-                                    assert_eq!(
-                                        heading,
-                                        Some(palette.sections[section].title.as_str())
-                                    );
-                                }
+                            if let Some(section) = palette.entry_sections[palette.matches[*index]]
+                                && layout.result_rows.len() > 1
+                            {
+                                assert_eq!(heading, Some(palette.sections[section].title.as_str()));
                             }
                             palette.click(
                                 &layout,

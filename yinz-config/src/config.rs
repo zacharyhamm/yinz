@@ -254,12 +254,11 @@ impl ConfigError {
 /// `Config::write_managed_fragment`.
 /// Shared blocks and global unbinds split by resets retain their source identity for replacements.
 pub fn merge_kdl_fragment(managed: &mut kdl::KdlDocument, fragment: &kdl::KdlDocument) {
-    if let Some(block) = managed.get_mut(crate::editor::EDITS_BLOCK) {
-        if let Ok(patches) = crate::editor::patches_from_kdl(block) {
-            if let Ok(normalized) = crate::editor::patches_to_kdl(&patches) {
-                *block = normalized;
-            }
-        }
+    if let Some(block) = managed.get_mut(crate::editor::EDITS_BLOCK)
+        && let Ok(patches) = crate::editor::patches_from_kdl(block)
+        && let Ok(normalized) = crate::editor::patches_to_kdl(&patches)
+    {
+        *block = normalized;
     }
     fn clears_defaults(node: &kdl::KdlNode) -> bool {
         // Lenient on purpose: a non-bool value is rejected when the merged file is parsed.
@@ -570,15 +569,15 @@ impl Config {
                 },
             };
             // Leaf edits to a directory theme need that definition before overlay parsing.
-            if crate::editor::edits_themes(&text) {
-                if let Err(error) = apply_themes(
+            if crate::editor::edits_themes(&text)
+                && let Err(error) = apply_themes(
                     &mut config,
                     None,
                     overlay_dir.parent().map(Path::to_path_buf),
-                ) {
-                    log::error!("Cannot load themes for {}: {error}", path.display());
-                    return config;
-                }
+                )
+            {
+                log::error!("Cannot load themes for {}: {error}", path.display());
+                return config;
             }
             match Config::from_kdl(&text, Some(config.clone())) {
                 Ok(layered) => layered,
@@ -1261,23 +1260,23 @@ pub async fn watch_config_file_changes<F, Fut>(
                 break;
             }
 
-            if let Some(watched_theme_dir) = &watched_theme_dir {
-                if let Err(e) = watcher.watch(watched_theme_dir, RecursiveMode::NonRecursive) {
-                    log::error!(
-                        "Failed to watch theme dir {:?}, continuing without it: {}",
-                        watched_theme_dir,
-                        e,
-                    );
-                }
+            if let Some(watched_theme_dir) = &watched_theme_dir
+                && let Err(e) = watcher.watch(watched_theme_dir, RecursiveMode::NonRecursive)
+            {
+                log::error!(
+                    "Failed to watch theme dir {:?}, continuing without it: {}",
+                    watched_theme_dir,
+                    e,
+                );
             }
-            if let Some(watched_overlay_dir) = &watched_overlay_dir {
-                if let Err(e) = watcher.watch(watched_overlay_dir, RecursiveMode::NonRecursive) {
-                    log::error!(
-                        "Failed to watch config drop-in dir {:?}, continuing without it: {}",
-                        watched_overlay_dir,
-                        e,
-                    );
-                }
+            if let Some(watched_overlay_dir) = &watched_overlay_dir
+                && let Err(e) = watcher.watch(watched_overlay_dir, RecursiveMode::NonRecursive)
+            {
+                log::error!(
+                    "Failed to watch config drop-in dir {:?}, continuing without it: {}",
+                    watched_overlay_dir,
+                    e,
+                );
             }
 
             while let Some(event_result) = rx.recv().await {

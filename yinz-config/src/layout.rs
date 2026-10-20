@@ -115,15 +115,15 @@ pub fn from_layout_info(
         },
         LayoutInfo::Stringified(stringified_layout) => (None, stringified_layout, None),
     };
-    let layout = crate::kdl::layout::from_kdl(
+
+    crate::kdl::layout::from_kdl(
         &raw_layout,
         path_to_raw_layout,
         raw_swap_layouts
             .as_ref()
             .map(|(r, f)| (r.as_str(), f.as_str())),
         None,
-    );
-    layout
+    )
 }
 pub fn from_layout_info_with_config(
     layout_dir: &Option<PathBuf>,

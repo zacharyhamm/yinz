@@ -382,20 +382,20 @@ impl Controller {
                 .to_owned();
             return Ok(plugin.descriptor());
         }
-        if let Ok(url) = url::Url::parse(path) {
-            if let Ok(target) = url.to_file_path() {
-                let home = self
-                    .root
-                    .canonicalize()
-                    .context("resolve disposable session root")?
-                    .join("home");
-                if target.starts_with(&home) {
-                    let sources = super::steel::Sources {
-                        entry: target,
-                        root: home,
-                    };
-                    return sources.resolve_test_path(path);
-                }
+        if let Ok(url) = url::Url::parse(path)
+            && let Ok(target) = url.to_file_path()
+        {
+            let home = self
+                .root
+                .canonicalize()
+                .context("resolve disposable session root")?
+                .join("home");
+            if target.starts_with(&home) {
+                let sources = super::steel::Sources {
+                    entry: target,
+                    root: home,
+                };
+                return sources.resolve_test_path(path);
             }
         }
         loader.resolve_test_path(path)
@@ -796,10 +796,10 @@ impl Controller {
                 }
                 let request: AgentRequest =
                     serde_json::from_value(arg).context("test agent request")?;
-                if let AgentRequest::Spawn { remote_host, .. } = &request {
-                    if remote_host.is_some() {
-                        bail!("test agent spawning is limited to the owned local session");
-                    }
+                if let AgentRequest::Spawn { remote_host, .. } = &request
+                    && remote_host.is_some()
+                {
+                    bail!("test agent spawning is limited to the owned local session");
                 }
                 let timeout = match &request {
                     AgentRequest::Prompt { timeout_ms, .. }

@@ -465,10 +465,10 @@ mod props {
         // (both encode as the same codepoint, e.g. 13 for '\r' vs Enter).
         // The parser cannot distinguish them, so skip those ambiguous cases;
         // they are better represented as the dedicated BareKey variants.
-        if let BareKey::Char(c) = key.bare_key {
-            if c.is_control() {
-                return;
-            }
+        if let BareKey::Char(c) = key.bare_key
+            && c.is_control()
+        {
+            return;
         }
         let Some(serialized) = yinz_key_codec::keys::serialize_kitty(&key) else {
             // Not every keycode has a Kitty encoding; nothing to check.

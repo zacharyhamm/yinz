@@ -167,16 +167,19 @@ impl Capture {
             let Some(request) = request else { break };
             let command =
                 serde_json::to_value(PluginCommand::RequestPluginPermissions(request.permissions))?;
-            if let Err(error) = Self::reply(shared, command) {
-                let mut capture = shared.lock().unwrap();
-                let completion = capture.permissions.finish(Err(format!("{error:#}")));
-                if immediate == Some(request.id.as_str()) {
-                    failure = Some(error);
-                } else if let Some(completion) = completion {
-                    capture.completions.push(completion);
-                }
-            } else {
-                break;
+            match Self::reply(shared, command) {
+                Err(error) => {
+                    let mut capture = shared.lock().unwrap();
+                    let completion = capture.permissions.finish(Err(format!("{error:#}")));
+                    if immediate == Some(request.id.as_str()) {
+                        failure = Some(error);
+                    } else if let Some(completion) = completion {
+                        capture.completions.push(completion);
+                    }
+                },
+                _ => {
+                    break;
+                },
             }
         }
         failure.map_or(Ok(()), Err)
@@ -263,12 +266,11 @@ fn callback_control(operation: &str, argument: &Value) -> Result<Option<Value>> 
         // A test may loop forever immediately after logging. Persist disposable-session
         // diagnostics now; nested mock logs are flushed when the outer harness call returns.
         HOST.with(|host| {
-            if let Ok(state) = host.try_borrow() {
-                if let Some(state) = state.as_ref() {
-                    if let Some(session) = &state.session {
-                        session.diagnostics(&state.capture.lock().unwrap().output, &state.pending);
-                    }
-                }
+            if let Ok(state) = host.try_borrow()
+                && let Some(state) = state.as_ref()
+                && let Some(session) = &state.session
+            {
+                session.diagnostics(&state.capture.lock().unwrap().output, &state.pending);
             }
         });
     }

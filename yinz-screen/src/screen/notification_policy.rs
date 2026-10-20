@@ -147,14 +147,12 @@ impl Screen {
             .pending
             .iter_mut()
             .find(|p| p.original.id == id)
+            && pending.policy == Some(plugin)
+            && pending.instance.is_none()
+            && pending.decision.is_none()
+            && Instant::now() < pending.deadline
         {
-            if pending.policy == Some(plugin)
-                && pending.instance.is_none()
-                && pending.decision.is_none()
-                && Instant::now() < pending.deadline
-            {
-                pending.instance = Some(instance);
-            }
+            pending.instance = Some(instance);
         }
     }
 
@@ -180,14 +178,13 @@ impl Screen {
         {
             return Ok(());
         }
-        if let NotificationDecision::Replace { title, body, .. } = &decision {
-            if title.as_ref().unwrap_or(&pending.original.title).len()
+        if let NotificationDecision::Replace { title, body, .. } = &decision
+            && title.as_ref().unwrap_or(&pending.original.title).len()
                 + body.as_ref().unwrap_or(&pending.original.body).len()
                 > MAX_NOTIFICATION_REPLACEMENT_BYTES
-            {
-                pending.fallback("replacement_too_large");
-                return self.commit_notifications();
-            }
+        {
+            pending.fallback("replacement_too_large");
+            return self.commit_notifications();
         }
         pending.decision = Some(decision);
         self.commit_notifications()
@@ -471,15 +468,14 @@ impl Screen {
                             .filter(|((p, _), assembly)| *p == pane && assembly.bypass.is_none())
                             .min_by_key(|(_, a)| a.sequence)
                             .map(|(k, _)| k.clone());
-                        if let Some(oldest) = oldest {
-                            if let Some(assembly) =
+                        if let Some(oldest) = oldest
+                            && let Some(assembly) =
                                 self.notification_policy.assemblies.get_mut(&oldest)
-                            {
-                                assembly.bypass = Some("assembly_overflow".into());
-                                assembly.bytes = 0;
-                                let chunks = std::mem::take(&mut assembly.chunks);
-                                self.deliver_desktop_notifications(chunks, pane);
-                            }
+                        {
+                            assembly.bypass = Some("assembly_overflow".into());
+                            assembly.bytes = 0;
+                            let chunks = std::mem::take(&mut assembly.chunks);
+                            self.deliver_desktop_notifications(chunks, pane);
                         }
                     }
                     let total_bytes = self
@@ -520,11 +516,11 @@ impl Screen {
                             fallback = Some("assembly_overflow".into());
                         }
                     }
-                    if is_done {
-                        if let Some(assembly) = self.notification_policy.assemblies.remove(&key) {
-                            chunks = assembly.chunks;
-                            fallback = assembly.bypass.or(fallback);
-                        }
+                    if is_done
+                        && let Some(assembly) = self.notification_policy.assemblies.remove(&key)
+                    {
+                        chunks = assembly.chunks;
+                        fallback = assembly.bypass.or(fallback);
                     }
                 }
                 if !is_done {
@@ -606,20 +602,18 @@ impl Screen {
         if metadata
             .get("p")
             .is_none_or(|p| !Osc99PayloadType::from_metadata_value(p).is_control_request())
-        {
-            if let Some(record) = self
+            && let Some(record) = self
                 .notification_history
                 .iter()
                 .find(|record| record.info.id == id)
-            {
-                self.activate_notification(
-                    id,
-                    record.pane_id,
-                    record.on_click.clone(),
-                    client,
-                    Instant::now(),
-                );
-            }
+        {
+            self.activate_notification(
+                id,
+                record.pane_id,
+                record.on_click.clone(),
+                client,
+                Instant::now(),
+            );
         }
         true
     }

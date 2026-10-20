@@ -183,10 +183,10 @@ fn binding_for(root: &Path, thread_id: &str) -> Result<Option<Binding>> {
                 .context("read Codex pane binding time")
         };
         // Registrations are created and removed concurrently with hooks.
-        if let Ok(Some(candidate)) = read() {
-            if latest.as_ref().is_none_or(|(time, _)| candidate.0 > *time) {
-                latest = Some(candidate);
-            }
+        if let Ok(Some(candidate)) = read()
+            && latest.as_ref().is_none_or(|(time, _)| candidate.0 > *time)
+        {
+            latest = Some(candidate);
         }
     }
     Ok(latest.map(|(_, binding)| binding))
@@ -275,20 +275,19 @@ impl Conversations {
         let Some(method) = value["method"].as_str() else {
             return Ok(());
         };
-        if matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
-            if let Some(id) = value.get("id") {
-                let ephemeral = value["params"]["ephemeral"].as_bool() == Some(true);
-                self.pending
-                    .insert(id.to_string(), (method.to_owned(), ephemeral));
-            }
+        if matches!(method, "thread/start" | "thread/resume" | "thread/fork")
+            && let Some(id) = value.get("id")
+        {
+            let ephemeral = value["params"]["ephemeral"].as_bool() == Some(true);
+            self.pending
+                .insert(id.to_string(), (method.to_owned(), ephemeral));
         }
         // Also handles a UI returning to an already loaded conversation without resuming it.
-        if matches!(method, "turn/start" | "turn/steer") {
-            if let Some(thread) = value["params"]["threadId"].as_str() {
-                if !self.ephemeral.contains(thread) {
-                    self.select(thread, registration)?;
-                }
-            }
+        if matches!(method, "turn/start" | "turn/steer")
+            && let Some(thread) = value["params"]["threadId"].as_str()
+            && !self.ephemeral.contains(thread)
+        {
+            self.select(thread, registration)?;
         }
         Ok(())
     }
@@ -413,7 +412,10 @@ async fn proxy(
 fn daemon_connection(
     program: &Path,
     socket: Option<&Path>,
-) -> Result<(tokio::process::Child, impl AsyncRead + AsyncWrite + Unpin)> {
+) -> Result<(
+    tokio::process::Child,
+    impl AsyncRead + AsyncWrite + Unpin + use<>,
+)> {
     let mut command = tokio::process::Command::new(program);
     command.args(["app-server", "proxy"]);
     if let Some(socket) = socket {

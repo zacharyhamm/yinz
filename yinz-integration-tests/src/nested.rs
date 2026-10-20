@@ -183,14 +183,20 @@ pub struct NestedHarness {
 }
 
 fn set_nested_timing_env() {
-    std::env::set_var(
-        "YINZ_NESTED_PING_INTERVAL_MS",
-        GUEST_PING_INTERVAL_MS.to_string(),
-    );
-    std::env::set_var(
-        "YINZ_NESTED_PONG_TIMEOUT_MS",
-        GUEST_PONG_TIMEOUT_MS.to_string(),
-    );
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe {
+        std::env::set_var(
+            "YINZ_NESTED_PING_INTERVAL_MS",
+            GUEST_PING_INTERVAL_MS.to_string(),
+        )
+    };
+    // FIXME: Audit that the environment access only happens in single-threaded code.
+    unsafe {
+        std::env::set_var(
+            "YINZ_NESTED_PONG_TIMEOUT_MS",
+            GUEST_PONG_TIMEOUT_MS.to_string(),
+        )
+    };
 }
 
 struct GuestBridge {

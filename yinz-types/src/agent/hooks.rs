@@ -285,33 +285,31 @@ pub fn unwrapped_program_and_args<'a>(
     args: &'a [String],
 ) -> Option<(&'a Path, &'a [String])> {
     if program.file_name()? == "yinz" {
-        if let [agent, launcher, flag, command, separator, rest @ ..] = args {
-            if agent == "agent"
-                && matches!(
-                    launcher.as_str(),
-                    "codex" | "codex-untracked" | "claude" | "muse"
-                )
-                && flag == "--command"
-                && separator == "--"
-            {
-                return Some((Path::new(command), rest));
-            }
+        if let [agent, launcher, flag, command, separator, rest @ ..] = args
+            && agent == "agent"
+            && matches!(
+                launcher.as_str(),
+                "codex" | "codex-untracked" | "claude" | "muse"
+            )
+            && flag == "--command"
+            && separator == "--"
+        {
+            return Some((Path::new(command), rest));
         }
-        if let [agent, launcher, separator, rest @ ..] = args {
-            if agent == "agent"
-                && matches!(
-                    launcher.as_str(),
-                    "codex" | "codex-untracked" | "claude" | "muse"
-                )
-                && separator == "--"
-            {
-                let program = if launcher == "codex-untracked" {
-                    "codex"
-                } else {
-                    launcher
-                };
-                return Some((Path::new(program), rest));
-            }
+        if let [agent, launcher, separator, rest @ ..] = args
+            && agent == "agent"
+            && matches!(
+                launcher.as_str(),
+                "codex" | "codex-untracked" | "claude" | "muse"
+            )
+            && separator == "--"
+        {
+            let program = if launcher == "codex-untracked" {
+                "codex"
+            } else {
+                launcher
+            };
+            return Some((Path::new(program), rest));
         }
     }
     if program.file_name()? != "env" {
@@ -341,10 +339,10 @@ pub fn unwrapped_program_and_args<'a>(
 /// through an `env(1)` wrapper - `env K=V claude …` is `claude`, because `env` execs it and the
 /// pane is running the agent, not the wrapper. `None` when there is no program to name.
 pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
-    if let Some(kind) = kind_from_program_and_args(program, args) {
-        if super::provider::provider(&kind).is_some() {
-            return Some(kind);
-        }
+    if let Some(kind) = kind_from_program_and_args(program, args)
+        && super::provider::provider(&kind).is_some()
+    {
+        return Some(kind);
     }
     unwrapped_program_and_args(program, args)
         .and_then(|(program, _)| program.file_name())
@@ -442,10 +440,10 @@ pub fn kind_from_command(command: &str) -> Option<String> {
     // Later words count only behind an interpreter. Otherwise `git commit -m
     // "ask claude"` would be an agent, which is the same reason detection is
     // token-based rather than substring-based.
-    if INTERPRETERS.contains(&program(first).to_lowercase().as_str()) {
-        if let Some(kind) = words.find_map(kind_of) {
-            return Some(kind);
-        }
+    if INTERPRETERS.contains(&program(first).to_lowercase().as_str())
+        && let Some(kind) = words.find_map(kind_of)
+    {
+        return Some(kind);
     }
     None
 }

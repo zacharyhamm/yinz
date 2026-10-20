@@ -172,7 +172,7 @@ pub(crate) use yinz_bus::screen::{
 /// - ?: A literal "?", to append a `?` to the closure when it returns a `Result` type. This
 ///   argument is optional and not needed when the closure returns `()`
 macro_rules! active_tab {
-    ($screen:ident, $client_id:ident, $closure:expr) => {
+    ($screen:ident, $client_id:ident, $closure:expr_2021) => {
         match $screen.get_active_tab_mut($client_id) {
             Ok(active_tab) => {
                 // This could be made more ergonomic by declaring the type of 'active_tab' in the
@@ -185,7 +185,7 @@ macro_rules! active_tab {
         };
     };
     // Same as above, but with an added `?` for when the close returns a `Result` type.
-    ($screen:ident, $client_id:ident, $closure:expr, ?) => {
+    ($screen:ident, $client_id:ident, $closure:expr_2021, ?) => {
         match $screen.get_active_tab_mut($client_id) {
             Ok(active_tab) => {
             $closure(active_tab)?;
@@ -197,7 +197,7 @@ macro_rules! active_tab {
 pub(crate) use active_tab;
 
 macro_rules! active_tab_and_connected_client_id {
-    ($screen:ident, $client_id:ident, $closure:expr) => {
+    ($screen:ident, $client_id:ident, $closure:expr_2021) => {
         match $screen.get_active_tab_mut($client_id) {
             Ok(active_tab) => {
                 $closure(active_tab, $client_id);
@@ -217,7 +217,7 @@ macro_rules! active_tab_and_connected_client_id {
         }
     };
     // Same as above, but with an added `?` for when the closure returns a `Result` type.
-    ($screen:ident, $client_id:ident, $closure:expr, ?) => {
+    ($screen:ident, $client_id:ident, $closure:expr_2021, ?) => {
         match $screen.get_active_tab_mut($client_id) {
             Ok(active_tab) => {
                 $closure(active_tab, $client_id).non_fatal();
@@ -240,7 +240,7 @@ macro_rules! active_tab_and_connected_client_id {
 pub(crate) use active_tab_and_connected_client_id;
 
 macro_rules! active_tab_and_connected_client_id_with_first_tab_fallback {
-    ($screen:ident, $client_id:ident, $closure:expr) => {
+    ($screen:ident, $client_id:ident, $closure:expr_2021) => {
         match $screen.get_active_tab_mut($client_id) {
             Ok(active_tab) => {
                 $closure(active_tab, Some($client_id));
@@ -267,7 +267,7 @@ macro_rules! active_tab_and_connected_client_id_with_first_tab_fallback {
         }
     };
     // Same as above, but with an added `?` for when the closure returns a `Result` type.
-    ($screen:ident, $client_id:ident, $closure:expr, ?) => {
+    ($screen:ident, $client_id:ident, $closure:expr_2021, ?) => {
         match $screen.get_active_tab_mut($client_id) {
             Ok(active_tab) => {
                 $closure(active_tab, Some($client_id)).non_fatal();
@@ -1735,25 +1735,22 @@ impl Screen {
                 tab.get_active_pane_id(client_id)
                     .map(|pane_id| (tab.id, pane_id))
             });
-        if let Some((tab_id, focused_pane_id)) = tab_id_and_pane_id {
-            if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                if tab.panes_with_pending_bell.contains(&focused_pane_id) {
-                    let tab_had_bell = tab.tab_has_pending_bell;
-                    tab.clear_bell_notification_for_pane(focused_pane_id);
-                    let tab_bell_now_cleared = tab_had_bell && !tab.tab_has_pending_bell;
-                    let _ =
-                        self.bus
-                            .senders
-                            .send_to_background_jobs(BackgroundJob::StopFlashPaneBell(vec![
-                                focused_pane_id,
-                            ]));
-                    if tab_bell_now_cleared {
-                        let _ = self
-                            .bus
-                            .senders
-                            .send_to_background_jobs(BackgroundJob::StopFlashTabBell(tab_id));
-                    }
-                }
+        if let Some((tab_id, focused_pane_id)) = tab_id_and_pane_id
+            && let Some(tab) = self.tabs.get_mut(&tab_id)
+            && tab.panes_with_pending_bell.contains(&focused_pane_id)
+        {
+            let tab_had_bell = tab.tab_has_pending_bell;
+            tab.clear_bell_notification_for_pane(focused_pane_id);
+            let tab_bell_now_cleared = tab_had_bell && !tab.tab_has_pending_bell;
+            let _ = self
+                .bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::StopFlashPaneBell(vec![focused_pane_id]));
+            if tab_bell_now_cleared {
+                let _ = self
+                    .bus
+                    .senders
+                    .send_to_background_jobs(BackgroundJob::StopFlashTabBell(tab_id));
             }
         }
     }
@@ -1761,23 +1758,22 @@ impl Screen {
     /// Clear bell notification for a specific pane ID in the given client's active tab.
     pub fn clear_bell_for_pane_id(&mut self, pane_id: PaneId, client_id: ClientId) {
         let tab_id: Option<TabId> = self.get_active_tab_mut(client_id).ok().map(|tab| tab.id);
-        if let Some(tab_id) = tab_id {
-            if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                if tab.panes_with_pending_bell.contains(&pane_id) {
-                    let tab_had_bell = tab.tab_has_pending_bell;
-                    tab.clear_bell_notification_for_pane(pane_id);
-                    let tab_bell_now_cleared = tab_had_bell && !tab.tab_has_pending_bell;
-                    let _ = self
-                        .bus
-                        .senders
-                        .send_to_background_jobs(BackgroundJob::StopFlashPaneBell(vec![pane_id]));
-                    if tab_bell_now_cleared {
-                        let _ = self
-                            .bus
-                            .senders
-                            .send_to_background_jobs(BackgroundJob::StopFlashTabBell(tab_id));
-                    }
-                }
+        if let Some(tab_id) = tab_id
+            && let Some(tab) = self.tabs.get_mut(&tab_id)
+            && tab.panes_with_pending_bell.contains(&pane_id)
+        {
+            let tab_had_bell = tab.tab_has_pending_bell;
+            tab.clear_bell_notification_for_pane(pane_id);
+            let tab_bell_now_cleared = tab_had_bell && !tab.tab_has_pending_bell;
+            let _ = self
+                .bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::StopFlashPaneBell(vec![pane_id]));
+            if tab_bell_now_cleared {
+                let _ = self
+                    .bus
+                    .senders
+                    .send_to_background_jobs(BackgroundJob::StopFlashTabBell(tab_id));
             }
         }
     }
@@ -2149,11 +2145,9 @@ impl Screen {
                     .non_fatal();
                 tab.set_force_render();
             }
-            if client_departed {
-                if let Some(tab) = self.tabs.get_mut(&tab_id) {
-                    tab.remove_client_pane_state(client_id);
-                    tab.remove_client(client_id);
-                }
+            if client_departed && let Some(tab) = self.tabs.get_mut(&tab_id) {
+                tab.remove_client_pane_state(client_id);
+                tab.remove_client(client_id);
             }
             let mut retired_source = None;
             if !client_departed && !self.active_tab_ids.contains_key(&client_id) {
@@ -2194,11 +2188,11 @@ impl Screen {
         if !self.has_pending_tabs() {
             self.departed_before_layout.clear();
         }
-        if let Err(error) = &applied {
-            if let Some((_, completion)) = blocking_terminal.as_mut() {
-                completion.set_exit_status(1);
-                completion.set_error_message(format!("{error:#}"));
-            }
+        if let Err(error) = &applied
+            && let Some((_, completion)) = blocking_terminal.as_mut()
+        {
+            completion.set_exit_status(1);
+            completion.set_error_message(format!("{error:#}"));
         }
         if applied.is_ok() {
             self.finish_group_restore();
@@ -2729,10 +2723,10 @@ impl Screen {
 
     pub fn move_active_tab_to_left(&mut self, client_id: ClientId) -> Result<()> {
         if self.tab_groups_enabled() && self.tab_groups.len() > 1 {
-            if let Some(client) = self.client_id(client_id) {
-                if let Some(tab) = self.active_tab_ids.get(&client).copied() {
-                    self.move_group_tab(tab, false)?;
-                }
+            if let Some(client) = self.client_id(client_id)
+                && let Some(tab) = self.active_tab_ids.get(&client).copied()
+            {
+                self.move_group_tab(tab, false)?;
             }
             return Ok(());
         }
@@ -2848,10 +2842,10 @@ impl Screen {
 
     pub fn move_active_tab_to_right(&mut self, client_id: ClientId) -> Result<()> {
         if self.tab_groups_enabled() && self.tab_groups.len() > 1 {
-            if let Some(client) = self.client_id(client_id) {
-                if let Some(tab) = self.active_tab_ids.get(&client).copied() {
-                    self.move_group_tab(tab, true)?;
-                }
+            if let Some(client) = self.client_id(client_id)
+                && let Some(tab) = self.active_tab_ids.get(&client).copied()
+            {
+                self.move_group_tab(tab, true)?;
             }
             return Ok(());
         }
@@ -3161,7 +3155,7 @@ impl Screen {
                 )?;
             }
             // Set affected pane ID for CLI client output
-            if let Some(ref mut completion) = completion_tx {
+            if let Some(completion) = completion_tx {
                 completion.set_affected_pane_id(pane_id);
             }
             return Ok(true);
@@ -3193,7 +3187,7 @@ impl Screen {
                 self.log_and_report_session_state()
                     .with_context(err_context)?;
                 // Set affected pane ID for CLI client output
-                if let Some(ref mut completion) = completion_tx {
+                if let Some(completion) = completion_tx {
                     completion.set_affected_pane_id(plugin_pane_id);
                 }
                 Ok(true)
@@ -3807,10 +3801,10 @@ impl Screen {
         if !tab.run_command_in_pane_with_id(terminal_id, command, false) {
             return Err("agent pane could not accept the restart".into());
         }
-        if session == AgentRestartSession::Fresh {
-            if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
-                pane.clear_agent_session_id();
-            }
+        if session == AgentRestartSession::Fresh
+            && let Some(pane) = tab.get_pane_with_id_mut(pane_id)
+        {
+            pane.clear_agent_session_id();
         }
         let current = AgentInfo {
             kind,
@@ -3999,11 +3993,11 @@ impl Screen {
             pane_id_of_existing_pane,
             suppress_replaced_pane,
         );
-        if let Err(error) = &replaced {
-            if let Some(completion) = completion_tx.as_mut() {
-                completion.set_exit_status(1);
-                completion.set_error_message(format!("{error:#}"));
-            }
+        if let Err(error) = &replaced
+            && let Some(completion) = completion_tx.as_mut()
+        {
+            completion.set_exit_status(1);
+            completion.set_error_message(format!("{error:#}"));
         }
         let _ = self.log_and_report_session_state();
         replaced
@@ -4081,10 +4075,11 @@ impl Screen {
         if let Some(entry) = carried_respawn {
             tab.restore_pending_respawn(pane_id_of_existing_pane, entry);
         }
-        if !suppress_replaced_pane && self.tab_containing_pane(pane_id_to_replace).is_none() {
-            if let PaneId::Plugin(plugin_id) = pane_id_to_replace {
-                self.drop_quit_notice(plugin_id);
-            }
+        if !suppress_replaced_pane
+            && self.tab_containing_pane(pane_id_to_replace).is_none()
+            && let PaneId::Plugin(plugin_id) = pane_id_to_replace
+        {
+            self.drop_quit_notice(plugin_id);
         }
         Ok(())
     }
@@ -4403,12 +4398,12 @@ impl Screen {
         let mut pty_writes: Vec<(Vec<u8>, TerminalId)> = vec![];
         for tab in self.tabs.values_mut() {
             for pane_id in tab.get_all_pane_ids() {
-                if let PaneId::Terminal(terminal_id) = pane_id {
-                    if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
-                        pane.push_color_palette_dsr(mode);
-                        for bytes in pane.drain_messages_to_pty() {
-                            pty_writes.push((bytes, terminal_id));
-                        }
+                if let PaneId::Terminal(terminal_id) = pane_id
+                    && let Some(pane) = tab.get_pane_with_id_mut(pane_id)
+                {
+                    pane.push_color_palette_dsr(mode);
+                    for bytes in pane.drain_messages_to_pty() {
+                        pty_writes.push((bytes, terminal_id));
                     }
                 }
             }
@@ -4608,10 +4603,8 @@ impl Screen {
             .map(|t| t.pane_id_is_floating(&root_pane_id))
             .unwrap_or(false);
 
-        if root_pane_id_is_floating {
-            if let Some(tab) = self.tabs.get_mut(&root_tab_id) {
-                let _ = tab.toggle_pane_embed_or_floating_for_pane_id(root_pane_id, None);
-            }
+        if root_pane_id_is_floating && let Some(tab) = self.tabs.get_mut(&root_tab_id) {
+            let _ = tab.toggle_pane_embed_or_floating_for_pane_id(root_pane_id, None);
         }
 
         let mut panes_to_stack = vec![];
@@ -4702,13 +4695,11 @@ impl Screen {
             if let Some(info) = self
                 .tab_containing_pane(*pane)
                 .and_then(|tab| tab.multipane_info(*pane))
-            {
-                if placements
+                && placements
                     .insert(info.id, coordinates)
                     .is_some_and(|previous| previous != coordinates)
-                {
-                    return Err(anyhow!("conflicting placements for the same multipane"));
-                }
+            {
+                return Err(anyhow!("conflicting placements for the same multipane"));
             }
         }
         Ok(())
@@ -4726,10 +4717,9 @@ impl Screen {
             if let Some(info) = self
                 .tab_containing_pane(pane_id)
                 .and_then(|tab| tab.multipane_info(pane_id))
+                && !applied.insert(info.id)
             {
-                if !applied.insert(info.id) {
-                    continue;
-                }
+                continue;
             }
             if let Some(tab) = self.tab_containing_pane_mut(pane_id) {
                 tab.change_floating_pane_coordinates(&pane_id, coordinates)
@@ -4898,11 +4888,11 @@ impl Screen {
             // editor is editing
             let mut scrollback_editor_subjects: HashMap<PaneId, &dyn Pane> = HashMap::new();
             for (_pane_id, suppressed) in tab.get_suppressed_panes() {
-                if let Some(stand_in) = suppressed.restored_by {
-                    if stand_in.is_scrollback_editor && !for_warp {
-                        scrollback_editor_subjects
-                            .insert(stand_in.pane_id, suppressed.pane.as_ref());
-                    }
+                if let Some(stand_in) = suppressed.restored_by
+                    && stand_in.is_scrollback_editor
+                    && !for_warp
+                {
+                    scrollback_editor_subjects.insert(stand_in.pane_id, suppressed.pane.as_ref());
                 }
             }
 
@@ -5802,13 +5792,13 @@ fn replay_pending_plugin_events(
             ScreenInstruction::ClosePane(pane_id, client_id, completion_tx, exit_status) => {
                 // Buffered only by the pty's "the child exited" road, which is the one that
                 // means a command pane's exit; the guard is the same as the live handler's.
-                if client_id.is_none() && completion_tx.is_none() {
-                    if let Some(run_command) = screen
+                if client_id.is_none()
+                    && completion_tx.is_none()
+                    && let Some(run_command) = screen
                         .tab_containing_pane(pane_id)
                         .and_then(|tab| tab.pane_run_command(pane_id))
-                    {
-                        screen.fire_pane_exit_hook(pane_id, exit_status, &run_command, false);
-                    }
+                {
+                    screen.fire_pane_exit_hook(pane_id, exit_status, &run_command, false);
                 }
                 if let PaneId::Plugin(plugin_id) = pane_id {
                     screen.drop_quit_notice(plugin_id);

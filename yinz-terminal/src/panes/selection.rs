@@ -264,7 +264,7 @@ impl Selection {
 
     /// Return an iterator over the line indices, up to max, that are not present in both self and other,
     /// except for the indices of the first and last line of both self and s2, that are always included.
-    pub fn diff(&self, other: &Self, max: usize) -> impl Iterator<Item = isize> {
+    pub fn diff(&self, other: &Self, max: usize) -> impl Iterator<Item = isize> + use<> {
         let mut lines_to_update = HashSet::new();
 
         lines_to_update.insert(self.start.line.get());

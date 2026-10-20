@@ -596,17 +596,18 @@ impl SessionMetaData {
         self.locked_escapes.remove(&client_id);
         if let Some(pane_id) = self.key_passthrough_clients.remove(&client_id) {
             let pane_still_active = self.key_passthrough_clients.values().any(|p| *p == pane_id);
-            if !pane_still_active && notify_guest {
-                if let PaneId::Terminal(terminal_id) = pane_id {
-                    let frame = yinz_ipc::nested_session::encode_frame(
-                        &yinz_ipc::nested_session::NestedSessionMessage::FocusLost,
-                    );
-                    let _ = self.senders.send_to_pty_writer(PtyWriteInstruction::Write(
-                        frame,
-                        terminal_id,
-                        None,
-                    ));
-                }
+            if !pane_still_active
+                && notify_guest
+                && let PaneId::Terminal(terminal_id) = pane_id
+            {
+                let frame = yinz_ipc::nested_session::encode_frame(
+                    &yinz_ipc::nested_session::NestedSessionMessage::FocusLost,
+                );
+                let _ = self.senders.send_to_pty_writer(PtyWriteInstruction::Write(
+                    frame,
+                    terminal_id,
+                    None,
+                ));
             }
         }
     }
@@ -986,21 +987,15 @@ fn change_key_passthrough(
                 session
                     .key_passthrough_clients
                     .insert(client_id, new_pane_id);
-                if !pane_already_active {
-                    if let PaneId::Terminal(terminal_id) = new_pane_id {
-                        let frame = yinz_ipc::nested_session::encode_frame(
-                            &yinz_ipc::nested_session::NestedSessionMessage::FocusGained {
-                                from_direction: entered_from_direction,
-                            },
-                        );
-                        let _ = session
-                            .senders
-                            .send_to_pty_writer(PtyWriteInstruction::Write(
-                                frame,
-                                terminal_id,
-                                None,
-                            ));
-                    }
+                if !pane_already_active && let PaneId::Terminal(terminal_id) = new_pane_id {
+                    let frame = yinz_ipc::nested_session::encode_frame(
+                        &yinz_ipc::nested_session::NestedSessionMessage::FocusGained {
+                            from_direction: entered_from_direction,
+                        },
+                    );
+                    let _ = session
+                        .senders
+                        .send_to_pty_writer(PtyWriteInstruction::Write(frame, terminal_id, None));
                 }
             }
         } else if previous_pane.is_some() {
@@ -1056,7 +1051,7 @@ fn with_session_mut<R>(
 }
 
 macro_rules! remove_client {
-    ($client_id:expr, $os_input:expr, $session_state:expr, $session_data:expr) => {
+    ($client_id:expr_2021, $os_input:expr_2021, $session_state:expr_2021, $session_data:expr_2021) => {
         $crate::remove_client_and_flush_forwards(
             $client_id,
             &mut $os_input,
@@ -1067,7 +1062,7 @@ macro_rules! remove_client {
 }
 
 macro_rules! send_to_client {
-    ($client_id:expr, $os_input:expr, $msg:expr, $session_state:expr, $session_data:expr) => {
+    ($client_id:expr_2021, $os_input:expr_2021, $msg:expr_2021, $session_state:expr_2021, $session_data:expr_2021) => {
         let send_to_client_res = $os_input.send_to_client($client_id, $msg);
         if let Err(e) = send_to_client_res {
             // Try to recover the message
@@ -1276,10 +1271,10 @@ impl SessionState {
     /// to any currently-connected non-watcher client. Returns `None`
     /// only when no regular client is connected.
     pub fn pick_forward_target(&self) -> Option<ClientId> {
-        if let Some(candidate) = self.last_active_client {
-            if self.clients.contains(&candidate) {
-                return Some(candidate);
-            }
+        if let Some(candidate) = self.last_active_client
+            && self.clients.contains(&candidate)
+        {
+            return Some(candidate);
         }
         self.clients.iter().copied().next()
     }

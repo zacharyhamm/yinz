@@ -180,46 +180,46 @@ impl<'a> PaneContentsAndUi<'a> {
                 clients.iter().copied(),
                 self.z_index,
             );
-            if let Some(raw_vte_output) = raw_vte_output {
-                if !raw_vte_output.is_empty() {
-                    self.output.add_post_vte_instruction_to_multiple_clients(
-                        clients.iter().copied(),
-                        &format!(
-                            "\u{1b}[{};{}H\u{1b}[m{}",
-                            self.pane.y() + 1,
-                            self.pane.render_geom().x + 1,
-                            raw_vte_output
-                        ),
-                    );
-                }
+            if let Some(raw_vte_output) = raw_vte_output
+                && !raw_vte_output.is_empty()
+            {
+                self.output.add_post_vte_instruction_to_multiple_clients(
+                    clients.iter().copied(),
+                    &format!(
+                        "\u{1b}[{};{}H\u{1b}[m{}",
+                        self.pane.y() + 1,
+                        self.pane.render_geom().x + 1,
+                        raw_vte_output
+                    ),
+                );
             }
         }
         if let Some(tabs) = self
             .pane
             .pane_tabs()
             .filter(|_| matches!(self.pane.pid(), PaneId::Terminal(_)))
+            && self.pane.get_content_y() > self.pane.y()
+            && self.pane.get_content_rows() > 0
         {
-            if self.pane.get_content_y() > self.pane.y() && self.pane.get_content_rows() > 0 {
-                for client in clients {
-                    let characters = crate::pane_tabs::render_bar(
-                        tabs,
-                        self.pane.pane_tabs_view(client),
-                        tabs.bar_focused.contains(&client),
-                        self.pane.get_content_columns(),
-                        &self.style,
-                    );
-                    self.output
-                        .add_character_chunks_to_client(
-                            client,
-                            vec![CharacterChunk::new(
-                                characters,
-                                self.pane.get_content_x(),
-                                self.pane.get_content_y() - 1,
-                            )],
-                            self.z_index,
-                        )
-                        .context("render terminal pane tabs")?;
-                }
+            for client in clients {
+                let characters = crate::pane_tabs::render_bar(
+                    tabs,
+                    self.pane.pane_tabs_view(client),
+                    tabs.bar_focused.contains(&client),
+                    self.pane.get_content_columns(),
+                    &self.style,
+                );
+                self.output
+                    .add_character_chunks_to_client(
+                        client,
+                        vec![CharacterChunk::new(
+                            characters,
+                            self.pane.get_content_x(),
+                            self.pane.get_content_y() - 1,
+                        )],
+                        self.z_index,
+                    )
+                    .context("render terminal pane tabs")?;
             }
         }
         Ok(())
@@ -251,18 +251,18 @@ impl<'a> PaneContentsAndUi<'a> {
                 kitty_image_chunks,
                 self.z_index,
             );
-            if let Some(raw_vte_output) = raw_vte_output {
-                if !raw_vte_output.is_empty() {
-                    self.output.add_post_vte_instruction_to_client(
-                        client_id,
-                        &format!(
-                            "\u{1b}[{};{}H\u{1b}[m{}",
-                            self.pane.y() + 1,
-                            self.pane.render_geom().x + 1,
-                            raw_vte_output
-                        ),
-                    );
-                }
+            if let Some(raw_vte_output) = raw_vte_output
+                && !raw_vte_output.is_empty()
+            {
+                self.output.add_post_vte_instruction_to_client(
+                    client_id,
+                    &format!(
+                        "\u{1b}[{};{}H\u{1b}[m{}",
+                        self.pane.y() + 1,
+                        self.pane.render_geom().x + 1,
+                        raw_vte_output
+                    ),
+                );
             }
         }
         Ok(())
@@ -340,18 +340,18 @@ impl<'a> PaneContentsAndUi<'a> {
                         }
                     })
                     .unwrap_or(false);
-                if cursor_is_visible {
-                    if let Some(vte_output) = self.pane.render_fake_cursor(colors.0, colors.1) {
-                        self.output.add_post_vte_instruction_to_client(
-                            client_id,
-                            &format!(
-                                "\u{1b}[{};{}H\u{1b}[m{}",
-                                self.pane.y() + 1,
-                                self.pane.render_geom().x + 1,
-                                vte_output
-                            ),
-                        );
-                    }
+                if cursor_is_visible
+                    && let Some(vte_output) = self.pane.render_fake_cursor(colors.0, colors.1)
+                {
+                    self.output.add_post_vte_instruction_to_client(
+                        client_id,
+                        &format!(
+                            "\u{1b}[{};{}H\u{1b}[m{}",
+                            self.pane.y() + 1,
+                            self.pane.render_geom().x + 1,
+                            vte_output
+                        ),
+                    );
                 }
             }
         }
@@ -367,10 +367,10 @@ impl<'a> PaneContentsAndUi<'a> {
             return;
         }
         let vte_output = self.pane.render_terminal_title(client_mode);
-        if let Some(previous_title) = previous_title {
-            if *previous_title == vte_output {
-                return;
-            }
+        if let Some(previous_title) = previous_title
+            && *previous_title == vte_output
+        {
+            return;
         }
         *previous_title = Some(vte_output.clone());
         self.output

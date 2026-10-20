@@ -509,10 +509,11 @@ impl CommandPalette {
             Normalization::Smart,
             AtomKind::Fuzzy,
         );
-        if (self.is_root() || self.agent_picker()) && self.form.is_none() {
-            if let Err(error) = &agent_query {
-                self.error = Some(error.clone());
-            }
+        if (self.is_root() || self.agent_picker())
+            && self.form.is_none()
+            && let Err(error) = &agent_query
+        {
+            self.error = Some(error.clone());
         }
         let ranked_root_search = self.ranked_root_search();
         let mut buffer = Vec::new();
@@ -678,40 +679,39 @@ impl CommandPalette {
     }
 
     pub fn handle_key(&mut self, key: KeyWithModifier) -> Outcome {
-        if !self.busy {
-            if let Some(field) = self
+        if !self.busy
+            && let Some(field) = self
                 .form
                 .as_mut()
                 .and_then(|f| f.fields.get_mut(f.selected))
+        {
+            if field.capturing {
+                if let FieldValue::Text(input) = &mut field.value {
+                    input.set_text(key.to_string());
+                }
+                field.capturing = false;
+                return Outcome::None;
+            }
+            if field
+                .input_options
+                .as_ref()
+                .is_some_and(|o| o.kind == "key")
+                && key.bare_key == BareKey::F(2)
             {
-                if field.capturing {
-                    if let FieldValue::Text(input) = &mut field.value {
-                        input.set_text(key.to_string());
-                    }
-                    field.capturing = false;
-                    return Outcome::None;
+                field.capturing = true;
+                return Outcome::None;
+            }
+            if field
+                .input_options
+                .as_ref()
+                .is_some_and(|o| o.kind == "multiline")
+                && key.bare_key == BareKey::Enter
+                && key.has_only_modifiers(&[KeyModifier::Shift])
+            {
+                if let FieldValue::Text(input) = &mut field.value {
+                    insert_multiline(input, "\n");
                 }
-                if field
-                    .input_options
-                    .as_ref()
-                    .is_some_and(|o| o.kind == "key")
-                    && key.bare_key == BareKey::F(2)
-                {
-                    field.capturing = true;
-                    return Outcome::None;
-                }
-                if field
-                    .input_options
-                    .as_ref()
-                    .is_some_and(|o| o.kind == "multiline")
-                    && key.bare_key == BareKey::Enter
-                    && key.has_only_modifiers(&[KeyModifier::Shift])
-                {
-                    if let FieldValue::Text(input) = &mut field.value {
-                        insert_multiline(input, "\n");
-                    }
-                    return Outcome::None;
-                }
+                return Outcome::None;
             }
         }
         let key = match key.bare_key {
@@ -744,10 +744,10 @@ impl CommandPalette {
                 });
             return Outcome::None;
         }
-        if let Some(agent) = &mut self.agent {
-            if let Some(outcome) = agent.get_mut().key(&key, self.view) {
-                return outcome;
-            }
+        if let Some(agent) = &mut self.agent
+            && let Some(outcome) = agent.get_mut().key(&key, self.view)
+        {
+            return outcome;
         }
         if self.form.is_none() && self.metadata.is_some() && key.bare_key == BareKey::Tab {
             self.metadata_focus = (self.metadata_focus
@@ -857,30 +857,29 @@ impl CommandPalette {
                 value: FieldValue::Choice { options, selected },
                 ..
             }) = form.fields.get_mut(form.selected)
+                && matches!(key.bare_key, BareKey::Char(_) | BareKey::Backspace)
             {
-                if matches!(key.bare_key, BareKey::Char(_) | BareKey::Backspace) {
-                    self.choice_input.handle_key(key);
-                    let pattern = Pattern::new(
-                        self.choice_input.get_text(),
-                        CaseMatching::Ignore,
-                        Normalization::Smart,
-                        AtomKind::Fuzzy,
-                    );
-                    let mut buffer = Vec::new();
-                    if let Some((index, _)) = options
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, value)| {
-                            pattern
-                                .score(Utf32Str::new(value, &mut buffer), &mut self.matcher)
-                                .map(|score| (i, score))
-                        })
-                        .max_by_key(|(_, score)| *score)
-                    {
-                        *selected = index;
-                    }
-                    return Outcome::None;
+                self.choice_input.handle_key(key);
+                let pattern = Pattern::new(
+                    self.choice_input.get_text(),
+                    CaseMatching::Ignore,
+                    Normalization::Smart,
+                    AtomKind::Fuzzy,
+                );
+                let mut buffer = Vec::new();
+                if let Some((index, _)) = options
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, value)| {
+                        pattern
+                            .score(Utf32Str::new(value, &mut buffer), &mut self.matcher)
+                            .map(|score| (i, score))
+                    })
+                    .max_by_key(|(_, score)| *score)
+                {
+                    *selected = index;
                 }
+                return Outcome::None;
             }
             if matches!(
                 key.bare_key,
@@ -901,20 +900,19 @@ impl CommandPalette {
                         return self.back();
                     } else {
                         for (index, field) in form.fields.iter().enumerate() {
-                            if let Some(options) = &field.input_options {
-                                if options.kind == "number"
-                                    && field.text_value().parse::<i64>().ok().is_none_or(|v| {
-                                        options.minimum.is_some_and(|min| v < min)
-                                            || options.maximum.is_some_and(|max| v > max)
-                                    })
-                                {
-                                    self.error = Some(format!(
-                                        "{}: enter a whole number within the displayed bounds",
-                                        field.label
-                                    ));
-                                    form.selected = index;
-                                    return Outcome::None;
-                                }
+                            if let Some(options) = &field.input_options
+                                && options.kind == "number"
+                                && field.text_value().parse::<i64>().ok().is_none_or(|v| {
+                                    options.minimum.is_some_and(|min| v < min)
+                                        || options.maximum.is_some_and(|max| v > max)
+                                })
+                            {
+                                self.error = Some(format!(
+                                    "{}: enter a whole number within the displayed bounds",
+                                    field.label
+                                ));
+                                form.selected = index;
+                                return Outcome::None;
                             }
                         }
                         return Outcome::Submit {
@@ -1025,17 +1023,15 @@ impl CommandPalette {
             .form
             .as_mut()
             .and_then(|f| f.fields.get_mut(f.selected))
-        {
-            if field
+            && field
                 .input_options
                 .as_ref()
                 .is_some_and(|o| o.kind == "multiline" || o.kind == "text")
-            {
-                if let FieldValue::Text(input) = &mut field.value {
-                    insert_multiline(input, text);
-                }
-                return;
+        {
+            if let FieldValue::Text(input) = &mut field.value {
+                insert_multiline(input, text);
             }
+            return;
         }
         let text: String = text
             .chars()
@@ -1119,10 +1115,11 @@ impl CommandPalette {
             } else {
                 None
             };
-            if (section, label) != previous && capacity >= 2 {
-                if let Some(label) = label {
-                    rows.push(ResultRow::Heading(label.into()));
-                }
+            if (section, label) != previous
+                && capacity >= 2
+                && let Some(label) = label
+            {
+                rows.push(ResultRow::Heading(label.into()));
             }
             rows.push(ResultRow::Entry(index, 0));
             previous = (section, label);
@@ -1297,10 +1294,10 @@ impl CommandPalette {
             }
         }
         let mut visible = Vec::new();
-        if capacity >= 2 {
-            if let Some(heading) = sticky_heading(start) {
-                visible.push(ResultRow::Heading(heading));
-            }
+        if capacity >= 2
+            && let Some(heading) = sticky_heading(start)
+        {
+            visible.push(ResultRow::Heading(heading));
         }
         let remaining = capacity - visible.len();
         visible.extend(rows.into_iter().skip(start).take(remaining));
@@ -1483,15 +1480,15 @@ impl CommandPalette {
                 }
             } else if let Some(row) = layout.result_rows.get(y - layout.options_y) {
                 self.select_row(row);
-                if self.metadata.is_some() {
-                    if let ResultRow::Entry(index, _) = row {
-                        self.metadata_focus =
-                            if self.entries[self.matches[*index]].id.contains("event:") {
-                                1
-                            } else {
-                                2
-                            };
-                    }
+                if self.metadata.is_some()
+                    && let ResultRow::Entry(index, _) = row
+                {
+                    self.metadata_focus =
+                        if self.entries[self.matches[*index]].id.contains("event:") {
+                            1
+                        } else {
+                            2
+                        };
                 }
             }
         }

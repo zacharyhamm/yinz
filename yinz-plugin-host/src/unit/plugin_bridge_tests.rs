@@ -2775,8 +2775,8 @@ impl TestBridge {
         done.wait_until("fixture load", Duration::from_secs(30), |result| {
             result.as_ref().map(|_| ())
         });
-        let result = done.lock().take().unwrap();
-        result
+
+        done.lock().take().unwrap()
     }
 
     fn wait_for_executor(&self, plugin_id: PluginId) {

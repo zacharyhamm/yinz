@@ -579,11 +579,11 @@ pub fn display_command(command: &str) -> String {
         let json = flag + FLAG.len();
         let mut values =
             serde_json::Deserializer::from_str(&command[json..]).into_iter::<serde_json::Value>();
-        if let Some(Ok(value)) = values.next() {
-            if value == super::claude_hook_settings(super::CLAUDE_HOOK_REPORT_COMMAND) {
-                let end = json + values.byte_offset();
-                command.replace_range(flag..end, "");
-            }
+        if let Some(Ok(value)) = values.next()
+            && value == super::claude_hook_settings(super::CLAUDE_HOOK_REPORT_COMMAND)
+        {
+            let end = json + values.byte_offset();
+            command.replace_range(flag..end, "");
         }
     }
     let mut words: Vec<&str> = command.split(' ').collect();
@@ -610,17 +610,17 @@ pub fn display_command(command: &str) -> String {
     } else {
         Some(0)
     };
-    if let Some(start) = start {
-        if words.get(start..start + 6).is_some_and(|args| {
+    if let Some(start) = start
+        && words.get(start..start + 6).is_some_and(|args| {
             (args[0] == "yinz" || args[0].ends_with("/yinz"))
                 && args[1] == "agent"
                 && matches!(args[2], "claude" | "codex-untracked")
                 && args[3] == "--command"
                 && args[5] == "--"
-        }) {
-            let executable = words[start + 4];
-            words.splice(start..start + 6, [executable]);
-        }
+        })
+    {
+        let executable = words[start + 4];
+        words.splice(start..start + 6, [executable]);
     }
     words.join(" ")
 }
@@ -650,17 +650,16 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         .as_deref()
         .and_then(yinz_types::agent::provider::provider);
     let executable = trimmed(&spec.command);
-    if let (Some(explicit), Some(executable)) = (trimmed(&spec.kind), executable) {
-        if let Some(detected) = yinz_types::agent::kind_from_program_and_args(
+    if let (Some(explicit), Some(executable)) = (trimmed(&spec.kind), executable)
+        && let Some(detected) = yinz_types::agent::kind_from_program_and_args(
             std::path::Path::new(executable),
             &spec.args,
-        ) {
-            if kind.as_deref() != Some(detected.as_str()) {
-                return Err(format!(
-                    "agent kind {explicit:?} conflicts with {detected} executable {executable:?}"
-                ));
-            }
-        }
+        )
+        && kind.as_deref() != Some(detected.as_str())
+    {
+        return Err(format!(
+            "agent kind {explicit:?} conflicts with {detected} executable {executable:?}"
+        ));
     }
     let program = match (kind.as_deref(), executable, &provider) {
         (_, Some(command), _) => command.to_owned(),
@@ -864,16 +863,16 @@ pub fn resume_command(
     // resume in `$YINZ_TMP_DIR/plugin-tmp/scratch`, which is the wrong folder rather than a
     // refusal. A remote cwd is the far machine's and is passed through as it stands, so this is
     // the local case only - and the list has to stay in step with the one over there.
-    if !target.is_remote() {
-        if let Some(mount) = cwd.as_ref().and_then(|cwd| {
+    if !target.is_remote()
+        && let Some(mount) = cwd.as_ref().and_then(|cwd| {
             ["/host", "/data", "/cache", "/tmp"]
                 .into_iter()
                 .find(|mount| cwd.starts_with(mount))
-        }) {
-            return Err(format!(
-                "agent cannot open a pane under {mount}: the plugin mounts claim it"
-            ));
-        }
+        })
+    {
+        return Err(format!(
+            "agent cannot open a pane under {mount}: the plugin mounts claim it"
+        ));
     }
     let spec = Spec {
         kind: Some(kind.to_owned()),

@@ -308,7 +308,8 @@ impl<'a> FloatingPaneGrid<'a> {
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
-        let next_index = panes
+
+        panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
@@ -324,8 +325,7 @@ impl<'a> FloatingPaneGrid<'a> {
                 }
             })
             .map(|(_, (pid, _))| pid)
-            .copied();
-        next_index
+            .copied()
     }
     pub fn pane_id_on_edge(&self, direction: Direction) -> Option<PaneId> {
         let panes = self.panes.borrow();
@@ -334,7 +334,8 @@ impl<'a> FloatingPaneGrid<'a> {
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
-        let next_index = panes
+
+        panes
             .iter()
             .enumerate()
             .max_by(|(_, (_, a)), (_, (_, b))| match direction {
@@ -368,8 +369,7 @@ impl<'a> FloatingPaneGrid<'a> {
                 },
             })
             .map(|(_, (pid, _))| pid)
-            .copied();
-        next_index
+            .copied()
     }
     pub fn next_selectable_pane_id_below(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
@@ -379,7 +379,8 @@ impl<'a> FloatingPaneGrid<'a> {
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
-        let next_index = panes
+
+        panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
@@ -395,8 +396,7 @@ impl<'a> FloatingPaneGrid<'a> {
                 }
             })
             .map(|(_, (pid, _))| pid)
-            .copied();
-        next_index
+            .copied()
     }
     pub fn next_selectable_pane_id_above(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
@@ -406,7 +406,8 @@ impl<'a> FloatingPaneGrid<'a> {
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
-        let next_index = panes
+
+        panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
@@ -422,8 +423,7 @@ impl<'a> FloatingPaneGrid<'a> {
                 }
             })
             .map(|(_, (pid, _))| pid)
-            .copied();
-        next_index
+            .copied()
     }
     pub fn next_selectable_pane_id_to_the_right(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
@@ -433,7 +433,8 @@ impl<'a> FloatingPaneGrid<'a> {
             .filter(|(_, p)| p.selectable())
             .map(|(p_id, p)| (*p_id, p.render_geom()))
             .collect();
-        let next_index = panes
+
+        panes
             .iter()
             .enumerate()
             .filter(|(_, (_, c))| {
@@ -449,8 +450,7 @@ impl<'a> FloatingPaneGrid<'a> {
                 }
             })
             .map(|(_, (pid, _))| pid)
-            .copied();
-        next_index
+            .copied()
     }
     pub fn next_selectable_pane_id(&self, current_pane_id: &PaneId) -> Option<PaneId> {
         let panes = self.panes.borrow();
@@ -512,7 +512,7 @@ impl<'a> FloatingPaneGrid<'a> {
             return None;
         }
         macro_rules! find_unoccupied_offset {
-            ($get_geom_with_offset:expr, $viewport:expr, $other_geoms:expr) => {
+            ($get_geom_with_offset:expr_2021, $viewport:expr_2021, $other_geoms:expr_2021) => {
                 let mut offset = 0;
                 loop {
                     let geom_with_current_offset = $get_geom_with_offset(offset);

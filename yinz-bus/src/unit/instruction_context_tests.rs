@@ -137,7 +137,7 @@ macro_rules! pin_context_to_instruction {
         context: $context:ty;
         special: [$($special:literal),* $(,)?];
         only_special: [$($only_special:literal),* $(,)?];
-        targets: [$(($target_name:literal, $sample:expr, $target:literal)),* $(,)?];
+        targets: [$(($target_name:literal, $sample:expr_2021, $target:literal)),* $(,)?];
     ) => {
         mod $name {
             use super::*;

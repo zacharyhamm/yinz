@@ -581,15 +581,13 @@ pub fn search_detail(
         .entries
         .into_iter()
         .find(|entry| entry.revision == revision)
-    {
-        if let Some(selected) = page
+        && let Some(selected) = page
             .entries
             .iter_mut()
             .find(|entry| entry.revision == revision)
-        {
-            *selected = entry;
-            page.truncated_revisions.retain(|r| *r != revision);
-        }
+    {
+        *selected = entry;
+        page.truncated_revisions.retain(|r| *r != revision);
     }
     Ok(page)
 }

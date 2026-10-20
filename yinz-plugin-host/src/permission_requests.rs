@@ -106,17 +106,16 @@ impl PluginBridge {
             && self
                 .plugin_ids_waiting_for_permission_request
                 .remove(&plugin)
+            && let Some(load_id) = self.load_ids.get(&plugin).copied()
         {
-            if let Some(load_id) = self.load_ids.get(&plugin).copied() {
-                self.senders
-                    .send_to_plugin(PluginInstruction::ApplyCachedEvents {
-                        load_id,
-                        plugin_ids: vec![plugin],
-                        done_receiving_permissions: true,
-                    })
-                    .context("replay events after permission cancellation")
-                    .non_fatal();
-            }
+            self.senders
+                .send_to_plugin(PluginInstruction::ApplyCachedEvents {
+                    load_id,
+                    plugin_ids: vec![plugin],
+                    done_receiving_permissions: true,
+                })
+                .context("replay events after permission cancellation")
+                .non_fatal();
         }
     }
 

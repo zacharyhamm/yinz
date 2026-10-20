@@ -43,16 +43,15 @@ impl PluginBridge {
         if map.get_running_plugin(id, None).is_none() {
             return;
         }
-        if let Some(metadata) = map.cached_metadata(id) {
-            if let (RunPluginLocation::File(_), Some(source)) =
+        if let Some(metadata) = map.cached_metadata(id)
+            && let (RunPluginLocation::File(_), Some(source)) =
                 (&metadata.config.location, &metadata.resolved_source_path)
-            {
-                // Refresh only this declaration, not every alias of its previous source.
-                self.resolved_plugin_locations.insert(
-                    RunPluginLocation::File(metadata.config.path.clone()),
-                    RunPluginLocation::File(source.clone()),
-                );
-            }
+        {
+            // Refresh only this declaration, not every alias of its previous source.
+            self.resolved_plugin_locations.insert(
+                RunPluginLocation::File(metadata.config.path.clone()),
+                RunPluginLocation::File(source.clone()),
+            );
         }
     }
 
@@ -63,21 +62,20 @@ impl PluginBridge {
     }
 
     pub(super) fn loaded_plugin_identity(&self, id: PluginId, run: RunPlugin) -> RunPlugin {
-        if matches!(run.location, RunPluginLocation::File(_)) {
-            if let Some(path) = self
+        if matches!(run.location, RunPluginLocation::File(_))
+            && let Some(path) = self
                 .plugin_map
                 .lock()
                 .unwrap()
                 // Identity is fixed at load; the guest may be waiting for this thread's reply.
                 .cached_metadata(id)
                 .and_then(|metadata| metadata.resolved_source_path.clone())
-            {
-                // This belongs to this load, even if its declaration's symlink has moved.
-                return RunPlugin {
-                    location: RunPluginLocation::File(path),
-                    ..run
-                };
-            }
+        {
+            // This belongs to this load, even if its declaration's symlink has moved.
+            return RunPlugin {
+                location: RunPluginLocation::File(path),
+                ..run
+            };
         }
         self.normalize_plugin(run)
     }
@@ -209,15 +207,14 @@ impl PluginBridge {
                 .configured_plugins
                 .iter()
                 .any(|old| self.same_identity(old, &run))
-            {
-                if let Err(error) = self.start_background_plugin(
+                && let Err(error) = self.start_background_plugin(
                     RunPluginOrAlias::RunPlugin(run.clone()),
                     client,
                     false,
-                ) {
-                    log::error!("Failed to start background plugin {run:?}: {error:#}");
-                    continue;
-                }
+                )
+            {
+                log::error!("Failed to start background plugin {run:?}: {error:#}");
+                continue;
             }
             reconciled.push(run);
         }
@@ -398,10 +395,10 @@ impl PluginBridge {
             statuses.push(self.plugin_status(id, &run));
         } else {
             for id in ids {
-                if request.operation == PluginOperation::Reload {
-                    if let Some(caller) = request.caller {
-                        self.plugin_callers.insert(id, caller);
-                    }
+                if request.operation == PluginOperation::Reload
+                    && let Some(caller) = request.caller
+                {
+                    self.plugin_callers.insert(id, caller);
                 }
                 match request.operation {
                     PluginOperation::Reload => {

@@ -302,7 +302,8 @@ fn hooks_fired_by_until(steps: Vec<ScreenInstruction>, expected: HookPoint) -> V
         },
     );
     mock_screen.teardown(vec![plugin_thread, screen_thread]);
-    let fired = instructions
+
+    instructions
         .lock()
         .iter()
         .filter_map(|instruction| match instruction {
@@ -314,8 +315,7 @@ fn hooks_fired_by_until(steps: Vec<ScreenInstruction>, expected: HookPoint) -> V
             } => Some((*point, *pane_id, payload.clone())),
             _ => None,
         })
-        .collect();
-    fired
+        .collect()
 }
 
 /// A hook-driven agent record flips several times a second under a working

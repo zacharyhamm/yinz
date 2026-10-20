@@ -91,10 +91,10 @@ impl Screen {
                 .cloned();
             let state = self.client_projects.entry(client).or_default();
             if (state.focused != focused || state.focused_project != project) && project.is_some() {
-                if state.current != project {
-                    if let Some(name) = &project {
-                        self.last_project.remember(name);
-                    }
+                if state.current != project
+                    && let Some(name) = &project
+                {
+                    self.last_project.remember(name);
                 }
                 state.current.clone_from(&project);
             }
@@ -904,11 +904,12 @@ impl Screen {
             if original.is_none() && target.is_none() {
                 continue;
             }
-            if let Some(cached) = state.shortcuts.get(&entry.id) {
-                if cached.original == original && cached.target == target {
-                    entry.shortcut.clone_from(&cached.hint);
-                    continue;
-                }
+            if let Some(cached) = state.shortcuts.get(&entry.id)
+                && cached.original == original
+                && cached.target == target
+            {
+                entry.shortcut.clone_from(&cached.hint);
+                continue;
             }
             #[cfg(test)]
             {

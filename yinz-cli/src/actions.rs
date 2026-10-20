@@ -739,10 +739,10 @@ pub fn actions_from_cli(
             let mut file = file;
             let current_dir = get_current_dir();
             let cwd = cwd.map(|cwd| current_dir.join(cwd)).or(Some(current_dir));
-            if file.is_relative() {
-                if let Some(cwd) = cwd.as_ref() {
-                    file = cwd.join(file);
-                }
+            if file.is_relative()
+                && let Some(cwd) = cwd.as_ref()
+            {
+                file = cwd.join(file);
             }
             let start_suppressed = false;
             Ok(vec![Action::EditFile {
@@ -944,7 +944,8 @@ pub fn actions_from_cli(
                 let swap_layouts: Option<(String, String)> = None;
                 let raw_layout_for_error = raw_layout.clone();
                 let layout = yinz_config::layout::from_str(&raw_layout, path_to_raw_layout, swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())), cwd).map_err(|e| {
-                        let stringified_error = match e {
+
+                        match e {
                             ConfigError::KdlError(kdl_error) => {
                                 let error = kdl_error.add_src(layout_source_name.clone(), raw_layout_for_error);
                                 let report: Report = error.into();
@@ -972,8 +973,7 @@ pub fn actions_from_cli(
                                 format!("{:?}", report)
                             },
                             e => format!("{}", e)
-                        };
-                        stringified_error
+                        }
                     })?;
                 let mut tabs = layout.tabs();
                 if !tabs.is_empty() {
@@ -1046,7 +1046,8 @@ pub fn actions_from_cli(
                     )
                     .map_err(|e| format!("Failed to load layout: {}", e))?;
                 let layout = yinz_config::layout::from_str(&raw_layout, path_to_raw_layout, swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())), cwd).map_err(|e| {
-                        let stringified_error = match e {
+
+                        match e {
                             ConfigError::KdlError(kdl_error) => {
                                 let error = kdl_error.add_src(layout_source_name.clone(), raw_layout);
                                 let report: Report = error.into();
@@ -1074,8 +1075,7 @@ pub fn actions_from_cli(
                                 format!("{:?}", report)
                             },
                             e => format!("{}", e)
-                        };
-                        stringified_error
+                        }
                     })?;
                 let mut tabs = layout.tabs();
                 if !tabs.is_empty() {
@@ -1192,20 +1192,17 @@ pub fn actions_from_cli(
                 swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())),
                 None, // cwd
             )
-            .map_err(|e| {
-                let stringified_error = match e {
-                    ConfigError::KdlError(kdl_error) => {
-                        let error = kdl_error.add_src(layout_source_name.clone(), raw_layout);
-                        let report: Report = error.into();
-                        format!("{:?}", report)
-                    },
-                    ConfigError::KdlDeserializationError(kdl_error) => {
-                        let error_message = kdl_error.to_string();
-                        format!("Failed to deserialize KDL layout: {}", error_message)
-                    },
-                    e => format!("{}", e),
-                };
-                stringified_error
+            .map_err(|e| match e {
+                ConfigError::KdlError(kdl_error) => {
+                    let error = kdl_error.add_src(layout_source_name.clone(), raw_layout);
+                    let report: Report = error.into();
+                    format!("{:?}", report)
+                },
+                ConfigError::KdlDeserializationError(kdl_error) => {
+                    let error_message = kdl_error.to_string();
+                    format!("Failed to deserialize KDL layout: {}", error_message)
+                },
+                e => format!("{}", e),
             })?;
 
             // Convert all tabs to Vec<TabLayoutInfo>

@@ -405,10 +405,10 @@ impl Pair {
                         }
                         events.sort_by_key(Value::to_string);
                     }
-                    if let Some(preset) = command.pointer_mut("/Reconfigure/0") {
-                        if let Some(source) = preset.as_str() {
-                            *preset = Value::String(super::reference_trace::legacy_preset(source));
-                        }
+                    if let Some(preset) = command.pointer_mut("/Reconfigure/0")
+                        && let Some(source) = preset.as_str()
+                    {
+                        *preset = Value::String(super::reference_trace::legacy_preset(source));
                     }
                     normalize_command_settings(&mut command);
                     command
@@ -567,17 +567,15 @@ fn normalize_command_settings(value: &mut Value) {
                     object.clone(),
                 ))
                 .is_ok()
+                && let Some(Value::Array(args)) = object.get_mut("args")
             {
-                if let Some(Value::Array(args)) = object.get_mut("args") {
-                    for index in 1..args.len() {
-                        if args[index - 1].as_str() == Some("--settings") {
-                            if let Some(raw) = args[index].as_str() {
-                                if let Ok(mut settings) = serde_json::from_str::<Value>(raw) {
-                                    settings.sort_all_objects();
-                                    args[index] = Value::String(settings.to_string());
-                                }
-                            }
-                        }
+                for index in 1..args.len() {
+                    if args[index - 1].as_str() == Some("--settings")
+                        && let Some(raw) = args[index].as_str()
+                        && let Ok(mut settings) = serde_json::from_str::<Value>(raw)
+                    {
+                        settings.sort_all_objects();
+                        args[index] = Value::String(settings.to_string());
                     }
                 }
             }

@@ -481,18 +481,18 @@ impl PaneFleet {
                     kitty_image_chunks,
                     None,
                 );
-                if let Some(raw_vte_output) = raw_vte_output {
-                    if !raw_vte_output.is_empty() {
-                        output.add_post_vte_instruction_to_client(
-                            CLIENT_ID,
-                            &format!(
-                                "\u{1b}[{};{}H\u{1b}[m{}",
-                                pane.y() + 1,
-                                pane.x() + 1,
-                                raw_vte_output
-                            ),
-                        );
-                    }
+                if let Some(raw_vte_output) = raw_vte_output
+                    && !raw_vte_output.is_empty()
+                {
+                    output.add_post_vte_instruction_to_client(
+                        CLIENT_ID,
+                        &format!(
+                            "\u{1b}[{};{}H\u{1b}[m{}",
+                            pane.y() + 1,
+                            pane.x() + 1,
+                            raw_vte_output
+                        ),
+                    );
                 }
             }
         }

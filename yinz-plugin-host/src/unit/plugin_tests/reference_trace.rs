@@ -211,10 +211,10 @@ impl Trace {
         for call in &step.calls {
             let command_json = replace(call.command.clone(), "<fixture-root>", &self.root);
             let mut command: PluginCommand = serde_json::from_value(command_json.clone()).unwrap();
-            if let PluginCommand::DataDefineEntity { def, .. } = &mut command {
-                if def.name == "project" {
-                    *def = project_data::store::project_def();
-                }
+            if let PluginCommand::DataDefineEntity { def, .. } = &mut command
+                && def.name == "project"
+            {
+                *def = project_data::store::project_def();
             }
             let reply = responder(&command);
             let mut actual = replace(
@@ -430,13 +430,11 @@ pub(crate) fn legacy_project_fields(value: &mut Value) {
             if object
                 .get("entity")
                 .is_some_and(|entity| entity == "project")
+                && let Some(values) = object.get_mut("values").and_then(Value::as_array_mut)
             {
-                if let Some(values) = object.get_mut("values").and_then(Value::as_array_mut) {
-                    values.retain(|pair| {
-                        !(pair[0] == "provider_identity"
-                            && (pair[1].is_null() || pair[1] == "Null"))
-                    });
-                }
+                values.retain(|pair| {
+                    !(pair[0] == "provider_identity" && (pair[1].is_null() || pair[1] == "Null"))
+                });
             }
             for key in ["attrs", "attrs_added", "select"] {
                 if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {

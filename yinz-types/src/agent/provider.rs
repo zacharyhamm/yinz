@@ -223,8 +223,8 @@ impl AgentProvider {
                 return Err("agent restart grammar exceeds its limits".into());
             }
         }
-        if let Some(input) = &self.input {
-            if input.clear_key.parse::<KeyWithModifier>().is_err()
+        if let Some(input) = &self.input
+            && (input.clear_key.parse::<KeyWithModifier>().is_err()
                 || input.submit_key.parse::<KeyWithModifier>().is_err()
                 || input.submit_delay_ms > 10_000
                 || input.paste_prefix.len() > 4096
@@ -233,10 +233,9 @@ impl AgentProvider {
                 || input.command_prefixes.iter().any(|prefix| {
                     prefix.is_empty() || prefix.len() > 32 || prefix.chars().any(char::is_control)
                 })
-                || !matches!(input.newline.as_str(), "\n" | "\r" | "\r\n")
-            {
-                return Err("agent input settings are invalid or exceed their limits".into());
-            }
+                || !matches!(input.newline.as_str(), "\n" | "\r" | "\r\n"))
+        {
+            return Err("agent input settings are invalid or exceed their limits".into());
         }
         if self.hooks.len() > 16 {
             return Err("agent provider has too many hook artifacts".into());

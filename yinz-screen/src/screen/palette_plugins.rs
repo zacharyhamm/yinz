@@ -740,18 +740,18 @@ impl Screen {
                         self.palette_reply(owner, client, scope, result, false)
                     },
                     Command::Close { scope } => {
-                        if let Some(state) = self.command_palettes.get_mut(&client) {
-                            if let Some(index) = state.plugins.pending.iter().position(|p| {
+                        if let Some(state) = self.command_palettes.get_mut(&client)
+                            && let Some(index) = state.plugins.pending.iter().position(|p| {
                                 p.execution && p.provider.0 == owner && p.scope == scope
-                            }) {
-                                let pending = state.plugins.pending.remove(index);
-                                pending.active.store(false, Ordering::Release);
-                                self.palette_providers
-                                    .closed
-                                    .insert((owner, client, scope), pending.label);
-                                self.close_command_palette(client);
-                                return true;
-                            }
+                            })
+                        {
+                            let pending = state.plugins.pending.remove(index);
+                            pending.active.store(false, Ordering::Release);
+                            self.palette_providers
+                                .closed
+                                .insert((owner, client, scope), pending.label);
+                            self.close_command_palette(client);
+                            return true;
                         }
                         false
                     },
@@ -876,52 +876,51 @@ impl Screen {
         mut result: Result<Reply, String>,
         timeout: bool,
     ) -> bool {
-        if !timeout {
-            if let Some(label) =
+        if !timeout
+            && let Some(label) =
                 self.palette_providers
                     .closed
                     .remove(&(owner.clone(), client, scope.clone()))
-            {
-                if let Ok(reply) = &result {
-                    deliver(
-                        &self.bus.senders,
-                        &owner,
-                        client,
-                        Message::Release {
-                            handles: reply.handles(),
-                        },
-                        None,
-                    );
-                    if let Err(error) = reply.validate() {
-                        result = Err(error);
-                    }
+        {
+            if let Ok(reply) = &result {
+                deliver(
+                    &self.bus.senders,
+                    &owner,
+                    client,
+                    Message::Release {
+                        handles: reply.handles(),
+                    },
+                    None,
+                );
+                if let Err(error) = reply.validate() {
+                    result = Err(error);
                 }
-                let message = match result {
-                    Ok(Reply::Complete { notification, .. }) => notification,
-                    Ok(Reply::Actions { .. }) => {
-                        format!("Could not {}: invalid palette reply", label.to_lowercase())
-                    },
-                    Ok(_) => format!("Completed: {label}"),
-                    Err(error) => {
-                        log::error!(
-                            "[deno:{}] Palette callback failed: {error}",
-                            owner.plugin_id
-                        );
-                        format!("Could not {}: {error}", label.to_lowercase())
-                    },
-                };
-                self.bus
-                    .senders
-                    .send_to_screen(ScreenInstruction::Notify(
-                        message,
-                        Some(yinz_types::data::PaneId::Plugin(owner.plugin_id)),
-                        None,
-                        None,
-                    ))
-                    .context("notifying palette completion")
-                    .non_fatal();
-                return true;
             }
+            let message = match result {
+                Ok(Reply::Complete { notification, .. }) => notification,
+                Ok(Reply::Actions { .. }) => {
+                    format!("Could not {}: invalid palette reply", label.to_lowercase())
+                },
+                Ok(_) => format!("Completed: {label}"),
+                Err(error) => {
+                    log::error!(
+                        "[deno:{}] Palette callback failed: {error}",
+                        owner.plugin_id
+                    );
+                    format!("Could not {}: {error}", label.to_lowercase())
+                },
+            };
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::Notify(
+                    message,
+                    Some(yinz_types::data::PaneId::Plugin(owner.plugin_id)),
+                    None,
+                    None,
+                ))
+                .context("notifying palette completion")
+                .non_fatal();
+            return true;
         }
         let Some(state) = self.command_palettes.get_mut(&client) else {
             if let Ok(reply) = result {
@@ -965,11 +964,11 @@ impl Screen {
                 None,
             );
         }
-        if let Ok(reply) = &result {
-            if let Err(error) = reply.validate() {
-                state.release(&self.bus.senders, client, &pending.provider, reply);
-                result = Err(error);
-            }
+        if let Ok(reply) = &result
+            && let Err(error) = reply.validate()
+        {
+            state.release(&self.bus.senders, client, &pending.provider, reply);
+            result = Err(error);
         }
         state.widget.busy = false;
         state.widget.pending = state.plugins.pending.iter().any(|p| !p.execution);

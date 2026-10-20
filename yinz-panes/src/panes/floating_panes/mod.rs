@@ -352,10 +352,10 @@ impl FloatingPanes {
         }
         self.move_clients_between_panes(pane_id, with_pane_id);
         self.active_panes.retarget_last_pane(pane_id, with_pane_id);
-        if let Some((id, _, _)) = self.pane_being_moved_with_mouse.as_mut() {
-            if *id == pane_id {
-                *id = with_pane_id;
-            }
+        if let Some((id, _, _)) = self.pane_being_moved_with_mouse.as_mut()
+            && *id == pane_id
+        {
+            *id = with_pane_id;
         }
         self.set_pane_frames().non_fatal();
         Ok(removed_pane)
@@ -678,10 +678,10 @@ impl FloatingPanes {
         };
 
         for (kind, pane) in &self.panes {
-            if let Some(fullscreen_pane_id) = self.fullscreen_pane_id {
-                if kind != &fullscreen_pane_id {
-                    continue;
-                }
+            if let Some(fullscreen_pane_id) = self.fullscreen_pane_id
+                && kind != &fullscreen_pane_id
+            {
+                continue;
             }
             match kind {
                 PaneId::Terminal(_) => {
@@ -1582,10 +1582,10 @@ impl FloatingPanes {
             log::error!("Cannot focus pane {:?} as it is not selectable!", pane_id);
             return;
         }
-        if let Some(focused_pane) = self.active_panes.get(&client_id) {
-            if pane_id != *focused_pane {
-                self.active_panes.set_last_pane(client_id, *focused_pane);
-            }
+        if let Some(focused_pane) = self.active_panes.get(&client_id)
+            && pane_id != *focused_pane
+        {
+            self.active_panes.set_last_pane(client_id, *focused_pane);
         }
         self.active_panes.insert(client_id, pane_id, &self.panes);
         self.focus_pane_for_all_clients(pane_id);
@@ -1690,12 +1690,11 @@ impl FloatingPanes {
         if let Some((last_pane_id, initial_position)) = self
             .pane_being_moved_with_mouse
             .map(|(pane_id, initial_position, _)| (pane_id, initial_position))
+            && last_pane_id == pane_id
         {
-            if last_pane_id == pane_id {
-                // preserve initial_position
-                self.pane_being_moved_with_mouse = Some((pane_id, initial_position, last_position));
-                return;
-            }
+            // preserve initial_position
+            self.pane_being_moved_with_mouse = Some((pane_id, initial_position, last_position));
+            return;
         }
         self.pane_being_moved_with_mouse = Some((pane_id, last_position, last_position));
     }

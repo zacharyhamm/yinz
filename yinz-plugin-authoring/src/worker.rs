@@ -284,16 +284,17 @@ pub fn supervise_cancel(
         if !stderr_done {
             stderr_done = drain(&mut stderr, &mut errors)?;
         }
-        if let Some(status) = child.0.try_wait().context("wait for worker")? {
-            if stdout_done && stderr_done {
-                if !remaining.is_empty() {
-                    bail!(
-                        "worker exited with {status} before reading its request: {}",
-                        String::from_utf8_lossy(&errors)
-                    );
-                }
-                return Ok((status, output, errors));
+        if let Some(status) = child.0.try_wait().context("wait for worker")?
+            && stdout_done
+            && stderr_done
+        {
+            if !remaining.is_empty() {
+                bail!(
+                    "worker exited with {status} before reading its request: {}",
+                    String::from_utf8_lossy(&errors)
+                );
             }
+            return Ok((status, output, errors));
         }
         std::thread::sleep(Duration::from_millis(1));
     }

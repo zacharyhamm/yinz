@@ -307,11 +307,11 @@ impl Screen {
                 if let Some(tab) = self.tabs.get_mut(&id) {
                     tab.agent_tab_waiting_for_pane = true;
                 }
-                if let Some(name) = name {
-                    if let Some(tab) = self.tabs.get_mut(&id) {
-                        tab.name = name;
-                        tab.set_user_named(true);
-                    }
+                if let Some(name) = name
+                    && let Some(tab) = self.tabs.get_mut(&id)
+                {
+                    tab.name = name;
+                    tab.set_user_named(true);
                 }
                 (id, true)
             },

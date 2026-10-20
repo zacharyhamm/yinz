@@ -1994,10 +1994,10 @@ fn replacement_exit_buffered_before_layout_is_held_after_settlement() {
         let (instruction, _) = plugins
             .recv_timeout(yinz_test_support::default_timeout())
             .unwrap();
-        if let PluginInstruction::NewTab(_, _, _, _, id, ..) = instruction {
-            if id != TabId::new(0) {
-                break id;
-            }
+        if let PluginInstruction::NewTab(_, _, _, _, id, ..) = instruction
+            && id != TabId::new(0)
+        {
+            break id;
         }
     };
     // The screen receives this before it knows which tab terminal 2 belongs to.

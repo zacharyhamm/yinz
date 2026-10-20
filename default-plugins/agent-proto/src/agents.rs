@@ -1469,10 +1469,10 @@ pub mod rows {
             .set("revision", entry.revision as i64)
             .set("kind", entry.kind.label())
             .set("text", entry.text.clone());
-        if let Some(tool) = &entry.tool {
-            if let Ok(value) = serde_json::to_string(tool) {
-                put = put.set("tool", value);
-            }
+        if let Some(tool) = &entry.tool
+            && let Ok(value) = serde_json::to_string(tool)
+        {
+            put = put.set("tool", value);
         }
         if let Some(event_id) = entry.event_id.as_ref() {
             put = put.set("event_id", event_id.clone());
@@ -3704,10 +3704,10 @@ pub fn mention_context(
 pub fn mention_candidates(panes: &[AgentPane], manual: &BTreeMap<u32, String>) -> Vec<String> {
     let mut candidates: Vec<String> = Vec::new();
     for pane in panes {
-        if let Some((kind, _)) = classify(pane, manual) {
-            if !candidates.iter().any(|candidate| candidate == &kind) {
-                candidates.push(kind.to_owned());
-            }
+        if let Some((kind, _)) = classify(pane, manual)
+            && !candidates.iter().any(|candidate| candidate == &kind)
+        {
+            candidates.push(kind.to_owned());
         }
     }
     for pane in panes {
@@ -3776,10 +3776,10 @@ pub fn list_json(
             });
             // The exact number the picker rounds to minutes. Only for a running
             // agent the poll has observed; absent means "no idea yet".
-            if pane.status == AgentStatus::Running {
-                if let Some((_, polls)) = activity.get(&pane.pane_id) {
-                    item["idle_seconds"] = json!(u64::from(*polls) * POLL_SECONDS);
-                }
+            if pane.status == AgentStatus::Running
+                && let Some((_, polls)) = activity.get(&pane.pane_id)
+            {
+                item["idle_seconds"] = json!(u64::from(*polls) * POLL_SECONDS);
             }
             if let Some((tab_id, name)) = &pane.tab {
                 item["tab_id"] = json!(tab_id);

@@ -712,12 +712,10 @@ fn handle_server_msg(
                     .session
                     .as_ref()
                     .is_some_and(|s| s.exit_status.is_none())
+                && let (Some(active), Some(snapshot)) = (&mut ctx.cmd.agent_theme, event.snapshot)
+                && active.launch_id == event.launch_id
             {
-                if let (Some(active), Some(snapshot)) = (&mut ctx.cmd.agent_theme, event.snapshot) {
-                    if active.launch_id == event.launch_id {
-                        active.snapshot = snapshot;
-                    }
-                }
+                active.snapshot = snapshot;
             }
             Ok(ControlOutcome::Continue)
         },
@@ -819,10 +817,8 @@ fn drain_master(ctx: &mut HostContext) {
             _ => break true,
         }
     };
-    if exhausted {
-        if let Some(session) = ctx.session.as_mut() {
-            session.drained = true;
-        }
+    if exhausted && let Some(session) = ctx.session.as_mut() {
+        session.drained = true;
     }
 }
 

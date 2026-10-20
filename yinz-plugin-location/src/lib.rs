@@ -126,11 +126,11 @@ pub fn refresh_file_identity(request: &mut RunPluginOrAlias) {
         RunPluginOrAlias::RunPlugin(plugin) => Some(plugin),
         RunPluginOrAlias::Alias(alias) => alias.run_plugin.as_mut(),
     };
-    if let Some(plugin) = plugin {
-        if let RunPluginLocation::File(location) = &mut plugin.location {
-            let declared = plugin.declared_path.as_ref().unwrap_or(location);
-            *location = declared.canonicalize().unwrap_or_else(|_| declared.clone());
-        }
+    if let Some(plugin) = plugin
+        && let RunPluginLocation::File(location) = &mut plugin.location
+    {
+        let declared = plugin.declared_path.as_ref().unwrap_or(location);
+        *location = declared.canonicalize().unwrap_or_else(|_| declared.clone());
     }
 }
 

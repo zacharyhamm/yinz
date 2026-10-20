@@ -1532,12 +1532,11 @@ fn history_process(
     let mut runtime = yinz_steel::worker::WorkerRuntime::new(std::path::Path::new(&binary), move |value| {
         let command = yinz_steel::binary::decode_command(value.clone())?;
         recorded.lock().unwrap().push(value);
-        if matches!(&command, PluginCommand::DataFetch { request } if request.entity == "agent_run") {
-            if let Some((waiting, release)) = hold.take() {
+        if matches!(&command, PluginCommand::DataFetch { request } if request.entity == "agent_run")
+            && let Some((waiting, release)) = hold.take() {
                 *waiting.lock() = true;
                 release.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
             }
-        }
         let Some(response) = responder(&command) else { return Ok(Value::Null); };
         Ok(match decode_response(CommandType::from(&command), &response).transpose()? {
             Some(DecodedResponse::Json(value)) => value,

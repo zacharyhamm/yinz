@@ -47,40 +47,40 @@ impl Screen {
             Some(client_id) if self.active_tab_ids.contains_key(&client_id) => Some(client_id),
             Some(_) => self.active_tab_ids.keys().next().copied(),
         };
-        if let Some(client_id) = client_id {
-            if let Ok(tab_exists) = self.go_to_tab_name(tab_name.clone(), client_id) {
-                self.render()?;
-                if tab_exists {
-                    // Tab already exists - find its ID and set in completion
-                    if let Some(existing_tab) = self.tabs.values().find(|t| t.name == tab_name) {
-                        if let Some(c) = completion_tx.as_mut() {
-                            c.set_affected_tab_id(existing_tab.id)
-                        }
-                    }
+        if let Some(client_id) = client_id
+            && let Ok(tab_exists) = self.go_to_tab_name(tab_name.clone(), client_id)
+        {
+            self.render()?;
+            if tab_exists {
+                // Tab already exists - find its ID and set in completion
+                if let Some(existing_tab) = self.tabs.values().find(|t| t.name == tab_name)
+                    && let Some(c) = completion_tx.as_mut()
+                {
+                    c.set_affected_tab_id(existing_tab.id)
                 }
-                if create && !tab_exists {
-                    let tab_index = self.get_new_tab_id();
-                    let should_change_focus_to_new_tab = true;
-                    // The name was typed in the command that asked for the tab.
-                    let user_named = !tab_name.is_empty();
-                    self.new_tab(tab_index, swap_layouts, Some(tab_name), Some(client_id))?;
-                    if let Some(tab) = self.tabs.get_mut(&tab_index) {
-                        tab.set_user_named(user_named);
-                    }
-                    self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
-                        None,
-                        default_shell,
-                        None,
-                        None,
-                        tab_index,
-                        None,  // initial_panes
-                        false, // block_on_first_terminal
-                        should_change_focus_to_new_tab,
-                        client_id,
-                        completion_tx,
-                    ))?;
-                    return Ok(()); // so we don't get to the completion signalling below
+            }
+            if create && !tab_exists {
+                let tab_index = self.get_new_tab_id();
+                let should_change_focus_to_new_tab = true;
+                // The name was typed in the command that asked for the tab.
+                let user_named = !tab_name.is_empty();
+                self.new_tab(tab_index, swap_layouts, Some(tab_name), Some(client_id))?;
+                if let Some(tab) = self.tabs.get_mut(&tab_index) {
+                    tab.set_user_named(user_named);
                 }
+                self.bus.senders.send_to_plugin(PluginInstruction::NewTab(
+                    None,
+                    default_shell,
+                    None,
+                    None,
+                    tab_index,
+                    None,  // initial_panes
+                    false, // block_on_first_terminal
+                    should_change_focus_to_new_tab,
+                    client_id,
+                    completion_tx,
+                ))?;
+                return Ok(()); // so we don't get to the completion signalling below
             }
         }
         Ok(())
@@ -779,10 +779,8 @@ impl Screen {
                             .focus_pane_with_id(pane, false, false, client_id)
                             .context("focus pane after switching tabs")?;
                     }
-                    if update_mode_infos {
-                        if let Some(tab) = self.tabs.get_mut(&new_tab_index) {
-                            tab.update_input_modes().with_context(err_context)?;
-                        }
+                    if update_mode_infos && let Some(tab) = self.tabs.get_mut(&new_tab_index) {
+                        tab.update_input_modes().with_context(err_context)?;
                     }
 
                     // Clear tab bell notification for the newly active tab
@@ -1001,12 +999,13 @@ impl Screen {
             self.teardown_tab(tab_id, !usable.is_empty())
                 .context(err_context)?;
         }
-        if confirm && self.quit_is_guarded() {
-            if let Some(client_id) = self.active_tab_ids.keys().copied().min() {
-                self.confirm_quit(client_id, true, None)
-                    .context(err_context)
-                    .non_fatal();
-            }
+        if confirm
+            && self.quit_is_guarded()
+            && let Some(client_id) = self.active_tab_ids.keys().copied().min()
+        {
+            self.confirm_quit(client_id, true, None)
+                .context(err_context)
+                .non_fatal();
         }
         Ok(())
     }
@@ -1188,10 +1187,11 @@ impl Screen {
         if preserve_guards {
             for (&plugin_id, notice) in &self.quit_notices {
                 let id = PaneId::Plugin(plugin_id);
-                if notice.guard && tab_to_close.pane_is_overlay(id) {
-                    if let Some(container) = tab_to_close.take_overlay_container(id) {
-                        overlay_panes.push(container);
-                    }
+                if notice.guard
+                    && tab_to_close.pane_is_overlay(id)
+                    && let Some(container) = tab_to_close.take_overlay_container(id)
+                {
+                    overlay_panes.push(container);
                 }
             }
         }

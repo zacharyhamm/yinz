@@ -983,7 +983,8 @@ fn bubblewrap_preparation_validates_each_distinct_checkout_once() {
         }
         let environment = yinz_config::project_config::bubblewrap::Environment::at_root(&root);
         for malformed in ["", "/tmp", "/tmp\n/tmp\n/tmp", "relative\nrelative"] {
-            std::env::set_var("YINZ_TEST_GIT_OUTPUT", malformed);
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("YINZ_TEST_GIT_OUTPUT", malformed) };
             assert!(environment.validate_cwd(&root).is_err());
         }
         return;

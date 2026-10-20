@@ -261,11 +261,10 @@ impl Tab {
                 .tabs
                 .iter_mut()
                 .find(|slot| slot.plugin_id == Some(plugin))
+                && slot.state != state
             {
-                if slot.state != state {
-                    slot.state = state;
-                    self.refresh_pane_tabs(id)?;
-                }
+                slot.state = state;
+                self.refresh_pane_tabs(id)?;
             }
         }
         Ok(())

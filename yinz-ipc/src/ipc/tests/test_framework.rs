@@ -43,7 +43,7 @@ pub(crate) fn uncovered_variants(
 
 /// Exercise the encoded wire too: struct conversions cannot catch missing oneof tags.
 macro_rules! test_client_roundtrip {
-    ($msg:expr) => {{
+    ($msg:expr_2021) => {{
         let original: crate::ipc::ClientToServerMsg = $msg;
         crate::ipc::tests::test_framework::record_covered(
             crate::ipc::tests::test_framework::Which::Client,
@@ -66,7 +66,7 @@ macro_rules! test_client_roundtrip {
 
 /// Exercise the encoded wire for every ServerToClientMsg fixture as well.
 macro_rules! test_server_roundtrip {
-    ($msg:expr) => {{
+    ($msg:expr_2021) => {{
         let original: crate::ipc::ServerToClientMsg = $msg;
         crate::ipc::tests::test_framework::record_covered(
             crate::ipc::tests::test_framework::Which::Server,

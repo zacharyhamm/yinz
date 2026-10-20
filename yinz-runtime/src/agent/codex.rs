@@ -45,14 +45,14 @@ pub fn bridge_options(args: &[String]) -> Option<BridgeOptions> {
                     {
                         return None;
                     }
-                    if matches!(option, "--config" | "-c") {
-                        if let Some(value) = value.filter(|value| {
+                    if matches!(option, "--config" | "-c")
+                        && let Some(value) = value.filter(|value| {
                             value.split_once('=').is_some_and(|(key, _)| {
                                 key.trim() == "projects" || key.trim().starts_with("projects.")
                             })
-                        }) {
-                            options.project_overrides.push(value.to_owned());
-                        }
+                        })
+                    {
+                        options.project_overrides.push(value.to_owned());
                     }
                     if matches!(option, "--cd" | "-C") {
                         options.cd = value.map(PathBuf::from);
