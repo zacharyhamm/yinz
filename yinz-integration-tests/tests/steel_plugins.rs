@@ -830,6 +830,7 @@ fn steel_and_builtins_share_a_session_through_permissions_events_reload_and_clos
     )
     .unwrap();
 
+    eprintln!("lifecycle: starting session");
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config_dir(directory.path().to_owned())
         .with_config(&format!("user_plugin_dir \"{}\"", plugins.display()))
@@ -847,6 +848,7 @@ layout {
         ))
         .start();
 
+    eprintln!("lifecycle: waiting for permission prompt");
     yinz.wait_until(
         "all plugins loaded and Scheme requested permission",
         |grid| {
@@ -855,11 +857,13 @@ layout {
                 && grid.contains("Plugin permissions")
         },
     );
+    eprintln!("lifecycle: granting permission");
     yinz.send_stdin(b"\t\r");
     yinz.wait_until(
         "the async load resumed after the permission grant",
         |grid| grid.contains("first granted; awaiting key") && !grid.contains("Plugin permissions"),
     );
+    eprintln!("lifecycle: sending first key");
     yinz.send_stdin(b"a");
     yinz.wait_until(
         "the awaited key produced a Scheme frame and renamed the Builtin tab bar",
@@ -872,6 +876,7 @@ layout {
 
     // Only the dependency changes. The entrypoint and its pane stay the same.
     fs::write(&dependency, r#"(provide label) (define label "second")"#).unwrap();
+    eprintln!("lifecycle: reloading plugin");
     let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
         url: format!("file:{}", plugins.join("acceptance.scm").display()),
         configuration: None,
@@ -884,6 +889,7 @@ layout {
             grid.contains("second granted; awaiting key") && !grid.contains("Plugin permissions")
         },
     );
+    eprintln!("lifecycle: sending replacement key");
     yinz.send_stdin(b"b");
     let grid = yinz.wait_until(
         "the replacement instance handles input alongside Scheme and Builtin",
@@ -895,7 +901,9 @@ layout {
     );
     assert!(!grid.contains("first awaited key rendered"), "{grid}");
     // quit joins the real client and server with the harness's bounded shutdown checks.
+    eprintln!("lifecycle: shutting down");
     yinz.quit();
+    eprintln!("lifecycle: complete");
 }
 
 #[test]

@@ -1,5 +1,7 @@
 use super::Screen;
-use crate::ui::command_palette::{Entry, EntryKind, Field, Form, Outcome, PluginSection};
+use crate::ui::command_palette::{
+    escape_literal, Entry, EntryKind, Field, Form, Outcome, PluginSection,
+};
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -239,8 +241,8 @@ impl Screen {
                         state.agents.actions.insert(id.clone(), choice.action);
                         Entry {
                             id,
-                            label: choice.label,
-                            description: choice.description.clone(),
+                            label: escape_literal(&choice.label),
+                            description: escape_literal(&choice.description),
                             aliases: vec![choice.description],
                             shortcut: String::new(),
                             // Section rows use the widget’s grouped entry kind.
@@ -250,7 +252,7 @@ impl Screen {
                     .collect::<Vec<_>>();
                 let status = entries.is_empty().then(|| "No projects available".into());
                 state.widget.set_sections(vec![PluginSection {
-                    title,
+                    title: escape_literal(&title),
                     entries,
                     semantic: false,
                     status,
@@ -268,7 +270,7 @@ impl Screen {
                 state.agents.actions.insert(id.clone(), action.clone());
                 state.widget.open_form(Form::new(
                     id,
-                    title,
+                    escape_literal(&title),
                     labels
                         .iter()
                         .enumerate()
@@ -338,7 +340,7 @@ impl Screen {
                     state
                         .widget
                         .push_view(FIRST_VIEW + step, "Agent launch failed".into());
-                    state.widget.open_text(message);
+                    state.widget.open_text(escape_literal(&message));
                 } else {
                     state.widget.set_error(message);
                 }

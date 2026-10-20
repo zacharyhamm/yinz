@@ -354,6 +354,13 @@ fn native_plugin_helpers_preserve_text_and_validate_bytes() {
     let mut runtime = runtime();
     assert_eq!(
         runtime
+            .eval(r#"(equal? (yinz-markdown-escape "**name**") "\\*\\*name\\*\\*")"#)
+            .unwrap()
+            .values,
+        ["#true"]
+    );
+    assert_eq!(
+        runtime
             .eval("(yinz-text-sanitize \"a\\tb\\n\\u{1b}[31mc\")")
             .unwrap()
             .values,

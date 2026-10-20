@@ -1,5 +1,5 @@
 use super::Screen;
-use crate::ui::command_palette::{Entry, EntryKind, Outcome, PluginSection};
+use crate::ui::command_palette::{escape_literal, Entry, EntryKind, Outcome, PluginSection};
 use std::{
     path::PathBuf,
     sync::{
@@ -213,7 +213,7 @@ impl Screen {
                 label: format!(
                     "#{} {}{}",
                     note.id,
-                    note.title,
+                    escape_literal(&note.title),
                     if note.archived { " [archived]" } else { "" }
                 ),
                 description: note.snippet,
@@ -267,7 +267,7 @@ impl Screen {
                 state
                     .widget
                     .push_view(VIEW + 1, "Note editor details".into());
-                state.widget.open_text(error);
+                state.widget.open_text(escape_literal(&error));
             }
             return true;
         }

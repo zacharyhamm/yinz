@@ -1,5 +1,7 @@
 use super::{Builtin, Screen};
-use crate::ui::command_palette::{Entry, EntryKind, Field, Form, Outcome, PluginSection};
+use crate::ui::command_palette::{
+    escape_literal, Entry, EntryKind, Field, Form, Outcome, PluginSection,
+};
 use std::collections::{BTreeMap, HashMap};
 use yinz_bus::command_palette::{
     query::{AgentQuery, ARCHIVE_FIELDS, LIVE_FIELDS},
@@ -377,8 +379,8 @@ impl Screen {
                 let mut entries = Vec::new();
                 let entry = |id: String, label: String, description: String| Entry {
                     id,
-                    label,
-                    description,
+                    label: escape_literal(&label),
+                    description: escape_literal(&description),
                     shortcut: String::new(),
                     aliases: vec![],
                     kind: EntryKind::Plugin,

@@ -1,6 +1,8 @@
 //! Native command palette. The screen owns its lifetime and input capture.
 
 use std::cell::{Cell, RefCell};
+pub use yinz_tile_markdown::escape_literal;
+use yinz_tile_markdown::{self as md, MdLine, MdStyle, Options};
 
 #[path = "command_palette_agent.rs"]
 mod agent;
@@ -222,9 +224,9 @@ pub struct CommandPaletteLayout {
     footer_y: Option<usize>,
     picker_heading_y: Option<usize>,
     result_rows: Vec<ResultRow>,
-    text_lines: Vec<String>,
-    metadata_lines: Vec<String>,
-    description_lines: Vec<String>,
+    text_lines: Vec<MdLine>,
+    metadata_lines: Vec<MdLine>,
+    description_lines: Vec<MdLine>,
     description_y: usize,
     metadata_y: usize,
     agent: Option<agent::AgentLayout>,
@@ -306,6 +308,7 @@ impl CommandPalette {
                     .find(|entry| entry.id == id)
                     .map(|entry| entry.label.clone())
             })
+            .map(|label| plain_text(&label))
             .unwrap_or_else(|| "Palette action".into())
     }
 
@@ -559,7 +562,7 @@ impl CommandPalette {
                 } else {
                     &pattern
                 };
-                std::iter::once(&entry.label)
+                std::iter::once(&inline(&entry.label).text)
                     .chain(entry.aliases.iter())
                     .chain(section.filter(|_| ranked_root_search).map(|s| &s.title))
                     .filter_map(|text| {
@@ -620,7 +623,7 @@ impl CommandPalette {
                     .map(|o| format!("{}: {} {}", f.label, o.help, o.error))
             })
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n\n");
         if !help.trim().is_empty() {
             self.metadata = Some(help);
         }
@@ -1151,26 +1154,31 @@ impl CommandPalette {
         rows
     }
 
-    fn entry_lines(&self, index: usize, width: usize, max_lines: usize) -> Vec<String> {
+    fn entry_lines(&self, index: usize, width: usize, max_lines: usize) -> Vec<MdLine> {
         use unicode_width::UnicodeWidthStr;
         let entry = &self.entries[self.matches[index]];
         let shortcut = take_columns(&entry.shortcut, width.saturating_sub(3));
         let width = width.saturating_sub(shortcut.width() + usize::from(!shortcut.is_empty()));
         let width = width - width.saturating_sub(1).min(2);
         if width == 0 {
-            return vec![String::new()];
+            return vec![MdLine::blank()];
         }
-        let mut lines = crate::ui::notification::wrapped_text_lines(&entry.label, width);
+        let label = inline(&entry.label);
+        let mut lines = wrap_inline(&label, width);
         for line in lines.iter_mut().skip(1) {
-            line.insert_str(0, &" ".repeat(2.min(width.saturating_sub(1))));
+            *line = std::mem::take(line).indent(2.min(width.saturating_sub(1)));
         }
-        let truncated = lines.len() > max_lines || lines.iter().any(|line| line.width() > width);
+        let truncated =
+            lines.len() > max_lines || lines.iter().any(|line| line.text.width() > width);
         lines.truncate(max_lines);
         if let Some(last) = lines.last_mut() {
             if truncated {
-                *last = format!("{}…", take_columns(last, width.saturating_sub(1)));
+                last.text = take_columns(&last.text, width.saturating_sub(1));
+                last.styles.truncate(last.text.chars().count());
+                append(last, &MdLine::plain("…"));
             } else if !entry.description.is_empty() {
-                last.push_str(&format!(" — {}", entry.description));
+                append(last, &MdLine::plain(" — "));
+                append(last, &inline(&entry.description));
             }
         }
         lines
@@ -1328,17 +1336,16 @@ impl CommandPalette {
         let description_lines = if self.description.is_empty() {
             vec![]
         } else {
-            crate::ui::notification::wrapped_text_lines(
+            md::render(
                 &self.description,
                 cols.saturating_sub(2 * border),
+                Options::compact(),
             )
         };
         let mut metadata_lines = self
             .metadata
             .as_ref()
-            .map(|text| {
-                crate::ui::notification::wrapped_text_lines(text, cols.saturating_sub(2 * border))
-            })
+            .map(|text| md::render(text, cols.saturating_sub(2 * border), Options::compact()))
             .unwrap_or_default();
         let content_heights = |rows: usize| {
             let content_end = rows.saturating_sub(border + usize::from(rows >= 5));
@@ -1414,9 +1421,7 @@ impl CommandPalette {
         let text_lines = self
             .text
             .as_ref()
-            .map(|text| {
-                crate::ui::notification::wrapped_text_lines(text, cols.saturating_sub(2 * border))
-            })
+            .map(|text| md::render(text, cols.saturating_sub(2 * border), Options::compact()))
             .unwrap_or_default();
         self.text_rows.set(text_lines.len());
         self.page_rows.set(options_rows);
@@ -1513,7 +1518,7 @@ impl CommandPalette {
                 return None;
             }
             let (_, column) = viewport(
-                &format!("{}: ", field.label),
+                &format!("{}: ", inline(&field.label).text),
                 input.get_text(),
                 input.get_cursor_position(),
                 layout.rect.cols.saturating_sub(2 * layout.border),
@@ -1560,6 +1565,7 @@ impl CommandPalette {
         let width = rect.cols - 2 * layout.border;
         (rect.y..rect.y + rect.rows)
             .map(|y| {
+                let mut markdown = MdLine::blank();
                 let mut shortcut_start = usize::MAX;
                 let mut label_span = 0..usize::MAX;
                 let (text, styles) = if layout.border == 1 && y == rect.y {
@@ -1645,9 +1651,9 @@ impl CommandPalette {
                             },
                         )
                     } else if (layout.description_y..layout.metadata_y).contains(&y) {
-                        (layout.description_lines.get(y - layout.description_y).cloned().unwrap_or_default(), heading.clone())
+                        ({ markdown = layout.description_lines.get(y - layout.description_y).cloned().unwrap_or_default(); markdown.text.clone() }, heading.clone())
                     } else if (layout.metadata_y..layout.options_y).contains(&y) {
-                        (layout.metadata_lines.get(y - layout.metadata_y).cloned().unwrap_or_default(), if self.metadata_focus == 0 { fill.clone() } else { heading.clone() })
+                        ({ markdown = layout.metadata_lines.get(y - layout.metadata_y).cloned().unwrap_or_default(); markdown.text.clone() }, if self.metadata_focus == 0 { fill.clone() } else { heading.clone() })
                     } else if (layout.options_y..layout.options_y + layout.options_rows)
                         .contains(&y)
                     {
@@ -1665,17 +1671,15 @@ impl CommandPalette {
                             row.is_some_and(|row| self.row_selected(row))
                         };
                         let text = if self.text.is_some() {
-                            layout
-                                .text_lines
-                                .get(y - layout.options_y)
-                                .cloned()
-                                .unwrap_or_default()
+                            markdown = layout.text_lines.get(y - layout.options_y).cloned().unwrap_or_default();
+                            markdown.text.clone()
                         } else if let Some(form) = &self.form {
                             if let Some(field) = form.fields.get(index) {
                                 match &field.value {
                                     FieldValue::Text(input) => {
+                                        markdown = inline(&field.label);
                                         viewport(
-                                            &format!("{}: ", field.label),
+                                            &format!("{}: ", markdown.text),
                                             input.get_text(),
                                             input.get_cursor_position(),
                                             width,
@@ -1683,21 +1687,25 @@ impl CommandPalette {
                                         .0
                                     },
                                     FieldValue::Choice { .. } => {
-                                        format!("{}: ‹ {} ›{}", field.label, field.text_value(), if is_selected && !self.choice_input.get_text().is_empty() { format!(" (search: {})", self.choice_input.get_text()) } else { String::new() })
+                                        markdown = inline(&field.label);
+                                        format!("{}: ‹ {} ›{}", markdown.text, field.text_value(), if is_selected && !self.choice_input.get_text().is_empty() { format!(" (search: {})", self.choice_input.get_text()) } else { String::new() })
                                     },
                                 }
                             } else if form.confirmation && index == form.fields.len() {
                                 "Cancel".into()
                             } else if index == form.fields.len() + usize::from(form.confirmation) {
-                                form.submit.clone()
+                                markdown = inline(&form.submit);
+                                markdown.text.clone()
                             } else {
-                                form.actions.get(index - form.fields.len() - 1 - usize::from(form.confirmation)).map(|a| a.1.clone()).unwrap_or_default()
+                                markdown = inline(form.actions.get(index - form.fields.len() - 1 - usize::from(form.confirmation)).map(|a| a.1.as_str()).unwrap_or_default());
+                                markdown.text.clone()
                             }
                         } else if let Some(
                             ResultRow::Heading(label) | ResultRow::Status(_, label),
                         ) = row
                         {
-                            label.clone()
+                            markdown = inline(label);
+                            markdown.text.clone()
                         } else if let Some(ResultRow::Entry(index, line)) = row {
                             use unicode_width::UnicodeWidthStr;
                             let entry = &self.entries[self.matches[*index]];
@@ -1708,9 +1716,10 @@ impl CommandPalette {
                             let lines = self.entry_lines(*index, width, max_lines);
                             let prefix = if is_selected && *line == 0 { "› " } else { "  " };
                             let prefix = take_columns(prefix, label_width.saturating_sub(1).min(2));
-                            let label = format!("{prefix}{}",
-                                lines.get(*line).map(String::as_str).unwrap_or(""));
+                            markdown = lines.get(*line).cloned().unwrap_or_default().prepend(&prefix, MdStyle::default());
+                            let label = markdown.text.clone();
                             let label = take_columns(&label, label_width);
+                            markdown.styles.truncate(label.chars().count());
                             let indent = if *line == 0 { prefix.chars().count() } else {
                                 label.chars().take_while(|c| c.is_whitespace()).count()
                             };
@@ -1749,6 +1758,11 @@ impl CommandPalette {
                     } else {
                         (String::new(), fill.clone())
                     };
+                    let text = if (y == layout.input_y && (self.form.is_some() || self.text.is_some()))
+                        || (Some(y) == layout.footer_y && self.error.is_some()) {
+                        markdown = inline(&text);
+                        markdown.text.clone()
+                    } else { text };
                     let text_len = text.chars().count();
                     label_span.end = label_span.end.min(text_len);
                     let text = fit(
@@ -1774,13 +1788,13 @@ impl CommandPalette {
                     characters.extend(text.chars().enumerate().map(|(index, c)| {
                         TerminalCharacter::new_styled(
                             c,
-                            if (shortcut_start..text_len).contains(&index) {
+                            paint_markdown(if (shortcut_start..text_len).contains(&index) {
                                 subtle.clone()
                             } else if label_span.contains(&index) {
                                 text_styles.clone()
                             } else {
                                 styles.clone()
-                            },
+                            }, markdown.styles.get(index).copied().unwrap_or_default(), style),
                         )
                     }));
                     if layout.border == 1 {
@@ -1798,6 +1812,111 @@ impl CommandPalette {
             })
             .collect()
     }
+}
+
+/// Convert a Markdown palette label to the text shown in plain-text notifications.
+pub fn plain_text(text: &str) -> String {
+    inline(text).text
+}
+
+// Labels occupy one logical line; block bodies use the normal Markdown layout.
+fn inline(text: &str) -> MdLine {
+    let mut line = MdLine::blank();
+    for block in md::parse(text) {
+        if !line.is_empty() {
+            append(&mut line, &MdLine::plain(" "));
+        }
+        append(&mut line, &MdLine::plain(block.prefix));
+        if block.rule {
+            append(&mut line, &MdLine::plain("───"));
+        }
+        // Flatten table cells without allocating a padded grid for a one-line preview.
+        let chars = if let Some(table) = block.table {
+            table
+                .head
+                .into_iter()
+                .chain(table.rows.into_iter().flatten())
+                .flat_map(|mut cell| {
+                    cell.push(md::StyledChar {
+                        ch: ' ',
+                        style: MdStyle::default(),
+                    });
+                    cell
+                })
+                .collect()
+        } else {
+            block.chars
+        };
+        for styled in chars {
+            line.text
+                .push(if styled.ch == '\n' { ' ' } else { styled.ch });
+            line.styles.push(styled.style);
+        }
+    }
+    line
+}
+
+fn append(line: &mut MdLine, other: &MdLine) {
+    if line.styles.is_empty() {
+        line.styles
+            .resize(line.text.chars().count(), MdStyle::default());
+    }
+    line.text.push_str(&other.text);
+    line.styles.extend(
+        other
+            .text
+            .chars()
+            .enumerate()
+            .map(|(i, _)| other.styles.get(i).copied().unwrap_or_default()),
+    );
+}
+
+fn wrap_inline(line: &MdLine, width: usize) -> Vec<MdLine> {
+    let block = md::MdBlock {
+        chars: line
+            .text
+            .chars()
+            .enumerate()
+            .map(|(i, ch)| md::StyledChar {
+                ch,
+                style: line.styles.get(i).copied().unwrap_or_default(),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    md::render_block(&block, width)
+}
+
+fn paint_markdown(base: RcCharacterStyles, md: MdStyle, style: &Style) -> RcCharacterStyles {
+    if md == MdStyle::default() {
+        return base;
+    }
+    let colors = style.colors.text_unselected;
+    let mut painted = *base;
+    if md.bold {
+        painted = painted.bold(Some(AnsiCode::On));
+    }
+    if md.dim {
+        painted = painted.dim(Some(AnsiCode::On));
+    }
+    if md.strike {
+        painted = painted.strike(Some(AnsiCode::On));
+    }
+    if let Some(color) = md.color {
+        painted = painted.foreground(Some(
+            match color {
+                0 => colors.emphasis_0,
+                1 => colors.emphasis_1,
+                2 => colors.emphasis_2,
+                _ => colors.emphasis_3,
+            }
+            .into(),
+        ));
+    }
+    if md.error {
+        painted = painted.foreground(Some(style.colors.exit_code_error.base.into()));
+    }
+    painted.into()
 }
 
 fn fit(text: &str, cols: usize, pad: char) -> String {

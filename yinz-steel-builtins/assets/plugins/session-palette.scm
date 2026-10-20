@@ -14,8 +14,8 @@
 (define (flat-map f items) (apply append (map f items)))
 (define (complete message) (hash "type" "complete" "notification" message "view" 'json-null))
 (define (defer thunk) (lambda (values context) (thunk)))
-(define (action id label run) (hash "id" id "label" label "run" run))
-(define (describe item description) (hash-insert item "description" description))
+(define (action id label run) (hash "id" id "label" (yinz-markdown-escape label) "search" label "run" run))
+(define (describe item description) (hash-insert (hash-insert item "description" (yinz-markdown-escape (clip description 256))) "search" (string-append (get item "search" "") " " description)))
 
 (define (load configuration)
   (yinz-palette-register "sessions" "Sessions" root-actions))
@@ -36,17 +36,16 @@
       (else (loop wanted (cdr remaining))))))
 
 (define (list-results title collect page previous-query)
-  (hash "type" "actions" "title" title "initialQuery" previous-query
+  (hash "type" "actions" "title" (yinz-markdown-escape title) "initialQuery" previous-query
     "source"
     (lambda (query context)
       (define all (filter (lambda (item)
-            (matches? query (string-append (hash-ref item "label") " " (get item "description" ""))))
+            (matches? query (get item "search" (hash-ref item "label"))))
           (collect)))
       (define offset (if (equal? query previous-query)
           (min (* page 98) (* (max 0 (- (quotient (+ (length all) 97) 98) 1)) 98)) 0))
       (define items
-        (map (lambda (item) (hash-insert item "description" (clip (get item "description" "") 256)))
-          (take (list-tail all offset) (min 98 (- (length all) offset)))))
+        (take (list-tail all offset) (min 98 (- (length all) offset))))
       (append items
         (if (> offset 0)
           (list (action "page:previous" "Previous results…"
@@ -96,7 +95,7 @@
 (define (collision name state)
   (define running (session-named state name))
   (and (or running (member name (saved state)))
-    (hash "type" "actions" "title" (string-append "Session " (clean name) " already exists")
+    (hash "type" "actions" "title" (string-append "Session " (yinz-markdown-escape (clean name)) " already exists")
       "actions" (list (action "existing" (if running "Switch to this session" "Resurrect this session")
           (defer (lambda () (switch-to name #f #f))))))))
 (define (layout-label layout)
@@ -182,7 +181,7 @@
 (define (confirm title consequences targets read mutate)
   (when (null? targets) (error "No matching targets remain"))
   (define captured (sort targets string<?))
-  (hash "type" "form" "title" (string-append title ": " (string-join (map clean captured) ", ") " — " consequences)
+  (hash "type" "form" "title" (string-append title ": " (string-join (map (lambda (name) (yinz-markdown-escape (clean name))) captured) ", ") " — " consequences)
     "fields" '() "confirmation" #t "submitLabel" title
     "onSubmit" (lambda (values context)
       (define now (sort (read) string<?))
@@ -225,8 +224,8 @@
                     "Running")))
               (panes-in session tab))))
         (by-position (hash-ref session "tabs")))))
-  (hash "type" "text" "title" (string-append "Session details: " (clean (hash-ref session "name")))
-    "text" (yinz-text-sanitize (string-join lines "\n"))))
+  (hash "type" "text" "title" (string-append "Session details: " (yinz-markdown-escape (clean (hash-ref session "name"))))
+    "text" (string-join (map (lambda (line) (yinz-markdown-escape (yinz-text-sanitize line))) lines) "  \n")))
 
 (define (disconnect-targets) (sort (map number-text (yinz-command "GetDisconnectTargets")) string<?))
 (define (disconnect changed? targets)
@@ -261,7 +260,7 @@
           (define message (hash-ref notification "message"))
           (define label (clip (clean message) 160))
           (describe (action (number-text (hash-ref notification "id")) (if (equal? label "") "Notification" label)
-              (defer (lambda () (hash "type" "text" "title" "Notification" "text" (yinz-text-sanitize message)))))
+              (defer (lambda () (hash "type" "text" "title" "Notification" "text" (yinz-markdown-escape (yinz-text-sanitize message))))))
             (yinz-text-sanitize message)))
         (sort (yinz-command "ListNotifications")
           (lambda (a b)

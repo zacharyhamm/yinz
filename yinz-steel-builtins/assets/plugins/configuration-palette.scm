@@ -23,7 +23,7 @@
     (cond ((null? items) #f) ((eq? object (car items)) index) (else (loop (cdr items) (+ index 1))))))
 (define (string-value value)
   (cond ((string? value) value) ((boolean? value) (if value "true" "false")) (else (number->string value))))
-(define (action id label run) (hash "id" id "label" label "run" run))
+(define (action id label run) (hash "id" id "label" (yinz-markdown-escape label) "search" label "run" run))
 (define (defer thunk) (lambda (values context) (thunk)))
 (define (read-config) (yinz-command (hash "InspectConfiguration" 'json-null)))
 
@@ -52,7 +52,7 @@
 (define (saved-node snapshot path) (find-node (map read-node (hash-ref snapshot "saved")) path))
 
 (define (list-view title collect)
-  (hash "type" "actions" "title" title
+  (hash "type" "actions" "title" (yinz-markdown-escape title)
     "source" (lambda (query context) (search-actions (collect) query))))
 (define (section-help root)
   (get (hash
@@ -71,24 +71,24 @@
   (define words (split-whitespace (string-downcase query)))
   (define found
     (filter (lambda (item)
-        (define text (string-downcase (string-append (hash-ref item "label") " " (string-join (get item "aliases" '()) " "))))
+        (define text (string-downcase (string-append (get item "search" (hash-ref item "label")) " " (string-join (get item "aliases" '()) " "))))
         (every (lambda (word) (string-contains? text word)) words)) actions))
   (take found (min 100 (length found))))
 (define (confirm title run)
-  (hash "type" "form" "title" title "fields" '() "confirmation" #t "submitLabel" "Confirm" "onSubmit" (defer run)))
+  (hash "type" "form" "title" (yinz-markdown-escape title) "fields" '() "confirmation" #t "submitLabel" "Confirm" "onSubmit" (defer run)))
 
 (define (scalar-field id label value kind choices help)
   (define text (string-value value))
   (cond
-    ((boolean? value) (hash "type" "choice" "id" id "label" label "options" '("Enabled" "Disabled")
+    ((boolean? value) (hash "type" "choice" "id" id "label" (yinz-markdown-escape label) "search" label "options" '("Enabled" "Disabled")
         "initialValue" (if value "Enabled" "Disabled")))
-    ((pair? choices) (hash "type" "choice" "id" id "label" label
+    ((pair? choices) (hash "type" "choice" "id" id "label" (yinz-markdown-escape label) "search" label
         "options" (if (or (equal? text "") (member text choices)) choices (cons text choices))
         "initialValue" (if (equal? text "") (car choices) text)))
     (else
       (define type (cond ((or (equal? kind "number") (number? value)) "number")
           ((member kind '("file" "directory" "key")) kind) (else "multiline")))
-      (hash "type" type "id" id "label" label "initialValue" text
+      (hash "type" type "id" id "label" (yinz-markdown-escape label) "search" label "initialValue" text
         "help" (if (not (equal? help "")) help
           (cond ((equal? type "key") "Type a chord, or press F2 then the desired key. Tab moves to the next field.")
             ((equal? type "multiline") "Shift+Enter inserts a newline. Whitespace is preserved.") (else "")))))))
@@ -171,8 +171,8 @@
       (sort (hash-keys->list clients) string<?)))
   (define override? (find (lambda (patch) (or (prefix? path (hash-ref patch "path")) (prefix? (hash-ref patch "path") path)))
       (hash-ref snapshot "overrides")))
-  (string-append "Saved: " (yinz-json-string (if saved (node-arguments saved) "unset")) "\n"
-    (string-join lines "\n") "\nSession override: " (if override? "Yes" "No")))
+  (yinz-markdown-escape (string-append "Saved: " (yinz-json-string (if saved (node-arguments saved) "unset")) "\n"
+      (string-join lines "\n") "\nSession override: " (if override? "Yes" "No"))))
 
 (define (setting-form draft setting)
   (define kind (hash-ref setting "kind"))
@@ -268,7 +268,7 @@
     (lambda ()
       (append
         (list
-          (action "state" "Current values…" (defer (lambda () (hash "type" "text" "title" (clean (string-join child-path " / "))
+          (action "state" "Current values…" (defer (lambda () (hash "type" "text" "title" (yinz-markdown-escape (clean (string-join child-path " / ")))
                   "text" (state-help draft child-path)))))
           (action "edit" "Edit fields…" (defer (lambda () (node-form draft child child-path
                   (lambda () (entry draft parent (index-of child (node-children parent)) path))))))
@@ -292,7 +292,7 @@
           (action "save" "Review and apply draft…" (defer (lambda () (finish-draft draft)))))))))
 
 (define (new-value title done)
-  (hash "type" "form" "title" title
+  (hash "type" "form" "title" (yinz-markdown-escape title)
     "fields" (list (hash "type" "text" "id" "name" "label" "Name" "initialValue" "value")
       (hash "type" "choice" "id" "type" "label" "Type" "options" '("Text" "Number" "Boolean"))
       (hash "type" "multiline" "id" "value" "label" "Value"
@@ -336,10 +336,10 @@
   (if (> (length fields) 16)
     (section-view path
       (lambda () (map (lambda (field)
-            (action (hash-ref field "id") (hash-ref field "label")
+            (action (hash-ref field "id") (get field "search" (hash-ref field "label"))
               (defer (lambda () (hash "type" "form" "title" (hash-ref field "label") "description" (section-help (car path)) "fields" (list field)
                     "onSubmit" (lambda (values context) (assign values) (local-done))))))) fields)))
-    (hash "type" "form" "title" (clean (string-join path " / ")) "description" (section-help (car path)) "fields" fields "submitLabel" "Keep in draft"
+    (hash "type" "form" "title" (yinz-markdown-escape (clean (string-join path " / "))) "description" (section-help (car path)) "fields" fields "submitLabel" "Keep in draft"
       "onSubmit" (lambda (values context)
         (assign values)
         (define parent (and (equal? (car path) "keybinds") (= (length path) 3)
@@ -377,7 +377,7 @@
                       (define initial (hash-ref properties name))
                       (action name name
                         (defer (lambda ()
-                            (hash "type" "form" "title" (string-append (node-name local) ": " name)
+                            (hash "type" "form" "title" (yinz-markdown-escape (string-append (node-name local) ": " name))
                               "fields" (list (scalar-field "value" name (get (node-properties local) name initial) #f '() ""))
                               "onSubmit" (lambda (values context)
                                 (vector-set! local 2 (hash-insert (node-properties local) name (parse-scalar (get values "value" "") initial)))
@@ -426,8 +426,9 @@
                 (child-list draft (draft-value draft) (list root)))))
           (indexed-map
             (lambda (child index)
+              (define label (string-append root ": " (clean (node-name child)) "…"))
               (hash "id" (string-append root ":" (number->string index) ":" (node-name child))
-                "label" (string-append root ": " (clean (node-name child)) "…")
+                "label" (yinz-markdown-escape label) "search" label
                 "aliases" (list (string-append root " " (clean (node-name child))))
                 "run" (defer (lambda () (define draft (discovery-draft snapshot client root))
                     (entry draft (draft-value draft) index (list root))))))
@@ -442,7 +443,9 @@
                 (and (equal? (node-name binding) "bind")
                   (hash "id" (string-append "keybinds:" (number->string mode-index) ":" (node-name mode) ":"
                       (number->string index) ":" (node-key binding))
-                    "label" (string-append "keybinding " (clean (node-name mode)) ": "
+                    "label" (yinz-markdown-escape (string-append "keybinding " (clean (node-name mode)) ": "
+                        (clean (string-join (map string-value (node-arguments binding)) " ")) "…"))
+                    "search" (string-append "keybinding " (clean (node-name mode)) ": "
                       (clean (string-join (map string-value (node-arguments binding)) " ")) "…")
                     "aliases" (cons "keybindings keybinds" (map node-name (node-children binding)))
                     "run" (defer (lambda ()
