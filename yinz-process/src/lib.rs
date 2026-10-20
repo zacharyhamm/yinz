@@ -21,6 +21,7 @@ pub mod claude_turn;
 pub mod command;
 pub mod pane_context;
 pub mod pty_host;
+pub mod ssh;
 
 use async_trait::async_trait;
 use std::io;

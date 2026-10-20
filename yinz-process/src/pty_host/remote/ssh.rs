@@ -21,12 +21,9 @@
 //! embedded sshd's do not implement.
 
 use std::collections::HashMap;
-use std::io::Read;
-use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use yinz_types::internal_ids::TerminalId;
@@ -35,6 +32,13 @@ use serde::Deserialize;
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::shared::ensure_secure_dir;
 use {yinz_runtime::consts::YINZ_SOCK_DIR, yinz_types::input::command::RunCommand};
+
+pub use crate::ssh::SshOptions;
+use crate::ssh::{
+    bootstrap_output, ssh_option_value, validate_ssh_host, HostForward, BOOTSTRAP_TIMEOUT,
+};
+#[cfg(test)]
+use crate::ssh::{SshOutputCapture, SSH_OUTPUT_CAPACITY};
 
 use super::conn::{Reconnected, Reconnector, RemoteConn};
 use super::env;
@@ -45,14 +49,6 @@ use super::protocol::{
 use crate::pty_host::protocol::{
     check_socket_path_length, SpawnFailureKind, WireWinsize, SSH_CONTROL_PATH_RENAME_MARGIN,
 };
-
-/// How long to wait for the forwarded socket to become connectable.
-const FORWARD_READY_TIMEOUT: Duration = Duration::from_secs(15);
-const FORWARD_POLL_INTERVAL: Duration = Duration::from_millis(50);
-/// Bootstrapping runs a remote command; a cold ssh handshake plus a broker start
-/// is comfortably under this, and a hang here would otherwise wedge a pane.
-const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
-const SSH_OUTPUT_CAPACITY: usize = 64 * 1024;
 
 /// How long to keep retrying a resume the broker refuses because someone is
 /// still attached. Deliberately the same as the supervisor's
@@ -209,115 +205,6 @@ fn sweep_stale_sockets(dir: &Path, ours: &Path) {
     }
 }
 
-/// A live ssh forward to one host. Dropping it tears the forward down.
-struct HostForward {
-    host: String,
-    local_socket: PathBuf,
-    ssh: Child,
-    stderr: Option<SshOutputCapture>,
-}
-
-/// Drain SSH output throughout its lifetime, retaining only the final 64 KiB.
-// ponytail: one polling thread per capture; share readiness polling if host counts grow large.
-struct SshOutputCapture {
-    stop: Arc<AtomicBool>,
-    reader: Option<std::thread::JoinHandle<Vec<u8>>>,
-}
-
-impl SshOutputCapture {
-    fn new(mut pipe: impl Read + AsFd + Send + 'static) -> Result<Self> {
-        use nix::fcntl::{fcntl, FcntlArg, OFlag};
-        let flags =
-            fcntl(pipe.as_fd(), FcntlArg::F_GETFL).context("failed to read SSH output flags")?;
-        fcntl(
-            pipe.as_fd(),
-            FcntlArg::F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK),
-        )
-        .context("failed to make SSH output nonblocking")?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopping = stop.clone();
-        let reader = std::thread::Builder::new()
-            .name("ssh-output".into())
-            .spawn(move || {
-                let mut output = super::session::OutputRing::new(SSH_OUTPUT_CAPACITY);
-                let mut chunk = [0; 8192];
-                let mut final_drain: usize = 1024 * 1024;
-                loop {
-                    let stopping = stopping.load(Ordering::Acquire);
-                    match pipe.read(&mut chunk) {
-                        Ok(0) => break,
-                        Ok(read) => {
-                            output.append(&chunk[..read]);
-                            // Drain up to 1 MiB queued after exit; descendants still
-                            // writing output cannot keep teardown alive forever.
-                            if stopping {
-                                final_drain = final_drain.saturating_sub(read);
-                                if final_drain == 0 {
-                                    break;
-                                }
-                            }
-                        },
-                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            if stopping {
-                                break;
-                            }
-                            let mut ready = [nix::poll::PollFd::new(
-                                pipe.as_fd(),
-                                nix::poll::PollFlags::POLLIN,
-                            )];
-                            match nix::poll::poll(&mut ready, 50u16) {
-                                Err(error) if error != nix::errno::Errno::EINTR => {
-                                    Err::<(), _>(error)
-                                        .context("failed to poll SSH output")
-                                        .non_fatal();
-                                    break;
-                                },
-                                _ => {},
-                            }
-                        },
-                        Err(error) => {
-                            Err::<(), _>(error)
-                                .context("failed to read SSH output")
-                                .non_fatal();
-                            break;
-                        },
-                    }
-                }
-                output.replay_from(0).0
-            })
-            .context("failed to start the SSH output reader")?;
-        Ok(Self {
-            stop,
-            reader: Some(reader),
-        })
-    }
-
-    fn finish(&mut self) -> Result<Vec<u8>> {
-        self.stop.store(true, Ordering::Release);
-        let Some(reader) = self.reader.take() else {
-            return Ok(Vec::new());
-        };
-        reader
-            .join()
-            .map_err(|_| anyhow!("the SSH output reader panicked"))
-    }
-}
-
-impl Drop for SshOutputCapture {
-    fn drop(&mut self) {
-        self.finish().non_fatal();
-    }
-}
-
-impl Drop for HostForward {
-    fn drop(&mut self) {
-        let _ = self.ssh.kill();
-        let _ = self.ssh.wait();
-        let _ = std::fs::remove_file(&self.local_socket);
-    }
-}
-
 /// Every host this session has panes on.
 pub struct RemoteHosts {
     forwards: Mutex<HashMap<SshTarget, Arc<HostForward>>>,
@@ -338,12 +225,6 @@ impl Default for RemoteHosts {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SshOptions {
-    pub identity_file: Option<PathBuf>,
-    pub known_hosts_file: Option<PathBuf>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct SshTarget {
     host: String,
@@ -362,45 +243,6 @@ impl SshTarget {
 struct SshReconnector {
     hosts: Arc<RemoteHosts>,
     target: SshTarget,
-}
-
-impl SshOptions {
-    pub fn args(&self) -> Vec<String> {
-        let mut args = vec![];
-        if let Some(path) = &self.identity_file {
-            // `-i` takes its whole argument as the path, so it needs no quoting.
-            args.extend([
-                "-o".to_owned(),
-                "IdentitiesOnly=yes".to_owned(),
-                "-i".to_owned(),
-                path.display().to_string(),
-            ]);
-        }
-        if let Some(path) = &self.known_hosts_file {
-            args.extend([
-                "-o".to_owned(),
-                format!("UserKnownHostsFile={}", ssh_option_value(path)),
-                "-o".to_owned(),
-                "StrictHostKeyChecking=yes".to_owned(),
-            ]);
-        }
-        args
-    }
-}
-
-/// A path as the value of an `-o Name=value` ssh option.
-///
-/// ssh reads the option string with its config-file tokenizer, which splits on
-/// whitespace even when the whole `Name=value` arrived as one argv entry, so an
-/// unquoted path with a space in it is silently cut at the space. Double quotes
-/// keep the value whole; a quote or backslash inside the path is escaped, which
-/// OpenSSH 8.7 and later understand.
-pub(crate) fn ssh_option_value(path: &Path) -> String {
-    let escaped = path
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    format!("\"{escaped}\"")
 }
 
 impl RemoteHosts {
@@ -741,46 +583,6 @@ impl Reconnector for SshReconnector {
     }
 }
 
-/// Reject a remote host that `ssh` would read as an option rather than a
-/// destination.
-///
-/// A value like `-oProxyCommand=sh -c '…'` in destination position would run an
-/// arbitrary *local* command. Two controls stop it. The structural one is that
-/// both spawn sites put `--` immediately before the host: OpenSSH (which this
-/// module already requires, for ControlMaster/ControlPath) accepts
-/// `ssh [opts] -- [user@]host|ssh://… [cmd]` and then refuses `-o…` as a
-/// hostname. This check is the second: it rejects the option lookalike up front
-/// with an error that names the reason, rather than ssh's "hostname contains
-/// invalid characters", and covers any future spawn site that forgets the `--`.
-/// ssh's option parsing only reads a *leading* `-` as an option, so nothing
-/// later in the string can turn a destination into one. Whitespace and control
-/// characters are refused as defense in depth. Everything else is left to ssh
-/// itself, because a destination can be `[user@]host`, an ssh_config alias
-/// (which may contain `/`, `+`, `~`, …), or an `ssh://user@host:port` URI — the
-/// only inline form that carries a port, since this module never splits
-/// `host:port` into `-p`. The host is passed as one argv element, never through
-/// a shell, so shell metacharacters are inert. Every ssh spawn in this module
-/// goes through `bootstrap` — `start_forward` calls it first — so validating
-/// there covers the open and the reconnect paths alike.
-fn validate_ssh_host(host: &str) -> Result<()> {
-    if host.is_empty() {
-        return Err(anyhow!("refusing to ssh: the remote host is empty"));
-    }
-    if host.starts_with('-') {
-        return Err(anyhow!(
-            "refusing remote host {host:?}: a host beginning with '-' would be \
-             interpreted as an ssh option, not a destination"
-        ));
-    }
-    if let Some(bad) = host.chars().find(|c| c.is_whitespace() || c.is_control()) {
-        return Err(anyhow!(
-            "refusing remote host {host:?}: it contains {bad:?}, which is not valid \
-             in a remote host"
-        ));
-    }
-    Ok(())
-}
-
 /// Ask the remote where its broker listens, starting one if needed.
 pub fn bootstrap(host: &str) -> Result<BrokerEndpoint> {
     bootstrap_with_options(host, &SshOptions::default())
@@ -802,7 +604,7 @@ fn bootstrap_with_options(host: &str, options: &SshOptions) -> Result<BrokerEndp
         .arg("yinz")
         .arg("--pty-broker")
         .arg("ensure");
-    let output = bootstrap_output(&mut command, BOOTSTRAP_TIMEOUT)
+    let output = bootstrap_output(&mut command, BOOTSTRAP_TIMEOUT, None)
         .with_context(|| format!("failed to run ssh to bootstrap a broker on {host}"))?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if !output.status.success() {
@@ -843,59 +645,6 @@ fn bootstrap_with_options(host: &str, options: &SshOptions) -> Result<BrokerEndp
     Ok(endpoint)
 }
 
-fn bootstrap_output(command: &mut Command, timeout: Duration) -> Result<Output> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to spawn the bootstrap ssh")?;
-    let result = (|| {
-        let mut stdout = SshOutputCapture::new(
-            child
-                .stdout
-                .take()
-                .context("bootstrap stdout was unavailable")?,
-        )?;
-        let mut stderr = SshOutputCapture::new(
-            child
-                .stderr
-                .take()
-                .context("bootstrap stderr was unavailable")?,
-        )?;
-        let deadline = Instant::now() + timeout;
-        let status = loop {
-            match child
-                .try_wait()
-                .context("failed waiting for the bootstrap ssh")?
-            {
-                Some(status) => break status,
-                None if Instant::now() < deadline => std::thread::sleep(FORWARD_POLL_INTERVAL),
-                None => {
-                    return Err(anyhow!(
-                        "timed out waiting for the bootstrap ssh after {timeout:?}"
-                    ))
-                },
-            }
-        };
-        Ok(Output {
-            status,
-            stdout: stdout
-                .finish()
-                .context("failed to collect bootstrap stdout")?,
-            stderr: stderr
-                .finish()
-                .context("failed to collect bootstrap stderr")?,
-        })
-    })();
-    if result.is_err() {
-        // Includes capture setup failures: no spawned child can escape an error path.
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    result
-}
-
 /// Options for the short-lived invocations: bootstrap, and nothing else.
 ///
 /// Multiplexed, because bootstrapping happens once per host per session and
@@ -919,37 +668,18 @@ fn ssh_common_args(host: &str, options: &SshOptions) -> Vec<String> {
     args
 }
 
-/// Options for the ssh that owns the forward.
-///
-/// Deliberately *not* multiplexed, which is the whole reason this exists
-/// separately. Given a control master to use — and the bootstrap always leaves
-/// one behind — `ssh -N -T -L` hands the forward to that master and exits
-/// immediately with status 0. Two things break at once: the forward now belongs
-/// to a master that outlives this `HostForward` and ignores its `Drop`, and the
-/// wait below sees a process that has already exited and calls a working forward
-/// a failure.
-///
-/// Its own connection means the forward really does belong to the process that
-/// owns it, which is what the rest of this file assumes.
-fn ssh_forward_args(options: &SshOptions) -> Vec<String> {
-    let mut args = vec![
-        "-o".to_owned(),
-        "BatchMode=yes".to_owned(),
-        "-o".to_owned(),
-        "ControlMaster=no".to_owned(),
-        "-o".to_owned(),
-        "ControlPath=none".to_owned(),
-    ];
-    args.extend(options.args());
-    args
-}
-
 fn start_forward(instance: &str, host: &str, options: &SshOptions) -> Result<HostForward> {
     // `bootstrap` validates the host before anything is spawned.
     let endpoint = bootstrap_with_options(host, options)?;
 
-    let dir = ensure_local_socket_dir()?;
-    let local_socket = local_socket_path(instance, host, options);
+    let dir = ensure_local_socket_dir()?
+        .canonicalize()
+        .context("failed to resolve the local SSH socket directory")?;
+    let local_socket = dir.join(
+        local_socket_path(instance, host, options)
+            .file_name()
+            .context("local SSH socket path has no filename")?,
+    );
     check_socket_path_length(&local_socket, 0)?;
     sweep_stale_sockets(&dir, &local_socket);
     // ssh refuses to bind over an existing file, and a stale one from a crashed
@@ -957,65 +687,7 @@ fn start_forward(instance: &str, host: &str, options: &SshOptions) -> Result<Hos
     // the bind, not the reason.
     let _ = std::fs::remove_file(&local_socket);
 
-    let ssh = Command::new("ssh")
-        .args(ssh_forward_args(options))
-        .arg("-N")
-        .arg("-T")
-        .arg("-L")
-        .arg(format!("{}:{}", local_socket.display(), endpoint.socket))
-        // End of options: see `validate_ssh_host`.
-        .arg("--")
-        .arg(host)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to start the ssh forward to {host}"))?;
-
-    let mut forward = HostForward {
-        host: host.to_owned(),
-        local_socket,
-        ssh,
-        stderr: None,
-    };
-    let stderr = forward
-        .ssh
-        .stderr
-        .take()
-        .context("SSH stderr was unavailable")?;
-    forward.stderr = Some(SshOutputCapture::new(stderr)?);
-
-    // Wait for the forward to actually carry a connection. `ssh` returning
-    // immediately does not mean the socket is bound yet.
-    let deadline = Instant::now() + FORWARD_READY_TIMEOUT;
-    loop {
-        if UnixStream::connect(&forward.local_socket).is_ok() {
-            return Ok(forward);
-        }
-        if let Ok(Some(status)) = forward.ssh.try_wait() {
-            let stderr = forward
-                .stderr
-                .as_mut()
-                .map(SshOutputCapture::finish)
-                .transpose()?
-                .unwrap_or_default();
-            let stderr = String::from_utf8_lossy(&stderr);
-            return Err(anyhow!(
-                "the ssh forward to {} exited ({status}): {}",
-                forward.host,
-                stderr.trim()
-            ));
-        }
-        if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "timed out waiting for the ssh forward to {} to come up. Does its sshd allow \
-                 unix-socket forwarding? (OpenSSH only; Dropbear and most embedded sshd's do \
-                 not implement it)",
-                forward.host
-            ));
-        }
-        std::thread::sleep(FORWARD_POLL_INTERVAL);
-    }
+    HostForward::start(host, options, &local_socket, &endpoint.socket, None)
 }
 
 /// Say hello, ask for the pane, and wait for the far side to confirm it started.

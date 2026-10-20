@@ -12,7 +12,7 @@ use signal_hook::iterator::{Handle, Signals};
 use std::thread;
 
 /// The exit status a shell expects from a process killed by SIGINT.
-const INTERRUPTED_EXIT_STATUS: i32 = 130;
+pub const INTERRUPTED_EXIT_STATUS: i32 = 130;
 
 /// Restores the terminal and exits if a quit signal arrives during startup.
 ///

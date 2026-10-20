@@ -47,8 +47,8 @@ fn a_server_hangup_is_reported_once_and_stops_the_router() {
         "a hangup should produce exactly one error, got: {instructions:?}"
     );
     assert!(
-        errors[0].contains("server exited"),
-        "the error should name the departed server, got: {}",
+        errors[0].contains("connection to the yinz server closed"),
+        "the error should name the closed server connection, got: {}",
         errors[0]
     );
     assert!(

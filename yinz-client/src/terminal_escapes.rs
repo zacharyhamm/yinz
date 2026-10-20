@@ -203,7 +203,7 @@ fn write_synchronised_tracking(
     written.and(closed.map(drop)).and(flushed)
 }
 
-/// Set once the client starts quitting; from then on a stalled host terminal is given up on.
+/// Set when the client starts quitting; cleared before the next interactive client starts.
 static ABANDON_STALLED_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 /// How long a quitting client keeps waiting on a host terminal that has stopped taking output,
@@ -219,6 +219,10 @@ const MAX_STALL_BACKOFF: Duration = Duration::from_millis(25);
 /// frame writers release stdout's lock and let terminal restoration take over.
 pub fn abandon_stalled_output() {
     ABANDON_STALLED_OUTPUT.store(true, Ordering::SeqCst);
+}
+
+pub(crate) fn reset_output_abandonment() {
+    ABANDON_STALLED_OUTPUT.store(false, Ordering::SeqCst);
 }
 
 pub(crate) fn stalled_output_abandoned() -> bool {

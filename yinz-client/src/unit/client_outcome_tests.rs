@@ -10,6 +10,35 @@ fn start_client_returns_terminal_failure_after_cleanup() {
 }
 
 #[test]
+fn start_client_resets_output_abandonment_after_teardown() {
+    use crate::terminal_escapes::{stalled_output_abandoned, ClientTeardown};
+
+    const CHILD: &str = "YINZ_TEST_RESET_OUTPUT_ABANDONMENT";
+    if std::env::var_os(CHILD).is_some() {
+        let os_input = FakeClientOsApi::new().capturing_stdout();
+        ClientTeardown::new(24, false).restore(&os_input, "switching sessions");
+        assert!(stalled_output_abandoned());
+        check_outcome(Some(ErrorKind::TimedOut), None);
+        assert!(
+            stalled_output_abandoned(),
+            "teardown must enable abandonment again"
+        );
+        return;
+    }
+    // Cancellation is process-global; isolate it from other tests under libtest too.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "unit::client_outcome_tests::start_client_resets_output_abandonment_after_teardown",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
 fn start_client_returns_normal_shutdown_after_cleanup() {
     check_outcome(None, None);
 }
@@ -132,4 +161,85 @@ fn interactive_startup_shows_the_splash_and_detached_startup_does_not() {
         .sent_messages()
         .iter()
         .any(|msg| matches!(msg, ClientToServerMsg::FirstClientConnected { .. })));
+}
+
+#[test]
+fn remote_attach_sends_only_terminal_assets_and_restores_before_switching() {
+    let os = FakeClientOsApi::new().capturing_stdout();
+    os.queue_from_server(ServerToClientMsg::SwitchSession {
+        connect_to_session: SessionConnection {
+            name: Some("next-remote".into()),
+            ..Default::default()
+        },
+    });
+    os.queue_from_server(ServerToClientMsg::Exit {
+        exit_reason: ExitReason::Normal,
+    });
+    let opts = yinz_cli::args::CliArgs {
+        config: Some("/local/config.kdl".into()),
+        config_dir: Some("/local/config".into()),
+        data_dir: Some("/local/data".into()),
+        layout: Some("/local/layout.kdl".into()),
+        ..Default::default()
+    };
+    let outcome = start_client(
+        Box::new(os.clone()),
+        opts,
+        Default::default(),
+        Default::default(),
+        ClientInfo::Remote {
+            name: "same-name-as-local".into(),
+            socket: "/forwarded/socket".into(),
+            cancelled: Default::default(),
+        },
+        None,
+        None,
+        true,
+        false,
+    );
+    assert_eq!(outcome.exit_status, 0);
+    assert!(outcome.reconnect_to_session.is_some());
+    assert!(!os.raw_mode());
+    let messages = os.sent_messages();
+    let assets = messages
+        .iter()
+        .find_map(|msg| match msg {
+            ClientToServerMsg::AttachClient { cli_assets, .. } => Some(cli_assets),
+            _ => None,
+        })
+        .unwrap();
+    assert!(assets.config_file_path.is_none());
+    assert!(assets.config_dir.is_none());
+    assert!(assets.data_dir.is_none());
+    assert!(assets.layout.is_none());
+    assert!(assets.configuration_options.is_none());
+    assert!(assets.cwd.is_none());
+    assert!(!messages
+        .iter()
+        .any(|msg| matches!(msg, ClientToServerMsg::FirstClientConnected { .. })));
+}
+
+#[test]
+fn cancelled_remote_handoff_does_not_claim_the_terminal_or_connect() {
+    let os = FakeClientOsApi::new().capturing_stdout();
+    let outcome = start_client(
+        Box::new(os.clone()),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        ClientInfo::Remote {
+            name: "cancelled-remote".into(),
+            socket: "/forwarded/socket".into(),
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        },
+        None,
+        None,
+        false,
+        false,
+    );
+    assert_eq!(outcome.exit_status, 130);
+    assert!(outcome.reconnect_to_session.is_none());
+    assert!(!os.raw_mode());
+    assert!(os.stdout_bytes().is_empty());
+    assert!(os.sent_messages().is_empty());
 }

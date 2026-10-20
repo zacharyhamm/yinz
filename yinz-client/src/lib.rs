@@ -25,6 +25,7 @@ pub mod cli_client;
 mod client_loop;
 pub mod repl;
 pub use client_loop::ClientOutcome;
+pub use startup_signals::INTERRUPTED_EXIT_STATUS;
 mod command_is_executing;
 mod host_transport;
 mod input_handler;
@@ -45,6 +46,7 @@ use std::env::current_exe;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use yinz_runtime::errors::{FatalError, LoggableError};
@@ -374,6 +376,11 @@ fn server_command(
 #[derive(Debug, Clone)]
 pub enum ClientInfo {
     Attach(SessionName, Options),
+    Remote {
+        name: SessionName,
+        socket: PathBuf,
+        cancelled: Arc<AtomicBool>,
+    },
     New(SessionName, Option<LayoutInfo>, Option<PathBuf>), // PathBuf -> explicit cwd
     Resurrect(SessionName, PathBuf, bool, Option<PathBuf>), // (name, path_to_layout, force_run_commands, cwd)
     Watch(SessionName, Options),                            // Watch mode (read-only)
@@ -383,6 +390,7 @@ impl ClientInfo {
     pub fn get_session_name(&self) -> &SessionName {
         match self {
             Self::Attach(name, _) => name,
+            Self::Remote { name, .. } => name,
             Self::New(name, _layout_info, _layout_cwd) => name,
             Self::Resurrect(name, _, _, _) => name,
             Self::Watch(name, _) => name,
@@ -439,11 +447,12 @@ pub fn start_client(
     is_a_reconnect: bool,
     start_detached_and_exit: bool,
 ) -> ClientOutcome {
+    let is_remote = matches!(&info, ClientInfo::Remote { .. });
     let startup_started = std::time::Instant::now();
     let own_session_name = info.get_session_name().to_owned();
     let kind = match &info {
         ClientInfo::New(..) => "new",
-        ClientInfo::Attach(..) => "attach",
+        ClientInfo::Attach(..) | ClientInfo::Remote { .. } => "attach",
         ClientInfo::Resurrect(..) => "resurrect",
         ClientInfo::Watch(..) => "watch",
     };
@@ -456,6 +465,7 @@ pub fn start_client(
             reconnect_to_session: None,
         };
     }
+    crate::terminal_escapes::reset_output_abandonment();
     info!("Starting Yinz client!");
 
     let explicitly_disable_kitty_keyboard_protocol = config_options
@@ -482,6 +492,18 @@ pub fn start_client(
     if os_input.should_install_panic_hook() {
         install_early_terminal_panic_guard(terminal_teardown);
         startup_signal_guard = StartupSignalGuard::arm(terminal_teardown);
+    }
+    if let ClientInfo::Remote { cancelled, .. } = &info
+        && cancelled.load(Ordering::Acquire)
+    {
+        if let Some(guard) = startup_signal_guard.take() {
+            guard.disarm();
+        }
+        return ClientOutcome {
+            exit_msg: "Interrupted while starting up".to_owned(),
+            exit_status: INTERRUPTED_EXIT_STATUS,
+            reconnect_to_session: None,
+        };
     }
     startup_stage("client.claim_terminal", || {
         claim_terminal(
@@ -743,7 +765,7 @@ pub fn start_client(
         say_bye(&*os_input);
     }
 
-    if outcome.reconnect_to_session.is_none() {
+    if outcome.reconnect_to_session.is_none() || is_remote {
         info!("{}", outcome.exit_msg);
         teardown.restore(&*os_input, &outcome.exit_msg);
     } else {
@@ -767,7 +789,10 @@ pub fn start_server_detached(
 
     // Only a session that does not exist yet can be started detached;
     // attaching needs a controlling terminal to attach to.
-    if matches!(info, ClientInfo::Attach(..) | ClientInfo::Watch(..)) {
+    if matches!(
+        info,
+        ClientInfo::Attach(..) | ClientInfo::Watch(..) | ClientInfo::Remote { .. }
+    ) {
         eprintln!("Session already exists");
         std::process::exit(1);
     }

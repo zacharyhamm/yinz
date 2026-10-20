@@ -426,6 +426,17 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
+    /// Internal SSH session bootstrap.
+    #[clap(hide = true)]
+    RemoteSession {
+        #[clap(long)]
+        client_version: String,
+        #[clap(long)]
+        contract_version: usize,
+        #[clap(long)]
+        create: bool,
+        session_name: String,
+    },
     /// Evaluate Steel Scheme in a running session, interactively, from stdin, or with --eval.
     ///
     /// Use --session NAME to select a session. Otherwise, use the current session,
@@ -982,6 +993,10 @@ pub enum Sessions {
         /// session).
         #[clap(value_parser)]
         session_name: Option<String>,
+
+        /// Attach through OpenSSH to this host or SSH config alias. Requires a session name.
+        #[clap(long, value_name = "HOST", requires = "session_name", conflicts_with_all = ["index", "create_background", "force_run_commands"])]
+        remote: Option<String>,
 
         /// Create a session if one does not exist.
         #[clap(short, long, value_parser)]

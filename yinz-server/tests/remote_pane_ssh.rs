@@ -2649,3 +2649,9 @@ read -r finish
         .any(|d| d.token == "success" && d.color == SourceColor::Rgb(18, 52, 86)));
     pane.close();
 }
+
+#[path = "../src/unit/remote_client_ssh.rs"]
+mod remote_client_ssh;
+
+#[path = "../src/unit/remote_pane_forward_ssh.rs"]
+mod remote_pane_forward_ssh;

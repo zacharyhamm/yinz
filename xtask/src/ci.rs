@@ -121,8 +121,9 @@ pub fn build_linux_release(sh: &Shell) -> anyhow::Result<PathBuf> {
     .context("failed to build the Debian test builder; Docker is required")?;
     let binary = Path::new(target).join("release/yinz");
     let executable = target_dir.join(&binary);
+    // Whole-program LTO exhausts an 8 GiB Docker VM; test binaries need no link-time optimization.
     // Podman also exposes a `docker` CLI; keep its rootless mapping aligned with --user.
-    cmd!(sh, "docker run --rm --platform {platform} --user {user} -v {project_mount} -v {target_mount} -w {project} -e {home} -e {cargo_home} {image} cargo build --locked --release --target {target} --bin yinz")
+    cmd!(sh, "docker run --rm --platform {platform} --user {user} -v {project_mount} -v {target_mount} -w {project} -e {home} -e {cargo_home} {image} cargo build --locked --release --config profile.release.lto=false --config profile.release.codegen-units=16 --target {target} --bin yinz")
         .env("PODMAN_USERNS", "keep-id")
         .run().context("failed to build the GNU/Linux test binary in Debian")?;
     cmd!(sh, "docker run --rm --platform {platform} --user {user} -v {target_mount} {image} {executable} --version")
