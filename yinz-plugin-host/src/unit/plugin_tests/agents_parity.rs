@@ -673,6 +673,215 @@ impl HistoryPanel {
 }
 
 #[test]
+fn agents_prompt_search_applies_cancels_and_restores_drafts() {
+    let runs = [run("prompt-run", 7, false)];
+    let mut h = HistoryPanel::new(&runs);
+    h.snapshot(1, &runs);
+    h.complete(&h.request());
+    h.panel.render(24, 100);
+    h.key("/");
+    let query = "  prompt: history  ";
+    h.panel.update(&Event::PastedText(query.into()));
+    let frame = history_frame(&h.panel.render(24, 100));
+    assert!(frame.contains("User prompts"));
+    assert!(frame.contains("prompt: text"));
+    assert!(!frame.contains("Ctrl-p"));
+    assert!(h.panel.take_commands().iter().any(|command| {
+        command.get("ShowCursor")
+            == Some(&json!(["Search [User prompts]: ".len() + query.len(), 0]))
+    }));
+    h.key("Tab");
+    h.key("/");
+    assert_eq!(h.get("search_query"), query);
+    h.key("Enter");
+    assert_eq!(h.get("search_revisions")["prompt-run"], 1);
+    assert_eq!(h.get("applied_search_query"), query);
+    let title = h.get("rows")[0]["Run"]["title"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(title.starts_with('…'), "{title}");
+    assert!(title.contains("history"), "{title}");
+    let request = h.request();
+    let payload: Value = serde_json::from_str(request["payload"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["revision"], 1);
+    let reply = h.complete(&request);
+    assert!(reply["run"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["kind"] == "message"));
+    h.panel.render(24, 100);
+    assert_eq!(h.get("history_cursor_anchor"), json!([1]));
+    // Changing the draft must not change the applied results when cancelled.
+    h.key("/");
+    assert_eq!(h.get("search_query"), query);
+    h.key("Ctrl u");
+    h.panel.update(&Event::PastedText("step".into()));
+    h.key("Esc");
+    assert_eq!(h.get("search_query"), query);
+    assert!(history_frame(&h.panel.render(24, 100)).contains("User prompts"));
+    assert_eq!(h.get("search_revisions")["prompt-run"], 1);
+    h.key("/");
+    h.key("Ctrl u");
+    h.panel.update(&Event::PastedText("step".into()));
+    h.key("Enter");
+    assert_eq!(h.get("search_revisions")["prompt-run"], 2);
+    assert_eq!(h.get("applied_search_query"), "step");
+    assert!(history_frame(&h.panel.render(24, 100)).contains("All messages"));
+    h.key("Esc");
+    h.key("/");
+    assert_eq!(h.get("search_query"), "");
+    // A prefix-only draft also survives leaving the editor.
+    h.panel.update(&Event::PastedText("prompt: ".into()));
+    h.key("Tab");
+    h.key("/");
+    assert_eq!(h.get("search_query"), "prompt: ");
+    h.key("Ctrl u");
+    assert_eq!(h.get("search_query"), "");
+    assert!(history_frame(&h.panel.render(24, 100)).contains("All messages"));
+    h.panel.update(&Event::PastedText("prompt:".into()));
+    h.key("Backspace");
+    assert_eq!(h.get("search_query"), "prompt");
+    assert!(history_frame(&h.panel.render(24, 100)).contains("All messages"));
+    h.key("Esc");
+    h.key("/");
+    assert_eq!(h.get("search_query"), "");
+}
+
+#[test]
+fn agents_prompt_search_reserves_only_a_leading_lowercase_prefix() {
+    let mut assistant = run("assistant", 7, true);
+    assistant.entries = vec![assistant.entries[1].clone()];
+    assistant.entries[0].text = "Prompt: history prompts: history history prompt:".into();
+    let mut h = HistoryPanel::new(&[assistant]);
+    h.panel.render(24, 100);
+    h.key("/");
+    for query in ["", "   ", "prompt:", "  prompt:  \t"] {
+        h.panel
+            .runtime
+            .invoke("a-set!", vec![json!("search_query"), json!(query)])
+            .unwrap();
+        h.panel.take_commands();
+        let request = h.get("search_request");
+        h.key("Enter");
+        assert_eq!(h.get("search_query"), query);
+        assert_eq!(h.get("search_request"), request);
+        assert_eq!(h.get("search_editing"), true);
+        assert_eq!(h.get("search_pending"), false);
+        assert_eq!(h.get("applied_search_query"), false);
+        assert!(!h
+            .panel
+            .take_commands()
+            .iter()
+            .any(|command| command.get("DataFetch").is_some()));
+    }
+    for (query, prompts_only) in [
+        ("prompt:history", true),
+        ("  prompt: history  ", true),
+        ("history", false),
+        ("Prompt: history", false),
+        ("prompts: history", false),
+        ("history prompt:", false),
+    ] {
+        h.key("Ctrl u");
+        h.panel.update(&Event::PastedText(query.into()));
+        assert_eq!(
+            h.panel
+                .runtime
+                .invoke("a-search-prompts-only?", vec![])
+                .unwrap(),
+            prompts_only
+        );
+        h.key("Enter");
+        assert_eq!(h.get("search_error"), false);
+        assert_eq!(h.get("applied_search_query"), query);
+        assert_eq!(
+            h.get("search_revisions"),
+            if prompts_only {
+                json!({})
+            } else {
+                json!({"assistant": 2})
+            }
+        );
+        h.key("/");
+    }
+}
+
+#[test]
+fn agents_prompt_search_filters_before_paging_and_substring_fallback() {
+    let mut mixed = run("mixed", 7, true);
+    let template = mixed.entries[0].clone();
+    mixed.entries = (1..=250)
+        .map(|revision| {
+            let mut entry = template.clone();
+            entry.revision = revision;
+            entry.created_at_ms = Some(revision as i64);
+            entry.kind = if revision <= 150 {
+                agents::RunEntryKind::Message
+            } else {
+                agents::RunEntryKind::Prompt
+            };
+            entry.text = "needleword".into();
+            entry
+        })
+        .collect();
+    let mut prompt = run("prompt", 8, true);
+    prompt.entries.truncate(1);
+    prompt.entries[0].text = "needleword".into();
+    let mut assistant = run("assistant", 9, true);
+    assistant.entries = vec![mixed.entries[0].clone()];
+    assistant.entries[0].text = "needleword needlewor".into();
+    let mut tool = run("tool", 10, true);
+    tool.entries = vec![mixed.entries[0].clone()];
+    tool.entries[0].text = "Tool finished".into();
+    tool.entries[0].tool = yinz_tile::agent::tool_capture::prepare(
+        "codex",
+        &yinz_tile::agent::HookEvent {
+            hook_event_name: "PostToolUse".into(),
+            tool_name: Some("exec".into()),
+            tool_response: Some(json!("needleword")),
+            ..Default::default()
+        },
+    );
+    assert!(tool.entries[0].tool.is_some());
+    let runs = [mixed, prompt, assistant, tool];
+    let mut h = HistoryPanel::new(&runs);
+    h.snapshot(1, &runs);
+    h.panel.render(24, 100);
+    // An assistant's exact token must not prevent the prompt substring fallback.
+    for query in ["needleword", "needlewor"] {
+        h.key("/");
+        h.key("Ctrl u");
+        h.panel
+            .update(&Event::PastedText(format!("prompt:{query}")));
+        h.key("Enter");
+        assert_eq!(h.get("search_error"), false);
+        let revisions = h.get("search_revisions");
+        assert_eq!(revisions.as_object().unwrap().len(), 2, "{revisions}");
+        assert!(revisions["mixed"].as_u64().unwrap() > 150);
+        assert_eq!(revisions["prompt"], 1);
+        assert_eq!(h.get("search_truncated"), false);
+        h.key("/");
+        h.key("Ctrl u");
+        h.panel.update(&Event::PastedText(query.into()));
+        h.key("Enter");
+        let expected = if query == "needleword" { 4 } else { 2 };
+        assert_eq!(
+            h.get("search_revisions").as_object().unwrap().len(),
+            expected
+        );
+        h.key("Esc");
+    }
+    h.key("/");
+    h.panel
+        .update(&Event::PastedText("prompt: finished".into()));
+    h.key("Enter");
+    assert_eq!(h.get("search_revisions"), json!({}));
+    assert!(history_frame(&h.panel.render(24, 100)).contains("no matches"));
+}
+
+#[test]
 fn agents_follow_the_theme_on_startup_and_mode_updates() {
     use yinz_terminal::panes::{grid::Grid, AnsiCode};
     use yinz_types::style::{Style, StyleDeclaration};

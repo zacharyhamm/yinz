@@ -393,6 +393,10 @@ impl Pair {
                             || command.get("GetLocalUtcOffset").is_some())
                 })
                 .map(|mut command| {
+                    // The agents search label now includes its mode; its cursor is tested separately.
+                    if agents && command.get("ShowCursor").is_some() {
+                        command["ShowCursor"] = Value::Null;
+                    }
                     if let Some(Value::Array(events)) = command.get_mut("Subscribe") {
                         if agents {
                             // Worker replies and theme repainting were added after the recordings.
