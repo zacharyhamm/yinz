@@ -154,6 +154,8 @@ impl Screen {
         }
         self.tab_groups
             .retain(|id, _| self.tab_group_ids.values().any(|group| group == id));
+        self.warped_tab_groups
+            .retain(|_, id| self.tab_groups.contains_key(id));
     }
 
     pub(super) fn group_tabs(&self, group: u32) -> Vec<TabId> {

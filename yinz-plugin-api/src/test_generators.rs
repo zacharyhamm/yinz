@@ -756,6 +756,7 @@ pub(crate) fn warped_panes(tc: &hegel::TestCase) -> WarpedPane {
 
 pub(crate) fn warped_tabs(tc: &hegel::TestCase) -> WarpedTab {
     WarpedTab {
+        source_instance_id: optional_strings(tc),
         relationships: None,
         name: optional_strings(tc),
         user_named: booleans(tc),

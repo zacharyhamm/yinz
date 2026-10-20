@@ -853,6 +853,7 @@ fn warping_a_visible_editor_carries_its_subject() {
         .expect("transfer");
     assert!(payload.relationships.is_some());
     assert!(payload.tiled_layout.tab_group.is_none());
+    assert!(payload.source_instance_id.is_none());
     assert!(slots
         .iter()
         .all(|id| screen.tabs[&tab_id].get_pane_with_id(*id).is_none()));
@@ -2860,7 +2861,12 @@ fn warp_adoption_preserves_explicit_floating_layouts_over_destination_template()
             screen
                 .place_adopted_tab(
                     WarpedTab {
+                        source_instance_id: Some("source".into()),
                         tiled_layout: TiledPaneLayout {
+                            tab_group: Some(yinz_types::tab_bar::TabGroupInfo {
+                                id: 5,
+                                name: "source group".into(),
+                            }),
                             run: Some(Run::Plugin(plugin.clone())),
                             focus: Some(true),
                             ..Default::default()
@@ -2880,6 +2886,7 @@ fn warp_adoption_preserves_explicit_floating_layouts_over_destination_template()
                     None,
                 )
                 .expect("queue adoption");
+            assert_eq!(screen.warped_tab_groups.is_empty(), placement.is_some());
             let (layout, transmitted_floating, tab_id, focus, client_id) = receiver
                 .try_iter()
                 .find_map(|(instruction, _)| match instruction {

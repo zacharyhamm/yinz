@@ -2244,6 +2244,9 @@ pub struct RemotePaneHandoff {
 /// orders.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedTab {
+    /// The source screen's UUID, paired with the layout's group ID across separate pulls.
+    #[serde(default)]
+    pub source_instance_id: Option<String>,
     #[serde(default)]
     pub relationships: Option<WarpRelationships>,
     /// The tab's name, so it does not arrive renamed.

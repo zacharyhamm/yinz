@@ -1196,6 +1196,7 @@ impl Screen {
         }
 
         Ok(Box::new(WarpedTab {
+            source_instance_id: (!prepared.pane_group).then(|| self.instance_id.to_string()),
             relationships: prepared.relationships,
             name: prepared.name,
             user_named: prepared.user_named,
@@ -1565,15 +1566,25 @@ impl Screen {
         let mut tiled_layout = payload.tiled_layout;
         tiled_layout.hide_floating_panes = payload.hide_floating_panes;
         tiled_layout.group_focused = false;
+        let source_group = if !is_rollback && placement.is_none() {
+            payload
+                .source_instance_id
+                .zip(tiled_layout.tab_group.as_ref().map(|group| group.id))
+        } else {
+            None
+        };
         if let Some(group) = &mut tiled_layout.tab_group {
             group.name = yinz_types::text::clean_string_from_control_and_linebreak(&group.name);
-            // Rollback IDs belong to this session; arrivals match displayed names.
+            // Rollback IDs are local; only the first arrival matches a mutable displayed name.
             if !is_rollback {
-                if let Some(id) = self
-                    .tab_groups
-                    .keys()
-                    .copied()
-                    .find(|id| self.tab_group_name(*id).as_deref() == Some(group.name.as_str()))
+                if let Some(id) = source_group
+                    .as_ref()
+                    .and_then(|source| self.warped_tab_groups.get(source).copied())
+                    .or_else(|| {
+                        self.tab_groups.keys().copied().find(|id| {
+                            self.tab_group_name(*id).as_deref() == Some(group.name.as_str())
+                        })
+                    })
                 {
                     group.id = id;
                 } else {
@@ -1593,6 +1604,9 @@ impl Screen {
             Some(client_id),
         )?;
         self.restore_tab_group(tab_index, &tiled_layout);
+        if let (Some(source), Some(group)) = (source_group, &tiled_layout.tab_group) {
+            self.warped_tab_groups.insert(source, group.id);
+        }
         // A name the tab was born with elsewhere is only a fallback here, as it was there;
         // a rename the user made there still holds.
         if let Some(tab) = self.tabs.get_mut(&tab_index) {
