@@ -14,7 +14,7 @@ use yinz_types::internal_ids::ClientId;
 
 use super::{CommandPaletteState, Screen};
 use crate::ui::command_palette::{
-    Entry, EntryKind, Field, FieldValue, Form, Outcome, PluginSection,
+    plain_text, Entry, EntryKind, Field, FieldValue, Form, Outcome, PluginSection,
 };
 
 type ProviderKey = (Owner, String);
@@ -549,7 +549,7 @@ impl Screen {
             Some(Execution {
                 handle,
                 values,
-                label,
+                label: plain_text(&label),
             }),
             None,
         );

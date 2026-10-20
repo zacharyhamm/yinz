@@ -42,6 +42,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-config",
             "yinz-steel",
             "yinz-test-support",
+            "yinz-tile-markdown",
         ],
     ),
     (
@@ -267,6 +268,7 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-config",
             "yinz-steel",
             "yinz-test-support",
+            "yinz-tile-markdown",
         ],
     ),
 ];

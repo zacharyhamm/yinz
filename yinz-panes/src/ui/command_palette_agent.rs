@@ -512,11 +512,12 @@ impl AgentView {
             .take(action_rows)
         {
             let selected = self.actions_focused && i == self.action;
-            layout.lines.push(dim(format!(
-                "{} {}",
-                if selected { "›" } else { "·" },
-                action.label
-            )));
+            let mut label = super::inline(&action.label)
+                .prepend(if selected { "› " } else { "· " }, MdStyle::default());
+            for style in &mut label.styles {
+                style.dim = true;
+            }
+            layout.lines.push(label);
             layout.hits.push(Some(Hit::Action(i)));
             layout.selected.push(selected);
         }
@@ -613,32 +614,10 @@ pub(super) fn chunks(
                         .and_then(|i| line.and_then(|l| l.styles.get(i)))
                         .copied()
                         .unwrap_or_default();
-                    let mut painted = base;
-                    if md.bold {
-                        painted = painted.bold(Some(AnsiCode::On));
-                    }
-                    if md.dim {
-                        painted = painted.dim(Some(AnsiCode::On));
-                    }
-                    if md.strike {
-                        painted = painted.strike(Some(AnsiCode::On));
-                    }
-                    if let Some(color) = md.color {
-                        painted = painted.foreground(Some(
-                            match color {
-                                0 => colors.emphasis_0,
-                                1 => colors.emphasis_1,
-                                2 => colors.emphasis_2,
-                                _ => colors.emphasis_3,
-                            }
-                            .into(),
-                        ));
-                    }
-                    if md.error {
-                        painted =
-                            painted.foreground(Some(style.colors.exit_code_error.base.into()));
-                    }
-                    chars.push(TerminalCharacter::new_styled(c, painted.into()));
+                    chars.push(TerminalCharacter::new_styled(
+                        c,
+                        super::paint_markdown(base.into(), md, style),
+                    ));
                 }
                 if layout.border == 1 {
                     chars.push(TerminalCharacter::new_styled('│', border.clone()));

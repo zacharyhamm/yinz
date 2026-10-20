@@ -1,3 +1,4 @@
+use yinz_panes::ui::command_palette::escape_literal;
 #[path = "palette_agents.rs"]
 pub(super) mod agents;
 #[path = "palette_history.rs"]
@@ -720,7 +721,7 @@ impl Screen {
             ] {
                 command(
                     &format!("agent:{kind}:{suffix}"),
-                    &label,
+                    &escape_literal(&label),
                     &[&aliases],
                     Builtin::Agent(action),
                 );
@@ -764,7 +765,7 @@ impl Screen {
             entries.push((
                 Entry {
                     id: format!("tab-group:{id}"),
-                    label: self.tab_group_name(*id).unwrap_or_default(),
+                    label: escape_literal(&self.tab_group_name(*id).unwrap_or_default()),
                     description: if self.tab_group_ids.get(&tab_id) == Some(id) {
                         "Current".into()
                     } else {
@@ -782,7 +783,7 @@ impl Screen {
             entries.push((
                 Entry {
                     id: format!("project:{name}"),
-                    label: name.clone(),
+                    label: escape_literal(name),
                     description: if state.context.current_project.as_ref() == Some(name) {
                         "Current".into()
                     } else {
@@ -801,8 +802,8 @@ impl Screen {
             (
                 Entry {
                     id: agent.id(),
-                    label: pane_label(&agent.pane),
-                    description: agent.description(),
+                    label: escape_literal(&pane_label(&agent.pane)),
+                    description: escape_literal(&agent.description()),
                     shortcut: String::new(),
                     aliases: vec![
                         agent.pane.title.clone(),
@@ -824,7 +825,7 @@ impl Screen {
             entries.push((
                 Entry {
                     id: format!("theme:{name}"),
-                    label: name.clone(),
+                    label: escape_literal(name),
                     description: String::new(),
                     shortcut: String::new(),
                     aliases: vec![],
@@ -953,7 +954,7 @@ impl Screen {
 
     fn warp_palette_entries(&self, source: Option<&SessionName>) -> Vec<(Entry, Builtin)> {
         let mut entries = Vec::new();
-        let mut add = |id, label, description, kind, action| {
+        let mut add = |id, label: String, description: String, kind, action| {
             let aliases = match &action {
                 Builtin::Warp(_, WarpTarget::Pane(id)) => {
                     vec![id.to_string(), id.legacy_parts().0.to_string()]
@@ -963,8 +964,8 @@ impl Screen {
             entries.push((
                 Entry {
                     id,
-                    label,
-                    description,
+                    label: escape_literal(&label),
+                    description: escape_literal(&description),
                     kind,
                     shortcut: String::new(),
                     aliases,
@@ -1252,7 +1253,7 @@ impl Screen {
                 } else if let Some(state) = self.command_palettes.get_mut(&client) {
                     state.widget.open_form(Form::new(
                         id,
-                        format!("Apply theme {name}"),
+                        escape_literal(&format!("Apply theme {name}")),
                         vec![Field::choice(
                             "Destination",
                             &["Apply to session", "Save permanently"],
@@ -1484,7 +1485,13 @@ impl Screen {
                 true,
             ),
         };
-        Ok(Form::new(id, title, fields, submit, confirmation))
+        Ok(Form::new(
+            id,
+            escape_literal(&title),
+            fields,
+            submit,
+            confirmation,
+        ))
     }
 
     fn palette_form_action(

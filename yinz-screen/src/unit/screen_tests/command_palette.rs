@@ -3368,7 +3368,7 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
     use yinz_runtime::channels::{unbounded, SenderWithContext};
     use yinz_types::agent::provider::{self, AgentProvider};
     let registered = AgentProvider {
-        kind: "palette-test-agent".into(),
+        kind: "_custom_".into(),
         executable: "palette-test-agent".into(),
         ..Default::default()
     };
@@ -3378,7 +3378,7 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
     let mut grid = grid_for_render_snapshot(SIZE);
     let (tx, rx) = unbounded();
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
-    screen.projects = ["current".into(), "other".into()].into_iter().collect();
+    screen.projects = ["**project**".into(), "other".into()].into_iter().collect();
     let enter = Some(KeyWithModifier::new(BareKey::Enter));
     let esc = Some(KeyWithModifier::new(BareKey::Esc));
     let next = || {
@@ -3389,21 +3389,18 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
             })
             .unwrap()
     };
-    for kind in [
-        "claude",
-        "codex",
-        "pi",
-        "muse",
-        "agy",
-        "cursor",
-        "palette-test-agent",
-    ] {
+    for kind in ["claude", "codex", "pi", "muse", "agy", "cursor", "_custom_"] {
         screen.toggle_command_palette(CLIENT);
         screen.command_palette_handles_input(
             &None,
             format!("{kind} new project").as_bytes(),
             false,
             CLIENT,
+        );
+        let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(
+            snapshot.contains(&format!("Spawn {kind} agent in new project…")),
+            "{snapshot}"
         );
         screen.command_palette_handles_input(&enter, b"", false, CLIENT);
         let request = next();
@@ -3414,14 +3411,37 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
         screen.toggle_command_palette(CLIENT);
         screen.command_palette_handles_input(
             &None,
-            format!("{kind} worktree").as_bytes(),
+            format!("{kind} current directory").as_bytes(),
             false,
             CLIENT,
+        );
+        let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(
+            snapshot.contains(&format!("Spawn {kind} agent in current directory")),
+            "{snapshot}"
         );
         screen.command_palette_handles_input(&enter, b"", false, CLIENT);
         let request = next();
         assert!(
-            matches!(&request.action, AgentAction::Start { kind: selected, project: Some(project) } if selected == kind && project == "current")
+            matches!(&request.action, AgentAction::Current { kind: selected } if selected == kind)
+        );
+        screen.close_command_palette(CLIENT);
+        screen.toggle_command_palette(CLIENT);
+        screen.command_palette_handles_input(
+            &None,
+            format!("{kind} worktree").as_bytes(),
+            false,
+            CLIENT,
+        );
+        let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(
+            snapshot.contains(&format!("Spawn {kind} agent in worktree…")),
+            "{snapshot}"
+        );
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        let request = next();
+        assert!(
+            matches!(&request.action, AgentAction::Start { kind: selected, project: Some(project) } if selected == kind && project == "**project**")
         );
         // Repeated Enter cannot submit the request twice.
         screen.command_palette_handles_input(&enter, b"", false, CLIENT);
@@ -3450,7 +3470,7 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
     let request = next();
     let action = AgentAction::Checkout {
         kind: "claude".into(),
-        project: AgentProject::Registered("current".into()),
+        project: AgentProject::Registered("**project**".into()),
         path: None,
     };
     screen.plugin_palette_instruction(Instruction::AgentReply {
@@ -3458,7 +3478,7 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
         opening: request.opening,
         step: request.step,
         reply: Ok(AgentReply::Choices {
-            title: "current · Worktrees".into(),
+            title: "**project** · Worktrees".into(),
             choices: vec![AgentChoice {
                 label: "Create new worktree…".into(),
                 description: "".into(),
@@ -3467,7 +3487,7 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
         }),
     });
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
-    assert!(snapshot.contains("current · Worktrees"), "{snapshot}");
+    assert!(snapshot.contains("**project** · Worktrees"), "{snapshot}");
     assert_eq!(
         snapshot.matches("Create new worktree").count(),
         1,
@@ -3528,7 +3548,7 @@ fn native_new_project_form_preserves_both_fields_and_guards_submission() {
             opening: request.opening,
             step: request.step,
             reply: Ok(AgentReply::Form {
-                title: "New project".into(),
+                title: "New **project**_[name]".into(),
                 labels: vec!["Project name".into(), "Destination directory".into()],
                 submit: "Create and launch".into(),
                 action: request.action.clone(),
@@ -3540,6 +3560,7 @@ fn native_new_project_form_preserves_both_fields_and_guards_submission() {
     palette_key(&mut screen, BareKey::Enter);
     show_form(&mut screen, &next());
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("New **project**_[name]"), "{snapshot}");
     assert!(snapshot.contains("Project name"), "{snapshot}");
     assert!(snapshot.contains("Destination directory"), "{snapshot}");
     assert!(snapshot.contains("Create and launch"), "{snapshot}");
@@ -3624,6 +3645,7 @@ fn native_agent_launch_replies_are_client_and_opening_scoped_and_errors_do_not_r
             message: Some("Launch outcome unknown".into()),
             launch_resources: Some(yinz_types::agent::AgentLaunchResources {
                 cwd: Some("/created/checkout".into()),
+                branch: Some("_topic_".into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -3646,6 +3668,7 @@ fn native_agent_launch_replies_are_client_and_opening_scoped_and_errors_do_not_r
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(snapshot.contains("Launch outcome unknown"), "{snapshot}");
     assert!(snapshot.contains("/created/checkout"), "{snapshot}");
+    assert!(snapshot.contains("Branch: _topic_"), "{snapshot}");
     screen.command_palette_handles_input(&enter, b"", false, CLIENT);
     assert!(!rx
         .try_iter()
@@ -3778,7 +3801,18 @@ fn archive_queries_discard_stale_replies_and_resume_cannot_be_submitted_twice() 
     screen.plugin_palette_instruction(reply(&old, "STALE ARCHIVE", run.clone()));
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!snapshot.contains("STALE ARCHIVE"));
-    screen.plugin_palette_instruction(reply(&current, "Matching run", run));
+    let mut response = reply(&current, "[report]: /tmp/output", run);
+    if let Instruction::AgentReply {
+        reply: Ok(AgentReply::History(HistoryReply::Rows { rows, .. })),
+        ..
+    } = &mut response
+    {
+        rows[0].description = "dev_test · /tmp/my_dir".into();
+    }
+    screen.plugin_palette_instruction(response);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("[report]: /tmp/output"), "{snapshot}");
+    assert!(snapshot.contains("dev_test · /tmp/my_dir"), "{snapshot}");
     screen.command_palette_handles_input(
         &Some(KeyWithModifier::new(BareKey::Down)),
         b"",
@@ -4217,7 +4251,11 @@ fn archive_filter_forms_preserve_literal_search_text() {
 
 #[test]
 fn native_note_palette_rejects_stale_search_and_clears_only_saved_notes() {
-    for result in [Ok(true), Ok(false), Err("Editor failed".into())] {
+    for result in [
+        Ok(true),
+        Ok(false),
+        Err("Cannot save **note**\n\nRecovery: /tmp/_note_.md\nKeep [draft].".into()),
+    ] {
         check_note_palette_completion(result);
     }
 }
@@ -4343,6 +4381,7 @@ fn check_note_palette_completion(result: Result<bool, String>) {
     ));
     assert!(!screen.command_palette_handles_input(&None, b"editor input", false, CLIENT));
     let saved = result == Ok(true);
+    let failure = result.as_ref().err().cloned();
     screen.plugin_palette_instruction(Instruction::NoteFinished {
         client: CLIENT,
         token: open.token,
@@ -4368,6 +4407,15 @@ fn check_note_palette_completion(result: Result<bool, String>) {
         "› #2 Second"
     };
     assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains(selected));
+    if let Some(failure) = failure {
+        palette_key(&mut screen, BareKey::Down);
+        palette_key(&mut screen, BareKey::Enter);
+        let details = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        for line in failure.lines().filter(|line| !line.is_empty()) {
+            assert!(details.contains(line), "{details}");
+        }
+        palette_key(&mut screen, BareKey::Esc);
+    }
     screen.command_palette_handles_input(&esc, b"", false, CLIENT);
     assert_palette_query(
         &render_frame_into(&mut screen, &receiver, CLIENT, &mut grid),
@@ -4794,6 +4842,25 @@ fn open_themes(screen: &mut Screen) {
 }
 
 #[test]
+fn native_theme_form_preserves_literal_name_and_saves_raw_value() {
+    let mut screen = theme_screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let name = "**theme**_[name]";
+    screen.themes = std::collections::BTreeMap::from([(name.into(), screen.style.colors)]);
+    open_themes(&mut screen);
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains(&format!("Apply theme {name}")), "{frame}");
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(receiver.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ServerInstruction::SavePaletteTheme { name: saved, .. } if saved == name
+    )));
+}
+
+#[test]
 fn theme_preview_initial_selection_filter_empty_and_cancel() {
     let mut screen = theme_screen();
     let receiver = screen_wired_to_server(&mut screen);
@@ -5178,6 +5245,9 @@ fn palette_completion_notifications_are_scoped_and_readable() {
             "reload",
             "disconnect",
             "form",
+            "form-error",
+            "nested",
+            "nested-error",
             "invalid",
             "oversized",
         ] {
@@ -5221,7 +5291,7 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                 result: Ok(Reply::Actions {
                     actions: vec![Action {
                         id: "save".into(),
-                        label: "Save report".into(),
+                        label: "**Save** report\\-file".into(),
                         description: String::new(),
                         aliases: vec![],
                         handle: "save".into(),
@@ -5229,10 +5299,10 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                 }),
             }));
             assert!(notifications.try_recv().is_err(), "discovery is quiet");
-            screen.command_palette_handles_input(&None, b"Save report", false, CLIENT);
+            screen.command_palette_handles_input(&None, b"Save report-file", false, CLIENT);
             palette_key(&mut screen, BareKey::Enter);
             let mut scope = next_scope();
-            if kind == "form" {
+            if matches!(kind, "form" | "form-error") {
                 screen.plugin_palette_instruction(command(Command::Reply {
                     scope,
                     result: Ok(Reply::View {
@@ -5240,10 +5310,33 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                             description: String::new(),
                             actions: vec![],
                             confirmation: false,
-                            title: "Edit report".into(),
+                            title: "**Edit** report\\-file".into(),
                             fields: vec![],
                             submit_label: "Save".into(),
                             handle: "submit".into(),
+                        },
+                    }),
+                }));
+                assert!(notifications.try_recv().is_err());
+                palette_key(&mut screen, BareKey::Enter);
+                scope = next_scope();
+            }
+            if matches!(kind, "nested" | "nested-error") {
+                screen.plugin_palette_instruction(command(Command::Reply {
+                    scope,
+                    result: Ok(Reply::View {
+                        view: View::Actions {
+                            title: "Report".into(),
+                            description: String::new(),
+                            actions: vec![Action {
+                                id: "export".into(),
+                                label: "**Export** report\\-file".into(),
+                                description: String::new(),
+                                aliases: vec![],
+                                handle: "export".into(),
+                            }],
+                            source: None,
+                            initial_query: String::new(),
                         },
                     }),
                 }));
@@ -5290,7 +5383,7 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                         text: "Contents".into(),
                     },
                 }),
-                "error" => Err("Disk full".into()),
+                "error" | "form-error" | "nested-error" => Err("Disk full".into()),
                 "invalid" => Ok(Reply::Complete {
                     notification: " ".into(),
                     view: None,
@@ -5318,11 +5411,14 @@ fn palette_completion_notifications_are_scoped_and_readable() {
                 "cancel" if !early_close => None,
                 "view" if !early_close => None,
                 "custom" => Some("Report saved"),
-                "form" => Some("Completed: Edit report"),
-                "invalid" => Some("Could not save report: Palette labels and IDs must be nonempty text without controls"),
-                "oversized" => Some("Could not save report: Palette display data exceeds 256 KiB"),
-                "error" => Some("Could not save report: Disk full"),
-                _ => Some("Completed: Save report"),
+                "form" => Some("Completed: Edit report-file"),
+                "form-error" => Some("Could not edit report-file: Disk full"),
+                "nested" => Some("Completed: Export report-file"),
+                "nested-error" => Some("Could not export report-file: Disk full"),
+                "invalid" => Some("Could not save report-file: Palette labels and IDs must be nonempty text without controls"),
+                "oversized" => Some("Could not save report-file: Palette display data exceeds 256 KiB"),
+                "error" => Some("Could not save report-file: Disk full"),
+                _ => Some("Completed: Save report-file"),
             };
             assert_eq!(
                 messages,
@@ -5878,4 +5974,120 @@ fn disabled_tab_groups_are_absent_from_the_command_palette() {
     palette_search(&mut screen, "tab group");
     let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(frame.contains("No matches"), "{frame}");
+}
+
+#[test]
+fn plugin_markdown_survives_results_forms_and_text_view_transitions() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    use yinz_bus::command_palette::{Delivery, Instruction, Owner};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::command_palette::{Action, Command, Field, Message, Reply, View};
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (sender, requests) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let command = |command| Instruction::Command {
+        owner: Owner {
+            plugin_id: PluginId::new(50),
+            generation: 9,
+            client_id: Some(CLIENT),
+        },
+        client: CLIENT,
+        unavailable: Arc::new(AtomicBool::new(false)),
+        command,
+    };
+    screen.plugin_palette_instruction(command(Command::Register {
+        id: "markdown".into(),
+        title: "**Provider**".into(),
+        registration: "1".into(),
+        static_actions: true,
+    }));
+    screen.toggle_command_palette(CLIENT);
+    let next_scope = || {
+        requests
+            .try_iter()
+            .find_map(|(request, _)| match request {
+                PluginInstruction::PluginPalette(Delivery {
+                    message: Message::Discover { scope, .. } | Message::Execute { scope, .. },
+                    ..
+                }) => Some(scope),
+                _ => None,
+            })
+            .unwrap()
+    };
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope: next_scope(),
+        result: Ok(Reply::Actions {
+            actions: vec![Action {
+                id: "edit".into(),
+                label: "**Edit** report".into(),
+                description: "Use `Markdown`".into(),
+                aliases: vec![],
+                handle: "edit".into(),
+            }],
+        }),
+    }));
+    screen.command_palette_handles_input(&None, b"Edit report", false, CLIENT);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Edit report — Use Markdown"), "{frame}");
+    assert!(!frame.contains("**Edit**"));
+    palette_key(&mut screen, BareKey::Enter);
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope: next_scope(),
+        result: Ok(Reply::View {
+            view: View::Form {
+                title: "**Report form**".into(),
+                description: "# Instructions\n\nUse **care**.".into(),
+                fields: vec![Field::Text {
+                    id: "value".into(),
+                    label: "**Value**".into(),
+                    initial_value: "**literal**".into(),
+                }],
+                submit_label: "**Save**".into(),
+                handle: "submit".into(),
+                actions: vec![],
+                confirmation: false,
+            },
+        }),
+    }));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Value: **literal**"), "{frame}");
+    assert!(frame.contains("Report form"));
+    assert!(!frame.contains("**Value**"));
+    palette_key(&mut screen, BareKey::Tab);
+    palette_key(&mut screen, BareKey::Enter);
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope: next_scope(),
+        result: Ok(Reply::View {
+            view: View::Text {
+                title: "**Saved**".into(),
+                text: "# Report\n\n**Finished**\n\n- first item".into(),
+            },
+        }),
+    }));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Finished"), "{frame}");
+    assert!(frame.contains("first item"));
+    assert!(!frame.contains("**Finished**"));
+}
+
+#[test]
+fn native_project_names_remain_literal_in_markdown_results() {
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let name = "**project**_[name]";
+    screen.projects.insert(name.into());
+    palette_search(&mut screen, "Switch current project");
+    palette_key(&mut screen, BareKey::Enter);
+    screen.command_palette_handles_input(&None, name.as_bytes(), false, CLIENT);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains(name), "{frame}");
+    assert!(frame.contains(&format!("› {name}")), "{frame}");
+    palette_key(&mut screen, BareKey::Enter);
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some(name)
+    );
 }

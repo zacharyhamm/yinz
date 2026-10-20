@@ -160,10 +160,7 @@ fn session_palette_pages_after_searching_full_inventory_and_preserves_query() {
         .execute(first.last().unwrap()["handle"].clone(), Value::Null)
         .unwrap();
     let second = h.discover(next["view"]["source"].clone(), "");
-    assert!(second[0]["description"]
-        .as_str()
-        .unwrap()
-        .contains("session-098"));
+    assert!(display_text(&second[0]["description"]).contains("session-098"));
     let found = h.discover(view["source"].clone(), "session-204");
     assert_eq!(found.len(), 1);
     h.execute(found[0]["handle"].clone(), Value::Null).unwrap();
@@ -175,7 +172,7 @@ fn session_palette_pages_after_searching_full_inventory_and_preserves_query() {
         .unwrap();
     assert_eq!(next["view"]["initialQuery"], "session-1");
     let cleared = h.discover(next["view"]["source"].clone(), "");
-    assert_eq!(cleared[0]["label"], "session-000");
+    assert_eq!(display_text(&cleared[0]["label"]), "session-000");
 }
 
 #[test]
@@ -317,7 +314,7 @@ fn session_palette_notifications_search_full_messages_but_bound_previews() {
     let detail = h
         .execute(choices[0]["handle"].clone(), Value::Null)
         .unwrap();
-    assert_eq!(detail["view"]["text"], "new\nfull message");
+    assert_eq!(display_text(&detail["view"]["text"]), "new\nfull message");
     assert_eq!(h.discover(view["source"].clone(), "full message").len(), 1);
     let message = format!("{}searchable ending", "🔔 long notification ".repeat(220));
     h.stub(
@@ -332,7 +329,7 @@ fn session_palette_notifications_search_full_messages_but_bound_previews() {
     let detail = h
         .execute(choices[0]["handle"].clone(), Value::Null)
         .unwrap();
-    assert_eq!(detail["view"]["text"], message);
+    assert_eq!(display_text(&detail["view"]["text"]), message);
 }
 
 #[test]
@@ -353,10 +350,7 @@ fn session_palette_rename_save_resurrect_delete_details_and_focus_use_typed_comm
     let detail = h
         .execute(choices[0]["handle"].clone(), Value::Null)
         .unwrap();
-    assert!(detail["view"]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Last save: 1s ago"));
+    assert!(display_text(&detail["view"]["text"]).contains("Last save: 1s ago"));
     let deletion = h.open("delete-all");
     assert_eq!(deletion["confirmation"], true);
     h.execute(deletion["handle"].clone(), json!({})).unwrap();
@@ -549,11 +543,20 @@ fn session_palette_searches_displayed_tab_names_and_keeps_tab_identity() {
     let view = h.open("find-tab");
     let actions = h.discover(view["source"].clone(), "yinz:topic");
     assert_eq!(actions.len(), 1);
-    assert!(actions[0]["label"]
-        .as_str()
-        .unwrap()
-        .contains("🔔 [4] yinz:topic #2"));
+    assert!(display_text(&actions[0]["label"]).contains("🔔 [4] yinz:topic #2"));
     h.execute(actions[0]["handle"].clone(), Value::Null)
         .unwrap();
     assert!(h.issued(json!({"GoToTabWithId": 7})));
+}
+
+fn display_text(value: &Value) -> String {
+    yinz_tile_markdown::render(
+        value.as_str().unwrap(),
+        10000,
+        yinz_tile_markdown::Options::compact(),
+    )
+    .into_iter()
+    .map(|line| line.text)
+    .collect::<Vec<_>>()
+    .join("\n")
 }

@@ -1798,10 +1798,10 @@ fn note_labels_wrap_twice_and_only_complete_titles_get_snippets() {
         ),
     ] {
         let palette = note_palette(&[label]);
-        assert_eq!(palette.entry_lines(0, 10, 2), expected, "{label}");
+        assert_eq!(texts(&palette.entry_lines(0, 10, 2)), expected, "{label}");
     }
     let palette = note_palette(&["#1 Short title"]);
-    assert_eq!(palette.entry_lines(0, 10, 1), vec!["#1 Shor…"]);
+    assert_eq!(texts(&palette.entry_lines(0, 10, 1)), vec!["#1 Shor…"]);
 }
 
 #[test]
@@ -1816,7 +1816,7 @@ fn continuation_indent_leaves_text_space_in_narrow_palettes() {
         (5, vec!["abc", "  …"]),
         (6, vec!["abcd", "  e…"]),
     ] {
-        let lines = palette.entry_lines(0, width, 2);
+        let lines = texts(&palette.entry_lines(0, width, 2));
         assert_eq!(lines, expected, "width {width}");
         assert!(lines
             .iter()
@@ -2065,7 +2065,7 @@ fn wrapped_shortcuts_and_descriptions_share_the_available_columns() {
     assert!(!lines.iter().any(|line| line.contains("body snippet")));
     palette.entries[0].label = "Alpha bravo charlie".into();
     assert_eq!(
-        palette.entry_lines(0, 24, 2),
+        texts(&palette.entry_lines(0, 24, 2)),
         vec!["Alpha bravo", "  charlie — body snippet"]
     );
 }
@@ -2535,7 +2535,7 @@ fn short_surfaces_keep_controls_visible_with_descriptions() {
 #[test]
 fn description_scrolling_clamps_on_resize_and_fits_short_surfaces() {
     let mut palette = palette();
-    palette.description = "one\ntwo\nthree\nfour\nfive".into();
+    palette.description = "one  \ntwo  \nthree  \nfour  \nfive".into();
     for rows in 0..=10 {
         let surface = Viewport {
             x: 3,
@@ -2559,7 +2559,7 @@ fn description_scrolling_clamps_on_resize_and_fits_short_surfaces() {
                 palette.handle_key(KeyWithModifier::new(BareKey::PageDown).with_alt_modifier());
                 seen.extend(palette.layout(surface).description_lines);
             }
-            assert!(seen.iter().any(|line| line == "five"), "{rows} rows");
+            assert!(seen.iter().any(|line| line.text == "five"), "{rows} rows");
         } else {
             assert!(layout.description_lines.is_empty(), "{rows} rows");
         }
@@ -2571,7 +2571,7 @@ fn description_scrolling_clamps_on_resize_and_fits_short_surfaces() {
     };
     let layout = palette.layout(large);
     assert_eq!(
-        layout.description_lines,
+        texts(&layout.description_lines),
         ["one", "two", "three", "four", "five"]
     );
     assert_eq!(palette.description_offset.get(), 0);
@@ -2592,7 +2592,10 @@ fn description_scrolling_clamps_on_resize_and_fits_short_surfaces() {
         palette.handle_key(KeyWithModifier::new(BareKey::PageDown).with_alt_modifier());
     }
     let layout = palette.layout(large);
-    assert_eq!(layout.description_lines, [palette.description.clone()]);
+    assert_eq!(
+        texts(&layout.description_lines),
+        [palette.description.clone()]
+    );
     assert_eq!(palette.description_offset.get(), 0);
 }
 
@@ -2609,8 +2612,8 @@ fn description_scrolling_preserves_metadata_navigation_and_message_priority() {
                 true,
             ));
         }
-        palette.description = (1..=12).map(|i| format!("Description {i}\n")).collect();
-        palette.metadata = Some((1..=12).map(|i| format!("Detail {i}\n")).collect());
+        palette.description = (1..=12).map(|i| format!("Description {i}  \n")).collect();
+        palette.metadata = Some((1..=12).map(|i| format!("Detail {i}  \n")).collect());
         let surface = Viewport {
             cols: 80,
             rows: 24,
@@ -2731,11 +2734,11 @@ fn result_height_counts_headings_wrapping_and_details() {
     assert_eq!(layout.rect.rows, 10);
     assert_eq!(layout.result_rows.len(), 5);
     assert_eq!(layout.options_rows, 5);
-    palette.description = "Choose a result".into();
-    palette.metadata = Some("Details".into());
+    palette.description = "Choose a **result**".into();
+    palette.metadata = Some("**Details**".into());
     let layout = palette.layout(surface);
-    assert_eq!(layout.description_lines, ["Choose a result"]);
-    assert_eq!(layout.metadata_lines, ["Details"]);
+    assert_eq!(texts(&layout.description_lines), ["Choose a result"]);
+    assert_eq!(texts(&layout.metadata_lines), ["Details"]);
     assert_eq!(layout.result_rows.len(), 5);
     assert!(layout.rect.rows <= 36);
     assert_eq!(layout.options_rows, layout.result_rows.len());
@@ -2773,4 +2776,169 @@ fn result_height_includes_provider_statuses_and_shrinks_after_refresh() {
     );
     palette.set_sections(vec![]);
     assert_eq!(palette.layout(surface).rect.rows, 6);
+}
+
+fn texts(lines: &[MdLine]) -> Vec<String> {
+    lines.iter().map(|line| line.text.clone()).collect()
+}
+
+#[test]
+fn markdown_results_share_styles_search_and_activation_for_all_providers() {
+    for plugin in [false, true] {
+        let mut palette = CommandPalette::default();
+        let mut item = entry(
+            "stable-id",
+            "**日本語** `command`",
+            if plugin {
+                EntryKind::Plugin
+            } else {
+                EntryKind::Command
+            },
+        );
+        item.description = "~~old~~ **new**".into();
+        if plugin {
+            palette.set_sections(vec![PluginSection {
+                title: "**Provider**".into(),
+                entries: vec![item],
+                semantic: false,
+                status: None,
+            }]);
+        } else {
+            palette.set_entries(vec![item]);
+        }
+        palette.insert_text("日本語 command");
+        assert_eq!(ids(&palette), ["stable-id"]);
+        assert_eq!(palette.action_label("stable-id"), "日本語 command");
+        let layout = palette.layout(Viewport {
+            cols: 80,
+            rows: 24,
+            ..Default::default()
+        });
+        let lines = rendered_lines(&palette, &layout).join("\n");
+        assert!(lines.contains("日本語 command — old new"), "{lines}");
+        assert!(!lines.contains("**"));
+        let chunks = palette.chunks(&layout, &Style::default());
+        let japanese = chunks
+            .iter()
+            .skip(layout.options_y - layout.rect.y)
+            .flat_map(|chunk| &chunk.terminal_characters)
+            .find(|c| c.character == '日')
+            .unwrap();
+        assert_eq!(japanese.styles.bold, Some(AnsiCode::On));
+        assert_eq!(
+            palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+            Outcome::Activate("stable-id".into())
+        );
+    }
+}
+
+#[test]
+fn markdown_form_labels_leave_values_literal_and_cursor_aligned() {
+    let mut palette = CommandPalette {
+        description: "# Instructions\n\nUse **care**.".into(),
+        ..Default::default()
+    };
+    let mut field = Field::text("**名前**", "**literal**");
+    field.input_options = Some(yinz_types::command_palette::InputOptions {
+        kind: "text".into(),
+        help: "Use `code`".into(),
+        error: "**Required**".into(),
+        ..Default::default()
+    });
+    palette.open_form(Form::new(
+        "form".into(),
+        "**Title**".into(),
+        vec![field],
+        "**Save**",
+        false,
+    ));
+    let layout = palette.layout(Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    });
+    let lines = rendered_lines(&palette, &layout).join("\n");
+    assert!(lines.contains("名前: **literal**"), "{lines}");
+    assert!(lines.contains("Use code Required"), "{lines}");
+    assert!(lines.contains("Instructions"));
+    let (x, _) = palette.cursor(&layout).unwrap();
+    assert_eq!(x, layout.rect.x + layout.border + 6 + "**literal**".len());
+    key(&mut palette, BareKey::Tab);
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Submit {
+            id: "form".into(),
+            values: vec!["**literal**".into()]
+        }
+    );
+}
+
+#[test]
+fn markdown_text_body_wraps_and_keeps_character_styles() {
+    let mut palette = CommandPalette::default();
+    palette.open_text(
+        "# Heading\n\n**Bold** and ~~old~~\n\n- item\n\n```\n**literal code**\n```".into(),
+    );
+    let layout = palette.layout(Viewport {
+        cols: 80,
+        rows: 30,
+        ..Default::default()
+    });
+    let lines = rendered_lines(&palette, &layout).join("\n");
+    assert!(lines.contains("Heading"));
+    assert!(lines.contains("Bold and old"));
+    assert!(lines.contains("**literal code**"));
+    assert!(layout
+        .text_lines
+        .iter()
+        .any(|line| line.styles.iter().any(|style| style.strike)));
+    for cols in 0..8 {
+        let layout = palette.layout(Viewport {
+            cols,
+            rows: 8,
+            ..Default::default()
+        });
+        for chunk in palette.chunks(&layout, &Style::default()) {
+            let text: String = chunk
+                .terminal_characters
+                .iter()
+                .map(|c| c.character)
+                .collect();
+            assert!(unicode_width::UnicodeWidthStr::width(text.as_str()) <= cols);
+        }
+    }
+}
+
+#[test]
+fn inline_markdown_does_not_expand_table_padding_or_split_long_labels() {
+    let header = "x".repeat(10_000);
+    let table = format!("| **{header}** |\n| --- |\n{}", "| a |\n".repeat(100));
+    let line = inline(&table);
+    assert!(line.text.starts_with(&header));
+    assert!(line.text.len() < table.len());
+    assert!(line.styles[0].bold);
+    assert_eq!(line.text.chars().count(), line.styles.len());
+    assert_eq!(inline(&header).text, header);
+}
+
+#[test]
+fn inline_markdown_keeps_styles_aligned_across_many_blocks() {
+    let line = inline(&format!("{}**日**", "a\n\n".repeat(50_000)));
+    assert_eq!(line.text, format!("{}日", "a ".repeat(50_000)));
+    assert_eq!(line.styles.len(), line.text.chars().count());
+    assert!(line.styles[..line.styles.len() - 1]
+        .iter()
+        .all(|style| *style == MdStyle::default()));
+    assert!(line.styles.last().unwrap().bold);
+
+    let mut plain = MdLine::plain("日本語");
+    append(&mut plain, &inline("**bold**"));
+    append(&mut plain, &MdLine::plain("!"));
+    assert_eq!(plain.text, "日本語bold!");
+    assert_eq!(plain.styles.len(), 8);
+    assert!(plain.styles[..3]
+        .iter()
+        .all(|style| *style == MdStyle::default()));
+    assert!(plain.styles[3..7].iter().all(|style| style.bold));
+    assert_eq!(plain.styles[7], MdStyle::default());
 }

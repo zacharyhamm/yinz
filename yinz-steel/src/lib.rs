@@ -296,6 +296,9 @@ impl Runtime {
                 binary::decode_utf8(value).map_err(scheme_error)
             },
         );
+        engine.register_fn("yinz-markdown-escape", |text: String| -> String {
+            yinz_tile_markdown::escape_literal(&text)
+        });
         engine.register_fn("yinz-text-sanitize", |text: String| -> String {
             String::from_utf8_lossy(&strip_ansi_escapes::strip(text.replace('\t', "    ")))
                 .chars()

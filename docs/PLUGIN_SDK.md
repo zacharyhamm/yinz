@@ -610,6 +610,35 @@ Use cancellation callbacks to release obsolete searches when the query changes.
 Return a view hash with `"type"` equal to `"text"`, `"actions"`, or `"form"`.
 Action and form views accept an optional `"description"` string. The palette
 wraps this text below the title or search field. Omit it for no description.
+Display text uses Markdown by default for native and plugin providers. This includes
+result labels and descriptions, provider headings, view titles, form labels,
+help and errors, submit labels, and secondary action labels. Text views and view
+descriptions support block Markdown, including headings, lists, code blocks, and
+tables. Result rows keep their two-line limit. Labels use a single logical line.
+Links show their destination but do not open it.
+
+Search matches displayed labels and aliases. Editable values, choice values,
+queries, IDs, and callback handles remain literal. Escape Markdown punctuation
+with a backslash when you need literal display text. In Scheme strings, write
+`"\\*literal\\*"` to display `*literal*`. Use `(yinz-markdown-escape value)` for dynamic names and paths before
+inserting them into display text.
+
+For example, an action can open a form and then show a Markdown text view:
+
+```scheme
+(yinz-palette-register "example" "**Example**"
+  (list (hash "id" "write" "label" "**Write** a message"
+    "description" "Enter a message in the `text` field."
+    "run" (lambda (values context)
+      (hash "type" "form" "title" "**Message**"
+        "description" "## Instructions\n\nEnter the message below."
+        "fields" (list (hash "type" "text" "id" "text" "label" "**Text**"))
+        "submitLabel" "**Continue**"
+        "onSubmit" (lambda (values context)
+          (hash "type" "text" "title" "**Done**"
+            "text" "# Message received\n\nThe form was submitted.")))))))
+```
+
 A form has `"title"`, `"fields"`, and an `"onSubmit"` callback. Set
 `"confirmation"` to true for a confirmation form. Directory and file fields add
 a picker action. Completion can return

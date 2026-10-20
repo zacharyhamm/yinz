@@ -185,7 +185,19 @@ impl Pair {
             actual.iter().map(|(command, _)| command.clone()).collect(),
         ];
         assert_eq!(
-            normalize(actual, &mut self.tokens[1]),
+            normalize(
+                actual
+                    .into_iter()
+                    .map(|(mut command, client)| {
+                        if let Some(palette) = command.get_mut("CommandPalette") {
+                            // Historical guests sent literal display text; current providers send Markdown.
+                            normalize_palette_display(palette);
+                        }
+                        (command, client)
+                    })
+                    .collect(),
+                &mut self.tokens[1]
+            ),
             normalize(reference, &mut self.tokens[0]),
             "Steel/Deno host actions differ"
         );
@@ -286,6 +298,39 @@ impl Pair {
 }
 
 // Only provider/callback capabilities are opaque; all user-visible fields and actions compare.
+fn normalize_palette_display(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if matches!(
+                    key.as_str(),
+                    "label" | "title" | "description" | "text" | "help" | "error" | "submitLabel"
+                ) {
+                    if let Some(text) = value.as_str() {
+                        *value = json!(yinz_tile_markdown::render(
+                            text,
+                            10000,
+                            yinz_tile_markdown::Options::compact()
+                        )
+                        .into_iter()
+                        .map(|line| line.text)
+                        .collect::<Vec<_>>()
+                        .join("\n"));
+                    }
+                } else if key != "values" {
+                    normalize_palette_display(value);
+                }
+            }
+        },
+        Value::Array(values) => {
+            for value in values {
+                normalize_palette_display(value);
+            }
+        },
+        _ => {},
+    }
+}
+
 fn normalize_palette_tokens(value: &mut Value, tokens: &mut BTreeMap<String, String>) {
     match value {
         Value::Object(fields) => {

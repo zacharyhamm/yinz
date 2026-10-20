@@ -393,6 +393,31 @@ pub fn escape_inline(text: &str) -> String {
     out
 }
 
+/// Escape literal palette display text, including block markers and HTML entities.
+/// Newlines remain line breaks so callers can also protect plain text documents.
+pub fn escape_literal(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    let mut leading = true;
+    for ch in text.chars() {
+        // Entities preserve indentation without opening a code block that ignores escapes.
+        if leading && matches!(ch, ' ' | '\t') {
+            escaped.push_str(if ch == ' ' { "&#32;" } else { "&#9;" });
+            continue;
+        }
+        if ch.is_ascii_punctuation() {
+            escaped.push('\\');
+        }
+        if ch == '\n' {
+            // Keep blank lines inside one paragraph so Markdown cannot collapse them.
+            escaped.push_str("&#10;");
+        } else {
+            escaped.push(ch);
+        }
+        leading = ch == '\n';
+    }
+    escaped
+}
+
 /// One block of markdown: a run of styled characters, and the prefixes its first and
 /// subsequent rows carry — a list marker, a quote bar, the indent under either.
 #[derive(Default)]
@@ -1863,3 +1888,7 @@ mod tests {
         assert!(render_block(&head[0], 80)[0].text.contains("[nope][9]"));
     }
 }
+
+#[cfg(test)]
+#[path = "unit/literal_tests.rs"]
+mod literal_tests;
