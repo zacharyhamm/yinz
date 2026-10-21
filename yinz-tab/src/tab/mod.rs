@@ -5873,7 +5873,6 @@ impl Tab {
                                 pane_is_in_group: groups
                                     .get(&client_id)
                                     .is_some_and(|group| group.contains(id)),
-                                pane_is_related: other.has_related_highlight(),
                                 mouse_is_hovering_over_pane: self
                                     .mouse_hover_pane_id
                                     .get(&client_id)
@@ -9371,23 +9370,6 @@ impl Tab {
             pane.add_highlight_pane_frame_color_override(error_text, client_id);
         }
     }
-    /// Mark exactly the panes in `related` as kin of the focused one, and unmark every other
-    /// pane in this tab. Answers whether anything changed, so the caller can skip a render.
-    ///
-    /// Assigning to *every* pane rather than only to the members is what clears the previous
-    /// set: the sender says what is related now and is not asked to remember what it last
-    /// said, so a plugin that reloads re-asserts by simply saying it again.
-    pub fn set_related_panes(&mut self, related: &HashSet<PaneId>) -> bool {
-        let mut changed = false;
-        for pane_id in self.get_all_pane_ids() {
-            let is_related = related.contains(&pane_id);
-            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                changed |= pane.set_related_highlight(is_related);
-            }
-        }
-        changed
-    }
-
     /// Whether `pane_id`'s frame override has finished fading, so the caller can stop asking for
     /// frames on its behalf. A pane that is not here has nothing fading.
     pub fn frame_color_override_is_faded_out(&self, pane_id: PaneId, now: Instant) -> bool {

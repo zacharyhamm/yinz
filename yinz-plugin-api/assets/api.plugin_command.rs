@@ -4,7 +4,7 @@
 pub struct PluginCommand {
     #[prost(enumeration="CommandName", tag="1")]
     pub name: i32,
-    #[prost(oneof="plugin_command::Payload", tags="243, 242, 236, 237, 238, 233, 234, 235, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 230, 231, 232, 214, 215, 216, 217, 218, 219, 220, 221, 222, 254, 223, 224, 225, 226, 227, 229, 239, 241, 245, 246, 247, 244, 248, 250, 251, 252, 253")]
+    #[prost(oneof="plugin_command::Payload", tags="243, 242, 236, 237, 238, 233, 234, 235, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 111, 112, 113, 114, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 196, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 168, 169, 170, 171, 172, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 188, 189, 190, 191, 192, 193, 194, 195, 197, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 230, 231, 232, 214, 215, 216, 217, 218, 219, 220, 221, 222, 254, 223, 224, 226, 227, 229, 239, 241, 245, 246, 247, 244, 248, 250, 251, 252, 253")]
     pub payload: ::core::option::Option<plugin_command::Payload>,
 }
 /// Nested message and enum types in `PluginCommand`.
@@ -424,8 +424,6 @@ pub mod plugin_command {
         ProjectConfigReadPayload(::prost::alloc::string::String),
         #[prost(message, tag="224")]
         ProjectConfigWritePayload(super::ProjectConfigWritePayload),
-        #[prost(message, tag="225")]
-        SetRelatedPanesPayload(super::SetRelatedPanesPayload),
         #[prost(message, tag="226")]
         ArrangeProjectPanesPayload(super::ArrangeProjectPanesPayload),
         #[prost(message, tag="227")]
@@ -1252,15 +1250,6 @@ pub struct FloatMultiplePanesPayload {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CloseMultiplePanesPayload {
-    #[prost(message, repeated, tag="1")]
-    pub pane_ids: ::prost::alloc::vec::Vec<PaneId>,
-}
-/// The agent panes that share a checkout with the focused one. Replaces the whole
-/// set: a plugin that goes away or reloads re-asserts rather than un-marking pane
-/// by pane, and a dropped message costs one stale frame rather than a stuck one.
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SetRelatedPanesPayload {
     #[prost(message, repeated, tag="1")]
     pub pane_ids: ::prost::alloc::vec::Vec<PaneId>,
 }
@@ -3438,7 +3427,6 @@ pub enum CommandName {
     SpawnAgent = 281,
     ProjectConfigRead = 282,
     ProjectConfigWrite = 283,
-    SetRelatedPanes = 284,
     ArrangeProjectPanes = 285,
     SubscribePaneOutput = 286,
     AgentControl = 296,
@@ -3713,7 +3701,6 @@ impl CommandName {
             CommandName::SpawnAgent => "SpawnAgent",
             CommandName::ProjectConfigRead => "ProjectConfigRead",
             CommandName::ProjectConfigWrite => "ProjectConfigWrite",
-            CommandName::SetRelatedPanes => "SetRelatedPanes",
             CommandName::ArrangeProjectPanes => "ArrangeProjectPanes",
             CommandName::SubscribePaneOutput => "SubscribePaneOutput",
             CommandName::AgentControl => "AgentControl",
@@ -3985,7 +3972,6 @@ impl CommandName {
             "SpawnAgent" => Some(Self::SpawnAgent),
             "ProjectConfigRead" => Some(Self::ProjectConfigRead),
             "ProjectConfigWrite" => Some(Self::ProjectConfigWrite),
-            "SetRelatedPanes" => Some(Self::SetRelatedPanes),
             "ArrangeProjectPanes" => Some(Self::ArrangeProjectPanes),
             "SubscribePaneOutput" => Some(Self::SubscribePaneOutput),
             "AgentControl" => Some(Self::AgentControl),

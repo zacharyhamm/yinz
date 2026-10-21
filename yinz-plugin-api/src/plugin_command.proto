@@ -260,11 +260,10 @@ enum CommandName {
   SpawnAgent = 281;
   ProjectConfigRead = 282;
   ProjectConfigWrite = 283;
-  SetRelatedPanes = 284;
   ArrangeProjectPanes = 285;
   SubscribePaneOutput = 286;
-  reserved 287;
-  reserved "SwampRequest";
+  reserved 284, 287;
+  reserved "SetRelatedPanes", "SwampRequest";
   AgentControl = 296;
   RegisterAgentProvider = 297;
   GetAgentProviders = 298;
@@ -294,8 +293,8 @@ enum CommandName {
 
 message PluginCommand {
   reserved 198 to 202;
-  reserved 228;
-  reserved "swamp_request_payload";
+  reserved 225, 228;
+  reserved "set_related_panes_payload", "swamp_request_payload";
   reserved 213, 174;
   reserved "search_recordings_payload";
   reserved "check_lua_plugin_payload";
@@ -508,7 +507,6 @@ message PluginCommand {
     string resolve_project_payload = 254;
     string project_config_read_payload = 223;
     ProjectConfigWritePayload project_config_write_payload = 224;
-    SetRelatedPanesPayload set_related_panes_payload = 225;
     ArrangeProjectPanesPayload arrange_project_panes_payload = 226;
     PaneOutputSubscription pane_output_subscription = 227;
     SetPaneSubtitlePayload set_pane_subtitle_payload = 229;
@@ -976,13 +974,6 @@ message FloatMultiplePanesPayload {
 }
 
 message CloseMultiplePanesPayload {
-  repeated PaneId pane_ids = 1;
-}
-
-// The agent panes that share a checkout with the focused one. Replaces the whole
-// set: a plugin that goes away or reloads re-asserts rather than un-marking pane
-// by pane, and a dropped message costs one stale frame rather than a stuck one.
-message SetRelatedPanesPayload {
   repeated PaneId pane_ids = 1;
 }
 

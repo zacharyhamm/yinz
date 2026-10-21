@@ -3059,14 +3059,6 @@ pub enum PluginCommand {
     // bool -> for all clients
     HighlightAndUnhighlightPanes(Vec<PaneId>, Vec<PaneId>), // panes to highlight, panes to
     // unhighlight
-    /// The panes that are kin of the focused one - agents sharing its checkout, say - to be
-    /// drawn with a gentle tint until this is sent again.
-    ///
-    /// Replaces the whole set rather than marking and unmarking, because the sender is
-    /// answering "which panes are related *now*" and has no way to know what the session
-    /// still believes. A plugin that reloads re-asserts; a dropped message costs one stale
-    /// frame rather than a mark nothing will ever take off.
-    SetRelatedPanes(Vec<PaneId>),
     /// Bring a pane into view for this client and highlight it, without taking
     /// keyboard focus. The `String` is a label drawn in place of the pane's
     /// title for as long as the highlight is up.

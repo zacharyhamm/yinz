@@ -1,16 +1,10 @@
-//! The colour ladder in `frame_color`, and in particular where the related-pane tint sits
-//! in it.
-//!
-//! The tint is the gentlest state there is, and every one of these tests exists because the
-//! cheap way to write the branch - putting it higher in the ladder, or giving it a
-//! precedence somebody else already has - is wrong in a way no compiler would catch.
+//! The colour ladder in `frame_color`: which state wins, and the precedence it wins with.
 
 use super::*;
 use yinz_types::data::{Palette, Styling};
 
-/// The default theme, which is the one that matters: it leaves `frame_unselected` as `None`,
-/// so an ordinary pane's frame has no colour at all and the tint has nothing to be a
-/// variation of.
+/// The default theme, which leaves `frame_unselected` as `None`, so an ordinary pane's frame
+/// has no colour at all.
 fn default_style() -> Style {
     Style::default()
 }
@@ -33,7 +27,6 @@ fn state() -> FrameColorState {
         waiting_pulse: None,
         pane_is_focused: false,
         pane_is_in_group: false,
-        pane_is_related: false,
         mouse_is_hovering_over_pane: false,
         multiple_users_exist_in_session: false,
         color_slot: ColorSlot::new(1),
@@ -42,122 +35,6 @@ fn state() -> FrameColorState {
 
 fn color_of(style: &Style, state: FrameColorState) -> Option<(PaletteColor, usize)> {
     frame_color(style, state, InputMode::Normal, false)
-}
-
-#[test]
-fn a_related_pane_is_coloured_where_an_ordinary_one_is_not() {
-    let style = default_style();
-    assert_eq!(
-        color_of(&style, state()),
-        None,
-        "the default theme leaves an ordinary frame with no colour - if this changes, the \
-         tint below is no longer distinguishable from doing nothing"
-    );
-    let (color, precedence) = color_of(
-        &style,
-        FrameColorState {
-            pane_is_related: true,
-            ..state()
-        },
-    )
-    .expect("a related pane is drawn in some colour");
-    assert_eq!(
-        precedence, 2,
-        "related leaves room for an idle waiting pulse below it"
-    );
-    assert_ne!(
-        color, style.colors.frame_selected.base,
-        "faded, not the focus colour itself: a related pane must not read as a second focus"
-    );
-}
-
-/// Naming an ordinary frame color does not change the related-pane tint.
-#[test]
-fn the_tint_does_not_depend_on_frame_unselected() {
-    let bare = color_of(
-        &default_style(),
-        FrameColorState {
-            pane_is_related: true,
-            ..state()
-        },
-    );
-    let themed = color_of(
-        &style_with_frame_unselected(),
-        FrameColorState {
-            pane_is_related: true,
-            ..state()
-        },
-    );
-    assert_eq!(bare, themed);
-    assert!(bare.is_some());
-}
-
-#[test]
-fn focus_beats_related() {
-    let style = default_style();
-    assert_eq!(
-        color_of(
-            &style,
-            FrameColorState {
-                pane_is_related: true,
-                pane_is_focused: true,
-                ..state()
-            }
-        ),
-        color_of(
-            &style,
-            FrameColorState {
-                pane_is_focused: true,
-                ..state()
-            }
-        ),
-        "the focused pane is the one everything else is kin *of*; it keeps its own colour"
-    );
-}
-
-#[test]
-fn a_group_beats_related() {
-    let style = default_style();
-    assert_eq!(
-        color_of(
-            &style,
-            FrameColorState {
-                pane_is_related: true,
-                pane_is_in_group: true,
-                ..state()
-            }
-        ),
-        color_of(
-            &style,
-            FrameColorState {
-                pane_is_in_group: true,
-                ..state()
-            }
-        ),
-        "a group is something the user asked for; an ambient hint must not paint over it"
-    );
-}
-
-#[test]
-fn hover_beats_related() {
-    let style = default_style();
-    assert_eq!(
-        color_of(
-            &style,
-            FrameColorState {
-                pane_is_related: true,
-                mouse_is_hovering_over_pane: true,
-                ..state()
-            }
-        ),
-        color_of(
-            &style,
-            FrameColorState {
-                mouse_is_hovering_over_pane: true,
-                ..state()
-            }
-        ),
-    );
 }
 
 #[test]
@@ -237,10 +114,6 @@ fn a_hovered_panes_override_fades_back_to_the_tab_button_color() {
 fn every_ambient_state_has_a_precedence_of_its_own() {
     let style = default_style();
     let precedence = |state| color_of(&style, state).map(|(_, precedence)| precedence);
-    let related = precedence(FrameColorState {
-        pane_is_related: true,
-        ..state()
-    });
     let hovered = precedence(FrameColorState {
         mouse_is_hovering_over_pane: true,
         ..state()
@@ -254,37 +127,10 @@ fn every_ambient_state_has_a_precedence_of_its_own() {
         ..state()
     });
     assert_eq!(
-        (related, hovered, grouped, focused),
-        (Some(2), Some(4), Some(6), Some(8)),
-        "nothing in particular < related < hovered < grouped < focused"
+        (hovered, grouped, focused),
+        (Some(4), Some(6), Some(8)),
+        "nothing in particular < hovered < grouped < focused"
     );
-}
-
-/// A bell on a related pane eases back to the *tint*, not to nothing - the override branch
-/// recomputes the settled colour with the same state, so it has to carry `pane_is_related`
-/// through. Getting that wrong makes a bell wipe the highlight off for as long as it lasts.
-#[test]
-fn a_fading_override_settles_back_onto_the_tint() {
-    let style = default_style();
-    let tint = color_of(
-        &style,
-        FrameColorState {
-            pane_is_related: true,
-            ..state()
-        },
-    )
-    .map(|(color, _)| color);
-    let settled = color_of(
-        &style,
-        FrameColorState {
-            pane_is_related: true,
-            // a flash that has finished fading contributes nothing
-            frame_color_override: Some((style.colors.exit_code_error.base, 0.0)),
-            ..state()
-        },
-    )
-    .map(|(color, _)| color);
-    assert_eq!(settled, tint);
 }
 
 #[test]
@@ -293,7 +139,6 @@ fn an_override_at_full_strength_wins_outright() {
     let (color, precedence) = color_of(
         &style,
         FrameColorState {
-            pane_is_related: true,
             frame_color_override: Some((style.colors.exit_code_error.base, 1.0)),
             ..state()
         },
@@ -308,12 +153,11 @@ fn waiting_pulse_uses_chrome_foreground_and_breaks_base_priority_ties() {
     let mut indexed = style_with_frame_unselected();
     indexed.colors.frame_unselected.as_mut().unwrap().base = PaletteColor::EightBit(24);
     for style in [default_style(), indexed] {
-        for flags in 0..16 {
+        for flags in 0..8 {
             let make_state = || FrameColorState {
                 pane_is_focused: flags & 1 != 0,
                 pane_is_in_group: flags & 2 != 0,
-                pane_is_related: flags & 4 != 0,
-                mouse_is_hovering_over_pane: flags & 8 != 0,
+                mouse_is_hovering_over_pane: flags & 4 != 0,
                 ..state()
             };
             let base = color_of(&style, make_state());
@@ -381,10 +225,6 @@ fn waiting_pulse_loses_to_every_higher_base_state() {
         [
             state(),
             FrameColorState {
-                pane_is_related: true,
-                ..state()
-            },
-            FrameColorState {
                 mouse_is_hovering_over_pane: true,
                 ..state()
             },
@@ -402,7 +242,7 @@ fn waiting_pulse_loses_to_every_higher_base_state() {
             },
         ]
     };
-    for (index, base) in states().into_iter().take(5).enumerate() {
+    for (index, base) in states().into_iter().take(4).enumerate() {
         let pulsed = color_of(
             &style,
             FrameColorState {
@@ -498,38 +338,6 @@ fn unfocused_bell_fades_to_the_ordinary_frame_color() {
                 );
             }
         }
-    }
-}
-
-#[test]
-fn related_tint_uses_terminal_background_or_host_background() {
-    let mut style = default_style();
-    for terminal in [
-        None,
-        Some(yinz_types::style::TerminalTheme {
-            foreground: (230, 240, 250),
-            background: (210, 220, 230),
-            ansi: [(0, 0, 0); 16],
-        }),
-    ] {
-        style.terminal = terminal;
-        assert_eq!(
-            color_of(
-                &style,
-                FrameColorState {
-                    pane_is_related: true,
-                    ..state()
-                }
-            ),
-            Some((
-                blend(
-                    style.colors.frame_selected.base,
-                    style.chrome_colors().unwrap_or(state().host_colors).1,
-                    RELATED_FADE
-                ),
-                2
-            ))
-        );
     }
 }
 

@@ -89,19 +89,36 @@ fn assert_repository_snapshot_and_summary(head: Option<&str>) {
     runtime
         .invoke("seed", vec![json!(panes), repository.clone(), other])
         .unwrap();
+    let label = match head {
+        Some("HEAD") => Some("repo"),
+        Some(_) => Some("repo:main"),
+        None => None,
+    };
     for focused in [9, 7] {
         host.lock().unwrap().commands.clear();
         runtime.invoke("publish", vec![json!(focused)]).unwrap();
-        let related = if focused == 7 && head.is_some() {
-            json!([8])
-        } else {
-            json!([])
-        };
-        assert_eq!(
-            runtime.invoke("as-get", vec![json!("related")]).unwrap(),
-            related
-        );
         let commands = host.lock().unwrap().commands.clone();
+        let prefixes: Vec<_> = commands
+            .iter()
+            .filter_map(|command| command.get("SetPaneTitlePrefix"))
+            .map(|prefix| {
+                (
+                    prefix["pane_id"]["Terminal"].clone(),
+                    prefix["prefix"].clone(),
+                )
+            })
+            .collect();
+        // Labels name each pane's checkout, so moving focus must not resend them.
+        let expected: Vec<_> = if focused == 9 {
+            [7, 8]
+                .into_iter()
+                .filter_map(|id| label.map(|label| (json!(id), json!(label))))
+                .chain([(json!(9), json!("repo:other"))])
+                .collect()
+        } else {
+            vec![]
+        };
+        assert_eq!(prefixes, expected);
         let snapshots: Vec<_> = commands
             .iter()
             .filter_map(|command| command.get("MessageToPlugin"))

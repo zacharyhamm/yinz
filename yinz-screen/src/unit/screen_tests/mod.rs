@@ -2049,7 +2049,6 @@ mod pane_state;
 mod plugin_broadcasts;
 mod quit;
 mod reconfigure;
-mod related_panes;
 mod render_pacing;
 mod reveal_pane;
 mod same_worktree;
