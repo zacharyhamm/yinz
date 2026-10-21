@@ -901,42 +901,54 @@ fn host_theme_dsr_997_unknown_param_dropped() {
 // =====================================================================
 
 #[test]
-fn kitty_kbd_event_does_not_wedge_subsequent_forward_reply() {
-    let kbd_events: Vec<&[u8]> = vec![
+fn unsupported_or_malformed_input_does_not_wedge_subsequent_forward_reply() {
+    let preludes: &[&[u8]] = &[
         b"\x1b[57414;129u", // captured from Kitty user
         b"\x1b[27;129u",    // captured from Ghostty user
         b"\x1b[102;133u",   // captured from Konsole user
-        b"\x1b[A",          // legacy CSI key (not Kitty kbd) — sanity
+        b"\x1b[A",          // legacy CSI key
+        b"\x1b[?1u",
+        b"\x1b[?6;1R",
+        b"\x1b[<u",
+        b"\x1b[<0;1M",
+        b"\x1b[<0;;1m",
+        b"\x1b[<999;1;1M",
+        b"\x1b]11;interrupted\x1b[?1u",
+        b"\x1b]11;interrupted",
+        b"\x1b[?1\x01",
     ];
+    let color = b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\";
+    let barrier = b"\x1b[?62;52;c";
 
-    for kbd in &kbd_events {
-        let pretty = String::from_utf8_lossy(kbd).replace('\x1b', "ESC");
+    for prelude in preludes {
+        let expected_residue = [*prelude, b"z"].concat();
         let mut parser = StdinAnsiParser::new();
-
-        // Pre-wedge: keypress arrives before the forward goes out.
-        let _ = parser.feed(kbd);
-
-        // Forward dispatched — slot opens for token=42.
         parser.open_forward(42);
-
-        // Host's reply arrives in two chunks (matches captured wire:
-        // OSC 11 reply 25B, then DA1 barrier 10B).
-        let _ = parser.feed(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\");
-        let out = parser.feed(b"\x1b[?62;52;c");
-
-        let (token, bytes) = out.completed_forward.unwrap_or_else(|| {
-            panic!(
-                "BARRIER never closed slot for kbd-event prelude {:?} — \
-                 termwiz wedge regression",
-                pretty
-            )
-        });
-        assert_eq!(token, 42, "wrong token closed for prelude {:?}", pretty);
-        assert!(
-            !bytes.is_empty(),
-            "OSC payload was lost behind the kbd event for prelude {:?}",
-            pretty
+        let out = parser.feed(&[*prelude, b"z", color, barrier].concat());
+        assert_eq!(
+            out.completed_forward,
+            Some((42, color.to_vec())),
+            "{prelude:?}"
         );
+        assert_eq!(out.residue, expected_residue);
+        assert_eq!(parser.active_forward_token(), None);
+
+        for split in 0..=prelude.len() {
+            let mut parser = StdinAnsiParser::new();
+            let mut residue = parser.feed(&prelude[..split]).residue;
+            residue.extend(parser.feed(&prelude[split..]).residue);
+            parser.open_forward(42);
+            residue.extend(parser.feed(&[b"z", color.as_slice()].concat()).residue);
+            let out = parser.feed(barrier);
+            residue.extend(out.residue);
+            assert_eq!(
+                out.completed_forward,
+                Some((42, color.to_vec())),
+                "prelude {prelude:?}, split {split}",
+            );
+            assert_eq!(residue, expected_residue);
+            assert_eq!(parser.active_forward_token(), None);
+        }
     }
 }
 
