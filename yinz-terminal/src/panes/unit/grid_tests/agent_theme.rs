@@ -116,7 +116,7 @@ fn preserved_scrollback_keeps_its_source_palette_across_restarts_and_reflow() {
     event(&mut grid, "fixture", Some(source("codex", Role::Error)));
     feed_bytes(&mut grid, b"\x1b[32mnew transcript");
     grid.force_change_size(20, 8);
-    grid.move_viewport_up(2);
+    grid.move_viewport_up(grid.scrollback_buffer_lines);
     let chunks = grid.render(0, 0, &style()).unwrap().unwrap().0;
     let old = chunks
         .iter()

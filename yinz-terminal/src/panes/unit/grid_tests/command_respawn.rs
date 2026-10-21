@@ -3,10 +3,21 @@
 
 use super::*;
 
+fn assert_clean_viewport(grid: &Grid) {
+    // Check before scrolling or searching so a short viewport fails instead of hanging search.
+    assert_eq!(grid.viewport.len(), grid.height);
+    assert!(grid
+        .viewport
+        .iter()
+        .all(|row| row.is_empty() && row.is_canonical));
+    assert_eq!((grid.cursor.x, grid.cursor.y), (0, 0));
+}
+
 #[test]
 fn a_preserving_reset_scrolls_the_screen_into_history() {
     let mut grid = create_grid_with_content("step one says hello\r\nand a second line");
     grid.reset_terminal_state_preserving_scrollback();
+    assert_clean_viewport(&grid);
     assert_eq!(
         scrollback_texts(&grid),
         vec!["step one says hello", "and a second line"],
@@ -17,6 +28,81 @@ fn a_preserving_reset_scrolls_the_screen_into_history() {
         "the screen itself starts clean, got: {:?}",
         viewport_texts(&grid)
     );
+}
+
+#[test]
+fn preserved_history_can_be_scrolled_and_searched_after_repeated_resets() {
+    let mut grid = grid_with_thirty_lines();
+    let mut expected: Vec<String> = (1..=30).map(|i| format!("line {i}")).collect();
+    for output in ["", "partial output", ""] {
+        feed_bytes(&mut grid, output.as_bytes());
+        if !output.is_empty() {
+            expected.push(output.to_owned());
+        }
+        grid.reset_terminal_state_preserving_scrollback();
+        assert_clean_viewport(&grid);
+        assert_eq!(scrollback_texts(&grid), expected);
+        let blank_viewport = viewport_texts(&grid);
+        let scrollback_count = grid.scrollback_buffer_lines;
+
+        grid.scroll_up_one_line();
+        assert_eq!(viewport_texts(&grid)[0], *expected.last().unwrap());
+        assert_eq!(grid.lines_below.len(), 1);
+        grid.scroll_down_one_line();
+        assert_eq!(viewport_texts(&grid), blank_viewport);
+        assert_eq!(scrollback_texts(&grid), expected);
+        assert_eq!(grid.scrollback_buffer_lines, scrollback_count);
+
+        for downward in [false, true] {
+            grid.search_results.needle = "line 7".to_owned();
+            grid.search_results.wrap_search = downward;
+            grid.search_viewport();
+            if downward {
+                grid.search_down();
+            } else {
+                grid.search_up();
+            }
+            let selection = grid
+                .search_results
+                .active
+                .expect("preserved text is searchable");
+            assert_eq!(
+                grid.text_for_selection(&selection).as_deref(),
+                Some("line 7")
+            );
+            grid.clear_search();
+            grid.reset_viewport();
+            assert_eq!(viewport_texts(&grid), blank_viewport);
+            assert_eq!(scrollback_texts(&grid), expected);
+        }
+
+        for wrap in [false, true] {
+            for scrolled in [false, true] {
+                if scrolled {
+                    grid.move_viewport_up(5);
+                }
+                let viewport = viewport_texts(&grid);
+                let above = scrollback_texts(&grid);
+                let below: Vec<_> = grid.lines_below.iter().map(row_text).collect();
+                let count = grid.scrollback_buffer_lines;
+                grid.search_results.wrap_search = wrap;
+                grid.set_search_string("absent text");
+                grid.search_up();
+                grid.search_down();
+                assert!(grid.search_results.selections.is_empty());
+                assert!(grid.search_results.active.is_none());
+                assert_eq!(viewport_texts(&grid), viewport);
+                assert_eq!(scrollback_texts(&grid), above);
+                assert_eq!(
+                    grid.lines_below.iter().map(row_text).collect::<Vec<_>>(),
+                    below
+                );
+                assert_eq!(grid.scrollback_buffer_lines, count);
+                grid.clear_search();
+                grid.reset_viewport();
+            }
+        }
+    }
 }
 
 #[test]

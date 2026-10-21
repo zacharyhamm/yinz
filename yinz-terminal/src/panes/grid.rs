@@ -3485,6 +3485,8 @@ impl Grid {
             screen_rows.pop_back();
         }
         self.reset_terminal_state();
+        self.viewport
+            .resize_with(self.height, || Row::new().canonical());
         let screen_row_count = screen_rows.len();
         transfer_rows_from_viewport_to_lines_above(
             &mut screen_rows,
