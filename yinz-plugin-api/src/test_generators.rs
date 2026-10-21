@@ -2074,6 +2074,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             config: context(tc),
             load_in_background: booleans(tc),
             skip_plugin_cache: booleans(tc),
+            cwd: optional_paths(tc),
         },
         CommandType::RebindKeys => PluginCommand::RebindKeys {
             keys_to_rebind: keys_to_rebind(tc),

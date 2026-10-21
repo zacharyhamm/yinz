@@ -388,12 +388,15 @@ fn notification_browser_keeps_dismissed_session_history() {
         !grid_snapshot.contains("history first") && !grid_snapshot.contains("newest")
     });
 
-    yinz.send_stdin(&keys::ctrl('o'));
-    yinz.send_stdin(&keys::key('w'));
-    yinz.wait_until("session manager is ready", |grid_snapshot| {
-        grid_snapshot.contains("Session Manager") && grid_snapshot.contains("Session: _")
+    yinz.send_stdin(b"\x1b[112;7u");
+    yinz.wait_until("command palette opens", |grid_snapshot| {
+        grid_snapshot.contains("Do · Project:")
     });
-    yinz.send_stdin(&keys::ctrl('v'));
+    yinz.send_stdin("Notifications…".as_bytes());
+    yinz.wait_until("notification action is ready", |grid_snapshot| {
+        grid_snapshot.contains("› Notifications…")
+    });
+    yinz.send_stdin(&keys::ENTER);
     let list = yinz.wait_until("notification history opens", |grid_snapshot| {
         grid_snapshot.contains("Received") && grid_snapshot.contains("history first")
     });
@@ -422,44 +425,31 @@ fn notification_browser_keeps_dismissed_session_history() {
 }
 
 #[test]
-fn session_manager_tabs_cycle_through_notifications_and_refresh_on_entry() {
+fn session_palette_notifications_refresh_on_each_visit() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(
-            r#"
-notification_timeout 1
-plugins {
-    session-manager location="yinz:session-manager" {
-        multi_screen true
-    }
-}
-"#,
-        )
+        .with_config("notification_timeout 1")
         .start();
     claim_first_terminal_and_wait_for_prompt(&yinz);
-    yinz.send_stdin(&keys::ctrl('o'));
-    yinz.send_stdin(&keys::key('w'));
-    yinz.wait_until("attach screen opens", |snapshot| {
-        snapshot.contains("Search:") && snapshot.contains("<Ctrl r>")
-    });
 
     for message in ["first visit", "second visit"] {
         notify(&yinz, message);
+        yinz.wait_until("toast appears", |snapshot| snapshot.contains(message));
         yinz.wait_until("toast dismisses", |snapshot| !snapshot.contains(message));
-        yinz.send_stdin(&keys::key('\t'));
-        yinz.wait_until("resurrect screen opens", |snapshot| {
-            snapshot.contains("<ENTER>/<DEL>/<Ctrl d>")
+        yinz.send_stdin(b"\x1b[112;7u");
+        yinz.wait_until("command palette opens", |snapshot| {
+            snapshot.contains("Do · Project:") && snapshot.contains("│> █")
         });
-        yinz.send_stdin(&keys::key('\t'));
+        yinz.send_stdin("Notifications…".as_bytes());
+        yinz.wait_until("notification action is ready", |snapshot| {
+            snapshot.contains("› Notifications…")
+        });
+        yinz.send_stdin(&keys::ENTER);
         yinz.wait_until("notifications refresh on entry", |snapshot| {
             snapshot.contains("Received") && snapshot.contains(message)
         });
-        yinz.send_stdin(&keys::key('\t'));
-        yinz.wait_until("new screen follows notifications", |snapshot| {
-            snapshot.contains("New session name:")
-        });
-        yinz.send_stdin(&keys::key('\t'));
-        yinz.wait_until("attach screen follows new", |snapshot| {
-            snapshot.contains("Search:") && snapshot.contains("<Ctrl r>")
+        yinz.send_stdin(b"\x1b[112;7u");
+        yinz.wait_until("command palette closes", |snapshot| {
+            !snapshot.contains(message) && snapshot.status_bar_appears()
         });
     }
     yinz.quit();

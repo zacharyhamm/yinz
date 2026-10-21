@@ -33,7 +33,7 @@ keybinds clear-defaults=true {
         bind "Alt i" { GoToNextTab; }
         bind "Ctrl j" { MoveFocusOrTab "right"; }
         bind "Ctrl Alt j" {
-            MessagePlugin "yinz:session-manager" {
+            MessagePlugin "yinz:strider" {
                 name "message_name"
                 cwd "/tmp"
                 payload "message_payload"
@@ -105,7 +105,7 @@ keybinds clear-defaults=true {
         bind "Alt t" { Detach; }
         bind "Ctrl u" { PageScrollUp; }
         bind "Alt u" {
-            LaunchOrFocusPlugin "yinz:session-manager" {
+            LaunchOrFocusPlugin "yinz:strider" {
                 floating true
                 move_to_focused_tab true
                 skip_plugin_cache true
@@ -115,7 +115,7 @@ keybinds clear-defaults=true {
         }
         bind "Ctrl v" { PageScrollDown; }
         bind "Alt v" {
-            LaunchOrFocusPlugin "yinz:session-manager" {
+            LaunchOrFocusPlugin "yinz:strider" {
                 move_to_focused_tab true
                 in_place true
                 skip_plugin_cache true
@@ -125,7 +125,7 @@ keybinds clear-defaults=true {
         }
         bind "Ctrl w" { HalfPageScrollUp; }
         bind "Alt w" {
-            LaunchPlugin "yinz:session-manager" {
+            LaunchPlugin "yinz:strider" {
                 floating true
                 skip_plugin_cache true
                 config_key_1 "config_value_1"
@@ -134,7 +134,7 @@ keybinds clear-defaults=true {
         }
         bind "Ctrl x" { HalfPageScrollDown; }
         bind "Alt x" {
-            LaunchPlugin "yinz:session-manager" {
+            LaunchPlugin "yinz:strider" {
                 in_place true
                 skip_plugin_cache true
                 config_key_1 "config_value_1"

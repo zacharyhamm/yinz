@@ -2133,9 +2133,9 @@ mod config_test {
                 status-bar location="yinz:status-bar"
                 strider location="yinz:strider"
                 compact-bar location="yinz:compact-bar"
-                session-manager location="yinz:session-manager"
-                welcome-screen location="yinz:session-manager" {
-                    welcome_screen true
+                session-palette location="yinz:session-palette"
+                session-browser location="yinz:session-palette" {
+                    shared true
                 }
                 filepicker location="yinz:strider"
             }
@@ -2159,16 +2159,16 @@ mod config_test {
             yinz_runtime::plugin_location::run_plugin_from_url("yinz:compact-bar").unwrap(),
         );
         expected_plugin_configuration.insert(
-            "session-manager".to_owned(),
-            yinz_runtime::plugin_location::run_plugin_from_url("yinz:session-manager").unwrap(),
+            "session-palette".to_owned(),
+            yinz_runtime::plugin_location::run_plugin_from_url("yinz:session-palette").unwrap(),
         );
-        let mut welcome_screen_configuration = BTreeMap::new();
-        welcome_screen_configuration.insert("welcome_screen".to_owned(), "true".to_owned());
+        let mut shared_session_configuration = BTreeMap::new();
+        shared_session_configuration.insert("shared".to_owned(), "true".to_owned());
         expected_plugin_configuration.insert(
-            "welcome-screen".to_owned(),
-            yinz_runtime::plugin_location::run_plugin_from_url("yinz:session-manager")
+            "session-browser".to_owned(),
+            yinz_runtime::plugin_location::run_plugin_from_url("yinz:session-palette")
                 .unwrap()
-                .with_configuration(welcome_screen_configuration),
+                .with_configuration(shared_session_configuration),
         );
         expected_plugin_configuration.insert(
             "filepicker".to_owned(),
@@ -2444,10 +2444,22 @@ mod config_test {
     }
 
     #[test]
-    fn session_palette_is_a_shared_default_and_clear_defaults_removes_it() {
+    fn management_palettes_are_defaults_and_clear_defaults_removes_them() {
         let config = Config::from_default_assets().unwrap();
         let serialized = config.to_string(false).unwrap();
-        assert!(serialized.contains("session-palette"));
+        for name in ["session-palette", "layout-palette", "plugin-palette"] {
+            assert!(serialized.contains(name), "missing {name}");
+            assert!(
+                config
+                    .background_plugins
+                    .iter()
+                    .any(|plugin| { plugin.location_string() == name }),
+                "{name} must load by default"
+            );
+        }
+        for removed in ["session-manager", "layout-manager", "plugin-manager"] {
+            assert!(!serialized.contains(removed), "obsolete {removed}");
+        }
         let cleared =
             Config::from_kdl("load_plugins clear-defaults=true {}", Some(config)).unwrap();
         assert!(cleared.background_plugins.is_empty());

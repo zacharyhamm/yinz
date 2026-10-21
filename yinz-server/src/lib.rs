@@ -147,8 +147,8 @@ use yinz_runtime::channels::ChannelWithContext;
 use yinz_runtime::channels::{SenderWithContext, Shutdown};
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::errors::FatalError;
-use yinz_runtime::home::default_layout_dir;
 use yinz_runtime::home::get_default_data_dir;
+use yinz_runtime::home::layout_dir_or_default;
 use yinz_runtime::home::user_plugin_dir_or_default;
 use yinz_screen::screen_thread_main;
 use yinz_types::diagnostics::ContextType;
@@ -2252,14 +2252,16 @@ pub fn start_server_impl(
                     log::error!("Cannot attach to same session");
                 } else {
                     let layout_dir = with_session(&session_data, |session| {
-                        session
-                            .session_configuration
-                            .get_client_configuration(&client_id)
-                            .options
-                            .layout_dir
+                        layout_dir_or_default(
+                            session
+                                .session_configuration
+                                .get_client_configuration(&client_id)
+                                .options
+                                .layout_dir,
+                            session.config_dir.clone(),
+                        )
                     })
-                    .flatten()
-                    .or_else(default_layout_dir);
+                    .flatten();
                     if let Some(layout_dir) = layout_dir {
                         connect_to_session.apply_layout_dir(&layout_dir);
                     }
@@ -2945,12 +2947,13 @@ fn init_session(
         .default_layout
         .as_ref()
         .map(|layout| layout.display().to_string());
+    let layout_dir = layout_dir_or_default(
+        config_options.layout_dir.clone(),
+        cli_assets.config_dir.clone(),
+    );
     let (available_layouts, available_layout_errors) =
         startup_stage("server.available_layouts", || {
-            yinz_config::layout::list_available_layouts(
-                config_options.layout_dir.clone(),
-                &default_layout_name,
-            )
+            yinz_config::layout::list_available_layouts(layout_dir.clone(), &default_layout_name)
         });
 
     log::info!(
@@ -2975,10 +2978,6 @@ fn init_session(
 
             let layout = Box::new(layout.clone());
             let default_shell = default_shell.clone();
-            let layout_dir = config_options
-                .layout_dir
-                .clone()
-                .or_else(default_layout_dir);
             // The session's *active* config dir, not whichever conventional one happens to exist:
             // a session started with `--config-dir` must load plugins from the folder
             // `yinz setup --check` names for it.

@@ -176,7 +176,7 @@ interface CommandArgs {
   CloseTabWithIndex: number; BreakPanesToNewTab: [PaneId[], string | null, boolean]; BreakPanesToTabWithIndex: [PaneId[], number, boolean];
   SwitchTabToId: number; GoToTabWithId: number; CloseTabWithId: number; RenameTabWithId: [number, string];
   ArrangeProjectPanes: ProjectPaneGroup[]; SetTabProjects: Record<string, string>; SetProjectContext: [string[], [PaneId, string][], Record<string, string>?]; BreakPanesToTabWithId: [PaneId[], number, boolean];
-  ReloadPlugin: number; LoadNewPlugin: {url: string; config: StringMap; load_in_background: boolean; skip_plugin_cache: boolean};
+  ReloadPlugin: number; LoadNewPlugin: {url: string; config: StringMap; load_in_background: boolean; skip_plugin_cache: boolean; cwd?: string | null};
   RebindKeys: {keys_to_rebind: [InputMode, KeyWithModifier, Action[]][]; keys_to_unbind: [InputMode, KeyWithModifier][]; write_config_to_disk: boolean};
   RegisterAgentProvider: AgentProvider; GetAgentProviders: undefined;
   RegisterDefaultKeybindings: string; ListClients: undefined; ChangeHostFolder: string;
@@ -727,6 +727,12 @@ optional map of project names to saved sources. Omitted sources default to an em
 map. The project picker shows each source as secondary literal text, with `Current`
 for the selected project. The project store prefers a nonblank saved Git remote,
 falling back to the root folder, and preserves the saved spelling.
+
+`LoadNewPlugin.cwd` sets the base directory for relative file URLs and the new
+plugin's default working directory in either placement. An explicitly configured
+alias directory takes precedence. If `cwd` is omitted or null, relative file URLs
+and foreground plugins use the calling plugin's directory; background plugins
+keep the session's default directory unless the alias specifies one.
 
 ## Pane slots
 

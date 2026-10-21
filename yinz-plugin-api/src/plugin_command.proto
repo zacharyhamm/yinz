@@ -1116,6 +1116,7 @@ message LoadNewPluginPayload {
   repeated ContextItem plugin_config = 2;
   bool should_load_plugin_in_background = 3;
   bool should_skip_plugin_cache = 4;
+  optional string cwd = 5;
 }
 
 message ReloadPluginPayload {

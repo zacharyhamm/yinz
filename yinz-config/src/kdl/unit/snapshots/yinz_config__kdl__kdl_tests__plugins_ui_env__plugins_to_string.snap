@@ -10,11 +10,11 @@ plugins {
     filepicker location="yinz:strider" {
         cwd "/"
     }
-    session-manager location="yinz:session-manager"
+    session-browser location="yinz:session-palette" {
+        shared true
+    }
+    session-palette location="yinz:session-palette"
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"
     tab-bar location="yinz:tab-bar"
-    welcome-screen location="yinz:session-manager" {
-        welcome_screen true
-    }
 }

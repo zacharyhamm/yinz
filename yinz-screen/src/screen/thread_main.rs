@@ -439,7 +439,11 @@ pub fn screen_thread_main(
     data_dir: Option<PathBuf>,
     default_layout: Box<Layout>,
 ) -> Result<()> {
-    let screen_config = ScreenConfig::from_config(&config);
+    let mut screen_config = ScreenConfig::from_config(&config);
+    screen_config.layout_dir = yinz_runtime::home::layout_dir_or_default(
+        config.options.layout_dir.clone(),
+        config_dir.clone(),
+    );
     let explicit_theme_hue = screen_config.explicit_theme_hue;
     let default_mode = screen_config.default_mode;
     let mode_info = get_mode_info(

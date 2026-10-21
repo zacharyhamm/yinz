@@ -323,6 +323,27 @@ fn compact_tooltip_groups_curated_directions_resize_and_lock_keys() {
 }
 
 #[test]
+fn compact_session_tooltip_groups_palette_shortcuts_after_the_base_mode_switch() {
+    let mut bar = Compact::new(json!({"is_tooltip":"true"}));
+    for base in ["Normal", "Locked"] {
+        let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
+        mode["mode"] = json!("Session");
+        mode["base_mode"] = json!(base);
+        mode["keybinds"] = json!([["Session", [
+            [key("w"),[{"SwitchToMode":{"input_mode":base}},"ToggleCommandPalette"]],
+            [key("p"),[{"SwitchToMode":{"input_mode":base}},"ToggleCommandPalette"]],
+            [key("l"),[{"SwitchToMode":{"input_mode":base}},"ToggleCommandPalette"]],
+            [key("a"),["ToggleCommandPalette"]],
+            [key("x"),[{"SwitchToMode":{"input_mode":base}},"Quit","ToggleCommandPalette"]]
+        ]]]);
+        assert_eq!(
+            bar.runtime.invoke("compact-actions", vec![mode]).unwrap(),
+            json!([["<l>/<w>/<p>", "Command palette"]])
+        );
+    }
+}
+
+#[test]
 fn compact_tooltip_normal_mode_ribbons_and_all_mode_fallbacks_fit() {
     let mut bar = Compact::new(json!({"is_tooltip":"true"}));
     bar.pipe("toggle_persisted_tooltip", None, true);

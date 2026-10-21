@@ -8,7 +8,7 @@ keybinds clear-defaults=true {
         bind "Ctrl n" {
             NewPane
             SwitchToMode "locked"
-            MessagePlugin "yinz:session-manager" {
+            MessagePlugin "yinz:strider" {
                 name "message_name"
                 cwd "/tmp"
                 payload "message_payload"

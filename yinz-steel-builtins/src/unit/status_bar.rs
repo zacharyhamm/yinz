@@ -360,6 +360,26 @@ fn status_mode_hints_prefer_tab_arrows_and_match_panel_message_name() {
 }
 
 #[test]
+fn session_mode_hints_name_the_palette_after_returning_to_the_base_mode() {
+    let mut status = Status::new(true);
+    status.tab();
+    for base in ["Normal", "Locked"] {
+        let mut mode = serde_json::to_value(ModeInfo::default()).unwrap();
+        mode["mode"] = json!("Session");
+        mode["base_mode"] = json!(base);
+        mode["keybinds"] = json!([["Session", [
+            [{"bare_key":{"Char":"w"},"key_modifiers":[]},[
+                {"SwitchToMode":{"input_mode":base}}, "ToggleCommandPalette"
+            ]]
+        ]]]);
+        status.mode(mode);
+        let frame = status.render(2, 200);
+        assert!(frame.contains("<w> Command palette"), "{frame}");
+        assert!(!frame.contains("Manager"), "{frame}");
+    }
+}
+
+#[test]
 fn status_counts_agents_and_uses_bounded_animation_ticks() {
     let mut status = Status::new(false);
     status.render(1, 200);

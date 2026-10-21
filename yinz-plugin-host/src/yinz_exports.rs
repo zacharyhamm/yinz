@@ -1200,7 +1200,8 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 config,
                 load_in_background,
                 skip_plugin_cache,
-            } => load_new_plugin(env, url, config, load_in_background, skip_plugin_cache),
+                cwd,
+            } => load_new_plugin(env, url, config, load_in_background, skip_plugin_cache, cwd),
             PluginCommand::RebindKeys {
                 keys_to_rebind,
                 keys_to_unbind,
@@ -8469,11 +8470,11 @@ fn try_edit_layout(
         .with_originating_plugin(env.originating_plugin(context)),
         direction: None,
         floating: false,
-        in_place: true,
+        in_place: !env.background,
         close_replaced_pane: false,
         start_suppressed: false,
         placement: NewPanePlacement::Floating(None),
-        near_current_pane: true,
+        near_current_pane: !env.background,
         no_focus: false,
         tab_id: None,
     };
@@ -8768,31 +8769,39 @@ fn load_new_plugin(
     config: BTreeMap<String, String>,
     load_in_background: bool,
     skip_plugin_cache: bool,
+    cwd: Option<PathBuf>,
 ) {
     let url = if &url == "yinz:OWN_URL" {
         env.plugin_config.location.display()
     } else {
         url
     };
+    let resolved_cwd = cwd.clone().unwrap_or_else(|| env.plugin_cwd.clone());
+    let parsed = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        &url,
+        &Some(config),
+        Some(&env.plugin_aliases.lock().unwrap()),
+        Some(resolved_cwd.clone()),
+    );
+    let mut run_plugin_or_alias = match parsed {
+        Ok(plugin) => plugin,
+        Err(error) => {
+            log::error!("Failed to load new plugin: {error}");
+            return;
+        },
+    };
     if load_in_background {
-        match yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-            &url,
-            &Some(config),
-            None,
-            Some(env.plugin_cwd.clone()),
-        ) {
-            Ok(run_plugin_or_alias) => {
-                let _ = env
-                    .senders
-                    .send_to_plugin(PluginInstruction::LoadBackgroundPlugin(
-                        run_plugin_or_alias,
-                        env.client_id,
-                    ));
-            },
-            Err(e) => {
-                log::error!("Failed to load new plugin: {:?}", e);
-            },
+        if let Some(cwd) = cwd
+            && run_plugin_or_alias.get_initial_cwd().is_none()
+        {
+            run_plugin_or_alias.add_initial_cwd(&cwd);
         }
+        let _ = env
+            .senders
+            .send_to_plugin(PluginInstruction::LoadBackgroundPlugin(
+                run_plugin_or_alias,
+                env.client_id,
+            ));
     } else {
         let should_float = Some(true);
         let should_be_open_in_place = false;
@@ -8801,38 +8810,26 @@ fn load_new_plugin(
         let pane_id_to_replace = None;
         let client_id = env.client_id;
         let size = Default::default();
-        let cwd = Some(env.plugin_cwd.clone());
+        let cwd = Some(resolved_cwd);
         let skip_cache = skip_plugin_cache;
-        match yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-            &url,
-            &Some(config),
+        let _ = env.senders.send_to_plugin(PluginInstruction::Load(
+            should_float,
+            should_be_open_in_place,
+            false, // close_replaced_pane
+            pane_title,
+            run_plugin_or_alias,
+            tab_index,
+            pane_id_to_replace,
+            client_id,
+            size,
+            cwd,
             None,
-            Some(env.plugin_cwd.clone()),
-        ) {
-            Ok(run_plugin_or_alias) => {
-                let _ = env.senders.send_to_plugin(PluginInstruction::Load(
-                    should_float,
-                    should_be_open_in_place,
-                    false, // close_replaced_pane
-                    pane_title,
-                    run_plugin_or_alias,
-                    tab_index,
-                    pane_id_to_replace,
-                    client_id,
-                    size,
-                    cwd,
-                    None,
-                    skip_cache,
-                    None,
-                    None,
-                    None,
-                    None,
-                ));
-            },
-            Err(e) => {
-                log::error!("Failed to load new plugin: {:?}", e);
-            },
-        }
+            skip_cache,
+            None,
+            None,
+            None,
+            None,
+        ));
     }
 }
 
@@ -10129,9 +10126,9 @@ mod permission_tests {
             check_command_permission(&env, &delete),
             (PermissionStatus::Granted, None)
         );
-        // Built-in plugins, such as the layout manager, keep saving and renaming without asking.
+        // Built-in plugins, such as the layout palette, keep saving and renaming without asking.
         env.plugin_config.location = yinz_types::input::layout::RunPluginLocation::Yinz(
-            yinz_types::data::PluginTag::new("layout-manager"),
+            yinz_types::data::PluginTag::new("layout-palette"),
         );
         *env.permissions.lock().unwrap() = None;
         for command in [&save, &rename] {

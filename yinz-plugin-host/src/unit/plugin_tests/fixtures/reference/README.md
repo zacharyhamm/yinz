@@ -51,7 +51,8 @@ Steps retain inputs, update decisions, typed host commands, and render streams.
 Wasm traces also retain decoded host replies, including failures.
 Deno and bar traces retain their deterministic host settings and command results.
 Bar traces retain status-tip cache changes and controlled random choices.
-The regression for the original plugin-manager render trap also retains that failure.
+The Session Manager, Layout Manager, and Plugin Manager traces were removed with
+those windows. Their replacements have palette unit and real-session integration tests.
 
 Replay runs the Scheme plugin and the test's host services normally.
 It also executes recorded Wasm commands against the independent reference backend and checks each reply.

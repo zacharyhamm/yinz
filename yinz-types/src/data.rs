@@ -3010,6 +3010,8 @@ pub enum PluginCommand {
         config: BTreeMap<String, String>,
         load_in_background: bool,
         skip_plugin_cache: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<PathBuf>,
     },
     RebindKeys {
         keys_to_rebind: Vec<(InputMode, KeyWithModifier, Vec<Action>)>,

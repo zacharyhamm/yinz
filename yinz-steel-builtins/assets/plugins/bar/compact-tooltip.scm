@@ -39,7 +39,7 @@
         (map (lambda (direction) (matches (bar-direction "Search" direction))) '("Down" "Up"))
         (map (lambda (option) (matches (hash "SearchToggleOption" (hash "option" option)))) '("CaseSensitivity" "Wrap" "WholeWord"))))
     ((equal? mode "Select") (append (directed "MoveTextSelection") (named '("SwapTextSelectionEnds"))))
-    ((equal? mode "Session") (append (named '("Detach")) (map launches '("session-manager" "plugin-manager" "configuration"))))
+    ((equal? mode "Session") (append (named '("Detach" "CommandPalette")) (map launches '("session-manager" "plugin-manager" "configuration"))))
     ((equal? mode "Notifications") (append (map (lambda (direction) (matches (bar-direction "MoveNotificationSelection" direction))) '("Down" "Up"))
         (named '("ActivateNotification" "ToggleNotificationDetail"))))
     ((equal? mode "Agent") (map launches '("new-agent" "agents")))
@@ -49,7 +49,7 @@
     "Search" "Search" "NewPaneWithDirection" "Split right/down" "NewPaneWithoutDirection" "New pane"
     "MovePaneToTabGroup" "Move pane to adjacent group" "BreakPaneLeftOrRight" "Break pane to adjacent tab" "GoToAdjacentTab" "Move tab focus" "Scroll" "Scroll"
     "PageScroll" "Scroll page" "HalfPageScroll" "Scroll half Page" "SessionManager" "Session manager"
-    "PluginManager" "Plugin manager" "Configuration" "Configuration" "TogglePaneEmbedOrFloating" "Float or embed"
+    "PluginManager" "Plugin manager" "Configuration" "Configuration" "CommandPalette" "Command palette" "TogglePaneEmbedOrFloating" "Float or embed"
     "NewStackedPane" "New stacked pane" "ToggleFocusFullscreen" "Toggle fullscreen" "ToggleFloatingPanes" "Show/hide floating panes"
     "CloseFocus" "Close pane" "CloseTab" "Close tab" "ToggleActiveSyncTab" "Sync panes in tab" "ToggleTab" "Circle tab focus"
     "BreakPane" "Break pane to new tab" "EditScrollback" "Open pane scrollback in editor" "NewTab" "New tab" "Detach" "Detach" "Quit" "Quit"))
@@ -98,15 +98,19 @@
       (string-join (append groups (if (null? other) '() (list (string-join other "/")))) "/"))))
 (define (compact-actions mi)
   (define keymap (filter (lambda (entry) (not (null? (cadr entry)))) (bar-mode-keymap mi)))
+  (define (entry-action entry)
+    (define base (hash-ref mi "base_mode"))
+    (if (bar-equal? (cadr entry) (list (bar-switch-mode (if (json-null? base) "Normal" base)) "ToggleCommandPalette"))
+      "CommandPalette" (car (cadr entry))))
   (define processed '())
   (define result '())
   (for-each (lambda (predicate)
-      (define found (filter (lambda (entry) (predicate (car (cadr entry)))) keymap))
+      (define found (filter (lambda (entry) (predicate (entry-action entry))) keymap))
       (unless (null? found)
-        (define type (action-type (car (cadr (car found)))))
+        (define type (action-type (entry-action (car found))))
         (unless (member type processed)
           (define keys (map (lambda (entry) (bar-key-label (car entry)))
-              (filter (lambda (entry) (bar-equal? (action-type (car (cadr entry))) type)) keymap)))
+              (filter (lambda (entry) (bar-equal? (action-type (entry-action entry)) type)) keymap)))
           (set! result (append result (list (list (compact-grouped-keys keys (not (equal? (hash-ref mi "mode") "Normal")) (equal? type "Mode:Locked")) (description type)))))
           (set! processed (cons type processed))))) (predicates (hash-ref mi "mode")))
   result)

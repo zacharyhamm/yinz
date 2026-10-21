@@ -145,7 +145,9 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
             }] => {
                 assert_eq!(*client_id, CLIENT);
                 assert_eq!(keybinds, &effective_keybinds);
-                assert_eq!(config, &ScreenConfig::from_config(&reloaded));
+                let mut expected = ScreenConfig::from_config(&reloaded);
+                expected.layout_dir = Some(PathBuf::from("/yinz-config/layouts"));
+                assert_eq!(config, &expected);
             },
             other => panic!("expected one screen Reconfigure, got {other:?}"),
         }
@@ -155,6 +157,7 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
                 client_id,
                 keybinds,
                 default_shell: Some(TerminalAction::RunCommand(default_shell)),
+                layout_dir,
                 user_plugin_dir,
                 was_written_to_disk: reported_written,
                 ..
@@ -162,6 +165,7 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
                 assert_eq!(client_id, CLIENT);
                 assert_eq!(keybinds.as_ref(), Some(&effective_keybinds));
                 assert_eq!(default_shell, shell);
+                assert_eq!(layout_dir, Some(PathBuf::from("/yinz-config/layouts")));
                 assert_eq!(user_plugin_dir, Some(PathBuf::from("/yinz-config/plugins")));
                 assert_eq!(reported_written, was_written_to_disk);
             },
@@ -238,6 +242,96 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
                 PluginInstruction::DetectPluginConfigChanges(_)
             )));
         }
+    }
+}
+
+#[test]
+fn reconfigure_resolves_layout_overrides_and_resets_from_the_active_config_directory() {
+    let (to_screen, screen_rx) = channels::unbounded();
+    let (to_plugin, plugin_rx) = channels::unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(SenderWithContext::new(to_screen)),
+        to_plugin: Some(SenderWithContext::new(to_plugin)),
+        should_silently_fail: true,
+        ..Default::default()
+    };
+    let cwd = std::env::current_dir().unwrap();
+    for (configured, config_dir, expected) in [
+        (
+            Some("/explicit-layouts"),
+            "/active-config",
+            PathBuf::from("/explicit-layouts"),
+        ),
+        (
+            None,
+            "/active-config",
+            PathBuf::from("/active-config/layouts"),
+        ),
+        (
+            Some("custom/../layouts"),
+            "/active-config",
+            cwd.join("custom/../layouts"),
+        ),
+        (
+            None,
+            "relative/./config",
+            cwd.join("relative/./config/layouts"),
+        ),
+    ] {
+        let mut config = Config::default();
+        config.options.layout_dir = configured.map(PathBuf::from);
+        senders.reconfigure_threads(vec![(CLIENT, config)], Some(Path::new(config_dir)), false);
+        let screen_layout_dir = screen_rx.try_iter().find_map(|(message, _)| match message {
+            ScreenInstruction::Reconfigure { config, .. } => Some(config.layout_dir),
+            _ => None,
+        });
+        let plugin_layout_dir = plugin_rx.try_iter().find_map(|(message, _)| match message {
+            PluginInstruction::Reconfigure { layout_dir, .. } => Some(layout_dir),
+            _ => None,
+        });
+        assert!(expected.is_absolute());
+        let expected = Some(Some(expected));
+        assert_eq!(screen_layout_dir, expected);
+        assert_eq!(plugin_layout_dir, expected);
+    }
+}
+
+#[test]
+fn session_handoff_loads_custom_layout_from_relative_directories() {
+    use yinz_types::data::{LayoutInfo, SessionConnection};
+    use yinz_types::input::cli_assets::CliAssets;
+
+    let cwd = std::env::current_dir().unwrap();
+    let root = tempfile::tempdir_in(&cwd).unwrap();
+    let relative_root = root.path().strip_prefix(&cwd).unwrap();
+    let config_dir = relative_root.join("config");
+    let explicit_dir = relative_root.join("custom-layouts");
+    for configured in [None, Some(explicit_dir)] {
+        let layout_dir =
+            layout_dir_or_default(configured.clone(), Some(config_dir.clone())).unwrap();
+        std::fs::create_dir_all(&layout_dir).unwrap();
+        std::fs::write(
+            layout_dir.join("custom.kdl"),
+            "layout { tab name=\"Custom handoff tab\" { pane; }; }",
+        )
+        .unwrap();
+        let mut connection = SessionConnection {
+            layout: Some(LayoutInfo::File("custom".into(), Default::default())),
+            ..Default::default()
+        };
+        connection.apply_layout_dir(&layout_dir);
+        let (_, layout) = yinz_config::cli_assets::load_config_and_layout(&CliAssets {
+            config_dir: Some(config_dir.clone()),
+            configuration_options: Some(Options {
+                layout_dir: configured,
+                ..Default::default()
+            }),
+            layout: connection.layout,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(layout.tabs.len(), 1);
+        assert_eq!(layout.tabs[0].0.as_deref(), Some("Custom handoff tab"));
     }
 }
 

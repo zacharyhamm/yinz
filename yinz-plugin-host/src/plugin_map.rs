@@ -844,7 +844,7 @@ pub struct PluginEnv {
     /// See [`crate::ServerSession`] for why it is not a plain name.
     pub server_session: crate::ServerSession,
     /// The `plugins { }` alias table, shared with `PluginBridge` so it stays current across
-    /// config reloads. Read only by `GetPluginAliasConfiguration`.
+    /// config reloads. Used by alias configuration queries and plugin loading.
     pub plugin_aliases: Arc<Mutex<PluginAliases>>,
     pub input_pipes_to_unblock: Arc<Mutex<HashSet<String>>>,
     pub input_pipes_to_block: Arc<Mutex<HashSet<String>>>,

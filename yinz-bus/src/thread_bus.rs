@@ -11,7 +11,7 @@ use yinz_config::screen_config::ScreenConfig;
 use yinz_runtime::channels;
 use yinz_runtime::channels::SenderWithContext;
 use yinz_runtime::errors::prelude::*;
-use yinz_runtime::home::user_plugin_dir_or_default;
+use yinz_runtime::home::{layout_dir_or_default, user_plugin_dir_or_default};
 use yinz_types::diagnostics::ErrorContext;
 use yinz_types::input::command::{RunCommand, TerminalAction};
 use yinz_types::input::options::Options;
@@ -262,7 +262,7 @@ impl ThreadSenders {
     ///
     /// Each config must already be the client's effective one, plugin default keybinds
     /// included: the threads adopt it as is. `config_dir` is the session's `--config-dir`, from
-    /// which a config that does not name `user_plugin_dir` has it re-derived.
+    /// which unset layout and user-plugin directories are re-derived.
     pub fn reconfigure_threads(
         &self,
         config_changes: Vec<(ClientId, Config)>,
@@ -276,10 +276,16 @@ impl ThreadSenders {
         for (client_id, new_config) in config_changes {
             new_plugin_config.get_or_insert_with(|| new_config.plugins.clone());
             let default_shell = default_shell_action(&new_config.options);
+            let layout_dir = layout_dir_or_default(
+                new_config.options.layout_dir.clone(),
+                config_dir.map(Path::to_path_buf),
+            );
+            let mut screen_config = ScreenConfig::from_config(&new_config);
+            screen_config.layout_dir = layout_dir.clone();
             self.send_to_screen(ScreenInstruction::Reconfigure {
                 client_id,
                 keybinds: new_config.keybinds.clone(),
-                config: ScreenConfig::from_config(&new_config),
+                config: screen_config,
             })
             .context("reconfiguring the screen")
             .non_fatal();
@@ -289,7 +295,7 @@ impl ThreadSenders {
                 keybinds: Some(new_config.keybinds),
                 default_mode: new_config.options.default_mode,
                 default_shell,
-                layout_dir: new_config.options.layout_dir,
+                layout_dir,
                 // Re-derived rather than passed through: `PluginBridge::reconfigure` assigns
                 // this verbatim, so a config that does not name the option explicitly would
                 // otherwise wipe the folder derived at session start. The server's cwd has

@@ -134,14 +134,6 @@ mod configuration_ui_tests;
 mod file_finder_listing_tests;
 
 #[cfg(test)]
-#[path = "unit/plugin_manager.rs"]
-mod plugin_manager_tests;
-
-#[cfg(test)]
-#[path = "unit/layout_manager.rs"]
-mod layout_manager_tests;
-
-#[cfg(test)]
 #[path = "unit/agent_service.rs"]
 mod agent_service_tests;
 

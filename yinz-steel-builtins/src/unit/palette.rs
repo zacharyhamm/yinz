@@ -28,6 +28,7 @@ pub(super) struct Palette {
     pub(super) host: Arc<Mutex<Host>>,
     pub(super) scope: Value,
     pub(super) roots: Vec<Value>,
+    context: Value,
 }
 
 impl Palette {
@@ -61,6 +62,7 @@ impl Palette {
             host,
             roots: vec![],
             scope: json!({"registration": registration, "opening": 1, "view": 0, "revision": 1}),
+            context: json!({"clientId": 1, "paneId": {"Terminal": 4}, "tabId": 7, "currentProject": null}),
         };
         result.roots = result.discover(Value::Null, "");
         result
@@ -90,8 +92,7 @@ impl Palette {
     fn send(&mut self, mut message: Value) {
         self.scope["revision"] = json!(self.scope["revision"].as_u64().unwrap() + 1);
         message["scope"] = self.scope.clone();
-        message["context"] =
-            json!({"clientId": 1, "paneId": {"Terminal": 4}, "tabId": 7, "currentProject": null});
+        message["context"] = self.context.clone();
         self.runtime.palette(message).unwrap();
     }
 
@@ -127,6 +128,147 @@ impl Palette {
 }
 
 #[test]
+fn plugin_palette_loads_from_context_cwd_and_stops_on_lookup_failure() {
+    for from_file in [false, true] {
+        let mut h = Palette::for_plugin("plugin-palette", BTreeMap::new());
+        h.context["paneId"] = json!({"Terminal": 27});
+        let mut form = h.open("load");
+        if from_file {
+            form = h
+                .execute(form["actions"][1]["handle"].clone(), json!({}))
+                .unwrap()["view"]
+                .clone();
+        }
+        h.host
+            .lock()
+            .unwrap()
+            .failures
+            .insert("GetPaneCwd".into(), "pane disappeared".into());
+        assert!(h
+            .execute(form["handle"].clone(), json!({"location": "./plugin.scm"}))
+            .unwrap_err()
+            .contains("pane disappeared"));
+        assert!(!h
+            .host
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .any(|command| command.get("LoadNewPlugin").is_some()));
+        h.host.lock().unwrap().failures.clear();
+        for placement in ["Foreground", "Background"] {
+            h.stub("GetPaneCwd", json!("/changed/雪"));
+            h.execute(
+                form["handle"].clone(),
+                json!({"location": "./plugin.scm", "placement": placement}),
+            )
+            .unwrap();
+            assert!(h.issued(json!({"GetPaneCwd": {"pane_id": {"Terminal": 27}}})));
+            assert!(h.issued(json!({"LoadNewPlugin": {
+                "url": if from_file { "file:./plugin.scm" } else { "./plugin.scm" },
+                "config": {}, "load_in_background": placement == "Background",
+                "skip_plugin_cache": true, "cwd": "/changed/雪"
+            }})));
+        }
+    }
+    let mut h = Palette::for_plugin("plugin-palette", BTreeMap::new());
+    h.context["paneId"] = json!({"Plugin": 27});
+    let form = h.open("load");
+    h.execute(form["handle"].clone(), json!({"location": "example"}))
+        .unwrap();
+    assert!(!h
+        .host
+        .lock()
+        .unwrap()
+        .commands
+        .iter()
+        .any(|command| command.get("GetPaneCwd").is_some()));
+    assert!(h.issued(json!({"LoadNewPlugin": {
+        "url": "example", "config": {}, "load_in_background": false,
+        "skip_plugin_cache": true, "cwd": null
+    }})));
+}
+
+#[test]
+fn plugin_palette_blank_keys_remain_visible_and_keep_their_values() {
+    let mut h = Palette::for_plugin(
+        "plugin-palette",
+        BTreeMap::from([("GetPaneCwd".into(), json!("/chosen"))]),
+    );
+    let form = h.open("load");
+    let configuration = h
+        .execute(form["actions"][0]["handle"].clone(), json!({}))
+        .unwrap()["view"]
+        .clone();
+    let add = h.discover(configuration["source"].clone(), "")[0]["handle"].clone();
+    let add = h.execute(add, Value::Null).unwrap()["view"]["handle"].clone();
+    let keys = [
+        String::new(),
+        " \t\n".into(),
+        "\u{2003}".into(),
+        format!("{}hidden", " ".repeat(180)),
+    ];
+    let mut expected = BTreeMap::new();
+    for key in &keys {
+        expected.insert(key.clone(), format!("value for {key}"));
+        h.execute(add.clone(), json!({"key": key, "value": expected[key]}))
+            .unwrap();
+    }
+    h.execute(form["handle"].clone(), json!({"location": "example"}))
+        .unwrap();
+    assert!(h.issued(json!({"LoadNewPlugin": {
+        "url": "example", "config": expected, "load_in_background": false,
+        "skip_plugin_cache": true, "cwd": "/chosen"
+    }})));
+    for key in keys {
+        // Revisit the original unfiltered source after every edit and removal.
+        let actions = h.discover(configuration["source"].clone(), "");
+        let id = serde_json::to_string(&[&key]).unwrap();
+        let entry = actions.iter().find(|action| action["id"] == id).unwrap();
+        assert_eq!(
+            display_text(&entry["label"]),
+            if key.is_empty() {
+                "(empty key)"
+            } else {
+                "(blank key)"
+            }
+        );
+        let edit = h.execute(entry["handle"].clone(), Value::Null).unwrap()["view"].clone();
+        assert_eq!(edit["fields"][0]["initialValue"], key);
+        assert_eq!(edit["fields"][1]["initialValue"], expected[&key]);
+        h.execute(
+            edit["handle"].clone(),
+            json!({"key": key, "value": "edited\nvalue"}),
+        )
+        .unwrap();
+        expected.insert(key.clone(), "edited\nvalue".into());
+        h.execute(form["handle"].clone(), json!({"location": "example"}))
+            .unwrap();
+        assert!(h.issued(json!({"LoadNewPlugin": {
+            "url": "example", "config": expected, "load_in_background": false,
+            "skip_plugin_cache": true, "cwd": "/chosen"
+        }})));
+        let actions = h.discover(configuration["source"].clone(), "");
+        let entry = actions.iter().find(|action| action["id"] == id).unwrap();
+        let edit = h.execute(entry["handle"].clone(), Value::Null).unwrap()["view"].clone();
+        assert_eq!(edit["fields"][1]["initialValue"], "edited\nvalue");
+        h.execute(edit["actions"][0]["handle"].clone(), Value::Null)
+            .unwrap();
+        expected.remove(&key);
+        assert_eq!(
+            h.discover(configuration["source"].clone(), "").len(),
+            expected.len() + 1
+        );
+    }
+    h.execute(form["handle"].clone(), json!({"location": "example"}))
+        .unwrap();
+    assert!(h.issued(json!({"LoadNewPlugin": {
+        "url": "example", "config": {}, "load_in_background": false,
+        "skip_plugin_cache": true, "cwd": "/chosen"
+    }})));
+}
+
+#[test]
 fn session_palette_registers_all_actions_and_separates_live_from_saved() {
     let mut h = Palette::new(state());
     assert_eq!(h.roots.len(), 14);
@@ -135,12 +277,21 @@ fn session_palette_registers_all_actions_and_separates_live_from_saved() {
     assert_eq!(
         actions
             .iter()
-            .map(|action| (&action["label"], &action["description"]))
+            .map(|action| (
+                action["label"].clone(),
+                json!(display_text(&action["description"]))
+            ))
             .collect::<Vec<_>>(),
         [
-            (&json!("current"), &json!("Running")),
-            (&json!("other"), &json!("Running")),
-            (&json!("saved"), &json!("Saved"))
+            (
+                json!("current"),
+                json!("Current session · Tabs: 1 · Panes: 1 · Clients: 1")
+            ),
+            (
+                json!("other"),
+                json!("Running · Tabs: 1 · Panes: 1 · Clients: 1")
+            ),
+            (json!("saved"), json!("Saved · Created 20s ago"))
         ]
     );
     h.execute(actions[2]["handle"].clone(), Value::Null)

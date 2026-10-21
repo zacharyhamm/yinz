@@ -2143,7 +2143,7 @@ pub fn builtin_plugins_still_save_and_rename_layouts_that_run_commands() {
     let layout_dir = tempdir().unwrap();
     let mut env = crate::test_env::test_env();
     env.plugin_config.location =
-        RunPluginLocation::Yinz(yinz_types::data::PluginTag::new("layout-manager"));
+        RunPluginLocation::Yinz(yinz_types::data::PluginTag::new("layout-palette"));
     env.layout_dir = Some(layout_dir.path().to_path_buf());
 
     crate::yinz_exports::run_plugin_command(

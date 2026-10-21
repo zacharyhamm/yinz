@@ -147,11 +147,8 @@ keybinds {
         bind "[" { FocusGuestSession; SwitchToMode "Normal"; }
         bind "f" { ToggleHostFullscreen; SwitchToMode "Normal"; }
         bind "w" {
-            LaunchOrFocusPlugin "session-manager" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
+            SwitchToMode "Normal";
+            ToggleCommandPalette
         }
         bind "c" {
             LaunchOrFocusPlugin "configuration" {
@@ -161,18 +158,12 @@ keybinds {
             SwitchToMode "Normal"
         }
         bind "p" {
-            LaunchOrFocusPlugin "plugin-manager" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
+            SwitchToMode "Normal";
+            ToggleCommandPalette
         }
         bind "l" {
-            LaunchOrFocusPlugin "yinz:layout-manager" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
+            SwitchToMode "Normal";
+            ToggleCommandPalette
         }
     }
     agent {
@@ -330,15 +321,10 @@ plugins {
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"
     compact-bar location="yinz:compact-bar"
-    session-manager location="yinz:session-manager"
-    welcome-screen location="yinz:session-manager" {
-        welcome_screen true
-    }
     filepicker location="yinz:strider" {
         cwd "/"
     }
     configuration location="yinz:configuration"
-    plugin-manager location="yinz:plugin-manager"
     // The shipped Scheme hooks, so `hooks { agent_exit "agent-exit" }` below and
     // `yinz action set-hook agent_waiting agent-policy --write` can name them by alias.
     context-menu location="yinz:context-menu"
@@ -421,6 +407,12 @@ plugins {
     session-palette location="yinz:session-palette" {
         shared true
     }
+    layout-palette location="yinz:layout-palette" {
+        shared true
+    }
+    plugin-palette location="yinz:plugin-palette" {
+        shared true
+    }
     todos location="yinz:todos"
     new-agent location="yinz:new-agent"
     duplicate-agent location="yinz:new-agent" {
@@ -470,6 +462,8 @@ load_plugins {
     "agent-service"
     "project-store"
     "session-palette"
+    "layout-palette"
+    "plugin-palette"
     "configuration-palette"
     "yinz:link"
     // "file:/path/to/my-plugin.scm"     // see docs/PLUGINS.md

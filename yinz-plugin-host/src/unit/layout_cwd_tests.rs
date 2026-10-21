@@ -4,6 +4,177 @@ use yinz_runtime::channels::{self, SenderWithContext};
 use yinz_types::input::layout::RunPluginLocation;
 use yinz_types::pick::{PickCommand, PickKind, PickOptions, PickRequest};
 
+#[test]
+fn load_new_plugin_resolves_source_and_default_cwd_for_both_placements() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let startup = root.join("startup");
+    let selected = root.join("雪 and spaces");
+    for path in [&startup, &selected] {
+        std::fs::create_dir(path).unwrap();
+        std::fs::write(path.join("plugin.scm"), "").unwrap();
+    }
+    for background in [false, true] {
+        for cwd in [None, Some(selected.clone())] {
+            for url in ["file:./plugin.scm", "plain-alias", "cwd-alias"] {
+                let mut env = crate::test_env::test_env();
+                env.plugin_cwd = startup.clone();
+                env.client_id = crate::ClientId::new(2);
+                assert_ne!(env.client_id, env.owner_client_id);
+                let alias_cwd = PathBuf::from("/alias-directory");
+                let mut aliases = env.plugin_aliases.lock().unwrap();
+                for (name, initial_cwd) in [
+                    ("plain-alias", None),
+                    ("cwd-alias", Some(alias_cwd.clone())),
+                ] {
+                    aliases.aliases.insert(
+                        name.into(),
+                        yinz_types::input::layout::RunPlugin {
+                            location: RunPluginLocation::File(startup.join("plugin.scm")),
+                            initial_cwd,
+                            ..Default::default()
+                        },
+                    );
+                }
+                drop(aliases);
+                let (to_plugin, plugin) = channels::unbounded();
+                env.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+                load_new_plugin(
+                    &env,
+                    url.into(),
+                    BTreeMap::new(),
+                    background,
+                    true,
+                    cwd.clone(),
+                );
+                let (instruction, _) = plugin.try_recv().unwrap();
+                let (mut run, client, fallback) = match instruction {
+                    PluginInstruction::LoadBackgroundPlugin(run, client) => {
+                        assert!(background);
+                        (run, client, None)
+                    },
+                    PluginInstruction::Load(
+                        float,
+                        _,
+                        _,
+                        _,
+                        run,
+                        _,
+                        _,
+                        client,
+                        _,
+                        cwd,
+                        _,
+                        skip,
+                        ..,
+                    ) => {
+                        assert!(!background);
+                        assert_eq!(float, Some(true));
+                        assert!(skip);
+                        (run, client, cwd)
+                    },
+                    other => panic!("expected plugin load, got {other:?}"),
+                };
+                assert_eq!(client, env.client_id);
+                run.populate_run_plugin_if_needed(&env.plugin_aliases.lock().unwrap());
+                let expected_cwd = if url == "cwd-alias" {
+                    Some(alias_cwd)
+                } else {
+                    cwd.clone()
+                        .or_else(|| (!background).then(|| startup.clone()))
+                };
+                assert_eq!(run.get_initial_cwd().or(fallback), expected_cwd);
+                let source_dir = if url.starts_with("file:") {
+                    cwd.as_ref().unwrap_or(&startup)
+                } else {
+                    &startup
+                };
+                assert_eq!(
+                    run.get_run_plugin().unwrap().location,
+                    RunPluginLocation::File(source_dir.join("plugin.scm").canonicalize().unwrap())
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn edit_layout_routes_foreground_in_place_and_background_to_the_acting_client() {
+    let layout_dir = tempfile::tempdir().unwrap();
+    for background in [false, true] {
+        let mut env = crate::test_env::test_env();
+        env.background = background;
+        env.client_id = crate::ClientId::new(2);
+        env.generation = Some(42);
+        env.layout_dir = Some(layout_dir.path().to_path_buf());
+        assert_ne!(env.client_id, env.owner_client_id);
+        let context = BTreeMap::from([("request".into(), "layout-editor".into())]);
+        let expected_payload = OpenFilePayload::new(
+            layout_dir.path().join("custom.kdl"),
+            None,
+            env.layout_dir.clone(),
+        )
+        .with_originating_plugin(env.originating_plugin(context.clone()));
+        let expected_route = if background {
+            ClientTabIndexOrPaneId::ClientId(env.client_id)
+        } else {
+            ClientTabIndexOrPaneId::PaneId(PaneId::Plugin(env.plugin_id))
+        };
+        let (to_pty, pty) = channels::unbounded();
+        env.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        let host = thread::spawn(move || {
+            let (instruction, _) = pty.recv_timeout(Duration::from_secs(30)).unwrap();
+            let (action, title, route, completion) = match instruction {
+                PtyInstruction::SpawnTerminal(
+                    action,
+                    title,
+                    placement,
+                    suppressed,
+                    route,
+                    completion,
+                    blocking,
+                ) => {
+                    assert!(background);
+                    assert_eq!(
+                        placement,
+                        NewPanePlacement::Tiled {
+                            direction: None,
+                            borderless: None
+                        }
+                    );
+                    assert!(!suppressed);
+                    assert!(!blocking);
+                    (action, title, route, completion)
+                },
+                PtyInstruction::SpawnInPlaceTerminal(
+                    action,
+                    title,
+                    replaced,
+                    route,
+                    completion,
+                ) => {
+                    assert!(!background);
+                    assert_eq!(replaced, ReplacedPane::Suppress);
+                    (action, title, route, completion)
+                },
+                other => panic!("expected layout editor, got {other:?}"),
+            };
+            let Some(TerminalAction::OpenFile(payload)) = action else {
+                panic!("expected file editor, got {action:?}");
+            };
+            assert_eq!(
+                title,
+                Some(format!("Editing: {}", expected_payload.path.display()))
+            );
+            assert_eq!(payload, expected_payload);
+            assert_eq!(route, expected_route);
+            drop(completion);
+        });
+        try_edit_layout(&env, "custom", context).unwrap();
+        host.join().unwrap();
+    }
+}
+
 fn session_connection(
     env: &mut PluginEnv,
     layout: Option<LayoutInfo>,
@@ -96,7 +267,7 @@ fn browse(env: &mut PluginEnv, roots: Option<Vec<String>>, focused_cwd: &Path) -
 fn session_palette_omitted_directory_preserves_default_and_selected_layout_cwds() {
     let mut env = crate::test_env::test_env();
     env.plugin_cwd = PathBuf::from("/startup");
-    for plugin in ["session-palette", "session-manager"] {
+    for plugin in ["session-palette", "configuration"] {
         env.plugin_config.location =
             RunPluginLocation::Yinz(yinz_types::data::PluginTag::new(plugin));
         for layout in [
@@ -183,7 +354,7 @@ fn session_palette_empty_browse_and_other_plugins_keep_focused_directory_semanti
     let mut env = crate::test_env::test_env();
     env.plugin_cwd = PathBuf::from("/startup");
     let focused = Path::new("/focused");
-    for plugin in ["session-palette", "session-manager"] {
+    for plugin in ["session-palette", "configuration"] {
         env.plugin_config.location =
             RunPluginLocation::Yinz(yinz_types::data::PluginTag::new(plugin));
         let request = browse(&mut env, None, focused);
