@@ -163,20 +163,22 @@ fn execute(
         },
         Projects { kind } => {
             let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
-            let mut entries: Vec<_> = registry
-                .values()
-                .map(|p| {
-                    choice(
-                        p.name.clone(),
-                        p.root.clone(),
-                        Worktrees {
-                            kind: kind.clone(),
+            let mut entries = vec![choice(
+                "Create new project…".into(),
+                String::new(),
+                NewProject { kind: kind.clone() },
+            )];
+            entries.extend(registry.values().map(|p| {
+                choice(
+                    p.name.clone(),
+                    p.root.clone(),
+                    Worktrees {
+                        kind: kind.clone(),
 
-                            project: AgentProject::Registered(p.name.clone()),
-                        },
-                    )
-                })
-                .collect();
+                        project: AgentProject::Registered(p.name.clone()),
+                    },
+                )
+            }));
             if !request.source.target.is_remote()
                 && let Some(cwd) = request.source.cwd.as_deref()
                 && let Ok(root) = primary_worktree(Path::new(cwd))

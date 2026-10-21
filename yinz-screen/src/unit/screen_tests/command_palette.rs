@@ -3393,19 +3393,19 @@ fn native_agent_palette_search_context_cancellation_and_stale_replies() {
         screen.toggle_command_palette(CLIENT);
         screen.command_palette_handles_input(
             &None,
-            format!("{kind} new project").as_bytes(),
+            format!("{kind} project").as_bytes(),
             false,
             CLIENT,
         );
         let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(
-            snapshot.contains(&format!("Spawn {kind} agent in new project…")),
+            snapshot.contains(&format!("Spawn {kind} agent in project…")),
             "{snapshot}"
         );
         screen.command_palette_handles_input(&enter, b"", false, CLIENT);
         let request = next();
         assert!(
-            matches!(&request.action, AgentAction::NewProject { kind: selected } if selected == kind)
+            matches!(&request.action, AgentAction::Projects { kind: selected } if selected == kind)
         );
         screen.close_command_palette(CLIENT);
         screen.toggle_command_palette(CLIENT);
@@ -3556,7 +3556,25 @@ fn native_new_project_form_preserves_both_fields_and_guards_submission() {
         });
     };
     screen.toggle_command_palette(CLIENT);
-    screen.command_palette_handles_input(&None, b"claude new project", false, CLIENT);
+    screen.command_palette_handles_input(&None, b"claude project", false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    let projects = next();
+    assert!(matches!(projects.action, AgentAction::Projects { .. }));
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: projects.opening,
+        step: projects.step,
+        reply: Ok(AgentReply::Choices {
+            title: "Choose project".into(),
+            choices: vec![yinz_bus::command_palette::AgentChoice {
+                label: "Create new project…".into(),
+                description: String::new(),
+                action: AgentAction::NewProject {
+                    kind: "claude".into(),
+                },
+            }],
+        }),
+    });
     palette_key(&mut screen, BareKey::Enter);
     show_form(&mut screen, &next());
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -3568,6 +3586,9 @@ fn native_new_project_form_preserves_both_fields_and_guards_submission() {
     palette_key(&mut screen, BareKey::Tab);
     screen.command_palette_handles_input(&None, b"/tmp/new-app", false, CLIENT);
     palette_key(&mut screen, BareKey::Esc);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Choose project"), "{snapshot}");
+    assert!(snapshot.contains("Create new project"), "{snapshot}");
     palette_key(&mut screen, BareKey::Enter);
     show_form(&mut screen, &next());
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
