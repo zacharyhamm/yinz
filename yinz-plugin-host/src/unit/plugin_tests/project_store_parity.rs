@@ -160,6 +160,13 @@ impl Pair {
         let expected = app(self.wasm.take_commands());
         let normalize = |mut commands: Vec<Value>| {
             for command in &mut commands {
+                // Original traces predate source descriptions; the publisher test checks those.
+                if let Some(context) = command
+                    .get_mut("SetProjectContext")
+                    .and_then(Value::as_array_mut)
+                {
+                    context.truncate(2);
+                }
                 if let Some(output) = command.get_mut("CliPipeOutput") {
                     let text = output[1].as_str().unwrap();
                     assert!(text.ends_with('\n'), "CLI replies terminate with a newline");
@@ -825,5 +832,55 @@ fn project_store_accepts_snapshots_only_from_the_agent_service_in_order() {
             .iter()
             .any(|command| command.get("ArrangeProjectPanes").is_some()),
         "rejected snapshots must not cancel the pending arrangement: {arranged:?}"
+    );
+}
+
+#[test]
+fn project_store_publishes_saved_sources_and_source_edits() {
+    let root = tempfile::tempdir().unwrap();
+    let data = DataHost::new("project-store");
+    let mut steel = SteelReference::new(
+        "project-store",
+        BTreeMap::new(),
+        root.path(),
+        with_agent_service(host(&data, root.path())),
+    );
+    steel.take_commands();
+    for remote in [
+        json!(" git@github.com:owner/雪.git "),
+        Value::Null,
+        json!(""),
+        json!("  "),
+    ] {
+        let registry = json!({"notes": {"root": "/home/[notes]", "remote": remote}});
+        steel
+            .runtime
+            .invoke("publish-context", vec![registry, Value::Null])
+            .unwrap();
+        let commands = steel.take_commands();
+        let expected = if remote.as_str().is_some_and(|r| !r.trim().is_empty()) {
+            remote.clone()
+        } else {
+            json!("/home/[notes]")
+        };
+        if remote == json!("") || remote == json!("  ") {
+            assert!(commands.is_empty(), "unchanged source is not republished");
+        } else {
+            assert_eq!(
+                commands,
+                vec![json!({"SetProjectContext": [["notes"], [], {"notes": expected}]})]
+            );
+        }
+    }
+    steel
+        .runtime
+        .invoke(
+            "publish-context",
+            vec![json!({"notes": {"root": "/new-root"}}), Value::Null],
+        )
+        .unwrap();
+    assert_eq!(
+        steel.take_commands(),
+        vec![json!({"SetProjectContext": [["notes"], [], {"notes": "/new-root"}]})]
     );
 }

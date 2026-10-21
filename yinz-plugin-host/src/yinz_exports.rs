@@ -1177,9 +1177,11 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     ))
                     .non_fatal();
             },
-            PluginCommand::SetProjectContext(projects, panes) => {
+            PluginCommand::SetProjectContext(projects, panes, sources) => {
                 env.senders
-                    .send_to_screen(ScreenInstruction::SetProjectContext(projects, panes))
+                    .send_to_screen(ScreenInstruction::SetProjectContext(
+                        projects, panes, sources,
+                    ))
                     .context("failed to set project context")
                     .non_fatal();
             },

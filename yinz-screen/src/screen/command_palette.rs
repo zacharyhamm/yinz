@@ -780,15 +780,25 @@ impl Screen {
         }
         entries.extend(self.warp_palette_entries(state.warp_source.as_ref()));
         for name in &self.projects {
+            let source = self
+                .project_sources
+                .get(name)
+                .map(String::as_str)
+                .unwrap_or_default();
+            let description = if state.context.current_project.as_ref() == Some(name) {
+                if source.is_empty() {
+                    "Current".into()
+                } else {
+                    format!("Current · {source}")
+                }
+            } else {
+                source.to_owned()
+            };
             entries.push((
                 Entry {
                     id: format!("project:{name}"),
                     label: escape_literal(name),
-                    description: if state.context.current_project.as_ref() == Some(name) {
-                        "Current".into()
-                    } else {
-                        String::new()
-                    },
+                    description: escape_literal(&description),
                     shortcut: String::new(),
                     aliases: vec![],
                     kind: EntryKind::Project,

@@ -3075,8 +3075,9 @@ pub fn screen_thread_main(
                     screen.arrange_project_panes(groups, client_id).non_fatal();
                     screen.render()?;
                 },
-                ScreenInstruction::SetProjectContext(projects, panes) => {
+                ScreenInstruction::SetProjectContext(projects, panes, sources) => {
                     screen.projects = projects.into_iter().collect();
+                    screen.project_sources = sources;
                     screen.pane_projects = panes
                         .into_iter()
                         .filter(|(_, project)| screen.projects.contains(project))

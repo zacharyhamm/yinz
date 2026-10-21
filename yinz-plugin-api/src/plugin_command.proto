@@ -718,6 +718,7 @@ message RevealPaneWithIdPayload {
 message SetProjectContextPayload {
   repeated string projects = 1;
   repeated PaneProject panes = 2;
+  map<string, string> sources = 3;
 }
 message PaneProject {
   PaneId pane_id = 1;

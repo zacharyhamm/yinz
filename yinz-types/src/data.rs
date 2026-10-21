@@ -2997,7 +2997,11 @@ pub enum PluginCommand {
     /// map, so a tab left out of it has no project.
     ArrangeProjectPanes(Vec<ProjectPaneGroup>),
     SetTabProjects(BTreeMap<TabId, String>),
-    SetProjectContext(Vec<String>, Vec<(PaneId, String)>),
+    SetProjectContext(
+        Vec<String>,
+        Vec<(PaneId, String)>,
+        #[serde(default)] BTreeMap<String, String>,
+    ),
     BreakPanesToTabWithId(Vec<PaneId>, TabId, bool), // stable tab id, bool -
     // should_change_focus_to_target_tab
     ReloadPlugin(crate::internal_ids::PluginId), // u32 - plugin pane id

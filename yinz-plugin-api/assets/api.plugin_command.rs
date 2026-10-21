@@ -817,6 +817,8 @@ pub struct SetProjectContextPayload {
     pub projects: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(message, repeated, tag="2")]
     pub panes: ::prost::alloc::vec::Vec<PaneProject>,
+    #[prost(map="string, string", tag="3")]
+    pub sources: ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
