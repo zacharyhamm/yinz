@@ -10,7 +10,7 @@ const LONE_ESC_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 const PARTIAL_REPLY_FLUSH_GUARD: Duration = Duration::from_millis(1000);
 const STARTUP_KITTY_PROBE_TIMEOUT: Duration =
     Duration::from_millis(crate::stdin_ansi_parser::CLIENT_KITTY_PROBE_TIMEOUT_MS);
-use yinz_key_codec::vendored::termwiz::input::{InputEvent, InputParser};
+use yinz_key_codec::vendored::termwiz::input::InputParser;
 use yinz_runtime::channels::SenderWithContext;
 use yinz_types::keys::KeyModifier;
 
@@ -418,10 +418,10 @@ fn feed_termwiz(
     instructions: &mut Vec<InputInstruction>,
 ) {
     termwiz_buffer.extend_from_slice(bytes);
-    let mut events: Vec<(InputEvent, usize)> = vec![];
+    let mut events = vec![];
     input_parser.parse_with_consumed(
         bytes,
-        |input_event: InputEvent, consumed: usize| {
+        |input_event, consumed| {
             events.push((input_event, consumed));
         },
         maybe_more,
@@ -429,7 +429,9 @@ fn feed_termwiz(
     for (input_event, consumed) in events {
         let take = consumed.min(termwiz_buffer.len());
         let raw_bytes: Vec<u8> = termwiz_buffer.drain(..take).collect();
-        instructions.push(InputInstruction::KeyEvent(input_event, raw_bytes));
+        if let Some(input_event) = input_event {
+            instructions.push(InputInstruction::KeyEvent(input_event, raw_bytes));
+        }
     }
 }
 
@@ -560,6 +562,10 @@ fn extract_focus_reports(residue: Vec<u8>) -> (Vec<u8>, Vec<bool>) {
     }
     (remaining, focus_changes)
 }
+
+#[cfg(test)]
+#[path = "unit/stdin_handler_recovery_tests.rs"]
+mod recovery_tests;
 
 #[cfg(test)]
 mod tests {
