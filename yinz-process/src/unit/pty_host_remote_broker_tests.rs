@@ -10,6 +10,7 @@ use super::*;
 use yinz_types::internal_ids::ProcessId;
 
 use std::io::Cursor;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,6 +20,212 @@ use yinz_types::command::PaneTarget;
 use yinz_types::input::command::RunCommand;
 
 use crate::pty_host::remote::protocol::{try_decode_frame, write_control, Frame};
+
+#[test]
+fn startup_reuses_a_healthy_listener_without_replacing_its_socket() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("broker");
+    // Older brokers have no ownership claim, but must still be preserved.
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let inode = std::fs::metadata(&socket).unwrap().ino();
+    ensure_socket(&socket, |_| panic!("the broker is already listening")).unwrap();
+    assert!(bind_broker(&socket).is_err());
+    assert_eq!(std::fs::metadata(&socket).unwrap().ino(), inode);
+    await_socket(&socket).unwrap();
+}
+
+#[test]
+fn startup_binds_a_missing_socket_and_releases_ownership_on_shutdown() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("private/broker");
+    let mut broker = None;
+    ensure_socket(&socket, |path| {
+        broker = bind_broker(path)?;
+        Ok(())
+    })
+    .unwrap();
+    let (owner, listener) = broker.unwrap();
+    assert_eq!(std::fs::metadata(&socket).unwrap().mode() & 0o777, 0o600);
+    assert_eq!(
+        std::fs::metadata(socket.parent().unwrap()).unwrap().mode() & 0o777,
+        0o700
+    );
+    assert!(bind_broker(&socket).unwrap().is_none());
+    drop(listener);
+    drop(owner);
+    assert!(!socket.exists());
+    assert!(bind_broker(&socket).unwrap().is_some());
+}
+
+#[test]
+fn startup_reclaims_a_crashed_owners_socket() {
+    use std::io::BufRead;
+    const CHILD_PATH: &str = "YINZ_TEST_BROKER_OWNER";
+    if let Some(path) = std::env::var_os(CHILD_PATH) {
+        let _broker = bind_broker(std::path::Path::new(&path)).unwrap().unwrap();
+        println!("LISTENING");
+        std::io::stdout().flush().unwrap();
+        std::io::stdin().read_exact(&mut [0]).unwrap();
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("broker");
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            concat!(module_path!(), "::startup_reclaims_a_crashed_owners_socket")
+                .strip_prefix("yinz_process::")
+                .unwrap(),
+            "--nocapture",
+        ])
+        .env(CHILD_PATH, &socket)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (ready, received) = std::sync::mpsc::channel();
+    let reader = thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            if line.unwrap() == "LISTENING" {
+                ready.send(()).unwrap();
+                break;
+            }
+        }
+    });
+    let result = received.recv_timeout(std::time::Duration::from_secs(10));
+    let contender = bind_broker(&socket);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    reader.join().unwrap();
+    result.unwrap();
+    assert!(contender.unwrap().is_none());
+    assert!(socket.exists());
+    let mut replacement = None;
+    ensure_socket(&socket, |path| {
+        replacement = bind_broker(path)?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(replacement.is_some());
+}
+
+#[test]
+fn concurrent_startups_leave_one_listener_and_one_owner() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("broker");
+    let contenders = std::sync::Barrier::new(8);
+    let brokers = Mutex::new(Vec::new());
+    thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                ensure_socket(&socket, |path| {
+                    // Every probe must see the missing socket before any daemon can bind.
+                    contenders.wait();
+                    if let Some(broker) = bind_broker(path)? {
+                        brokers.lock().unwrap().push(broker);
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            });
+        }
+    });
+    assert_eq!(brokers.lock().unwrap().len(), 1);
+    let inode = std::fs::metadata(&socket).unwrap().ino();
+    assert!(bind_broker(&socket).unwrap().is_none());
+    await_socket(&socket).unwrap();
+    assert_eq!(std::fs::metadata(&socket).unwrap().ino(), inode);
+}
+
+#[test]
+fn startup_and_wait_are_bounded_when_an_owned_backlog_is_full() {
+    use std::os::fd::AsRawFd;
+    use std::time::{Duration, Instant};
+    use yinz_ipc::consts::{ipc_connect, IPC_CONNECT_TIMEOUT};
+
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("broker");
+    let (_owner, listener) = bind_broker(&socket).unwrap().unwrap();
+    let inode = std::fs::metadata(&socket).unwrap().ino();
+    // Safety: the listener owns this live socket; only its backlog limit changes.
+    assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+    let mut queued = Vec::new();
+    let mut refused = false;
+    for _ in 0..8 {
+        match ipc_connect(&socket) {
+            Ok(stream) => queued.push(stream),
+            Err(error) => {
+                refused = error.kind() == std::io::ErrorKind::ConnectionRefused;
+                assert!(matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::ConnectionRefused
+                ));
+                break;
+            },
+        }
+    }
+    assert!(queued.len() < 8, "failed to fill the listen backlog");
+    let started = Instant::now();
+    assert!(ensure_socket(&socket, |path| {
+        // BSD may still refuse after retries, but the owner prevents replacement.
+        assert!(refused, "a timeout must not spawn a broker");
+        assert!(bind_broker(path)?.is_none());
+        Ok(())
+    })
+    .is_err());
+    assert!(await_socket(&socket).is_err());
+    assert!(started.elapsed() >= IPC_CONNECT_TIMEOUT);
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert_eq!(std::fs::metadata(&socket).unwrap().ino(), inode);
+    assert!(bind_broker(&socket).unwrap().is_none());
+
+    listener.set_nonblocking(true).unwrap();
+    for _ in &queued {
+        listener.accept().unwrap();
+    }
+    ensure_socket(&socket, |_| panic!("draining restored the broker")).unwrap();
+    listener.accept().unwrap();
+    await_socket(&socket).unwrap();
+    assert_eq!(std::fs::metadata(&socket).unwrap().ino(), inode);
+}
+
+#[test]
+fn startup_preserves_non_socket_paths_and_releases_a_failed_claim() {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("broker");
+    std::fs::write(&socket, "keep me").unwrap();
+    let inode = std::fs::metadata(&socket).unwrap().ino();
+    assert!(ensure_socket(&socket, |path| bind_broker(path).map(|_| ())).is_err());
+    let error = bind_broker(&socket).err().unwrap();
+    assert!(format!("{error:#}").contains("not a socket"));
+    assert_eq!(std::fs::read_to_string(&socket).unwrap(), "keep me");
+    assert_eq!(std::fs::metadata(&socket).unwrap().ino(), inode);
+    assert!(SessionOwnership::acquire(&socket).unwrap().is_some());
+}
+
+#[test]
+fn startup_and_wait_preserve_sockets_on_permission_errors() {
+    if nix::unistd::Uid::effective().is_root() {
+        return; // Root bypasses directory permissions.
+    }
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("broker");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let inode = std::fs::metadata(&socket).unwrap().ino();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let startup = ensure_socket(&socket, |_| panic!("permission denied is not absence"));
+    let waiting = await_socket(&socket);
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    for result in [startup, waiting] {
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+    assert_eq!(std::fs::metadata(&socket).unwrap().ino(), inode);
+}
 
 /// Run a broker against one end of a socketpair, returning the caller's end.
 fn broker_on_a_pair() -> (UnixStream, std::thread::JoinHandle<Result<()>>) {

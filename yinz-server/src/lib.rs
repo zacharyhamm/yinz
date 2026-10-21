@@ -915,6 +915,130 @@ fn reconfigure_client(
     )
 }
 
+fn reconfigure_all_clients(
+    config: String,
+    write_config_to_disk: bool,
+    mut completion: Option<NotificationEnd>,
+    session_state: &Arc<RwLock<SessionState>>,
+    session_data: &Arc<RwLock<Option<SessionMetaData>>>,
+) {
+    let result = (|| -> Result<()> {
+        let client_ids = session_state.read().unwrap().interactive_client_ids();
+        // Validate the whole change before mutating live configuration. Background
+        // declarations are session-wide; notify the plugin thread once for the batch.
+        let client_ids = if client_ids.is_empty() {
+            vec![ClientId::NONE]
+        } else {
+            client_ids
+        };
+        if write_config_to_disk {
+            let client_id = client_ids[0];
+            let (new_config, changed) = with_session_mut(session_data, |session| {
+                session.session_configuration.reconfigure_runtime_config(
+                    &client_id,
+                    config.clone(),
+                    session.config_file_path.as_deref(),
+                    session.config_dir.as_deref(),
+                )
+            })
+            .context("session is unavailable")??;
+            update_new_saved_config(
+                new_config,
+                ConfigPersistence::Fragment(config.clone()),
+                changed,
+                session_data,
+                client_id,
+            )?;
+        } else {
+            with_session_mut(session_data, |session| -> Result<()> {
+                let mut staged = session.session_configuration.clone();
+                let mut changes = vec![];
+                for client_id in client_ids {
+                    let (new_config, changed) = staged.reconfigure_runtime_config(
+                        &client_id,
+                        config.clone(),
+                        session.config_file_path.as_deref(),
+                        session.config_dir.as_deref(),
+                    )?;
+                    if let (Some(new_config), true) = (new_config, changed) {
+                        changes.push((client_id, new_config));
+                    }
+                }
+                session.session_configuration = staged;
+                session.propagate_configuration_changes(changes, false);
+                Ok(())
+            })
+            .context("session is unavailable")??;
+        }
+        if config.contains("load_plugins") {
+            let senders = with_session(session_data, |session| session.senders.clone())
+                .context("session is unavailable")?;
+            let (reply, receiver) = std::sync::mpsc::channel();
+            senders
+                .send_to_plugin(PluginInstruction::PluginRequest {
+                    request: yinz_types::cli::PluginRequest {
+                        operation: yinz_types::cli::PluginOperation::List,
+                        target: None,
+                        configuration: None,
+                        fallback: None,
+                        candidates: vec![],
+                        caller: None,
+                    },
+                    client_id: ClientId::NONE,
+                    reply,
+                })
+                .context("query scheduled background plugins")?;
+            complete_plugin_reconfiguration(receiver, completion.take(), Duration::from_secs(30));
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        if let Some(completion) = completion.as_mut() {
+            completion.set_exit_status(1);
+            completion.set_error_message(format!("{error:#}"));
+        }
+        log::error!("reconfigure: {error:#}");
+    }
+}
+
+fn complete_plugin_reconfiguration(
+    receiver: std::sync::mpsc::Receiver<
+        std::result::Result<yinz_types::cli::PluginResponse, String>,
+    >,
+    mut completion: Option<NotificationEnd>,
+    timeout: Duration,
+) {
+    // Keep draining the server queue while the plugin thread works toward its reply.
+    global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
+        let result = receiver
+            .recv_timeout(timeout)
+            .context("background plugin scheduling timed out")
+            .and_then(|response| response.map_err(|error| anyhow!("{error}")));
+        match result {
+            Ok(response) => {
+                if let Some(completion) = completion.as_mut() {
+                    completion.set_stdout_message(format!(
+                        "Scheduled plugin state: {}",
+                        response
+                            .plugins
+                            .iter()
+                            .map(|plugin| format!("plugin_{} {:?}", plugin.id, plugin.state))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            },
+            Err(error) => {
+                if let Some(completion) = completion.as_mut() {
+                    completion.set_exit_status(1);
+                    completion.set_error_message(format!("{error:#}"));
+                }
+                log::error!("reconfigure: {error:#}");
+            },
+        }
+    });
+}
+
 /// `RebindKeys` for one client. A departed client's rebinding applies session-wide, as
 /// [`configuration_target`] decides.
 fn rebind_client_keys(
@@ -2371,103 +2495,15 @@ pub fn start_server_impl(
             ServerInstruction::ReconfigureAllClients {
                 config,
                 write_config_to_disk,
-                mut completion,
+                completion,
             } => {
-                let result = (|| -> Result<()> {
-                    let client_ids = session_state.read().unwrap().interactive_client_ids();
-                    // Validate the whole change before mutating live configuration. Background
-                    // declarations are session-wide; notify the plugin thread once for the batch.
-                    let client_ids = if client_ids.is_empty() {
-                        vec![ClientId::NONE]
-                    } else {
-                        client_ids
-                    };
-                    if write_config_to_disk {
-                        let client_id = client_ids[0];
-                        let (new_config, changed) = with_session_mut(&session_data, |session| {
-                            session.session_configuration.reconfigure_runtime_config(
-                                &client_id,
-                                config.clone(),
-                                session.config_file_path.as_deref(),
-                                session.config_dir.as_deref(),
-                            )
-                        })
-                        .context("session is unavailable")??;
-                        update_new_saved_config(
-                            new_config,
-                            ConfigPersistence::Fragment(config.clone()),
-                            changed,
-                            &session_data,
-                            client_id,
-                        )?;
-                    } else {
-                        with_session_mut(&session_data, |session| -> Result<()> {
-                            let mut staged = session.session_configuration.clone();
-                            let mut changes = vec![];
-                            for client_id in client_ids {
-                                let (new_config, changed) = staged.reconfigure_runtime_config(
-                                    &client_id,
-                                    config.clone(),
-                                    session.config_file_path.as_deref(),
-                                    session.config_dir.as_deref(),
-                                )?;
-                                if let (Some(new_config), true) = (new_config, changed) {
-                                    changes.push((client_id, new_config));
-                                }
-                            }
-                            session.session_configuration = staged;
-                            session.propagate_configuration_changes(changes, false);
-                            Ok(())
-                        })
-                        .context("session is unavailable")??;
-                    }
-                    if config.contains("load_plugins") {
-                        let senders =
-                            with_session(&session_data, |session| session.senders.clone())
-                                .context("session is unavailable")?;
-                        let (reply, receiver) = std::sync::mpsc::channel();
-                        senders
-                            .send_to_plugin(PluginInstruction::PluginRequest {
-                                request: yinz_types::cli::PluginRequest {
-                                    operation: yinz_types::cli::PluginOperation::List,
-                                    target: None,
-                                    configuration: None,
-                                    fallback: None,
-                                    candidates: vec![],
-                                    caller: None,
-                                },
-                                client_id: ClientId::NONE,
-                                reply,
-                            })
-                            .context("query scheduled background plugins")?;
-                        let response = receiver
-                            .recv_timeout(Duration::from_secs(30))
-                            .context("background plugin scheduling timed out")?
-                            .map_err(|error| anyhow!("{error}"))?;
-                        if let Some(completion) = completion.as_mut() {
-                            completion.set_stdout_message(format!(
-                                "Scheduled plugin state: {}",
-                                response
-                                    .plugins
-                                    .iter()
-                                    .map(|plugin| format!(
-                                        "plugin_{} {:?}",
-                                        plugin.id, plugin.state
-                                    ))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ));
-                        }
-                    }
-                    Ok(())
-                })();
-                if let Err(error) = result {
-                    if let Some(completion) = completion.as_mut() {
-                        completion.set_exit_status(1);
-                        completion.set_error_message(format!("{error:#}"));
-                    }
-                    log::error!("reconfigure: {error:#}");
-                }
+                reconfigure_all_clients(
+                    config,
+                    write_config_to_disk,
+                    completion,
+                    &session_state,
+                    &session_data,
+                );
             },
             ServerInstruction::ConfigWrittenToDisk(new_config) => {
                 with_session_mut(&session_data, |session| {
