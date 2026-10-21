@@ -698,10 +698,10 @@ impl Screen {
         for kind in &offered_agents {
             for (suffix, label, aliases, action) in [
                 (
-                    "new-project",
-                    format!("Spawn {kind} agent in new project…"),
-                    format!("{kind} new project"),
-                    yinz_bus::command_palette::AgentAction::NewProject { kind: kind.clone() },
+                    "project",
+                    format!("Spawn {kind} agent in project…"),
+                    format!("{kind} project"),
+                    yinz_bus::command_palette::AgentAction::Projects { kind: kind.clone() },
                 ),
                 (
                     "worktree",

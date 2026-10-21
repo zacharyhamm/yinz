@@ -816,6 +816,21 @@ fn command_palette_launches_agent_in_selected_worktree_and_focuses_it() {
             .unwrap();
         assert!(output.status.success(), "{output:?}");
     }
+    let test_root = yinz_integration_tests::test_env::init();
+    let data = yinz_storage::data_access::DataAccess::sqlite(&test_root.join("data"));
+    for definition in agent_proto::store::shared_defs() {
+        data.plugin_data()
+            .define_entity(agent_proto::store::SHARED, "test", &definition, false)
+            .unwrap();
+    }
+    let project =
+        agent_proto::projects::validate("palette-project", root.to_str().unwrap()).unwrap();
+    data.plugin_data()
+        .apply(
+            agent_proto::store::SHARED,
+            &[agent_proto::projects::to_mutation(&project)],
+        )
+        .unwrap();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config("load_plugins clear-defaults=true {}\npane_animations false")
         .with_layout(LayoutInfo::Stringified(format!(
@@ -828,12 +843,12 @@ fn command_palette_launches_agent_in_selected_worktree_and_focuses_it() {
     yinz.wait_until("shell ready", |s| s.contains("$"));
     yinz.send_stdin(DO);
     yinz.wait_until("palette open", |s| s.contains("Do · Project:"));
-    yinz.send_stdin(b"claude worktree");
+    yinz.send_stdin(b"claude project");
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("caller repository offered", |s| {
         s.contains("Caller’s repository")
     });
-    yinz.send_stdin(b"Caller");
+    yinz.send_stdin(b"palette-project");
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("searchable worktrees", |s| s.contains("palette-branch"));
     yinz.send_stdin(b"palette-branch");
@@ -880,7 +895,11 @@ fn command_palette_creates_a_project_and_focuses_its_agent() {
     let shell = yinz.expect_pty_spawn();
     shell.output(PROMPT);
     yinz.wait_until("shell ready", |s| s.contains("$"));
-    palette_query(&yinz, "Spawn claude agent in new project…");
+    palette_query(&yinz, "Spawn claude agent in project…");
+    yinz.wait_until("project picker", |s| {
+        s.contains("Choose project") && s.contains("Create new project")
+    });
+    yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("new project form", |s| {
         s.contains("Project name") && s.contains("Destination directory")
     });

@@ -121,6 +121,64 @@ fn run(request: &AgentRequest, data: &DataAccess) -> (Result<AgentReply, String>
 }
 
 #[test]
+fn palette_projects_offer_creation_first_and_preserve_provider_through_selection() {
+    let (repo, populated) = repository();
+    let empty_root = tempfile::tempdir().unwrap();
+    let empty = DataAccess::sqlite(empty_root.path());
+    for definition in project_data::store::shared_defs() {
+        empty
+            .plugin_data()
+            .define_entity(project_data::store::SHARED, "test", &definition, false)
+            .unwrap();
+    }
+    for (data, registered) in [(&empty, false), (&populated, true)] {
+        let (reply, commands) = run(
+            &request(
+                empty_root.path(),
+                AgentAction::Projects {
+                    kind: "codex".into(),
+                },
+            ),
+            data,
+        );
+        assert!(commands.is_empty());
+        let AgentReply::Choices { title, choices } = reply.unwrap() else {
+            panic!()
+        };
+        assert_eq!(title, "Choose project");
+        assert_eq!(choices.len(), if registered { 2 } else { 1 });
+        assert_eq!(choices[0].label, "Create new project…");
+        assert!(matches!(&choices[0].action, AgentAction::NewProject { kind } if kind == "codex"));
+        let (reply, commands) = run(&request(repo.path(), choices[0].action.clone()), data);
+        assert!(commands.is_empty());
+        assert!(
+            matches!(reply.unwrap(), AgentReply::Form { action: AgentAction::NewProject { kind }, .. } if kind == "codex")
+        );
+        if registered {
+            assert!(
+                matches!(&choices[1].action, AgentAction::Worktrees { kind, project: AgentProject::Registered(name) } if kind == "codex" && name == "project")
+            );
+            let (reply, commands) = run(&request(repo.path(), choices[1].action.clone()), data);
+            assert!(commands.is_empty());
+            let AgentReply::Choices { title, choices } = reply.unwrap() else {
+                panic!()
+            };
+            assert_eq!(title, "project · Worktrees");
+            assert_eq!(choices[0].label, "Create new worktree…");
+            for choice in choices
+                .iter()
+                .filter(|choice| choice.label != "Change project…")
+            {
+                assert!(
+                    matches!(&choice.action, AgentAction::Checkout { kind, project: AgentProject::Registered(name), .. } if kind == "codex" && name == "project")
+                );
+            }
+            assert!(choices.iter().any(|choice| choice.label == "main"));
+        }
+    }
+}
+
+#[test]
 fn palette_new_project_form_validation_and_launch_use_the_shared_backend() {
     let (repo, data) = repository();
     let parent = tempfile::tempdir().unwrap();
