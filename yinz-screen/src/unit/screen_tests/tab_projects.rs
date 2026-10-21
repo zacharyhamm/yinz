@@ -59,6 +59,7 @@ fn project_changes_publish_group_names_for_manually_named_tabs() {
                 [(PaneId::Terminal(TerminalId::new(0)), project.to_owned())]
                     .into_iter()
                     .collect(),
+                Default::default(),
             ))
             .unwrap();
         instructions.wait_until(

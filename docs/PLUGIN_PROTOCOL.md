@@ -175,7 +175,7 @@ interface CommandArgs {
   PageScrollUpInPaneId: PaneId; PageScrollDownInPaneId: PaneId; TogglePaneIdFullscreen: PaneId; TogglePaneEmbedOrEjectForPaneId: PaneId;
   CloseTabWithIndex: number; BreakPanesToNewTab: [PaneId[], string | null, boolean]; BreakPanesToTabWithIndex: [PaneId[], number, boolean];
   SwitchTabToId: number; GoToTabWithId: number; CloseTabWithId: number; RenameTabWithId: [number, string];
-  ArrangeProjectPanes: ProjectPaneGroup[]; SetTabProjects: Record<string, string>; SetProjectContext: [string[], [PaneId, string][]]; BreakPanesToTabWithId: [PaneId[], number, boolean];
+  ArrangeProjectPanes: ProjectPaneGroup[]; SetTabProjects: Record<string, string>; SetProjectContext: [string[], [PaneId, string][], Record<string, string>?]; BreakPanesToTabWithId: [PaneId[], number, boolean];
   ReloadPlugin: number; LoadNewPlugin: {url: string; config: StringMap; load_in_background: boolean; skip_plugin_cache: boolean};
   RebindKeys: {keys_to_rebind: [InputMode, KeyWithModifier, Action[]][]; keys_to_unbind: [InputMode, KeyWithModifier][]; write_config_to_disk: boolean};
   RegisterAgentProvider: AgentProvider; GetAgentProviders: undefined;
@@ -721,6 +721,12 @@ interface ConfigurationSetting {name: string; label: string; kind: string; choic
 
 interface ConfigurationSnapshot {action_children: Record<string, ConfigurationNode[]>; action_properties: Record<string, Record<string, string | number | boolean>>; section_timing: Record<string, string>; sections: string[]; templates: Record<string, ConfigurationNode[]>; actions: ConfigurationNode[]; revision: string; catalog: ConfigurationSetting[]; saved: ConfigurationNode[]; clients: Record<string, ConfigurationNode[]>; overrides: ConfigurationPatch[]; notice: string;}
 ```
+
+`SetProjectContext` replaces the registered project names, pane assignments, and
+optional map of project names to saved sources. Omitted sources default to an empty
+map. The project picker shows each source as secondary literal text, with `Current`
+for the selected project. The project store prefers a nonblank saved Git remote,
+falling back to the root folder, and preserves the saved spelling.
 
 ## Pane slots
 

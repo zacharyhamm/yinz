@@ -2383,6 +2383,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                                 ))
                             })
                             .collect::<Result<Vec<_>, &'static str>>()?,
+                        payload.sources.into_iter().collect(),
                     ))
                 },
                 _ => Err("Mismatched payload for SetProjectContext"),
@@ -4960,23 +4961,26 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     },
                 )),
             }),
-            PluginCommand::SetProjectContext(projects, panes) => Ok(ProtobufPluginCommand {
-                name: CommandName::SetProjectContext as i32,
-                payload: Some(Payload::SetProjectContextPayload(
-                    SetProjectContextPayload {
-                        projects,
-                        panes: panes
-                            .into_iter()
-                            .map(|(pane_id, project)| {
-                                Ok(PaneProject {
-                                    pane_id: Some(pane_id.try_into()?),
-                                    project,
+            PluginCommand::SetProjectContext(projects, panes, sources) => {
+                Ok(ProtobufPluginCommand {
+                    name: CommandName::SetProjectContext as i32,
+                    payload: Some(Payload::SetProjectContextPayload(
+                        SetProjectContextPayload {
+                            projects,
+                            sources: sources.into_iter().collect(),
+                            panes: panes
+                                .into_iter()
+                                .map(|(pane_id, project)| {
+                                    Ok(PaneProject {
+                                        pane_id: Some(pane_id.try_into()?),
+                                        project,
+                                    })
                                 })
-                            })
-                            .collect::<Result<Vec<_>, &'static str>>()?,
-                    },
-                )),
-            }),
+                                .collect::<Result<Vec<_>, &'static str>>()?,
+                        },
+                    )),
+                })
+            },
             PluginCommand::SetTabProjects(tab_projects) => Ok(ProtobufPluginCommand {
                 name: CommandName::SetTabProjects as i32,
                 payload: Some(Payload::SetTabProjectsPayload(SetTabProjectsPayload {
@@ -7754,6 +7758,26 @@ mod tests {
         match decoded {
             PluginCommand::CancelWebRequest(stream_id) => assert_eq!(stream_id, "stream-1"),
             other => panic!("expected CancelWebRequest, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn project_context_defaults_sources_and_round_trips() {
+        for wire in [
+            serde_json::json!({"SetProjectContext": [["notes"], []]}),
+            serde_json::json!({"SetProjectContext": [["notes"], [], {"notes": "/home/雪/[notes]"}]}),
+        ] {
+            let original: PluginCommand = serde_json::from_value(wire.clone()).unwrap();
+            let PluginCommand::SetProjectContext(_, _, sources) = &original else {
+                panic!("project context")
+            };
+            assert_eq!(
+                sources.get("notes").map(String::as_str),
+                wire["SetProjectContext"][2]["notes"].as_str()
+            );
+            let protobuf: ProtobufPluginCommand = original.clone().try_into().unwrap();
+            let decoded: PluginCommand = protobuf.try_into().unwrap();
+            assert_eq!(decoded, original);
         }
     }
 

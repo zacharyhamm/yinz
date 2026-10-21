@@ -6090,3 +6090,41 @@ fn native_project_names_remain_literal_in_markdown_results() {
         Some(name)
     );
 }
+
+#[test]
+fn project_picker_shows_literal_sources_and_current_marker() {
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    screen.projects = ["alpha", "beta", "gamma"].map(String::from).into();
+    screen.project_sources = [
+        ("alpha".into(), "git@host:雪/[a].git".into()),
+        ("beta".into(), "/home/*notes*".into()),
+    ]
+    .into();
+    screen.reconcile_project_contexts();
+    palette_search(&mut screen, "Switch current project");
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Current · git@host:雪/[a].git"), "{frame}");
+    assert!(frame.contains("/home/*notes*"), "{frame}");
+    assert!(frame.contains("gamma"), "{frame}");
+    screen.project_sources.clear();
+    screen.reconcile_project_contexts();
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Current"), "{frame}");
+    assert!(!frame.contains("git@host"), "{frame}");
+    screen
+        .project_sources
+        .insert("alpha".into(), "git@host:雪/[a].git".repeat(10));
+    screen
+        .resize_to_screen(Size { cols: 35, rows: 24 })
+        .unwrap();
+    grid.change_size(24, 35);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("alpha"), "{frame}");
+    assert!(grid
+        .as_character_lines()
+        .iter()
+        .all(|line| line.len() <= 35));
+}

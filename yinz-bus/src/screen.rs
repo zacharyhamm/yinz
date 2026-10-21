@@ -327,7 +327,7 @@ pub enum ScreenInstruction {
     RenameTabWithId(TabId, Vec<u8>, Option<NotificationEnd>),
     ArrangeProjectPanes(Vec<yinz_types::data::ProjectPaneGroup>, ClientId),
     SetTabProjects(BTreeMap<TabId, String>),
-    SetProjectContext(Vec<String>, Vec<(PaneId, String)>),
+    SetProjectContext(Vec<String>, Vec<(PaneId, String)>, BTreeMap<String, String>),
     BreakPanesToTabWithId {
         pane_ids: Vec<PaneId>,
         tab_id: TabId,

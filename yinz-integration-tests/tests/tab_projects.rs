@@ -868,6 +868,7 @@ fn arrangement_loads_chrome_for_a_new_project_tab() {
 fn registry_updates_palette_and_switching_project_preserves_focus() {
     let folder = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();
+    let updated = tempfile::tempdir().unwrap();
     let config = format!(
         r#"{AGENT_PROJECT_CONFIG}
         keybinds {{ shared {{ bind "Ctrl Alt p" {{ ToggleCommandPalette; }}; }}; }}
@@ -905,7 +906,19 @@ fn registry_updates_palette_and_switching_project_preserves_focus() {
     yinz.send_stdin(b"Switch current project");
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("projects without panes appear", |screen| {
-        screen.contains("beta") && screen.contains("Current")
+        screen.contains("beta")
+            && screen.contains("Current")
+            && screen.contains(other.path().to_str().unwrap())
+    });
+    mutate_store(
+        &yinz,
+        "project_remember",
+        serde_json::json!({"name": "beta", "root": updated.path()}),
+    );
+    yinz.wait_until("source edit refreshes open picker", |screen| {
+        screen.contains("beta")
+            && screen.contains(updated.path().to_str().unwrap())
+            && !screen.contains(other.path().to_str().unwrap())
     });
     yinz.send_stdin(b"beta");
     yinz.send_stdin(&keys::ENTER);
