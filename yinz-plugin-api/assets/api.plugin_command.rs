@@ -1475,6 +1475,8 @@ pub struct LoadNewPluginPayload {
     pub should_load_plugin_in_background: bool,
     #[prost(bool, tag="4")]
     pub should_skip_plugin_cache: bool,
+    #[prost(string, optional, tag="5")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

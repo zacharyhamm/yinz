@@ -1,6 +1,10 @@
+// Session creation and switching are available from the command palette.
 layout {
-    pane borderless=true {
-        plugin location="welcome-screen"
+    pane size=2 borderless=true {
+        plugin location="tab-bar"
+    }
+    pane
+    pane size=1 borderless=true {
+        plugin location="status-bar"
     }
 }
-session_serialization false // this will apply only to the initial welcome screen layout, and is intended to prevent lots of garbage sessions left around

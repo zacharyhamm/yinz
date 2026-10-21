@@ -14,6 +14,8 @@ fn installed_builtin_scheme_integration_suites() {
         "agent-opencode",
         "agent-exit",
         "session-palette",
+        "layout-palette",
+        "plugin-palette",
         "configuration-palette",
     ] {
         assert!(

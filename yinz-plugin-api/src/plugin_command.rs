@@ -817,6 +817,10 @@ fn key_to_unbind_to_plugin_command_assets(
     ))
 }
 
+#[cfg(test)]
+#[path = "unit/load_new_plugin.rs"]
+mod load_new_plugin_tests;
+
 impl TryFrom<ProtobufPluginCommand> for PluginCommand {
     type Error = &'static str;
     fn try_from(protobuf_plugin_command: ProtobufPluginCommand) -> Result<Self, &'static str> {
@@ -2436,6 +2440,7 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         load_in_background: load_new_plugin_payload
                             .should_load_plugin_in_background,
                         skip_plugin_cache: load_new_plugin_payload.should_skip_plugin_cache,
+                        cwd: load_new_plugin_payload.cwd.map(PathBuf::from),
                     })
                 },
                 _ => Err("Mismatched payload for LoadNewPlugin"),
@@ -5021,6 +5026,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 config,
                 load_in_background,
                 skip_plugin_cache,
+                cwd,
             } => Ok(ProtobufPluginCommand {
                 name: CommandName::LoadNewPlugin as i32,
                 payload: Some(Payload::LoadNewPluginPayload(LoadNewPluginPayload {
@@ -5031,6 +5037,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                         .collect(),
                     should_skip_plugin_cache: skip_plugin_cache,
                     should_load_plugin_in_background: load_in_background,
+                    cwd: cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
                 })),
             }),
             PluginCommand::RebindKeys {

@@ -3195,7 +3195,7 @@ mod tests {
                 name: Some("go".to_owned()),
                 payload: None,
                 args: None,
-                plugin: Some("yinz:session-manager".to_owned()),
+                plugin: Some("yinz:configuration".to_owned()),
                 plugin_id: None,
                 configuration: None,
                 launch_new: false,

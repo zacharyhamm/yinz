@@ -19,6 +19,7 @@ struct Pair {
     tokens: [BTreeMap<String, String>; 2],
     last: [Vec<Value>; 2],
     now: Arc<AtomicU64>,
+    session_palette: bool,
 }
 
 struct Reference {
@@ -125,6 +126,7 @@ impl Pair {
             tokens: Default::default(),
             last: Default::default(),
             now,
+            session_palette: name == "session-palette",
         };
         pair.compare_commands();
         pair
@@ -191,7 +193,7 @@ impl Pair {
                     .map(|(mut command, client)| {
                         if let Some(palette) = command.get_mut("CommandPalette") {
                             // Historical guests sent literal display text; current providers send Markdown.
-                            normalize_palette_display(palette);
+                            normalize_palette_display(palette, self.session_palette);
                         }
                         (command, client)
                     })
@@ -297,11 +299,11 @@ impl Pair {
     }
 }
 
-// Only provider/callback capabilities are opaque; all user-visible fields and actions compare.
-fn normalize_palette_display(value: &mut Value) {
+// Compare historical display text while newer session metadata has dedicated provider tests.
+fn normalize_palette_display(value: &mut Value, session_palette: bool) {
     match value {
         Value::Object(fields) => {
-            for (key, value) in fields {
+            for (key, value) in fields.iter_mut() {
                 if matches!(
                     key.as_str(),
                     "label" | "title" | "description" | "text" | "help" | "error" | "submitLabel"
@@ -318,13 +320,32 @@ fn normalize_palette_display(value: &mut Value) {
                         .join("\n"));
                     }
                 } else if key != "values" {
-                    normalize_palette_display(value);
+                    normalize_palette_display(value, session_palette);
+                }
+            }
+            if session_palette
+                && let Some(id) = fields.get("id").and_then(Value::as_str)
+                && let Ok(Value::Array(id)) = serde_json::from_str::<Value>(id)
+                && let Some(description) = fields.get("description").and_then(Value::as_str)
+            {
+                let legacy = match id.len() {
+                    1 if description.starts_with("Current session · ")
+                        || description.starts_with("Running · ") =>
+                    {
+                        Some("Running")
+                    },
+                    1 if description.starts_with("Saved · Created ") => Some("Saved"),
+                    3 => description.strip_suffix(" · Running"),
+                    _ => None,
+                };
+                if let Some(legacy) = legacy {
+                    fields.insert("description".into(), json!(legacy));
                 }
             }
         },
         Value::Array(values) => {
             for value in values {
-                normalize_palette_display(value);
+                normalize_palette_display(value, session_palette);
             }
         },
         _ => {},

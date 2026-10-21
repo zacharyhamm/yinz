@@ -110,9 +110,9 @@ fn plugins_to_string() {
             status-bar location="yinz:status-bar"
             strider location="yinz:strider"
             compact-bar location="yinz:compact-bar"
-            session-manager location="yinz:session-manager"
-            welcome-screen location="yinz:session-manager" {
-                welcome_screen true
+            session-palette location="yinz:session-palette"
+            session-browser location="yinz:session-palette" {
+                shared true
             }
             filepicker location="yinz:strider" {
                 cwd "/"

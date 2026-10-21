@@ -481,7 +481,7 @@ fn detaching_the_guest_client_while_descended_returns_control_to_the_host() {
 }
 
 #[test]
-fn opening_the_host_session_manager_with_a_guest_pane_does_not_misbehave() {
+fn opening_the_host_command_palette_preserves_the_guest_pane() {
     let mut nested = NestedHarness::start(TERMINAL_SIZE);
 
     boot_and_descend_on_first_load(&nested);
@@ -489,30 +489,30 @@ fn opening_the_host_session_manager_with_a_guest_pane_does_not_misbehave() {
 
     nested.host.send_stdin(&keys::ctrl('o'));
     nested.host.wait_until(
-        "the host entered session mode before launching the session manager",
+        "the host entered session mode before opening the command palette",
         session_mode_bar_settled,
     );
     nested.host.send_stdin(&keys::key('w'));
     nested.host.wait_until(
-        "the host session manager opened over its guest pane",
-        |host_grid| host_grid.contains("Session Manager") && host_grid.status_bar_appears(),
+        "the host command palette opened over its guest pane",
+        |host_grid| host_grid.contains("Do · Project:") && host_grid.status_bar_appears(),
     );
 
-    nested.host.send_stdin(&keys::ctrl('c'));
+    nested.host.send_stdin(&keys::ESC);
     nested.host.wait_until(
-        "the host session manager closed and normal chrome returned",
-        |host_grid| !host_grid.contains("Session Manager") && normal_mode_bar_settled(host_grid),
+        "the host command palette closed and normal chrome returned",
+        |host_grid| !host_grid.contains("Do · Project:") && normal_mode_bar_settled(host_grid),
     );
 
     nested.guest.wait_until(
-        "the guest is undisturbed by the host session manager",
+        "the guest is undisturbed by the host command palette",
         guest_ascended_ui_settled,
     );
     nested.host.send_stdin(&keys::alt('n'));
     let host_new_pane = nested.host.expect_pty_spawn();
     host_new_pane.output(PROMPT);
     nested.host.wait_until(
-        "the host still acts on its own keybindings after the session manager closed",
+        "the host still acts on its own keybindings after the command palette closed",
         |host_grid| host_grid.contains("Pane #2") && normal_mode_bar_settled(host_grid),
     );
 

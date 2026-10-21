@@ -108,17 +108,16 @@ fn configuration_load_and_wizard_preserve_pane_setup_contract() {
 }
 
 #[test]
-fn every_preset_matches_templates_and_parses_with_agent_selection_and_notifications() {
+fn every_preset_parses_with_palette_agent_selection_and_notifications() {
     let mut plugin = Configuration::new(false);
-    // Keep the original presets pinned after removing the new group bindings.
-    for (primary, secondary, locked, expected) in [
-        ("Ctrl", "Alt", false, 15960040746295113056u64),
-        ("Ctrl", "Alt", true, 12161722900292792986),
-        ("", "Alt", false, 18290454268979490468),
-        ("Ctrl", "", false, 15107899114023689823),
-        ("", "", false, 4563540240599315174),
-        ("Ctrl", "Ctrl", false, 6344144133553793149),
-        ("Ctrl Shift", "Alt Super", false, 981793447407902638),
+    for (primary, secondary, locked) in [
+        ("Ctrl", "Alt", false),
+        ("Ctrl", "Alt", true),
+        ("", "Alt", false),
+        ("Ctrl", "", false),
+        ("", "", false),
+        ("Ctrl", "Ctrl", false),
+        ("Ctrl Shift", "Alt Super", false),
     ] {
         let source = plugin
             .runtime
@@ -132,22 +131,29 @@ fn every_preset_matches_templates_and_parses_with_agent_selection_and_notificati
             )
             .unwrap();
         let source = source.as_str().unwrap();
-        let legacy = source
-            .split_inclusive('\n')
-            .filter(|line| !line.contains("TabGroup"))
-            .collect::<String>()
-            .replace("GoToTabInGroup", "GoToTab");
-        let hash = legacy.bytes().fold(14695981039346656037u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(1099511628211)
-        });
-        assert_eq!(
-            hash, expected,
-            "primary={primary:?}, secondary={secondary:?}, locked={locked}"
-        );
+        for plugin in ["session-manager", "layout-manager", "plugin-manager"] {
+            assert!(!source.contains(plugin));
+        }
         let config = Config::from_kdl(source, None).unwrap();
         let saved = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
         let key = |s: &str| -> KeyWithModifier { s.parse().unwrap() };
         for config in [&config, &saved] {
+            for binding in ["w", "p", "l"] {
+                assert_eq!(
+                    config.keybinds.0[&InputMode::Session][&key(binding)],
+                    vec![
+                        Action::SwitchToMode {
+                            input_mode: if locked {
+                                InputMode::Locked
+                            } else {
+                                InputMode::Normal
+                            }
+                        },
+                        Action::ToggleCommandPalette
+                    ],
+                    "primary={primary:?}, secondary={secondary:?}, locked={locked}"
+                );
+            }
             for (binding, action) in [
                 ("{", Action::MovePaneToPreviousTabGroup),
                 ("}", Action::MovePaneToNextTabGroup),

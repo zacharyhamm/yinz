@@ -12,42 +12,33 @@ use std::{
 use yinz_types::data::{CommandType, PluginCommand};
 
 pub(super) fn legacy_keybinds() -> yinz_types::data::KeybindsVec {
-    use yinz_types::input::actions::Action;
-    let mut keybinds = yinz_config::config::Config::from_default_assets()
+    let source = std::str::from_utf8(yinz_config::assets::DEFAULT_CONFIG).unwrap();
+    yinz_config::config::Config::from_kdl(&legacy_preset(source), None)
         .unwrap()
         .keybinds
-        .to_keybinds_vec();
-    // The recorded engines predate tab groups; replay their original keymap in both guests.
-    for (_, bindings) in &mut keybinds {
-        bindings.retain(|(_, actions)| {
-            !actions.iter().any(|action| {
-                matches!(
-                    action,
-                    Action::NewTabGroup
-                        | Action::GoToNextTabGroup
-                        | Action::GoToPreviousTabGroup
-                        | Action::MovePaneToNextTabGroup
-                        | Action::MovePaneToPreviousTabGroup
-                )
-            })
-        });
-        for (_, actions) in bindings {
-            for action in actions {
-                if let Action::GoToTabInGroup { index } = action {
-                    *action = Action::GoToTab { index: *index };
-                }
-            }
-        }
-    }
-    keybinds
+        .to_keybinds_vec()
 }
 
 pub(super) fn legacy_preset(source: &str) -> String {
-    source
+    // Replay the recorded keymap, including the former manager shortcuts.
+    let mut source = source
         .split_inclusive('\n')
         .filter(|line| !line.contains("TabGroup"))
         .collect::<String>()
-        .replace("GoToTabInGroup", "GoToTab")
+        .replace("GoToTabInGroup", "GoToTab");
+    for mode in ["Normal", "Locked"] {
+        for (key, plugin) in [
+            ("w", "session-manager"),
+            ("p", "plugin-manager"),
+            ("l", "yinz:layout-manager"),
+        ] {
+            source = source.replace(
+                &format!("bind \"{key}\" {{\n            SwitchToMode \"{mode}\";\n            ToggleCommandPalette\n        }}"),
+                &format!("bind \"{key}\" {{\n            LaunchOrFocusPlugin \"{plugin}\" {{\n                floating true\n                move_to_focused_tab true\n            }};\n            SwitchToMode \"{mode}\"\n        }}"),
+            );
+        }
+    }
+    source
 }
 
 thread_local! {

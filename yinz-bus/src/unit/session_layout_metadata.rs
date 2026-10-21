@@ -21,7 +21,7 @@ fn pane_tabs_metadata_roundtrip_omits_terminal_backed_wrappers() {
                         .map(|(index, label)| PaneTabInfo {
                             descriptor: PaneTabDescriptor {
                                 label: label.into(),
-                                location: "yinz:session-manager".into(),
+                                location: "yinz:configuration".into(),
                                 configuration: BTreeMap::from([("custom".into(), "value".into())]),
                                 initial_cwd: Some("/project/overlay".into()),
                             },
@@ -47,7 +47,7 @@ fn pane_tabs_metadata_roundtrip_omits_terminal_backed_wrappers() {
                 } else {
                     Run::Plugin(
                         yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
-                            "yinz:session-manager",
+                            "yinz:configuration",
                             &None,
                             None,
                             None,

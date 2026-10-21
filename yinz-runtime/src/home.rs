@@ -70,6 +70,19 @@ pub fn default_layout_dir() -> Option<PathBuf> {
     find_default_config_dir().map(|dir| dir.join("layouts"))
 }
 
+pub fn layout_dir_or_default(
+    configured: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    configured
+        .or_else(|| get_layout_dir(config_dir.or_else(find_default_config_dir)))
+        .map(|dir| {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&dir))
+                .unwrap_or(dir)
+        })
+}
+
 /// The drop-in folder beside the config file: every `*.kdl` in it is layered over the config,
 /// in file-name order, and it is where yinz itself writes what it is asked to persist
 /// (`yinz-managed.kdl`). Computed only, never created - see `get_user_plugin_dir`.
@@ -153,6 +166,10 @@ pub fn user_plugin_dir_or_default(
         .or_else(|| get_user_plugin_dir(config_dir.or_else(find_default_config_dir)))
         .map(|dir| absolute_lexical(&dir))
 }
+
+#[cfg(test)]
+#[path = "unit/layout_dir_tests.rs"]
+mod layout_dir_tests;
 
 #[cfg(test)]
 mod tests {

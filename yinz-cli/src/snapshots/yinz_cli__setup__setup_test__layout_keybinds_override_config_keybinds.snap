@@ -1,5 +1,6 @@
 ---
 source: yinz-cli/src/setup.rs
+assertion_line: 620
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -340,6 +341,22 @@ Config {
                 relative_path: None,
                 declared_path: None,
             },
+            "layout-palette": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "layout-palette",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+                declared_path: None,
+            },
             "new-agent": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
@@ -354,15 +371,17 @@ Config {
                 relative_path: None,
                 declared_path: None,
             },
-            "plugin-manager": RunPlugin {
+            "plugin-palette": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
                     PluginTag(
-                        "plugin-manager",
+                        "plugin-palette",
                     ),
                 ),
                 configuration: PluginUserConfiguration(
-                    {},
+                    {
+                        "shared": "true",
+                    },
                 ),
                 initial_cwd: None,
                 relative_path: None,
@@ -379,20 +398,6 @@ Config {
                     {
                         "shared": "true",
                     },
-                ),
-                initial_cwd: None,
-                relative_path: None,
-                declared_path: None,
-            },
-            "session-manager": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "session-manager",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
                 ),
                 initial_cwd: None,
                 relative_path: None,
@@ -470,22 +475,6 @@ Config {
                 relative_path: None,
                 declared_path: None,
             },
-            "welcome-screen": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "session-manager",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {
-                        "welcome_screen": "true",
-                    },
-                ),
-                initial_cwd: None,
-                relative_path: None,
-                declared_path: None,
-            },
         },
     },
     ui: UiConfig {
@@ -527,6 +516,30 @@ Config {
         Alias(
             PluginAlias {
                 name: "configuration-palette",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "layout-palette",
+                configuration: Some(
+                    PluginUserConfiguration(
+                        {},
+                    ),
+                ),
+                initial_cwd: None,
+                run_plugin: None,
+            },
+        ),
+        Alias(
+            PluginAlias {
+                name: "plugin-palette",
                 configuration: Some(
                     PluginUserConfiguration(
                         {},

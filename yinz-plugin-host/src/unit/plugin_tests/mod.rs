@@ -1061,14 +1061,11 @@ mod tab_commands;
 mod agents_parity;
 pub(crate) mod data_parity;
 mod file_finder_parity;
-mod layout_manager_parity;
 mod legacy_parity;
 mod link_parity;
 mod multiple_select_parity;
-mod plugin_manager_parity;
 pub(crate) mod runtime_parity;
 mod runtime_parity_dialogs;
-mod session_manager_parity;
 
 mod project_store_parity;
 mod todos_parity;

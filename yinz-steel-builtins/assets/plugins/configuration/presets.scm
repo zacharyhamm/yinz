@@ -269,11 +269,8 @@ keybinds clear-defaults=true {
         bind \"[\" { FocusGuestSession; SwitchToMode \"Locked\"; }
         bind \"f\" { ToggleHostFullscreen; SwitchToMode \"Locked\"; }
         bind \"w\" {
-            LaunchOrFocusPlugin \"session-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Locked\"
+            SwitchToMode \"Locked\";
+            ToggleCommandPalette
         }
         bind \"c\" {
             LaunchOrFocusPlugin \"configuration\" {
@@ -283,18 +280,12 @@ keybinds clear-defaults=true {
             SwitchToMode \"Locked\"
         }
         bind \"p\" {
-            LaunchOrFocusPlugin \"plugin-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Locked\"
+            SwitchToMode \"Locked\";
+            ToggleCommandPalette
         }
         bind \"l\" {
-            LaunchOrFocusPlugin \"yinz:layout-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Locked\"
+            SwitchToMode \"Locked\";
+            ToggleCommandPalette
         }
     }
     shared_except \"locked\" \"renametab\" \"renamepane\" {
@@ -579,11 +570,8 @@ keybinds clear-defaults=true {
         bind \"[\" { FocusGuestSession; SwitchToMode \"Normal\"; }
         bind \"f\" { ToggleHostFullscreen; SwitchToMode \"Normal\"; }
         bind \"w\" {
-            LaunchOrFocusPlugin \"session-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"c\" {
             LaunchOrFocusPlugin \"configuration\" {
@@ -593,18 +581,12 @@ keybinds clear-defaults=true {
             SwitchToMode \"Normal\"
         }
         bind \"p\" {
-            LaunchOrFocusPlugin \"plugin-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"l\" {
-            LaunchOrFocusPlugin \"yinz:layout-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
     }
     tmux {
@@ -896,11 +878,8 @@ keybinds clear-defaults=true {
         bind \"[\" { FocusGuestSession; SwitchToMode \"Normal\"; }
         bind \"f\" { ToggleHostFullscreen; SwitchToMode \"Normal\"; }
         bind \"w\" {
-            LaunchOrFocusPlugin \"session-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"c\" {
             LaunchOrFocusPlugin \"configuration\" {
@@ -910,18 +889,12 @@ keybinds clear-defaults=true {
             SwitchToMode \"Normal\"
         }
         bind \"p\" {
-            LaunchOrFocusPlugin \"plugin-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"l\" {
-            LaunchOrFocusPlugin \"yinz:layout-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
     }
     tmux {
@@ -1178,11 +1151,8 @@ keybinds clear-defaults=true {
         bind \"[\" { FocusGuestSession; SwitchToMode \"Normal\"; }
         bind \"f\" { ToggleHostFullscreen; SwitchToMode \"Normal\"; }
         bind \"w\" {
-            LaunchOrFocusPlugin \"session-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"c\" {
             LaunchOrFocusPlugin \"configuration\" {
@@ -1192,18 +1162,12 @@ keybinds clear-defaults=true {
             SwitchToMode \"Normal\"
         }
         bind \"p\" {
-            LaunchOrFocusPlugin \"plugin-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"l\" {
-            LaunchOrFocusPlugin \"yinz:layout-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
     }
     tmux {
@@ -1472,11 +1436,8 @@ keybinds clear-defaults=true {
         bind \"[\" { FocusGuestSession; SwitchToMode \"Normal\"; }
         bind \"f\" { ToggleHostFullscreen; SwitchToMode \"Normal\"; }
         bind \"w\" {
-            LaunchOrFocusPlugin \"session-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"c\" {
             LaunchOrFocusPlugin \"configuration\" {
@@ -1486,18 +1447,12 @@ keybinds clear-defaults=true {
             SwitchToMode \"Normal\"
         }
         bind \"p\" {
-            LaunchOrFocusPlugin \"plugin-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"l\" {
-            LaunchOrFocusPlugin \"yinz:layout-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
     }
     tmux {
@@ -1761,11 +1716,8 @@ keybinds clear-defaults=true {
         bind \"[\" { FocusGuestSession; SwitchToMode \"Normal\"; }
         bind \"f\" { ToggleHostFullscreen; SwitchToMode \"Normal\"; }
         bind \"w\" {
-            LaunchOrFocusPlugin \"session-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"c\" {
             LaunchOrFocusPlugin \"configuration\" {
@@ -1775,18 +1727,12 @@ keybinds clear-defaults=true {
             SwitchToMode \"Normal\"
         }
         bind \"p\" {
-            LaunchOrFocusPlugin \"plugin-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
         bind \"l\" {
-            LaunchOrFocusPlugin \"yinz:layout-manager\" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode \"Normal\"
+            SwitchToMode \"Normal\";
+            ToggleCommandPalette
         }
     }
     tmux {

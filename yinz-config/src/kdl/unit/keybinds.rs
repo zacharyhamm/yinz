@@ -633,7 +633,7 @@ fn keybinds_to_string_with_all_actions() {
                 }
                 bind "Alt t" { Detach; }
                 bind "Alt u" {
-                    LaunchOrFocusPlugin "yinz:session-manager"{
+                    LaunchOrFocusPlugin "yinz:strider"{
                         floating true;
                         move_to_focused_tab true;
                         skip_plugin_cache true;
@@ -642,7 +642,7 @@ fn keybinds_to_string_with_all_actions() {
                     };
                 }
                 bind "Alt v" {
-                    LaunchOrFocusPlugin "yinz:session-manager"{
+                    LaunchOrFocusPlugin "yinz:strider"{
                         in_place true;
                         move_to_focused_tab true;
                         skip_plugin_cache true;
@@ -651,7 +651,7 @@ fn keybinds_to_string_with_all_actions() {
                     };
                 }
                 bind "Alt w" {
-                    LaunchPlugin "yinz:session-manager" {
+                    LaunchPlugin "yinz:strider" {
                         floating true;
                         skip_plugin_cache true;
                         config_key_1 "config_value_1";
@@ -659,7 +659,7 @@ fn keybinds_to_string_with_all_actions() {
                     };
                 }
                 bind "Alt x" {
-                    LaunchPlugin "yinz:session-manager"{
+                    LaunchPlugin "yinz:strider"{
                         in_place true;
                         skip_plugin_cache true;
                         config_key_1 "config_value_1";
@@ -678,7 +678,7 @@ fn keybinds_to_string_with_all_actions() {
                 bind "Ctrl Alt i" { BreakPaneLeft; }
                 bind "Ctrl Alt i" { BreakPaneLeft; }
                 bind "Ctrl Alt j" {
-                    MessagePlugin "yinz:session-manager"{
+                    MessagePlugin "yinz:strider"{
                         name "message_name";
                         payload "message_payload";
                         cwd "/tmp";
@@ -792,7 +792,7 @@ fn message_plugin_in_place_is_read_and_written_back() {
         keybinds {
             normal {
                 bind "Ctrl y" {
-                    MessagePlugin "yinz:session-manager" {
+                    MessagePlugin "yinz:strider" {
                         name "go";
                         in_place true;
                     };
@@ -829,7 +829,7 @@ fn keybinds_to_string_with_multiple_multiline_actions() {
                 bind "Ctrl n" {
                     NewPane
                     SwitchToMode "Locked"
-                    MessagePlugin "yinz:session-manager"{
+                    MessagePlugin "yinz:strider"{
                         name "message_name";
                         payload "message_payload";
                         cwd "/tmp";

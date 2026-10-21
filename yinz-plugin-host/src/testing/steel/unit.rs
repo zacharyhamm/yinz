@@ -517,6 +517,8 @@ builtin_scheme_suites! {
     scheme_builtin_compact_bar_unit => "compact-bar",
     scheme_builtin_status_bar_unit => "status-bar",
     scheme_builtin_session_palette_unit => "session-palette",
+    scheme_builtin_layout_palette_unit => "layout-palette",
+    scheme_builtin_plugin_palette_unit => "plugin-palette",
     scheme_builtin_configuration_palette_unit => "configuration-palette",
     scheme_builtin_agent_exit_unit => "agent-exit",
 }
@@ -529,6 +531,8 @@ builtin_scheme_suites! {
     scheme_builtin_compact_bar_integration => "compact-bar",
     scheme_builtin_status_bar_integration => "status-bar",
     scheme_builtin_session_palette_integration => "session-palette",
+    scheme_builtin_layout_palette_integration => "layout-palette",
+    scheme_builtin_plugin_palette_integration => "plugin-palette",
     scheme_builtin_configuration_palette_integration => "configuration-palette",
     scheme_builtin_agent_exit_integration => "agent-exit",
 }

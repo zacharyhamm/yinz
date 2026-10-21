@@ -107,11 +107,8 @@ keybinds clear-defaults=true {
         bind "o" { SwitchToMode "normal"; }
         bind "Ctrl s" { SwitchToMode "scroll"; }
         bind "w" {
-            LaunchOrFocusPlugin "session-manager" {
-                floating true
-                move_to_focused_tab true
-            }
-            SwitchToMode "locked"
+            SwitchToMode "locked";
+            ToggleCommandPalette
         }
     }
     shared_among "normal" "locked" {
@@ -201,13 +198,9 @@ plugins {
     filepicker location="yinz:strider" {
         cwd "/"
     }
-    session-manager location="yinz:session-manager"
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"
     tab-bar location="yinz:tab-bar"
-    welcome-screen location="yinz:session-manager" {
-        welcome_screen true
-    }
 }
 
 load_plugins clear-defaults=true {

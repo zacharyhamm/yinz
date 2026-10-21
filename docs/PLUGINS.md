@@ -330,17 +330,33 @@ terminal controls, and fit within the existing 256 KiB display-reply limit.
 The host supplies plugin attribution. Notification policy can suppress or replace
 messages, and the normal history, placement, and lifetime settings apply.
 
-## Session palette and forms
+## Management palette and forms
 
-The shared `yinz:session-palette` background plugin supplies session commands by default.
-`load_plugins clear-defaults=true` removes it unless the block explicitly loads it.
-The session manager, its shortcut, and the welcome screen remain available.
+The shared `yinz:session-palette`, `yinz:layout-palette`, and `yinz:plugin-palette`
+background plugins supply management commands by default.
+`load_plugins clear-defaults=true` removes them unless the block explicitly loads them.
+The Session Manager, Layout Manager, and Plugin Manager windows have been removed.
+Their default shortcuts (`Ctrl o`, then `w`, `l`, or `p`) now open the command palette.
+Replace custom bindings that launch these managers with `ToggleCommandPalette`.
+Remove their entries from custom plugin aliases and layouts.
+The `welcome` layout now opens a normal terminal layout with access to the palette.
 
 Use **Switch session…** for running or saved local sessions. Selecting a saved session resurrects it.
 **Find tab…** and **Find pane…** search all running local sessions.
 **New session…** accepts an optional name. **Configure…** adds layout selection and a directory field.
 Kill, deletion, and disconnection commands require confirmation. Cancel has initial focus.
 Use Page Up and Page Down to read all confirmation details.
+
+Use **Layouts…** to search layouts, inspect metadata or diagnostics, open tabs,
+apply a layout, or edit, rename, and delete custom layouts.
+The apply form selects the target tabs and which existing panes to retain.
+**Save session as layout…** captures all tabs or the current tab.
+**Import layout…** accepts KDL and shows a preview before saving.
+
+Use **Plugins…** to inspect each plugin's location, tab, and configuration.
+You can focus, reload, or close a plugin from its actions or the corresponding root commands.
+**Load plugin…** accepts a URL, alias, or file and supports foreground or background placement.
+Use **Edit configuration…** to add, change, or remove configuration entries before loading.
 
 SDK forms accept optional `actions`. Each action has `"id"`, `"label"`, and a `"run"` procedure taking `(values context)`.
 The callback receives current field values keyed by field ID, like `"onSubmit"`.

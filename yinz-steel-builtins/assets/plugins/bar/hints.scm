@@ -90,6 +90,7 @@
         (hint "Whole words" "Whole" (exact (hash "SearchToggleOption" (hash "option" "WholeWord"))))))
     ((equal? mode "Session")
       (list (hint "Detach" "Detach" (exact "Detach"))
+        (hint "Command palette" "Commands" (exact (bar-switch-mode (if (json-null? base) "Normal" base)) "ToggleCommandPalette"))
         (hint "Session Manager" "Manager" (plugin "session-manager"))
         (hint "Configure" "Config" (plugin "configuration"))
         (hint "Layout Manager" "Layouts" (plugin "yinz:layout-manager"))
