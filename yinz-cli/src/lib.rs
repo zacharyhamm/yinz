@@ -25,6 +25,9 @@ mod cross_contracts;
 mod kdl_action_props;
 pub mod options;
 #[cfg(test)]
+#[path = "unit/options.rs"]
+mod options_tests;
+#[cfg(test)]
 #[path = "unit/repl.rs"]
 mod repl_tests;
 #[cfg(test)]
