@@ -1,8 +1,216 @@
 use super::*;
 use std::str::FromStr;
 use yinz_config::screen_config::ScreenConfig;
+use yinz_types::cli::{PluginOperation, PluginResponse, PluginState, PluginStatus};
 
 const CLIENT: ClientId = ClientId::new(1);
+const RECONFIGURE_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn scheduled_plugins() -> PluginResponse {
+    PluginResponse {
+        plugins: [PluginState::Running, PluginState::Loading]
+            .into_iter()
+            .enumerate()
+            .map(|(id, state)| PluginStatus {
+                id: PluginId::new(id as u32),
+                location: "file:/background.scm".into(),
+                configuration: Default::default(),
+                background: true,
+                shared: true,
+                clients: vec![],
+                state,
+                pending_permissions: vec![],
+                latest_error: None,
+            })
+            .collect(),
+    }
+}
+
+fn assert_reconfiguration_returns_before_reply(server_message_count: usize) {
+    let (plugin_tx, plugin_rx) = channels::unbounded();
+    let (server_tx, server_rx) = channels::bounded(50);
+    let server_tx = SenderWithContext::new(server_tx);
+    let (returned_tx, returned_rx) = channels::bounded(1);
+    let (ready_tx, ready_rx) = channels::bounded(1);
+    let (drain_tx, drain_rx) = channels::bounded(1);
+    let (reply_tx, reply_rx) = channels::bounded(1);
+    let (completion_tx, mut completion_rx) = tokio::sync::oneshot::channel();
+    let server = thread::spawn(move || {
+        let session = reconfiguration_session(ThreadSenders {
+            to_plugin: Some(SenderWithContext::new(plugin_tx)),
+            should_silently_fail: true,
+            ..Default::default()
+        });
+        reconfigure_all_clients(
+            "mouse_mode false\nload_plugins clear-defaults=true {}".into(),
+            false,
+            Some(NotificationEnd::new(completion_tx)),
+            &Arc::new(RwLock::new(SessionState::new())),
+            &Arc::new(RwLock::new(Some(session))),
+        );
+        returned_tx.send(()).unwrap();
+        drain_rx.recv_timeout(RECONFIGURE_TEST_TIMEOUT).unwrap();
+        for _ in 0..server_message_count {
+            assert!(matches!(
+                server_rx.recv_timeout(RECONFIGURE_TEST_TIMEOUT).unwrap().0,
+                ServerInstruction::EventUpdateToClient(..)
+            ));
+        }
+    });
+    let plugin = thread::spawn(move || {
+        let event =
+            ServerInstruction::EventUpdateToClient(CLIENT, "ModeUpdate".into(), "{}".into());
+        for _ in 0..server_message_count.min(50) {
+            server_tx.send(event.clone()).unwrap();
+        }
+        ready_tx.send(()).unwrap();
+        // The 51st send cannot finish until dispatch returns and the server drains its queue.
+        for _ in 50..server_message_count {
+            server_tx.send(event.clone()).unwrap();
+        }
+        loop {
+            if let PluginInstruction::PluginRequest { request, reply, .. } =
+                plugin_rx.recv_timeout(RECONFIGURE_TEST_TIMEOUT).unwrap().0
+            {
+                assert_eq!(request.operation, PluginOperation::List);
+                reply_rx.recv_timeout(RECONFIGURE_TEST_TIMEOUT).unwrap();
+                reply.send(Ok(scheduled_plugins())).unwrap();
+                break;
+            }
+        }
+    });
+    returned_rx.recv_timeout(RECONFIGURE_TEST_TIMEOUT).unwrap();
+    ready_rx.recv_timeout(RECONFIGURE_TEST_TIMEOUT).unwrap();
+    assert!(matches!(
+        completion_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    drain_tx.send(()).unwrap();
+    reply_tx.send(()).unwrap();
+    let result = global_async_runtime::get_tokio_runtime().block_on(async {
+        tokio::time::timeout(RECONFIGURE_TEST_TIMEOUT, completion_rx)
+            .await
+            .unwrap()
+            .unwrap()
+    });
+    assert!(result.confirmed);
+    assert_eq!(result.exit_status, None);
+    assert_eq!(result.error_message, None);
+    assert_eq!(
+        result.stdout_message.as_deref(),
+        Some("Scheduled plugin state: plugin_0 Running, plugin_1 Loading")
+    );
+    server.join().unwrap();
+    plugin.join().unwrap();
+}
+
+#[test]
+fn background_reconfiguration_returns_with_completion_pending_until_plugin_reply() {
+    assert_reconfiguration_returns_before_reply(0);
+}
+
+#[test]
+fn background_reconfiguration_drains_a_full_server_queue_before_plugin_reply() {
+    assert_reconfiguration_returns_before_reply(51);
+}
+
+#[test]
+fn background_reconfiguration_reports_reply_errors_disconnects_and_timeouts() {
+    for failure in ["plugin", "disconnected", "timeout"] {
+        let (reply, receiver) = std::sync::mpsc::channel();
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        let expected_error = match failure {
+            "plugin" => {
+                reply.send(Err("plugin query failed".into())).unwrap();
+                "plugin query failed".to_owned()
+            },
+            "disconnected" => {
+                drop(reply);
+                format!(
+                    "background plugin scheduling timed out: {}",
+                    std::sync::mpsc::RecvTimeoutError::Disconnected
+                )
+            },
+            _ => format!(
+                "background plugin scheduling timed out: {}",
+                std::sync::mpsc::RecvTimeoutError::Timeout
+            ),
+        };
+        complete_plugin_reconfiguration(
+            receiver,
+            Some(NotificationEnd::new(completion_tx)),
+            Duration::ZERO,
+        );
+        let result = global_async_runtime::get_tokio_runtime().block_on(async {
+            tokio::time::timeout(RECONFIGURE_TEST_TIMEOUT, completion_rx)
+                .await
+                .unwrap()
+                .unwrap()
+        });
+        assert!(result.confirmed);
+        assert_eq!(result.exit_status, Some(1));
+        assert_eq!(result.error_message, Some(expected_error));
+        assert_eq!(result.stdout_message, None);
+    }
+}
+
+#[test]
+fn background_reconfiguration_validation_and_enqueue_failures_complete_synchronously() {
+    for (config, error) in [
+        ("load_plugins {", "Deserialization error"),
+        (
+            "load_plugins clear-defaults=true {}",
+            "query scheduled background plugins",
+        ),
+    ] {
+        let (plugin_tx, plugin_rx) = channels::unbounded();
+        drop(plugin_rx);
+        let session = reconfiguration_session(ThreadSenders {
+            to_plugin: Some(SenderWithContext::new(plugin_tx)),
+            ..Default::default()
+        });
+        let (completion_tx, mut completion_rx) = tokio::sync::oneshot::channel();
+        reconfigure_all_clients(
+            config.into(),
+            false,
+            Some(NotificationEnd::new(completion_tx)),
+            &Arc::new(RwLock::new(SessionState::new())),
+            &Arc::new(RwLock::new(Some(session))),
+        );
+        let result = completion_rx.try_recv().unwrap();
+        assert!(result.confirmed);
+        assert_eq!(result.exit_status, Some(1));
+        assert!(
+            result.error_message.as_ref().unwrap().contains(error),
+            "{result:?}"
+        );
+        assert_eq!(result.stdout_message, None);
+    }
+}
+
+fn reconfiguration_session(senders: ThreadSenders) -> SessionMetaData {
+    SessionMetaData {
+        shutdown: Default::default(),
+        senders,
+        data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(
+            std::path::Path::new("/unused"),
+        )),
+        default_shell: None,
+        current_input_modes: HashMap::new(),
+        session_configuration: Default::default(),
+        key_passthrough_clients: HashMap::new(),
+        locked_escapes: HashMap::new(),
+        command_palette_restore_modes: HashMap::new(),
+        pending_mouse_updates: Vec::new(),
+        screen_thread: None,
+        pty_thread: None,
+        plugin_thread: None,
+        pty_writer_thread: None,
+        background_jobs_thread: None,
+        config_file_path: None,
+        config_dir: Some(PathBuf::from("/yinz-config")),
+    }
+}
 
 fn normal_mode_keybinds(bindings: &[(&str, Action)]) -> Keybinds {
     let mut keybinds = Keybinds::default();
@@ -83,32 +291,12 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
         let (to_screen, screen_rx) = channels::unbounded();
         let (to_plugin, plugin_rx) = channels::unbounded();
         let (to_pty, pty_rx) = channels::unbounded();
-        let mut session = SessionMetaData {
-            shutdown: Default::default(),
-            senders: ThreadSenders {
-                to_screen: Some(SenderWithContext::new(to_screen)),
-                to_plugin: Some(SenderWithContext::new(to_plugin)),
-                to_pty: Some(SenderWithContext::new(to_pty)),
-                ..Default::default()
-            },
-            data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(
-                std::path::Path::new("/unused"),
-            )),
-            default_shell: None,
-            current_input_modes: HashMap::new(),
-            session_configuration: Default::default(),
-            key_passthrough_clients: HashMap::new(),
-            locked_escapes: HashMap::new(),
-            command_palette_restore_modes: HashMap::new(),
-            pending_mouse_updates: Vec::new(),
-            screen_thread: None,
-            pty_thread: None,
-            plugin_thread: None,
-            pty_writer_thread: None,
-            background_jobs_thread: None,
-            config_file_path: None,
-            config_dir: Some(PathBuf::from("/yinz-config")),
-        };
+        let mut session = reconfiguration_session(ThreadSenders {
+            to_screen: Some(SenderWithContext::new(to_screen)),
+            to_plugin: Some(SenderWithContext::new(to_plugin)),
+            to_pty: Some(SenderWithContext::new(to_pty)),
+            ..Default::default()
+        });
         let saved = Config {
             keybinds: normal_mode_keybinds(&[("Ctrl g", Action::Quit)]),
             ..Default::default()

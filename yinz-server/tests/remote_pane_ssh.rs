@@ -668,7 +668,29 @@ fn bootstrap_starts_a_broker_on_the_far_machine_and_says_where_it_listens() {
         remote_pids("pty-broker serve").is_empty()
     });
 
-    let endpoint = ssh::bootstrap(HOST).expect("failed to bootstrap a broker");
+    let concurrent_bootstraps = || {
+        let ready = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        ready.wait();
+                        ssh::bootstrap(HOST).expect("failed to bootstrap a broker")
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        })
+    };
+    let endpoints = concurrent_bootstraps();
+    let endpoint = &endpoints[0];
+    for other in &endpoints {
+        assert_eq!(other.socket, endpoint.socket);
+        assert_eq!(other.protocol_version, REMOTE_PROTOCOL_VERSION);
+    }
 
     assert_eq!(
         endpoint.protocol_version, REMOTE_PROTOCOL_VERSION,
@@ -690,21 +712,32 @@ fn bootstrap_starts_a_broker_on_the_far_machine_and_says_where_it_listens() {
         "the broker reported a relative socket path: {}",
         endpoint.socket
     );
-    assert_eq!(
-        remote_pids("pty-broker serve").len(),
-        1,
-        "bootstrap should have started exactly one broker"
-    );
+    wait_for_remote("losing broker contenders to exit", || {
+        remote_pids("pty-broker serve").len() == 1
+    });
+    let broker = remote_pids("pty-broker serve");
+    let inode = remote_exec(&["stat", "-c", "%i", &endpoint.socket]);
 
-    // Idempotent: the second call finds the first broker rather than starting a
-    // second one alongside it.
-    let again = ssh::bootstrap(HOST).expect("failed to bootstrap a second time");
-    assert_eq!(again.socket, endpoint.socket);
-    assert_eq!(
-        remote_pids("pty-broker serve").len(),
-        1,
-        "a second bootstrap started a second broker"
+    let hosts = start();
+    let pane = open_pane(
+        &hosts,
+        "stty -echo; echo READY; while IFS= read -r line; do printf 'broker-reply:%s\\n' \"$line\"; done",
     );
+    pane.wait_for_output("READY");
+    pane.send_line("before");
+    pane.wait_for_output("broker-reply:before");
+    for again in concurrent_bootstraps() {
+        assert_eq!(again.socket, endpoint.socket);
+    }
+    assert_eq!(
+        remote_pids("pty-broker serve"),
+        broker,
+        "subsequent bootstraps replaced the broker"
+    );
+    assert_eq!(remote_exec(&["stat", "-c", "%i", &endpoint.socket]), inode);
+    pane.send_line("after");
+    pane.wait_for_output("broker-reply:after");
+    pane.close();
 }
 
 /// The broker is started by an ssh that exits immediately afterwards. If it died

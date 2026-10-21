@@ -22,6 +22,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use yinz_ipc::session_ownership::SessionOwnership;
 use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::TerminalId;
 
@@ -1272,14 +1273,7 @@ pub fn broker_socket_path() -> std::path::PathBuf {
 /// so it goes to stdout and nothing else may.
 pub fn ensure() -> Result<()> {
     let socket = broker_socket_path();
-    check_socket_path_length(&socket, 0)?;
-
-    if UnixStream::connect(&socket).is_err() {
-        // Either nothing is listening or the file is a leftover from a crash.
-        let _ = std::fs::remove_file(&socket);
-        spawn_detached_broker(&socket)?;
-        await_socket(&socket)?;
-    }
+    ensure_socket(&socket, spawn_detached_broker)?;
 
     println!(
         "{}",
@@ -1290,6 +1284,34 @@ pub fn ensure() -> Result<()> {
         })
     );
     Ok(())
+}
+
+fn ensure_socket(
+    socket: &std::path::Path,
+    start: impl FnOnce(&std::path::Path) -> Result<()>,
+) -> Result<()> {
+    check_socket_path_length(socket, 0)?;
+    if !broker_is_reachable(socket)? {
+        start(socket)?;
+        await_socket(socket)?;
+    }
+    Ok(())
+}
+
+fn broker_is_reachable(socket: &std::path::Path) -> Result<bool> {
+    match yinz_ipc::consts::ipc_connect(socket) {
+        Ok(_) => Ok(true),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Ok(false)
+        },
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to connect to broker at {}", socket.display())),
+    }
 }
 
 fn spawn_detached_broker(socket: &std::path::Path) -> Result<()> {
@@ -1320,7 +1342,7 @@ fn spawn_detached_broker(socket: &std::path::Path) -> Result<()> {
 fn await_socket(socket: &std::path::Path) -> Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
-        if UnixStream::connect(socket).is_ok() {
+        if broker_is_reachable(socket)? {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -1334,17 +1356,30 @@ fn await_socket(socket: &std::path::Path) -> Result<()> {
 /// `yinz --pty-broker serve` — the daemon itself.
 pub fn serve_forever() -> Result<()> {
     let socket = broker_socket_path();
-    check_socket_path_length(&socket, 0)?;
+    let Some((_ownership, listener)) = bind_broker(&socket)? else {
+        return Ok(());
+    };
+    let host_bin = std::env::current_exe().context("could not resolve our own binary")?;
+    serve(listener, host_bin)
+}
+
+fn bind_broker(socket: &std::path::Path) -> Result<Option<(SessionOwnership, UnixListener)>> {
+    check_socket_path_length(socket, 0)?;
     if let Some(parent) = socket.parent() {
         ensure_secure_dir(parent)?;
     }
-    let _ = std::fs::remove_file(&socket);
-    let listener = UnixListener::bind(&socket)
+    let Some(ownership) = SessionOwnership::acquire(socket)
+        .with_context(|| format!("failed to claim broker socket {}", socket.display()))?
+    else {
+        return Ok(None);
+    };
+    let listener = ownership
+        .bind()
         .with_context(|| format!("failed to bind {}", socket.display()))?;
+    let interprocess::local_socket::Listener::UdSocket(listener) = listener;
     // Owner only: this socket starts processes as us.
-    secure_socket(&socket, 0o600)?;
-    let host_bin = std::env::current_exe().context("could not resolve our own binary")?;
-    serve(listener, host_bin)
+    secure_socket(socket, 0o600)?;
+    Ok(Some((ownership, listener.into())))
 }
 
 /// Accept panes until the listener dies.
