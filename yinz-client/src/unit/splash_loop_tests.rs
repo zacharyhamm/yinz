@@ -109,6 +109,7 @@ fn run(
     let nested = NestedReannounce::spawn(Box::new(FakeClientOsApi::new()), "splash-test".into());
     nested.stop();
     ClientLoop {
+        remote_host: None,
         os_input: os,
         command_is_executing: &mut CommandIsExecuting::new(),
         stdin_ansi_parser: &Arc::new(Mutex::new(StdinAnsiParser::new())),

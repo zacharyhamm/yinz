@@ -8,8 +8,16 @@ use unicode_width::UnicodeWidthChar;
 use yinz_types::internal_ids::SessionName;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Destination {
+    Local(SessionName),
+    Remote { host: String, name: SessionName },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerRow {
-    pub name: SessionName,
+    pub label: String,
+    pub destination: Option<Destination>,
+    pub status: Option<String>,
     pub age: Duration,
     pub listing: SessionListing,
     /// The session this command is running inside.
@@ -18,7 +26,8 @@ pub struct PickerRow {
 
 impl PickerRow {
     fn selectable(&self) -> bool {
-        !self.current
+        self.destination.is_some()
+            && !self.current
             && !matches!(
                 self.listing,
                 SessionListing::Unresponsive | SessionListing::Denied
@@ -46,7 +55,7 @@ pub enum PickerKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Continue,
-    Picked(SessionName),
+    Picked(Destination),
     /// Left without picking, with something to tell the person, if anything.
     Cancelled(Option<String>),
     Interrupted,
@@ -80,6 +89,24 @@ impl PickerState {
         }
     }
 
+    pub fn replace_rows(&mut self, rows: Vec<PickerRow>) {
+        let held = self
+            .selected()
+            .filter(|row| row.selectable())
+            .and_then(|row| row.destination.clone());
+        self.rows = rows;
+        self.visible.clear();
+        self.refilter();
+        if let Some(destination) = held
+            && let Some(index) = self
+                .visible
+                .iter()
+                .position(|&i| self.rows[i].destination.as_ref() == Some(&destination))
+        {
+            self.cursor = index;
+        }
+    }
+
     pub fn input(&self) -> &str {
         &self.input
     }
@@ -93,7 +120,7 @@ impl PickerState {
     pub fn visible_names(&self) -> Vec<&str> {
         self.visible
             .iter()
-            .map(|&i| self.rows[i].name.as_str())
+            .map(|&i| self.rows[i].label.as_str())
             .collect()
     }
 
@@ -136,19 +163,25 @@ impl PickerState {
         let Some(row) = self.selected() else {
             return Outcome::Continue;
         };
-        let name = row.name.as_str().to_owned();
-        if row.current {
+        let name = row.label.as_str().to_owned();
+        if row.destination.is_none() {
+            Outcome::Continue
+        } else if row.current {
             Outcome::Cancelled(Some(format!("Already in session {name:?}.")))
         } else if row.listing == SessionListing::Unresponsive {
-            self.message = Some(format!(
-                "{name} is not responding; stop it with `yinz kill-session {name}`"
-            ));
+            self.message = Some(
+                if matches!(row.destination, Some(Destination::Remote { .. })) {
+                    format!("{name} is not responding on its SSH host")
+                } else {
+                    format!("{name} is not responding; stop it with `yinz kill-session {name}`")
+                },
+            );
             Outcome::Continue
         } else if row.listing == SessionListing::Denied {
             self.message = Some(format!("{name} cannot be reached from here"));
             Outcome::Continue
         } else {
-            Outcome::Picked(row.name.clone())
+            Outcome::Picked(row.destination.clone().expect("selectable destination"))
         }
     }
 
@@ -162,14 +195,14 @@ impl PickerState {
         }
         if candidates.len() == 1 {
             let row = self.visible[candidates[0]];
-            self.input = self.rows[row].name.as_str().to_owned();
+            self.input = self.rows[row].label.as_str().to_owned();
             self.refilter();
             self.cursor_to_row(row);
             return;
         }
         let names: Vec<&str> = candidates
             .iter()
-            .map(|&p| self.rows[self.visible[p]].name.as_str())
+            .map(|&p| self.rows[self.visible[p]].label.as_str())
             .collect();
         let prefix = common_prefix(&names);
         let extends_input = prefix.chars().count() > self.input.chars().count()
@@ -210,7 +243,7 @@ impl PickerState {
         let prefixed: Vec<usize> = (0..self.visible.len())
             .filter(|&p| {
                 self.rows[self.visible[p]]
-                    .name
+                    .label
                     .as_str()
                     .to_lowercase()
                     .starts_with(&input)
@@ -227,7 +260,7 @@ impl PickerState {
         let held = self.visible.get(self.cursor).copied();
         let needle = self.input.to_lowercase();
         self.visible = (0..self.rows.len())
-            .filter(|&i| self.rows[i].name.as_str().to_lowercase().contains(&needle))
+            .filter(|&i| self.rows[i].label.as_str().to_lowercase().contains(&needle))
             .collect();
         self.cursor = held
             .and_then(|row| self.visible.iter().position(|&i| i == row))
@@ -269,8 +302,30 @@ impl PickerState {
                 } else {
                     "  "
                 };
-                let line =
-                    format_session_line(row.name.as_str(), row.age, row.listing, row.current, true);
+                let line = match &row.status {
+                    Some(status) => format!("{} ({status})", row.label),
+                    None if matches!(row.destination, Some(Destination::Remote { .. }))
+                        && row.listing == SessionListing::Unresponsive =>
+                    {
+                        format!(
+                            "{} (UNRESPONSIVE)",
+                            format_session_line(
+                                &row.label,
+                                row.age,
+                                SessionListing::Running,
+                                false,
+                                true
+                            )
+                        )
+                    },
+                    None => format_session_line(
+                        row.label.as_str(),
+                        row.age,
+                        row.listing,
+                        row.current,
+                        true,
+                    ),
+                };
                 lines.push(format!("{marker}{line}"));
             }
         }

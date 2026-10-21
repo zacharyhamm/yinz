@@ -116,6 +116,17 @@ fn main() {
     }
 
     let opts = CliArgs::parse();
+    if let Some(Command::RemoteSessions {
+        client_version,
+        contract_version,
+    }) = &opts.command
+    {
+        if let Err(error) = remote_session::list(client_version, *contract_version) {
+            eprintln!("Error: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Some(Command::RemoteSession {
         client_version,
         contract_version,
@@ -138,6 +149,7 @@ fn main() {
         ..
     })) = &opts.command
     {
+        configure_logger();
         let result = remote_session::attach(
             &opts,
             host,

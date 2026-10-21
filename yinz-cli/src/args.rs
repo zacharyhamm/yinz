@@ -426,6 +426,14 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
+    /// Internal read-only SSH session discovery.
+    #[clap(hide = true)]
+    RemoteSessions {
+        #[clap(long)]
+        client_version: String,
+        #[clap(long)]
+        contract_version: usize,
+    },
     /// Internal SSH session bootstrap.
     #[clap(hide = true)]
     RemoteSession {
@@ -989,12 +997,14 @@ pub enum Sessions {
     #[clap(visible_alias = "a")]
     Attach {
         /// Name of the session to attach to. Without one, attaches to the only running session,
-        /// or on a terminal opens a picker when there are several (switching, from inside a
-        /// session).
+        /// or opens a picker on a terminal when there are several or remembered SSH hosts.
+        /// Remote sessions are discovered with SSH key/agent authentication; local choices
+        /// switch sessions when invoked inside Yinz.
         #[clap(value_parser)]
         session_name: Option<String>,
 
         /// Attach through OpenSSH to this host or SSH config alias. Requires a session name.
+        /// Successful attachments remember the host for interactive session discovery.
         #[clap(long, value_name = "HOST", requires = "session_name", conflicts_with_all = ["index", "create_background", "force_run_commands"])]
         remote: Option<String>,
 

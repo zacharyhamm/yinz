@@ -223,6 +223,7 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
             nested_reannounce.stop();
             let (input_sender, _input_receiver) = channels::unbounded();
             let outcome = ClientLoop {
+                remote_host: None,
                 os_input: &os_input,
                 command_is_executing: &mut CommandIsExecuting::new(),
                 stdin_ansi_parser: &Arc::new(Mutex::new(StdinAnsiParser::new())),
