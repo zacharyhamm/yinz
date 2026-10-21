@@ -900,14 +900,6 @@ pub enum ScreenInstruction {
     // message
     GroupAndUngroupPanes(Vec<PaneId>, Vec<PaneId>, bool, ClientId), // panes_to_group, panes_to_ungroup, bool -> for all clients
     HighlightAndUnhighlightPanes(Vec<PaneId>, Vec<PaneId>, ClientId), // panes_to_highlight, panes_to_unhighlight
-    /// The panes that are kin of the focused one, drawn with a gentle tint until this
-    /// arrives again with a different set. Replaces whatever was marked before, so the
-    /// sender need not remember what it last said.
-    ///
-    /// Not a `FrameColorOverride`: this must not take the slot a bell flash and a failed
-    /// command share, and it is a fact about the session rather than about one client's
-    /// conversation - so no `ClientId`.
-    SetRelatedPanes(HashSet<PaneId>),
     /// Show a client a pane and mark it, without moving that client's keyboard
     /// focus. `Option<String>` is a label drawn in place of the pane's title.
     RevealPaneWithId(PaneId, Option<String>, ClientId),

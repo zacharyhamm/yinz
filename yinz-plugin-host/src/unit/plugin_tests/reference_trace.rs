@@ -200,6 +200,14 @@ impl Trace {
         );
         let mut commands = vec![];
         for call in &step.calls {
+            // The original agent service tinted shared-checkout frames. The screen's own 👯 title
+            // marker replaced it, the host no longer has that command, and it never had a reply.
+            if self.transcript.plugin == "agent-service"
+                && call.command.get("SetRelatedPanes").is_some()
+            {
+                assert_eq!(call.reply, json!({"absent":true}));
+                continue;
+            }
             let command_json = replace(call.command.clone(), "<fixture-root>", &self.root);
             let mut command: PluginCommand = serde_json::from_value(command_json.clone()).unwrap();
             if let PluginCommand::DataDefineEntity { def, .. } = &mut command

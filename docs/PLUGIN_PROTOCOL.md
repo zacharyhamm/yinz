@@ -192,7 +192,7 @@ interface CommandArgs {
   OpenTerminalInPlaceOfPlugin: [FileToOpen, boolean]; OpenCommandPaneFloatingNearPlugin: [CommandToRun, FloatingPaneCoordinates | null, StringMap];
   OpenCommandPaneInPlaceOfPlugin: [CommandToRun, boolean, StringMap]; OpenFileNearPlugin: [FileToOpen, StringMap];
   OpenFileFloatingNearPlugin: [FileToOpen, FloatingPaneCoordinates | null, StringMap]; OpenFileInPlaceOfPlugin: [FileToOpen, boolean, StringMap];
-  GroupAndUngroupPanes: [PaneId[], PaneId[], boolean]; HighlightAndUnhighlightPanes: [PaneId[], PaneId[]]; SetRelatedPanes: PaneId[];
+  GroupAndUngroupPanes: [PaneId[], PaneId[], boolean]; HighlightAndUnhighlightPanes: [PaneId[], PaneId[]];
   RevealPaneWithId: [PaneId, string | null]; CloseMultiplePanes: PaneId[]; FloatMultiplePanes: PaneId[]; EmbedMultiplePanes: PaneId[];
   SetSelfMouseSelectionSupport: boolean; InterceptKeyPresses: undefined; ClearKeyPressesIntercepts: undefined;
   ReplacePaneWithExistingPane: [PaneId, PaneId, boolean]; RunAction: [Action, StringMap]; CopyToClipboard: string;

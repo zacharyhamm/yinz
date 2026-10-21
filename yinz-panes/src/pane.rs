@@ -366,19 +366,6 @@ pub trait Pane {
     fn was_an_agent(&self) -> bool {
         false
     }
-    /// Whether this pane is kin of the focused one - one of a set some plugin named through
-    /// `PluginCommand::SetRelatedPanes` - so its frame is drawn with a gentle tint.
-    ///
-    /// State on the pane rather than a set threaded through the render: a pane that closes
-    /// takes its answer with it. Only terminal panes carry one; agents are terminals.
-    fn has_related_highlight(&self) -> bool {
-        false
-    }
-    /// Mark or unmark this pane as kin of the focused one. Answers whether it changed, so a
-    /// caller setting a whole session's worth can tell whether anything needs redrawing.
-    fn set_related_highlight(&mut self, _related: bool) -> bool {
-        false
-    }
     fn right_boundary_x_coords(&self) -> usize {
         self.x() + self.cols()
     }

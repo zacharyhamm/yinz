@@ -577,7 +577,6 @@ impl<'a> PaneContentsAndUi<'a> {
                     .get(&client_id)
                     .map(|p| p.contains(&self.pane.pid()))
                     .unwrap_or(false),
-                pane_is_related: self.pane.has_related_highlight(),
                 mouse_is_hovering_over_pane: self
                     .mouse_is_hovering_over_pane_for_clients
                     .contains(&client_id),
@@ -604,10 +603,6 @@ pub struct FrameColorState {
     pub waiting_pulse: Option<f32>,
     pub pane_is_focused: bool,
     pub pane_is_in_group: bool,
-    /// This pane is kin of the focused one - see `Pane::has_related_highlight`. The gentlest
-    /// state there is: it loses to focus, to a group, to a hover and to an override, and only
-    /// ever replaces the colour a pane would have had for being nothing in particular.
-    pub pane_is_related: bool,
     pub mouse_is_hovering_over_pane: bool,
     pub multiple_users_exist_in_session: bool,
     /// The viewing client's multiplayer color, which a focused frame wears when several clients
@@ -615,16 +610,13 @@ pub struct FrameColorState {
     pub color_slot: Option<ColorSlot>,
 }
 
-/// Fade the focused frame's hue toward the chrome background to mark related panes gently.
-const RELATED_FADE: f32 = 0.55;
-
 /// The colour a pane's frame and boundary cells are drawn in, and the precedence that colour wins
 /// with where two panes share one boundary cell (see `Boundaries::add_rect` and `combine_symbols`).
 ///
 /// A free function so a caller outside `PaneContentsAndUi` can arrive at the same answer for a
 /// pane it is drawing a boundary for.
 ///
-/// The base precedences run `0` (nothing in particular) → `2` related → `4` hovered → `6` grouped →
+/// The base precedences run `0` (nothing in particular) → `4` hovered → `6` grouped →
 /// `8` focused → `10` overridden. A positive waiting pulse adds `1`, beating an unpulsed neighbour
 /// of the same base state but losing to every higher base state. Overrides suppress the pulse.
 /// Only their order matters, never the values: `combine_symbols`
@@ -643,12 +635,11 @@ pub fn frame_color(
         waiting_pulse,
         pane_is_focused,
         pane_is_in_group,
-        pane_is_related,
         mouse_is_hovering_over_pane,
         multiple_users_exist_in_session,
         color_slot,
     } = state;
-    let (foreground, background) = style.chrome_colors().unwrap_or(host_colors);
+    let (foreground, _) = style.chrome_colors().unwrap_or(host_colors);
     if let Some((override_color, strength)) = frame_color_override.filter(|_| !pane_is_in_group) {
         // a fading override blends towards whatever this pane's frame would be without it, so a
         // bell settles back into the normal colour instead of snapping off it
@@ -660,7 +651,6 @@ pub fn frame_color(
                 waiting_pulse: None,
                 pane_is_focused,
                 pane_is_in_group,
-                pane_is_related,
                 mouse_is_hovering_over_pane,
                 multiple_users_exist_in_session,
                 color_slot,
@@ -691,14 +681,6 @@ pub fn frame_color(
         }
     } else if mouse_is_hovering_over_pane {
         Some((style.colors.ribbon_unselected.emphasis_1, 4))
-    } else if pane_is_related {
-        // Kin of the focused pane, and drawn as such: the focused frame's own colour, faded
-        // most of the way back to the background, so it reads as "these belong with that one"
-        // rather than as a second focus competing with the first.
-        Some((
-            blend(style.colors.frame_selected.base, background, RELATED_FADE),
-            2,
-        ))
     } else {
         style.colors.frame_unselected.map(|frame| (frame.base, 0))
     };

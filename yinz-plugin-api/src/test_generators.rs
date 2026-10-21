@@ -2209,7 +2209,6 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::HighlightAndUnhighlightPanes => {
             PluginCommand::HighlightAndUnhighlightPanes(pane_ids(tc), pane_ids(tc))
         },
-        CommandType::SetRelatedPanes => PluginCommand::SetRelatedPanes(pane_ids(tc)),
         CommandType::RevealPaneWithId => {
             PluginCommand::RevealPaneWithId(pane_id(tc), optional_strings(tc))
         },

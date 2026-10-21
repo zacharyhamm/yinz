@@ -289,7 +289,6 @@ pub enum ScreenContext {
     RestoreWarpedAgentInput,
     SetPaneAgent,
     SetPaneAgentRun,
-    SetRelatedPanes,
     SetQuitNotice,
     ConfirmQuit,
     WriteKeyToPaneId,

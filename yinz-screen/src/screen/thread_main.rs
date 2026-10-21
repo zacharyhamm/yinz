@@ -2485,18 +2485,6 @@ pub fn screen_thread_main(
                     screen.sync_animation_clock(now)?;
                     screen.render()?;
                 },
-                ScreenInstruction::SetRelatedPanes(pane_ids) => {
-                    let mut changed = false;
-                    for tab in screen.tabs.values_mut() {
-                        changed |= tab.set_related_panes(&pane_ids);
-                    }
-                    // Nearly every one of these says the same thing as the last: the daemon
-                    // sending them republishes on every pane update. Rendering only on a real
-                    // change is what keeps that from being a frame per update.
-                    if changed {
-                        screen.render()?;
-                    }
-                },
                 ScreenInstruction::ClearPaneFrameColorOverride(pane_ids) => {
                     for pane_id in pane_ids {
                         if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
