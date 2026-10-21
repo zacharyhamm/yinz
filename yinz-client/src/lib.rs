@@ -377,6 +377,7 @@ fn server_command(
 pub enum ClientInfo {
     Attach(SessionName, Options),
     Remote {
+        host: String,
         name: SessionName,
         socket: PathBuf,
         cancelled: Arc<AtomicBool>,
@@ -448,6 +449,10 @@ pub fn start_client(
     start_detached_and_exit: bool,
 ) -> ClientOutcome {
     let is_remote = matches!(&info, ClientInfo::Remote { .. });
+    let remote_host = match &info {
+        ClientInfo::Remote { host, .. } => Some(host.clone()),
+        _ => None,
+    };
     let startup_started = std::time::Instant::now();
     let own_session_name = info.get_session_name().to_owned();
     let kind = match &info {
@@ -740,6 +745,7 @@ pub fn start_client(
         workers_started.elapsed().as_micros()
     );
     let outcome = crate::client_loop::ClientLoop {
+        remote_host: remote_host.as_deref(),
         os_input: &*os_input,
         command_is_executing: &mut command_is_executing,
         stdin_ansi_parser: &stdin_ansi_parser,

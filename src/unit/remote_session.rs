@@ -211,3 +211,67 @@ fn remote_bootstrap_waits_for_a_concurrent_creator_to_initialize() {
     wait_until_ready(&socket).unwrap();
     peer.join().unwrap();
 }
+
+#[test]
+fn discovery_checks_versions_names_and_keeps_unavailable_but_not_exited_sessions() {
+    use yinz_cli::sessions::SessionListing;
+    let mut response = SessionList {
+        yinz_version: VERSION.into(),
+        contract_version: CLIENT_SERVER_CONTRACT_VERSION,
+        sessions: vec![
+            (
+                "work".into(),
+                Duration::from_secs(12),
+                SessionListing::Running,
+            ),
+            ("busy".into(), Duration::ZERO, SessionListing::Unresponsive),
+            ("denied".into(), Duration::ZERO, SessionListing::Denied),
+            ("gone".into(), Duration::ZERO, SessionListing::Exited),
+        ],
+    };
+    let parse = |response: &SessionList| {
+        parse_sessions("user@alias", &serde_json::to_vec(response).unwrap())
+    };
+    let rows = parse(&response).unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].label.as_str(), "user@alias / work");
+    assert_eq!(rows[0].age, Duration::from_secs(12));
+    assert_eq!(rows[1].listing, SessionListing::Unresponsive);
+    response.contract_version += 1;
+    assert!(parse(&response).is_err());
+    response.contract_version -= 1;
+    response.sessions[0].0 = "bad\x1bname".into();
+    assert!(parse(&response).is_err());
+    assert!(parse_sessions("host", b"banner\n{}").is_err());
+}
+
+#[test]
+fn discovery_deadline_kills_and_reaps_ssh() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let pid_file = root.path().join("pid");
+    yinz_test_support::write_warm_script(
+        &root.path().join("ssh"),
+        "printf '%s' \"$$\" > \"$YINZ_TEST_QUERY_PID\"\nexec sleep 60",
+    );
+    let mut path = vec![root.path().to_path_buf()];
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    unsafe {
+        std::env::set_var("PATH", std::env::join_paths(path).unwrap());
+        std::env::set_var("YINZ_TEST_QUERY_PID", &pid_file);
+    }
+    let error = discover("host", &AtomicBool::new(false)).unwrap_err();
+    assert!(format!("{error:#}").contains("timed out"));
+    let pid: i32 = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
+    assert_eq!(
+        nix::sys::wait::waitpid(
+            nix::unistd::Pid::from_raw(pid),
+            Some(nix::sys::wait::WaitPidFlag::WNOHANG)
+        ),
+        Err(nix::errno::Errno::ECHILD)
+    );
+}

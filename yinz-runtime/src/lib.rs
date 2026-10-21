@@ -43,3 +43,5 @@ pub use yinz_plugin_location as plugin_location;
 
 #[cfg(target_os = "windows")]
 compile_error!("Yinz does not support Windows");
+
+pub mod remote_hosts;

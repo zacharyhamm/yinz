@@ -38,6 +38,7 @@ pub struct ClientOutcome {
 }
 
 pub(crate) struct ClientLoop<'a> {
+    pub remote_host: Option<&'a str>,
     pub os_input: &'a dyn ClientOsApi,
     pub command_is_executing: &'a mut CommandIsExecuting,
     pub stdin_ansi_parser: &'a Arc<Mutex<StdinAnsiParser>>,
@@ -135,6 +136,15 @@ impl ClientLoop<'_> {
                     self.startup_started.elapsed().as_micros(),
                     started_at.elapsed().as_micros()
                 );
+                if result == "ok"
+                    && let Some(host) = self.remote_host
+                {
+                    yinz_runtime::remote_hosts::remember(
+                        &yinz_runtime::consts::YINZ_CACHE_DIR,
+                        host,
+                    )
+                    .non_fatal();
+                }
                 waiting_for_first_render = false;
             }
             if should_exit {

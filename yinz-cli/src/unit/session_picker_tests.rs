@@ -6,7 +6,9 @@ use yinz_types::internal_ids::SessionName;
 
 fn row(name: &str, listing: SessionListing) -> PickerRow {
     PickerRow {
-        name: SessionName::new(name),
+        label: name.to_owned(),
+        destination: Some(Destination::Local(SessionName::new(name))),
+        status: None,
         age: Duration::from_secs(60),
         listing,
         current: false,
@@ -27,7 +29,7 @@ fn type_str(state: &mut PickerState, text: &str) {
 }
 
 fn selected(state: &PickerState) -> &str {
-    state.selected().unwrap().name.as_str()
+    state.selected().unwrap().label.as_str()
 }
 
 fn strip(line: &str) -> String {
@@ -85,7 +87,7 @@ fn tab_with_a_single_candidate_fills_its_whole_name() {
     assert_eq!(selected(&state), "bar-baz");
     assert_eq!(
         state.handle(PickerKey::Enter),
-        Outcome::Picked(SessionName::new("bar-baz"))
+        Outcome::Picked(Destination::Local(SessionName::new("bar-baz")))
     );
 }
 
@@ -195,7 +197,7 @@ fn exited_sessions_can_be_picked() {
     let mut state = PickerState::new(vec![row("old", SessionListing::Exited)], "attach");
     assert_eq!(
         state.handle(PickerKey::Enter),
-        Outcome::Picked(SessionName::new("old"))
+        Outcome::Picked(Destination::Local(SessionName::new("old")))
     );
 }
 
@@ -355,5 +357,76 @@ fn a_live_socket_overrides_a_resurrectable_session_of_the_same_name() {
             ("sandboxed", SessionListing::Denied),
             ("wedged", SessionListing::Unresponsive),
         ]
+    );
+}
+
+fn remote_row(host: &str, name: &str) -> PickerRow {
+    let mut row = row(&format!("{host} / {name}"), SessionListing::Running);
+    row.destination = Some(Destination::Remote {
+        host: host.into(),
+        name: name.into(),
+    });
+    row
+}
+
+#[test]
+fn progressive_remote_results_preserve_destination_and_filter() {
+    let first = remote_row("one", "work");
+    let second = remote_row("two", "work");
+    let mut state = PickerState::new(vec![first.clone(), second.clone()], "attach");
+    state.handle(PickerKey::Down);
+    let mut rows = running(&["work"]);
+    rows.extend([remote_row("new", "work"), first, second.clone()]);
+    state.replace_rows(rows);
+    assert_eq!(
+        state.handle(PickerKey::Enter),
+        Outcome::Picked(second.destination.clone().unwrap())
+    );
+    type_str(&mut state, "two / wo");
+    assert_eq!(state.visible_names(), ["two / work"]);
+    state.replace_rows(vec![remote_row("one", "work"), second.clone()]);
+    assert_eq!(
+        state.handle(PickerKey::Enter),
+        Outcome::Picked(second.destination.unwrap())
+    );
+}
+
+#[test]
+fn host_status_and_unavailable_remote_sessions_cannot_be_picked() {
+    let mut loading = row("host", SessionListing::Denied);
+    loading.destination = None;
+    loading.status = Some("loading…".into());
+    let mut state = PickerState::new(vec![loading], "attach");
+    assert_eq!(state.handle(PickerKey::Enter), Outcome::Continue);
+    assert!(state
+        .render(80, 24)
+        .iter()
+        .any(|line| line.contains("loading…")));
+    let mut unavailable = remote_row("host", "work");
+    unavailable.listing = SessionListing::Unresponsive;
+    state.replace_rows(vec![unavailable]);
+    assert_eq!(state.handle(PickerKey::Enter), Outcome::Continue);
+    assert!(!state
+        .render(120, 24)
+        .iter()
+        .any(|line| line.contains("kill-session")));
+    state.replace_rows(vec![remote_row("host", "work")]);
+    assert!(matches!(
+        state.handle(PickerKey::Enter),
+        Outcome::Picked(Destination::Remote { .. })
+    ));
+}
+
+#[test]
+fn first_remote_result_replaces_an_initially_disabled_selection() {
+    let mut local = row("local-work", SessionListing::Running);
+    local.current = true;
+    let mut state = PickerState::new(vec![local.clone()], "switch");
+    let remote = remote_row("host", "work");
+    state.replace_rows(vec![local, remote.clone()]);
+    type_str(&mut state, "work");
+    assert_eq!(
+        state.handle(PickerKey::Enter),
+        Outcome::Picked(remote.destination.unwrap())
     );
 }

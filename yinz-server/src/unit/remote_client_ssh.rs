@@ -21,17 +21,34 @@ struct Client {
     stop: Arc<AtomicBool>,
     reader: Option<std::thread::JoinHandle<()>>,
     root: tempfile::TempDir,
+    cache: PathBuf,
+    local_session: Option<String>,
 }
 impl Client {
     fn start(host: &str, name: &str, create: bool) -> Self {
+        let mut args = vec!["--remote", host, name];
+        if create {
+            args.push("--create");
+        }
+        Self::start_args(&args, None, None)
+    }
+    fn picker(cache: &std::path::Path) -> Self {
+        Self::start_args(&[], Some(cache), None)
+    }
+    fn start_args(args: &[&str], cache: Option<&Path>, sockets: Option<&Path>) -> Self {
         test_env();
         let root = tempfile::Builder::new()
             .prefix("yrc-")
             .tempdir_in("/tmp")
             .unwrap();
         let config = root.path().join("config.kdl");
-        // A nonexistent local default layout must not affect a remote attachment.
+        // A nonexistent local default layout must not affect remote attachment or discovery.
         std::fs::write(&config, "default_layout \"/no/local/layout.kdl\"\n").unwrap();
+        if args.contains(&"--create") && !args.contains(&"--remote") {
+            let layout = root.path().join("local.kdl");
+            std::fs::write(&layout, r#"layout { pane command="/bin/sh" { args "-c" "printf 'LOCAL_READY\\n'; exec /bin/sh"; }; }"#).unwrap();
+            std::fs::write(&config, format!("show_startup_tips false\nload_plugins clear-defaults=true\ndefault_layout {:?}\n", layout)).unwrap();
+        }
         let pty = nix::pty::openpty(
             Some(&nix::pty::Winsize {
                 ws_row: 30,
@@ -53,6 +70,9 @@ impl Client {
         let slave = File::from(pty.slave);
         let master = File::from(pty.master);
         let status_path = root.path().join("status");
+        let cache = cache
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| root.path().join("cache"));
         let hold = root.path().join("hold");
         nix::unistd::mkfifo(&hold, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
         // Keep a shell as the session leader: macOS revokes the slave when that leader exits.
@@ -76,19 +96,23 @@ read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
             .env_remove("YINZ_PANE_REF")
             .env_remove("YINZ_CONFIG_DIR")
             .env_remove("YINZ_CONFIG_FILE")
-            .env("YINZ_SOCKET_DIR", root.path().join("s"))
+            .env(
+                "YINZ_SOCKET_DIR",
+                sockets
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| root.path().join("s")),
+            )
             .env("XDG_CONFIG_HOME", root.path())
-            .env("XDG_CACHE_HOME", root.path())
+            .env("XDG_DATA_HOME", root.path().join("data"))
+            .env("YINZ_TEST_CACHE_DIR", &cache)
             .env("TERM", "xterm-256color")
             .arg("--config")
             .arg(config)
-            .args(["attach", "--remote", host, name])
+            .arg("attach")
             .stdin(slave.try_clone().unwrap())
             .stdout(slave.try_clone().unwrap())
             .stderr(slave.try_clone().unwrap());
-        if create {
-            command.arg("--create");
-        }
+        command.args(args);
         // The shell owns the controlling terminal while Yinz runs in its foreground group.
         unsafe {
             command.pre_exec(|| {
@@ -150,6 +174,10 @@ read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
             stop,
             reader: Some(reader),
             root,
+            cache,
+            local_session: (!args.contains(&"--remote"))
+                .then(|| args.last().map(|name| (*name).to_owned()))
+                .flatten(),
         }
     }
     fn send(&mut self, bytes: &[u8]) {
@@ -232,6 +260,12 @@ read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
 }
 impl Drop for Client {
     fn drop(&mut self) {
+        if let Some(name) = &self.local_session {
+            let _ = Command::new(repo_root().join("target/debug/yinz"))
+                .env("YINZ_SOCKET_DIR", self.root.path().join("s"))
+                .args(["kill-session", name])
+                .output();
+        }
         let mut child = self.child.lock().unwrap();
         // A failed assertion must also terminate the client's SSH children.
         let _ = nix::sys::signal::killpg(
@@ -378,6 +412,9 @@ fn remote_client_bootstrap_errors_and_denied_forwarding_leave_no_tunnel() {
     let session = Session::new();
     let client = Client::start(HOST, &session.0, false);
     assert!(client.exit(false).contains("does not exist"));
+    assert!(yinz_runtime::remote_hosts::load(&client.cache)
+        .unwrap()
+        .is_empty());
     let client = Client::start(&format!("no-such-user@{HOST}"), &session.0, false);
     assert!(client.exit(false).contains("Permission denied"));
     {
@@ -414,4 +451,80 @@ chmod +x /usr/local/bin/yinz"#,
         );
         session.alive();
     }
+}
+
+#[test]
+#[ignore = "requires Docker SSH fixture"]
+fn remote_client_remembers_host_and_picker_discovers_and_attaches() {
+    let session = Session::new();
+    let mut first = Client::start(HOST, &session.0, true);
+    first.see(&session.0);
+    first.marker("DISCOVERED");
+    first.detach();
+    let cache = &first.cache;
+    assert_eq!(yinz_runtime::remote_hosts::load(cache).unwrap(), [HOST]);
+    let response = remote_exec(&[
+        "yinz",
+        "remote-sessions",
+        "--client-version",
+        yinz_runtime::consts::VERSION,
+        "--contract-version",
+        &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+    ]);
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert!(response["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row[0] == session.0));
+    let mut picker = Client::picker(cache);
+    picker.see(&format!("{HOST} / {}", session.0));
+    picker.send(format!("{}\r", session.0).as_bytes());
+    picker.see("YINZ_CLIENT_DISCOVERED");
+    picker.marker("PICKED");
+    picker.detach();
+    assert_eq!(yinz_runtime::remote_hosts::load(cache).unwrap(), [HOST]);
+    let mut cancelled = Client::picker(cache);
+    cancelled.see("Session:");
+    cancelled.send(b"\x1b");
+    cancelled.exit(true);
+    let interrupted = Client::picker(cache);
+    interrupted.see("Session:");
+    let pid = std::fs::read_to_string(interrupted.root.path().join("pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
+    interrupted.exit(false);
+    let local_name = format!("local-{}", session.0);
+    let mut local = Client::start_args(&["--create", &local_name], Some(cache), None);
+    local.see("LOCAL_READY");
+    local.marker("LOCAL");
+    let mut invalid_layout =
+        Client::start_args(&[], Some(cache), Some(&local.root.path().join("s")));
+    invalid_layout.see(&local_name);
+    invalid_layout.send(format!("{local_name}\r").as_bytes());
+    assert!(invalid_layout.exit(false).contains("/no/local/layout.kdl"));
+    let binary =
+        yinz_process::ssh::shell_argument(repo_root().join("target/debug/yinz").to_str().unwrap())
+            .unwrap();
+    let config =
+        yinz_process::ssh::shell_argument(local.root.path().join("config.kdl").to_str().unwrap())
+            .unwrap();
+    local.send(format!("{binary} --config {config} attach\r").as_bytes());
+    local.see("Enter switch");
+    local.see(&format!("{HOST} / {}", session.0));
+    local.send(format!("{}\r", session.0).as_bytes());
+    local.see("Nested Yinz session detected:");
+    local.send(b"1");
+    local.see("YINZ_CLIENT_PICKED");
+    local.marker("NESTED");
+    session.action(&["detach"]);
+    local.marker("RETURNED_LOCAL");
+    local.detach();
+    session.alive();
 }

@@ -25,13 +25,17 @@ use yinz_types::internal_ids::SessionName;
 const ENDPOINT_LIMIT: usize = 8192;
 const READY_TIMEOUT: Duration = Duration::from_secs(25);
 
-struct StartupCancellation {
+pub(crate) struct StartupCancellation {
     cancelled: Arc<AtomicBool>,
     handlers: Vec<signal_hook::SigId>,
 }
 
 impl StartupCancellation {
-    fn new() -> Result<Self> {
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn new() -> Result<Self> {
         let mut guard = Self {
             cancelled: Arc::new(AtomicBool::new(false)),
             handlers: Vec::new(),
@@ -413,7 +417,6 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: &str, mut create: bool) -
     validate_options(opts)?;
     validate_name(name)?;
     ssh::validate_ssh_host(host)?;
-    yinz_runtime::logging::configure_logger();
     let mut config = yinz_config::config::Config::load(
         opts.config.as_deref(),
         opts.config_dir.as_deref(),
@@ -449,6 +452,7 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: &str, mut create: bool) -
             config.clone(),
             options.clone(),
             ClientInfo::Remote {
+                host: host.to_owned(),
                 name: SessionName::new(&name),
                 socket,
                 cancelled: cancellation.cancelled.clone(),
@@ -473,3 +477,87 @@ pub(crate) fn attach(opts: &CliArgs, host: &str, name: &str, mut create: bool) -
 #[cfg(test)]
 #[path = "unit/remote_session.rs"]
 mod tests;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SessionList {
+    yinz_version: String,
+    contract_version: usize,
+    sessions: Vec<(SessionName, Duration, yinz_cli::sessions::SessionListing)>,
+}
+
+pub(crate) fn list(client_version: &str, contract: usize) -> Result<()> {
+    check_versions(client_version, contract)?;
+    let mut sessions = yinz_cli::sessions::collect_sessions(false)
+        .map_err(std::io::Error::from)
+        .context("collect remote sessions")?;
+    yinz_cli::sessions::sort_sessions(&mut sessions, true);
+    let response = SessionList {
+        yinz_version: VERSION.to_owned(),
+        contract_version: CLIENT_SERVER_CONTRACT_VERSION,
+        sessions,
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&response).context("encode remote sessions")?
+    );
+    Ok(())
+}
+
+pub(crate) fn discover(
+    host: &str,
+    cancelled: &AtomicBool,
+) -> Result<Vec<yinz_cli::session_picker::PickerRow>> {
+    ssh::validate_ssh_host(host)?;
+    let args = [
+        "yinz",
+        "remote-sessions",
+        "--client-version",
+        VERSION,
+        "--contract-version",
+        &CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+    ];
+    let command = args
+        .iter()
+        .map(|arg| ssh::shell_argument(arg))
+        .collect::<Result<Vec<_>>>()?
+        .join(" ");
+    let output = ssh::bootstrap_output(
+        Command::new("ssh")
+            .args(ssh::ssh_forward_args(&SshOptions::default()))
+            .args(["-T", "--", host, &command]),
+        Duration::from_secs(10),
+        Some(cancelled),
+    )
+    .with_context(|| format!("discover sessions on {host}"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "SSH discovery failed ({})",
+        output.status
+    );
+    parse_sessions(host, &output.stdout)
+}
+
+fn parse_sessions(host: &str, bytes: &[u8]) -> Result<Vec<yinz_cli::session_picker::PickerRow>> {
+    use yinz_cli::session_picker::{Destination, PickerRow};
+    let response: SessionList = serde_json::from_slice(bytes).context("decode remote sessions")?;
+    check_versions(&response.yinz_version, response.contract_version)?;
+    response
+        .sessions
+        .into_iter()
+        .filter(|(_, _, listing)| *listing != yinz_cli::sessions::SessionListing::Exited)
+        .map(|(name, age, listing)| {
+            validate_name(name.as_str())?;
+            Ok(PickerRow {
+                label: format!("{host} / {name}"),
+                destination: Some(Destination::Remote {
+                    host: host.to_owned(),
+                    name,
+                }),
+                age,
+                listing,
+                current: false,
+                status: None,
+            })
+        })
+        .collect()
+}

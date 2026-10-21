@@ -333,7 +333,7 @@ pub fn session_listing_error_message(kind: io::ErrorKind) -> String {
 /// it exists: a wedged server holds its name and its socket but answers
 /// nothing, and listing it as absent is what let one of them sit for days
 /// hanging every other yinz command on the machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SessionListing {
     /// A server that answered.
     Running,

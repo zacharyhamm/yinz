@@ -188,6 +188,7 @@ fn remote_attach_sends_only_terminal_assets_and_restores_before_switching() {
         Default::default(),
         Default::default(),
         ClientInfo::Remote {
+            host: "test-host".to_owned(),
             name: "same-name-as-local".into(),
             socket: "/forwarded/socket".into(),
             cancelled: Default::default(),
@@ -228,6 +229,7 @@ fn cancelled_remote_handoff_does_not_claim_the_terminal_or_connect() {
         Default::default(),
         Default::default(),
         ClientInfo::Remote {
+            host: "test-host".to_owned(),
             name: "cancelled-remote".into(),
             socket: "/forwarded/socket".into(),
             cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -242,4 +244,54 @@ fn cancelled_remote_handoff_does_not_claim_the_terminal_or_connect() {
     assert!(!os.raw_mode());
     assert!(os.stdout_bytes().is_empty());
     assert!(os.sent_messages().is_empty());
+}
+
+#[test]
+fn remote_hosts_are_remembered_only_after_a_successful_render() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let cache = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("YINZ_TEST_CACHE_ROOT", cache.path());
+    }
+    for (host, render, fail) in [
+        ("no-render", false, false),
+        ("failed-render", true, true),
+        ("user@alias", true, false),
+    ] {
+        let mut os = FakeClientOsApi::new().capturing_stdout();
+        if fail {
+            os = os.with_stdout_error_on(ErrorKind::BrokenPipe, b"frame".to_vec());
+        }
+        if render {
+            os.queue_from_server(ServerToClientMsg::Render {
+                content: "frame".into(),
+            });
+        }
+        os.queue_from_server(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        });
+        let outcome = start_client(
+            Box::new(os),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            ClientInfo::Remote {
+                host: host.into(),
+                name: "remote".into(),
+                socket: "/forwarded/socket".into(),
+                cancelled: Default::default(),
+            },
+            None,
+            None,
+            true,
+            false,
+        );
+        assert_eq!(outcome.exit_status, i32::from(fail));
+    }
+    assert_eq!(
+        yinz_runtime::remote_hosts::load(&yinz_runtime::consts::YINZ_CACHE_DIR).unwrap(),
+        ["user@alias"]
+    );
 }

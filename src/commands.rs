@@ -65,13 +65,13 @@ fn can_pick_a_session() -> bool {
 /// A nameless `yinz attach` with several sessions running: a menu that
 /// attaches to the session picked, or switches to it when run from inside a
 /// session.
-fn pick_session_to_attach(config_options: Options, config: &Config) -> ClientInfo {
-    use yinz_cli::session_picker::{Outcome, PickerRow};
+fn pick_session_to_attach(remote: Option<(&CliArgs, Vec<String>)>) -> SessionName {
+    use yinz_cli::session_picker::{Destination, Outcome, PickerRow};
     let mut sessions = yinz_cli::sessions::collect_sessions(false).unwrap_or_else(|e| {
         eprintln!("Error occurred: {:?}", e);
         process::exit(1);
     });
-    if sessions.is_empty() {
+    if sessions.is_empty() && remote.is_none() {
         eprintln!("No active yinz sessions found.");
         process::exit(1);
     }
@@ -82,7 +82,9 @@ fn pick_session_to_attach(config_options: Options, config: &Config) -> ClientInf
         .into_iter()
         .map(|(name, age, listing)| PickerRow {
             current: current.as_ref() == Some(&name),
-            name,
+            destination: Some(Destination::Local(name.clone())),
+            status: None,
+            label: name.to_string(),
             age,
             listing,
         })
@@ -92,21 +94,31 @@ fn pick_session_to_attach(config_options: Options, config: &Config) -> ClientInf
     } else {
         "attach"
     };
-    match crate::session_menu::run(rows, verb) {
-        Ok(Outcome::Picked(name)) if current.is_some() => {
-            let switch = yinz_cli::args::CliAction::SwitchSession {
-                name: name.into_string(),
-                tab_position: None,
-                pane_id: None,
-                layout: None,
-                layout_string: None,
-                layout_dir: None,
-                cwd: None,
-            };
-            send_action_to_session(switch, None, Some(config.clone()));
-            process::exit(0);
+    let (opts, hosts) = match remote {
+        Some((opts, hosts)) => (Some(opts), hosts),
+        None => (None, Vec::new()),
+    };
+    match crate::session_menu::run(rows, verb, hosts) {
+        Ok(Outcome::Picked(Destination::Remote { host, name })) => {
+            let mut opts = opts.expect("remote picker options").clone();
+            if let Some(Command::Sessions(Sessions::Attach {
+                remote,
+                session_name,
+                ..
+            })) = &mut opts.command
+            {
+                *remote = Some(host.clone());
+                *session_name = Some(name.to_string());
+            }
+            match crate::remote_session::attach(&opts, &host, name.as_str(), false) {
+                Ok(code) => process::exit(code),
+                Err(error) => {
+                    eprintln!("Error: {error:#}");
+                    process::exit(1);
+                },
+            }
         },
-        Ok(Outcome::Picked(name)) => ClientInfo::Attach(name, config_options),
+        Ok(Outcome::Picked(Destination::Local(name))) => name,
         Ok(Outcome::Cancelled(message)) => {
             if let Some(message) = message {
                 eprintln!("{message}");
@@ -120,6 +132,27 @@ fn pick_session_to_attach(config_options: Options, config: &Config) -> ClientInf
             process::exit(1);
         },
     }
+}
+
+fn attach_picked_local_session(
+    name: SessionName,
+    config_options: Options,
+    config: &Config,
+) -> ClientInfo {
+    if current_session().is_some() {
+        let switch = yinz_cli::args::CliAction::SwitchSession {
+            name: name.into_string(),
+            tab_position: None,
+            pane_id: None,
+            layout: None,
+            layout_string: None,
+            layout_dir: None,
+            cwd: None,
+        };
+        send_action_to_session(switch, None, Some(config.clone()));
+        process::exit(0);
+    }
+    ClientInfo::Attach(name, config_options)
 }
 
 fn sessions_to_kill(
@@ -678,7 +711,11 @@ fn attach_with_session_name(
             },
             ActiveSession::One(session_name) => ClientInfo::Attach(session_name, config_options),
             ActiveSession::Many => match picker {
-                Some(config) => pick_session_to_attach(config_options, config),
+                Some(config) => attach_picked_local_session(
+                    pick_session_to_attach(None),
+                    config_options,
+                    config,
+                ),
                 None => {
                     println!("Please specify the session to attach to, either by using the full name or a unique prefix.\nThe following sessions are active:");
                     list_sessions(false, false, true, false);
@@ -697,6 +734,35 @@ fn handle_client_outcome(outcome: yinz_client::ClientOutcome) -> Option<SessionC
 }
 
 pub(crate) fn start_client(opts: CliArgs) {
+    // Remote destinations must not depend on the local default layout.
+    let mut picked_session = if matches!(
+        &opts.command,
+        Some(Command::Sessions(Sessions::Attach {
+            session_name: None,
+            remote: None,
+            index: None,
+            create: false,
+            create_background: false,
+            force_run_commands: false,
+            options: None,
+        }))
+    ) && can_pick_a_session()
+    {
+        let hosts: Vec<_> = yinz_runtime::remote_hosts::load(&yinz_runtime::consts::YINZ_CACHE_DIR)
+            .map(|hosts| {
+                hosts
+                    .into_iter()
+                    .filter(|host| yinz_process::ssh::validate_ssh_host(host).is_ok())
+                    .collect()
+            })
+            .unwrap_or_else(|error| {
+                log::warn!("load remembered SSH hosts: {error:#}");
+                Vec::new()
+            });
+        (!hosts.is_empty()).then(|| pick_session_to_attach(Some((&opts, hosts))))
+    } else {
+        None
+    };
     let (
         config,
         client_layout_info,
@@ -794,7 +860,9 @@ pub(crate) fn start_client(opts: CliArgs) {
             let session_name = session_name.map(SessionName::new);
             should_create_detached = create_background;
 
-            let mut client = if let Some(idx) = index {
+            let mut client = if let Some(name) = picked_session.take() {
+                attach_picked_local_session(name, config_options.clone(), &config)
+            } else if let Some(idx) = index {
                 attach_with_session_index(
                     config_options.clone(),
                     idx,

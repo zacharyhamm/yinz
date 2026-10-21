@@ -121,10 +121,13 @@ lazy_static! {
         format!("cv{}", CLIENT_SERVER_CONTRACT_VERSION);
     pub static ref YINZ_PROJ_DIR: ProjectDirs =
         ProjectDirs::from("org", "Yinz Contributors", "Yinz").unwrap();
-    pub static ref YINZ_CACHE_DIR: PathBuf = std::env::var_os("YINZ_TEST_CACHE_ROOT")
-        .map(|root| PathBuf::from(root)
-            .join(std::process::id().to_string())
-            .join("cache"))
+    pub static ref YINZ_CACHE_DIR: PathBuf = std::env::var_os("YINZ_TEST_CACHE_DIR")
+        .map(PathBuf::from)
+        .or_else(
+            || std::env::var_os("YINZ_TEST_CACHE_ROOT").map(|root| PathBuf::from(root)
+                .join(std::process::id().to_string())
+                .join("cache"))
+        )
         .unwrap_or_else(|| YINZ_PROJ_DIR.cache_dir().to_path_buf());
     pub static ref YINZ_PLUGIN_PERMISSIONS_CACHE: PathBuf = YINZ_CACHE_DIR.join("permissions.kdl");
     pub static ref YINZ_SESSION_INFO_CACHE_DIR: PathBuf = YINZ_CACHE_DIR
