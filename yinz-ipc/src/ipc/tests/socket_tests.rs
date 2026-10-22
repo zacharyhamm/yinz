@@ -1092,7 +1092,12 @@ fn acknowledged_kill_waits_for_completion_and_rejects_eof_and_cleanup_errors() {
             let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
             assert!(matches!(
                 receiver.recv_client_msg(),
-                IpcRecv::Msg(ClientToServerMsg::KillSessionWithCompletion, _)
+                IpcRecv::Msg(
+                    ClientToServerMsg::KillSessionWithCompletion {
+                        report_progress: true
+                    },
+                    _
+                )
             ));
             received_tx.send(()).unwrap();
             release_rx.recv().unwrap();
@@ -1114,5 +1119,138 @@ fn acknowledged_kill_waits_for_completion_and_rejects_eof_and_cleanup_errors() {
         release_tx.send(()).unwrap();
         assert_eq!(client.join().unwrap().is_ok(), success);
         server.join().unwrap();
+    }
+}
+
+#[cfg(unix)]
+async fn accept_confirmed_kill(listener: &tokio::net::UnixListener) -> tokio::net::UnixStream {
+    use prost::Message;
+    use tokio::io::AsyncReadExt;
+    let (mut stream, _) = listener.accept().await.unwrap();
+    let len = stream.read_u32_le().await.unwrap();
+    let mut body = vec![0; len as usize];
+    stream.read_exact(&mut body).await.unwrap();
+    let request = crate::ipc::ProtoClientToServerMsg::decode(body.as_slice()).unwrap();
+    assert_eq!(
+        ClientToServerMsg::try_from(request).unwrap(),
+        ClientToServerMsg::KillSessionWithCompletion {
+            report_progress: true
+        }
+    );
+    stream
+}
+
+#[cfg(unix)]
+async fn send_kill_reply(stream: &mut tokio::net::UnixStream, reply: ServerToClientMsg) {
+    use prost::Message;
+    use tokio::io::AsyncWriteExt;
+    let reply: crate::ipc::ProtoServerToClientMsg = reply.into();
+    let body = reply.encode_to_vec();
+    stream.write_u32_le(body.len() as u32).await.unwrap();
+    stream.write_all(&body).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn kill_progress_extends_the_deadline_but_does_not_complete_shutdown() {
+    use std::time::Duration;
+    let (_dir, name) = new_ipc();
+    let listener = tokio::net::UnixListener::bind(&name).unwrap();
+    let client =
+        tokio::spawn(async move { crate::ipc::async_kill_session_with_completion(&name).await });
+    let mut stream = accept_confirmed_kill(&listener).await;
+    // Timing is the behavior under test: two progress replies span the original deadline.
+    for _ in 0..2 {
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        assert!(
+            !client.is_finished(),
+            "progress was mistaken for completion or the deadline did not renew"
+        );
+        send_kill_reply(&mut stream, ServerToClientMsg::KillSessionProgress).await;
+    }
+    send_kill_reply(
+        &mut stream,
+        ServerToClientMsg::KillSessionComplete { error: None },
+    )
+    .await;
+    client.await.unwrap().unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn kill_progress_that_stalls_still_times_out() {
+    use std::time::Duration;
+    let (_dir, name) = new_ipc();
+    let listener = tokio::net::UnixListener::bind(&name).unwrap();
+    let client =
+        tokio::spawn(async move { crate::ipc::async_kill_session_with_completion(&name).await });
+    let mut stream = accept_confirmed_kill(&listener).await;
+    send_kill_reply(&mut stream, ServerToClientMsg::KillSessionProgress).await;
+    let error = tokio::time::timeout(Duration::from_secs(15), client)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unrelated_kill_broadcast_does_not_renew_the_deadline() {
+    use std::time::Duration;
+    let (_dir, name) = new_ipc();
+    let listener = tokio::net::UnixListener::bind(&name).unwrap();
+    let client =
+        tokio::spawn(async move { crate::ipc::async_kill_session_with_completion(&name).await });
+    let mut stream = accept_confirmed_kill(&listener).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    send_kill_reply(&mut stream, ServerToClientMsg::UnblockInputThread).await;
+    let error = tokio::time::timeout(Duration::from_secs(7), client)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn partial_kill_progress_frame_does_not_renew_the_deadline() {
+    use prost::Message;
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+    let (_dir, name) = new_ipc();
+    let listener = tokio::net::UnixListener::bind(&name).unwrap();
+    let client =
+        tokio::spawn(async move { crate::ipc::async_kill_session_with_completion(&name).await });
+    let mut stream = accept_confirmed_kill(&listener).await;
+    let reply: crate::ipc::ProtoServerToClientMsg = ServerToClientMsg::KillSessionProgress.into();
+    let body = reply.encode_to_vec();
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    stream.write_u32_le(body.len() as u32).await.unwrap();
+    stream.write_all(&body[..1]).await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(7), client)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn malformed_kill_replies_do_not_confirm_completion() {
+    use tokio::io::AsyncWriteExt;
+    for body in [vec![0xff], vec![]] {
+        let (_dir, name) = new_ipc();
+        let listener = tokio::net::UnixListener::bind(&name).unwrap();
+        let client =
+            tokio::spawn(
+                async move { crate::ipc::async_kill_session_with_completion(&name).await },
+            );
+        let mut stream = accept_confirmed_kill(&listener).await;
+        stream.write_u32_le(body.len() as u32).await.unwrap();
+        stream.write_all(&body).await.unwrap();
+        assert!(client.await.unwrap().is_err());
     }
 }

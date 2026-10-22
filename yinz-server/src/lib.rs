@@ -1608,6 +1608,7 @@ pub fn start_server_impl(
     let exit_reason: &str;
     let mut kill_session = false;
     let mut kill_completion_client = None;
+    let mut kill_progress_client = None;
     // Until a first client has initialised the session, the wait is bounded by
     // this one deadline. The client that spawned this server gives up on it
     // after `CONNECT_TO_SERVER_TIMEOUT` (30s) and exits with no way to kill
@@ -2163,10 +2164,21 @@ pub fn start_server_impl(
                     remove_client!(client_id, os_input, session_state, session_data);
                 }
             },
-            ServerInstruction::KillSession | ServerInstruction::KillSessionWithCompletion(_) => {
+            ServerInstruction::KillSession
+            | ServerInstruction::KillSessionWithCompletion { .. } => {
                 log::info!("shutdown: KillSession received");
-                if let ServerInstruction::KillSessionWithCompletion(client_id) = instruction {
+                if let ServerInstruction::KillSessionWithCompletion {
+                    client_id,
+                    report_progress,
+                } = instruction
+                {
                     kill_completion_client = Some(client_id);
+                    if report_progress {
+                        kill_progress_client = Some(client_id);
+                        os_input
+                            .send_to_client(client_id, ServerToClientMsg::KillSessionProgress)
+                            .non_fatal();
+                    }
                 }
                 // Keep clients registered until exit; disconnect cleanup would cancel plugin unload.
                 let client_ids = session_state.read().unwrap().client_ids();
@@ -2681,6 +2693,13 @@ pub fn start_server_impl(
     }
 
     let shutdown_started = std::time::Instant::now();
+    let mut progress = || {
+        if let Some(client_id) = kill_progress_client {
+            os_input
+                .send_to_client(client_id, ServerToClientMsg::KillSessionProgress)
+                .non_fatal();
+        }
+    };
     log::info!("Server exiting: {exit_reason}");
     shutdown.begin();
     // No one drains this bounded channel now. Disconnect it before joining workers that
@@ -2688,6 +2707,7 @@ pub fn start_server_impl(
     drop(server_receiver);
 
     ownership.shutdown().non_fatal();
+    progress();
 
     // Drop cached session data before exit. This joins the pty thread, which
     // drops `Pty` and closes every pane — which is what terminates each pane's
@@ -2701,6 +2721,7 @@ pub fn start_server_impl(
     } else {
         Ok(())
     };
+    progress();
     log::info!(
         "shutdown: acquiring session-data lock at {:?}",
         shutdown_started.elapsed()
@@ -2711,6 +2732,7 @@ pub fn start_server_impl(
         shutdown_started.elapsed()
     );
     drop(session_metadata);
+    progress();
     log::info!(
         "shutdown: workers dropped at {:?}",
         shutdown_started.elapsed()
@@ -2719,6 +2741,7 @@ pub fn start_server_impl(
     // Belt and braces. A supervisor that outlived the sweep above would be a
     // leaked user process holding a live shell, invisible until `pty-host list`.
     os_input.shutdown_pty_hosts();
+    progress();
     log::info!(
         "shutdown: PTY hosts stopped at {:?}",
         shutdown_started.elapsed()
@@ -2727,6 +2750,7 @@ pub fn start_server_impl(
     // left detached when it died without shutting down. Only on a kill: a detach
     // or a last-client exit is not the user saying those panes are done.
     let owned_teardown = tracking.and_then(|_| os_input.confirm_pty_host_shutdown());
+    progress();
     log::info!(
         "shutdown: PTY host shutdown confirmed at {:?}",
         shutdown_started.elapsed()
@@ -2734,7 +2758,7 @@ pub fn start_server_impl(
     let cleanup = if kill_session {
         envs::get_session_name()
             .context("missing session name during shutdown")
-            .and_then(|name| os_input.terminate_orphaned_pty_hosts(name.as_str()))
+            .and_then(|name| os_input.terminate_orphaned_pty_hosts(name.as_str(), &mut progress))
     } else {
         Ok(())
     };

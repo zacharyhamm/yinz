@@ -29,6 +29,7 @@ message ServerToClientMsg {
     EventUpdateMsg event_update = 20;
     AgentReportAcceptedMsg agent_report_accepted = 21;
     KillSessionCompleteMsg kill_session_complete = 22;
+    KillSessionProgressMsg kill_session_progress = 27;
   }
 }
 
@@ -113,6 +114,7 @@ message EmitNestedSessionFrameMsg {
 
 message AgentReportAcceptedMsg { string report_id = 1; }
 message KillSessionCompleteMsg { optional string error = 1; }
+message KillSessionProgressMsg {}
 
 message DataResponseMsg {
   string request_id = 1;

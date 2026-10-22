@@ -583,9 +583,24 @@ pub fn terminate_orphans_of_session(session: &str) -> Result<Vec<HostStatus>> {
     terminate_orphans_of_session_in(&protocol::socket_dir(), session)
 }
 
+pub fn terminate_orphans_of_session_with_progress(
+    session: &str,
+    progress: &mut dyn FnMut(),
+) -> Result<Vec<HostStatus>> {
+    terminate_orphans_of_session_in_with_progress(&protocol::socket_dir(), session, progress)
+}
+
 pub(crate) fn terminate_orphans_of_session_in(
     dir: &Path,
     session: &str,
+) -> Result<Vec<HostStatus>> {
+    terminate_orphans_of_session_in_with_progress(dir, session, &mut || {})
+}
+
+fn terminate_orphans_of_session_in_with_progress(
+    dir: &Path,
+    session: &str,
+    progress: &mut dyn FnMut(),
 ) -> Result<Vec<HostStatus>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -593,12 +608,12 @@ pub(crate) fn terminate_orphans_of_session_in(
         .context("failed to start orphan cleanup runtime")?;
     runtime.block_on(async {
         use futures_util::{stream, StreamExt};
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let timeout = std::time::Duration::from_secs(5);
         let mut terminated = Vec::new();
         let mut errors = Vec::new();
-        let mut unresolved = std::collections::BTreeSet::new();
-        let sweep = async {
-            let mut paths = Vec::new();
+        let mut paths = Vec::new();
+        progress();
+        let discover = async {
             let mut dir = match tokio::fs::read_dir(dir).await {
                 Ok(dir) => dir,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -611,33 +626,36 @@ pub(crate) fn terminate_orphans_of_session_in(
             {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("sock") {
-                    unresolved.insert(path.clone());
                     paths.push(path);
-                }
-            }
-            let mut pending = stream::iter(paths.into_iter().map(|path| async move {
-                let result = sweep_socket(&path, session)
-                    .await
-                    .with_context(|| format!("unresolved supervisor {}", path.display()));
-                (path, result)
-            }))
-            .buffer_unordered(32);
-            while let Some((path, result)) = pending.next().await {
-                unresolved.remove(&path);
-                match result {
-                    Ok(Some(status)) => terminated.push(status),
-                    Ok(None) => {},
-                    Err(e) => errors.push(format!("{e:#}")),
                 }
             }
             Ok::<(), anyhow::Error>(())
         };
-        match tokio::time::timeout_at(deadline, sweep).await {
+        match tokio::time::timeout(timeout, discover).await {
             Ok(Ok(())) => {},
             Ok(Err(e)) => errors.push(format!("{e:#}")),
             Err(_) => errors.push(format!(
-                "five-second orphan sweep deadline exceeded; discovery or cleanup incomplete; unresolved supervisors: {unresolved:?}"
+                "five-second supervisor discovery deadline exceeded for {}",
+                dir.display()
             )),
+        }
+        progress();
+        let mut pending = stream::iter(paths.into_iter().map(|path| async move {
+            // Queued supervisors get their full query-and-termination budget when polled.
+            tokio::time::timeout(timeout, sweep_socket(&path, session))
+                .await
+                .context("five-second supervisor deadline exceeded")
+                .and_then(|result| result)
+                .with_context(|| format!("unresolved supervisor {}", path.display()))
+        }))
+        .buffer_unordered(32);
+        while let Some(result) = pending.next().await {
+            match result {
+                Ok(Some(status)) => terminated.push(status),
+                Ok(None) => {},
+                Err(e) => errors.push(format!("{e:#}")),
+            }
+            progress();
         }
         if !errors.is_empty() {
             bail!("incomplete orphan cleanup: {}", errors.join("; "));

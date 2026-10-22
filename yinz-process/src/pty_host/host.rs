@@ -52,7 +52,6 @@ use nix::{
     poll::{poll, PollFd, PollFlags, PollTimeout},
     pty::{openpty, Winsize},
     sys::signal::{kill, Signal},
-    sys::wait::{waitpid, WaitPidFlag, WaitStatus},
     unistd::Pid,
 };
 use yinz_runtime::errors::prelude::*;
@@ -73,6 +72,10 @@ const RING_CAPACITY: usize = 256 * 1024;
 /// How long to let a child wind down after `SIGHUP` before resorting to
 /// `SIGKILL`.
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
+
+// Leave time for the completion reply before the client's four-second deadline.
+const TERMINATE_KILL_GRACE: Duration = Duration::from_secs(1);
+const TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A `Query` from the CLI must not be able to wedge the supervisor.
 const CLI_CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
@@ -161,11 +164,34 @@ struct Session {
     /// master return `EIO`/`0`, which is how a pane learns to close.
     slave: Option<OwnedFd>,
     child_pid: ProcessId,
+    // Dropping this sender releases the waiter's WNOWAIT reservation on the PID.
+    reap_child: Option<Sender<()>>,
+    child_reaped: Receiver<std::io::Result<std::process::ExitStatus>>,
     exit_status: Option<Option<i32>>,
     /// Set once the master has nothing left to give. Without it the poll loop
     /// would keep watching a hung-up descriptor that is permanently "ready", and
     /// an orphaned pane whose child has exited would spin a core forever.
     drained: bool,
+}
+
+impl Session {
+    fn signal_child_group(&self, signal: Signal) -> Result<()> {
+        self.reap_child
+            .as_ref()
+            .context("cannot signal a pane group after releasing its leader")?;
+        let pid = super::kernel_pid(self.child_pid);
+        // ECHILD means ownership was lost; a numeric PID alone is no longer safe.
+        wait_child(pid, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG)
+            .context("failed to verify ownership of the pane leader")?;
+        let group =
+            super::process_group(pid).context("failed to select the pane's process group")?;
+        match kill(group, Some(signal)) {
+            Ok(()) | Err(Errno::ESRCH) => Ok(()),
+            Err(error) => Err(error).with_context(|| {
+                format!("failed to send {signal} to pane group {}", self.child_pid)
+            }),
+        }
+    }
 }
 
 /// Entry point for `yinz --pty-host`. Never returns.
@@ -590,7 +616,7 @@ fn event_loop(
                                 )?;
                             },
                             HostEvent::TerminateRequested => {
-                                terminate(ctx, &event_rx);
+                                terminate(ctx, &event_rx).non_fatal();
                                 return Ok(());
                             },
                         }
@@ -602,13 +628,9 @@ fn event_loop(
                             Ok((stream, _)) => match serve_cli_connection(ctx, stream) {
                                 CliOutcome::Done => {},
                                 CliOutcome::TerminateWithCompletion(mut stream) => {
-                                    let child_pid = ctx.session.as_ref().map(|s| s.child_pid);
-                                    terminate(ctx, &event_rx);
-                                    let error = child_pid
-                                        .filter(|pid| {
-                                            kill(super::kernel_pid(*pid), None) != Err(Errno::ESRCH)
-                                        })
-                                        .map(|_| "child teardown unconfirmed".to_owned());
+                                    let error = terminate(ctx, &event_rx)
+                                        .err()
+                                        .map(|error| format!("{error:#}"));
                                     let reply = HostToServerMsg::TerminationComplete {
                                         terminated: true,
                                         error,
@@ -617,7 +639,7 @@ fn event_loop(
                                     return Ok(());
                                 },
                                 CliOutcome::Terminate => {
-                                    terminate(ctx, &event_rx);
+                                    terminate(ctx, &event_rx).non_fatal();
                                     return Ok(());
                                 },
                                 CliOutcome::Attached(stream) => {
@@ -676,7 +698,7 @@ fn handle_server_msg(
             Ok(ControlOutcome::Continue)
         },
         ServerToHostMsg::Terminate => {
-            terminate(ctx, event_rx);
+            terminate(ctx, event_rx).non_fatal();
             Ok(ControlOutcome::Exit)
         },
         ServerToHostMsg::Query => {
@@ -1053,48 +1075,66 @@ fn abandon_attach(ctx: &mut HostContext, buffered: Vec<u8>) -> CliOutcome {
     CliOutcome::Done
 }
 
-fn kill_current_child(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {
-    let Some(session) = ctx.session.as_ref() else {
-        return;
+fn kill_current_child(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) -> Result<()> {
+    let Some(mut session) = ctx.session.take() else {
+        return Ok(());
     };
-    if session.exit_status.is_some() {
-        ctx.session = None;
-        return;
-    }
-    let pid = super::kernel_pid(session.child_pid);
-    // A stopped child does not act on SIGHUP until it runs again, so a pane
-    // closed while suspended would sit out the whole grace period and then be
-    // SIGKILLed — no hangup for its descendants. Wake it first; SIGCONT is
-    // delivered even to a stopped process.
-    let _ = kill(pid, Some(Signal::SIGCONT));
-    let _ = kill(pid, Some(Signal::SIGHUP));
-    let deadline = std::time::Instant::now() + TERMINATE_GRACE;
+    // Stopped group members must resume to handle the hangup.
+    session.signal_child_group(Signal::SIGCONT)?;
+    session.signal_child_group(Signal::SIGHUP)?;
+    let grace_deadline = std::time::Instant::now() + TERMINATE_GRACE;
+    let kill_deadline = grace_deadline + TERMINATE_KILL_GRACE;
+    let mut leader_reaped = false;
+    let mut escalated = false;
     loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            let _ = kill(pid, Some(Signal::SIGKILL));
-            // The waiter thread will observe this; give it a moment to report so
-            // the child is reaped rather than left a zombie of ours.
-            let _ = event_rx.recv_timeout(TERMINATE_GRACE);
-            break;
+        let now = std::time::Instant::now();
+        if !escalated && now >= grace_deadline {
+            // Keep the leader unreaped through the last signal, even if it exited earlier.
+            session.signal_child_group(Signal::SIGKILL)?;
+            session.reap_child.take();
+            escalated = true;
         }
-        match event_rx.recv_timeout(remaining) {
-            Ok(HostEvent::ChildExited(_)) => break,
-            // A child that is merely stopped has not gone anywhere: SIGKILL is
-            // not blockable, so keep waiting for the exit rather than mistaking
-            // a suspend for one.
-            Ok(HostEvent::ChildStopped(_)) | Ok(HostEvent::ChildContinued) => continue,
-            Ok(HostEvent::TerminateRequested) => continue,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
+        if escalated && !leader_reaped {
+            match session.child_reaped.try_recv() {
+                Ok(result) => {
+                    result.context("failed to reap the pane leader")?;
+                    leader_reaped = true;
+                },
+                Err(mpsc::TryRecvError::Empty) => {},
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(anyhow!("pane waiter ended without reaping its leader"));
+                },
+            }
+        }
+        let group_gone = leader_reaped && super::process_group_terminated(session.child_pid);
+        if group_gone {
+            return Ok(());
+        }
+        if now >= kill_deadline {
+            return Err(anyhow!(
+                "pane {} teardown unconfirmed: leader reaped={leader_reaped}, group gone={group_gone}",
+                session.child_pid
+            ));
+        }
+        let deadline = if escalated {
+            kill_deadline
+        } else {
+            grace_deadline
+        };
+        let wait = deadline
+            .saturating_duration_since(now)
+            .min(TERMINATE_POLL_INTERVAL);
+        match event_rx.recv_timeout(wait) {
+            Ok(_) | Err(RecvTimeoutError::Timeout) => {},
+            // The leader's waiter can be gone while its group still needs escalation.
+            Err(RecvTimeoutError::Disconnected) => std::thread::sleep(wait),
         }
     }
-    ctx.session = None;
 }
 
-fn terminate(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) {
+fn terminate(ctx: &mut HostContext, event_rx: &Receiver<HostEvent>) -> Result<()> {
     log::info!("pty-host {} ({}) terminating", ctx.host_id, ctx.label);
-    kill_current_child(ctx, event_rx);
+    kill_current_child(ctx, event_rx).context("failed to terminate pane")
 }
 
 fn cleanup_socket(host_id: &SupervisorId) {
@@ -1376,6 +1416,9 @@ fn start_session(
         });
     }
 
+    let child_wake = wake_tx
+        .try_clone()
+        .context("failed to clone the child wake channel")?;
     let child = command
         .spawn()
         .with_context(|| format!("failed to spawn '{}'", cmd.command.to_string_lossy()))?;
@@ -1391,12 +1434,14 @@ fn start_session(
         }
     }
 
-    spawn_child_waiter(child, event_tx.clone(), wake_tx.try_clone()?);
+    let (reap_child, child_reaped) = spawn_child_waiter(child, event_tx.clone(), child_wake);
 
     Ok(Session {
         master,
         slave: Some(slave),
         child_pid,
+        reap_child: Some(reap_child),
+        child_reaped,
         exit_status: None,
         drained: false,
     })
@@ -1444,11 +1489,11 @@ fn acquire_controlling_tty(slave_raw: RawFd) -> bool {
 
 /// Watch the child for good, not just for its exit.
 ///
-/// `Child::wait` cannot be used here: it is `waitpid` without `WUNTRACED`, so a
+/// `Child::wait` cannot observe job control: it is `waitpid` without `WUNTRACED`, so a
 /// stopped child is indistinguishable from a busy one and `^Z` in a command pane
-/// looks exactly like a hang. `nix`'s `waitpid` reaps the child itself, so the
-/// `Child` is deliberately never waited on — it is only kept alive so nothing
-/// else reaps the pid out from under this loop.
+/// looks exactly like a hang. Observe exits with WNOWAIT to reserve the leader's
+/// PID until the session releases it after the last group signal. Dropping the
+/// release sender on an error also lets this thread reap the child when it exits.
 ///
 /// Once the child *is* stopped the wait has to become a poll, because
 /// `WCONTINUED` is not enough on every kernel. On XNU a blocking `waitpid` is
@@ -1473,41 +1518,64 @@ fn acquire_controlling_tty(slave_raw: RawFd) -> bool {
 /// command it was told to run — and resumed there will therefore still be
 /// reported as stopped. Polling narrows that to the interval below; closing it
 /// entirely would mean reading the process's state rather than waiting on it.
-fn spawn_child_waiter(child: Child, event_tx: Sender<HostEvent>, wake_tx: UnixStream) {
+fn spawn_child_waiter(
+    mut child: Child,
+    event_tx: Sender<HostEvent>,
+    wake_tx: UnixStream,
+) -> (
+    Sender<()>,
+    Receiver<std::io::Result<std::process::ExitStatus>>,
+) {
+    let (reap_tx, reap_rx) = mpsc::channel();
+    let (reaped_tx, reaped_rx) = mpsc::channel();
     let mut wake_tx = wake_tx;
     std::thread::spawn(move || {
         let pid = Pid::from_raw(child.id() as i32);
-        let flags = WaitPidFlag::WUNTRACED | WaitPidFlag::WCONTINUED;
+        let flags = libc::WEXITED | libc::WSTOPPED | libc::WCONTINUED | libc::WNOWAIT;
         let mut stopped = false;
         loop {
             let flags = if stopped {
-                flags | WaitPidFlag::WNOHANG
+                flags | libc::WNOHANG
             } else {
                 flags
             };
-            let event = match waitpid(pid, Some(flags)) {
-                Ok(WaitStatus::Exited(_, code)) => HostEvent::ChildExited(Some(code)),
-                Ok(WaitStatus::Signaled(_, _, _)) => HostEvent::ChildExited(None),
-                Ok(WaitStatus::Stopped(_, signal)) => HostEvent::ChildStopped(signal as i32),
-                Ok(WaitStatus::Continued(_)) => HostEvent::ChildContinued,
-                // Only reachable while polling, and the only arm that sleeps —
+            let observed = wait_child(pid, flags).and_then(|event| match event {
+                Some(HostEvent::ChildStopped(_) | HostEvent::ChildContinued) => {
+                    // Consume job-control events, but never an exit that races with them.
+                    wait_child(pid, libc::WSTOPPED | libc::WCONTINUED | libc::WNOHANG).or_else(
+                        |error| {
+                            if error == Errno::ECHILD {
+                                // An exited child is ineligible for a job-control-only wait.
+                                wait_child(pid, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG)
+                            } else {
+                                Err(error)
+                            }
+                        },
+                    )
+                },
+                other => Ok(other),
+            });
+            let event = match observed {
+                Ok(Some(event)) => event,
+                // No pending state, and the only arm that sleeps —
                 // which is what keeps the poll from becoming a spin. The first
                 // poll after a stop is deliberately not delayed: the kernel
                 // holds a continue only until the process next `exec`s, so the
                 // sooner it is asked the smaller that window is.
-                Ok(WaitStatus::StillAlive) => {
+                Ok(None) => {
                     std::thread::sleep(STOPPED_POLL_INTERVAL);
                     continue;
                 },
-                // The ptrace statuses, which exist only on Linux — so on every
-                // other platform the arms above are already exhaustive.
-                #[allow(unreachable_patterns)]
-                Ok(_) => continue,
                 Err(Errno::EINTR) => continue,
                 // ECHILD and friends: there is nothing left to wait for, and a
                 // waiter that returned without reporting would leave the pane
                 // open forever. Report an unknown status instead.
-                Err(_) => HostEvent::ChildExited(None),
+                Err(error) => {
+                    Err::<(), _>(error)
+                        .context("failed to observe the pane child")
+                        .non_fatal();
+                    HostEvent::ChildExited(None)
+                },
             };
             // Recomputed every time, so a continue or an exit puts the loop back
             // on the blocking wait.
@@ -1519,8 +1587,35 @@ fn spawn_child_waiter(child: Child, event_tx: Sender<HostEvent>, wake_tx: UnixSt
                 break;
             }
         }
-        drop(child);
+        let _ = reap_rx.recv();
+        let _ = reaped_tx.send(child.wait());
     });
+    (reap_tx, reaped_rx)
+}
+
+// nix does not expose waitid on macOS; libc supports the same WNOWAIT contract there.
+fn wait_child(pid: Pid, flags: i32) -> nix::Result<Option<HostEvent>> {
+    // Zeroing also handles kernels that leave siginfo untouched for WNOHANG.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    Errno::result(unsafe {
+        libc::waitid(libc::P_PID, pid.as_raw() as libc::id_t, &mut info, flags)
+    })?;
+    decode_child_event(&info)
+}
+
+fn decode_child_event(info: &libc::siginfo_t) -> nix::Result<Option<HostEvent>> {
+    // XNU can report CLD_CONTINUED with a zero PID.
+    if info.si_signo == 0 {
+        return Ok(None);
+    }
+    let status = unsafe { info.si_status() };
+    match info.si_code {
+        libc::CLD_EXITED => Ok(Some(HostEvent::ChildExited(Some(status)))),
+        libc::CLD_KILLED | libc::CLD_DUMPED => Ok(Some(HostEvent::ChildExited(None))),
+        libc::CLD_STOPPED | libc::CLD_TRAPPED => Ok(Some(HostEvent::ChildStopped(status))),
+        libc::CLD_CONTINUED => Ok(Some(HostEvent::ChildContinued)),
+        _ => Err(Errno::EINVAL),
+    }
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@ fn server_message_name(msg: &ServerToClientMsg) -> String {
         ServerToClientMsg::PluginResponse { .. } => "PluginResponse",
         ServerToClientMsg::AgentReportAccepted { .. } => "AgentReportAccepted",
         ServerToClientMsg::KillSessionComplete { .. } => "KillSessionComplete",
+        ServerToClientMsg::KillSessionProgress => "KillSessionProgress",
         ServerToClientMsg::Render { .. } => "Render",
         ServerToClientMsg::UnblockInputThread => "UnblockInputThread",
         ServerToClientMsg::Exit { .. } => "Exit",

@@ -374,7 +374,11 @@ impl ServerOsApi for FakeServerOsApi {
         self.shared_ptys.remove(terminal_id);
         Ok(())
     }
-    fn terminate_orphaned_pty_hosts(&self, session: &str) -> Result<()> {
+    fn terminate_orphaned_pty_hosts(
+        &self,
+        session: &str,
+        _progress: &mut dyn FnMut(),
+    ) -> Result<()> {
         self.orphan_sweeps.lock().unwrap().push(session.to_owned());
         if let Some(error) = self.orphan_sweep_error.lock().unwrap().as_ref() {
             bail!("{error}");

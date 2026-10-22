@@ -24,7 +24,10 @@ pub enum ServerInstruction {
     RemoveClient(ClientId),
     Error(String),
     KillSession,
-    KillSessionWithCompletion(ClientId),
+    KillSessionWithCompletion {
+        client_id: ClientId,
+        report_progress: bool,
+    },
     DetachSession(Vec<ClientId>, Option<NotificationEnd>),
     AttachClient(
         CliAssets,
@@ -125,7 +128,7 @@ impl From<&ServerInstruction> for ServerContext {
             ServerInstruction::ConfigurationEditor { .. } => ServerContext::Reconfigure,
             ServerInstruction::SavePaletteTheme { .. } => ServerContext::Reconfigure,
             ServerInstruction::SetCommandPaletteOpen(..) => ServerContext::ChangeMode,
-            ServerInstruction::KillSessionWithCompletion(..) => ServerContext::KillSession,
+            ServerInstruction::KillSessionWithCompletion { .. } => ServerContext::KillSession,
             ServerInstruction::CliPipeError(..) => ServerContext::LogError,
             other => {
                 let name: &'static str = other.into();

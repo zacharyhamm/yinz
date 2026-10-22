@@ -500,7 +500,7 @@ pin_context_to_instruction! {
         ),
         (
             "KillSessionWithCompletion",
-            ServerInstruction::KillSessionWithCompletion(ClientId::new(1)),
+            ServerInstruction::KillSessionWithCompletion { client_id: ClientId::new(1), report_progress: true },
             "KillSession"
         ),
         (

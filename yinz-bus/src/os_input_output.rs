@@ -261,7 +261,11 @@ pub trait ServerOsApi: Send + Sync {
     /// out of a `KillSession` only. They are what an earlier incarnation of this
     /// session left behind when it died without shutting down; killing the
     /// session by name is the user saying those panes are done too.
-    fn terminate_orphaned_pty_hosts(&self, _session: &str) -> Result<()> {
+    fn terminate_orphaned_pty_hosts(
+        &self,
+        _session: &str,
+        _progress: &mut dyn FnMut(),
+    ) -> Result<()> {
         Ok(())
     }
     /// Wait for queued client messages to reach their sockets, on the way out.

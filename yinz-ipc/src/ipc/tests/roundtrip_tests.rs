@@ -4337,7 +4337,12 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::ClientExited);
     test_client_roundtrip!(ClientToServerMsg::KillSession);
-    test_client_roundtrip!(ClientToServerMsg::KillSessionWithCompletion);
+    test_client_roundtrip!(ClientToServerMsg::KillSessionWithCompletion {
+        report_progress: false
+    });
+    test_client_roundtrip!(ClientToServerMsg::KillSessionWithCompletion {
+        report_progress: true
+    });
     test_client_roundtrip!(ClientToServerMsg::ConnStatus);
     test_client_roundtrip!(ClientToServerMsg::RequestSessionList);
     test_client_roundtrip!(ClientToServerMsg::HostTerminalFocusChanged { focused: true });
@@ -4794,6 +4799,7 @@ fn test_server_messages() {
             ..AgentResponse::default()
         }));
     }
+    test_server_roundtrip!(ServerToClientMsg::KillSessionProgress);
     test_server_roundtrip!(ServerToClientMsg::KillSessionComplete { error: None });
     test_server_roundtrip!(ServerToClientMsg::KillSessionComplete {
         error: Some("cleanup failed".into())
@@ -5715,4 +5721,26 @@ fn tab_groups_options_round_trip() {
             options
         );
     }
+}
+
+#[test]
+fn legacy_completion_request_does_not_opt_into_progress() {
+    use crate::ipc::ProtoClientToServerMsg;
+    // Field 32 with the original empty message body.
+    let legacy = [0x82, 0x02, 0x00];
+    let decoded = ProtoClientToServerMsg::decode(legacy.as_slice()).unwrap();
+    let request = ClientToServerMsg::KillSessionWithCompletion {
+        report_progress: false,
+    };
+    assert_eq!(ClientToServerMsg::try_from(decoded).unwrap(), request);
+    let encoded: ProtoClientToServerMsg = request.try_into().unwrap();
+    assert_eq!(encoded.encode_to_vec(), legacy);
+    let json: ClientToServerMsg =
+        serde_json::from_str(r#"{"KillSessionWithCompletion":{}}"#).unwrap();
+    assert_eq!(
+        json,
+        ClientToServerMsg::KillSessionWithCompletion {
+            report_progress: false
+        }
+    );
 }

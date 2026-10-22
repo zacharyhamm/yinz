@@ -189,7 +189,10 @@ pub enum ClientToServerMsg {
     Paste(String),
     ClientExited,
     KillSession,
-    KillSessionWithCompletion,
+    KillSessionWithCompletion {
+        #[serde(default)]
+        report_progress: bool,
+    },
     ConnStatus,
     SubscribeToPaneRenders {
         pane_ids: Vec<PaneId>,
@@ -264,6 +267,7 @@ pub enum ServerToClientMsg {
     KillSessionComplete {
         error: Option<String>,
     },
+    KillSessionProgress,
     AgentReportAccepted {
         report_id: String,
     },
@@ -736,20 +740,13 @@ pub async fn async_send_kill_and_await(path: &std::path::Path) -> io::Result<()>
     Ok(())
 }
 
-/// Wait up to ten seconds for confirmed server teardown.
+/// Wait for confirmed server teardown, allowing ten seconds between progress replies.
 #[cfg(unix)]
 pub fn kill_session_with_completion(path: &std::path::Path) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            async_kill_session_with_completion(path),
-        )
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "waiting for shutdown completion"))?
-    })
+    runtime.block_on(async_kill_session_with_completion(path))
 }
 
 /// Unlike the legacy kill, only a post-teardown reply confirms completion.
@@ -759,26 +756,51 @@ pub async fn async_kill_session_with_completion(path: &std::path::Path) -> io::R
     use interprocess::local_socket::{prelude::*, GenericFilePath};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let mut stream: interprocess::local_socket::tokio::Stream =
-        interprocess::local_socket::tokio::Stream::connect(path.to_fs_name::<GenericFilePath>()?)
+    let timeout = std::time::Duration::from_secs(10);
+    let mut deadline = tokio::time::Instant::now() + timeout;
+    let timed_out = |_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "waiting for shutdown progress or completion",
+        )
+    };
+    let mut stream = tokio::time::timeout_at(deadline, async {
+        let mut stream: interprocess::local_socket::tokio::Stream =
+            interprocess::local_socket::tokio::Stream::connect(
+                path.to_fs_name::<GenericFilePath>()?,
+            )
             .await?;
-    let request: ProtoClientToServerMsg =
-        ClientToServerMsg::KillSessionWithCompletion
-            .try_into()
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let body = request.encode_to_vec();
-    stream.write_all(&(body.len() as u32).to_le_bytes()).await?;
-    stream.write_all(&body).await?;
-    stream.flush().await?;
-    loop {
-        let len = stream.read_u32_le().await? as usize;
-        if len > MAX_IPC_FRAME_LEN {
-            return Err(io::Error::other("oversized kill completion response"));
+        let request: ProtoClientToServerMsg = ClientToServerMsg::KillSessionWithCompletion {
+            report_progress: true,
         }
-        let mut body = vec![0; len];
-        stream.read_exact(&mut body).await?;
-        let response = ProtoServerToClientMsg::decode(body.as_slice())?;
-        match ServerToClientMsg::try_from(response).map_err(io::Error::other)? {
+        .try_into()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let body = request.encode_to_vec();
+        stream.write_all(&(body.len() as u32).to_le_bytes()).await?;
+        stream.write_all(&body).await?;
+        stream.flush().await?;
+        Ok::<_, io::Error>(stream)
+    })
+    .await
+    .map_err(timed_out)??;
+    loop {
+        // A partial frame or an unrelated broadcast must not renew the deadline.
+        let response = tokio::time::timeout_at(deadline, async {
+            let len = stream.read_u32_le().await? as usize;
+            if len > MAX_IPC_FRAME_LEN {
+                return Err(io::Error::other("oversized kill completion response"));
+            }
+            let mut body = vec![0; len];
+            stream.read_exact(&mut body).await?;
+            let response = ProtoServerToClientMsg::decode(body.as_slice())?;
+            ServerToClientMsg::try_from(response).map_err(io::Error::other)
+        })
+        .await
+        .map_err(timed_out)??;
+        match response {
+            ServerToClientMsg::KillSessionProgress => {
+                deadline = tokio::time::Instant::now() + timeout;
+            },
             ServerToClientMsg::KillSessionComplete { error: None } => return Ok(()),
             ServerToClientMsg::KillSessionComplete { error: Some(error) } => {
                 return Err(io::Error::other(error))
