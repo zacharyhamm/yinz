@@ -2656,8 +2656,19 @@ fn a_pane_that_could_not_start_names_its_terminal_and_its_reason() {
 /// something to take apart, and a reader task standing in for the real one so a
 /// test can see whether it survived.
 fn set_warpable_terminal(pty: &mut Pty, terminal_id: TerminalId) {
-    pty.terminal_cmds
-        .insert(terminal_id, vec!["/bin/sh".to_owned()]);
+    pty.track_launch(terminal_id, &warp_test_command(terminal_id));
+    pty.terminal_cmds.insert(
+        terminal_id,
+        vec![
+            "/usr/bin/printf".to_owned(),
+            format!("pane {terminal_id}"),
+            "argument with spaces".to_owned(),
+        ],
+    );
+    pty.terminal_cwds.insert(
+        terminal_id,
+        PathBuf::from(format!("/tmp/warp {terminal_id}")),
+    );
     pty.id_to_child_pid
         .insert(terminal_id, ProcessId::new(100 + terminal_id.get()));
     pty.task_handles
@@ -2688,6 +2699,201 @@ fn pane_messages(instructions: &[ScreenInstruction]) -> HashMap<TerminalId, Stri
 /// tests that pass one already in the past.
 fn test_warp_deadline() -> std::time::Instant {
     std::time::Instant::now() + std::time::Duration::from_secs(30)
+}
+
+fn warp_targets() -> [PaneTarget; 3] {
+    [
+        PaneTarget::Local,
+        PaneTarget::Ssh {
+            host: "ssh://developer@build-box:2222".to_owned(),
+        },
+        PaneTarget::Bubblewrap {
+            root: "/work/sandbox root".into(),
+        },
+    ]
+}
+
+#[test]
+fn a_local_rerun_replaces_the_previous_launch_command() {
+    for target in warp_targets() {
+        let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
+        pty.track_launch(
+            TERMINAL_3,
+            &RunCommand {
+                target,
+                remote_default_shell: true,
+                ..warp_test_command(TERMINAL_3)
+            },
+        );
+
+        let rerun = RunCommand {
+            command: PathBuf::from("/usr/bin/true"),
+            ..Default::default()
+        };
+        pty.rerun_command_in_pane(PaneId::Terminal(TERMINAL_3), rerun.clone())
+            .unwrap();
+
+        assert_eq!(warp_restart_command(&pty, TERMINAL_3), rerun);
+    }
+}
+
+#[test]
+fn closing_a_pane_forgets_its_launch_command() {
+    for target in warp_targets() {
+        let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
+        pty.track_launch(
+            TERMINAL_3,
+            &RunCommand {
+                target,
+                ..Default::default()
+            },
+        );
+
+        pty.close_pane(PaneId::Terminal(TERMINAL_3)).unwrap();
+
+        assert!(pty.terminal_launch_commands.is_empty());
+    }
+}
+
+fn warp_test_command(terminal_id: TerminalId) -> RunCommand {
+    RunCommand {
+        command: PathBuf::from("/usr/bin/printf"),
+        args: vec![
+            format!("pane {terminal_id}"),
+            "argument with spaces".to_owned(),
+        ],
+        cwd: Some(PathBuf::from(format!("/tmp/launch {terminal_id}"))),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn warp_restart_uses_the_launch_cwd_until_one_is_reported() {
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
+    let launch = warp_test_command(TERMINAL_3);
+    pty.track_launch(TERMINAL_3, &launch);
+
+    assert_eq!(warp_restart_command(&pty, TERMINAL_3), launch);
+}
+
+#[test]
+fn warp_restart_without_launch_metadata_uses_observed_argv() {
+    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(MockOsApi::new());
+    set_warpable_terminal(&mut pty, TERMINAL_3);
+    pty.terminal_launch_commands.clear();
+
+    assert_warp_restart_command(
+        TERMINAL_3,
+        &warp_restart_command(&pty, TERMINAL_3),
+        &PaneTarget::Local,
+    );
+}
+
+fn assert_warp_restart_command(terminal_id: TerminalId, command: &RunCommand, target: &PaneTarget) {
+    assert_eq!(
+        command,
+        &RunCommand {
+            cwd: Some(PathBuf::from(format!("/tmp/warp {terminal_id}"))),
+            target: target.clone(),
+            ..warp_test_command(terminal_id)
+        }
+    );
+}
+
+#[test]
+fn a_successful_warp_release_preserves_restart_commands_after_metadata_cleanup() {
+    let cases = warp_targets()
+        .into_iter()
+        .map(|target| (target, None))
+        .chain(["-bash", "-zsh"].map(|shell| {
+            (
+                PaneTarget::Ssh {
+                    host: "ssh://developer@build-box:2222".to_owned(),
+                },
+                Some(shell),
+            )
+        }));
+    for (target, shell) in cases {
+        for tab in [false, true] {
+            let mock = MockOsApi::new();
+            let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
+            let terminal_id = TerminalId::new(3);
+            set_warpable_terminal(&mut pty, terminal_id);
+            let launch = RunCommand {
+                target: target.clone(),
+                remote_default_shell: shell.is_some(),
+                hold_on_start: true,
+                hold_on_close: true,
+                ..warp_test_command(terminal_id)
+            };
+            pty.track_launch(terminal_id, &launch);
+            if let Some(shell) = shell {
+                pty.terminal_cmds
+                    .insert(terminal_id, vec![shell.to_owned()]);
+            }
+            let released = if tab {
+                release_tab_for_warp(&mut pty, vec![terminal_id], test_warp_deadline())
+                    .remove(0)
+                    .1
+                    .unwrap()
+            } else {
+                release_pane_for_warp(
+                    &mut pty,
+                    terminal_id,
+                    &"elsewhere".into(),
+                    test_warp_deadline(),
+                )
+                .unwrap()
+            };
+            assert!(pty.terminal_cmds.is_empty());
+            assert!(pty.terminal_cwds.is_empty());
+            assert!(pty.terminal_launch_commands.is_empty());
+            assert!(pty.id_to_child_pid.is_empty());
+            assert!(pty.task_handles.is_empty());
+            assert!(
+                !drain_screen(&screen_rx)
+                    .iter()
+                    .any(|instruction| matches!(instruction, ScreenInstruction::HoldPane(..))),
+                "successful release must not hold the pane"
+            );
+
+            // Screen can return this snapshot after the request expires and metadata is gone.
+            strand_pane_after_warp(
+                &pty,
+                terminal_id,
+                released.run_command,
+                "the caller stopped waiting",
+                Some(released.pane.recovery_command()),
+            );
+            let instructions = drain_screen(&screen_rx);
+            let held: Vec<_> = instructions
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    ScreenInstruction::HoldPane(PaneId::Terminal(id), Some(2), command) => {
+                        Some((*id, command))
+                    },
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(held.len(), 1);
+            assert_eq!(held[0].0, terminal_id);
+            assert_eq!(
+                held[0].1,
+                &RunCommand {
+                    cwd: Some(PathBuf::from(format!("/tmp/warp {terminal_id}"))),
+                    hold_on_start: false,
+                    hold_on_close: false,
+                    ..launch
+                }
+            );
+            assert!(
+                pane_messages(&instructions)[&terminal_id].contains("yinz pty-host adopt host-3")
+            );
+            assert!(pty.terminal_cmds.is_empty());
+            assert!(pty.terminal_cwds.is_empty());
+            assert!(pty.terminal_launch_commands.is_empty());
+        }
+    }
 }
 
 #[test]
@@ -2764,37 +2970,57 @@ fn a_refused_pane_is_not_told_it_was_cut_loose() {
 
 #[test]
 fn a_release_that_fails_after_the_check_says_so_in_the_pane() {
-    // The residual case: a supervisor that agrees to be asked and then does not
-    // confirm. The pane cannot be put back, so the one thing left to get right
-    // is that it stops looking alive.
-    let mock = MockOsApi::new();
-    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
-    set_warpable_terminal(&mut pty, crate::TerminalId::new(3));
-    mock.fail_the_release_of(crate::TerminalId::new(3));
+    for target in warp_targets() {
+        // The residual case: a supervisor that agrees to be asked and then does not
+        // confirm. The pane cannot be put back, so the one thing left to get right
+        // is that it stops looking alive.
+        let mock = MockOsApi::new();
+        let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+        set_warpable_terminal(&mut pty, crate::TerminalId::new(3));
+        pty.track_launch(
+            TERMINAL_3,
+            &RunCommand {
+                target: target.clone(),
+                ..warp_test_command(TERMINAL_3)
+            },
+        );
+        mock.fail_the_release_of(crate::TerminalId::new(3));
 
-    let released = release_pane_for_warp(
-        &mut pty,
-        crate::TerminalId::new(3),
-        &yinz_types::internal_ids::SessionName::new("elsewhere"),
-        test_warp_deadline(),
-    );
+        let released = release_pane_for_warp(
+            &mut pty,
+            crate::TerminalId::new(3),
+            &yinz_types::internal_ids::SessionName::new("elsewhere"),
+            test_warp_deadline(),
+        );
 
-    assert!(released.is_err(), "the release should have failed");
-    let instructions = drain_screen(&screen_rx);
-    let message = pane_messages(&instructions)
-        .remove(&TerminalId::new(3))
-        .expect("the pane should have been told what happened to it");
-    assert!(
-        message.contains("could not move this pane to 'elsewhere'"),
-        "the pane's own account should name the session it was going to, got: {message}"
-    );
-    assert!(
-        instructions.iter().any(|instruction| matches!(
-            instruction,
-            ScreenInstruction::HoldPane(PaneId::Terminal(TERMINAL_3), ..)
-        )),
-        "a pane with nothing on the other end must be held rather than left looking live"
-    );
+        assert!(released.is_err(), "the release should have failed");
+        let instructions = drain_screen(&screen_rx);
+        let message = pane_messages(&instructions)
+            .remove(&TerminalId::new(3))
+            .expect("the pane should have been told what happened to it");
+        assert!(
+            message.contains("could not move this pane to 'elsewhere'"),
+            "the pane's own account should name the session it was going to, got: {message}"
+        );
+        let command = instructions
+            .iter()
+            .find_map(|instruction| match instruction {
+                ScreenInstruction::HoldPane(PaneId::Terminal(TERMINAL_3), Some(2), command) => {
+                    Some(command)
+                },
+                _ => None,
+            })
+            .expect(
+                "a pane with nothing on the other end must be held rather than left looking live",
+            );
+        assert_warp_restart_command(TERMINAL_3, command, &target);
+        assert_eq!(
+            pty.terminal_launch_commands
+                .get(&TERMINAL_3)
+                .map(|command| &command.target),
+            Some(&target)
+        );
+    }
 }
 
 #[test]
@@ -3002,37 +3228,71 @@ fn one_unwarpable_pane_stops_a_whole_tab_being_released() {
 
 #[test]
 fn a_tab_release_that_fails_part_way_tells_every_pane_in_it() {
-    // Pane 1 was handed over before pane 3 failed, so it is orphaned and pane 3
-    // is severed. Neither has a process on the other end any more, and both have
-    // to say so — including the one whose own release "worked".
-    let mock = MockOsApi::new();
-    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
-    for terminal_id in [1, 3] {
-        set_warpable_terminal(&mut pty, crate::TerminalId::new(terminal_id));
+    for target in warp_targets() {
+        // Pane 1 was handed over before pane 3 failed, so it is orphaned and pane 3
+        // is severed. Neither has a process on the other end any more, and both have
+        // to say so — including the one whose own release "worked".
+        let mock = MockOsApi::new();
+        let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+        for terminal_id in [1, 3] {
+            set_warpable_terminal(&mut pty, crate::TerminalId::new(terminal_id));
+            pty.track_launch(
+                TerminalId::new(terminal_id),
+                &RunCommand {
+                    target: target.clone(),
+                    ..warp_test_command(TerminalId::new(terminal_id))
+                },
+            );
+        }
+        mock.fail_the_release_of(crate::TerminalId::new(3));
+
+        release_tab_for_warp(
+            &mut pty,
+            vec![crate::TerminalId::new(1), TerminalId::new(3)],
+            test_warp_deadline(),
+        );
+
+        let instructions = drain_screen(&screen_rx);
+        let held: Vec<_> = instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                ScreenInstruction::HoldPane(PaneId::Terminal(id), Some(2), command) => {
+                    Some((*id, command))
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(held.len(), 2);
+        for (id, command) in held {
+            assert_warp_restart_command(id, command, &target);
+        }
+        assert!(!pty.terminal_cmds.contains_key(&TerminalId::new(1)));
+        assert!(!pty.terminal_cwds.contains_key(&TerminalId::new(1)));
+        assert!(!pty
+            .terminal_launch_commands
+            .contains_key(&TerminalId::new(1)));
+        assert_eq!(
+            pty.terminal_launch_commands
+                .get(&TERMINAL_3)
+                .map(|command| &command.target),
+            Some(&target)
+        );
+        let messages = pane_messages(&instructions);
+        let orphaned = messages
+            .get(&TerminalId::new(1))
+            .expect("the pane handed over before the failure must say so");
+        assert!(
+            orphaned.contains("had already been handed over")
+                && orphaned.contains("yinz pty-host adopt host-1"),
+            "an orphaned pane's only way back is the recovery command, got: {orphaned}"
+        );
+        assert!(
+            messages
+                .get(&TerminalId::new(3))
+                .is_some_and(|message| message.contains("this tab could not be moved")),
+            "the pane whose release failed must say so too, got: {messages:?}"
+        );
     }
-    mock.fail_the_release_of(crate::TerminalId::new(3));
-
-    release_tab_for_warp(
-        &mut pty,
-        vec![crate::TerminalId::new(1), TerminalId::new(3)],
-        test_warp_deadline(),
-    );
-
-    let messages = pane_messages(&drain_screen(&screen_rx));
-    let orphaned = messages
-        .get(&TerminalId::new(1))
-        .expect("the pane handed over before the failure must say so");
-    assert!(
-        orphaned.contains("had already been handed over")
-            && orphaned.contains("yinz pty-host adopt host-1"),
-        "an orphaned pane's only way back is the recovery command, got: {orphaned}"
-    );
-    assert!(
-        messages
-            .get(&TerminalId::new(3))
-            .is_some_and(|message| message.contains("this tab could not be moved")),
-        "the pane whose release failed must say so too, got: {messages:?}"
-    );
 }
 
 // A pane workflow's steps each carry their own context, and `rerun_command_in_pane` is where a
@@ -3794,7 +4054,10 @@ fn warp_held_release_drains_final_output_before_acknowledging() {
             let (instruction, _) = screen_rx
                 .recv_timeout(yinz_test_support::default_timeout())
                 .unwrap();
-            if !matches!(instruction, ScreenInstruction::UpdatePaneHost(..)) {
+            if !matches!(
+                instruction,
+                ScreenInstruction::UpdatePaneHost(..) | ScreenInstruction::UpdatePaneCwd(..)
+            ) {
                 break instruction;
             }
         };

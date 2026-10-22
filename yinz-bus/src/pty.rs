@@ -411,11 +411,10 @@ pub enum PtyInstruction {
     ///
     /// For the cases Screen is the one to notice — a tab released for a warp
     /// nobody was waiting on, most of all. The message has to be written on this
-    /// thread because holding a pane means naming the command it was running,
-    /// and that is one of the things Screen hands *to* the pty thread rather
-    /// than one of the things it keeps.
+    /// thread using the restart command captured before its metadata was removed.
     StrandPaneAfterWarp {
         terminal_id: TerminalId,
+        run_command: RunCommand,
         why: String,
         recovery: Option<String>,
     },

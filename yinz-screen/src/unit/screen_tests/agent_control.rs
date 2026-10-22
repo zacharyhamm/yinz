@@ -8012,7 +8012,7 @@ fn warped_codex_consumption_waits_for_parent_and_rejects_new_input() {
                             .unwrap()
                             .clone();
                         let released = |id| {
-                            Ok(ReleasedPane::Local(ReleasedPtyHost {
+                            Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                                 host_id: yinz_types::internal_ids::SupervisorId::new(format!(
                                     "codex-warp-{id}"
                                 )),
@@ -8020,7 +8020,7 @@ fn warped_codex_consumption_waits_for_parent_and_rejects_new_input() {
                                 control_socket: Some(PathBuf::from(format!(
                                     "/tmp/codex-warp-{id}.sock"
                                 ))),
-                            }))
+                            })))
                         };
                         let payload = if whole_tab {
                             let (tab, terminals, prepared) = source

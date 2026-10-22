@@ -81,11 +81,11 @@ fn warp_departures_notify_plugins_and_subscribers_without_closing_processes() {
                 if failed {
                     Err("release failed".to_owned())
                 } else {
-                    Ok(ReleasedPane::Local(ReleasedPtyHost {
+                    Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                         host_id: SupervisorId::new(format!("host-{id}")),
                         host_pid: ProcessId::new(1),
                         control_socket: Some(PathBuf::from(format!("/tmp/warp-{id}.sock"))),
-                    }))
+                    })))
                 }
             };
             let result = if let Some((tab_id, terminals, prepared)) = prepared {
@@ -840,11 +840,11 @@ fn warping_a_visible_editor_carries_its_subject() {
         .map(|id| {
             (
                 id,
-                Ok(ReleasedPane::Local(ReleasedPtyHost {
+                Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                     host_id: SupervisorId::new(format!("host-{id}")),
                     host_pid: ProcessId::new(1),
                     control_socket: Some(PathBuf::from(format!("/tmp/warp-{id}.sock"))),
-                })),
+                }))),
             )
         })
         .collect();
@@ -951,11 +951,11 @@ fn warping_an_editor_pair_never_closes_either_process() {
         .map(|id| {
             (
                 id,
-                Ok(ReleasedPane::Local(ReleasedPtyHost {
+                Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                     host_id: SupervisorId::new(format!("host-{id}")),
                     host_pid: ProcessId::new(1),
                     control_socket: Some(PathBuf::from(format!("/tmp/warp-{id}.sock"))),
-                })),
+                }))),
             )
         })
         .collect();
@@ -1041,11 +1041,11 @@ fn the_sessions_only_pane_can_be_warped() {
     )));
     screen.pane_released_for_warp(
         TerminalId::new(1),
-        Ok(ReleasedPane::Local(ReleasedPtyHost {
+        Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
             host_id: SupervisorId::new("host-1"),
             host_pid: ProcessId::new(1),
             control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
-        })),
+        }))),
     );
     let (payload, hold) = response_rx
         .try_recv()
@@ -1102,11 +1102,11 @@ fn a_pane_released_after_its_caller_left_is_taken_back_with_its_hold() {
     drop(response_rx);
     screen.pane_released_for_warp(
         TerminalId::new(1),
-        Ok(ReleasedPane::Local(ReleasedPtyHost {
+        Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
             host_id: SupervisorId::new("host-1"),
             host_pid: ProcessId::new(1),
             control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
-        })),
+        }))),
     );
     let taken_back = pty
         .try_iter()
@@ -1316,19 +1316,21 @@ fn released_remote_pane(
     screen
         .take_released_pane_for_warp(
             terminal_id,
-            Ok(ReleasedPane::Remote(ReleasedRemotePane {
-                host: "build-box".to_owned(),
-                pane_token: format!("token-{terminal_id}"),
-                received: 4096,
-                cmd: RunCommand {
-                    command: PathBuf::from("/usr/bin/cargo"),
-                    args: vec!["watch".to_owned()],
-                    target: yinz_types::command::PaneTarget::Ssh {
-                        host: "build-box".to_owned(),
+            Ok(released_for_warp(ReleasedPane::Remote(
+                ReleasedRemotePane {
+                    host: "build-box".to_owned(),
+                    pane_token: format!("token-{terminal_id}"),
+                    received: 4096,
+                    cmd: RunCommand {
+                        command: PathBuf::from("/usr/bin/cargo"),
+                        args: vec!["watch".to_owned()],
+                        target: yinz_types::command::PaneTarget::Ssh {
+                            host: "build-box".to_owned(),
+                        },
+                        ..Default::default()
                     },
-                    ..Default::default()
                 },
-            })),
+            ))),
         )
         .expect("a remote pane should have been taken out of its tab")
 }
@@ -1446,11 +1448,11 @@ fn a_tab_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
                 .map(|terminal_id| {
                     (
                         *terminal_id,
-                        Ok(ReleasedPane::Local(ReleasedPtyHost {
+                        Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                             host_id: SupervisorId::new(format!("host-{terminal_id}")),
                             host_pid: ProcessId::new(1),
                             control_socket: Some(std::path::PathBuf::from("/tmp/warp-test.sock")),
-                        })),
+                        }))),
                     )
                 })
                 .collect(),
@@ -1462,7 +1464,13 @@ fn a_tab_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
         let (instruction, _) = pty_receiver
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("every released pane must be held and told what happened to it");
-        if let PtyInstruction::StrandPaneAfterWarp { terminal_id, .. } = instruction {
+        if let PtyInstruction::StrandPaneAfterWarp {
+            terminal_id,
+            run_command,
+            ..
+        } = instruction
+        {
+            assert_eq!(run_command, warp_restart_fixture());
             stranded.push(terminal_id);
         }
     }
@@ -1529,11 +1537,11 @@ fn a_tab_is_not_taken_apart_when_its_release_lands_inside_screens_own_reserve() 
                 .map(|terminal_id| {
                     (
                         *terminal_id,
-                        Ok(ReleasedPane::Local(ReleasedPtyHost {
+                        Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                             host_id: SupervisorId::new(format!("host-{terminal_id}")),
                             host_pid: ProcessId::new(1),
                             control_socket: Some(std::path::PathBuf::from("/tmp/warp-test.sock")),
-                        })),
+                        }))),
                     )
                 })
                 .collect(),
@@ -1545,7 +1553,13 @@ fn a_tab_is_not_taken_apart_when_its_release_lands_inside_screens_own_reserve() 
         let (instruction, _) = pty_receiver
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("every released pane must be held rather than the tab closed");
-        if let PtyInstruction::StrandPaneAfterWarp { terminal_id, .. } = instruction {
+        if let PtyInstruction::StrandPaneAfterWarp {
+            terminal_id,
+            run_command,
+            ..
+        } = instruction
+        {
+            assert_eq!(run_command, warp_restart_fixture());
             stranded.push(terminal_id);
         }
     }
@@ -1619,11 +1633,11 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
             to_session,
             placement,
             client_id,
-            released: Ok(ReleasedPane::Local(ReleasedPtyHost {
+            released: Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                 host_id: SupervisorId::new("host-1".to_owned()),
                 host_pid: ProcessId::new(1),
                 control_socket: Some(std::path::PathBuf::from("/tmp/warp-test.sock")),
-            })),
+            }))),
         })
         .unwrap();
 
@@ -1634,9 +1648,11 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
         if let PtyInstruction::StrandPaneAfterWarp {
             terminal_id,
             recovery,
+            run_command,
             ..
         } = instruction
         {
+            assert_eq!(run_command, warp_restart_fixture());
             break (terminal_id, recovery);
         }
     };
@@ -2116,11 +2132,11 @@ fn warping_a_visible_stack_member_removes_the_whole_list() {
         .map(|id| {
             (
                 id,
-                Ok(ReleasedPane::Local(ReleasedPtyHost {
+                Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                     host_id: SupervisorId::new(format!("host-{id}")),
                     host_pid: ProcessId::new(1),
                     control_socket: Some(PathBuf::from(format!("/tmp/warp-{id}.sock"))),
-                })),
+                }))),
             )
         })
         .collect();
@@ -3665,13 +3681,13 @@ fn companion_capability_refusal_and_expired_group_preserve_every_pane() {
                             .map(|id| {
                                 (
                                     *id,
-                                    Ok(ReleasedPane::Local(ReleasedPtyHost {
+                                    Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                                         host_id: SupervisorId::new(format!("companion-{id}")),
                                         host_pid: ProcessId::new(1),
                                         control_socket: Some(PathBuf::from(format!(
                                             "/tmp/companion-{id}.sock"
                                         ))),
-                                    })),
+                                    }))),
                                 )
                             })
                             .collect(),
@@ -3685,11 +3701,13 @@ fn companion_capability_refusal_and_expired_group_preserve_every_pane() {
                         PtyInstruction::StrandPaneAfterWarp {
                             terminal_id,
                             recovery,
+                            run_command,
                             ..
                         } => {
                             assert!(recovery
                                 .unwrap()
                                 .contains(&format!("companion-{terminal_id}")));
+                            assert_eq!(run_command, warp_restart_fixture());
                             recovered.push(terminal_id);
                         },
                         PtyInstruction::ClosePane(..) | PtyInstruction::CloseTab(..) => {
@@ -3787,13 +3805,13 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                                 control_socket: Some(format!("/tmp/warp-{id}.sock").into()),
                             }),
                         };
-                        (id, Ok(pane))
+                        (id, Ok(released_for_warp(pane)))
                     })
                     .collect();
                 let expected: HashMap<_, _> = released
                     .iter()
                     .filter(|(id, _)| !held.contains_key(id))
-                    .map(|(id, result)| (*id, result.as_ref().unwrap().recovery_command()))
+                    .map(|(id, result)| (*id, result.as_ref().unwrap().pane.recovery_command()))
                     .collect();
                 assert_eq!(expected.len(), 2);
                 released.sort_by_key(|(id, _)| (*id == held_id) != held_first);
@@ -3830,8 +3848,10 @@ fn warp_held_revalidation_recovers_every_released_peer() {
                             terminal_id,
                             recovery,
                             why,
+                            run_command,
                         } => {
                             assert!(why.contains("held state changed"));
+                            assert_eq!(run_command, warp_restart_fixture());
                             (terminal_id, recovery.unwrap())
                         },
                         other => panic!("unexpected instruction: {other:?}"),
@@ -4008,7 +4028,10 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                         .is_none(),
                     "restart waits until the transfer finishes"
                 );
-                screen.pane_released_for_warp(TerminalId::new(1), Ok(ReleasedPane::Held(held)));
+                screen.pane_released_for_warp(
+                    TerminalId::new(1),
+                    Ok(released_for_warp(ReleasedPane::Held(held))),
+                );
                 *rx.recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap()
@@ -4042,7 +4065,12 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                         tab_index,
                         terminal_ids
                             .into_iter()
-                            .map(|id| (id, Ok(ReleasedPane::Held(held[&id].clone()))))
+                            .map(|id| {
+                                (
+                                    id,
+                                    Ok(released_for_warp(ReleasedPane::Held(held[&id].clone()))),
+                                )
+                            })
                             .collect(),
                     );
                     rx.recv().unwrap().unwrap().tiled_panes.remove(0)
@@ -4079,14 +4107,14 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
                             .map(|id| {
                                 (
                                     id,
-                                    Ok(match held.get(&id) {
+                                    Ok(released_for_warp(match held.get(&id) {
                                         Some(held) => ReleasedPane::Held(held.clone()),
                                         None => ReleasedPane::Local(ReleasedPtyHost {
                                             host_id: "live".into(),
                                             host_pid: ProcessId::new(1),
                                             control_socket: Some("/live".into()),
                                         }),
-                                    }),
+                                    })),
                                 )
                             })
                             .collect(),
@@ -4199,9 +4227,10 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                     let released = pty
                         .try_iter()
                         .find_map(|(instruction, _)| match instruction {
-                            PtyInstruction::ReleaseTerminalForWarp { held, .. } => {
-                                Some(vec![(terminal_id, Ok(ReleasedPane::Held(held.unwrap())))])
-                            },
+                            PtyInstruction::ReleaseTerminalForWarp { held, .. } => Some(vec![(
+                                terminal_id,
+                                Ok(released_for_warp(ReleasedPane::Held(held.unwrap()))),
+                            )]),
                             PtyInstruction::ReleaseTerminalsForWarp {
                                 terminal_ids, held, ..
                             } => Some(
@@ -4210,14 +4239,14 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                                     .map(|id| {
                                         (
                                             id,
-                                            Ok(match held.get(&id) {
+                                            Ok(released_for_warp(match held.get(&id) {
                                                 Some(held) => ReleasedPane::Held(held.clone()),
                                                 None => ReleasedPane::Local(ReleasedPtyHost {
                                                     host_id: "live".into(),
                                                     host_pid: ProcessId::new(1),
                                                     control_socket: Some("/live".into()),
                                                 }),
-                                            }),
+                                            })),
                                         )
                                     })
                                     .collect(),
@@ -4453,14 +4482,14 @@ fn warp_mixed_tab_keeps_terminal_8_distinct_from_status_bar_plugin_8() {
             .map(|id| {
                 (
                     id,
-                    Ok(match held.get(&id) {
+                    Ok(released_for_warp(match held.get(&id) {
                         Some(held) => ReleasedPane::Held(held.clone()),
                         None => ReleasedPane::Local(ReleasedPtyHost {
                             host_id: "live".into(),
                             host_pid: ProcessId::new(1),
                             control_socket: Some("/live".into()),
                         }),
-                    }),
+                    })),
                 )
             })
             .collect(),
@@ -4534,11 +4563,11 @@ fn pane_and_tab_warp_capture_actual_paste_mode() {
                     .map(|id| {
                         (
                             id,
-                            Ok(ReleasedPane::Local(ReleasedPtyHost {
+                            Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                                 host_id: SupervisorId::new(format!("host-{id}")),
                                 host_pid: ProcessId::new(1),
                                 control_socket: Some(PathBuf::from(format!("/tmp/warp-{id}.sock"))),
-                            })),
+                            }))),
                         )
                     })
                     .collect();
@@ -4612,11 +4641,11 @@ fn a_pane_warp_keeps_the_last_tab_until_its_hold_drops() {
             to_session: "destination".into(),
             placement: yinz_types::data::WarpPlacement::FocusedTab,
             client_id,
-            released: Ok(ReleasedPane::Local(ReleasedPtyHost {
+            released: Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                 host_id: SupervisorId::new("host-1"),
                 host_pid: ProcessId::new(1),
                 control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
-            })),
+            }))),
         })
         .unwrap();
     let (_payload, hold) = released
@@ -4817,11 +4846,11 @@ fn agent_theme_history_travels_through_pane_and_tab_warps() {
         pane.handle_pty_bytes(history(Role::Error, "second", "\x1b[32mBBB"));
         check(pane.as_mut(), true);
         let release = || {
-            Ok(ReleasedPane::Local(ReleasedPtyHost {
+            Ok(released_for_warp(ReleasedPane::Local(ReleasedPtyHost {
                 host_id: "fixture".into(),
                 host_pid: ProcessId::new(1),
                 control_socket: Some("/tmp/fixture.sock".into()),
-            }))
+            })))
         };
         let payload = if whole_tab {
             let (tab, ids, prepared) = screen

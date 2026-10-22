@@ -10,8 +10,8 @@ use yinz_types::internal_ids::TerminalId;
 use crate::loading_indication::LoadingIndication;
 use crate::plugins::{DumpSessionLayoutResponse, PluginId, PluginRenderAsset};
 use crate::pty::{AdoptedTabPanes, ClientTabIndexOrPaneId, ReplacedPane, VteBytes};
-use crate::pty_host::client::ReleasedPane;
 use crate::route::NotificationEnd;
+use crate::warp::ReleasedPaneForWarp;
 use crate::ClientId;
 use crate::PaneId;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -615,7 +615,7 @@ pub enum ScreenInstruction {
         to_session: SessionName,
         placement: WarpPlacement,
         client_id: ClientId,
-        released: Result<ReleasedPane, String>,
+        released: Result<ReleasedPaneForWarp, String>,
     },
     /// Nudge an adopted pane's process to repaint by briefly changing its size.
     RequestPaneRedraw(TerminalId),
@@ -655,7 +655,7 @@ pub enum ScreenInstruction {
     /// the reader tasks are gone, so all their output is queued ahead of this.
     TabReleasedForWarp {
         tab_index: TabId,
-        released: Vec<(TerminalId, Result<ReleasedPane, String>)>,
+        released: Vec<(TerminalId, Result<ReleasedPaneForWarp, String>)>,
     },
     /// The pty thread has taken a tab's supervisors over and this session now
     /// owns their terminal ids. All that is left is to build the tab around them.
