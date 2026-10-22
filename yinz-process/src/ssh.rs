@@ -323,7 +323,7 @@ impl HostForward {
         }
         let ssh = Command::new("ssh")
             .args(ssh_forward_args(options))
-            .arg("-N")
+            .args(["-o", "StdinNull=no"])
             .arg("-T")
             .arg("-L")
             .arg(format!(
@@ -334,7 +334,10 @@ impl HostForward {
             // End of options: see `validate_ssh_host`.
             .arg("--")
             .arg(host)
-            .stdin(Stdio::null())
+            // A command makes sshd enable TCP_NODELAY; forwarding alone delays small updates.
+            .arg("exec cat")
+            // Child owns this open pipe until teardown, keeping the remote command alive.
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
