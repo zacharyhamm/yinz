@@ -655,7 +655,7 @@ pub(crate) fn route_thread_main(
                             let cli_client_id = client_id;
                             let client_id = if is_cli_client {
                                 // A CLI connection has no focus, mode or tab of its own: actions
-                                // such as move focus or switch mode act for an attached client.
+                                // such as move focus, switch mode or quit act for one interactive client.
                                 session_state
                                     .read()
                                     .unwrap()

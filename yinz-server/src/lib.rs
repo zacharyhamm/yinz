@@ -1338,15 +1338,7 @@ impl SessionState {
         self.pipes.get(pipe_name).copied()
     }
     pub fn active_clients_are_connected(&self) -> bool {
-        let ids_of_pipe_clients: HashSet<ClientId> = self.pipes.values().copied().collect();
-        let mut active_clients_connected = false;
-        for client_id in &self.clients {
-            if ids_of_pipe_clients.contains(client_id) {
-                continue;
-            }
-            active_clients_connected = true;
-        }
-        active_clients_connected
+        self.has_interactive_clients()
     }
     pub fn convert_client_to_watcher(&mut self, client_id: ClientId) {
         self.clients.remove(&client_id);
@@ -1390,17 +1382,12 @@ impl SessionState {
     pub fn clear_forward_in_flight(&mut self, token: u32) {
         self.forwards_in_flight.remove(&token);
     }
-    /// Client to route a host-query forward to. Prefers whichever
-    /// client most recently interacted with the session; falls back
-    /// to any currently-connected non-watcher client. Returns `None`
-    /// only when no regular client is connected.
+    /// Route host queries to the last-active interactive client, falling back to the
+    /// lowest interactive client ID. CLI, pipe, subscription and watcher clients are excluded.
     pub fn pick_forward_target(&self) -> Option<ClientId> {
-        if let Some(candidate) = self.last_active_client
-            && self.clients.contains(&candidate)
-        {
-            return Some(candidate);
-        }
-        self.clients.iter().copied().next()
+        self.last_active_client
+            .filter(|client| self.interactive_clients.contains(client))
+            .or_else(|| self.interactive_clients.iter().min().copied())
     }
 }
 
@@ -2144,7 +2131,7 @@ pub fn start_server_impl(
                             .iter()
                             .copied()
                             .collect();
-                        // these are just the pipes
+                        // Only CLI, pipe and subscription connections remain.
                         for client_id in client_ids_to_cleanup {
                             remove_client!(client_id, os_input, session_state, session_data);
                         }
@@ -2160,7 +2147,7 @@ pub fn start_server_impl(
                             );
                         }
 
-                        exit_reason = "the last client exited";
+                        exit_reason = "the last interactive client exited";
                         break;
                     }
                 }
@@ -2619,13 +2606,8 @@ pub fn start_server_impl(
                 });
             },
             ServerInstruction::ForwardQueryToHost(token, query_bytes, resolve_async) => {
-                // Pick a regular (non-watcher) client to carry the
-                // forward. Preference is the most recently active
-                // client (whichever last sent input); falls back to
-                // any connected client. When the host terminals of
-                // attached clients differ, the recently-active one
-                // is the best proxy for "what the user is currently
-                // looking at".
+                // The last-active interactive client's terminal is the best proxy for
+                // what the user is looking at; otherwise use the lowest interactive ID.
                 let target_client_id = {
                     let mut session = session_state.write().unwrap();
                     let picked = session.pick_forward_target();
@@ -2647,14 +2629,14 @@ pub fn start_server_impl(
                         session_data
                     );
                 } else {
-                    // No client to ask — synthesize an empty reply
+                    // No interactive client to ask — synthesize an empty reply
                     // so `Screen`'s in-flight slot releases. Without
                     // this, a detached session (apps still running)
                     // accumulates forwards in `forward_queue` with
                     // no way for them to drain until someone
                     // reattaches.
                     log::warn!(
-                        "No connected client to forward host query (token={}); returning empty reply",
+                        "No interactive client to forward host query (token={}); returning empty reply",
                         token
                     );
                     if let Some(session) = session_data.read().unwrap().as_ref() {
@@ -3414,6 +3396,10 @@ mod cli_pipe_tests;
 mod session_start_cwd_tests;
 
 #[cfg(test)]
+#[path = "unit/client_selection_tests.rs"]
+mod client_selection_tests;
+
+#[cfg(test)]
 mod session_state_tests {
     use super::*;
     use std::str::FromStr;
@@ -3429,6 +3415,7 @@ mod session_state_tests {
         let mut s = SessionState::new();
         s.clients.insert(crate::ClientId::new(1));
         s.clients.insert(crate::ClientId::new(2));
+        s.interactive_clients.extend(s.clients.iter().copied());
         s.set_last_active_client(crate::ClientId::new(2));
         assert_eq!(s.pick_forward_target(), Some(ClientId::new(2)));
     }
@@ -3636,14 +3623,10 @@ mod session_state_tests {
         let mut s = SessionState::new();
         s.clients.insert(crate::ClientId::new(1));
         s.clients.insert(crate::ClientId::new(2));
-        // Client 3 was last active but has since disconnected — not in
-        // `clients` map anymore. Must fall through to any connected
-        // client rather than returning None.
+        s.interactive_clients.extend(s.clients.iter().copied());
+        // A stale last-active ID must fall back to the lowest interactive client ID.
         s.last_active_client = Some(crate::ClientId::new(3));
-        let picked = s
-            .pick_forward_target()
-            .expect("some client still connected");
-        assert!(picked == crate::ClientId::new(1) || picked == crate::ClientId::new(2));
+        assert_eq!(s.pick_forward_target(), Some(ClientId::new(1)));
     }
 
     #[test]
