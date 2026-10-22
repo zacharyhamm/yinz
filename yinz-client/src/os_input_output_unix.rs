@@ -47,7 +47,7 @@ impl crate::os_input_output::AsyncSignals for AsyncSignalListener {
 }
 
 /// Blocking signal iterator that maps Unix signals to `SignalEvent` variants.
-/// Used by `handle_signals()` on a dedicated thread.
+/// Used by `start_signal_listener()` on a dedicated thread.
 pub(crate) struct BlockingSignalIterator {
     signals: Signals,
 }
@@ -56,6 +56,10 @@ impl BlockingSignalIterator {
     pub fn new() -> io::Result<Self> {
         let signals = Signals::new([SIGWINCH, SIGTERM, SIGINT, SIGQUIT, SIGHUP])?;
         Ok(Self { signals })
+    }
+
+    pub fn handle(&self) -> signal_hook::iterator::Handle {
+        self.signals.handle()
     }
 }
 

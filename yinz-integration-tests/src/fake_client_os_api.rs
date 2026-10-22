@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use yinz_client::os_input_output::{
     connect_with_deadline, ClientOsApi, ConnectToServerError, ServerConnection, SignalEvent,
-    SignalSource, StdioAccess, TtyControl,
+    SignalListener, SignalSource, StdioAccess, TtyControl,
 };
 use yinz_types::input::actions::Action;
 use yinz_types::pane_size::Size;
@@ -349,37 +349,45 @@ impl ServerConnection for FakeClientOsApi {
 }
 
 impl SignalSource for FakeClientOsApi {
-    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>) {
-        loop {
-            let mut pending = self.signal_buffer.lock().unwrap();
-            if !self.is_current_connection() {
-                break;
-            }
-            let event = match pending.take() {
-                Some(event) => event,
-                None => match self
-                    .signal_rx
-                    .recv_timeout(std::time::Duration::from_millis(100))
-                {
-                    Ok(event) => event,
-                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
-                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
-                },
-            };
-            // Keep handoff from invalidating a callback between its check and send_to_server.
-            let _session_name = self.session_name.lock().unwrap();
-            if !self.is_current_connection() {
-                *pending = Some(event);
-                break;
-            }
-            match event {
-                SignalEvent::Resize => sigwinch_cb(),
-                SignalEvent::Quit => {
-                    quit_cb();
+    fn start_signal_listener(
+        &self,
+        sigwinch_cb: Box<dyn Fn() + Send>,
+        quit_cb: Box<dyn Fn() + Send>,
+    ) -> anyhow::Result<SignalListener> {
+        let connection = self.clone();
+        let (stop, cancelled) = crossbeam::channel::bounded::<()>(0);
+        SignalListener::spawn(
+            move || drop(stop),
+            move || loop {
+                let mut pending = connection.signal_buffer.lock().unwrap();
+                if !connection.is_current_connection() {
                     break;
-                },
-            }
-        }
+                }
+                let event = match pending.take() {
+                    Some(event) => event,
+                    None => crossbeam::channel::select_biased! {
+                        recv(cancelled) -> _ => break,
+                        recv(connection.signal_rx) -> event => match event {
+                            Ok(event) => event,
+                            Err(_) => break,
+                        }
+                    },
+                };
+                // Keep handoff from invalidating a callback between its check and send_to_server.
+                let _session_name = connection.session_name.lock().unwrap();
+                if !connection.is_current_connection() {
+                    *pending = Some(event);
+                    break;
+                }
+                match event {
+                    SignalEvent::Resize => sigwinch_cb(),
+                    SignalEvent::Quit => {
+                        quit_cb();
+                        break;
+                    },
+                }
+            },
+        )
     }
     fn env_variable(&self, name: &str) -> Option<String> {
         self.env.lock().unwrap().get(name).cloned()

@@ -357,7 +357,7 @@ fn pixel_size_queries_never_wait_for_the_terminal_and_coalesce() {
     let gate = Arc::new(Mutex::new(gate));
     let (entered, writing) = mpsc::channel();
     let out = Watched::<Vec<u8>>::default();
-    let queries = PixelSizeQueries::spawn({
+    let (queries, worker) = PixelSizeQueries::spawn({
         let out = out.clone();
         move || -> Box<dyn Write> {
             Box::new(GatedStdout {
@@ -388,7 +388,9 @@ fn pixel_size_queries_never_wait_for_the_terminal_and_coalesce() {
     // The ten requests made while the first was stuck came to one more query.
     assert_eq!(out.get(), [query, query].concat());
     assert!(writing.recv_timeout(Duration::from_millis(1)).is_ok());
-    assert!(writing.recv_timeout(Duration::from_millis(100)).is_err());
+    drop(queries);
+    worker.join().unwrap().unwrap();
+    assert!(writing.try_recv().is_err());
 }
 
 #[test]

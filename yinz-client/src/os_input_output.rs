@@ -287,13 +287,69 @@ pub trait ServerConnection {
 
 /// Signals and other process-level environment the client reacts to.
 pub trait SignalSource {
-    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>);
+    /// Registers signals before returning; stopping or dropping the guard joins the listener.
+    fn start_signal_listener(
+        &self,
+        sigwinch_cb: Box<dyn Fn() + Send>,
+        quit_cb: Box<dyn Fn() + Send>,
+    ) -> Result<SignalListener>;
     fn env_variable(&self, _name: &str) -> Option<String> {
         None
     }
     /// Returns an async signal listener that can be polled in tokio::select
     fn get_async_signal_listener(&self) -> io::Result<Box<dyn AsyncSignals>> {
         Ok(Box::new(AsyncSignalListener::new()?))
+    }
+}
+
+/// Owns a signal worker and the operation that wakes it for shutdown.
+pub struct SignalListener {
+    stop: Option<Box<dyn FnOnce() + Send>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl SignalListener {
+    /// `stop` must wake an idle `run` so it can return without another signal.
+    pub fn spawn(
+        stop: impl FnOnce() + Send + 'static,
+        run: impl FnOnce() + Send + 'static,
+    ) -> Result<Self> {
+        match thread::Builder::new()
+            .name("signal_listener".to_string())
+            .spawn(run)
+        {
+            Ok(thread) => Ok(Self {
+                stop: Some(Box::new(stop)),
+                thread: Some(thread),
+            }),
+            Err(error) => {
+                stop();
+                Err(error).context("failed to spawn the signal listener")
+            },
+        }
+    }
+
+    /// Cancel the listener and wait until its callbacks have been released.
+    pub fn stop(mut self) -> Result<()> {
+        self.stop_and_join()
+    }
+
+    fn stop_and_join(&mut self) -> Result<()> {
+        if let Some(stop) = self.stop.take() {
+            stop();
+        }
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| anyhow!("signal listener panicked"))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SignalListener {
+    fn drop(&mut self) {
+        self.stop_and_join().non_fatal();
     }
 }
 
@@ -504,28 +560,39 @@ impl ServerConnection for ClientOsInputOutput {
 }
 
 impl SignalSource for ClientOsInputOutput {
-    fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>) {
-        let mut sigwinch_cb_timestamp = time::Instant::now();
-        let signals = BlockingSignalIterator::new().unwrap();
-        for event in signals {
-            if !self.is_current_connection() {
-                break;
-            }
-            match event {
-                SignalEvent::Resize => {
-                    // throttle sigwinch_cb calls, reduce excessive renders while resizing
-                    if sigwinch_cb_timestamp.elapsed() < SIGWINCH_CB_THROTTLE_DURATION {
-                        thread::sleep(SIGWINCH_CB_THROTTLE_DURATION);
+    fn start_signal_listener(
+        &self,
+        sigwinch_cb: Box<dyn Fn() + Send>,
+        quit_cb: Box<dyn Fn() + Send>,
+    ) -> Result<SignalListener> {
+        let signals = BlockingSignalIterator::new().context("failed to register client signals")?;
+        let handle = signals.handle();
+        let connection = self.clone();
+        SignalListener::spawn(
+            move || handle.close(),
+            move || {
+                let mut sigwinch_cb_timestamp = time::Instant::now();
+                for event in signals {
+                    if !connection.is_current_connection() {
+                        break;
                     }
-                    sigwinch_cb_timestamp = time::Instant::now();
-                    sigwinch_cb();
-                },
-                SignalEvent::Quit => {
-                    quit_cb();
-                    break;
-                },
-            }
-        }
+                    match event {
+                        SignalEvent::Resize => {
+                            // throttle sigwinch_cb calls, reduce excessive renders while resizing
+                            if sigwinch_cb_timestamp.elapsed() < SIGWINCH_CB_THROTTLE_DURATION {
+                                thread::sleep(SIGWINCH_CB_THROTTLE_DURATION);
+                            }
+                            sigwinch_cb_timestamp = time::Instant::now();
+                            sigwinch_cb();
+                        },
+                        SignalEvent::Quit => {
+                            quit_cb();
+                            break;
+                        },
+                    }
+                }
+            },
+        )
     }
 
     fn env_variable(&self, name: &str) -> Option<String> {

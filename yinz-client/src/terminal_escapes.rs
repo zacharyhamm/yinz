@@ -340,23 +340,30 @@ impl<W: Write> Write for HostWriter<W> {
 pub(crate) struct PixelSizeQueries(std::sync::mpsc::SyncSender<()>);
 
 impl PixelSizeQueries {
-    pub fn spawn(stdout: impl Fn() -> Box<dyn Write> + Send + 'static) -> Result<Self> {
+    pub fn spawn(
+        stdout: impl Fn() -> Box<dyn Write> + Send + 'static,
+    ) -> Result<(Self, std::thread::JoinHandle<Result<()>>)> {
         let (requests, pending) = std::sync::mpsc::sync_channel::<()>(1);
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("pixel_size_queries".to_string())
             .spawn(move || {
                 // Ends when the last sender is dropped.
                 for () in pending {
                     let mut stdout = stdout();
-                    stdout
+                    let written = stdout
                         .write_all(crate::stdin_handler::PIXEL_SIZE_QUERY.as_bytes())
-                        .and_then(|()| stdout.flush())
-                        .context("failed to query the host terminal's pixel size")
-                        .non_fatal();
+                        .and_then(|()| stdout.flush());
+                    if matches!(&written, Err(e) if e.kind() == std::io::ErrorKind::TimedOut)
+                        && stalled_output_abandoned()
+                    {
+                        continue;
+                    }
+                    written.context("failed to query the host terminal's pixel size")?;
                 }
+                Ok(())
             })
             .context("failed to spawn the pixel-size query thread")?;
-        Ok(Self(requests))
+        Ok((Self(requests), thread))
     }
 
     /// Ask for a query without waiting for it to be written.
