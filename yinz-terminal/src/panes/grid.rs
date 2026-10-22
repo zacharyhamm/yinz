@@ -3049,16 +3049,17 @@ impl Grid {
         self.output_buffer.update_line(self.cursor.y);
     }
     pub fn replace_characters_in_line_before_cursor(&mut self, replace_with: TerminalCharacter) {
-        let row = self.viewport.get_mut(self.cursor.y).unwrap();
-        row.writing(&self.agent_theme);
-        // A prefix erase leaves the tail's padding colour intact unless it reaches the edge.
-        if self.cursor.x >= self.width.saturating_sub(1) {
-            row.bg_color = replace_with
-                .styles
-                .background
-                .filter(|bg| *bg != AnsiCode::Reset);
+        if let Some(row) = self.viewport.get_mut(self.cursor.y) {
+            row.writing(&self.agent_theme);
+            // A prefix erase leaves the tail's padding colour intact unless it reaches the edge.
+            if self.cursor.x >= self.width.saturating_sub(1) {
+                row.bg_color = replace_with
+                    .styles
+                    .background
+                    .filter(|bg| *bg != AnsiCode::Reset);
+            }
+            row.replace_and_pad_beginning(self.cursor.x, replace_with);
         }
-        row.replace_and_pad_beginning(self.cursor.x, replace_with);
         self.output_buffer.update_line(self.cursor.y);
     }
     pub fn clear_all_after_cursor(&mut self, replace_with: TerminalCharacter) {
@@ -3214,7 +3215,7 @@ impl Grid {
     }
     pub fn move_cursor_to(&mut self, x: usize, y: usize, pad_character: TerminalCharacter) {
         let (scroll_region_top, scroll_region_bottom) = self.scroll_region;
-        self.cursor.x = std::cmp::min(self.width - 1, x);
+        self.cursor.x = std::cmp::min(self.width.saturating_sub(1), x);
         let y_offset = if self.erasure_mode {
             scroll_region_top
         } else {
@@ -3265,14 +3266,14 @@ impl Grid {
         if self.cursor.y >= scroll_region_top && self.cursor.y <= scroll_region_bottom {
             self.cursor.y = std::cmp::min(self.cursor.y + count, scroll_region_bottom);
         } else {
-            self.cursor.y = std::cmp::min(self.cursor.y + count, self.height - 1);
+            self.cursor.y = std::cmp::min(self.cursor.y + count, self.height.saturating_sub(1));
         }
         self.pad_lines_until(self.cursor.y, pad_character);
     }
     pub fn move_cursor_back(&mut self, count: usize) {
         if self.cursor.x == self.width {
             // on the rightmost screen edge, backspace skips one character
-            self.cursor.x -= 1;
+            self.cursor.x = self.cursor.x.saturating_sub(1);
         }
         if self.cursor.x < count {
             self.cursor.x = 0;
@@ -3358,7 +3359,7 @@ impl Grid {
         self.pad_current_line_until(self.cursor.x, pad_character);
     }
     pub fn move_cursor_to_line(&mut self, line: usize, pad_character: TerminalCharacter) {
-        self.cursor.y = std::cmp::min(self.height - 1, line);
+        self.cursor.y = std::cmp::min(self.height.saturating_sub(1), line);
         self.pad_lines_until(self.cursor.y, pad_character);
         let pad_character = EMPTY_TERMINAL_CHARACTER;
         self.pad_current_line_until(self.cursor.x, pad_character);
@@ -6360,11 +6361,14 @@ impl Perform for Grid {
                     6 => {
                         // CPR - cursor position report
 
-                        // Note that this is relative to scrolling region.
-                        let offset = self.scroll_region.0; // scroll_region_top
+                        let offset = if self.erasure_mode {
+                            self.scroll_region.0
+                        } else {
+                            0
+                        };
                         let position_report = format!(
                             "\u{1b}[{};{}R",
-                            self.cursor.y + 1 - offset,
+                            self.cursor.y.saturating_sub(offset) + 1,
                             self.cursor.x + 1
                         );
                         self.pending_messages_to_pty
