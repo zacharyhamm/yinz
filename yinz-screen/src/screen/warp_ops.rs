@@ -18,6 +18,7 @@ use crate::ClientId;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
+use yinz_bus::warp::ReleasedPaneForWarp;
 use yinz_session::warped_tab::layout_for_warped_tab;
 use yinz_types::input::command::RunCommand;
 use yinz_types::input::layout::Run;
@@ -152,7 +153,7 @@ impl Screen {
     pub(super) fn tab_released_for_warp(
         &mut self,
         tab_index: TabId,
-        released: Vec<(TerminalId, Result<ReleasedPane, String>)>,
+        released: Vec<(TerminalId, Result<ReleasedPaneForWarp, String>)>,
     ) {
         let terminal_ids: Vec<_> = released.iter().map(|(id, _)| *id).collect();
         // Asked before the tab is taken apart rather than after.
@@ -180,15 +181,16 @@ impl Screen {
             } else {
                 for (terminal_id, released) in released {
                     if let Ok(released) = released {
-                        if matches!(released, ReleasedPane::Held(_)) {
+                        if matches!(released.pane, ReleasedPane::Held(_)) {
                             continue;
                         }
                         self.bus
                             .senders
                             .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
                                 terminal_id,
+                                run_command: released.run_command,
                                 why: "pane group transfer timed out".into(),
-                                recovery: Some(released.recovery_command()),
+                                recovery: Some(released.pane.recovery_command()),
                             })
                             .non_fatal();
                     }
@@ -235,16 +237,17 @@ impl Screen {
             );
             for (terminal_id, released) in released {
                 if let Ok(released) = released {
-                    if matches!(released, ReleasedPane::Held(_)) {
+                    if matches!(released.pane, ReleasedPane::Held(_)) {
                         continue;
                     }
                     self.bus
                         .senders
                         .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
                             terminal_id,
+                            run_command: released.run_command,
                             why: "this tab was moved to another session, but nothing took it"
                                 .to_owned(),
-                            recovery: Some(released.recovery_command()),
+                            recovery: Some(released.pane.recovery_command()),
                         })
                         .non_fatal();
                 }
@@ -326,7 +329,7 @@ impl Screen {
     pub(super) fn pane_released_for_warp(
         &mut self,
         terminal_id: TerminalId,
-        released: Result<ReleasedPane, String>,
+        released: Result<ReleasedPaneForWarp, String>,
     ) {
         // Asked before the pane is taken apart, exactly as
         // `TabReleasedForWarp` asks below and for the same reason:
@@ -356,15 +359,16 @@ impl Screen {
              still running and can be recovered with `yinz pty-host adopt <id>`"
             );
             if let Ok(released) = released
-                && !matches!(released, ReleasedPane::Held(_))
+                && !matches!(released.pane, ReleasedPane::Held(_))
             {
                 self.bus
                     .senders
                     .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
                         terminal_id,
+                        run_command: released.run_command,
                         why: "this pane was moved to another session, but nothing took it"
                             .to_owned(),
-                        recovery: Some(released.recovery_command()),
+                        recovery: Some(released.pane.recovery_command()),
                     })
                     .non_fatal();
             }
@@ -841,11 +845,11 @@ impl Screen {
     pub(super) fn take_released_pane_for_warp(
         &mut self,
         terminal_id: TerminalId,
-        released: Result<ReleasedPane, String>,
+        released: Result<ReleasedPaneForWarp, String>,
     ) -> Result<Box<WarpedPane>, String> {
         let released = released.map_err(|reason| self.warp_failure(terminal_id, reason))?;
-        self.validate_held_release(terminal_id, &released)?;
-        let address = Self::warp_address(released)?;
+        self.validate_held_release(terminal_id, &released.pane)?;
+        let address = Self::warp_address(released.pane)?;
         let pane_id = PaneId::Terminal(terminal_id);
         let agent_input = self.warped_agent_input(pane_id);
         let scrollback_lines = self.scrollback_lines_to_serialize;
@@ -1068,7 +1072,7 @@ impl Screen {
     pub(super) fn take_released_tab_for_warp(
         &mut self,
         tab_index: TabId,
-        released: Vec<(TerminalId, Result<ReleasedPane, String>)>,
+        released: Vec<(TerminalId, Result<ReleasedPaneForWarp, String>)>,
         prepared: PreparedTabWarp,
     ) -> Result<Box<WarpedTab>, String> {
         // PTY release failures already strand every detached peer. Check those first
@@ -1080,18 +1084,21 @@ impl Screen {
         }
         for (terminal_id, result) in &released {
             if let Ok(pane) = result
-                && let Err(reason) = self.validate_held_release(*terminal_id, pane)
+                && let Err(reason) = self.validate_held_release(*terminal_id, &pane.pane)
             {
                 // Keep every release address until validation finishes: live peers
                 // before and after this held pane have already been detached.
                 for (terminal_id, result) in &released {
-                    if let Ok(pane @ (ReleasedPane::Local(_) | ReleasedPane::Remote(_))) = result {
+                    if let Ok(released) = result
+                        && !matches!(released.pane, ReleasedPane::Held(_))
+                    {
                         self.bus
                             .senders
                             .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
                                 terminal_id: *terminal_id,
+                                run_command: released.run_command.clone(),
                                 why: reason.clone(),
-                                recovery: Some(pane.recovery_command()),
+                                recovery: Some(released.pane.recovery_command()),
                             })
                             .non_fatal();
                     }
@@ -1108,7 +1115,7 @@ impl Screen {
             // happened to it — this is the reason travelling back to the caller,
             // not the pane's only account of itself.
             let released = released.map_err(|reason| self.warp_failure(terminal_id, reason))?;
-            addresses.insert(terminal_id, Self::warp_address(released)?);
+            addresses.insert(terminal_id, Self::warp_address(released.pane)?);
         }
 
         // The budget is shared out only now, because only now is it known how

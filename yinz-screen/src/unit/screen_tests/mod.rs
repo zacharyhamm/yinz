@@ -1792,6 +1792,23 @@ fn screen_with_a_pane_replaced_in_place() -> Screen {
     screen
 }
 
+fn warp_restart_fixture() -> RunCommand {
+    RunCommand {
+        command: "/usr/bin/printf".into(),
+        args: vec!["warp test".into(), "argument with spaces".into()],
+        cwd: Some("/tmp/warp workdir".into()),
+        ..Default::default()
+    }
+}
+
+fn released_for_warp(pane: ReleasedPane) -> yinz_bus::warp::ReleasedPaneForWarp {
+    let run_command = match &pane {
+        ReleasedPane::Held(held) => held.command.clone(),
+        _ => warp_restart_fixture(),
+    };
+    yinz_bus::warp::ReleasedPaneForWarp { pane, run_command }
+}
+
 /// The same, for a pane whose process is on another machine.
 ///
 /// What a remote release hands over is a broker and a token rather than a
@@ -1804,19 +1821,21 @@ fn released_remote_pane_for_warp(
     screen
         .take_released_pane_for_warp(
             terminal_id,
-            Ok(ReleasedPane::Remote(ReleasedRemotePane {
-                host: "build-box".to_owned(),
-                pane_token: format!("token-{terminal_id}"),
-                received: 4096,
-                cmd: RunCommand {
-                    command: PathBuf::from("/usr/bin/tail"),
-                    args: vec!["-f".to_owned(), "/var/log/build".to_owned()],
-                    target: yinz_types::command::PaneTarget::Ssh {
-                        host: "build-box".to_owned(),
+            Ok(released_for_warp(ReleasedPane::Remote(
+                ReleasedRemotePane {
+                    host: "build-box".to_owned(),
+                    pane_token: format!("token-{terminal_id}"),
+                    received: 4096,
+                    cmd: RunCommand {
+                        command: PathBuf::from("/usr/bin/tail"),
+                        args: vec!["-f".to_owned(), "/var/log/build".to_owned()],
+                        target: yinz_types::command::PaneTarget::Ssh {
+                            host: "build-box".to_owned(),
+                        },
+                        ..Default::default()
                     },
-                    ..Default::default()
                 },
-            })),
+            ))),
         )
         .expect("the pane should have been taken out of its tab")
 }

@@ -17,6 +17,7 @@ use std::{
     path::PathBuf,
 };
 pub use yinz_bus::pty::*;
+use yinz_bus::warp::ReleasedPaneForWarp;
 use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TabId;
@@ -560,9 +561,8 @@ pub struct Pty {
     pub(crate) bus: Bus<PtyInstruction>,
     pub(crate) id_to_child_pid: HashMap<TerminalId, ProcessId>, // terminal_id => child pid
     originating_plugins: HashMap<TerminalId, OriginatingPlugin>,
-    /// Panes whose command runs in a Bubblewrap environment. The process holding such a
-    /// pane's pty is the sandbox, so its argv is read through to the command inside.
-    bubblewrap_terminals: HashSet<TerminalId>,
+    /// Retained for restart commands and for reading argv inside Bubblewrap sandboxes.
+    terminal_launch_commands: HashMap<TerminalId, RunCommand>,
     debug_to_file: bool,
     task_handles: HashMap<TerminalId, JoinHandle<()>>, // terminal_id to join-handle
     default_editor: Option<PathBuf>,
@@ -829,7 +829,10 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             } => {
                 let released = if let Some(held) = held {
                     pty.drain_held_reader_for_warp(terminal_id, deadline)
-                        .map(|_| ReleasedPane::Held(held))
+                        .map(|_| ReleasedPaneForWarp {
+                            run_command: held.command.clone(),
+                            pane: ReleasedPane::Held(held),
+                        })
                         .map_err(|e| format!("{e:#}"))
                 } else {
                     release_pane_for_warp(&mut pty, terminal_id, &to_session, deadline)
@@ -928,10 +931,11 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             },
             PtyInstruction::StrandPaneAfterWarp {
                 terminal_id,
+                run_command,
                 why,
                 recovery,
             } => {
-                strand_pane_after_warp(&pty, terminal_id, &why, recovery);
+                strand_pane_after_warp(&pty, terminal_id, run_command, &why, recovery);
             },
             PtyInstruction::GiveBackAdoptedTerminal {
                 terminal_id,
@@ -1319,7 +1323,7 @@ impl Pty {
             task_handles: HashMap::new(),
             default_editor,
             originating_plugins: HashMap::new(),
-            bubblewrap_terminals: HashSet::new(),
+            terminal_launch_commands: HashMap::new(),
             post_command_discovery_hook,
             plugin_cwds: HashMap::new(),
             terminal_cwds: HashMap::new(),
@@ -2804,17 +2808,18 @@ impl Pty {
     }
     /// Record what a pane's command says about the pane itself, each time one starts in it.
     fn track_launch(&mut self, terminal_id: TerminalId, command: &RunCommand) {
-        if command.target.is_bubblewrap() {
-            self.bubblewrap_terminals.insert(terminal_id);
-        } else {
-            self.bubblewrap_terminals.remove(&terminal_id);
-        }
+        self.terminal_launch_commands
+            .insert(terminal_id, command.clone());
     }
 
     /// The argv to report for a pane's own process: the command inside the sandbox for a
     /// Bubblewrap pane, and the process's own otherwise.
     fn pane_argv(&self, terminal_id: TerminalId, argv: Vec<String>) -> Vec<String> {
-        if !self.bubblewrap_terminals.contains(&terminal_id) {
+        if !self
+            .terminal_launch_commands
+            .get(&terminal_id)
+            .is_some_and(|command| command.target.is_bubblewrap())
+        {
             return argv;
         }
         match yinz_types::agent::bubblewrap_inner_argv(&argv) {
@@ -2882,7 +2887,7 @@ impl Pty {
                 // a remote pane there is no pid to forget in the first place.
                 self.signal_pane_child(id, ChildSignal::Hup);
                 self.id_to_child_pid.remove(&id);
-                self.bubblewrap_terminals.remove(&id);
+                self.terminal_launch_commands.remove(&id);
                 self.pane_activity_flags.remove(&id);
                 self.forget_terminal_cwd(id);
                 self.forget_terminal_host(id);
@@ -3039,7 +3044,7 @@ impl Pty {
         // The plugin that spawned this pane lives in *this* session, so it does
         // not follow the pane out.
         self.originating_plugins.remove(&terminal_id);
-        self.bubblewrap_terminals.remove(&terminal_id);
+        self.terminal_launch_commands.remove(&terminal_id);
     }
 
     /// Take a supervisor over from another session (or from a server that died)
@@ -4135,19 +4140,25 @@ fn release_pane_for_warp(
     terminal_id: TerminalId,
     to_session: &SessionName,
     deadline: Instant,
-) -> std::result::Result<ReleasedPane, String> {
+) -> std::result::Result<ReleasedPaneForWarp, String> {
     if let Err(e) = pty.check_terminal_can_be_warped(terminal_id) {
         return Err(format!("{e:#}"));
     }
     if let Err(e) = refuse_if_nobody_is_waiting(deadline) {
         return Err(format!("{e:#}"));
     }
-    pty.release_terminal_for_warp(terminal_id, deadline)
+    let run_command = warp_restart_command(pty, terminal_id);
+    let released = pty
+        .release_terminal_for_warp(terminal_id, deadline)
         .map_err(|e| {
             let why = format!("could not move this pane to '{to_session}': {e:#}");
-            strand_pane_after_warp(pty, terminal_id, &why, None);
+            strand_pane_after_warp(pty, terminal_id, run_command.clone(), &why, None);
             format!("{e:#}")
-        })
+        })?;
+    Ok(ReleasedPaneForWarp {
+        pane: released,
+        run_command,
+    })
 }
 
 /// Say no to a release whose caller has already stopped waiting.
@@ -4221,7 +4232,7 @@ fn release_tab_with_held_for_warp(
     mut terminal_ids: Vec<TerminalId>,
     held: HashMap<TerminalId, yinz_types::data::HeldTerminal>,
     deadline: Instant,
-) -> Vec<(TerminalId, std::result::Result<ReleasedPane, String>)> {
+) -> Vec<(TerminalId, std::result::Result<ReleasedPaneForWarp, String>)> {
     // Revalidate before releasing any live terminal. Screen has frozen restart input
     // for these held panes; asynchronous spawns must also have finished.
     let refusal = terminal_ids
@@ -4271,7 +4282,10 @@ fn release_tab_with_held_for_warp(
         .into_iter()
         .map(|id| {
             let result = match held.get(&id) {
-                Some(held) => Ok(ReleasedPane::Held(held.clone())),
+                Some(held) => Ok(ReleasedPaneForWarp {
+                    run_command: held.command.clone(),
+                    pane: ReleasedPane::Held(held.clone()),
+                }),
                 None => released
                     .remove(&id)
                     .unwrap_or_else(|| Err(format!("terminal_{id} was not released"))),
@@ -4302,7 +4316,7 @@ fn release_tab_for_warp(
     pty: &mut Pty,
     terminal_ids: Vec<TerminalId>,
     deadline: Instant,
-) -> Vec<(TerminalId, std::result::Result<ReleasedPane, String>)> {
+) -> Vec<(TerminalId, std::result::Result<ReleasedPaneForWarp, String>)> {
     let refusal = terminal_ids.iter().find_map(|terminal_id| {
         pty.check_terminal_can_be_warped(*terminal_id)
             .err()
@@ -4320,6 +4334,11 @@ fn release_tab_for_warp(
             .collect();
     }
 
+    let commands: Vec<_> = terminal_ids
+        .iter()
+        .map(|id| (*id, warp_restart_command(pty, *id)))
+        .collect();
+
     // Every reader stopped before any socket is written to. A remote pane's
     // reader shares the connection the release is about to speak on, and it
     // shares it with *this* pane's release only — but stopping them all up
@@ -4327,7 +4346,7 @@ fn release_tab_for_warp(
     pty.stop_readers_for_warp(&terminal_ids);
 
     let budget = deadline.saturating_duration_since(Instant::now());
-    let released: Vec<(TerminalId, std::result::Result<ReleasedPane, String>)> = {
+    let released: Vec<_> = {
         let Some(os_input) = pty.bus.os_input.as_deref() else {
             return terminal_ids
                 .iter()
@@ -4349,23 +4368,23 @@ fn release_tab_for_warp(
                     })
                 })
                 .collect();
-            terminal_ids
-                .iter()
+            commands
+                .into_iter()
                 .zip(threads)
-                .map(|(terminal_id, thread)| {
+                .map(|((terminal_id, run_command), thread)| {
                     // A panicked release is a failed release. Reporting it as
                     // one puts the pane through the stranding below, which is
                     // the only way its process gets named to the user at all.
                     let result = thread
                         .join()
                         .unwrap_or_else(|_| Err(format!("releasing pane {terminal_id} panicked")));
-                    (*terminal_id, result)
+                    (terminal_id, run_command, result)
                 })
                 .collect()
         })
     };
 
-    for (terminal_id, result) in &released {
+    for (terminal_id, _, result) in &released {
         if result.is_ok() {
             pty.forget_released_terminal(*terminal_id);
         }
@@ -4374,18 +4393,20 @@ fn release_tab_for_warp(
     // tab down with it: the ones that succeeded are orphaned, the one that
     // failed is severed, and none of them has a process on the other end any
     // more. Each says so, and the orphans say how to get theirs back.
-    if released.iter().any(|(_, result)| result.is_err()) {
-        for (terminal_id, result) in &released {
+    if released.iter().any(|(_, _, result)| result.is_err()) {
+        for (terminal_id, run_command, result) in &released {
             match result {
                 Ok(released) => strand_pane_after_warp(
                     pty,
                     *terminal_id,
+                    run_command.clone(),
                     "this tab could not be moved, and this pane had already been handed over",
                     Some(released.recovery_command()),
                 ),
                 Err(e) => strand_pane_after_warp(
                     pty,
                     *terminal_id,
+                    run_command.clone(),
                     &format!("this tab could not be moved: {e}"),
                     None,
                 ),
@@ -4393,6 +4414,14 @@ fn release_tab_for_warp(
         }
     }
     released
+        .into_iter()
+        .map(|(terminal_id, run_command, result)| {
+            (
+                terminal_id,
+                result.map(|pane| ReleasedPaneForWarp { pane, run_command }),
+            )
+        })
+        .collect()
 }
 
 /// Tell the user, in the pane itself, that a warp cut it loose.
@@ -4409,23 +4438,44 @@ fn release_tab_for_warp(
 /// the other end any more — and it comes with the way out already wired up:
 /// `<ENTER>` re-runs, `<Ctrl-c>` closes. `recovery` names the still-running
 /// process for the user who would rather have *that* one back than a fresh one.
-fn strand_pane_after_warp(pty: &Pty, terminal_id: TerminalId, why: &str, recovery: Option<String>) {
+fn strand_pane_after_warp(
+    pty: &Pty,
+    terminal_id: TerminalId,
+    run_command: RunCommand,
+    why: &str,
+    recovery: Option<String>,
+) {
     let mut message = format!("\r\n\u{1b}[31m── {why} ──\u{1b}[0m\r\n");
     if let Some(recovery) = recovery {
         message.push_str(&format!(
             "\u{1b}[33mThe process is still running — recover it with `{recovery}`\u{1b}[0m\r\n"
         ));
     }
-    // The pane's own command, so `<ENTER>` on the held pane runs what was in it
-    // rather than something invented here. `hold_on_close` is deliberately left
-    // false: this hold is not the pane's command policy, it is a one-off.
+    send_pane_error_to_screen(pty.bus.senders.clone(), terminal_id, message, run_command)
+        .non_fatal();
+}
+
+fn warp_restart_command(pty: &Pty, terminal_id: TerminalId) -> RunCommand {
+    // Observed argv can start with `-bash`; only the launch command retains login-shell intent.
+    if let Some(command) = pty.terminal_launch_commands.get(&terminal_id) {
+        return RunCommand {
+            cwd: pty
+                .terminal_cwds
+                .get(&terminal_id)
+                .cloned()
+                .or_else(|| command.cwd.clone()),
+            hold_on_start: false,
+            hold_on_close: false,
+            ..command.clone()
+        };
+    }
     let argv = pty
         .terminal_cmds
         .get(&terminal_id)
         .cloned()
         .unwrap_or_default();
     let mut argv = argv.into_iter();
-    let run_command = RunCommand {
+    RunCommand {
         command: argv
             .next()
             .map(PathBuf::from)
@@ -4433,9 +4483,7 @@ fn strand_pane_after_warp(pty: &Pty, terminal_id: TerminalId, why: &str, recover
         args: argv.collect(),
         cwd: pty.terminal_cwds.get(&terminal_id).cloned(),
         ..Default::default()
-    };
-    send_pane_error_to_screen(pty.bus.senders.clone(), terminal_id, message, run_command)
-        .non_fatal();
+    }
 }
 
 fn send_pane_error_to_screen(

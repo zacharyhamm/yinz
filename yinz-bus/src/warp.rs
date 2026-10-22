@@ -39,6 +39,13 @@ use crate::thread_bus::ThreadSenders;
 use crate::ClientId;
 use crate::PaneId;
 
+/// Internal release state retained after PTY metadata is removed, until Screen accepts it.
+#[derive(Clone, Debug)]
+pub struct ReleasedPaneForWarp {
+    pub pane: crate::pty_host::client::ReleasedPane,
+    pub run_command: yinz_types::input::command::RunCommand,
+}
+
 /// How long to wait on the far session before giving up on a warp.
 ///
 /// Generous compared to the other CLI round trips, because this one includes
