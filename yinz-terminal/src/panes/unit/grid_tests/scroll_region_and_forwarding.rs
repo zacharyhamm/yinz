@@ -2,6 +2,96 @@ use super::*;
 use crate::panes::terminal_character::NamedColor;
 
 #[test]
+fn cursor_position_reports_are_absolute_with_origin_mode_off() {
+    let grid = create_grid_with_size_and_raw(12, 8, b"\x1b[5;10r\x1b[6n\x1b[6;3H\x1b[6n");
+
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        [b"\x1b[1;1R".to_vec(), b"\x1b[6;3R".to_vec()]
+    );
+}
+
+#[test]
+fn cursor_position_reports_are_relative_with_origin_mode_on() {
+    let grid =
+        create_grid_with_size_and_raw(12, 8, b"\x1b[5;10r\x1b[?6h\x1b[H\x1b[6n\x1b[3;2H\x1b[6n");
+
+    assert_eq!(
+        grid.pending_messages_to_pty,
+        [b"\x1b[1;1R".to_vec(), b"\x1b[3;2R".to_vec()]
+    );
+}
+
+#[test]
+fn cursor_position_report_above_origin_margin_does_not_underflow() {
+    let mut grid = create_grid_with_size_and_raw(12, 8, b"\x1b[5;10r\x1b[?6h");
+    assert!(grid.cursor.y < grid.scroll_region.0);
+
+    feed_bytes(&mut grid, b"\x1b[6n");
+
+    assert_eq!(grid.pending_messages_to_pty, [b"\x1b[1;1R".to_vec()]);
+}
+
+#[test]
+fn prefix_erase_after_restoring_cursor_on_alternate_screen_preserves_primary() {
+    for (save, restore) in [("\x1b7", "\x1b8"), ("\x1b[s", "\x1b[u")] {
+        let mut grid = create_grid_with_size_and_raw(3, 8, b"one\r\ntwo\r\nthree\r\nfour");
+        let primary_viewport = viewport_texts(&grid);
+        let primary_scrollback = scrollback_texts(&grid);
+        let primary_cursor = (grid.cursor.x, grid.cursor.y);
+
+        feed_bytes(&mut grid, format!("{save}\x1b[?1049h{restore}").as_bytes());
+        assert!(grid.viewport.get(grid.cursor.y).is_none());
+        let alternate_viewport = viewport_texts(&grid);
+
+        feed_bytes(&mut grid, b"\x1b[1K");
+
+        assert_eq!(viewport_texts(&grid), alternate_viewport);
+        feed_bytes(&mut grid, b"\x1b[?1049l");
+        assert_eq!(viewport_texts(&grid), primary_viewport);
+        assert_eq!(scrollback_texts(&grid), primary_scrollback);
+        assert_eq!((grid.cursor.x, grid.cursor.y), primary_cursor);
+    }
+}
+
+#[test]
+fn cursor_movement_and_backspace_tolerate_zero_dimensions() {
+    for (rows, cols) in [(5, 0), (0, 8), (0, 0)] {
+        for command in [
+            "\x1b[2;2H",
+            "\x1b[2;2f",
+            "\x1b[2d",
+            "\x1b[B",
+            "\x1b[e",
+            "\x1b[E",
+            "\x08",
+            "\x1b[D",
+        ] {
+            let grid = create_grid_with_size_and_raw(rows, cols, command.as_bytes());
+
+            assert!(grid.cursor.x <= cols.saturating_sub(1), "{command:?}");
+            assert!(grid.cursor.y <= rows.saturating_sub(1), "{command:?}");
+            assert_eq!((grid.height, grid.width), (rows, cols));
+        }
+    }
+}
+
+#[test]
+fn cursor_down_outside_scroll_margins_tolerates_zero_height() {
+    for cols in [0, 8] {
+        for command in ["\x1b[B", "\x1b[e", "\x1b[E"] {
+            let mut grid = create_grid_with_size_and_raw(0, cols, b"");
+            grid.cursor.y = grid.scroll_region.1 + 1;
+
+            feed_bytes(&mut grid, command.as_bytes());
+
+            assert_eq!(grid.cursor.y, 0, "{command:?}");
+            assert_eq!((grid.height, grid.width), (0, cols));
+        }
+    }
+}
+
+#[test]
 fn cursor_down_materializes_rows_before_erasing_or_inserting() {
     for movement in ["B", "e", "E"] {
         for edit in ["1K", "1L"] {
