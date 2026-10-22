@@ -8,6 +8,7 @@ Options {
     simplified_ui: Some(
         true,
     ),
+    disable_splash_screen: None,
     theme: None,
     theme_dark: None,
     theme_light: None,

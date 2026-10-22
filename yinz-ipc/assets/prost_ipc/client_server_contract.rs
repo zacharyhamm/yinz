@@ -2558,6 +2558,8 @@ pub struct Options {
     pub max_agent_width: ::core::option::Option<u64>,
     #[prost(bool, optional, tag="82")]
     pub tab_groups: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="83")]
+    pub disable_splash_screen: ::core::option::Option<bool>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn disable_splash_screen_round_trips_and_requires_a_boolean() {
+    for disabled in [None, Some(false), Some(true)] {
+        let options = Options {
+            disable_splash_screen: disabled,
+            ..Default::default()
+        };
+        for add_comments in [false, true] {
+            let mut document = KdlDocument::new();
+            document
+                .nodes_mut()
+                .extend(crate::kdl::options::to_kdl(&options, add_comments));
+            let parsed = crate::kdl::options::from_string(&document.to_string()).unwrap();
+            assert_eq!(parsed, options);
+        }
+    }
+    for invalid in ["1", "\"true\"", ""] {
+        assert!(
+            crate::kdl::options::from_string(&format!("disable_splash_screen {invalid}")).is_err()
+        );
+    }
+}
+
+#[test]
 fn locked_escape_timeout_options_round_trip() {
     let document: KdlDocument = "locked_escape_timeout_ms 400".parse().unwrap();
     let options = crate::kdl::options::from_kdl(&document).unwrap();

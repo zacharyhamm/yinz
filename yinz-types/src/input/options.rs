@@ -228,6 +228,9 @@ pub struct Options {
     /// that is compatible with more fonts (true or false)
     #[serde(default)]
     pub simplified_ui: Option<bool>,
+    /// Skip the startup splash and its minimum display time (default: false).
+    #[serde(default)]
+    pub disable_splash_screen: Option<bool>,
     /// Set the default theme
     pub theme: Option<String>,
     /// Theme name to apply when the host terminal reports a dark color palette
@@ -532,6 +535,7 @@ impl Options {
         let mirror_session = other.mirror_session.or(self.mirror_session);
         let tab_groups = other.tab_groups.or(self.tab_groups);
         let simplified_ui = other.simplified_ui.or(self.simplified_ui);
+        let disable_splash_screen = other.disable_splash_screen.or(self.disable_splash_screen);
         let default_mode = other.default_mode.or(self.default_mode);
         let default_shell = other.default_shell.or_else(|| self.default_shell.clone());
         let default_cwd = other.default_cwd.or_else(|| self.default_cwd.clone());
@@ -618,6 +622,7 @@ impl Options {
         Options {
             tab_groups,
             simplified_ui,
+            disable_splash_screen,
             theme,
             theme_dark,
             theme_light,

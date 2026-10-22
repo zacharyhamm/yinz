@@ -6,6 +6,7 @@ Options {
     tab_groups: None,
     agent_theme_mapping: None,
     simplified_ui: None,
+    disable_splash_screen: None,
     theme: None,
     theme_dark: None,
     theme_light: None,

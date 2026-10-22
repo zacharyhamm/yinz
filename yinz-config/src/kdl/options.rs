@@ -62,6 +62,9 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "tab_groups").map(|(v, _)| v);
     let simplified_ui =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "simplified_ui").map(|(v, _)| v);
+    let disable_splash_screen =
+        kdl_property_first_arg_as_bool_or_error!(kdl_options, "disable_splash_screen")
+            .map(|(v, _)| v);
     let default_shell = kdl_property_first_arg_as_string_or_error!(kdl_options, "default_shell")
         .map(|(string, _entry)| PathBuf::from(string));
     let default_cwd = kdl_property_first_arg_as_string_or_error!(kdl_options, "default_cwd")
@@ -277,6 +280,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     Ok(Options {
         tab_groups,
         simplified_ui,
+        disable_splash_screen,
         theme,
         theme_dark,
         theme_light,
@@ -376,6 +380,24 @@ fn simplified_ui_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> 
     } else {
         None
     }
+}
+fn disable_splash_screen_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
+    if value.disable_splash_screen.is_none() && !add_comments {
+        return None;
+    }
+    let mut node = KdlNode::new("disable_splash_screen");
+    node.push(KdlValue::Bool(value.disable_splash_screen.unwrap_or(true)));
+    if add_comments {
+        let prefix = if value.disable_splash_screen.is_none() {
+            "// "
+        } else {
+            ""
+        };
+        node.set_leading(format!(
+            "\n// Skip the startup splash and its minimum display time.\n// Default: false\n//\n{prefix}"
+        ));
+    }
+    Some(node)
 }
 fn osc8_hyperlinks_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
     let comment_text = format!(
@@ -2083,6 +2105,9 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
     }
     if let Some(simplified_ui_node) = simplified_ui_to_kdl(value, add_comments) {
         nodes.push(simplified_ui_node);
+    }
+    if let Some(node) = disable_splash_screen_to_kdl(value, add_comments) {
+        nodes.push(node);
     }
     if let Some(osc8_hyperlinks_node) = osc8_hyperlinks_to_kdl(value, add_comments) {
         nodes.push(osc8_hyperlinks_node);

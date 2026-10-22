@@ -194,6 +194,82 @@ fn configuration_transactions_preserve_temporary_edits_and_reject_failed_or_stal
 }
 
 #[test]
+fn session_splash_edits_are_rejected_without_changing_state_or_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.kdl");
+    let contents = "mouse_mode true\ndisable_splash_screen false\n";
+    std::fs::write(&path, contents).unwrap();
+    let (mut session, screen_rx) = session(dir.path());
+    let base = Config::load(None, Some(dir.path()), false).unwrap();
+    session
+        .session_configuration
+        .set_saved_configuration(base.clone());
+    session
+        .session_configuration
+        .set_client_runtime_configuration(ClientId::new(1), base);
+    let before = session.configuration_editor(None).unwrap();
+    let mut splash = mouse(true);
+    splash.path[0] = "disable_splash_screen".into();
+    splash.node.as_mut().unwrap().name = "disable_splash_screen".into();
+    for (patches, reset) in [
+        (vec![splash.clone()], vec![]),
+        (vec![], vec![splash.path.clone()]),
+        (vec![mouse(false), splash.clone()], vec![]),
+        (vec![mouse(false)], vec![splash.path.clone()]),
+    ] {
+        let error = submit(&mut session, Destination::Session, patches, reset).unwrap_err();
+        assert_eq!(
+            error,
+            "This setting can only be saved permanently; it takes effect on next client start"
+        );
+        assert_eq!(session.configuration_editor(None).unwrap(), before);
+        assert!(session.session_configuration.editor_overrides.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
+        assert!(!dir.path().join("config.d/yinz-managed.kdl").exists());
+        assert!(screen_rx.try_recv().is_err());
+    }
+}
+
+#[test]
+fn permanent_splash_edits_report_next_client_start() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.kdl"),
+        "disable_splash_screen false\n",
+    )
+    .unwrap();
+    let (mut session, _screen_rx) = session(dir.path());
+    let base = Config::load(None, Some(dir.path()), false).unwrap();
+    session
+        .session_configuration
+        .set_saved_configuration(base.clone());
+    session
+        .session_configuration
+        .set_client_runtime_configuration(ClientId::new(1), base);
+    let mut splash = mouse(true);
+    splash.path[0] = "disable_splash_screen".into();
+    splash.node.as_mut().unwrap().name = "disable_splash_screen".into();
+    for (patches, reset, expected) in [
+        (vec![splash.clone()], vec![], true),
+        (vec![], vec![splash.path], false),
+    ] {
+        let result = submit(&mut session, Destination::Permanent, patches, reset).unwrap();
+        assert_eq!(
+            result["notice"],
+            "Saved permanently; startup settings take effect on next client start"
+        );
+        assert_eq!(
+            Config::load(None, Some(dir.path()), false)
+                .unwrap()
+                .options
+                .disable_splash_screen,
+            Some(expected)
+        );
+        assert!(session.session_configuration.editor_overrides.is_empty());
+    }
+}
+
+#[test]
 fn legacy_reconfigure_does_not_copy_the_session_layer_into_client_base() {
     let mut state = SessionConfiguration::default();
     let base = Config::from_kdl("mouse_mode true\npane_frames true", None).unwrap();

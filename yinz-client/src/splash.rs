@@ -31,6 +31,9 @@ pub(crate) fn show(
     config: &Config,
     options: &Options,
 ) -> Result<Option<Instant>> {
+    if options.disable_splash_screen.unwrap_or(false) {
+        return Ok(None);
+    }
     let style = config
         .theme_config(options.theme.as_ref())
         .unwrap_or_else(|| default_palette().into())

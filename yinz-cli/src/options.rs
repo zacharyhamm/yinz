@@ -19,6 +19,10 @@ pub struct CliOptions {
     #[clap(long, value_parser)]
     #[serde(default)]
     pub simplified_ui: Option<bool>,
+    /// Skip the startup splash and its minimum display time (default: false).
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub disable_splash_screen: Option<bool>,
     /// Set the default theme
     #[clap(long, value_parser)]
     pub theme: Option<String>,
@@ -352,6 +356,7 @@ impl From<CliOptions> for Options {
         Self {
             tab_groups: value.tab_groups,
             simplified_ui: value.simplified_ui,
+            disable_splash_screen: value.disable_splash_screen,
             theme: value.theme,
             theme_dark: value.theme_dark,
             theme_light: value.theme_light,
@@ -428,6 +433,7 @@ impl From<Options> for CliOptions {
         Self {
             tab_groups: value.tab_groups,
             simplified_ui: value.simplified_ui,
+            disable_splash_screen: value.disable_splash_screen,
             theme: value.theme,
             theme_dark: value.theme_dark,
             theme_light: value.theme_light,

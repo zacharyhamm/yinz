@@ -148,6 +148,12 @@ impl SessionMetaData {
                 {
                     return Err("This setting can only be saved permanently; it takes effect on next session start".into());
                 }
+                if catalog
+                    .iter()
+                    .any(|s| path.first() == Some(&s.name) && s.timing == "On next client start")
+                {
+                    return Err("This setting can only be saved permanently; it takes effect on next client start".into());
+                }
             }
         }
         let mut staged = self.session_configuration.clone();
@@ -230,6 +236,13 @@ impl SessionMetaData {
                     })
                 }) {
                     notice.push_str("; startup settings take effect on next session start");
+                }
+                if touched.iter().any(|path| {
+                    catalog.iter().any(|s| {
+                        path.first() == Some(&s.name) && s.timing == "On next client start"
+                    })
+                }) {
+                    notice.push_str("; startup settings take effect on next client start");
                 }
             }
             Some((fragment, underlay))

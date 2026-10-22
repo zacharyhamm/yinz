@@ -1552,6 +1552,7 @@ message Options {
   optional string agent_theme_mapping = 79;
   optional uint64 max_agent_width = 80;
   optional bool tab_groups = 82;
+  optional bool disable_splash_screen = 83;
 }
 
 enum OnForceClose {

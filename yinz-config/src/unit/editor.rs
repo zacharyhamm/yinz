@@ -47,6 +47,9 @@ fn catalog_covers_and_validates_every_option() {
     let catalog = catalog();
     assert_eq!(fields.as_object().unwrap().len(), catalog.len());
     for setting in catalog {
+        if setting.name == "disable_splash_screen" {
+            assert_eq!(setting.timing, "On next client start");
+        }
         assert!(
             !setting.help.is_empty(),
             "missing explanation for {}",

@@ -515,6 +515,11 @@ load_plugins {
 //
 // simplified_ui true
 
+// Skip the startup splash and its minimum display time.
+// Default: false
+//
+// disable_splash_screen true
+
 // Choose the path to the default shell that yinz will use for opening new panes
 // Default: $SHELL
 //
