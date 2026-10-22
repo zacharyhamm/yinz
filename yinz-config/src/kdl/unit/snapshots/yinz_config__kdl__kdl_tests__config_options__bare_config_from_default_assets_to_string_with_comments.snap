@@ -419,6 +419,11 @@ context_menu {
 //   - false (Default)
 // 
 // simplified_ui true
+
+// Skip the startup splash and its minimum display time.
+// Default: false
+//
+// disable_splash_screen true
  
 // Enable OSC8 hyperlink output
 // Options:

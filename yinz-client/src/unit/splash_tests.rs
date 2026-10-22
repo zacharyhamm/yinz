@@ -2,6 +2,26 @@ use super::*;
 use crate::test_support::FakeClientOsApi;
 
 #[test]
+fn disabling_the_splash_skips_output_and_the_deadline() {
+    for disabled in [None, Some(false), Some(true)] {
+        let options = Options {
+            disable_splash_screen: disabled,
+            ..Default::default()
+        };
+        let os = FakeClientOsApi::new().capturing_stdout();
+        let deadline = show(
+            &os,
+            Size { rows: 24, cols: 80 },
+            &Config::default(),
+            &options,
+        )
+        .unwrap();
+        assert_eq!(deadline.is_none(), disabled == Some(true));
+        assert_eq!(os.stdout_bytes().is_empty(), disabled == Some(true));
+    }
+}
+
+#[test]
 fn artwork_and_bands_keep_the_blank_row_and_use_cell_coordinates() {
     let style = StyleDeclaration {
         background: PaletteColor::Rgb((1, 2, 3)),

@@ -742,6 +742,7 @@ fn test_client_messages() {
                 tab_groups: Some(false),
                 agent_theme_mapping: Some(yinz_types::agent::theme::AgentThemeMapping::Off),
                 simplified_ui: Some(true),
+                disable_splash_screen: Some(true),
                 theme: Some("theme".to_owned()),
                 theme_dark: Some("theme_dark".to_owned()),
                 theme_light: Some("theme_light".to_owned()),
@@ -5343,6 +5344,20 @@ fn agent_double_escape_ipc_round_trip() {
     for value in [None, Some(false), Some(true)] {
         let options = Options {
             agent_double_escape: value,
+            ..Options::default()
+        };
+        let wire = ProtoOptions::from(options.clone()).encode_to_vec();
+        let decoded = ProtoOptions::decode(wire.as_slice()).unwrap();
+        assert_eq!(Options::try_from(decoded).unwrap(), options);
+    }
+}
+
+#[test]
+fn disable_splash_screen_ipc_round_trip() {
+    use crate::client_server_contract::client_server_contract::Options as ProtoOptions;
+    for value in [None, Some(false), Some(true)] {
+        let options = Options {
+            disable_splash_screen: value,
             ..Options::default()
         };
         let wire = ProtoOptions::from(options.clone()).encode_to_vec();

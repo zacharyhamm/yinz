@@ -114,33 +114,41 @@ fn check_outcome(error: Option<ErrorKind>, reconnect: Option<SessionConnection>)
 }
 
 #[test]
-fn interactive_startup_shows_the_splash_and_detached_startup_does_not() {
-    for info in [
-        ClientInfo::New("splash-new".into(), None, None),
-        ClientInfo::Resurrect("splash-resurrect".into(), Default::default(), false, None),
-        ClientInfo::Attach("splash-attach".into(), Default::default()),
-        ClientInfo::Watch("splash-watch".into(), Default::default()),
-    ] {
-        let os = FakeClientOsApi::new().capturing_stdout();
-        os.queue_from_server(ServerToClientMsg::Exit {
-            exit_reason: ExitReason::Normal,
-        });
-        let outcome = start_client(
-            Box::new(os.clone()),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            info,
-            None,
-            None,
-            false,
-            false,
-        );
-        assert_eq!(outcome.exit_status, 0);
-        assert!(String::from_utf8(os.stdout_bytes())
-            .unwrap()
-            .contains("░██░"));
-        assert!(!os.raw_mode());
+fn interactive_startup_respects_splash_option_and_detached_startup_stays_quiet() {
+    for disabled in [None, Some(false), Some(true)] {
+        for info in [
+            ClientInfo::New("splash-new".into(), None, None),
+            ClientInfo::Resurrect("splash-resurrect".into(), Default::default(), false, None),
+            ClientInfo::Attach("splash-attach".into(), Default::default()),
+            ClientInfo::Watch("splash-watch".into(), Default::default()),
+        ] {
+            let os = FakeClientOsApi::new().capturing_stdout();
+            os.queue_from_server(ServerToClientMsg::Exit {
+                exit_reason: ExitReason::Normal,
+            });
+            let outcome = start_client(
+                Box::new(os.clone()),
+                Default::default(),
+                Default::default(),
+                yinz_types::input::options::Options {
+                    disable_splash_screen: disabled,
+                    ..Default::default()
+                },
+                info,
+                None,
+                None,
+                false,
+                false,
+            );
+            assert_eq!(outcome.exit_status, 0);
+            assert_eq!(
+                String::from_utf8(os.stdout_bytes())
+                    .unwrap()
+                    .contains("░██░"),
+                disabled != Some(true)
+            );
+            assert!(!os.raw_mode());
+        }
     }
     let os = FakeClientOsApi::new().capturing_stdout();
     let outcome = start_client(

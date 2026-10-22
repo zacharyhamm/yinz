@@ -287,6 +287,7 @@ pub fn catalog() -> Vec<Setting> {
                     match name.as_str() {
                         "tab_groups" => "Group tabs and show a group bar. Disable to show all tabs in one row.",
                         "simplified_ui" => "Use simpler plugin visuals that work with more fonts.",
+                        "disable_splash_screen" => "Skip the startup splash and its minimum display time.",
                         "mouse_mode" => "Let Yinz handle mouse input for pane selection and resizing. Hold Shift to bypass it.",
                         "agent_double_escape" => "Require two plain Escape presses within one second in agent panes.",
                         "detachable_panes" => "Keep pane processes running when the session server exits.",
@@ -321,6 +322,7 @@ pub fn catalog() -> Vec<Setting> {
                 ),
             };
             let timing = match name.as_str() {
+                "disable_splash_screen" => "On next client start",
                 "session_name"
                 | "host_id"
                 | "attach_to_session"

@@ -135,7 +135,7 @@
   (define root (draft-root draft))
   (define setting (find (lambda (setting) (equal? (hash-ref setting "name") root)) (hash-ref snapshot "catalog")))
   (define timing (get setting "timing" (get (hash-ref snapshot "section_timing") root "Applies to this session")))
-  (define startup? (equal? timing "On next session start"))
+  (define startup? (or (equal? timing "On next session start") (equal? timing "On next client start")))
   (hash "type" "form" "title" (string-replace (clean root) "_" " ")
     "description" (get setting "help" (section-help root))
     "fields" (append (if (null? fields) '() (car fields)) (list (hash "type" "choice" "id" "destination" "label" "Destination"

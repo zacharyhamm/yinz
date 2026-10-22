@@ -1006,6 +1006,7 @@ impl From<yinz_types::input::options::Options>
         Self {
             tab_groups: options.tab_groups,
             simplified_ui: options.simplified_ui,
+            disable_splash_screen: options.disable_splash_screen,
             theme: options.theme,
             theme_dark: options.theme_dark,
             theme_light: options.theme_light,
@@ -1124,6 +1125,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
         Ok(Self {
             tab_groups: options.tab_groups,
             simplified_ui: options.simplified_ui,
+            disable_splash_screen: options.disable_splash_screen,
             theme: options.theme,
             theme_dark: options.theme_dark,
             theme_light: options.theme_light,

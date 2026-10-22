@@ -1,6 +1,5 @@
 ---
 source: yinz-cli/src/setup.rs
-assertion_line: 620
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -94,6 +93,7 @@ Config {
         tab_groups: None,
         agent_theme_mapping: None,
         simplified_ui: None,
+        disable_splash_screen: None,
         theme: None,
         theme_dark: None,
         theme_light: None,

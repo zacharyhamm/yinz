@@ -14,6 +14,11 @@ Options:
           
           [possible values: true, false]
 
+      --disable-splash-screen <DISABLE_SPLASH_SCREEN>
+          Skip the startup splash and its minimum display time (default: false)
+
+          [possible values: true, false]
+
       --theme <THEME>
           Set the default theme
 
