@@ -19,7 +19,7 @@ fn configured_local_forward_allows_pane_creation_and_reconnection() {
     let config = std::fs::read_to_string(&fixture_config).unwrap();
     std::fs::write(
         &config_path,
-        format!("{config}\nHost {HOST}\n    LocalForward {configured_address} 127.0.0.1:2222\n"),
+        format!("{config}\nHost {HOST}\n    StdinNull yes\n    LocalForward {configured_address} 127.0.0.1:2222\n"),
     )
     .unwrap();
     let shim = std::fs::read_to_string(remote_test_dir().join("bin/ssh")).unwrap();
@@ -64,6 +64,13 @@ fn relative_socket_directory_allows_pane_creation_and_reconnection() {
 }
 
 fn assert_pane_forward_lifecycle(configured_address: Option<SocketAddr>) {
+    let commands_before = remote_pids("^cat$");
+    let forward_commands = || {
+        remote_pids("^cat$")
+            .into_iter()
+            .filter(|pid| !commands_before.contains(pid))
+            .count()
+    };
     let hosts = start();
     let marker = marker("forward");
     let pane = open_pane(
@@ -83,6 +90,10 @@ fn assert_pane_forward_lifecycle(configured_address: Option<SocketAddr>) {
             .unwrap(),
     };
     assert_eq!(local_forward_count(&env), 1);
+    // The remote command enables TCP_NODELAY and must live exactly as long as its tunnel.
+    wait_for_remote("the forwarding command to start", || {
+        forward_commands() == 1
+    });
 
     with_link_down(|| {
         wait_for_remote("the private SSH tunnel to exit", || {
@@ -94,12 +105,16 @@ fn assert_pane_forward_lifecycle(configured_address: Option<SocketAddr>) {
     pane.wait_for_output(&format!("{marker}-got:after-reconnect"));
     assert_eq!(remote_pids(&marker), pid);
     assert_eq!(local_forward_count(&env), 1);
+    wait_for_remote("only the reconnected forwarding command to remain", || {
+        forward_commands() == 1
+    });
 
     pane.close();
     wait_for_remote("the closed pane to exit", || {
         remote_pids(&marker).is_empty()
     });
     hosts.shutdown();
+    wait_for_remote("the forwarding command to exit", || forward_commands() == 0);
     assert!(!socket.exists(), "the private forwarding socket leaked");
     assert_eq!(
         local_forward_count(&env),

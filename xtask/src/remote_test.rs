@@ -221,7 +221,7 @@ fn compose<'a>(sh: &'a Shell, args: &[&str]) -> xshell::Cmd<'a> {
 /// it. So the shim is an `ssh` earlier on the path that execs the real one with
 /// `-F <test config>` in front of whatever it was given. It supplies exactly
 /// what a developer's `~/.ssh/config` would supply and nothing else: every other
-/// argument — `BatchMode`, `ControlMaster`, `-N -T -L` — still comes from the
+/// argument — `BatchMode`, `ControlMaster`, `-T -L` — still comes from the
 /// code being tested.
 fn generate_credentials(sh: &Shell) -> anyhow::Result<()> {
     let dir = remote_test_dir();

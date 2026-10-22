@@ -309,7 +309,7 @@ def report(stage):
         events.connect(os.environ['YINZ_TEST_EVENTS'])
         events.sendall(json.dumps(dict(stage=stage, pid=os.getpid(), socket=path)).encode())
 
-if '-N' not in sys.argv:
+if '-L' not in sys.argv:
     if stage == 'bootstrap' or (stage == 'switch' and "'next'" in sys.argv[-1]):
         report('blocked')
         signal.pause()

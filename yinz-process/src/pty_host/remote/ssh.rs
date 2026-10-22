@@ -8,7 +8,7 @@
 //!      Linux and macOS (`$XDG_RUNTIME_DIR` vs the `~/.yinz/run` fallback), and the
 //!      `sun_path` limit differs too (108 vs 104), so a locally-computed guess
 //!      would be wrong in exactly the cases that are hardest to diagnose.
-//!   2. **Forward** — one long-lived `ssh -N -L <local>:<remote>` per target
+//!   2. **Forward** — one long-lived `ssh -T -L <local>:<remote> <host> 'exec cat'` per target
 //!      that *owns* the forward, with every matching pane connecting through it.
 //!
 //! Why a dedicated master rather than per-pane `ssh -L`: a forward belongs to
