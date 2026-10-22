@@ -8,18 +8,18 @@ fn defaults_replacement_empty_and_round_trip() {
         tabs.iter()
             .map(|tab| (tab.location.as_str(), tab.label.as_str()))
             .collect::<Vec<_>>(),
-        vec![("yinz:agents", "Agents"), ("yinz:todos", "Todos")]
+        vec![("yinz:agents", "Agents")]
     );
     let custom = Config::from_kdl(
         r#"
         plugins { custom location="file:/custom.scm" { cwd "/work"; setting "value"; }; }
-        overlay_tab_plugins { "yinz:todos"; custom label="Custom"; }
+        overlay_tab_plugins { "yinz:strider"; custom label="Custom"; }
     "#,
         Some(default),
     )
     .unwrap();
     let tabs = custom.resolved_overlay_tab_plugins().unwrap();
-    assert_eq!(tabs[0].label, "yinz:todos");
+    assert_eq!(tabs[0].label, "yinz:strider");
     assert_eq!(tabs[1].location, "file:///custom.scm");
     assert_eq!(
         tabs[1].initial_cwd.as_deref(),
@@ -54,11 +54,11 @@ fn invalid_entries_and_resolved_duplicates_have_diagnostics() {
         "overlay_tab_plugins { \"yinz:does-not-exist\"; }",
         "overlay_tab_plugins { \"file:/plugin.wasm\"; }",
         "overlay_tab_plugins { \"https://example.com/a.scm\"; }",
-        "overlay_tab_plugins { \"yinz:todos\" label=1; }",
-        "overlay_tab_plugins { \"yinz:todos\" label=\"\"; }",
-        "overlay_tab_plugins { \"yinz:todos\" unexpected=true; }",
-        "overlay_tab_plugins { \"yinz:todos\"; \"yinz:todos\"; }",
-        "plugins { todo location=\"yinz:todos\"; } overlay_tab_plugins { todo; \"yinz:todos\"; }",
+        "overlay_tab_plugins { \"yinz:strider\" label=1; }",
+        "overlay_tab_plugins { \"yinz:strider\" label=\"\"; }",
+        "overlay_tab_plugins { \"yinz:strider\" unexpected=true; }",
+        "overlay_tab_plugins { \"yinz:strider\"; \"yinz:strider\"; }",
+        "plugins { files location=\"yinz:strider\"; } overlay_tab_plugins { files; \"yinz:strider\"; }",
         "overlay_tab_plugins {}\noverlay_tab_plugins {}",
     ] {
         assert!(Config::from_kdl(text, None).is_err(), "{text}");
@@ -75,7 +75,7 @@ fn editor_replaces_ordered_entries_and_preserves_alias_configuration() {
     )
     .unwrap();
     let replacement = Config::from_kdl(
-        r#"overlay_tab_plugins { custom label="C"; "yinz:todos" label="T"; }"#,
+        r#"overlay_tab_plugins { custom label="C"; "yinz:strider" label="T"; }"#,
         Some(config.clone()),
     )
     .unwrap();
@@ -101,7 +101,7 @@ fn editor_replaces_ordered_entries_and_preserves_alias_configuration() {
     assert!(editor::document(&config)
         .unwrap()
         .iter()
-        .any(|node| node.name == "overlay_tab_plugins" && node.children.len() == 2));
+        .any(|node| node.name == "overlay_tab_plugins" && node.children.len() == 1));
 }
 
 #[test]

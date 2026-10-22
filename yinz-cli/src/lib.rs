@@ -40,7 +40,7 @@ mod session_picker_tests;
 pub mod sessions;
 pub mod setup;
 
-pub mod notes_todos;
+pub mod projects;
 
 pub mod operations;
 

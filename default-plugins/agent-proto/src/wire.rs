@@ -5,7 +5,7 @@
 //! matches nothing, and the sender waits forever.
 //!
 //! What is left here is the agent daemon's protocol and the shell-facing store
-//! pipes. The store's own snapshot push is gone: projects and todos live in a
+//! pipes. The store's own snapshot push is gone: projects live in a
 //! shared data-store namespace that every agent plugin reads directly, so there
 //! is nothing to replicate and nothing to keep in step.
 
@@ -394,24 +394,25 @@ mod tests {
     /// to correlate when the answer comes back down the same pipe.
     #[test]
     fn a_cli_mutation_parses_without_a_request_id() {
-        let mutation: Mutation =
-            serde_json::from_str(r#"{"op":"todo_add","args":{"project":"work","text":"ship it"}}"#)
-                .expect("parsed");
-        assert_eq!(mutation.op, "todo_add");
+        let mutation: Mutation = serde_json::from_str(
+            r#"{"op":"project_remember","args":{"name":"work","root":"/work"}}"#,
+        )
+        .expect("parsed");
+        assert_eq!(mutation.op, "project_remember");
         assert!(mutation.request_id.is_empty());
-        assert_eq!(mutation.args["text"], "ship it");
+        assert_eq!(mutation.args["root"], "/work");
     }
 
     /// Same for a query — and a plugin's query keeps the id it sent, which is
     /// the only thing that lets the reply find its way back to the right call.
     #[test]
     fn a_query_carries_a_request_id_only_when_one_was_sent() {
-        let typed: Query = serde_json::from_str(r#"{"op":"todo_list","args":{"project":"work"}}"#)
-            .expect("parsed");
+        let typed: Query =
+            serde_json::from_str(r#"{"op":"project_list","args":{}}"#).expect("parsed");
         assert!(typed.request_id.is_empty());
 
         let from_plugin: Query =
-            serde_json::from_str(r#"{"request_id":"call_7","op":"todo_list","args":{}}"#)
+            serde_json::from_str(r#"{"request_id":"call_7","op":"project_list","args":{}}"#)
                 .expect("parsed");
         assert_eq!(from_plugin.request_id, "call_7");
     }

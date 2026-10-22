@@ -413,7 +413,6 @@ plugins {
     plugin-palette location="yinz:plugin-palette" {
         shared true
     }
-    todos location="yinz:todos"
     new-agent location="yinz:new-agent"
     duplicate-agent location="yinz:new-agent" {
         duplicate_focused true
@@ -451,7 +450,6 @@ plugins {
 // Ordered plugin tabs. An explicit block replaces the defaults; an empty block disables grouping.
 // overlay_tab_plugins {
 //     agents label="Agents"
-//     todos label="Todos"
 // }
 
 load_plugins {

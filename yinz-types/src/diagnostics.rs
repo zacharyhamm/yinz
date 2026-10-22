@@ -393,8 +393,6 @@ pub enum ScreenContext {
 pub enum PtyContext {
     SpawnTerminal,
     SpawnResolved,
-    OpenNoteEditor,
-    NoteEditorExited,
     OpenInPlaceEditor,
     UpdateActivePane,
     RemoveClient,

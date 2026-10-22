@@ -621,20 +621,6 @@ pub fn plan_merge(rows: &DataRows, source: &str, target: &str) -> Result<Change,
         );
     }
     let mut mutations = vec![assert_projects(rows, "name", &[&source.name, target])?];
-    if source.root != project.root {
-        if projects
-            .values()
-            .any(|other| other.name != source.name && other.root == source.root)
-        {
-            return Err(
-                "another project shares the source root; its todos and notes cannot be separated"
-                    .into(),
-            );
-        }
-        mutations.push(assert_projects(rows, "root", &[&source.root])?);
-        mutations.extend(crate::todos::plan_move_root(&source.root, &project.root)?);
-        mutations.extend(crate::notes::plan_move_root(&source.root, &project.root)?);
-    }
     project.discovered = false;
     record_replacement(rows, source, &mut project)?;
     mutations.extend([to_mutation(&project), delete_mutation(&source.name)]);
@@ -1326,79 +1312,6 @@ mod tests {
     }
 
     #[test]
-    fn merging_two_completed_lists_keeps_all_1200_items_usable() {
-        use crate::todos;
-        let backend = backend();
-        let (source, target) = merge_projects(&backend);
-        let ids = backend
-            .apply(
-                [&source.root, &target.root]
-                    .into_iter()
-                    .flat_map(|root| {
-                        (0..600).map(move |i| {
-                            Mutation::put("todo")
-                                .set("root", root.clone())
-                                .set("text", format!("task {i}"))
-                                .set("done", true)
-                                .build()
-                        })
-                    })
-                    .collect(),
-            )
-            .unwrap()
-            .ids;
-        backend
-            .apply(
-                plan_merge(&project_rows(&backend), &source.name, &target.name)
-                    .unwrap()
-                    .mutations,
-            )
-            .unwrap();
-        let list = todos::fetch_list(&backend, &target.root).unwrap();
-        assert_eq!(todos::counts(&list), (0, 1200));
-        assert!(todos::fetch_list(&backend, &source.root)
-            .unwrap()
-            .items
-            .is_empty());
-        let mut edits = Vec::new();
-        for id in &ids {
-            assert!(todos::plan_delete(&list, &target.root, id.get() as u64, false).is_ok());
-            edits.extend(
-                todos::plan_edit(&list, id.get() as u64, "edited", None)
-                    .unwrap()
-                    .0,
-            );
-        }
-        backend.apply(edits).unwrap();
-        let list = todos::fetch_list(&backend, &target.root).unwrap();
-        assert!(list.items.iter().all(|item| item.text == "edited"));
-        backend
-            .apply(
-                todos::plan_add(&list, &target.root, "another", None)
-                    .unwrap()
-                    .0,
-            )
-            .unwrap();
-        let list = todos::fetch_list(&backend, &target.root).unwrap();
-        assert_eq!(todos::counts(&list), (1, 1201));
-        // Remove items on both sides of the page boundary through the public planner.
-        for index in [0, 999, 1199] {
-            let list = todos::fetch_list(&backend, &target.root).unwrap();
-            backend
-                .apply(
-                    todos::plan_delete(&list, &target.root, ids[index].get() as u64, false)
-                        .unwrap()
-                        .0,
-                )
-                .unwrap();
-        }
-        assert_eq!(
-            todos::counts(&todos::fetch_list(&backend, &target.root).unwrap()),
-            (1, 1198)
-        );
-    }
-
-    #[test]
     fn rename_validates_names_and_preserves_all_metadata() {
         let backend = backend();
         let (_, mut expected) = merge_projects(&backend);
@@ -1419,34 +1332,9 @@ mod tests {
     }
 
     #[test]
-    fn merge_preserves_target_settings_todo_hierarchy_and_note_links() {
-        use crate::{notes, todos};
+    fn merge_preserves_target_settings() {
         let backend = backend();
         let (source, mut expected) = merge_projects(&backend);
-        let add_todo = |root: &str, parent| {
-            let list = todos::fetch_list(&backend, root).unwrap();
-            let (mutations, _) = todos::plan_add(&list, root, "task", parent).unwrap();
-            backend.apply(mutations).unwrap().ids[0].get() as u64
-        };
-        let parent = add_todo(&source.root, None);
-        let child = add_todo(&source.root, Some(parent));
-        let kept = add_todo(&expected.root, None);
-        let (mutations, draft) = notes::plan_add(
-            0,
-            Some(&source.root),
-            "note",
-            "body",
-            "user",
-            &["tag".into()],
-            &[child],
-        )
-        .unwrap();
-        let note = backend.apply(mutations).unwrap().ids[0].get() as u64;
-        backend
-            .apply(notes::plan_attach(&backend, note, &draft.tags, &draft.todo_ids).unwrap())
-            .unwrap();
-        let before_note = notes::fetch_note(&backend, note).unwrap().unwrap();
-
         let rows = project_rows(&backend);
         let change = plan_merge(&rows, "duplicate", "kept").unwrap();
         expected.replaced_ids = vec![row_ids(&rows)["duplicate"]];
@@ -1458,21 +1346,6 @@ mod tests {
             registry,
             Registry::from([("kept".into(), expected.clone())])
         );
-        assert!(todos::fetch_list(&backend, &source.root)
-            .unwrap()
-            .items
-            .is_empty());
-        let list = todos::fetch_list(&backend, &expected.root).unwrap();
-        assert_eq!(list.items.len(), 2);
-        assert_eq!(todos::item_of(&list, parent).unwrap().children[0].id, child);
-        assert!(todos::item_of(&list, kept).is_some());
-        let after_note = notes::fetch_note(&backend, note).unwrap().unwrap();
-        assert_eq!(after_note.root.as_deref(), Some(expected.root.as_str()));
-        assert_eq!(after_note.id, before_note.id);
-        assert_eq!(after_note.tags, before_note.tags);
-        assert_eq!(after_note.todo_ids, before_note.todo_ids);
-        assert_eq!(after_note.body, before_note.body);
-
         // Even a primary source checkout cannot move the user-managed target or recreate it.
         let source_checkout = git(
             &source.root,
@@ -1485,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_requires_distinct_matching_origins_and_exclusive_source_root() {
+    fn merge_requires_distinct_matching_origins() {
         let backend = backend();
         let (source, mut target) = merge_projects(&backend);
         let rows = project_rows(&backend);
@@ -1504,11 +1377,6 @@ mod tests {
                 to_mutation(&validated("shared", &source.root)),
             ])
             .unwrap();
-        assert!(plan_merge(&project_rows(&backend), "duplicate", "kept")
-            .unwrap_err()
-            .contains("shares"));
-        target.root = source.root.clone();
-        backend.apply(vec![to_mutation(&target)]).unwrap();
         backend
             .apply(
                 plan_merge(&project_rows(&backend), "duplicate", "kept")
@@ -1520,16 +1388,10 @@ mod tests {
     }
 
     #[test]
-    fn project_changes_reject_stale_rows_new_names_and_new_root_sharers_atomically() {
-        for conflict in [
-            "source",
-            "target",
-            "root sharer",
-            "destination",
-            "deleted source",
-        ] {
+    fn project_changes_reject_stale_rows_and_new_names_atomically() {
+        for conflict in ["source", "target", "destination", "deleted source"] {
             let backend = backend();
-            let (source, _) = merge_projects(&backend);
+            merge_projects(&backend);
             let rows = project_rows(&backend);
             let change = if conflict == "destination" {
                 plan_rename(&rows, "duplicate", "new").unwrap()
@@ -1550,7 +1412,6 @@ mod tests {
                 )
                 .set("worktree_dir", "concurrent")
                 .build(),
-                "root sharer" => to_mutation(&validated("shared", &source.root)),
                 "destination" => to_mutation(&validated("new", "/unrelated")),
                 _ => delete_mutation("duplicate"),
             };

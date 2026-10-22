@@ -178,8 +178,7 @@ keybinds {
         // Bring the panel up with the keyboard on the agent list, rather than
         // in the conversation. The list is its own pane, the left half of the
         // panel: this reveals it if it was hidden and opens one if there is
-        // none. It comes back on the tab you left it on - Agents or
-        // Todos - with the keyboard in that tab's list, whichever stop had it
+        // none. It comes back with the keyboard in the Agents list, whichever stop had it
         // when the panel went away. The conversation comes up beside it either
         // way — the panel is one thing with one visibility — it simply does not
         // take the focus.
@@ -205,8 +204,8 @@ keybinds {
         //
         // These two are the way *in*, not the way across. Once the panel is up the
         // keyboard moves with Tab and Shift+Tab, which walk one ring of five stops:
-        // the panel's own tab bar (Agents, Todos), the tab's list, its
-        // second half (the history on Agents, the Todos list), the chat tab
+        // the panel's own tab bar (Agents), the tab's list, its
+        // second half (the history on Agents), the chat tab
         // bar and the box you type in - and round again. A tab with no second
         // half has four. A box with a draft in it keeps Tab for completing a
         // /command or an @agent — Esc lets go of the box, keeping the draft, and

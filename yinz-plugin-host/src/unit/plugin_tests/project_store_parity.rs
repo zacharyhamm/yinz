@@ -106,17 +106,16 @@ struct Pair {
     _root: tempfile::TempDir,
 }
 impl Pair {
-    fn new(legacy: Option<(&str, &str)>) -> Self {
+    fn new(legacy: Option<&str>) -> Self {
         Self::with_host(legacy, host)
     }
     fn with_host(
-        legacy: Option<(&str, &str)>,
+        legacy: Option<&str>,
         make_host: impl Fn(&Arc<DataHost>, &Path) -> Responder,
     ) -> Self {
         let root = tempfile::tempdir().unwrap();
-        if let Some((projects, todos)) = legacy {
+        if let Some(projects) = legacy {
             std::fs::write(root.path().join("projects.json"), projects).unwrap();
-            std::fs::write(root.path().join("todos.json"), todos).unwrap();
         }
         let clock = Arc::new(AtomicU64::new(1_700_000_000_000));
         let databases = [
@@ -186,29 +185,6 @@ impl Pair {
         };
         let mut actual = app(self.steel.take_commands());
         actual.retain(|command| !steel_only(command));
-        // Adapted traces include revision updates for tags; link-only assertions remain new.
-        // Exclude the metadata lookup and link-only assertion, which attachment tests cover.
-        actual.retain(|command| {
-            let request = &command["DataFetch"]["request"];
-            !(request["entity"] == "note"
-                && request["select"] == json!(agent_proto::notes::LIST_COLUMNS)
-                && request["limit"] == 1
-                && request["filter"]["Eq"][0] == "id")
-        });
-        for command in &mut actual {
-            if let Some(mutations) = command
-                .pointer_mut("/DataApply/mutations")
-                .and_then(Value::as_array_mut)
-                && mutations.iter().any(|mutation| {
-                    matches!(
-                        mutation["Put"]["entity"].as_str(),
-                        Some("note_tag" | "note_link")
-                    )
-                })
-            {
-                mutations.retain(|mutation| mutation["AssertRows"]["entity"] != "note");
-            }
-        }
         assert_eq!(
             normalize(actual),
             normalize(expected.clone()),
@@ -307,9 +283,9 @@ impl Pair {
 }
 
 #[test]
-fn project_store_actual_runtimes_match_projects_and_guarded_todo_tree() {
+fn project_store_actual_runtimes_match_project_commands() {
     let _reference_trace = super::reference_trace::Scenario::new(
-        "project_store_actual_runtimes_match_projects_and_guarded_todo_tree",
+        "project_store_actual_runtimes_match_project_commands",
     );
     let mut pair = Pair::new(None);
     assert!(pair.request("store_query", None).is_empty());
@@ -323,30 +299,6 @@ fn project_store_actual_runtimes_match_projects_and_guarded_todo_tree() {
         pair.mutate("project_remember", args);
     }
     pair.watches();
-    pair.mutate("todo_add", json!({"project":"work","text":"Parent 雪"}));
-    pair.mutate(
-        "todo_add",
-        json!({"project":"work","text":"Child","parent_id":1}),
-    );
-    pair.query("todo_list", json!({"project":"work"}));
-    pair.query("todo_search", json!({"query":"Child"}));
-    pair.mutate(
-        "todo_edit",
-        json!({"project":"work","id":2,"text":"Changed child","expect_rev":999}),
-    );
-    pair.mutate(
-        "todo_edit",
-        json!({"project":"work","id":2,"text":"Changed child","expect_rev":1}),
-    );
-    pair.mutate("todo_move", json!({"project":"work","id":1,"parent_id":2}));
-    pair.mutate("todo_done", json!({"project":"work","id":1}));
-    pair.query("todo_list", json!({"project":"work","include_done":true}));
-    pair.mutate("todo_done", json!({"project":"work","id":2,"undo":true}));
-    pair.mutate(
-        "todo_move",
-        json!({"project":"work","id":2,"parent_id":null}),
-    );
-    pair.mutate("todo_delete", json!({"project":"work","id":1}));
     pair.mutate(
         "project_rename",
         json!({"name":"work","new_name":"renamed"}),
@@ -361,45 +313,6 @@ fn project_store_actual_runtimes_match_projects_and_guarded_todo_tree() {
     );
     pair.query("project_list", json!({}));
     pair.watches();
-    pair.rows();
-}
-
-#[test]
-fn project_store_actual_runtimes_match_note_tags_links_search_and_revisions() {
-    let _reference_trace = super::reference_trace::Scenario::new(
-        "project_store_actual_runtimes_match_note_tags_links_search_and_revisions",
-    );
-    let mut pair = Pair::new(None);
-    pair.mutate("project_remember", json!({"name":"work","root":"/work"}));
-    pair.mutate("todo_add", json!({"project":"work","text":"First"}));
-    pair.mutate("todo_add", json!({"project":"work","text":"Second"}));
-    pair.mutate("note_add", json!({}));
-    pair.mutate(
-        "note_add",
-        json!({"global":true,"title":"global","body":"Unicode 雪"}),
-    );
-    let created = pair.mutate(
-        "note_add",
-        json!({"project":"work","title":"Decision","body":"We chose Steel.","tags":["ENGINE"," design "],"todo_ids":[1,2]}),
-    );
-    pair.query("note_list", json!({}));
-    pair.query("note_list", json!({"project":"work","tag":"engine"}));
-    pair.query("note_get", json!({"id":2}));
-    pair.query("note_search", json!({"query":"Steel"}));
-    pair.query("todo_list", json!({"project":"work"}));
-    pair.mutate(
-        "note_edit",
-        json!({"id":2,"body":"Updated body","expect_rev":999}),
-    );
-    pair.mutate(
-        "note_edit",
-        json!({"id":2,"body":"Updated body","tags":["new"],"expect_rev":created["data"]["rev"]}),
-    );
-    pair.mutate("note_link", json!({"note_id":1,"todo_id":1}));
-    pair.mutate("note_link", json!({"note_id":2,"todo_id":2,"unlink":true}));
-    pair.mutate("note_archive", json!({"id":2}));
-    pair.query("note_list", json!({"include_archived":true}));
-    pair.mutate("note_delete", json!({"id":1}));
     pair.rows();
 }
 
@@ -533,21 +446,15 @@ fn project_store_actual_runtimes_match_real_legacy_import_files() {
     );
     let registry = BTreeMap::from([("work", projects::validate("work", "/work").unwrap())]);
     let projects = serde_json::to_string(&registry).unwrap();
-    let todos = json!({"/work":{"items":[{"id":1,"text":"parent","children":[{"id":2,"text":"child","children":[{"id":3,"text":"雪 leaf"}]}]}]},
-        "/other":{"items":[{"id":1,"text":"other root"}]}}).to_string();
-    let mut pair = Pair::new(Some((&projects, &todos)));
+    let mut pair = Pair::new(Some(&projects));
     pair.query("project_list", json!({}));
-    pair.query("todo_list", json!({"project":"work"}));
     pair.rows();
-    let before = pair.databases[0].fetch(&FetchRequest::entity("todo").in_namespace(store::SHARED));
-    std::fs::write(
-        pair._root.path().join("todos.json"),
-        json!({"/work":{"items":[{"id":90,"text":"must not be imported twice"}]}}).to_string(),
-    )
-    .unwrap();
+    let before =
+        pair.databases[0].fetch(&FetchRequest::entity("project").in_namespace(store::SHARED));
+    std::fs::write(pair._root.path().join("projects.json"), "{}").unwrap();
     pair.reload();
     assert_eq!(
-        pair.databases[0].fetch(&FetchRequest::entity("todo").in_namespace(store::SHARED)),
+        pair.databases[0].fetch(&FetchRequest::entity("project").in_namespace(store::SHARED)),
         before
     );
     for data in &pair.databases {
@@ -556,13 +463,12 @@ fn project_store_actual_runtimes_match_real_legacy_import_files() {
             &[
                 Mutation::delete("import_marker", Pred::eq("host_id", "parity-host-id")),
                 store::import_marker_mutation(&HostId::new(""), "projects"),
-                store::import_marker_mutation(&HostId::new(""), "todos"),
             ],
         );
     }
     pair.reload();
     assert_eq!(
-        pair.databases[0].fetch(&FetchRequest::entity("todo").in_namespace(store::SHARED)),
+        pair.databases[0].fetch(&FetchRequest::entity("project").in_namespace(store::SHARED)),
         before
     );
     assert_eq!(
@@ -573,7 +479,7 @@ fn project_store_actual_runtimes_match_real_legacy_import_files() {
                     .filter(Pred::eq("host_id", ""))
             )
             .len(),
-        2,
+        1,
         "claiming this host's import must preserve legacy markers for other hosts"
     );
     pair.rows();
@@ -616,49 +522,6 @@ fn project_store_actual_runtimes_match_discovery_context_arrangement_and_rpc_aut
         );
     }
     pair.rows();
-}
-
-#[test]
-fn project_store_actual_runtimes_match_partial_note_writes_and_missing_attachment_targets() {
-    let _reference_trace = super::reference_trace::Scenario::new(
-        "project_store_actual_runtimes_match_partial_note_writes_and_missing_attachment_targets",
-    );
-    for disappears in [false, true] {
-        let mut pair = Pair::with_host(None, |data, root| {
-            let responder = host(data, root);
-            let data = data.clone();
-            Arc::new(move |command| {
-                if let PluginCommand::DataApply { mutations, .. } = command {
-                    if mutations.iter().any(|mutation| matches!(mutation,Mutation::Put {entity,..} if entity == "note_tag")) {
-                        return Some(ProtobufDataApplyResponse::from(DataApplyResponse::Err("fixture attachment failure".into())).encode_to_vec());
-                    }
-                    if disappears && mutations.iter().any(|mutation| matches!(mutation,Mutation::Put {entity,..} if entity == "note")) {
-                        let response=responder(command);
-                        data.apply(store::SHARED,&[Mutation::delete("todo",Pred::eq("id",1i64))]);
-                        return response;
-                    }
-                }
-                responder(command)
-            })
-        });
-        assert_eq!(
-            pair.mutate("todo_add", json!({"project":"/work","text":"attachment"}))["ok"],
-            true
-        );
-        let result=pair.mutate("note_add",json!({"global":true,"title":"Keep this note","body":"written before attachments","tags":["tag"],"todo_ids":[1]}));
-        assert_eq!(result["ok"], true);
-        assert!(result["data"]["warning"]
-            .as_str()
-            .unwrap()
-            .contains(if disappears {
-                "no todo item 1"
-            } else {
-                "fixture attachment failure"
-            }));
-        assert_eq!(result["data"]["tags"], json!([]));
-        assert_eq!(result["data"]["todo_ids"], json!([]));
-        pair.rows();
-    }
 }
 
 #[test]

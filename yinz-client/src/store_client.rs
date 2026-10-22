@@ -27,22 +27,13 @@ pub fn raw_request(
     })
 }
 
-fn pipe_timeout(action: &Action) -> Duration {
-    // Multi-megabyte note writes include full-body reads and JSON replies in the Wasm interpreter.
-    let large_write = matches!(action,
-        Action::CliPipe { name: Some(name), payload: Some(payload), .. }
-            if name == "store_mutate" && payload.len() >= yinz_types::plugin_data::MAX_FETCH_BYTES
-    );
-    Duration::from_secs(if large_write { 120 } else { 30 })
-}
-
 fn pipe_request(
     session: &SessionName,
     action: Action,
     caller: Option<yinz_types::internal_ids::TerminalId>,
     decode: impl Fn(&str) -> Result<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let timeout = pipe_timeout(&action);
+    let timeout = Duration::from_secs(30);
     let Action::CliPipe { ref pipe_id, .. } = action else {
         return Err(anyhow!("expected a service pipe request"));
     };

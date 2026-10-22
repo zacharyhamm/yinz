@@ -301,17 +301,6 @@ pub enum PtyInstruction {
     /// asked for are resolved and started (or failed), and the pty thread can
     /// finish the job the way it would have had the spawn been local.
     SpawnResolved(PendingSpawn),
-    OpenNoteEditor {
-        path: PathBuf,
-        pane_title: String,
-        client: ClientId,
-        tab: TabId,
-        exit: crate::command_palette::NoteEditorCompletion,
-    },
-    NoteEditorExited {
-        pane: PaneId,
-        status: Option<i32>,
-    },
     OpenInPlaceEditor(
         PathBuf,
         Option<usize>,

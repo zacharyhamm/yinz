@@ -11,7 +11,7 @@ fn bar_style(frame: &GridSnapshot) -> CellStyle {
         .text
         .lines()
         .enumerate()
-        .find(|(_, line)| line.contains("Agents") && line.contains("Todos"))
+        .find(|(_, line)| line.contains("│ Agents │"))
         .expect("panel tab bar");
     let column = line[..line.find("Agents").unwrap()].chars().count();
     frame.cell_style(column, row)
@@ -68,7 +68,6 @@ load_plugins clear-defaults=true {{ "agent-service"; }}
     yinz.send_stdin(&keys::ctrl('b'));
     let initial = yinz.wait_until("both agents appear in the panel", |frame| {
         frame.contains("Agents")
-            && frame.contains("Todos")
             && frame.contains("CLA")
             && frame.contains("CDX")
             && frame.contains("Enter focus")

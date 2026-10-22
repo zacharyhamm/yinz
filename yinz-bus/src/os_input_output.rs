@@ -236,10 +236,6 @@ pub trait ServerOsApi: Send + Sync {
         Err(anyhow!("this backend does not support remote panes"))
     }
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> Result<()>;
-    /// Confirm that a local process is gone, without relying on its exit callback.
-    fn wait_for_process_exit(&self, _pid: ProcessId, _timeout: Duration) -> Result<()> {
-        Err(anyhow!("this backend cannot confirm process exit"))
-    }
     /// Whether new panes get a detachable pty-host supervisor. Config only
     /// arrives with the first client, long after the backend is built, so this is
     /// set once at session init. Defaulted so mock implementations are unaffected.

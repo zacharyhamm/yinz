@@ -2,8 +2,6 @@
 use std::{fs, io::Write, path::Path};
 use yinz_runtime::errors::prelude::*;
 
-const SKILL: &str = include_str!("../assets/skills/yinz-notes-todos/SKILL.md");
-
 fn install_content(path: &Path, content: &str, dry_run: bool, force: bool) -> Result<()> {
     match fs::read(path) {
         Ok(bytes) if bytes == content.as_bytes() => {
@@ -51,7 +49,6 @@ const BUNDLE: &[(&str, &str)] = &[
         "yinz-agents",
         include_str!("../assets/skills/yinz-agents/SKILL.md"),
     ),
-    ("yinz-notes-todos", SKILL),
     (
         "yinz-plugin-data",
         include_str!("../assets/skills/yinz-plugin-data/SKILL.md"),
@@ -143,8 +140,9 @@ mod tests {
     use super::*;
     #[test]
     fn skill_install_is_explicit_idempotent_and_preserves_other_files() {
+        const SKILL: &str = include_str!("../assets/skills/yinz-sessions/SKILL.md");
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("skills/yinz-notes-todos/SKILL.md");
+        let path = temp.path().join("skills/yinz-sessions/SKILL.md");
         install_content(&path, SKILL, true, false).unwrap();
         assert!(!path.parent().unwrap().exists());
         install_content(&path, SKILL, false, false).unwrap();

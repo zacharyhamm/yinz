@@ -1492,9 +1492,6 @@ impl ServerOsApi for ServerOsInputOutput {
     fn begin_confirmed_pty_host_shutdown(&self) -> Result<()> {
         self.pty_backend.begin_confirmed_pty_host_shutdown()
     }
-    fn wait_for_process_exit(&self, pid: ProcessId, timeout: Duration) -> Result<()> {
-        self.pty_backend.wait_for_process_exit(pid, timeout)
-    }
     fn confirm_pty_host_shutdown(&self) -> Result<()> {
         self.pty_backend.confirm_pty_host_shutdown()
     }

@@ -12,8 +12,7 @@
 //! still going. SQLite includes all sessions using the data directory. Narrowing by
 //! session or host identity is optional.
 //!
-//! Its own module rather than more of `agents.rs` for the reason [`crate::notes`] is its own:
-//! reading is a different job from recording, and `agents.rs` is already the largest file in
+//! Reading is a different job from recording, and `agents.rs` is already the largest file in
 //! the crate.
 
 use serde::{Deserialize, Serialize};
@@ -94,8 +93,7 @@ pub const MAX_PAGE_ENTRIES: usize = 100;
 /// see what a result was answering.
 pub const ANCHOR_LEAD_IN: u64 = 2;
 
-/// The `IN` chunk that [`crate::notes`] uses, and for the same reason: one `Pred::is_in` of
-/// unbounded width is a query the store will refuse.
+/// Bound `IN` chunks to avoid queries the store will refuse.
 const IN_CHUNK: usize = 500;
 
 /// How many rows a listing will scan to fill a page it has to narrow in the guest.
@@ -705,8 +703,8 @@ fn scope_runs(backend: &impl Backend, filter: &Filter) -> Result<(Vec<String>, b
 ///   matches four runs cannot be starved by five hundred hits that all belong to others.
 ///
 /// With `regex`, scan bounded pages of complete entries, newest stored first.
-/// Otherwise the FTS index is tried first and a substring pass is the fallback, exactly as
-/// `notes::search` does it — a query FTS5 tokenizes into nothing still finds the entries that
+/// Otherwise the FTS index is tried first and a substring pass is the fallback.
+/// A query FTS5 tokenizes into nothing still finds the entries that
 /// literally contain it.
 pub fn search(
     backend: &impl Backend,
@@ -1128,7 +1126,7 @@ pub fn hits_from_rows(
 /// Centred on the hit rather than taken from the head, which is what makes a search result
 /// worth reading: the match in a two-thousand-word plan is rarely in its first sentence. When
 /// the query does not appear literally — FTS5 stems, so it often will not — this falls back to
-/// the head of the text, which is `notes::snippet`'s behaviour.
+/// the head of the text.
 pub fn snippet(text: &str, query: &str) -> String {
     let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.chars().count() <= SNIPPET_CHARS {
@@ -1964,7 +1962,7 @@ mod tests {
             .collect()
     }
 
-    /// The `notes::search` fallback, pinned here too: FTS5 tokenizes on word boundaries, so a
+    /// The substring fallback: FTS5 tokenizes on word boundaries, so a
     /// fragment matches nothing in the index and everything in a substring pass.
     #[test]
     fn a_fragment_falls_back_to_a_substring_pass() {

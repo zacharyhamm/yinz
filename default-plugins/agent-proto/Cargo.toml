@@ -8,7 +8,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-# The store seam, the schemas and the project/todo/note registry, re-exported unchanged. Its
+# The store seam, the schemas and the project registry, re-exported unchanged. Its
 # native build carries the store engine, which is what `store::Local` needs here.
 project-data = { path = "../project-data" }
 yinz-types = { workspace = true }

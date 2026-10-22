@@ -1,5 +1,5 @@
 use super::*;
-use yinz_cli::notes_todos::NotesTodos;
+use yinz_cli::projects::Projects;
 use yinz_integration_tests::test_env;
 
 #[test]
@@ -32,12 +32,12 @@ fn last_project_survives_restart_and_yields_to_a_known_folder() {
     };
     let mut first = start(&unrelated);
     for (name, folder) in [("alpha", alpha), ("beta", root.join("beta"))] {
-        let action = NotesTodos::ProjectRemember {
+        let action = Projects::ProjectRemember {
             name: name.into(),
             root: folder.display().to_string(),
             worktree_dir: None,
         }
-        .action(&mut std::io::empty())
+        .action()
         .unwrap();
         yinz_client::store_client::request(&first.session_name().into(), action, None).unwrap();
     }

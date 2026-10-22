@@ -28,32 +28,6 @@ pub enum Instruction {
         view: u64,
         generation: u64,
     },
-    NoteDiscover {
-        client: ClientId,
-        token: u64,
-        revision: u64,
-    },
-    NoteSearch {
-        client: ClientId,
-        token: u64,
-        revision: u64,
-        reply: Result<NoteResults, String>,
-    },
-    NoteReady {
-        client: ClientId,
-        token: u64,
-        revision: u64,
-        path: std::path::PathBuf,
-        pane_title: String,
-        exit: NoteEditorCompletion,
-    },
-    NoteFinished {
-        client: ClientId,
-        token: u64,
-        revision: u64,
-        /// True if the note changed and was saved.
-        result: Result<bool, String>,
-    },
     AgentReply {
         client: ClientId,
         opening: u64,
@@ -162,39 +136,6 @@ pub enum AgentReply {
         action: AgentAction,
     },
     Launched(yinz_types::agent::control::AgentResponse),
-}
-
-/// The worker owns the original note and temporary directory until this completes.
-pub type NoteEditorCompletion = crossbeam::channel::Sender<Result<(), String>>;
-
-#[derive(Clone, Debug)]
-pub struct NoteRequest {
-    pub client: ClientId,
-    pub token: u64,
-    pub revision: u64,
-    pub project: String,
-    pub action: NoteAction,
-    pub active: Arc<AtomicBool>,
-}
-
-#[derive(Clone, Debug)]
-pub enum NoteAction {
-    Search(String),
-    Open(u64),
-}
-
-#[derive(Clone, Debug)]
-pub struct NoteChoice {
-    pub id: u64,
-    pub title: String,
-    pub snippet: String,
-    pub archived: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct NoteResults {
-    pub notes: Vec<NoteChoice>,
-    pub truncated: bool,
 }
 
 #[path = "palette_query.rs"]

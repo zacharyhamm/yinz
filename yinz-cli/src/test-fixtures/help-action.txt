@@ -16,27 +16,12 @@ Commands:
   pane-rerun                        Rerun a held command pane
   pane-pin                          Pin an explicit floating pane
   pane-unpin                        Unpin an explicit floating pane
-  project-rename                    Rename a project, preserving linked records
+  project-rename                    Rename a project
   project-merge                     Merge duplicate project identities, preserving the target's
                                     settings
   project-list                      List remembered projects
   project-remember                  Remember a project name and absolute root
-  project-forget                    Forget a project name, preserving its notes and todos
-  todo-list                         List a project’s todo tree
-  todo-search                       Search todos across projects by default
-  todo-add                          Add a todo or subtask
-  todo-edit                         Replace todo text
-  todo-done                         Complete a todo and its subtree, or reopen it
-  todo-delete                       Delete a leaf, or a subtree with --recursive. Notes survive
-  todo-move                         Move a subtree within its project
-  note-list                         List notes across all scopes by default
-  note-search                       Search notes across all scopes by default
-  note-get                          Read a whole note, including its revision
-  note-add                          Create a project or global note
-  note-edit                         Replace a note’s title, body, or tags
-  note-archive                      Archive a note, or restore it with --undo
-  note-delete                       Delete a note and its tags and links
-  note-link                         Link a note to a todo, or unlink it
+  project-forget                    Forget a project name
   write                             Write bytes to the terminal
   write-chars                       Write characters to the terminal
   paste                             Paste text to the terminal (using bracketed paste mode)

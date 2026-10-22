@@ -363,7 +363,6 @@ plugins {
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"
     tab-bar location="yinz:tab-bar"
-    todos location="yinz:todos"
 }
 
 // Plugins to load in the background when a new session starts

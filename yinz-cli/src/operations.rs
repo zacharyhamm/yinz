@@ -75,7 +75,7 @@ impl Operations {
             *args = supplied;
         }
         request["structured_reply"] = json!(true);
-        Ok(crate::notes_todos::pipe_action("agent_action", request))
+        Ok(crate::projects::pipe_action("agent_action", request))
     }
 }
 

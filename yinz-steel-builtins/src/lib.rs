@@ -142,9 +142,5 @@ mod agent_service_tests;
 mod project_store_tests;
 
 #[cfg(test)]
-#[path = "unit/todos.rs"]
-mod todos_tests;
-
-#[cfg(test)]
 #[path = "unit/install.rs"]
 mod install_tests;

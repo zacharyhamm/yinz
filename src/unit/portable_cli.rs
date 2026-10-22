@@ -1105,7 +1105,12 @@ fn bundle_installation_preserves_unrelated_files_and_preflights_conflicts() {
             .output()
             .unwrap(),
     );
-    assert_eq!(names.as_array().unwrap().len(), 5);
+    assert_eq!(names.as_array().unwrap().len(), 4);
+    assert!(!names
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|name| name == "yinz-notes-todos"));
     for name in names.as_array().unwrap() {
         let path = dest.join(name.as_str().unwrap()).join("SKILL.md");
         let shown = command(dir.path())

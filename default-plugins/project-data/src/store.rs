@@ -2,7 +2,6 @@
 //! [`Local`] uses the real SQLite store for native model tests. Scheme plugins send
 //! data commands through their confined host bridge and keep transactions in guest code.
 
-use yinz_tile::prelude::DataRevision;
 use yinz_tile::prelude::HostId;
 use yinz_tile::prelude::*;
 
@@ -58,9 +57,7 @@ pub fn owned_rows_request(entity: &str, owner: &Owner) -> FetchRequest {
 /// other's rows — which is the whole reason the store used to replicate its
 /// state over a pipe.
 ///
-/// One namespace for both entities rather than one each, because a batch of
-/// mutations is a transaction over a single namespace and discovery has to move
-/// a project's root and its todo list together.
+/// Shared project and agent data. A mutation batch is a transaction over one namespace.
 pub const SHARED: &str = "shared:yinz";
 
 /// The page size for list reads; lists may span any number of pages.
@@ -102,72 +99,11 @@ pub fn project_def() -> EntityDef {
         .attr(AttrDef::boolean("discovered").required().default(false))
 }
 
-/// One todo item. The tree is edges, not nesting: `parent_id` holds the store id
-/// of the item above, and is null for a top-level item.
-///
-/// There is deliberately no `position` column. Siblings are only ever appended,
-/// so `id` ascending *is* insertion order — and a stored ordering that nothing
-/// maintains is a column that can go wrong. Nor is there a `depth`: it follows
-/// from the parent chain, and a copy could disagree with it.
-///
-/// Nor is there an `item_id`. The store's own `id` is the id the model names in
-/// a tool call, which is what retires the per-list `next_id` counter and the
-/// allocation race that came with it.
-pub fn todo_def() -> EntityDef {
-    EntityDef::new("todo", 1)
-        .attr(AttrDef::text("root").indexed().required())
-        .attr(AttrDef::int("parent_id"))
-        .attr(AttrDef::text("text").full_text().required())
-        .attr(AttrDef::boolean("done").indexed().required().default(false))
-}
-
-/// One note. `root` is the normalized project root the note belongs to, as a
-/// todo's is, or null for a note tied to no project at all.
-///
-/// Both `title` and `body` are full-text: a search for a word should find it
-/// whichever of the two it is in, and FTS5 answers one row per note however
-/// many of its columns match. A listing selects everything but `body`, which is
-/// the one attribute with a real size.
-///
-/// The store's own `created_at` and `updated_at` are the note's timestamps;
-/// nothing here duplicates them.
-pub fn note_def() -> EntityDef {
-    EntityDef::new("note", 1)
-        .attr(AttrDef::text("root").indexed())
-        .attr(AttrDef::text("title").full_text().required())
-        .attr(AttrDef::text("body").full_text().required())
-        .attr(AttrDef::text("author").required().default("user"))
-        .attr(
-            AttrDef::boolean("archived")
-                .indexed()
-                .required()
-                .default(false),
-        )
-}
-
-/// A note referencing one todo item. Its uid is `"{note_id}:{todo_id}"`, so
-/// linking the same pair twice is one row. Both sides are indexed: a note's
-/// items and an item's notes are each one lookup.
-pub fn note_link_def() -> EntityDef {
-    EntityDef::new("note_link", 1)
-        .attr(AttrDef::int("note_id").indexed().required())
-        .attr(AttrDef::int("todo_id").indexed().required())
-}
-
-/// One tag on one note, uid `"{note_id}:{tag}"`. A row per tag rather than a
-/// text column of them, so a listing can be narrowed to a tag by the store.
-pub fn note_tag_def() -> EntityDef {
-    EntityDef::new("note_tag", 1)
-        .attr(AttrDef::int("note_id").indexed().required())
-        .attr(AttrDef::text("tag").indexed().required())
-}
-
-/// A note that one of the old JSON files has been read in already.
+/// Records that one of the old JSON files has been read in already.
 ///
 /// Written in the same transaction as the rows it describes, so the import is
 /// atomic and idempotent. A marker rather than "is the table empty?", because
-/// emptiness is a state a user can reach honestly — crossing off and clearing
-/// the last todo would otherwise resurrect the file on the next launch.
+/// emptiness is a state a user can reach honestly by forgetting all projects.
 pub fn import_marker_def() -> EntityDef {
     EntityDef::new("import_marker", 2)
         .attr(AttrDef::text("what").required())
@@ -387,10 +323,6 @@ pub fn agent_run_entry_def() -> EntityDef {
 pub fn shared_defs() -> Vec<EntityDef> {
     vec![
         project_def(),
-        todo_def(),
-        note_def(),
-        note_link_def(),
-        note_tag_def(),
         import_marker_def(),
         agent_latch_def(),
         EntityDef::new("agent_assignment", 1)
@@ -403,37 +335,6 @@ pub fn shared_defs() -> Vec<EntityDef> {
         agent_run_def(),
         agent_run_entry_def(),
     ]
-}
-
-// ---------------------------------------------------------------------------
-// Guarding a write on what its author read
-// ---------------------------------------------------------------------------
-
-/// The revision an edit guards on: what the caller says it read, else what the row said when it
-/// was fetched, and nothing at all when neither is a real revision.
-///
-/// Two revisions rather than one because they answer different questions. The row's own `rev`
-/// comes from a fetch the writer made microseconds earlier, in the same straight-line function,
-/// so guarding on it catches only a writer landing inside that window. The revision worth
-/// guarding on is the one the *author of the text* saw, which for a model is several turns back
-/// and for a script is however long it held the value — and that one can only travel in, as an
-/// argument. Where a caller supplies it, it wins.
-///
-/// A caller's zero is treated as absent rather than as `REV_ABSENT`. A reader is never shown a
-/// zero — `notes::note_json` and `todos::items_json` leave it out — so a zero arriving here is a
-/// caller filling the field in rather than a claim that the row must not exist, and the store
-/// refuses `REV_ABSENT` on an update anyway.
-///
-/// A row `rev` of zero means there is no row to guard: a note or an item that came from the
-/// legacy file rather than the store. It must never come to mean "a fetch projected the column
-/// away" — see `notes::LIST_COLUMNS`, which names `rev` for that reason.
-pub fn guarded_rev(
-    expect_rev: Option<DataRevision>,
-    row_rev: DataRevision,
-) -> Option<DataRevision> {
-    expect_rev
-        .filter(|rev| *rev > DataRevision::new(0))
-        .or(Some(row_rev).filter(|rev| *rev > DataRevision::new(0)))
 }
 
 // ---------------------------------------------------------------------------
@@ -713,13 +614,9 @@ mod tests {
         }
     }
 
-    /// Full-text search is only legal on an entity that declares a full-text
-    /// attribute, and three of ours are searched. A note is searched on two
-    /// columns, and one row must come back however many of them match.
     #[test]
     fn the_searched_entities_declare_a_full_text_attribute() {
-        assert_eq!(todo_def().full_text_attrs().len(), 1);
-        assert_eq!(note_def().full_text_attrs().len(), 2);
+        assert_eq!(agent_run_entry_def().full_text_attrs().len(), 1);
     }
 
     /// The marker entity is declared in both namespaces, so it has to be one
@@ -738,8 +635,7 @@ mod tests {
     /// rather than instead of.
     ///
     /// Without the first half, the launch after the upgrade is told the import has not happened
-    /// on every machine at once. The old JSON is never unlinked and nothing dedupes a record or a
-    /// todo, so the whole archive would double. The second half is the same worry from the other
+    /// on every machine at once. The old JSON is never unlinked and nothing dedupes a record, so the whole archive would double. The second half is the same worry from the other
     /// end: the legacy row names no machine, so deleting it is deleting somebody else's only
     /// record that they have already imported — see
     /// `a_legacy_marker_is_not_deleted_out_from_under_the_machine_that_wrote_it`.
@@ -1050,20 +946,20 @@ mod tests {
     #[test]
     fn define_all_names_the_entity_that_failed() {
         let backend = Local::shared("project_store");
-        backend.define(&todo_def()).expect("declared");
+        backend.define(&record_def()).expect("declared");
 
-        let narrower = EntityDef::new("todo", 1).attr(AttrDef::text("root").indexed().required());
+        let narrower = EntityDef::new("record", 2).attr(AttrDef::text("title").required());
         let error = backend
             .joined(SHARED, "agents")
             .define_all(&[project_def(), narrower])
             .expect_err("the second definition should be refused");
         assert!(
-            error.starts_with("could not declare `todo`"),
+            error.starts_with("could not declare `record`"),
             "got: {error}"
         );
     }
     #[test]
-    fn incomplete_pagination_never_returns_a_partial_todo_tree() {
+    fn incomplete_pagination_never_returns_partial_rows() {
         use std::cell::RefCell;
         use std::collections::VecDeque;
         struct Pages(RefCell<VecDeque<Result<DataRows, String>>>);
@@ -1105,7 +1001,7 @@ mod tests {
             (vec![page(Some(1)), page(Some(1))], "did not advance"),
         ] {
             let backend = Pages(RefCell::new(pages.into()));
-            assert!(crate::todos::fetch_list(&backend, "/work")
+            assert!(fetch_all(&backend, FetchRequest::entity("project"))
                 .unwrap_err()
                 .contains(message));
             assert!(backend.0.borrow().is_empty());

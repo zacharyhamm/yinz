@@ -4,12 +4,11 @@ use anyhow::{bail, Result};
 use serde_json::Value;
 use yinz_types::{
     data::FetchRequest,
-    internal_ids::{DataRevision, HostId, SessionName},
+    internal_ids::{HostId, SessionName},
 };
 
 pub(super) fn run(op: &str, args: Value) -> Result<Value> {
     match op {
-        "DebugString" => encode(format!("{:?}", decode::<String>(args)?)),
         "SharedDefs" => encode(store::shared_defs()),
         "FetchLimit" => encode(store::LIST_FETCH_LIMIT),
         "EntityRequest" => encode(FetchRequest::entity(decode::<String>(args)?)),
@@ -17,10 +16,6 @@ pub(super) fn run(op: &str, args: Value) -> Result<Value> {
         "OwnedRowsRequest" => encode(store::owned_rows_request(
             &decode::<String>(args["entity"].clone())?,
             &owner(&args)?,
-        )),
-        "GuardedRev" => encode(store::guarded_rev(
-            decode::<Option<DataRevision>>(args["expect_rev"].clone())?,
-            decode(args["rev"].clone())?,
         )),
         "ImportMarkerMutation" => encode(store::import_marker_mutation(
             &decode::<HostId>(args["host_id"].clone())?,

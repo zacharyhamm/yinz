@@ -608,9 +608,9 @@ fn injected_wall_clock_tracks_the_same_replay_time_as_monotonic_clock() {
 #[test]
 fn data_sdk_pages_through_host_calls_with_optional_initial_cursors() {
     for initial in [
-        json!({"entity": "todo"}),
-        json!({"entity": "todo", "after_id": null}),
-        json!({"entity": "todo", "after_id": 5}),
+        json!({"entity": "project"}),
+        json!({"entity": "project", "after_id": null}),
+        json!({"entity": "project", "after_id": 5}),
     ] {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let calls = seen.clone();
@@ -660,7 +660,10 @@ fn data_sdk_rejects_missing_or_stalled_response_cursors() {
         let error = runtime
             .invoke(
                 "yinz-data-fetch-all",
-                vec![json!("shared:yinz"), json!({"entity":"todo","after_id":5})],
+                vec![
+                    json!("shared:yinz"),
+                    json!({"entity":"project","after_id":5}),
+                ],
             )
             .unwrap_err()
             .to_string();

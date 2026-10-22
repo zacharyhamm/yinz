@@ -1,5 +1,5 @@
 //! Pure agent models, planning helpers, and wire types shared by the host and Scheme bridge.
-//! Stored schemas and project, todo, and note models come from `project-data`.
+//! Stored schemas and project models come from `project-data`.
 //! Guest lifecycle, host commands, and transaction sequencing remain in Scheme.
 
 /// The session's reading of a Claude Code hook event, for plugins that link only this crate.
@@ -19,6 +19,6 @@ pub mod wire;
 
 pub mod panel_text;
 
-pub use project_data::{git_probe, location, notes, paths, projects, store, todos};
+pub use project_data::{git_probe, location, paths, projects, store};
 
 pub mod pane_operations;

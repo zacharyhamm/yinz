@@ -40,21 +40,13 @@ fn panel_tabs_open_and_dismiss_without_chat() {
     });
     yinz.send_stdin(&keys::ctrl('b'));
     let initial = yinz.wait_until("the agents panel receives the service snapshot", |s| {
-        s.contains("Agents") && s.contains("Todos") && s.contains("CLA")
+        s.contains("Agents") && s.contains("CLA")
     });
     assert!(!initial.contains("Hocus"));
-    assert_eq!(panel(&yinz).pane_info.pane_tabs.unwrap().tabs.len(), 2);
-    // The native tab bar owns navigation; activate each lazily loaded companion.
-    let (name, content) = ("Todos", "no projects");
-    yinz.send_stdin(&keys::SHIFT_TAB);
-    yinz.send_stdin(b"\x1b[C");
-    yinz.send_stdin(&keys::ENTER);
-    yinz.wait_until(&format!("{name} view loads"), |s| {
-        s.contains(name) && s.text.to_lowercase().contains(&content.to_lowercase())
-    });
+    assert_eq!(panel(&yinz).pane_info.pane_tabs.unwrap().tabs.len(), 1);
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("the panel is dismissed", |s| {
-        !s.contains("Agents") && !s.contains("Todos")
+        !s.contains("Agents") && !s.contains("Companion")
     });
     yinz.quit();
 }
@@ -77,7 +69,7 @@ fn open_agent_panel_repaints_its_background_when_the_theme_changes() {
     yinz.send_stdin(&keys::ctrl('e'));
     yinz.send_stdin(b"a");
     yinz.wait_until("the agents panel receives the service snapshot", |s| {
-        s.contains("Agents") && s.contains("Todos") && s.contains("CLA")
+        s.contains("Agents") && s.contains("CLA")
     });
     let pane = panel(&yinz).pane_info;
     let x = pane.pane_content_x.get();
@@ -145,13 +137,28 @@ fn creating_an_agent_dismisses_each_companion_panel() {
     companion_panel_dismisses(true);
 }
 
+fn companion_config() -> (tempfile::TempDir, String) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("companion.scm");
+    std::fs::write(
+        &path,
+        r#"(define (render rows columns) "companion content")"#,
+    )
+    .unwrap();
+    let config = format!(
+        "{CONFIG}\noverlay_tab_plugins {{ agents label=\"Agents\"; \"file:{}\" label=\"Companion\"; }}", path.display()
+    );
+    (directory, config)
+}
+
 fn companion_panel_dismisses(create_agent: bool) {
-    let (index, name, content) = (1, "Todos", "no projects");
+    let (_directory, config) = companion_config();
+    let (index, name, content) = (1, "Companion", "companion content");
     let mut yinz = TestRunner::new(Size {
         cols: 120,
         rows: 40,
     })
-    .with_config(CONFIG)
+    .with_config(&config)
     .with_layout(LayoutInfo::Stringified(
         "layout { pane command=\"claude\"; }".into(),
     ))
@@ -163,7 +170,7 @@ fn companion_panel_dismisses(create_agent: bool) {
     });
     yinz.send_stdin(&keys::ctrl('b'));
     yinz.wait_until("the panel tab bar is ready", |s| {
-        s.contains("Agents") && s.contains("Todos")
+        s.contains("Agents") && s.contains("Companion")
     });
     click_text(&mut yinz, name);
     yinz.wait_until(&format!("{name} is active"), |s| {
@@ -187,20 +194,20 @@ fn companion_panel_dismisses(create_agent: bool) {
         agent.output(b"NEW AGENT\r\n");
         yinz.wait_until(
             "the new agent receives focus and the panel is dismissed",
-            |s| s.contains("NEW AGENT") && !s.contains("Create agent") && !s.contains("Todos"),
+            |s| s.contains("NEW AGENT") && !s.contains("Create agent") && !s.contains("Companion"),
         );
     } else {
         // The terminal's top-left corner is outside the panel's padded rectangle.
         yinz.send_stdin(b"\x1b[<0;1;1M");
         yinz.send_stdin(b"\x1b[<0;1;1m");
         yinz.wait_until("terminal focus dismisses the companion panel", |s| {
-            !s.contains("Agents") && !s.contains("Todos")
+            !s.contains("Agents") && !s.contains("Companion")
         });
     }
 
     yinz.send_stdin(&keys::ctrl('b'));
     yinz.wait_until("the dismissed panel can be reopened", |s| {
-        s.contains("Agents") && s.contains("Todos")
+        s.contains("Agents") && s.contains("Companion")
     });
     assert!(
         panel(&yinz).pane_info.is_focused,
@@ -233,8 +240,9 @@ fn panel(yinz: &TestSession) -> PaneListEntry {
 
 #[test]
 fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
+    let (_directory, config) = companion_config();
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(CONFIG)
+        .with_config(&config)
         .with_layout(LayoutInfo::Stringified(
             "layout { pane command=\"claude\"; }".into(),
         ))
@@ -289,7 +297,7 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     });
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("the dragged panel is dismissed", |s| {
-        !s.contains("Agents") && !s.contains("Todos")
+        !s.contains("Agents") && !s.contains("Companion")
     });
     yinz.send_stdin(&keys::ctrl('x'));
     yinz.send_stdin(&keys::ctrl('b'));
@@ -314,7 +322,7 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     });
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("modal cancellation leaves the panel up", |s| {
-        !s.contains("Create agent") && s.contains("Todos")
+        !s.contains("Create agent") && s.contains("Companion")
     });
     yinz.send_stdin(b"w");
     yinz.wait_until("the modal returned keyboard focus to Agents", |s| {
@@ -325,13 +333,13 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     yinz.send_stdin(&keys::SHIFT_TAB);
     yinz.send_stdin(b"\x1b[C");
     yinz.send_stdin(&keys::ENTER);
-    yinz.wait_until("Todos is the active panel child", |s| {
-        s.contains("no projects") && panel(&yinz).pane_info.pane_tabs.unwrap().active == 1
+    yinz.wait_until("Companion is the active panel child", |s| {
+        s.contains("companion content") && panel(&yinz).pane_info.pane_tabs.unwrap().active == 1
     });
     yinz.send_stdin(&keys::ctrl('x'));
     yinz.wait_until("the companion moves to the top-right corner", |s| {
         let p = panel(&yinz).pane_info;
-        s.contains("no projects") && (p.pane_x.get(), p.pane_y.get()) == (53, 3)
+        s.contains("companion content") && (p.pane_x.get(), p.pane_y.get()) == (53, 3)
     });
     yinz.resize(Size {
         rows: 36,
@@ -339,7 +347,7 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     });
     yinz.wait_until("the companion follows the resized surface", |s| {
         let p = panel(&yinz).pane_info;
-        s.contains("no projects")
+        s.contains("companion content")
             && (
                 p.pane_x.get(),
                 p.pane_y.get(),
@@ -351,7 +359,7 @@ fn panel_placement_drag_tab_follow_and_modal_return_work_without_chat() {
     let shell = yinz.expect_pty_spawn();
     shell.output(b"SECOND TAB");
     yinz.wait_until("the panel follows the new tab", |s| {
-        s.contains("SECOND TAB") && s.contains("no projects")
+        s.contains("SECOND TAB") && s.contains("companion content")
     });
     assert_eq!(panel(&yinz).tab_position.get(), 1);
     yinz.quit();
