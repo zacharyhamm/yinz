@@ -1507,8 +1507,13 @@ impl ServerOsApi for ServerOsInputOutput {
         self.pty_backend.rename_pty_host_session(old, new)
     }
     #[cfg(not(windows))]
-    fn terminate_orphaned_pty_hosts(&self, session: &str) -> Result<()> {
-        crate::pty_host::cli::terminate_orphans_of_session(session).map(|_| ())
+    fn terminate_orphaned_pty_hosts(
+        &self,
+        session: &str,
+        progress: &mut dyn FnMut(),
+    ) -> Result<()> {
+        crate::pty_host::cli::terminate_orphans_of_session_with_progress(session, progress)
+            .map(|_| ())
     }
 
     fn flush_client_writers(&self, deadline: Duration) {

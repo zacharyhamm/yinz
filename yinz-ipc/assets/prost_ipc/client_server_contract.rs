@@ -3712,7 +3712,7 @@ pub mod client_to_server_msg {
         #[prost(message, tag="12")]
         KillSession(super::KillSessionMsg),
         #[prost(message, tag="32")]
-        KillSessionWithCompletion(super::KillSessionMsg),
+        KillSessionWithCompletion(super::KillSessionWithCompletionMsg),
         #[prost(message, tag="13")]
         ConnStatus(super::ConnStatusMsg),
         #[prost(message, tag="16")]
@@ -3834,6 +3834,12 @@ pub struct ClientExitedMsg {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KillSessionMsg {
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KillSessionWithCompletionMsg {
+    #[prost(bool, tag="1")]
+    pub report_progress: bool,
 }
 /// Empty message (just indicates connection status request)
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -3988,7 +3994,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22")]
+    #[prost(oneof="server_to_client_msg::Message", tags="23, 24, 25, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 26, 14, 15, 16, 18, 20, 21, 22, 27")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -4042,6 +4048,8 @@ pub mod server_to_client_msg {
         AgentReportAccepted(super::AgentReportAcceptedMsg),
         #[prost(message, tag="22")]
         KillSessionComplete(super::KillSessionCompleteMsg),
+        #[prost(message, tag="27")]
+        KillSessionProgress(super::KillSessionProgressMsg),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -4175,6 +4183,10 @@ pub struct AgentReportAcceptedMsg {
 pub struct KillSessionCompleteMsg {
     #[prost(string, optional, tag="1")]
     pub error: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KillSessionProgressMsg {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

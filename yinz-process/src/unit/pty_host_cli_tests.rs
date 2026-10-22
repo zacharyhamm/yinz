@@ -420,23 +420,23 @@ fn a_recovered_panes_command_is_reconstructed_by_splitting_on_spaces() {
     assert_eq!(cmd.target.ssh_host(), Some("build-box"));
 }
 
-#[test]
-fn orphan_sweep_reaches_responsive_targets_within_one_shared_deadline() {
+fn sweep_target(
+    path: &Path,
+    delay: std::time::Duration,
+    requests: yinz_test_support::Watched<Vec<PathBuf>>,
+) -> std::thread::JoinHandle<()> {
     use protocol::{HostToServerMsg, ServerToHostMsg};
-    use std::os::unix::net::UnixListener;
-    let dir = tempfile::tempdir().unwrap();
-    let _silent: Vec<_> = (0..4)
-        .map(|i| UnixListener::bind(dir.path().join(format!("silent-{i}.sock"))).unwrap())
-        .collect();
-    let listener = UnixListener::bind(dir.path().join("target.sock")).unwrap();
-    let target = std::thread::spawn(move || {
+    let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+    let path = path.to_owned();
+    std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         assert!(matches!(
             protocol::read_msg::<ServerToHostMsg, _>(&mut stream).unwrap(),
             Some(ServerToHostMsg::Query)
         ));
         let status: HostStatus = serde_json::from_value(serde_json::json!({
-            "host_id": "target", "session_name": "wanted", "terminal_id": 0,
+            "host_id": path.file_stem().unwrap().to_str().unwrap(),
+            "session_name": "wanted", "terminal_id": 0,
             "command": "sleep", "cwd": null, "child_pid": null, "host_pid": 1,
             "started_at_unix": 0, "attached": false, "child_exit_status": null, "buffered_bytes": 0
         }))
@@ -447,6 +447,9 @@ fn orphan_sweep_reaches_responsive_targets_within_one_shared_deadline() {
             matches!(protocol::read_msg::<ServerToHostMsg, _>(&mut stream).unwrap(),
             Some(ServerToHostMsg::TerminateDetached { expected_session }) if expected_session.as_str() == "wanted")
         );
+        requests.lock().push(path);
+        // Model the supervisor's termination grace, which is the behavior under test.
+        std::thread::sleep(delay);
         protocol::write_msg(
             &mut stream,
             &HostToServerMsg::TerminationComplete {
@@ -455,19 +458,101 @@ fn orphan_sweep_reaches_responsive_targets_within_one_shared_deadline() {
             },
         )
         .unwrap();
-    });
+    })
+}
+
+fn sweep_delayed_targets(count: usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let requests = yinz_test_support::Watched::default();
+    let targets: Vec<_> = (0..count)
+        .map(|i| {
+            sweep_target(
+                &dir.path().join(format!("target-{i}.sock")),
+                std::time::Duration::from_secs(2),
+                requests.clone(),
+            )
+        })
+        .collect();
+    let mut progress = 0;
+    let terminated =
+        terminate_orphans_of_session_in_with_progress(dir.path(), "wanted", &mut || progress += 1)
+            .expect("queued supervisors must get their full termination budget");
+    assert_eq!(
+        progress,
+        count + 2,
+        "discovery and each settled operation report progress"
+    );
+    assert_eq!(requests.get().len(), count);
+    let ids: std::collections::BTreeSet<_> = terminated
+        .iter()
+        .map(|status| status.host_id.as_str())
+        .collect();
+    assert_eq!(ids.len(), count);
+    for target in targets {
+        target.join().unwrap();
+    }
+}
+
+#[test]
+fn orphan_sweep_terminates_65_supervisors_with_two_second_grace() {
+    sweep_delayed_targets(65);
+}
+
+#[test]
+fn orphan_sweep_terminates_97_supervisors_with_two_second_grace() {
+    sweep_delayed_targets(97);
+}
+
+#[test]
+fn orphan_sweep_releases_timed_out_slots_and_attempts_every_target() {
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let silent_paths: Vec<_> = (0..33)
+        .map(|i| dir.path().join(format!("silent-{i}.sock")))
+        .collect();
+    let _silent: Vec<_> = silent_paths
+        .iter()
+        .map(|path| UnixListener::bind(path).unwrap())
+        .collect();
+    let requests = yinz_test_support::Watched::default();
+    let targets: Vec<_> = (0..3)
+        .map(|i| {
+            sweep_target(
+                &dir.path().join(format!("target-{i}.sock")),
+                std::time::Duration::ZERO,
+                requests.clone(),
+            )
+        })
+        .collect();
     let start = std::time::Instant::now();
-    let error = terminate_orphans_of_session_in(dir.path(), "wanted").unwrap_err();
+    let mut progress = 0;
+    let error =
+        terminate_orphans_of_session_in_with_progress(dir.path(), "wanted", &mut || progress += 1)
+            .unwrap_err();
+    assert_eq!(progress, silent_paths.len() + targets.len() + 2);
     assert!(
-        start.elapsed() < std::time::Duration::from_secs(7),
-        "sweep used per-socket deadlines"
+        start.elapsed() >= std::time::Duration::from_secs(10),
+        "queued silent supervisors did not get their own five-second deadlines"
     );
-    assert!(format!("{error:#}").contains("unresolved supervisors"));
     assert!(
-        target.is_finished(),
-        "silent supervisors blocked the responsive target"
+        start.elapsed() < std::time::Duration::from_secs(20),
+        "supervisors must be processed concurrently"
     );
-    target.join().unwrap();
+    let error = format!("{error:#}");
+    assert!(error.contains("incomplete orphan cleanup"), "{error}");
+    for path in silent_paths {
+        assert!(
+            error.contains(&format!(
+                "unresolved supervisor {}: five-second supervisor deadline exceeded",
+                path.display()
+            )),
+            "{error}"
+        );
+    }
+    assert_eq!(requests.get().len(), targets.len());
+    for target in targets {
+        target.join().unwrap();
+    }
 }
 
 #[test]
@@ -492,7 +577,11 @@ fn unsupported_conditional_termination_is_incomplete_cleanup() {
         let _ = protocol::read_msg::<ServerToHostMsg, _>(&mut stream).unwrap();
         // An old supervisor closes a connection carrying an unknown request.
     });
-    let error = terminate_orphans_of_session_in(dir.path(), "wanted").unwrap_err();
+    let mut progress = 0;
+    let error =
+        terminate_orphans_of_session_in_with_progress(dir.path(), "wanted", &mut || progress += 1)
+            .unwrap_err();
+    assert_eq!(progress, 3, "failed operations also report progress");
     assert!(format!("{error:#}").contains("unsupported protocol"));
     host.join().unwrap();
     assert!(

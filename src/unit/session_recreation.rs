@@ -415,7 +415,12 @@ fn force_delete_waits_for_completion_and_preserves_checkpoint_on_failure() {
                         })
                         .unwrap();
                 },
-                IpcRecv::Msg(ClientToServerMsg::KillSessionWithCompletion, _) => {
+                IpcRecv::Msg(
+                    ClientToServerMsg::KillSessionWithCompletion {
+                        report_progress: true,
+                    },
+                    _,
+                ) => {
                     started.send(()).unwrap();
                     released.recv().unwrap();
                     // Completion must not race the client checking that the listener is closed.
@@ -583,4 +588,76 @@ fn remote_bootstrap_version_mismatch_cannot_create_a_session() {
     let error = String::from_utf8_lossy(&out.stderr);
     assert!(error.contains("incompatible") && error.contains(yinz_runtime::consts::VERSION));
     assert!(!session.socket().exists());
+}
+
+#[test]
+fn live_kill_session_confirms_a_sweep_longer_than_ten_seconds() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use yinz_process::pty_host::protocol::{self, HostStatus, HostToServerMsg, ServerToHostMsg};
+
+    let session = Session::new();
+    session.success(&[
+        "--layout-string",
+        "layout { pane; }",
+        "attach",
+        "--create-background",
+        NAME,
+    ]);
+    session.wait_for_panes(false);
+    let dir = session.socket().parent().unwrap().join("pty");
+    fs::create_dir_all(&dir).unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let mut supervisors = tokio::task::JoinSet::new();
+            for i in 0..129 {
+                let path = dir.join(format!("delayed-{i}.sock"));
+                let listener = tokio::net::UnixListener::bind(&path).unwrap();
+                supervisors.spawn(async move {
+                    for terminate in [false, true] {
+                        let (mut stream, _) = listener.accept().await.unwrap();
+                        let len = stream.read_u32_le().await.unwrap();
+                        assert!(len < 4096, "unexpectedly large supervisor request");
+                        let mut body = vec![0; len as usize];
+                        stream.read_exact(&mut body).await.unwrap();
+                        let request: ServerToHostMsg = serde_json::from_slice(&body).unwrap();
+                        let reply = if terminate {
+                            assert!(matches!(request, ServerToHostMsg::TerminateDetached { expected_session } if expected_session.as_str() == NAME));
+                            // Five batches at the 32-operation limit must exceed ten seconds.
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                            HostToServerMsg::TerminationComplete { terminated: true, error: None }
+                        } else {
+                            assert!(matches!(request, ServerToHostMsg::Query));
+                            let status: HostStatus = serde_json::from_value(serde_json::json!({
+                                "host_id": format!("delayed-{i}"), "session_name": NAME,
+                                "terminal_id": 0, "command": "sleep", "cwd": null,
+                                "child_pid": null, "host_pid": 1, "started_at_unix": 0,
+                                "attached": false, "child_exit_status": null, "buffered_bytes": 0
+                            })).unwrap();
+                            HostToServerMsg::Status(status)
+                        };
+                        let mut bytes = Vec::new();
+                        protocol::write_msg(&mut bytes, &reply).unwrap();
+                        stream.write_all(&bytes).await.unwrap();
+                    }
+                    i
+                });
+            }
+            let start = std::time::Instant::now();
+            let output = tokio::time::timeout(
+                Duration::from_secs(60),
+                tokio::process::Command::from(session.command()).args(["kill-session", NAME]).output(),
+            ).await.unwrap().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(start.elapsed() > Duration::from_secs(10));
+            let mut terminated = std::collections::BTreeSet::new();
+            while let Some(result) = supervisors.join_next().await {
+                assert!(terminated.insert(result.unwrap()), "duplicate termination request");
+            }
+            assert_eq!(terminated.len(), 129);
+            // A live kill succeeds only on completion; fallback orphan cleanup cannot return success.
+            assert!(std::os::unix::net::UnixStream::connect(session.socket()).is_err());
+        });
 }

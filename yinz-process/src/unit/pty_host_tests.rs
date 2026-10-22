@@ -11,6 +11,24 @@ use std::time::Instant;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[test]
+fn zeroed_waitid_info_is_no_event() {
+    let info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    assert!(matches!(decode_child_event(&info), Ok(None)));
+}
+
+#[test]
+fn waitid_continued_with_zero_pid_is_an_event() {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    info.si_signo = libc::SIGCHLD;
+    info.si_code = libc::CLD_CONTINUED;
+    assert_eq!(unsafe { info.si_pid() }, 0);
+    assert!(matches!(
+        decode_child_event(&info),
+        Ok(Some(HostEvent::ChildContinued))
+    ));
+}
+
 struct TestHost {
     control: UnixStream,
     handle: Option<JoinHandle<Result<()>>>,
@@ -349,6 +367,356 @@ fn terminate_kills_a_running_child() {
         || !process_alive(child_pid),
         "the child to die after Terminate",
     );
+}
+
+struct GroupProcess {
+    pid: ProcessId,
+    child: Option<Child>,
+    reaper: Option<JoinHandle<std::process::ExitStatus>>,
+    _stdin: std::process::ChildStdin,
+    output: yinz_test_support::Watched<String>,
+}
+
+impl GroupProcess {
+    fn spawn(script: &str, group: i32) -> Self {
+        use std::io::BufRead;
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", script])
+            .process_group(group)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let process = Self {
+            pid: ProcessId::new(child.id()),
+            child: Some(child),
+            reaper: None,
+            _stdin: stdin,
+            output: yinz_test_support::Watched::default(),
+        };
+        let output = process.output.clone();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                output.lock().push_str(&format!("{}\n", line.unwrap()));
+            }
+        });
+        process
+            .output
+            .wait_until("group member readiness", TEST_TIMEOUT, |output| {
+                output.contains("ready\n").then_some(())
+            });
+        process
+    }
+
+    fn reap(&mut self) {
+        let mut child = self.child.take().unwrap();
+        self.reaper = Some(std::thread::spawn(move || child.wait().unwrap()));
+    }
+
+    fn join(&mut self) -> std::process::ExitStatus {
+        let reaper = self.reaper.as_ref().unwrap();
+        wait_until(|| reaper.is_finished(), "group member reaping");
+        self.reaper.take().unwrap().join().unwrap()
+    }
+}
+
+impl Drop for GroupProcess {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(reaper) = self.reaper.take() {
+            if !reaper.is_finished() {
+                let _ = kill(super::super::kernel_pid(self.pid), Some(Signal::SIGKILL));
+            }
+            let _ = reaper.join();
+        }
+    }
+}
+
+fn session_with_child(child: Child) -> (Session, Receiver<HostEvent>, UnixStream) {
+    let child_pid = ProcessId::new(child.id());
+    let pty = openpty(None, None).unwrap();
+    let (event_tx, event_rx) = mpsc::channel();
+    let (wake_tx, wake_rx) = UnixStream::pair().unwrap();
+    wake_rx.set_nonblocking(true).unwrap();
+    let (reap_child, child_reaped) = spawn_child_waiter(child, event_tx, wake_tx);
+    (
+        Session {
+            master: pty.master,
+            slave: Some(pty.slave),
+            child_pid,
+            reap_child: Some(reap_child),
+            child_reaped,
+            exit_status: None,
+            drained: false,
+        },
+        event_rx,
+        wake_rx,
+    )
+}
+
+#[test]
+fn exited_leader_stays_reserved_until_the_last_group_signal() {
+    let mut leader = GroupProcess::spawn("trap 'exit 0' HUP; echo ready; read line", 0);
+    let (mut session, events, _wake) = session_with_child(leader.child.take().unwrap());
+    session.signal_child_group(Signal::SIGHUP).unwrap();
+    assert!(matches!(
+        events.recv_timeout(TEST_TIMEOUT).unwrap(),
+        HostEvent::ChildExited(Some(0))
+    ));
+    assert!(matches!(
+        wait_child(
+            super::super::kernel_pid(leader.pid),
+            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG
+        ),
+        Ok(Some(HostEvent::ChildExited(Some(0))))
+    ));
+    session.signal_child_group(Signal::SIGKILL).unwrap();
+    session.reap_child.take();
+    assert!(session
+        .child_reaped
+        .recv_timeout(TEST_TIMEOUT)
+        .unwrap()
+        .unwrap()
+        .success());
+    assert!(matches!(
+        wait_child(
+            super::super::kernel_pid(leader.pid),
+            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG
+        ),
+        Err(Errno::ECHILD)
+    ));
+
+    // Simulate PID reuse without waiting for the kernel to recycle an ID.
+    let mut unrelated = GroupProcess::spawn("echo ready; read line", 0);
+    session.child_pid = unrelated.pid;
+    for signal in [Signal::SIGCONT, Signal::SIGHUP, Signal::SIGKILL] {
+        assert!(session.signal_child_group(signal).is_err());
+    }
+    assert!(unrelated
+        .child
+        .as_mut()
+        .unwrap()
+        .try_wait()
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn dropping_a_session_releases_its_exited_leader() {
+    let mut leader = GroupProcess::spawn("trap 'exit 0' HUP; echo ready; read line", 0);
+    let (session, events, _wake) = session_with_child(leader.child.take().unwrap());
+    session.signal_child_group(Signal::SIGHUP).unwrap();
+    assert!(matches!(
+        events.recv_timeout(TEST_TIMEOUT).unwrap(),
+        HostEvent::ChildExited(Some(0))
+    ));
+    drop(session);
+    wait_until(
+        || !process_alive(leader.pid),
+        "dropped session's child reaping",
+    );
+}
+
+#[test]
+fn group_signals_refuse_a_leader_reaped_outside_the_waiter() {
+    let mut leader = GroupProcess::spawn("trap 'exit 0' HUP; echo ready; read line", 0);
+    let (session, events, _wake) = session_with_child(leader.child.take().unwrap());
+    session.signal_child_group(Signal::SIGHUP).unwrap();
+    assert!(matches!(
+        events.recv_timeout(TEST_TIMEOUT).unwrap(),
+        HostEvent::ChildExited(Some(0))
+    ));
+    nix::sys::wait::waitpid(super::super::kernel_pid(leader.pid), None).unwrap();
+    for signal in [Signal::SIGCONT, Signal::SIGHUP, Signal::SIGKILL] {
+        let error = session.signal_child_group(signal).unwrap_err();
+        assert_eq!(error.downcast_ref::<Errno>(), Some(&Errno::ECHILD));
+    }
+}
+
+// Both members remain children of the test, so leader-exit cases never rely on init
+// reaping orphan zombies. The supervisor owns the leader's real waiter.
+fn host_with_process_group(member_script: &str) -> (TestHost, PathBuf, GroupProcess, GroupProcess) {
+    let mut leader = GroupProcess::spawn("trap 'exit 0' HUP; echo ready; read line", 0);
+    let member = GroupProcess::spawn(member_script, super::super::kernel_pid(leader.pid).as_raw());
+    let host_id = protocol::new_host_id();
+    let listener = bind_listener(&host_id).unwrap();
+    let socket = protocol::socket_path(&host_id);
+    let (session, event_rx, wake_rx) = session_with_child(leader.child.take().unwrap());
+    let mut ctx = HostContext {
+        host_id,
+        host_pid: ProcessId::new(std::process::id()),
+        label: "test/group".into(),
+        terminal_id: TerminalId::new(0),
+        session_name: Some("pty-host-tests".into()),
+        cmd: sh(""),
+        started_at_unix: UnixSeconds::new(unix_now()),
+        state: State::Attached,
+        ring: RingBuffer::new(),
+        session: Some(session),
+    };
+    let (control, host_control) = UnixStream::pair().unwrap();
+    let handle = std::thread::spawn(move || {
+        let result = event_loop(&mut ctx, host_control, Some(listener), event_rx, wake_rx);
+        cleanup_socket(&ctx.host_id);
+        result
+    });
+    (
+        TestHost {
+            control,
+            handle: Some(handle),
+        },
+        socket,
+        leader,
+        member,
+    )
+}
+
+#[test]
+fn termination_continues_and_hangs_up_a_stopped_descendant() {
+    let (mut host, _socket, leader, mut member) = host_with_process_group(
+        r#"
+        exec 3<&0
+        /bin/sh -c 'trap "echo descendant-hung-up; exit 0" HUP
+                    echo descendant=$$; kill -STOP $$; read line' <&3 &
+        child=$!
+        trap 'wait "$child"; exit 0' HUP
+        echo ready
+        wait "$child"
+        "#,
+    );
+    let descendant = member
+        .output
+        .wait_until("descendant readiness", TEST_TIMEOUT, |output| {
+            output.lines().find_map(|line| {
+                line.strip_prefix("descendant=")
+                    .map(|pid| Pid::from_raw(pid.parse().unwrap()))
+            })
+        });
+    struct ResumeOnDrop(Pid);
+    impl Drop for ResumeOnDrop {
+        fn drop(&mut self) {
+            let _ = kill(self.0, Some(Signal::SIGCONT));
+            let _ = kill(self.0, Some(Signal::SIGHUP));
+        }
+    }
+    let _cleanup = ResumeOnDrop(descendant);
+    let pid = sysinfo::Pid::from_u32(descendant.as_raw() as u32);
+    let mut system = sysinfo::System::new();
+    wait_until(
+        || {
+            system.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::Some(&[pid]),
+                true,
+                sysinfo::ProcessRefreshKind::nothing(),
+            );
+            system
+                .process(pid)
+                .is_some_and(|process| process.status() == sysinfo::ProcessStatus::Stop)
+        },
+        "descendant to stop",
+    );
+    member.reap();
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+    member
+        .output
+        .wait_until("descendant hangup handler", TEST_TIMEOUT, |output| {
+            output.contains("descendant-hung-up\n").then_some(())
+        });
+    assert!(member.join().success());
+    assert!(!process_alive(leader.pid));
+    assert!(super::super::process_group_terminated(leader.pid));
+}
+
+#[test]
+fn termination_escalates_after_the_leader_exits_and_spares_other_groups() {
+    use std::os::unix::process::ExitStatusExt;
+    let (mut host, socket, leader, mut member) =
+        host_with_process_group("trap '' HUP; echo ready; read line");
+    let mut unrelated = GroupProcess::spawn("echo ready; read line", 0);
+    member.reap();
+    host.send(&ServerToHostMsg::Release);
+    wait_until(|| !query_status(&socket).attached, "detachment");
+    let started = Instant::now();
+    assert!(matches!(
+        conditional_terminate(&socket, "pty-host-tests"),
+        HostToServerMsg::TerminationComplete {
+            terminated: true,
+            error: None
+        }
+    ));
+    assert!(started.elapsed() >= TERMINATE_GRACE, "skipped hangup grace");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "exceeded client deadline"
+    );
+    assert!(!process_alive(leader.pid));
+    assert_eq!(member.join().signal(), Some(libc::SIGKILL));
+    assert!(super::super::process_group_terminated(leader.pid));
+    assert!(unrelated
+        .child
+        .as_mut()
+        .unwrap()
+        .try_wait()
+        .unwrap()
+        .is_none());
+    host.join();
+}
+
+#[test]
+fn termination_cleans_the_group_of_a_previously_exited_leader() {
+    use std::os::unix::process::ExitStatusExt;
+    let (mut host, _socket, leader, mut member) =
+        host_with_process_group("trap '' HUP; echo ready; read line");
+    member.reap();
+    kill(super::super::kernel_pid(leader.pid), Some(Signal::SIGHUP)).unwrap();
+    assert!(matches!(
+        host.recv(),
+        HostToServerMsg::ChildExited { status: Some(0) }
+    ));
+    assert!(matches!(
+        wait_child(
+            super::super::kernel_pid(leader.pid),
+            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG
+        ),
+        Ok(Some(HostEvent::ChildExited(Some(0))))
+    ));
+    assert!(process_alive(member.pid));
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+    assert_eq!(member.join().signal(), Some(libc::SIGKILL));
+    assert!(!process_alive(leader.pid));
+    assert!(super::super::process_group_terminated(leader.pid));
+}
+
+#[test]
+fn detached_termination_reports_unconfirmed_group_teardown() {
+    let (mut host, socket, leader, mut member) =
+        host_with_process_group("trap '' HUP; echo ready; read line");
+    // Keep the killed member unreaped until after the reply: ESRCH must not be assumed.
+    host.send(&ServerToHostMsg::Release);
+    wait_until(|| !query_status(&socket).attached, "detachment");
+    match conditional_terminate(&socket, "pty-host-tests") {
+        HostToServerMsg::TerminationComplete {
+            terminated: true,
+            error: Some(error),
+        } => {
+            assert!(
+                error.contains("leader reaped=true, group gone=false"),
+                "{error}"
+            );
+        },
+        other => panic!("expected unconfirmed group teardown, got {other:?}"),
+    }
+    assert!(!process_alive(leader.pid));
+    member.child.as_mut().unwrap().wait().unwrap();
+    assert!(super::super::process_group_terminated(leader.pid));
+    host.join();
 }
 
 /// `run_pty_host` ignores SIGHUP and SIGPIPE so the supervisor outlives the
@@ -1966,6 +2334,27 @@ fn a_stopped_child_is_reported_and_so_is_its_continue() {
     host.join();
 }
 
+#[test]
+fn a_child_with_a_sigcont_handler_resumes_input_after_continuation() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (child_pid, mut master) = host.spawn(sh(
+        "trap 'echo continued' CONT; echo ready; while :; do if read line; then echo processed:$line; fi; done",
+    ));
+    read_until(&mut master, "ready");
+    let pid = super::super::kernel_pid(child_pid);
+    kill(pid, Some(Signal::SIGSTOP)).unwrap();
+    assert!(
+        matches!(host.recv(), HostToServerMsg::ChildStopped { signal } if signal == libc::SIGSTOP)
+    );
+    kill(pid, Some(Signal::SIGCONT)).unwrap();
+    assert!(matches!(host.recv(), HostToServerMsg::ChildContinued));
+    read_until(&mut master, "continued");
+    master.write_all(b"after-resume\n").unwrap();
+    read_until(&mut master, "processed:after-resume");
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
 /// The waiter polls while the child is stopped and waits blocking while it runs,
 /// so a second suspend has to find its way back onto the blocking wait. If the
 /// switch were one-way the pane would report its first `^Z` and no other.
@@ -2019,6 +2408,23 @@ fn a_child_killed_while_stopped_still_reports_its_exit() {
         other => panic!("expected ChildExited, got {other:?}"),
     }
 
+    host.send(&ServerToHostMsg::Terminate);
+    host.join();
+}
+
+#[test]
+fn a_child_exiting_on_continue_reports_its_exit_code() {
+    let (mut host, _host_id, _sock) = TestHost::start();
+    let (child_pid, _master) = host.spawn(sh("kill -STOP $$; exit 7"));
+    assert!(matches!(host.recv(), HostToServerMsg::ChildStopped { .. }));
+    kill(super::super::kernel_pid(child_pid), Some(Signal::SIGCONT)).unwrap();
+    loop {
+        match host.recv() {
+            HostToServerMsg::ChildContinued => {},
+            HostToServerMsg::ChildExited { status: Some(7) } => break,
+            other => panic!("expected continue or exit status 7, got {other:?}"),
+        }
+    }
     host.send(&ServerToHostMsg::Terminate);
     host.join();
 }

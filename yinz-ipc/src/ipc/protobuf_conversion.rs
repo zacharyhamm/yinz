@@ -40,6 +40,8 @@ use {
     crate::client_server_contract::client_server_contract::KeyMsg,
     crate::client_server_contract::client_server_contract::KillSessionCompleteMsg,
     crate::client_server_contract::client_server_contract::KillSessionMsg,
+    crate::client_server_contract::client_server_contract::KillSessionProgressMsg,
+    crate::client_server_contract::client_server_contract::KillSessionWithCompletionMsg,
     crate::client_server_contract::client_server_contract::KittyGraphicsSupportMsg,
     crate::client_server_contract::client_server_contract::LayoutMetadata as ProtoLayoutMetadata,
     crate::client_server_contract::client_server_contract::LogErrorMsg,
@@ -191,8 +193,10 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
             ClientToServerMsg::ClientExited => {
                 client_to_server_msg::Message::ClientExited(ClientExitedMsg {})
             },
-            ClientToServerMsg::KillSessionWithCompletion => {
-                client_to_server_msg::Message::KillSessionWithCompletion(KillSessionMsg {})
+            ClientToServerMsg::KillSessionWithCompletion { report_progress } => {
+                client_to_server_msg::Message::KillSessionWithCompletion(
+                    KillSessionWithCompletionMsg { report_progress },
+                )
             },
             ClientToServerMsg::KillSession => {
                 client_to_server_msg::Message::KillSession(KillSessionMsg {})
@@ -418,8 +422,10 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             Some(client_to_server_msg::Message::ClientExited(_)) => {
                 Ok(ClientToServerMsg::ClientExited)
             },
-            Some(client_to_server_msg::Message::KillSessionWithCompletion(_)) => {
-                Ok(ClientToServerMsg::KillSessionWithCompletion)
+            Some(client_to_server_msg::Message::KillSessionWithCompletion(msg)) => {
+                Ok(ClientToServerMsg::KillSessionWithCompletion {
+                    report_progress: msg.report_progress,
+                })
             },
             Some(client_to_server_msg::Message::KillSession(_)) => {
                 Ok(ClientToServerMsg::KillSession)
@@ -541,6 +547,9 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
             },
             ServerToClientMsg::KillSessionComplete { error } => {
                 server_to_client_msg::Message::KillSessionComplete(KillSessionCompleteMsg { error })
+            },
+            ServerToClientMsg::KillSessionProgress => {
+                server_to_client_msg::Message::KillSessionProgress(KillSessionProgressMsg {})
             },
             ServerToClientMsg::AgentControl(response) => match serde_json::to_string(&response) {
                 Ok(json) => server_to_client_msg::Message::AgentControlJson(json),
@@ -666,6 +675,9 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
         match msg.message {
             Some(server_to_client_msg::Message::KillSessionComplete(msg)) => {
                 Ok(ServerToClientMsg::KillSessionComplete { error: msg.error })
+            },
+            Some(server_to_client_msg::Message::KillSessionProgress(_)) => {
+                Ok(ServerToClientMsg::KillSessionProgress)
             },
             Some(server_to_client_msg::Message::AgentControlJson(json)) => {
                 Ok(ServerToClientMsg::AgentControl(

@@ -150,9 +150,8 @@ impl From<ServerToClientMsg> for ClientInstruction {
             | ServerToClientMsg::DataResponse { .. }
             | ServerToClientMsg::PluginResponse { .. }
             | ServerToClientMsg::AgentReportAccepted { .. }
-            | ServerToClientMsg::KillSessionComplete { .. } => {
-                ClientInstruction::UnblockInputThread
-            },
+            | ServerToClientMsg::KillSessionComplete { .. }
+            | ServerToClientMsg::KillSessionProgress => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::EventUpdate { .. } => ClientInstruction::UnblockInputThread,
         }
     }
