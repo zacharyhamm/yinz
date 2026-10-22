@@ -1,6 +1,6 @@
 use crate::os_input_output::{
-    AsyncSignals, AsyncStdin, ClientOsApi, ServerConnection, SignalEvent, SignalSource,
-    StdioAccess, TtyControl,
+    AsyncSignals, AsyncStdin, ClientOsApi, ServerConnection, SignalEvent, SignalListener,
+    SignalSource, StdioAccess, TtyControl,
 };
 use async_trait::async_trait;
 use std::collections::VecDeque;
@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use yinz_test_support::Watched;
 use yinz_types::diagnostics::ErrorContext;
 use yinz_types::pane_size::Size;
 use yinz_types::style::Palette;
@@ -24,13 +25,16 @@ pub struct FakeClientOsApi {
     raw_mode: Arc<AtomicBool>,
     terminal_size: Size,
     stdout: Option<Arc<Mutex<Vec<u8>>>>,
+    pub stdout_attempts: Watched<Vec<Vec<u8>>>,
     stdout_error: Option<io::ErrorKind>,
     stdout_error_on: Option<Vec<u8>>,
     stdin: Option<Vec<u8>>,
-    sent_to_server: Arc<Mutex<Vec<ClientToServerMsg>>>,
+    pub sent_to_server: Watched<Vec<ClientToServerMsg>>,
     from_server: Arc<Mutex<VecDeque<IpcRecv<ServerToClientMsg>>>>,
     stdin_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>>,
     signal_rx: Option<Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SignalEvent>>>>,
+    blocking_signal_rx: Option<yinz_runtime::channels::Receiver<SignalEvent>>,
+    signal_setup_error: bool,
 }
 
 impl Default for FakeClientOsApi {
@@ -39,13 +43,16 @@ impl Default for FakeClientOsApi {
             raw_mode: Arc::new(AtomicBool::new(false)),
             terminal_size: Size { rows: 24, cols: 80 },
             stdout: None,
+            stdout_attempts: Watched::default(),
             stdout_error: None,
             stdout_error_on: None,
             stdin: None,
-            sent_to_server: Arc::new(Mutex::new(Vec::new())),
+            sent_to_server: Watched::default(),
             from_server: Arc::new(Mutex::new(VecDeque::new())),
             stdin_rx: None,
             signal_rx: None,
+            blocking_signal_rx: None,
+            signal_setup_error: false,
         }
     }
 }
@@ -105,6 +112,16 @@ impl FakeClientOsApi {
         self
     }
 
+    pub fn with_signals(mut self, rx: yinz_runtime::channels::Receiver<SignalEvent>) -> Self {
+        self.blocking_signal_rx = Some(rx);
+        self
+    }
+
+    pub fn with_signal_setup_error(mut self) -> Self {
+        self.signal_setup_error = true;
+        self
+    }
+
     /// Everything the client has written to stdout so far. Empty unless
     /// `capturing_stdout` was used.
     pub fn stdout_bytes(&self) -> Vec<u8> {
@@ -116,7 +133,7 @@ impl FakeClientOsApi {
 
     /// Every message the client sent to the server, in order.
     pub fn sent_messages(&self) -> Vec<ClientToServerMsg> {
-        self.sent_to_server.lock().unwrap().clone()
+        self.sent_to_server.get()
     }
 
     /// Queue a message for `recv_from_server` to hand back.
@@ -146,10 +163,14 @@ struct FakeStdout(
     Option<Arc<Mutex<Vec<u8>>>>,
     Option<io::ErrorKind>,
     Option<Vec<u8>>,
+    Watched<Vec<Vec<u8>>>,
 );
 
 impl Write for FakeStdout {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.0.is_some() {
+            self.3.lock().push(buf.to_vec());
+        }
         if let Some(error) = self.1
             && self.2.as_deref().is_none_or(|bytes| bytes == buf)
         {
@@ -220,10 +241,16 @@ impl TtyControl for FakeClientOsApi {
 
 impl StdioAccess for FakeClientOsApi {
     fn get_stdout_writer(&self) -> Box<dyn Write> {
-        Box::new(FakeStdout(
-            self.stdout.clone(),
-            self.stdout_error,
-            self.stdout_error_on.clone(),
+        Box::new(crate::terminal_escapes::HostWriter::with_stall_policy(
+            FakeStdout(
+                self.stdout.clone(),
+                self.stdout_error,
+                self.stdout_error_on.clone(),
+                self.stdout_attempts.clone(),
+            ),
+            |_| Ok(()),
+            crate::terminal_escapes::stalled_output_abandoned,
+            std::time::Duration::ZERO,
         ))
     }
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
@@ -251,7 +278,7 @@ impl ServerConnection for FakeClientOsApi {
     }
 
     fn send_to_server(&self, msg: ClientToServerMsg) {
-        self.sent_to_server.lock().unwrap().push(msg);
+        self.sent_to_server.lock().push(msg);
     }
     fn recv_from_server(&self) -> IpcRecv<ServerToClientMsg> {
         match self.from_server.lock().unwrap().pop_front() {
@@ -276,7 +303,44 @@ impl ServerConnection for FakeClientOsApi {
 }
 
 impl SignalSource for FakeClientOsApi {
-    fn handle_signals(&self, _sigwinch_cb: Box<dyn Fn()>, _quit_cb: Box<dyn Fn()>) {}
+    fn start_signal_listener(
+        &self,
+        sigwinch_cb: Box<dyn Fn() + Send>,
+        quit_cb: Box<dyn Fn() + Send>,
+    ) -> anyhow::Result<SignalListener> {
+        if self.signal_setup_error {
+            anyhow::bail!("signal registration failed");
+        }
+        let signals = self.blocking_signal_rx.clone();
+        let (stop, cancelled) = yinz_runtime::channels::bounded::<()>(0);
+        SignalListener::spawn(
+            move || drop(stop),
+            move || {
+                let Some(signals) = signals else {
+                    let _ = cancelled.recv();
+                    return;
+                };
+                let mut select = yinz_runtime::channels::Select::new_biased();
+                select.recv(&cancelled);
+                select.recv(&signals);
+                loop {
+                    let operation = select.select();
+                    if operation.index() == 0 {
+                        let _ = operation.recv(&cancelled);
+                        break;
+                    }
+                    match operation.recv(&signals) {
+                        Ok(SignalEvent::Resize) => sigwinch_cb(),
+                        Ok(SignalEvent::Quit) => {
+                            quit_cb();
+                            break;
+                        },
+                        Err(_) => break,
+                    }
+                }
+            },
+        )
+    }
     fn get_async_signal_listener(&self) -> io::Result<Box<dyn AsyncSignals>> {
         Ok(match &self.signal_rx {
             Some(rx) => Box::new(FakeAsyncSignals(rx.clone())),

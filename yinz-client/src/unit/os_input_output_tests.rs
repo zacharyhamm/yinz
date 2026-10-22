@@ -601,3 +601,101 @@ fn same_name_handoff_invalidates_old_readers_and_preserves_buffered_input() {
     assert!(old.read_from_stdin().is_err());
     assert_eq!(current.read_from_stdin().unwrap(), b"next session");
 }
+
+#[test]
+fn stopping_an_idle_signal_listener_releases_both_workers() {
+    for os in [
+        Box::new(get_client_os_input().unwrap()) as Box<dyn ClientOsApi>,
+        Box::new(crate::test_support::FakeClientOsApi::new()),
+    ] {
+        for explicit_stop in [false, true] {
+            let (callback, released) = std::sync::mpsc::channel::<()>();
+            let (query_factory, query_released) = std::sync::mpsc::channel::<()>();
+            let (queries, query_worker) =
+                crate::terminal_escapes::PixelSizeQueries::spawn(move || {
+                    let _keep_alive = &query_factory;
+                    Box::new(io::sink())
+                })
+                .unwrap();
+            let listener = os
+                .start_signal_listener(
+                    Box::new(move || {
+                        let _ = callback.send(());
+                        queries.request();
+                    }),
+                    Box::new(|| panic!("unexpected quit signal")),
+                )
+                .unwrap();
+            let (done, stopped) = std::sync::mpsc::channel();
+            let worker = thread::spawn(move || {
+                if explicit_stop {
+                    listener.stop().unwrap();
+                } else {
+                    drop(listener);
+                }
+                query_worker.join().unwrap().unwrap();
+                done.send(()).unwrap();
+            });
+            stopped
+                .recv_timeout(yinz_test_support::default_timeout())
+                .unwrap();
+            worker.join().unwrap();
+            assert_eq!(
+                released.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            );
+            assert_eq!(
+                query_released.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            );
+        }
+    }
+}
+
+#[test]
+fn signal_listener_reports_a_worker_panic_after_stopping() {
+    let (stop, cancelled) = std::sync::mpsc::channel::<()>();
+    let listener = SignalListener::spawn(
+        move || drop(stop),
+        move || {
+            assert!(cancelled.recv().is_err());
+            panic!("failed signal worker");
+        },
+    )
+    .unwrap();
+    assert!(listener
+        .stop()
+        .unwrap_err()
+        .to_string()
+        .contains("signal listener panicked"));
+}
+
+#[test]
+fn unix_resizes_only_reach_the_current_signal_listener() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let os = get_client_os_input().unwrap();
+    let mut previous = Vec::new();
+    for _ in 0..4 {
+        let (callback, calls) = std::sync::mpsc::channel();
+        let listener = os
+            .start_signal_listener(
+                Box::new(move || callback.send(()).unwrap()),
+                Box::new(|| panic!("unexpected quit signal")),
+            )
+            .unwrap();
+        signal_hook::low_level::raise(signal_hook::consts::signal::SIGWINCH).unwrap();
+        calls
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        listener.stop().unwrap();
+        previous.push(calls);
+        for old in &previous {
+            assert_eq!(
+                old.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            );
+        }
+    }
+}

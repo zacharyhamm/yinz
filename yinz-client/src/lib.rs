@@ -49,7 +49,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use yinz_runtime::errors::{FatalError, LoggableError};
+use yinz_runtime::errors::prelude::*;
 use yinz_runtime::logging::startup_stage;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TabNumber;
@@ -776,6 +776,73 @@ fn run_client(
 
     log::info!("startup trace: stage=client.workers event=begin");
     let workers_started = std::time::Instant::now();
+    let signal_workers = (|| -> Result<_> {
+        let (pixel_size_queries, query_thread) =
+            crate::terminal_escapes::PixelSizeQueries::spawn({
+                let os_api = os_input.clone();
+                move || os_api.get_stdout_writer()
+            })?;
+        let listener = os_input.start_signal_listener(
+            Box::new({
+                let os_api = os_input.clone();
+                move || {
+                    os_api.send_to_server(ClientToServerMsg::TerminalResize {
+                        new_size: os_api.get_terminal_size(),
+                    });
+                    // Written elsewhere: this thread must not wait on the terminal.
+                    pixel_size_queries.request();
+                }
+            }),
+            Box::new({
+                let os_api = os_input.clone();
+                move || {
+                    // A paused terminal must not keep the client from quitting.
+                    crate::terminal_escapes::abandon_stalled_output();
+                    os_api.send_to_server(ClientToServerMsg::Action {
+                        action: on_force_close.into(),
+                        terminal_id: None,
+                        client_id: None,
+                        is_cli_client: false,
+                    });
+                }
+            }),
+        );
+        match listener {
+            Ok(listener) => Ok((listener, query_thread)),
+            Err(error) => {
+                crate::terminal_escapes::abandon_stalled_output();
+                query_thread
+                    .join()
+                    .map_err(|_| anyhow!("pixel-size query worker panicked"))
+                    .and_then(|result| result)
+                    .non_fatal();
+                Err(error).context("failed to start the client signal listener")
+            },
+        }
+    })();
+    let (signal_listener, query_thread) = match signal_workers {
+        Ok(workers) => workers,
+        Err(error) => {
+            crate::terminal_escapes::abandon_stalled_output();
+            nested_reannounce.stop();
+            os_input.send_to_server(ClientToServerMsg::ClientExited);
+            let exit_msg = format!("Could not start client workers: {error:#}");
+            terminal_teardown.restore(&*os_input, &exit_msg);
+            if let Some(guard) = startup_signal_guard.take() {
+                guard.disarm();
+            }
+            return ClientOutcome {
+                exit_msg,
+                exit_status: 1,
+                reconnect_to_session: None,
+                prepared_connection: None,
+            };
+        },
+    };
+    // Registration is complete before the startup guard hands quit signals over.
+    if let Some(guard) = startup_signal_guard.take() {
+        guard.disarm();
+    }
     let _stdin_thread = thread::Builder::new()
         .name("stdin_handler".to_string())
         .spawn({
@@ -831,52 +898,6 @@ fn run_client(
             }
         });
 
-    // Handing quit signals over from the startup guard to the real listener.
-    if let Some(guard) = startup_signal_guard.take() {
-        guard.disarm();
-    }
-    let pixel_size_queries = crate::terminal_escapes::PixelSizeQueries::spawn({
-        let os_api = os_input.clone();
-        move || os_api.get_stdout_writer()
-    })
-    .to_log()
-    .ok();
-    let _signal_thread = thread::Builder::new()
-        .name("signal_listener".to_string())
-        .spawn({
-            let os_input = os_input.clone();
-            move || {
-                os_input.handle_signals(
-                    Box::new({
-                        let os_api = os_input.clone();
-                        move || {
-                            os_api.send_to_server(ClientToServerMsg::TerminalResize {
-                                new_size: os_api.get_terminal_size(),
-                            });
-                            // Written elsewhere: this thread must not wait on the terminal.
-                            if let Some(queries) = &pixel_size_queries {
-                                queries.request();
-                            }
-                        }
-                    }),
-                    Box::new({
-                        let os_api = os_input.clone();
-                        move || {
-                            // A paused terminal must not keep the client from quitting.
-                            crate::terminal_escapes::abandon_stalled_output();
-                            os_api.send_to_server(ClientToServerMsg::Action {
-                                action: on_force_close.into(),
-                                terminal_id: None,
-                                client_id: None,
-                                is_cli_client: false,
-                            });
-                        }
-                    }),
-                );
-            }
-        })
-        .unwrap();
-
     let render_budget = std::sync::Arc::new(crate::render_budget::RenderBudget::new(
         crate::render_budget::RENDER_BUDGET_BYTES,
     ));
@@ -911,7 +932,7 @@ fn run_client(
         &cli_args,
         local_config,
     );
-    let outcome = crate::client_loop::ClientLoop {
+    let mut outcome = crate::client_loop::ClientLoop {
         sessions: &mut sessions,
         remote_host: remote_host.as_deref(),
         os_input: &*os_input,
@@ -933,6 +954,22 @@ fn run_client(
     client_shutdown.begin();
     drop(receive_client_instructions);
 
+    // A paused terminal must release the query worker before we join it.
+    crate::terminal_escapes::abandon_stalled_output();
+    let signals_stopped = signal_listener.stop();
+    let queries_stopped = query_thread
+        .join()
+        .map_err(|_| anyhow!("pixel-size query worker panicked"))
+        .and_then(|result| result);
+    for result in [signals_stopped, queries_stopped] {
+        if let Err(error) = result.context("failed to stop client workers").to_log() {
+            outcome.exit_msg = format!("Could not stop client workers: {error:#}");
+            outcome.exit_status = 1;
+            outcome.reconnect_to_session = None;
+            outcome.prepared_connection = None;
+        }
+    }
+
     router_thread.join().unwrap();
 
     if nested_reannounce.host_contacted() {
@@ -945,7 +982,15 @@ fn run_client(
         info!("{}", outcome.exit_msg);
         teardown.restore(&*os_input, &outcome.exit_msg);
     } else {
-        write_seqs(&*os_input, &[CLEAR_SCREEN]);
+        let mut stdout = os_input.get_stdout_writer();
+        stdout
+            .write_all(CLEAR_SCREEN.as_bytes())
+            .context("failed to clear the terminal before reconnecting")
+            .non_fatal();
+        stdout
+            .flush()
+            .context("failed to flush the terminal clear before reconnecting")
+            .non_fatal();
     }
 
     drop(sessions);

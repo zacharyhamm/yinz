@@ -400,3 +400,244 @@ fn refused_destination_keeps_rendering_the_source_until_it_exits() {
     assert_eq!(exits.len(), 1);
     assert!(exits[0] > refusal);
 }
+
+#[test]
+fn reconnect_clear_output_failure_preserves_the_session_switch() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    use crate::terminal_escapes::CLEAR_SCREEN;
+    use yinz_test_support::default_timeout;
+
+    for error in [
+        ErrorKind::WouldBlock,
+        ErrorKind::TimedOut,
+        ErrorKind::BrokenPipe,
+    ] {
+        let os = FakeClientOsApi::new()
+            .capturing_stdout()
+            .with_stdout_error_on(error, CLEAR_SCREEN.as_bytes().to_vec());
+        let destination = SessionConnection {
+            name: Some("next-session".into()),
+            ..Default::default()
+        };
+        os.queue_from_server(ServerToClientMsg::SwitchSession {
+            connect_to_session: destination.clone(),
+        });
+        os.queue_from_server(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        });
+        let (done, completion) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let os = os.clone();
+            move || done.send(run_client(os, Default::default())).unwrap()
+        });
+        let outcome = completion
+            .recv_timeout(default_timeout())
+            .expect("a failed screen clear must not prevent reconnecting");
+        worker.join().unwrap();
+        assert_eq!(outcome.exit_status, 0);
+        assert_eq!(outcome.reconnect_to_session, Some(destination));
+        assert!(os.raw_mode());
+        assert!(os
+            .stdout_attempts
+            .get()
+            .iter()
+            .any(|bytes| bytes == CLEAR_SCREEN.as_bytes()));
+    }
+}
+
+#[test]
+fn signal_setup_failure_restores_the_terminal() {
+    let os = FakeClientOsApi::new()
+        .capturing_stdout()
+        .with_signal_setup_error();
+    let outcome = run_client(os.clone(), Default::default());
+    assert_eq!(outcome.exit_status, 1);
+    assert!(outcome.reconnect_to_session.is_none());
+    assert!(outcome.exit_msg.contains("signal registration failed"));
+    assert!(!os.raw_mode());
+    assert!(os
+        .sent_messages()
+        .iter()
+        .any(|msg| matches!(msg, ClientToServerMsg::ClientExited)));
+}
+
+fn run_client(
+    os: FakeClientOsApi,
+    options: yinz_types::input::options::Options,
+) -> crate::ClientOutcome {
+    start_client(
+        Box::new(os),
+        Default::default(),
+        Default::default(),
+        options,
+        ClientInfo::Attach("worker-cleanup-test".into(), Default::default()),
+        None,
+        None,
+        true,
+        false,
+    )
+}
+
+#[test]
+fn repeated_reconnects_only_query_from_the_current_listener() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    use crate::os_input_output::SignalEvent;
+    use crate::stdin_handler::PIXEL_SIZE_QUERY;
+    use yinz_test_support::default_timeout;
+
+    let mut previous: Vec<(FakeClientOsApi, yinz_runtime::channels::Sender<SignalEvent>)> =
+        Vec::new();
+    for _ in 0..4 {
+        let (signals, rx) = yinz_runtime::channels::bounded(8);
+        let os = FakeClientOsApi::new().capturing_stdout().with_signals(rx);
+        let (done, completion) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let os = os.clone();
+            move || done.send(run_client(os, Default::default())).unwrap()
+        });
+        for (_, old_signals) in &previous {
+            old_signals.send(SignalEvent::Resize).unwrap();
+        }
+        signals.send(SignalEvent::Resize).unwrap();
+        os.stdout_attempts.wait_until(
+            "current connection's pixel query",
+            default_timeout(),
+            |writes| {
+                writes
+                    .iter()
+                    .any(|bytes| bytes == PIXEL_SIZE_QUERY.as_bytes())
+                    .then_some(())
+            },
+        );
+        os.queue_from_server(ServerToClientMsg::SwitchSession {
+            connect_to_session: SessionConnection {
+                name: Some("next-session".into()),
+                ..Default::default()
+            },
+        });
+        os.queue_from_server(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        });
+        let outcome = completion.recv_timeout(default_timeout()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(outcome.exit_status, 0);
+        assert!(outcome.reconnect_to_session.is_some());
+        previous.push((os, signals));
+        for (old, _) in &previous {
+            assert_eq!(
+                old.sent_messages()
+                    .iter()
+                    .filter(|msg| matches!(msg, ClientToServerMsg::TerminalResize { .. }))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                old.stdout_attempts
+                    .get()
+                    .iter()
+                    .filter(|bytes| bytes.as_slice() == PIXEL_SIZE_QUERY.as_bytes())
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn pixel_query_failure_is_reported_after_worker_cleanup() {
+    check_query_cleanup(ErrorKind::BrokenPipe, false, false);
+}
+
+#[test]
+fn switching_sessions_abandons_a_stalled_pixel_query_before_joining() {
+    check_query_cleanup(ErrorKind::WouldBlock, true, false);
+}
+
+#[test]
+fn exiting_abandons_a_stalled_pixel_query_before_joining() {
+    check_query_cleanup(ErrorKind::WouldBlock, false, false);
+}
+
+#[test]
+fn quit_signals_preserve_force_close_and_release_stalled_workers() {
+    check_query_cleanup(ErrorKind::WouldBlock, false, true);
+}
+
+fn check_query_cleanup(error: ErrorKind, reconnect: bool, quit: bool) {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    use crate::os_input_output::SignalEvent;
+    use crate::stdin_handler::PIXEL_SIZE_QUERY;
+    use yinz_test_support::default_timeout;
+    use yinz_types::input::{actions::Action, options::OnForceClose};
+
+    for force_close in [OnForceClose::Detach, OnForceClose::Quit] {
+        let (signals, rx) = yinz_runtime::channels::bounded(2);
+        let os = FakeClientOsApi::new()
+            .capturing_stdout()
+            .with_signals(rx)
+            .with_stdout_error_on(error, PIXEL_SIZE_QUERY.as_bytes().to_vec());
+        let (done, completion) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let os = os.clone();
+            move || {
+                done.send(run_client(
+                    os,
+                    yinz_types::input::options::Options {
+                        on_force_close: Some(force_close),
+                        ..Default::default()
+                    },
+                ))
+                .unwrap()
+            }
+        });
+        signals.send(SignalEvent::Resize).unwrap();
+        os.stdout_attempts
+            .wait_until("pixel query write attempt", default_timeout(), |writes| {
+                writes
+                    .iter()
+                    .any(|bytes| bytes == PIXEL_SIZE_QUERY.as_bytes())
+                    .then_some(())
+            });
+        if quit {
+            signals.send(SignalEvent::Quit).unwrap();
+            let expected: Action = force_close.into();
+            os.sent_to_server.wait_until("force-close action", default_timeout(), |messages| {
+                messages.iter().any(|msg| matches!(msg, ClientToServerMsg::Action { action, .. } if action == &expected)).then_some(())
+            });
+        }
+        if reconnect {
+            os.queue_from_server(ServerToClientMsg::SwitchSession {
+                connect_to_session: SessionConnection {
+                    name: Some("next-session".into()),
+                    ..Default::default()
+                },
+            });
+        }
+        os.queue_from_server(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        });
+        let outcome = completion
+            .recv_timeout(default_timeout())
+            .expect("cleanup must release stalled workers");
+        worker.join().unwrap();
+        let failed = error == ErrorKind::BrokenPipe;
+        assert_eq!(outcome.exit_status, i32::from(failed));
+        assert_eq!(outcome.reconnect_to_session.is_some(), reconnect && !failed);
+        assert_eq!(os.raw_mode(), reconnect && !failed);
+        if failed {
+            assert!(
+                outcome
+                    .exit_msg
+                    .contains("failed to query the host terminal's pixel size"),
+                "{}",
+                outcome.exit_msg
+            );
+        }
+    }
+}
