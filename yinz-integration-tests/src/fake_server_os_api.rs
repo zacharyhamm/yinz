@@ -16,8 +16,9 @@ use yinz_types::internal_ids::{ProcessId, SupervisorId};
 use yinz_types::style::default_palette;
 use yinz_types::style::Palette;
 use {
-    yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::IpcReceiverWithContext,
-    yinz_ipc::ipc::IpcSenderWithContext, yinz_ipc::ipc::ServerToClientMsg,
+    yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::ExitReason,
+    yinz_ipc::ipc::IpcReceiverWithContext, yinz_ipc::ipc::IpcSenderWithContext,
+    yinz_ipc::ipc::ServerToClientMsg,
 };
 use {yinz_types::input::command::RunCommand, yinz_types::input::command::TerminalAction};
 
@@ -39,6 +40,10 @@ impl NonBlockingClientSender {
                         break;
                     }
                 }
+                // Match the real client writer's final reply when its queue closes.
+                let _ = ipc_sender.send_server_msg(ServerToClientMsg::Exit {
+                    exit_reason: ExitReason::Disconnect,
+                });
             })
             .unwrap();
         NonBlockingClientSender { buffer_tx }
