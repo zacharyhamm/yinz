@@ -575,21 +575,17 @@ pub fn plan_remember(
             .ok_or_else(|| format!("unknown project {name}; root is required for a new project"))?,
     };
     project.worktree_dir = stored.and_then(|p| p.worktree_dir.clone());
-    let (mut project, mut mutations) = if root.is_some() {
-        let (adopted, mutations) = plan_adopt(rows, project)?;
-        (adopted.project, mutations)
-    } else if worktree_dir.is_some() {
-        let mutations = vec![
-            assert_projects(rows, "name", &[name])?,
-            to_mutation(&project),
-        ];
-        (project, mutations)
-    } else {
-        return Ok((project, vec![]));
-    };
+    if root.is_some() {
+        let (adopted, mutations) = plan_adopt_with_worktree_dir(rows, project, worktree_dir)?;
+        return Ok((adopted.project, mutations));
+    }
+    let mut mutations = Vec::new();
     if let Some(dir) = worktree_dir {
+        mutations.push(assert_projects(rows, "name", &[name])?);
         project.worktree_dir = (!dir.is_empty()).then(|| dir.to_owned());
-        mutations.push(to_mutation(&project));
+        if stored != Some(&project) {
+            mutations.push(to_mutation(&project));
+        }
     }
     Ok((project, mutations))
 }
@@ -662,6 +658,14 @@ fn record_replacement(
 
 /// An explicit adoption and its history are committed together, guarded by the rows read.
 pub fn plan_adopt(rows: &DataRows, project: Project) -> Result<(Adopted, Vec<Mutation>), String> {
+    plan_adopt_with_worktree_dir(rows, project, None)
+}
+
+fn plan_adopt_with_worktree_dir(
+    rows: &DataRows,
+    project: Project,
+    worktree_dir: Option<&str>,
+) -> Result<(Adopted, Vec<Mutation>), String> {
     let before = from_rows(rows);
     let mut after = before.clone();
     let mut adopted = adopt(&mut after, project);
@@ -669,9 +673,13 @@ pub fn plan_adopt(rows: &DataRows, project: Project) -> Result<(Adopted, Vec<Mut
     let mut names = vec![name.as_str()];
     if let Some(name) = &adopted.replaced {
         record_replacement(rows, &before[name], &mut adopted.project)?;
-        after.insert(adopted.project.name.clone(), adopted.project.clone());
         names.push(name);
     }
+    if let Some(dir) = worktree_dir {
+        // Apply explicit clearing after adoption inherits the discovered project's defaults.
+        adopted.project.worktree_dir = (!dir.is_empty()).then(|| dir.to_owned());
+    }
+    after.insert(adopted.project.name.clone(), adopted.project.clone());
     let mut mutations = vec![
         assert_projects(rows, "name", &names)?,
         assert_projects(rows, "root", &[&adopted.project.root])?,
@@ -2364,3 +2372,7 @@ mod tests {
 #[cfg(test)]
 #[path = "unit/project_providers.rs"]
 mod provider_tests;
+
+#[cfg(test)]
+#[path = "unit/project_remember.rs"]
+mod remember_tests;
