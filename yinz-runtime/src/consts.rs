@@ -31,7 +31,6 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "strider",
     "configuration",
     "file-finder",
-    "todos",
     "new-agent",
     "agents",
     "agent-service",

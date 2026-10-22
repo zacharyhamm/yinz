@@ -11,14 +11,14 @@ The implementation has five main parts:
 | Agent launcher | Select an agent, project, branch, worktree, and execution environment | `default-plugins/new-agent/src/main.rs`, `yinz-runtime/src/agent/launch.rs` |
 | State and history | Receive agent hooks, track panes, record runs, and produce summaries | `default-plugins/agent-service/src/main.rs`, `default-plugins/agent-proto/src/agents.rs` |
 | Agent panel | Browse live agents and archived runs, read transcripts, and resume conversations | `default-plugins/agents/src/main.rs` |
-| Project memory | Share projects, nested todos, and linked notes across tools and the CLI | `default-plugins/project-store/`, `default-plugins/project-data/src/todos.rs`, `yinz-cli/src/notes_todos.rs` |
+| Projects | Remember projects and manage their configuration through the CLI | `yinz-steel-builtins/assets/plugins/project-store.scm`, `default-plugins/project-data/src/projects.rs`, `yinz-cli/src/projects.rs` |
 
 Use the shipped keybindings to open **New agent** with `Ctrl e`, then `n`.
 Open the agent panel with `Ctrl e`, then `a`.
 Custom configurations can bind the `new-agent` and `agents` aliases to other keys.
 
 The panel is the agent list on the left and the agent conversation on the right.
-The list has two tabs: **Agents** and **Todos**.
+The panel contains the **Agents** list.
 Its own tab bar is the keyboard route between them: `Shift+Tab` from a tab's list reaches the bar, `←` and `→` switch tabs, and `Enter`, `↓`, `Tab`, or `Esc` return to the tab's list.
 `Tab` and `Shift+Tab` move focus between the panel tab bar and the active view.
 Press `?` in the list for a key sheet of every key the current tab answers.
@@ -51,14 +51,6 @@ The footer changes with the current selection to expose these actions.
 Waiting means the same thing as the existing `!` marker and the `agent_list` tool's `awaiting_confirmation` field.
 An agent hook takes precedence. Without hooks, the existing fallback requires an idle pane and a summary matching its current screen.
 An exited agent or a stale summary does not count as waiting. The `◆` marker identifies agents with a hook feed.
-
-In the **Todos** tab, select a task and press `n` to open **New agent**.
-The launcher uses that todo's project, even when the panel was opened from another directory.
-Its prompt starts with `Todo #ID:` and the task, then adds parent context and unfinished subtasks.
-Review or edit the prompt, choose the agent and worktree, then select **Create agent**.
-The panel stays up under the launcher, so `Esc` in the launcher returns the keyboard to the Todos list.
-Launching does not change the todo's completion status. Complete an open task with `Space` after checking the result.
-`Enter` edits a todo. The current project is named above the list, and `p` picks another.
 
 The launcher now offers **Reasoning effort** and **Approval mode** alongside **Model**.
 The choices come from the existing launch planner and change with the selected agent.

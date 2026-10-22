@@ -1347,7 +1347,7 @@ pub fn actions_from_cli(
         },
         CliAction::Wait(_) => Err("waits require a subscribing CLI client".into()),
         CliAction::Operations(command) => Ok(vec![command.action(&mut std::io::stdin())?]),
-        CliAction::NotesTodos(command) => Ok(vec![command.action(&mut std::io::stdin())?]),
+        CliAction::Projects(command) => Ok(vec![command.action()?]),
         CliAction::Notify { text } => Ok(vec![Action::Notify(text)]),
         CliAction::Pipe {
             focus_plugin,

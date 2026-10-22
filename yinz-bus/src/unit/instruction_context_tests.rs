@@ -371,7 +371,7 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["DataRequest", "RefreshDataWatches", "PostMessagesToPluginWorker", "PluginTick", "PluginPalette", "PaletteNote", "PaletteAgent", "PluginEvent", "PluginReply", "PluginDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
+    special: ["DataRequest", "RefreshDataWatches", "PostMessagesToPluginWorker", "PluginTick", "PluginPalette", "PaletteAgent", "PluginEvent", "PluginReply", "PluginDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
     only_special: ["PostMessageToPluginWorker", "UnblockCliPipes"];
     targets: [(
         "RefreshDataWatches",
@@ -394,14 +394,6 @@ pin_context_to_instruction! {
             vec![],
         ),
         "PostMessageToPluginWorker"
-    ), (
-        "PaletteNote",
-        PluginInstruction::PaletteNote(Box::new(crate::command_palette::NoteRequest {
-            client: ClientId::new(1), token: 1, revision: 1, project: "project".into(),
-            action: crate::command_palette::NoteAction::Search(String::new()),
-            active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        })),
-        "Update"
     ), (
         "PaletteAgent",
         PluginInstruction::PaletteAgent(Box::new(crate::command_palette::AgentRequest {

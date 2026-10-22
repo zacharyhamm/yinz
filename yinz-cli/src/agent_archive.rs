@@ -100,6 +100,6 @@ impl AgentArchive {
             .ok_or("invalid archive arguments")?
             .retain(|_, value| !value.is_null());
         request["structured_reply"] = true.into();
-        Ok(crate::notes_todos::pipe_action("store_query", request))
+        Ok(crate::projects::pipe_action("store_query", request))
     }
 }

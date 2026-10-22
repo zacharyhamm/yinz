@@ -8828,20 +8828,6 @@ Config {
                 relative_path: None,
                 declared_path: None,
             },
-            "todos": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "todos",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-                relative_path: None,
-                declared_path: None,
-            },
         },
     },
     ui: UiConfig {

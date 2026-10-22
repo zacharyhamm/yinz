@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn fresh_install_omits_retired_notes_and_todos() {
+    let data = tempfile::tempdir().unwrap();
+    install(&asset_dir(), data.path()).unwrap();
+    let root = data.path().join("plugins/builtins");
+    assert!(!root.join("todos.scm").exists());
+    assert!(!root.join("project-store/notes.scm").exists());
+    assert!(builtin_path(data.path(), "todos").is_err());
+    assert!(builtin_path(data.path(), "project-store").is_ok());
+}
+
+#[test]
 fn install_replaces_shipped_files_and_preserves_unrelated_files() {
     let source = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();

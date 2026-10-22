@@ -171,7 +171,7 @@ escalation on the first attempt.
 | `yinz-tile-markdown/` | CommonMark to styled terminal lines for plugins |
 | `yinz-test-support/` | Condition waits and warm scripts for tests |
 | `default-plugins/` | Native agent and project-data libraries shared with the host |
-| `default-plugins/project-data/` | Agent store seam, entity schemas, project/todo/note registry; re-exported by `agent-proto`, linked by the plugin host |
+| `default-plugins/project-data/` | Agent store seam, entity schemas, project registry; re-exported by `agent-proto`, linked by the plugin host |
 | `yinz-integration-tests/` | Whole-app tests |
 | `src/tests/e2e/`, `yinz-server/tests/` | Docker E2E and remote-pane tests |
 | `docker/` | Test containers |
@@ -210,8 +210,7 @@ One SQLite `plugin-data.db` serves all local servers using the same data directo
 - Guard read-modify-write `Put`/`Update` operations with `expect_rev` set to the
   **revision the value's author read**. Do not re-fetch it just before writing.
   Conflicts return `DataError::Conflict` and roll back the batch. Include `rev`
-  in selected columns and carry it through `todo_edit` and `note_edit`, including
-  tags-only edits. Reuse `store::guarded_rev`. Setting a flag alone does not need a guard.
+  in selected columns and carry it through edits. Setting a flag alone does not need a guard.
 - Watches see commits from every local server using the same database. The host
   checks SQLite's `data_version` every 250 ms while watches exist, then compares
   their query results. Allow additional time for queries and event delivery.

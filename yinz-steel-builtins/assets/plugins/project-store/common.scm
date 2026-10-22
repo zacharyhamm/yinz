@@ -1,13 +1,12 @@
-(provide ps-get ps-present? ps-safe ps-error ps-model ps-plan ps-result ps-nullable ps-arg ps-id ps-revision ps-flag
-  ps-request ps-limit ps-filter ps-eq ps-in ps-value ps-fetch ps-fetch-all ps-count ps-apply ps-apply-topology
-  ps-row-values ps-rows ps-projects ps-todo-list ps-todo-root ps-namespace ps-conflict? ps-chunks ps-put ps-delete ps-unique ps-debug)
+(provide ps-get ps-present? ps-safe ps-error ps-model ps-plan ps-result ps-nullable ps-arg ps-id ps-flag
+  ps-request ps-limit ps-filter ps-eq ps-in ps-value ps-fetch ps-fetch-all ps-count ps-apply
+  ps-row-values ps-rows ps-projects ps-namespace ps-conflict? ps-chunks ps-put ps-delete ps-unique)
 
 (define ps-namespace "shared:yinz")
 (define (ps-get object key fallback) (if (and (hash? object) (hash-contains? object key)) (hash-ref object key) fallback))
 (define (ps-present? value) (and value (not (json-null? value))))
 (define (ps-nullable value) (if value value json-null))
 (define (ps-error failure) (trim (error-object-message failure)))
-(define (ps-debug text) (yinz-agent-model "store" "DebugString" text))
 (define (ps-safe thunk fallback) (with-handler (lambda (failure) fallback) (thunk)))
 (define (ps-model namespace operation . arguments) (yinz-agent-model namespace operation arguments))
 (define (ps-result result) (if (hash-contains? result "Err") (error (hash-ref result "Err")) (hash-ref result "Ok")))
@@ -18,9 +17,6 @@
 (define (ps-id args key)
   (define value (ps-get args key #f))
   (and (integer? value) (exact? value) (>= value 0) (<= value 18446744073709551615) value))
-(define (ps-revision args)
-  (define value (ps-get args "expect_rev" #f))
-  (if (and (integer? value) (exact? value) (>= value -9223372036854775808) (<= value 9223372036854775807)) value json-null))
 (define (ps-flag args key) (equal? (ps-get args key #f) #t))
 (define (ps-value value)
   (cond ((json-null? value) "Null") ((boolean? value) (hash "Bool" value))
@@ -38,11 +34,6 @@
 (define (ps-count request) (yinz-data-count ps-namespace request))
 (define (ps-apply mutations) (yinz-data-apply ps-namespace mutations))
 (define (ps-conflict? message) (starts-with? message "data conflict: "))
-(define (ps-apply-topology mutations)
-  (with-handler (lambda (failure)
-      (define message (ps-error failure))
-      (error (if (ps-conflict? message) "the todo list changed; reload and retry" message)))
-    (ps-apply mutations)))
 (define (ps-row-values rows row)
   (let loop ((columns (hash-ref rows "columns")) (cells row) (record (hash)))
     (if (or (null? columns) (null? cells)) record
@@ -50,13 +41,6 @@
           (if (equal? (car cells) "Null") json-null (car (hash-values->list (car cells)))))))))
 (define (ps-rows rows) (map (lambda (row) (ps-row-values rows row)) (hash-ref rows "rows")))
 (define (ps-projects rows) (ps-model "projects" "FromRows" rows))
-(define (ps-todo-root registry args)
-  (define selector (ps-arg args "project"))
-  (unless selector (error "project is required; call project_list"))
-  (ps-plan "todos" "Resolve" registry selector))
-(define (ps-todo-list root)
-  (ps-get (ps-model "todos" "FromRows" (ps-fetch-all (ps-filter (ps-request "todo") (ps-eq "root" root))))
-    root (hash "items" '() "next_id" 0)))
 (define (ps-chunks items)
   (if (null? items) '() (let ((count (min 500 (length items))))
       (cons (take items count) (ps-chunks (drop items count))))))

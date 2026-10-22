@@ -382,7 +382,7 @@ fn background_palette_permission_lifecycle() {
             });
             yinz.send_stdin(TOGGLE);
             let mut pipe =
-                yinz_cli::notes_todos::pipe_action("background-version", serde_json::Value::Null);
+                yinz_cli::projects::pipe_action("background-version", serde_json::Value::Null);
             if let yinz_types::input::actions::Action::CliPipe {
                 plugin: target,
                 configuration: config,

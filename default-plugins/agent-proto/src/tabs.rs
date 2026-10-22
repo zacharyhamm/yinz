@@ -55,10 +55,10 @@ pub fn label(text: &str) -> String {
 ///
 /// A name ending in `!` is an error marker (`"Log!"`). Three tiers are tried in turn:
 ///
-/// 1. Padded, `" Agents │ Todos │ Log!│ Notes │"`. The marker takes the place of the space
+/// 1. Padded, `" Agents │ Files │ Log!│ Shell │"`. The marker takes the place of the space
 ///    before its separator, so it costs no width: an error can never be what pushes the bar
 ///    into a tighter tier and so cuts away the very marker that caused it.
-/// 2. Tight, `"Agents│Todos│Log!│Notes"`: whole names, separated but not padded, with no
+/// 2. Tight, `"Agents│Files│Log!│Shell"`: whole names, separated but not padded, with no
 ///    separator after the last. 22 columns without markers, so every name survives in the
 ///    narrowest half the default panel geometry gives the list.
 /// 3. Initials, one column each so very narrow panes keep as many targets as possible, and
@@ -147,7 +147,7 @@ mod tests {
         )
     }
 
-    /// Four sample tabs, with a marker on whichever of Log and Notes is failing.
+    /// Four sample tabs, with a marker on whichever of Log and Shell is failing.
     fn panel(log: bool, notes: bool, width: usize) -> Vec<String> {
         let mark = |name: &str, marked: bool| match marked {
             true => format!("{name}!"),
@@ -156,9 +156,9 @@ mod tests {
         cells(
             [
                 ("Agents".to_owned(), true, false, 0),
-                ("Todos".to_owned(), false, false, 1),
+                ("Files".to_owned(), false, false, 1),
                 (mark("Log", log), false, false, 2),
-                (mark("Notes", notes), false, false, 3),
+                (mark("Shell", notes), false, false, 3),
             ],
             width,
         )
@@ -214,10 +214,10 @@ mod tests {
     #[test]
     fn a_marker_never_changes_the_tier() {
         let plain = panel(false, false, 31);
-        assert_eq!(plain, [" Agents │", " Todos │", " Log │", " Notes │"]);
+        assert_eq!(plain, [" Agents │", " Files │", " Log │", " Shell │"]);
         assert_eq!(
             panel(true, true, 31),
-            [" Agents │", " Todos │", " Log!│", " Notes!│"]
+            [" Agents │", " Files │", " Log!│", " Shell!│"]
         );
     }
 
@@ -226,25 +226,25 @@ mod tests {
     fn a_tight_tier_keeps_whole_names() {
         assert_eq!(
             panel(false, false, 30),
-            ["Agents│", "Todos│", "Log│", "Notes"]
+            ["Agents│", "Files│", "Log│", "Shell"]
         );
         assert_eq!(
             panel(false, false, 22),
-            ["Agents│", "Todos│", "Log│", "Notes"]
+            ["Agents│", "Files│", "Log│", "Shell"]
         );
         assert_eq!(
             panel(true, true, 24),
-            ["Agents│", "Todos│", "Log!│", "Notes!"]
+            ["Agents│", "Files│", "Log!│", "Shell!"]
         );
         assert_eq!(
             panel(false, true, 23),
-            ["Agents│", "Todos│", "Log│", "Notes!"]
+            ["Agents│", "Files│", "Log│", "Shell!"]
         );
         // Below the names, initials - and the markers too while there is room for them.
-        assert_eq!(panel(false, false, 21), ["A", "T", "L", "N"]);
-        assert_eq!(panel(true, true, 23), ["A", "T", "L!", "N!"]);
-        assert_eq!(panel(true, false, 5), ["A", "T", "L!", "N"]);
-        assert_eq!(panel(true, false, 4), ["A", "T", "L", "N"]);
+        assert_eq!(panel(false, false, 21), ["A", "F", "L", "S"]);
+        assert_eq!(panel(true, true, 23), ["A", "F", "L!", "S!"]);
+        assert_eq!(panel(true, false, 5), ["A", "F", "L!", "S"]);
+        assert_eq!(panel(true, false, 4), ["A", "F", "L", "S"]);
     }
 
     /// The active tab keeps its bold, and only a marker is painted in the error colour - never
@@ -274,10 +274,10 @@ mod tests {
             )
         );
         assert_eq!(
-            styled("Notes!", false),
+            styled("Shell!", false),
             format!(
                 "{:?}",
-                Text::new("Notes!")
+                Text::new("Shell!")
                     .unbold_range(..)
                     .dim_range(..)
                     .error_color_range(5..=5)

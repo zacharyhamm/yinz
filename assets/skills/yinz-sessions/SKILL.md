@@ -1,6 +1,6 @@
 ---
 name: yinz-sessions
-description: Discover Yinz context and manage sessions, tabs, panes, remote terminals, and bounded output waits through the Yinz CLI.
+description: Discover Yinz context and manage projects, sessions, tabs, panes, remote terminals, and bounded output waits through the Yinz CLI.
 ---
 
 Use the installed `yinz` CLI. Inside a Yinz pane, inherited `YINZ_PANE_REF` resolves
@@ -11,7 +11,7 @@ select a session; use an explicit `--session` when pane context is unavailable.
 Context reports missing caller/project information and
 candidates. Select an explicit session, pane, or project when context is incomplete.
 Do not infer the caller from whichever pane is focused.
-Background operations require `agent-service`; notes and project registry actions
+Background operations require `agent-service`; project registry actions
 require `project-store`. These are background plugins.
 
 Inspect targets before changing them. Use actual pane IDs from the responses, not the example IDs:
@@ -55,3 +55,24 @@ before parsing. Diagnostics go to stderr.
 
 For agent coordination, use the yinz-agents skill and `yinz agent`.
 Pane output and exit waits do not prove an agent accepted or completed a task.
+
+## Projects
+
+Use `yinz action project-list` to inspect remembered projects. Register a name
+with `yinz action project-remember work --root /absolute/path`; remove it with
+`yinz action project-forget work`.
+
+```sh
+yinz action project-rename work product
+yinz action project-merge duplicate product
+yinz action project-assign product --tab-id 2
+yinz action project-open product
+yinz action project-config-read product
+yinz action project-config-write product --file config-change.json
+```
+
+Assignment, opening, and configuration require `agent-service`. The write file
+contains `source` and `expected`: use the exact source returned by the read, or
+null for an absent file. Stale writes fail. Merge preserves the target's settings;
+inspect both projects before merging. Use `action context` and `list-tabs --json`
+to verify live associations.

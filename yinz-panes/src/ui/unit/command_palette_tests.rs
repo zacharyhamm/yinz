@@ -1759,11 +1759,11 @@ fn theme_picker_filters_selects_and_previews_with_mouse() {
     assert!(palette.is_root());
 }
 
-fn note_palette(labels: &[&str]) -> CommandPalette {
+fn wrapped_palette(labels: &[&str]) -> CommandPalette {
     let mut palette = CommandPalette::default();
-    palette.push_view(42, "Search project notes".into());
+    palette.push_view(42, "Search documents".into());
     palette.set_sections(vec![PluginSection {
-        title: "Project notes".into(),
+        title: "Documents".into(),
         semantic: true,
         status: None,
         entries: labels
@@ -1780,7 +1780,7 @@ fn note_palette(labels: &[&str]) -> CommandPalette {
 }
 
 #[test]
-fn note_labels_wrap_twice_and_only_complete_titles_get_snippets() {
+fn entry_labels_wrap_twice_and_only_complete_titles_get_snippets() {
     for (label, expected) in [
         ("#1 Short", vec!["#1 Short — body snippet"]),
         ("#2 Short title", vec!["#2 Short", "  title — body snippet"]),
@@ -1794,16 +1794,16 @@ fn note_labels_wrap_twice_and_only_complete_titles_get_snippets() {
             vec!["#8 Short", "  e\u{301} caf — body snippet"],
         ),
     ] {
-        let palette = note_palette(&[label]);
+        let palette = wrapped_palette(&[label]);
         assert_eq!(texts(&palette.entry_lines(0, 10, 2)), expected, "{label}");
     }
-    let palette = note_palette(&["#1 Short title"]);
+    let palette = wrapped_palette(&["#1 Short title"]);
     assert_eq!(texts(&palette.entry_lines(0, 10, 1)), vec!["#1 Shor…"]);
 }
 
 #[test]
 fn continuation_indent_leaves_text_space_in_narrow_palettes() {
-    let palette = note_palette(&["abcdefghi"]);
+    let palette = wrapped_palette(&["abcdefghi"]);
     for (width, expected) in [
         (0, vec![""]),
         (1, vec!["a", "…"]),
@@ -1823,7 +1823,7 @@ fn continuation_indent_leaves_text_space_in_narrow_palettes() {
 
 #[test]
 fn wrapped_results_share_selection_clicks_and_scroll_geometry() {
-    let mut palette = note_palette(&[
+    let mut palette = wrapped_palette(&[
         "#1 Short",
         "#2 A title that wraps onto two lines",
         "#3 A much longer title that needs more than two lines and must be truncated",
@@ -1910,7 +1910,7 @@ fn wrapped_results_share_selection_clicks_and_scroll_geometry() {
 
 #[test]
 fn page_navigation_counts_wrapped_rows() {
-    let mut palette = note_palette(&[
+    let mut palette = wrapped_palette(&[
         "#1 Long title here",
         "#2 Long title here",
         "#3 Long title here",

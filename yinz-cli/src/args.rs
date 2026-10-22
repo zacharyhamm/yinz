@@ -1413,7 +1413,7 @@ pub enum CliAction {
     #[clap(flatten)]
     Operations(crate::operations::Operations),
     #[clap(flatten)]
-    NotesTodos(crate::notes_todos::NotesTodos),
+    Projects(crate::projects::Projects),
     /// Write bytes to the terminal.
     Write {
         bytes: Vec<u8>,

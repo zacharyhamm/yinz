@@ -397,7 +397,7 @@ pub(crate) fn send_action_to_session(
     }
     let named_store_action = matches!(
         cli_action,
-        yinz_cli::args::CliAction::NotesTodos(_)
+        yinz_cli::args::CliAction::Projects(_)
             | yinz_cli::args::CliAction::Operations(_)
             | yinz_cli::args::CliAction::Wait(_)
     );
@@ -577,9 +577,7 @@ fn attach_with_cli_client(
         }
     }
     let service_action = match &cli_action {
-        yinz_cli::args::CliAction::NotesTodos(command) => {
-            Some(command.action(&mut std::io::stdin()))
-        },
+        yinz_cli::args::CliAction::Projects(command) => Some(command.action()),
         yinz_cli::args::CliAction::Operations(command) => {
             Some(command.action(&mut std::io::stdin()))
         },

@@ -64,7 +64,7 @@ pub(super) fn to_kdl(tabs: &[PaneTabDescriptor]) -> KdlNode {
 impl Config {
     pub fn overlay_tab_plugin_declarations(&self) -> Vec<PaneTabDescriptor> {
         self.overlay_tab_plugins.clone().unwrap_or_else(|| {
-            [("agents", "Agents"), ("todos", "Todos")]
+            [("agents", "Agents")]
                 .into_iter()
                 .map(|(name, label)| PaneTabDescriptor {
                     location: if self.plugins.aliases.contains_key(name) {

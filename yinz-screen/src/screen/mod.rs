@@ -711,7 +711,6 @@ pub(crate) struct Screen {
     permission_modals: Vec<permission_modal::PermissionModal>,
     permission_last_client: Option<ClientId>,
     permission_mouse_captures: HashSet<ClientId>,
-    note_edit_palettes: HashMap<u64, (ClientId, command_palette::CommandPaletteState)>,
     command_palette_mouse_captures: HashSet<ClientId>,
     palette_providers: command_palette::plugins::Registry,
     /// Correlates a plugin's answer with the menu that asked for it. Monotonic per session.
@@ -1449,7 +1448,6 @@ impl Screen {
             permission_modals: vec![],
             permission_last_client: None,
             permission_mouse_captures: HashSet::new(),
-            note_edit_palettes: HashMap::new(),
             command_palette_mouse_captures: HashSet::new(),
             palette_providers: command_palette::plugins::Registry::default(),
             next_context_menu_request_id: ContextMenuRequestId::new(0),
@@ -2414,8 +2412,6 @@ impl Screen {
         // nobody is looking at any more.
         self.context_menus.remove(&client_id);
         self.close_command_palette(client_id);
-        self.note_edit_palettes
-            .retain(|_, (client, _)| *client != client_id);
         self.disconnect_palette_client(client_id);
         self.command_palette_mouse_captures.remove(&client_id);
         self.client_projects.remove(&client_id);

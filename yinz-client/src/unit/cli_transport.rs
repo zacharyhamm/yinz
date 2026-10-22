@@ -71,30 +71,3 @@ fn requests_are_correlated_and_a_lost_mutation_is_not_retried() {
         server.join().unwrap();
     }
 }
-
-#[test]
-fn large_store_writes_have_time_for_full_note_bodies() {
-    use yinz_cli::notes_todos::pipe_action;
-
-    for (name, body_bytes, seconds) in [
-        ("store_mutate", 100, 30),
-        (
-            "store_mutate",
-            yinz_types::plugin_data::MAX_FETCH_BYTES - 100,
-            30,
-        ),
-        (
-            "store_mutate",
-            yinz_types::plugin_data::MAX_FETCH_BYTES,
-            120,
-        ),
-        ("store_query", yinz_types::plugin_data::MAX_FETCH_BYTES, 30),
-        ("other", yinz_types::plugin_data::MAX_FETCH_BYTES, 30),
-    ] {
-        let action = pipe_action(
-            name,
-            serde_json::json!({ "op": "note_edit", "args": { "body": "x".repeat(body_bytes) } }),
-        );
-        assert_eq!(pipe_timeout(&action), Duration::from_secs(seconds));
-    }
-}

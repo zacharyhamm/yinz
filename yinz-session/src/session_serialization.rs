@@ -2583,8 +2583,8 @@ mod tests {
                     configuration: BTreeMap::new(),
                 },
                 PaneTabDescriptor {
-                    label: "Todos!".into(),
-                    location: "yinz:todos".into(),
+                    label: "Files!".into(),
+                    location: "yinz:strider".into(),
                     initial_cwd: None,
                     configuration: BTreeMap::from([("custom".into(), "value".into())]),
                 },

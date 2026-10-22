@@ -280,8 +280,8 @@ unstable = ["yinz-client/unstable"]
 e2e = ["dep:ssh2"]
 
 [[test]]
-name = "notes_todos"
-path = "src/tests/notes_todos.rs"
+name = "projects"
+path = "src/tests/projects.rs"
 
 [[test]]
 name = "portable_cli"

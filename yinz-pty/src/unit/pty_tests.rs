@@ -95,9 +95,6 @@ struct MockOsApi {
     /// and then break the one after it.
     local_spawns_to_allow: Arc<Mutex<usize>>,
     adopted_command: Arc<Mutex<Option<RunCommand>>>,
-    exit_check_started: Arc<Barrier>,
-    exit_check_release: Arc<Barrier>,
-    exit_check_error: Option<String>,
 }
 
 impl MockOsApi {
@@ -130,9 +127,6 @@ impl MockOsApi {
             fail_local_spawns: Arc::new(Mutex::new(false)),
             local_spawns_to_allow: Arc::new(Mutex::new(0)),
             adopted_command: Arc::new(Mutex::new(None)),
-            exit_check_started: Arc::new(Barrier::new(1)),
-            exit_check_release: Arc::new(Barrier::new(1)),
-            exit_check_error: None,
         }
     }
     fn rerun_commands(&self) -> Vec<RunCommand> {
@@ -485,21 +479,7 @@ impl ServerOsApi for MockOsApi {
             child_exit_status: None,
         })
     }
-    fn wait_for_process_exit(&self, pid: ProcessId, timeout: Duration) -> anyhow::Result<()> {
-        assert_eq!(pid, ProcessId::new(1000));
-        assert_eq!(timeout, Duration::from_secs(5));
-        assert!(self
-            .cleared_terminal_ids
-            .lock()
-            .unwrap()
-            .contains(&TerminalId::new(0)));
-        self.exit_check_started.wait();
-        self.exit_check_release.wait();
-        match &self.exit_check_error {
-            Some(error) => Err(anyhow::anyhow!("{error}")),
-            None => Ok(()),
-        }
-    }
+
     fn clear_terminal_id(&self, terminal_id: TerminalId) -> anyhow::Result<()> {
         self.cleared_terminal_ids.lock().unwrap().push(terminal_id);
         (!self.clear_failures.lock().unwrap().contains(&terminal_id))
@@ -4087,171 +4067,6 @@ fn agent_process_start_failure_is_not_success_even_when_a_placeholder_is_placed(
         Some(PaneId::Terminal(TerminalId::new(41)))
     );
     assert_eq!(result.affected_tab_id, Some(TabId::new(7)));
-}
-
-#[test]
-fn note_editor_forced_closure_completes_once_and_startup_failure_has_no_pane() {
-    let mut os = MockOsApi::new();
-    os.exit_check_started = Arc::new(Barrier::new(2));
-    os.exit_check_release = Arc::new(Barrier::new(2));
-    *os.local_spawns_to_allow.lock().unwrap() = 1;
-    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os.clone());
-    let (exit, receiver) = crossbeam::channel::bounded(1);
-    pty.open_note_editor(
-        "/tmp/note.md".into(),
-        "#123 Current title".into(),
-        TabId::new(0),
-        ClientId::new(7),
-        exit,
-    )
-    .unwrap();
-    let id = TerminalId::new(0);
-    assert!(pty.note_editors.contains_key(&id));
-    assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(instruction,
-        ScreenInstruction::NewPane(PaneId::Terminal(terminal), Some(title), _, _, NewPanePlacement::Overlay(_), _, ClientTabIndexOrPaneId::TabIndexForClient(tab, client), ..) if terminal == id && title == "#123 Current title" && tab == TabId::new(0) && client == ClientId::new(7)
-    )));
-    pty.close_pane(PaneId::Terminal(id)).unwrap();
-    pty.close_pane(PaneId::Terminal(id)).unwrap();
-    os.exit_check_started.wait();
-    assert_eq!(
-        receiver.try_recv(),
-        Err(crossbeam::channel::TryRecvError::Empty)
-    );
-    assert!(pty.note_editors.is_empty());
-    pty.note_editor_exited(PaneId::Terminal(id), Some(0));
-    assert!(receiver.try_recv().is_err());
-    os.exit_check_release.wait();
-    assert!(receiver
-        .recv_timeout(Duration::from_secs(30))
-        .unwrap()
-        .unwrap_err()
-        .contains("closed"));
-    pty.note_editor_exited(PaneId::Terminal(id), Some(0));
-    assert_eq!(
-        receiver.recv_timeout(Duration::from_secs(30)),
-        Err(crossbeam::channel::RecvTimeoutError::Disconnected)
-    );
-    *os.fail_local_spawns.lock().unwrap() = true;
-    let (exit, _) = crossbeam::channel::bounded(1);
-    assert!(pty
-        .open_note_editor(
-            "/tmp/note.md".into(),
-            "#123 Current title".into(),
-            TabId::new(0),
-            ClientId::new(7),
-            exit
-        )
-        .is_err());
-    assert!(pty.note_editors.is_empty());
-}
-
-#[test]
-fn note_editor_completion_uses_exit_status() {
-    for status in [Some(0), Some(1), None] {
-        let os = MockOsApi::new();
-        *os.local_spawns_to_allow.lock().unwrap() = 1;
-        let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os);
-        let (exit, receiver) = crossbeam::channel::bounded(1);
-        pty.open_note_editor(
-            "/tmp/note.md".into(),
-            "#123 Current title".into(),
-            TabId::new(0),
-            ClientId::new(7),
-            exit,
-        )
-        .unwrap();
-        let pane = PaneId::Terminal(TerminalId::new(0));
-        assert_eq!(
-            receiver.try_recv(),
-            Err(crossbeam::channel::TryRecvError::Empty)
-        );
-        pty.note_editor_exited(pane, status);
-        let result = receiver.try_recv().unwrap();
-        assert_eq!(result.is_ok(), status == Some(0));
-        if let Err(error) = result {
-            assert!(error.contains("exited unsuccessfully"));
-        }
-        pty.note_editor_exited(pane, status);
-        assert_eq!(
-            receiver.try_recv(),
-            Err(crossbeam::channel::TryRecvError::Disconnected)
-        );
-        assert!(pty.note_editors.is_empty());
-        assert_eq!(screen_rx.try_iter().filter(|(instruction, _)| matches!(instruction,
-            ScreenInstruction::ClosePane(closed, _, _, exit_status) if *closed == pane && *exit_status == status
-        )).count(), 1);
-    }
-}
-
-#[test]
-fn note_editor_placement_failure_waits_for_exit_and_preserves_error() {
-    let mut os = MockOsApi::new();
-    os.exit_check_started = Arc::new(Barrier::new(2));
-    os.exit_check_release = Arc::new(Barrier::new(2));
-    *os.local_spawns_to_allow.lock().unwrap() = 1;
-    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os.clone());
-    drop(screen_rx);
-    pty.bus.senders.should_silently_fail = false;
-    let (exit, receiver) = crossbeam::channel::bounded(1);
-    // Success here prevents OpenNoteEditor from reporting an immediate startup failure.
-    pty.open_note_editor(
-        "/tmp/note.md".into(),
-        "#123 Current title".into(),
-        TabId::new(0),
-        ClientId::new(7),
-        exit,
-    )
-    .unwrap();
-    let pane = PaneId::Terminal(TerminalId::new(0));
-    os.exit_check_started.wait();
-    assert_eq!(
-        receiver.try_recv(),
-        Err(crossbeam::channel::TryRecvError::Empty)
-    );
-    assert_eq!(
-        *os.local_signals.lock().unwrap(),
-        vec![(ProcessId::new(1000), "SIGHUP")]
-    );
-    pty.close_pane(pane).unwrap();
-    os.exit_check_release.wait();
-    assert!(receiver
-        .recv_timeout(Duration::from_secs(30))
-        .unwrap()
-        .unwrap_err()
-        .contains("placing note editor"));
-    pty.note_editor_exited(pane, Some(0));
-    assert_eq!(
-        receiver.recv_timeout(Duration::from_secs(30)),
-        Err(crossbeam::channel::RecvTimeoutError::Disconnected)
-    );
-    assert!(pty.note_editors.is_empty());
-}
-
-#[test]
-fn note_editor_forced_close_reports_teardown_and_confirmation_errors() {
-    let mut os = MockOsApi::new();
-    os.exit_check_error = Some("process exit unconfirmed after 5s".into());
-    os.fail_clear_of(TerminalId::new(0));
-    *os.local_spawns_to_allow.lock().unwrap() = 1;
-    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os);
-    let (exit, receiver) = crossbeam::channel::bounded(1);
-    pty.open_note_editor(
-        "/tmp/note.md".into(),
-        "#123 Current title".into(),
-        TabId::new(0),
-        ClientId::new(7),
-        exit,
-    )
-    .unwrap();
-    pty.close_pane(PaneId::Terminal(TerminalId::new(0)))
-        .unwrap();
-    let error = receiver
-        .recv_timeout(Duration::from_secs(30))
-        .unwrap()
-        .unwrap_err();
-    assert!(error.contains("closed"), "{error}");
-    assert!(error.contains("injected clear failure"), "{error}");
-    assert!(error.contains("process exit unconfirmed"), "{error}");
 }
 
 #[test]

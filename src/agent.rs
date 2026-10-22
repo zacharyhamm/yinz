@@ -115,7 +115,7 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
     yinz_session::sessions::validate_session_name(&session).map_err(|error| anyhow!(error))?;
     let action = match &command {
         Agent::Archive(archive) => Some(archive.action().map_err(anyhow::Error::msg)?),
-        Agent::Register { pane_id, kind, .. } => Some(yinz_cli::notes_todos::pipe_action(
+        Agent::Register { pane_id, kind, .. } => Some(yinz_cli::projects::pipe_action(
             "agent_action",
             serde_json::json!({"op":"agent_register","args":{"pane_id":pane_id,"kind":kind},"structured_reply":true}),
         )),

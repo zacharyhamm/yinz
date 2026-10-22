@@ -41,11 +41,6 @@ threads-required = "num-test-threads"
 filter = 'test(=plugin_tests::compact_bar::compact_bar_wasm_deno_markers_nested_hints_and_themes) | test(=plugin_tests::tab_bar::tab_bar_wasm_deno_mouse_ranges_and_breadcrumbs)'
 slow-timeout = { period = "60s", terminate-after = 3 }
 
-# The CLI note round trip sends several 8 MiB bodies through the interpreter.
-[[profile.unit.overrides]]
-filter = 'binary(notes_todos) & test(=notes_todos_commands_return_json_and_failures_with_redirected_stdin)'
-slow-timeout = { period = "60s", terminate-after = 3 }
-
 # Text/JSON parity checks every target spelling through separate strict compiler workers.
 [[profile.unit.overrides]]
 filter = 'binary(portable_cli) & test(=plugin_check_targets_have_text_json_parity)'

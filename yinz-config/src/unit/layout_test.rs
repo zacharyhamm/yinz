@@ -3554,7 +3554,7 @@ fn pane_tabs_layout_validates_flat_named_plugins_and_selects_one_run() {
             r#"layout {{ {prefix}
             pane tabbed=true selected=1 {{
                 pane name="Files" {{ plugin location="yinz:strider"; }}
-                pane name="Todos" {{ plugin location="yinz:todos"; }}
+                pane name="Files" {{ plugin location="yinz:strider"; }}
             }}; {suffix}
         }}"#
         );
@@ -3570,7 +3570,7 @@ fn pane_tabs_templates_merge_selection_and_keep_child_cwds() {
     let raw = r#"layout cwd="/project" {
         pane_template name="views" tabbed=true selected=1 {
             pane name="Files" { plugin location="strider" cwd="files"; }
-            pane name="Todos" { plugin location="yinz:todos" cwd="todos"; }
+            pane name="Files" { plugin location="yinz:strider" cwd="files"; }
         }
         views
         views selected=0
@@ -3587,7 +3587,7 @@ fn pane_tabs_templates_merge_selection_and_keep_child_cwds() {
         );
         assert_eq!(
             tabs.tabs[1].initial_cwd,
-            Some(PathBuf::from("/project/todos"))
+            Some(PathBuf::from("/project/files"))
         );
         let Run::Plugin(plugin) = pane.run.as_ref().unwrap() else {
             panic!("selected plugin")
@@ -3618,7 +3618,7 @@ fn floating_pane_tabs_keep_their_child_cwds() {
         floating_panes {
             pane tabbed=true selected=1 {
                 pane name="Files" { plugin location="yinz:strider" cwd="files"; }
-                pane name="Todos" { plugin location="yinz:todos" cwd="todos"; }
+                pane name="Files" { plugin location="yinz:strider" cwd="files"; }
             }
         }
     }"#;
@@ -3632,7 +3632,7 @@ fn floating_pane_tabs_keep_their_child_cwds() {
     );
     assert_eq!(
         tabs.tabs[1].initial_cwd,
-        Some(PathBuf::from("/project/todos"))
+        Some(PathBuf::from("/project/files"))
     );
     let Run::Plugin(plugin) = pane.run.as_ref().unwrap() else {
         panic!("selected plugin")

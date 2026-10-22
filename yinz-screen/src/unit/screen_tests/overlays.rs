@@ -7756,6 +7756,18 @@ fn configured_overlay_screen() -> (
         cols: 120,
         rows: 40,
     });
+    let config = Config::from_kdl(
+        r#"overlay_tab_plugins { "yinz:agents" label="Agents"; "yinz:strider" label="Files"; }"#,
+        None,
+    )
+    .unwrap();
+    screen
+        .reconfigure(
+            ScreenConfig::from_config(&config),
+            Keybinds::default(),
+            CLIENT_1,
+        )
+        .unwrap();
     let (tx, ptys) = channels::unbounded();
     screen.bus.senders.to_pty = Some(SenderWithContext::new(tx));
     (screen, plugins, ptys)
@@ -7962,20 +7974,20 @@ fn configured_overlay_coalesces_launches_selects_unloaded_tabs_and_survives_relo
 fn configured_overlay_load_failure_releases_pending_launch_and_retry_reuses_slots() {
     let (mut screen, events, ptys) = configured_overlay_screen();
     new_tab(&mut screen, 1, TabId::new(0));
-    launch_configured_overlay(&mut screen, "yinz:todos", CLIENT_1);
+    launch_configured_overlay(&mut screen, "yinz:strider", CLIENT_1);
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
     screen
         .pane_tab_loaded(id, index, generation, Err("load failed".into()))
         .unwrap();
     assert!(screen.pending_overlay_tabs.is_none());
-    launch_configured_overlay(&mut screen, "yinz:todos", CLIENT_1);
+    launch_configured_overlay(&mut screen, "yinz:strider", CLIENT_1);
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
     screen
         .pane_tab_loaded(
             id,
             index,
             generation,
-            Ok((PluginId::new(100), configured_overlay_run("yinz:todos"))),
+            Ok((PluginId::new(100), configured_overlay_run("yinz:strider"))),
         )
         .unwrap();
     launch_configured_overlay(&mut screen, "yinz:agents", CLIENT_1);
@@ -8098,14 +8110,14 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
     screen
         .switch_active_tab(screen.tabs[&TabId::new(0)].position, None, true, CLIENT_1)
         .unwrap();
-    launch_configured_overlay(&mut screen, "yinz:todos", other);
+    launch_configured_overlay(&mut screen, "yinz:strider", other);
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
     screen
         .pane_tab_loaded(
             id,
             index,
             generation,
-            Ok((PluginId::new(100), configured_overlay_run("yinz:todos"))),
+            Ok((PluginId::new(100), configured_overlay_run("yinz:strider"))),
         )
         .unwrap();
     let pane = PaneId::Plugin(PluginId::new(100));
@@ -8117,7 +8129,7 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
     // Plugin actions carry their source pane even when they are not replacing it.
     screen
         .launch_plugin(
-            configured_overlay_run("yinz:todos"),
+            configured_overlay_run("yinz:strider"),
             false,
             false,
             false,
@@ -8139,7 +8151,7 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
         .next()
         .unwrap();
     let config = Config::from_kdl(
-        "overlay_tab_plugins { \"yinz:todos\" label=\"Only\"; }",
+        "overlay_tab_plugins { \"yinz:strider\" label=\"Only\"; }",
         None,
     )
     .unwrap();
@@ -8166,7 +8178,7 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
         .unwrap();
     screen
         .new_floating_plugin_pane(
-            configured_overlay_run("yinz:todos"),
+            configured_overlay_run("yinz:strider"),
             None,
             false,
             None,
@@ -8184,7 +8196,7 @@ fn configured_overlay_plugin_launch_uses_acting_clients_tab_and_new_groups_use_r
             id,
             index,
             generation,
-            Ok((PluginId::new(101), configured_overlay_run("yinz:todos"))),
+            Ok((PluginId::new(101), configured_overlay_run("yinz:strider"))),
         )
         .unwrap();
     assert_eq!(
@@ -8243,7 +8255,7 @@ fn configured_overlay_lazy_launch_completion_follows_requested_slot() {
     let (tx, mut second) = tokio::sync::oneshot::channel();
     screen
         .launch_plugin(
-            configured_overlay_run("yinz:todos"),
+            configured_overlay_run("yinz:strider"),
             false,
             false,
             false,
@@ -8259,7 +8271,7 @@ fn configured_overlay_lazy_launch_completion_follows_requested_slot() {
         .unwrap();
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
     assert!(second.try_recv().is_err());
-    let mut duplicate = launch_overlay_with_completion(&mut screen, "yinz:todos");
+    let mut duplicate = launch_overlay_with_completion(&mut screen, "yinz:strider");
     let mut loaded = launch_overlay_with_completion(&mut screen, "yinz:agents");
     assert_eq!(
         loaded.try_recv().unwrap().affected_pane_id,
@@ -8270,7 +8282,7 @@ fn configured_overlay_lazy_launch_completion_follows_requested_slot() {
             id,
             index,
             generation - 1,
-            Ok((PluginId::new(101), configured_overlay_run("yinz:todos"))),
+            Ok((PluginId::new(101), configured_overlay_run("yinz:strider"))),
         )
         .unwrap();
     assert!(second.try_recv().is_err());
@@ -8280,7 +8292,7 @@ fn configured_overlay_lazy_launch_completion_follows_requested_slot() {
             id,
             index,
             generation,
-            Ok((PluginId::new(102), configured_overlay_run("yinz:todos"))),
+            Ok((PluginId::new(102), configured_overlay_run("yinz:strider"))),
         )
         .unwrap();
     for completion in [&mut second, &mut duplicate] {
@@ -8309,7 +8321,7 @@ fn configured_overlay_coalesced_completions_load_each_requested_slot() {
         });
     let mut first = launch_overlay_with_completion(&mut screen, "yinz:agents");
     let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
-    let mut second = launch_overlay_with_completion(&mut screen, "yinz:todos");
+    let mut second = launch_overlay_with_completion(&mut screen, "yinz:strider");
     let mut third = launch_overlay_with_completion(&mut screen, "yinz:about");
     screen
         .pane_tab_loaded(
@@ -8388,7 +8400,7 @@ fn configured_overlay_launch_completion_reports_failure_and_closure() {
                 Ok((PluginId::new(100), configured_overlay_run("yinz:agents"))),
             )
             .unwrap();
-        let mut completion = launch_overlay_with_completion(&mut screen, "yinz:todos");
+        let mut completion = launch_overlay_with_completion(&mut screen, "yinz:strider");
         let (id, index, generation, _) = next_overlay_load(&mut screen, &ptys, &events);
         if close {
             screen
@@ -8417,7 +8429,7 @@ fn configured_overlay_initial_configuration_and_caller_metadata_survive_loading(
         new_tab(&mut screen, 1, TabId::new(0));
         let config = Config::from_kdl(r#"
             plugins { custom location="file:overlay-custom.scm" { width "50%"; unchanged "yes"; cwd "/plugin"; }; }
-            overlay_tab_plugins { custom; "yinz:todos"; }
+            overlay_tab_plugins { custom; "yinz:strider"; }
         "#, None).unwrap();
         screen
             .reconfigure(
@@ -8460,7 +8472,7 @@ fn configured_overlay_initial_configuration_and_caller_metadata_survive_loading(
             screen.tabs[&TabId::new(0)].pane_tabs_info(id).unwrap().tabs[index].descriptor,
             descriptor
         );
-        launch_configured_overlay(&mut screen, "yinz:todos", CLIENT_1);
+        launch_configured_overlay(&mut screen, "yinz:strider", CLIENT_1);
         let (_, _, _, companion) = next_overlay_load(&mut screen, &ptys, &events);
         assert_eq!(companion.configuration["caller_cwd"], "/focused");
         assert_eq!(companion.configuration["caller_terminal_pane_id"], "7");
@@ -8481,7 +8493,7 @@ fn configured_overlay_explicit_cwd_overrides_alias_default() {
             let config = Config::from_kdl(
                 r#"
                 plugins { custom location="file:overlay-custom.scm" { cwd "/plugin"; }; }
-                overlay_tab_plugins { custom; "yinz:todos"; }
+                overlay_tab_plugins { custom; "yinz:strider"; }
                 "#,
                 None,
             )
@@ -8515,7 +8527,7 @@ fn configured_overlay_explicit_cwd_overrides_alias_default() {
             screen
                 .pane_tab_loaded(id, index, generation, Ok((PluginId::new(100), request)))
                 .unwrap();
-            launch_configured_overlay(&mut screen, "yinz:todos", CLIENT_1);
+            launch_configured_overlay(&mut screen, "yinz:strider", CLIENT_1);
             let (_, _, _, sibling) = next_overlay_load(&mut screen, &ptys, &events);
             assert_eq!(sibling.initial_cwd, Some("/focused".into()));
         }
@@ -8546,7 +8558,7 @@ fn configured_overlay_coalesced_loads_keep_originating_clients() {
             let mut pending_id = None;
             for (index, location, client) in [
                 (0, "yinz:agents", CLIENT_1),
-                (1, "yinz:todos", other),
+                (1, "yinz:strider", other),
                 (2, "yinz:about", CLIENT_1),
                 (2, "yinz:about", other),
             ] {

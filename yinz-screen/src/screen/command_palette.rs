@@ -3,8 +3,6 @@ use yinz_panes::ui::command_palette::escape_literal;
 pub(super) mod agents;
 #[path = "palette_history.rs"]
 pub(super) mod history;
-#[path = "palette_notes.rs"]
-pub(super) mod notes;
 #[path = "palette_plugins.rs"]
 pub(super) mod plugins;
 
@@ -36,7 +34,6 @@ pub(super) struct CommandPaletteState {
     suspended: bool,
     plugins: plugins::State,
     agents: agents::State,
-    notes: notes::State,
     context: PaletteContext,
     actions: HashMap<String, Builtin>,
     warp_source: Option<SessionName>,
@@ -149,7 +146,6 @@ impl Screen {
                 suspended: false,
                 plugins: plugins::State::default(),
                 agents: agents::State::new(source),
-                notes: notes::State::default(),
                 context: PaletteContext {
                     tab_id,
                     pane_id,
@@ -182,25 +178,17 @@ impl Screen {
     }
 
     pub(crate) fn close_command_palette(&mut self, client_id: ClientId) -> bool {
-        self.take_command_palette(client_id, true).is_some()
+        self.take_command_palette(client_id).is_some()
     }
 
     pub(super) fn command_palette_is_open(&self, client_id: ClientId) -> bool {
         self.command_palettes.contains_key(&client_id)
-            || self
-                .note_edit_palettes
-                .values()
-                .any(|(client, _)| *client == client_id)
     }
 
     pub(super) fn palette_owns_input(&self, client_id: ClientId) -> bool {
         self.command_palettes
             .get(&client_id)
             .is_some_and(|s| !s.suspended)
-            || self
-                .note_edit_palettes
-                .values()
-                .any(|(client, _)| *client == client_id)
     }
 
     fn release_palette_input(&self, client_id: ClientId) {
@@ -213,25 +201,15 @@ impl Screen {
         }
     }
 
-    fn take_command_palette(
-        &mut self,
-        client_id: ClientId,
-        dismiss_plugins: bool,
-    ) -> Option<CommandPaletteState> {
+    fn take_command_palette(&mut self, client_id: ClientId) -> Option<CommandPaletteState> {
         let mut state = self.command_palettes.remove(&client_id)?;
         self.cancel_theme_preview(client_id);
         state.backing = TranslucentOverlayBacking::default();
         state.watcher_backing = TranslucentOverlayBacking::default();
         state.painted = None;
         state.agents.cancel();
-        state.notes.cancel();
-        if dismiss_plugins {
-            self.dismiss_plugin_palette(client_id, &mut state);
-            self.release_palette_input(client_id);
-        } else {
-            // Keep the plugin opening alive while the native editor owns input.
-            state.cancel_requests(&self.bus.senders, client_id);
-        }
+        self.dismiss_plugin_palette(client_id, &mut state);
+        self.release_palette_input(client_id);
         if self.command_palettes.is_empty() {
             self.bus
                 .senders
@@ -490,7 +468,6 @@ impl Screen {
 
 #[derive(Clone)]
 enum Builtin {
-    SearchNotes,
     Theme(String),
     Inspect(history::LiveAgent),
     Archive,
@@ -570,12 +547,6 @@ impl Screen {
             "Switch current project…",
             &["project context"],
             Builtin::Picker(EntryKind::Project),
-        );
-        command(
-            "search-project-notes",
-            "Search project notes…",
-            &["find notes markdown"],
-            Builtin::SearchNotes,
         );
         command(
             "agents",
@@ -1217,9 +1188,6 @@ impl Screen {
             self.close_command_palette(client);
             return;
         }
-        if self.note_palette_outcome(client, &outcome) {
-            return;
-        }
         if self.history_palette_outcome(client, &outcome) {
             return;
         }
@@ -1289,10 +1257,6 @@ impl Screen {
             },
             Builtin::AgentFilters => {
                 self.open_agent_filters(client);
-                return;
-            },
-            Builtin::SearchNotes => {
-                self.open_note_search(client);
                 return;
             },
             Builtin::Agent(action) => {

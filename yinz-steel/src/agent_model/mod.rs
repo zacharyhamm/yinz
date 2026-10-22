@@ -3,11 +3,9 @@ mod agents;
 mod archive;
 mod history;
 mod launch;
-mod notes;
 mod panel;
 mod projects;
 mod store;
-mod todos;
 
 use anyhow::{bail, Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
@@ -167,11 +165,9 @@ fn run(namespace: &str, op: &str, args: Value) -> Result<Value> {
         "archive" => archive::run(op, args),
         "history" => history::run(op, args),
         "launch" => launch::run(op, args),
-        "notes" => notes::run(op, args),
         "panel" => panel::run(op, args),
         "projects" => projects::run(op, args),
         "store" => store::run(op, args),
-        "todos" => todos::run(op, args),
         _ => bail!("unknown agent model namespace {namespace:?}"),
     }
     .with_context(|| format!("agent model {namespace}.{op}"))

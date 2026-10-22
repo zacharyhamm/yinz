@@ -1,7 +1,7 @@
 //! One string per folder.
 //!
 //! Folders are map keys all over agent — the probed repositories, the project
-//! roots, the todo lists — and every one of those maps is looked up by exact
+//! roots — and every one of those maps is looked up by exact
 //! string. `/work/agent/` and `/work/agent` are the same folder and would be two
 //! keys, so an agent could sit inside a project the registry knows and still be
 //! told it has none. Everything that takes a folder from outside normalizes it

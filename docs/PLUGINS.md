@@ -2,13 +2,12 @@
 
 ## Overlay plugin tabs
 
-The overlay contains Agents followed by Todos by default. Set `overlay_tab_plugins`
+The overlay contains Agents by default. Set `overlay_tab_plugins`
 in `config.kdl` to replace the list:
 
 ```kdl
 overlay_tab_plugins {
     agents label="Agents"
-    todos label="Todos"
     "file:/path/to/plugin.scm" label="Custom"
 }
 ```

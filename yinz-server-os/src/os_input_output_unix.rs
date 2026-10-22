@@ -493,22 +493,6 @@ impl UnixPtyBackend {
         Ok(())
     }
 
-    pub fn wait_for_process_exit(&self, pid: ProcessId, timeout: Duration) -> Result<()> {
-        let process = crate::pty_host::process_pid(pid).context("invalid process identity")?;
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            match nix::sys::signal::kill(process, None) {
-                Err(nix::errno::Errno::ESRCH) => return Ok(()),
-                Err(error) => return Err(error).context("checking process exit"),
-                Ok(()) => {},
-            }
-            if std::time::Instant::now() >= deadline {
-                bail!("process {pid} exit unconfirmed after {timeout:?}");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
     pub fn confirm_pty_host_shutdown(&self) -> Result<()> {
         let mut pending = self
             .shutdown_processes
@@ -1563,60 +1547,6 @@ mod tests {
         assert_eq!(status.session_name.unwrap(), published);
         assert_eq!(status.child_pid, Some(child));
         assert!(status.attached);
-    }
-
-    #[test]
-    fn note_editor_exit_confirmation_survives_suppressed_pty_host_callback() {
-        let dir = tempfile::tempdir().unwrap();
-        let supervisor = dir.path().join("supervisor");
-        let exe = std::env::current_exe().unwrap();
-        yinz_test_support::write_warm_script(&supervisor, &format!(
-            "YINZ_SOCKET_DIR='{}' YINZ_TEST_TERMIOS_SUPERVISOR=1 exec '{}' --exact os_input_output_unix::tests::termios_supervisor_entry --nocapture\n",
-            dir.path().display(), exe.display(),
-        ));
-        let mut backend = UnixPtyBackend::with_termios(None).unwrap();
-        backend.host_bin = Some(supervisor);
-        backend.pty_host_enabled.store(true, Ordering::SeqCst);
-        let (exit, receiver) = std::sync::mpsc::channel();
-        let id = TerminalId::new(0);
-        let (_reader, pid) = backend
-            .spawn_terminal(
-                RunCommand {
-                    command: PathBuf::from("/bin/sh"),
-                    args: vec!["-c".into(), "read line".into()],
-                    ..Default::default()
-                },
-                None,
-                Box::new(move |_, status, _| {
-                    let _ = exit.send(status);
-                }),
-                id,
-            )
-            .unwrap();
-        assert!(backend
-            .terminal_id_to_host
-            .lock()
-            .unwrap()
-            .contains_key(&id));
-        // A live editor must time out rather than be reported as gone.
-        assert!(backend
-            .wait_for_process_exit(pid, Duration::ZERO)
-            .unwrap_err()
-            .to_string()
-            .contains("unconfirmed"));
-        backend.clear_terminal_id(id).unwrap();
-        backend
-            .wait_for_process_exit(pid, Duration::from_secs(5))
-            .unwrap();
-        assert_eq!(
-            nix::sys::signal::kill(crate::pty_host::process_pid(pid).unwrap(), None),
-            Err(nix::errno::Errno::ESRCH)
-        );
-        // Teardown marks the callback reported before terminating the host.
-        assert_eq!(
-            receiver.recv_timeout(Duration::from_secs(5)),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
-        );
     }
 
     #[tokio::test]

@@ -1,7 +1,6 @@
 //! Exercise the public commands as processes with redirected stdin and a real session.
 use serde_json::Value;
 use std::{
-    io::Write,
     path::Path,
     process::{Command, Output, Stdio},
 };
@@ -46,7 +45,7 @@ struct Session(tempfile::TempDir);
 impl Session {
     fn action(&self, args: &[&str]) -> Output {
         command(self.0.path())
-            .args(["--session", "notes-test", "action"])
+            .args(["--session", "projects-test", "action"])
             .args(args)
             .output()
             .unwrap()
@@ -55,13 +54,13 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = command(self.0.path())
-            .args(["kill-session", "notes-test"])
+            .args(["kill-session", "projects-test"])
             .output();
     }
 }
 
 #[test]
-fn notes_todos_commands_return_json_and_failures_with_redirected_stdin() {
+fn projects_commands_return_json_and_failures_with_redirected_stdin() {
     let session = Session(tempfile::tempdir().unwrap());
     let dir = session.0.path();
     yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &dir.join("yinz")).unwrap();
@@ -74,7 +73,7 @@ fn notes_todos_commands_return_json_and_failures_with_redirected_stdin() {
         .arg(&config)
         .arg("--layout")
         .arg(&layout)
-        .args(["attach", "--create-background", "notes-test"])
+        .args(["attach", "--create-background", "projects-test"])
         .output()
         .unwrap();
     assert!(
@@ -83,87 +82,30 @@ fn notes_todos_commands_return_json_and_failures_with_redirected_stdin() {
         String::from_utf8_lossy(&started.stderr)
     );
     success(session.action(&["project-remember", "work", "--root", "/work"]));
-    let todo = success(session.action(&["todo-add", "one request only", "--project", "work"]));
-    let id = todo["id"].to_string();
-    let mut child = command(dir)
-        .args([
-            "--session",
-            "notes-test",
-            "action",
-            "note-add",
-            "multiline",
-            "--project",
-            "work",
-            "--todo-id",
-            &id,
-            "--body-file",
-            "-",
-        ])
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let prefix = "first\n\nsecond\n";
-    let body = format!(
-        "{prefix}{}",
-        "é".repeat((8 * 1024 * 1024 - prefix.len()) / 2)
-    );
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(body.as_bytes())
-        .unwrap();
-    let note = success(child.wait_with_output().unwrap());
-    assert_eq!(note["body"], body);
-    let note_id = note["id"].to_string();
-    let list = success(session.action(&["todo-list", "--project", "work"]));
-    assert_eq!(list["items"].as_array().unwrap().len(), 1);
-    let fetched = success(session.action(&["note-get", &note_id]));
-    assert_eq!(fetched["todo_ids"][0], todo["id"]);
-    assert_eq!(fetched["body"], body);
-    let replacement = "y".repeat(8 * 1024 * 1024);
-    let body_file = dir.join("body.md");
-    std::fs::write(&body_file, &replacement).unwrap();
-    let edited = success(session.action(&[
-        "note-edit",
-        &note_id,
-        "--body-file",
-        body_file.to_str().unwrap(),
-        "--expect-rev",
-        &note["rev"].to_string(),
-    ]));
-    assert_eq!(edited["body"], replacement);
-    assert!(edited["rev"].as_i64() > note["rev"].as_i64());
+    let list = success(session.action(&["project-list"]));
+    assert_eq!(list["projects"][0]["name"], "work");
+    success(session.action(&["project-rename", "work", "renamed"]));
+    let list = success(session.action(&["project-list"]));
+    assert_eq!(list["projects"][0]["name"], "renamed");
+    let error = session.action(&["project-forget", "missing"]);
+    assert!(!error.status.success());
+    assert!(error.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&error.stderr).contains("unknown project"));
+    success(session.action(&["project-forget", "renamed"]));
     assert_eq!(
-        success(session.action(&["note-get", &note_id]))["body"],
-        replacement
+        success(session.action(&["project-list"]))["projects"],
+        serde_json::json!([])
     );
-    let error = session.action(&["note-get", "999999"]);
-    assert!(!error.status.success());
-    assert!(error.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&error.stderr).contains("no note"));
-    // A deliberately stale revision is also a process failure, without partial tag replacement.
-    let error = session.action(&[
-        "note-edit",
-        &note_id,
-        "--tag",
-        "new",
-        "--expect-rev",
-        "999999",
-    ]);
-    assert!(!error.status.success());
-    assert!(error.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&error.stderr).contains("somebody else"));
 }
 
 #[test]
-fn notes_todos_skill_install_uses_custom_codex_home_and_defaults_to_both_agents() {
+fn projects_skill_install_uses_custom_codex_home_and_defaults_to_both_agents() {
     let temp = tempfile::tempdir().unwrap();
     let codex_home = temp.path().join("custom codex");
     let install = |args: &[&str]| {
         command(temp.path())
             .env("CODEX_HOME", &codex_home)
-            .args(["skills", "install", "yinz-notes-todos"])
+            .args(["skills", "install", "yinz-sessions"])
             .args(args)
             .output()
             .unwrap()
@@ -172,8 +114,8 @@ fn notes_todos_skill_install_uses_custom_codex_home_and_defaults_to_both_agents(
     assert!(dry.status.success());
     assert!(!codex_home.exists());
     assert!(install(&[]).status.success());
-    let codex = codex_home.join("skills/yinz-notes-todos/SKILL.md");
-    let claude = temp.path().join(".claude/skills/yinz-notes-todos/SKILL.md");
+    let codex = codex_home.join("skills/yinz-sessions/SKILL.md");
+    let claude = temp.path().join(".claude/skills/yinz-sessions/SKILL.md");
     assert_eq!(
         std::fs::read(&codex).unwrap(),
         std::fs::read(&claude).unwrap()
