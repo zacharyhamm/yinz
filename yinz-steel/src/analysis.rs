@@ -118,10 +118,17 @@ fn bindings(expressions: &[ExprKind], bound: &mut HashSet<String>) {
                 }
             },
             Some("require") => {
-                // An unrestricted import may replace these bindings; never infer extra grants.
+                // An unrestricted import may replace these bindings.
                 bound.extend(
-                    ["yinz-command", "yinz-wait-for-permissions", "hash", "list"]
-                        .map(str::to_owned),
+                    [
+                        "yinz-command",
+                        "yinz-wait-for-permissions",
+                        "yinz-then",
+                        "yinz-catch",
+                        "hash",
+                        "list",
+                    ]
+                    .map(str::to_owned),
                 );
             },
             _ => {},
@@ -191,6 +198,19 @@ impl Visitor {
         }
         let line = self.line(expression);
         match head.as_str() {
+            "begin" if !bound.contains(&head) && !self.mutated.contains(&head) => {
+                self.sequence(&list[1..], bound, during_load);
+                return;
+            },
+            "cond" if !bound.contains(&head) && !self.mutated.contains(&head) => {
+                for clause in list.iter().skip(1) {
+                    if let Some((predicate, body)) = items(clause).split_first() {
+                        self.visit(predicate, bound, during_load);
+                        self.sequence(body, bound, during_load);
+                    }
+                }
+                return;
+            },
             "case" if list.len() >= 2 => {
                 self.visit(&list[1], bound, during_load);
                 for clause in list.iter().skip(2) {
@@ -230,6 +250,11 @@ impl Visitor {
                     let mut scope = bound.clone();
                     scope.extend(function.iter().skip(1).filter_map(name));
                     self.sequence(&list[2..], &scope, head_name(function) == "load");
+                    return;
+                }
+                if name(target).as_deref() == Some("load") && head_name(items(&list[2])) == "lambda"
+                {
+                    self.visit(&list[2], bound, true);
                     return;
                 }
             },
@@ -291,6 +316,27 @@ impl Visitor {
                 return;
             },
             "require" => self.result.imports.push((line, expression.to_string())),
+            "yinz-then" | "yinz-catch"
+                if !bound.contains(&head) && !self.mutated.contains(&head) =>
+            {
+                // shortcut: only inline lambdas have known timing, revisit if execution analysis is added.
+                // Settled values queue callbacks that the load lifecycle drains immediately.
+                let waits_for_plugin_data = list
+                    .get(1)
+                    .is_some_and(|value| self.waits_for_plugin_data(value, bound));
+                for (index, argument) in list.iter().enumerate().skip(1) {
+                    let callback = items(argument);
+                    let deferred_callback = list.len() == 3
+                        && index == 2
+                        && waits_for_plugin_data
+                        && head_name(callback) == "lambda"
+                        && callback.len() >= 3
+                        && !bound.contains("lambda")
+                        && !self.mutated.contains("lambda");
+                    self.visit(argument, bound, during_load && !deferred_callback);
+                }
+                return;
+            },
             "yinz-wait-for-permissions"
                 if !bound.contains(&head)
                     && !self.mutated.contains(&head)
@@ -339,6 +385,37 @@ impl Visitor {
         }
         for child in list.iter().skip(1) {
             self.visit(child, bound, during_load);
+        }
+    }
+
+    fn waits_for_plugin_data(&self, expression: &ExprKind, bound: &HashSet<String>) -> bool {
+        let list = items(expression);
+        let Some(head) = head(list) else { return false };
+        if bound.contains(&head) || self.mutated.contains(&head) {
+            return false;
+        }
+        match head.as_str() {
+            "yinz-wait-for-permissions" => {
+                list.len() == 2
+                    && !bound.contains("yinz-command")
+                    && !self.mutated.contains("yinz-command")
+                    && matches!(
+                        literal(&list[1], bound, &self.mutated, false),
+                        Some(Value::Array(permissions))
+                            if permissions.iter().any(|permission| permission == "PluginData")
+                    )
+            },
+            "yinz-then" | "yinz-catch" => {
+                list.len() == 3 && self.waits_for_plugin_data(&list[1], bound)
+            },
+            "begin" => {
+                let mut scope = bound.clone();
+                bindings(&list[1..], &mut scope);
+                list[1..]
+                    .last()
+                    .is_some_and(|expression| self.waits_for_plugin_data(expression, &scope))
+            },
+            _ => false,
         }
     }
 }
