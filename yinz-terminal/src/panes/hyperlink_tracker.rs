@@ -2,6 +2,7 @@ use crate::panes::grid::Row;
 use crate::panes::link_handler::LinkHandler;
 use crate::panes::terminal_character::{Cursor, LinkAnchor};
 use std::collections::VecDeque;
+use std::ops::RangeInclusive;
 
 // Bound automatic detection work and storage; explicit OSC 8 links bypass this heuristic.
 const MAX_DETECTED_URL_BYTES: usize = 8 * 1024;
@@ -26,6 +27,42 @@ impl HyperlinkPosition {
             x: cursor.x as isize,
             y: cursor.y as isize,
         }
+    }
+
+    fn row_and_character_index(
+        &self,
+        width: usize,
+        viewport: &VecDeque<Row>,
+        lines_above: &VecDeque<Row>,
+    ) -> Option<(usize, usize)> {
+        let x = self.x.max(0) as usize;
+        if self.y >= 0 {
+            let y = self.y as usize;
+            let row = viewport.get(y)?;
+            return Some((lines_above.len() + y, row.absolute_character_index(x)));
+        }
+
+        let mut rows_above = self.y.unsigned_abs();
+        for (index, row) in lines_above.iter().enumerate().rev() {
+            // Match Row::split_to_rows_of_length: a wide glyph can leave a short wrap.
+            let mut wrap_starts = vec![0];
+            let mut column = 0;
+            let mut wrap_width = 0;
+            for character in &row.columns {
+                if wrap_width + character.width() > width {
+                    wrap_starts.push(column);
+                    wrap_width = 0;
+                }
+                column += character.width();
+                wrap_width += character.width();
+            }
+            if rows_above <= wrap_starts.len() {
+                let column = wrap_starts[wrap_starts.len() - rows_above] + x;
+                return Some((index, row.absolute_character_index(column)));
+            }
+            rows_above -= wrap_starts.len();
+        }
+        None
     }
 }
 
@@ -52,22 +89,19 @@ impl HyperlinkTracker {
         &mut self,
         ch: char,
         cursor: &Cursor,
+        width: usize,
         viewport: &mut VecDeque<Row>,
         lines_above: &mut VecDeque<Row>,
         link_handler: &mut LinkHandler,
-    ) {
-        if ch == ' ' && cursor.x == 0 {
-            // skip carriage return
-            return;
-        }
-
+    ) -> Option<RangeInclusive<usize>> {
+        let mut affected_rows = None;
         let current_pos = HyperlinkPosition::from_cursor(cursor);
 
         // Check if cursor moved non-contiguously
         if self.should_reset_due_to_cursor_jump(&current_pos) {
             if self.is_currently_tracking() {
                 // Finalize the current URL before resetting
-                self.finalize_and_apply(viewport, lines_above, link_handler);
+                affected_rows = self.finalize_and_apply(width, viewport, lines_above, link_handler);
             } else {
                 self.clear();
             }
@@ -75,7 +109,7 @@ impl HyperlinkTracker {
 
         if self.is_currently_tracking() {
             if self.is_url_terminator(ch) {
-                self.finalize_and_apply(viewport, lines_above, link_handler);
+                affected_rows = self.finalize_and_apply(width, viewport, lines_above, link_handler);
             } else {
                 self.buffer.push(ch);
                 self.cursor_positions.push(current_pos);
@@ -96,6 +130,7 @@ impl HyperlinkTracker {
         }
 
         self.last_cursor = Some(current_pos);
+        affected_rows
     }
 
     pub fn offset_cursor_lines_in_range(&mut self, top: isize, bottom: isize, offset: isize) {
@@ -179,10 +214,12 @@ impl HyperlinkTracker {
 
     fn finalize_and_apply(
         &mut self,
+        width: usize,
         viewport: &mut VecDeque<Row>,
         lines_above: &mut VecDeque<Row>,
         link_handler: &mut LinkHandler,
-    ) {
+    ) -> Option<RangeInclusive<usize>> {
+        let mut affected_rows = None;
         let original_len = self.buffer.chars().count();
         let trimmed_url = self.trim_trailing_punctuation(&self.buffer);
         let trimmed_len = trimmed_url.chars().count();
@@ -200,7 +237,8 @@ impl HyperlinkTracker {
                 self.cursor_positions.last()
             };
             let Some(end_position) = end_position.copied() else {
-                return;
+                self.clear();
+                return None;
             };
 
             let detected_link = DetectedLink {
@@ -209,73 +247,71 @@ impl HyperlinkTracker {
                 end_position,
             };
 
-            self.apply_hyperlink_to_grid(&detected_link, viewport, lines_above, link_handler);
+            affected_rows = self.apply_hyperlink_to_grid(
+                &detected_link,
+                width,
+                viewport,
+                lines_above,
+                link_handler,
+            );
         }
 
         self.clear();
+        affected_rows
     }
 
     fn apply_hyperlink_to_grid(
         &self,
         link: &DetectedLink,
+        width: usize,
         viewport: &mut VecDeque<Row>,
         lines_above: &mut VecDeque<Row>,
         link_handler: &mut LinkHandler,
-    ) {
+    ) -> Option<RangeInclusive<usize>> {
+        let (start_row, start_character) =
+            match link
+                .start_position
+                .row_and_character_index(width, viewport, lines_above)
+            {
+                Some(position) => position,
+                None if link.start_position.y < 0 => (0, 0), // The beginning was evicted.
+                None => return None,
+            };
+        let (end_row, last_character) =
+            link.end_position
+                .row_and_character_index(width, viewport, lines_above)?;
+        let scrollback_rows = lines_above.len();
         let link_anchor_start = link_handler.new_link_from_url(link.url.clone());
 
-        let start_pos = &link.start_position;
-        let end_pos = &link.end_position;
-
-        for y in start_pos.y..=end_pos.y {
-            let row = if y < 0 {
-                // Row is in lines_above
-                let lines_above_index = (lines_above.len() as isize + y) as usize;
-                lines_above.get_mut(lines_above_index)
-            } else if (y as usize) < viewport.len() {
-                // Row is in viewport
-                viewport.get_mut(y as usize)
+        for (y, row) in lines_above
+            .iter_mut()
+            .chain(viewport.iter_mut())
+            .enumerate()
+            .take(end_row + 1)
+            .skip(start_row)
+        {
+            let start = if y == start_row { start_character } else { 0 };
+            // Advance by one glyph, not one display column, for the exclusive endpoint.
+            let end = if y == end_row {
+                (last_character + 1).min(row.columns.len())
             } else {
-                // Row is beyond bounds, skip
-                None
+                row.columns.len()
             };
-
-            if let Some(row) = row {
-                let start_x = if y == start_pos.y {
-                    start_pos.x.max(0) as usize
-                } else {
-                    0
-                };
-                let end_x = if y == end_pos.y {
-                    (end_pos.x + 1).max(0) as usize
-                } else {
-                    row.width()
-                };
-
-                // Convert width-based positions to character indices
-                let start_char_index = row.absolute_character_index(start_x);
-                let end_char_index = row.absolute_character_index(end_x.min(row.width()));
-
-                for char_index in
-                    start_char_index..=end_char_index.min(row.columns.len().saturating_sub(1))
-                {
-                    if let Some(character) = row.columns.get_mut(char_index) {
-                        character.styles.update(|styles| {
-                            if y == start_pos.y && char_index == start_char_index {
-                                // First character gets the start anchor
-                                styles.link_anchor = Some(link_anchor_start);
-                            } else if y == end_pos.y && char_index == end_char_index {
-                                // Last character gets the end anchor
-                                styles.link_anchor = Some(LinkAnchor::End);
-                            } else {
-                                // Middle characters get the same start anchor
-                                styles.link_anchor = Some(link_anchor_start);
-                            }
-                        });
-                    }
-                }
+            for character in row.columns.iter_mut().take(end).skip(start) {
+                character
+                    .styles
+                    .update(|styles| styles.link_anchor = Some(link_anchor_start));
+            }
+            if y == end_row
+                && let Some(character) = row.columns.get_mut(end)
+                && !matches!(character.styles.link_anchor, Some(LinkAnchor::Start(_)))
+            {
+                character
+                    .styles
+                    .update(|styles| styles.link_anchor = Some(LinkAnchor::End));
             }
         }
+        Some(start_row.saturating_sub(scrollback_rows)..=end_row.checked_sub(scrollback_rows)?)
     }
 
     fn trim_trailing_punctuation(&self, url: &str) -> String {
@@ -382,6 +418,7 @@ mod tests {
                 tracker.update(
                     ch,
                     &create_test_cursor(index % 80, 3),
+                    80,
                     &mut viewport,
                     &mut lines_above,
                     &mut link_handler,
@@ -398,6 +435,7 @@ mod tests {
                 tracker.update(
                     ch,
                     &create_test_cursor(x, 0),
+                    80,
                     &mut viewport,
                     &mut lines_above,
                     &mut link_handler,
@@ -424,6 +462,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -434,6 +473,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -491,6 +531,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -501,6 +542,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -558,6 +600,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -568,6 +611,7 @@ mod tests {
         tracker.update(
             '\n',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -602,6 +646,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -612,6 +657,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -647,6 +693,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -657,6 +704,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -705,6 +753,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -715,6 +764,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -746,6 +796,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -758,6 +809,7 @@ mod tests {
         tracker.update(
             'h',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -778,6 +830,7 @@ mod tests {
         tracker.update(
             'h',
             &cursor1,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -787,6 +840,7 @@ mod tests {
         tracker.update(
             't',
             &cursor2,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -808,6 +862,7 @@ mod tests {
         tracker.update(
             'h',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -839,6 +894,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -850,6 +906,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -860,6 +917,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -942,6 +1000,7 @@ mod tests {
                 tracker.update(
                     ch,
                     &cursor,
+                    80,
                     &mut viewport,
                     &mut lines_above,
                     &mut link_handler,
@@ -952,6 +1011,7 @@ mod tests {
             tracker.update(
                 *terminator,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -973,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_carriage_return_at_line_start() {
+    fn test_space_at_line_start_does_not_start_tracking() {
         let mut tracker = HyperlinkTracker::new();
         let mut viewport = create_test_viewport(10, 80);
         let mut lines_above = VecDeque::new();
@@ -983,6 +1043,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -1108,6 +1169,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -1118,6 +1180,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -1128,6 +1191,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -1138,6 +1202,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -1214,6 +1279,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -1226,6 +1292,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -1261,6 +1328,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -1270,6 +1338,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -1283,6 +1352,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -1292,6 +1362,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -1342,6 +1413,7 @@ mod tests {
             tracker.update(
                 ch,
                 &cursor,
+                80,
                 &mut viewport,
                 &mut lines_above,
                 &mut link_handler,
@@ -1352,6 +1424,7 @@ mod tests {
         tracker.update(
             ' ',
             &cursor,
+            80,
             &mut viewport,
             &mut lines_above,
             &mut link_handler,
@@ -1403,14 +1476,14 @@ mod tests {
                                 "All characters should have the same link ID"
                             ),
                         },
-                        LinkAnchor::End => {
-                            if i != url.len().saturating_sub(1) {
-                                panic!("Only the last character should have End anchor");
-                            }
-                        },
+                        LinkAnchor::End => panic!("URL glyphs must retain the start anchor"),
                     }
                 }
             }
         }
+        assert_eq!(
+            row.columns[url.len()].styles.link_anchor,
+            Some(LinkAnchor::End)
+        );
     }
 }
