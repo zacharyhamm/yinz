@@ -469,9 +469,12 @@ fn original_termios_survives_startup_raw_mode_and_cloning() {
         assert!(!raw.input_flags.contains(InputFlags::ICRNL));
         assert!(raw.local_flags.contains(LocalFlags::ISIG));
         let cloned = client.clone();
-        let command =
-            crate::server_command(Path::new("test.sock"), false, Some(&cloned.orig_termios))
-                .unwrap();
+        let command = crate::server_command(
+            Path::new("test.sock"),
+            false,
+            Some(&cloned.original_termios()),
+        )
+        .unwrap();
         let args: Vec<_> = command.get_args().collect();
         let json = args[args
             .iter()
@@ -584,4 +587,17 @@ fn cli_client_os_input_can_be_constructed() {
     let size = os_input.get_terminal_size();
     assert!(size.rows > 0, "rows should be positive");
     assert!(size.cols > 0, "cols should be positive");
+}
+
+#[test]
+fn same_name_handoff_invalidates_old_readers_and_preserves_buffered_input() {
+    let mut current = get_client_os_input().unwrap();
+    current.update_session_name(SessionName::new("same"));
+    let mut old = current.clone();
+    current.update_session_name(SessionName::new("same"));
+    assert!(!old.is_current_connection());
+    assert!(current.is_current_connection());
+    *current.reading_from_stdin.lock().unwrap() = Some(b"next session".to_vec());
+    assert!(old.read_from_stdin().is_err());
+    assert_eq!(current.read_from_stdin().unwrap(), b"next session");
 }

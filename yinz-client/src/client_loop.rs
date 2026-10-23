@@ -35,9 +35,11 @@ pub struct ClientOutcome {
     /// Set when the client should reconnect to a different session rather
     /// than exiting.
     pub reconnect_to_session: Option<SessionConnection>,
+    pub(crate) prepared_connection: Option<crate::session_switch::PreparedConnection>,
 }
 
-pub(crate) struct ClientLoop<'a> {
+pub(crate) struct ClientLoop<'a, 'config> {
+    pub sessions: &'a mut crate::session_switch::Sessions<'config>,
     pub remote_host: Option<&'a str>,
     pub os_input: &'a dyn ClientOsApi,
     pub command_is_executing: &'a mut CommandIsExecuting,
@@ -58,7 +60,7 @@ pub(crate) struct ClientLoop<'a> {
     pub splash_deadline: Option<Instant>,
 }
 
-impl ClientLoop<'_> {
+impl ClientLoop<'_, '_> {
     /// Run until the server tells us to exit or to switch sessions.
     pub fn run(
         mut self,
@@ -71,6 +73,7 @@ impl ClientLoop<'_> {
             exit_msg: String::new(),
             exit_status: 0,
             reconnect_to_session: None,
+            prepared_connection: None,
         };
         let started_at = Instant::now();
         let mut waiting_for_first_render = true;
@@ -201,6 +204,33 @@ impl ClientLoop<'_> {
                 outcome.exit_msg = reason.to_string();
                 return true;
             },
+            ClientInstruction::SessionRequest(request) => {
+                use yinz_types::session_destination::{
+                    ClientReply, ClientRequest, Reply, SwitchRequest,
+                };
+                let (result, prepared) =
+                    if let ClientRequest::Switch(SwitchRequest::Commit(id)) = &request.request {
+                        match self.sessions.commit(id) {
+                            Ok(prepared) => (Ok(ClientReply::Complete), Some(prepared)),
+                            Err(error) => (Err(error), None),
+                        }
+                    } else {
+                        self.sessions.handle(request.request, self.os_input)
+                    };
+                if !request.token.is_empty() {
+                    self.os_input
+                        .send_to_server(ClientToServerMsg::SessionReply(Reply {
+                            token: request.token,
+                            result: result.map_err(|error| format!("{error:#}")),
+                        }));
+                }
+                if let Some(prepared) = prepared {
+                    outcome.prepared_connection = Some(prepared);
+                    self.os_input
+                        .send_to_server(ClientToServerMsg::ClientExited);
+                    return true;
+                }
+            },
             ClientInstruction::SwitchSession(connect_to_session) => {
                 outcome.reconnect_to_session = Some(connect_to_session);
                 self.os_input
@@ -292,17 +322,20 @@ impl ClientLoop<'_> {
                     .context("updating mouse mode")
                     .non_fatal();
             },
+            ClientInstruction::RenamedSession(name) => {
+                self.sessions.rename(name.into_string());
+            },
             ClientInstruction::Connected
             | ClientInstruction::UnblockCliPipeInput(..)
             | ClientInstruction::CliPipeOutput(..)
-            | ClientInstruction::RenamedSession(..)
             | ClientInstruction::ConfigFileUpdated => {},
         }
         false
     }
 
     /// Restore the terminal, report `message`, and exit non-zero.
-    fn fail(&self, message: String) -> ! {
+    fn fail(&mut self, message: String) -> ! {
+        self.sessions.shutdown();
         self.teardown.tear_down(self.os_input, message, 1)
     }
 

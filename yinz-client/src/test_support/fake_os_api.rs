@@ -286,6 +286,9 @@ impl SignalSource for FakeClientOsApi {
 }
 
 impl ClientOsApi for FakeClientOsApi {
+    fn original_termios(&self) -> Option<yinz_runtime::termios::WireTermios> {
+        None
+    }
     fn should_install_panic_hook(&self) -> bool {
         false
     }

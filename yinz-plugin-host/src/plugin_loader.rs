@@ -372,6 +372,7 @@ impl PluginLoader {
             cancel: self.cancel.clone(),
             cancel_tripped: Arc::new(AtomicBool::new(false)),
             generation: None,
+            session_preparations: Default::default(),
             workers: None,
             client_id: self.client_id,
             owner_client_id: self.client_id,

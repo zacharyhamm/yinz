@@ -60,7 +60,11 @@
     ((equal? kind "actions")
      (hash "type" "actions" "title" title "initialQuery" (%palette-get view "initialQuery" "")
            "actions" (%palette-wire-actions (%palette-get view "actions" '()) scope client)
-           "source" (if (%palette-get view "source" #f) (%palette-remember (hash-ref view "source") scope client) 'json-null)))
+           "source" (if (%palette-get view "source" #f)
+             (let ((id (%palette-remember (hash-ref view "source") scope client)))
+               (when (%palette-get view "onClose" #f)
+                 (set! %palette-handles (hash-insert %palette-handles id
+                   (hash-insert (hash-insert (hash-ref %palette-handles id) "onRelease" (hash-ref view "onClose")) "origin" %async-client)))) id) 'json-null)))
     (else
      (define fields (map %palette-wire-field (hash-ref view "fields")))
      (define browse-actions
@@ -124,9 +128,19 @@
                 (%palette-host "Pick" (hash "Cancel" (hash "request_id" id "timeout" #f)))))
             (hash-keys->list %palette-picks)))
 
+(define (%palette-release-handle id)
+  (define entry (%palette-get %palette-handles id #f))
+  (when entry
+    (set! %palette-handles (hash-remove %palette-handles id))
+    (define cleanup (%palette-get entry "onRelease" #f))
+    (when cleanup
+      (%async-with-client (%palette-get entry "origin" #f)
+        (lambda ()
+          (with-handler (lambda (failure) (yinz-log (%async-error failure))) (cleanup)))))))
+
 (define (%palette-forget predicate)
   (for-each (lambda (id)
-              (when (predicate (hash-ref %palette-handles id)) (set! %palette-handles (hash-remove %palette-handles id))))
+              (when (predicate (hash-ref %palette-handles id)) (%palette-release-handle id)))
             (hash-keys->list %palette-handles))
   (%palette-cancel-picks predicate))
 
@@ -206,7 +220,7 @@
     ((equal? kind "release")
      (for-each (lambda (id)
                  (when (equal? (%palette-get (%palette-get %palette-handles id #f) "client" #f) client)
-                   (set! %palette-handles (hash-remove %palette-handles id))))
+                   (%palette-release-handle id)))
                (hash-ref message "handles")))
     ((equal? kind "cancel")
      (define scope (hash-ref message "scope"))
@@ -288,7 +302,7 @@
 (define (yinz-palette-update event)
   (when (equal? event "BeforeClose")
     (%palette-cancel-tasks (lambda (task) #t) #f)
-    (%palette-cancel-picks (lambda (entry) #t))
+    (%palette-forget (lambda (entry) #t))
     (for-each (lambda (provider) ((hash-ref provider "release"))) (hash-values->list %palette-providers))
     (set! %palette-handles (hash))
     (set! %palette-providers (hash)))

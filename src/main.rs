@@ -131,11 +131,22 @@ fn main() {
         client_version,
         contract_version,
         create,
+        configuration_options,
+        client_termios,
+        terminal_window_size,
         session_name,
     }) = &opts.command
     {
-        let result =
-            remote_session::bootstrap(session_name, *create, client_version, *contract_version);
+        let result = remote_session::bootstrap(
+            session_name,
+            *create,
+            client_version,
+            *contract_version,
+            configuration_options.as_deref(),
+            client_termios.as_deref(),
+            terminal_window_size.as_deref(),
+            &opts,
+        );
         if let Err(error) = result {
             eprintln!("Error: {error:#}");
             std::process::exit(1);

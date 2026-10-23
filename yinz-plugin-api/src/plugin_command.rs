@@ -1858,6 +1858,20 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 None => Ok(PluginCommand::GetDisconnectTargets),
                 Some(_) => Err("GetDisconnectTargets should have no payload"),
             },
+            Some(CommandName::GetSessionInventory) => match protobuf_plugin_command.payload {
+                Some(Payload::GetSessionInventoryPayload(id)) => {
+                    Ok(PluginCommand::GetSessionInventory(id))
+                },
+                _ => Err("Mismatched payload for GetSessionInventory"),
+            },
+            Some(CommandName::SwitchSessionDestination) => match protobuf_plugin_command.payload {
+                Some(Payload::SwitchSessionDestinationPayload(json)) => {
+                    Ok(PluginCommand::SwitchSessionDestination(
+                        serde_json::from_str(&json).map_err(|_| "Invalid session destination")?,
+                    ))
+                },
+                _ => Err("Mismatched payload for SwitchSessionDestination"),
+            },
             Some(CommandName::GetSessionList) => match protobuf_plugin_command.payload {
                 Some(Payload::GetSessionListPayload(_)) => Ok(PluginCommand::GetSessionList),
                 None => Ok(PluginCommand::GetSessionList),
@@ -4505,6 +4519,16 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::GetDisconnectTargets => Ok(ProtobufPluginCommand {
                 name: CommandName::GetDisconnectTargets as i32,
                 payload: None,
+            }),
+            PluginCommand::GetSessionInventory(id) => Ok(ProtobufPluginCommand {
+                name: CommandName::GetSessionInventory as i32,
+                payload: Some(Payload::GetSessionInventoryPayload(id)),
+            }),
+            PluginCommand::SwitchSessionDestination(request) => Ok(ProtobufPluginCommand {
+                name: CommandName::SwitchSessionDestination as i32,
+                payload: Some(Payload::SwitchSessionDestinationPayload(
+                    serde_json::to_string(&request).map_err(|_| "Invalid session destination")?,
+                )),
             }),
             PluginCommand::GetSessionList => Ok(ProtobufPluginCommand {
                 name: CommandName::GetSessionList as i32,
@@ -8194,6 +8218,8 @@ mod tests {
                 | PluginCommand::SetPaneRegexHighlights(..)
                 | PluginCommand::ClearPaneHighlights(_)
                 | PluginCommand::OpenPluginPaneFloating { .. }
+                | PluginCommand::GetSessionInventory(_)
+                | PluginCommand::SwitchSessionDestination(_)
                 | PluginCommand::GetSessionList
                 | PluginCommand::GetDisconnectTargets
                 | PluginCommand::KillSessionsAndReply(_)

@@ -793,6 +793,8 @@ pub struct PluginEnv {
     pub cancel_tripped: Arc<AtomicBool>,
     /// Identifies the runtime instance that emitted a failure, including host ReportPanic.
     pub generation: Option<u64>,
+    /// Preparations owned by this generation, retaining the original acting client.
+    pub(crate) session_preparations: HashSet<(ClientId, String)>,
     /// Named workers share the owning instance's permissions and lifetime.
     pub(crate) workers: Option<Arc<crate::background_worker::Workers>>,
     pub plugin_config: PluginConfig,

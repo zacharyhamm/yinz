@@ -1,4 +1,6 @@
 use super::*;
+use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
 fn startup_cancellation_unregisters_handlers_on_scope_exit() {

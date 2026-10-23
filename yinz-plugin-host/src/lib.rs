@@ -2591,3 +2591,5 @@ mod plugin_tests;
 
 #[cfg(test)]
 mod test_env;
+
+mod session_destinations;

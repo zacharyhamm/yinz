@@ -54,6 +54,50 @@ fn start_client_returns_reconnection_without_restoring_the_terminal() {
     );
 }
 
+#[test]
+fn legacy_reconnect_retains_options_when_configuration_on_disk_is_invalid() {
+    if yinz_test_support::reexec_test() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.kdl");
+    std::fs::write(&config_path, "scroll_buffer_size 1000\nmouse_mode false\n").unwrap();
+    let args = yinz_cli::args::CliArgs {
+        config: Some(config_path.clone()),
+        config_dir: Some(dir.path().into()),
+        ..Default::default()
+    };
+    let (config, mut options) = yinz_cli::setup::Setup::config_without_layout(&args).unwrap();
+    options.scroll_buffer_size = Some(42);
+    std::fs::write(&config_path, "{").unwrap();
+    let os = FakeClientOsApi::new().capturing_stdout();
+    os.queue_from_server(ServerToClientMsg::Render {
+        content: "retained config attached".into(),
+    });
+    os.queue_from_server(ServerToClientMsg::Exit {
+        exit_reason: ExitReason::Normal,
+    });
+    let outcome = start_client(
+        Box::new(os.clone()),
+        args,
+        config,
+        options.clone(),
+        ClientInfo::Attach("legacy-reconnect".into(), options.clone()),
+        None,
+        None,
+        true,
+        false,
+    );
+    assert_eq!(outcome.exit_status, 0, "{}", outcome.exit_msg);
+    assert!(os.sent_messages().iter().any(|msg| matches!(msg,
+        ClientToServerMsg::AttachClient { cli_assets, .. }
+        if cli_assets.configuration_options.as_ref() == Some(&options)
+    )));
+    assert!(String::from_utf8(os.stdout_bytes())
+        .unwrap()
+        .contains("retained config attached"));
+}
+
 fn check_outcome(error: Option<ErrorKind>, reconnect: Option<SessionConnection>) {
     let mut os_input = FakeClientOsApi::new().capturing_stdout();
     if let Some(error) = error {
@@ -173,6 +217,9 @@ fn interactive_startup_respects_splash_option_and_detached_startup_stays_quiet()
 
 #[test]
 fn remote_attach_sends_only_terminal_assets_and_restores_before_switching() {
+    let local_config = tempfile::tempdir().unwrap();
+    let config_path = local_config.path().join("config.kdl");
+    std::fs::write(&config_path, "").unwrap();
     let os = FakeClientOsApi::new().capturing_stdout();
     os.queue_from_server(ServerToClientMsg::SwitchSession {
         connect_to_session: SessionConnection {
@@ -184,8 +231,8 @@ fn remote_attach_sends_only_terminal_assets_and_restores_before_switching() {
         exit_reason: ExitReason::Normal,
     });
     let opts = yinz_cli::args::CliArgs {
-        config: Some("/local/config.kdl".into()),
-        config_dir: Some("/local/config".into()),
+        config: Some(config_path),
+        config_dir: Some(local_config.path().into()),
         data_dir: Some("/local/data".into()),
         layout: Some("/local/layout.kdl".into()),
         ..Default::default()
@@ -302,4 +349,54 @@ fn remote_hosts_are_remembered_only_after_a_successful_render() {
         yinz_runtime::remote_hosts::load(&yinz_runtime::consts::YINZ_CACHE_DIR).unwrap(),
         ["user@alias"]
     );
+}
+
+#[test]
+fn refused_destination_keeps_rendering_the_source_until_it_exits() {
+    use yinz_types::session_destination::*;
+    let os = FakeClientOsApi::new().capturing_stdout();
+    os.queue_from_server(ServerToClientMsg::SessionRequest(Request {
+        token: "refused".into(),
+        request: ClientRequest::Switch(SwitchRequest::Prepare {
+            id: "switch".into(),
+            target: SwitchTarget {
+                destination: Destination::Remote("-invalid-host".into()),
+                name: "same".into(),
+                saved: false,
+            },
+        }),
+    }));
+    os.queue_from_server(ServerToClientMsg::Render {
+        content: "SOURCE STILL USABLE".into(),
+    });
+    os.queue_from_server(ServerToClientMsg::Exit {
+        exit_reason: ExitReason::Normal,
+    });
+    let outcome = start_client(
+        Box::new(os.clone()),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        ClientInfo::Attach("source".into(), Default::default()),
+        None,
+        None,
+        true,
+        false,
+    );
+    assert_eq!(outcome.exit_status, 0);
+    assert!(outcome.reconnect_to_session.is_none());
+    assert!(String::from_utf8(os.stdout_bytes())
+        .unwrap()
+        .contains("SOURCE STILL USABLE"));
+    let sent = os.sent_messages();
+    let refusal = sent.iter().position(|message| matches!(message, ClientToServerMsg::SessionReply(Reply { token, result: Err(_) }) if token == "refused")).unwrap();
+    let exits = sent
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| {
+            matches!(message, ClientToServerMsg::ClientExited).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(exits.len(), 1);
+    assert!(exits[0] > refusal);
 }

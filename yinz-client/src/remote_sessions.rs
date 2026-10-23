@@ -1,0 +1,315 @@
+//! SSH discovery and forwarding shared by startup and the attached session picker.
+use interprocess::local_socket::prelude::*;
+use serde::{Deserialize, Serialize};
+use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+use yinz_process::ssh::{self, HostForward, SshOptions};
+use yinz_runtime::{
+    consts::{CLIENT_SERVER_CONTRACT_VERSION, VERSION, YINZ_SOCK_DIR},
+    errors::prelude::*,
+};
+use yinz_session::sessions::validate_session_name;
+use yinz_types::internal_ids::SessionName;
+pub struct StartupCancellation {
+    pub cancelled: Arc<AtomicBool>,
+    handlers: Vec<signal_hook::SigId>,
+}
+
+impl StartupCancellation {
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn new() -> Result<Self> {
+        let mut guard = Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            handlers: Vec::new(),
+        };
+        for signal in [SIGINT, SIGTERM, SIGQUIT, SIGHUP] {
+            guard.handlers.push(
+                signal_hook::flag::register(signal, guard.cancelled.clone())
+                    .context("register remote startup cancellation")?,
+            );
+        }
+        Ok(guard)
+    }
+}
+
+impl Drop for StartupCancellation {
+    fn drop(&mut self) {
+        for handler in self.handlers.drain(..) {
+            signal_hook::low_level::unregister(handler);
+        }
+    }
+}
+
+const ENDPOINT_LIMIT: usize = 8192;
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Endpoint {
+    pub session_name: String,
+    pub socket: PathBuf,
+    pub yinz_version: String,
+    pub contract_version: usize,
+}
+
+pub fn check_versions(version: &str, contract: usize) -> Result<()> {
+    anyhow::ensure!(version == VERSION && contract == CLIENT_SERVER_CONTRACT_VERSION,
+        "Yinz compatibility mismatch: this machine has Yinz {VERSION}, client/server contract {CLIENT_SERVER_CONTRACT_VERSION}; peer has Yinz {version}, client/server contract {contract}. Install matching Yinz versions on both machines.");
+    Ok(())
+}
+
+pub fn validate_name(name: &str) -> Result<()> {
+    validate_session_name(name).map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        !name.chars().any(char::is_control),
+        "session name contains control characters"
+    );
+    Ok(())
+}
+
+pub fn parse_endpoint(bytes: &[u8], name: &str) -> Result<Endpoint> {
+    anyhow::ensure!(
+        bytes.len() <= ENDPOINT_LIMIT,
+        "remote endpoint response exceeds {ENDPOINT_LIMIT} bytes"
+    );
+    let endpoint: Endpoint = serde_json::from_slice(bytes).context(
+        "invalid remote endpoint response; the SSH command must print only Yinz's JSON response",
+    )?;
+    check_versions(&endpoint.yinz_version, endpoint.contract_version)?;
+    anyhow::ensure!(
+        endpoint.session_name == name,
+        "remote endpoint returned a different session name"
+    );
+    let socket = endpoint
+        .socket
+        .to_str()
+        .context("remote socket path is not UTF-8")?;
+    anyhow::ensure!(
+        endpoint.socket.is_absolute() && !socket.chars().any(char::is_control),
+        "invalid remote socket path"
+    );
+    Ok(endpoint)
+}
+
+pub fn probe(socket: &Path) -> Result<()> {
+    let stream = yinz_ipc::consts::ipc_connect(socket).context("connect to session socket")?;
+    stream
+        .set_recv_timeout(Some(Duration::from_secs(5)))
+        .context("bound session probe reply")?;
+    stream
+        .set_send_timeout(Some(Duration::from_secs(5)))
+        .context("bound session probe request")?;
+    let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(stream);
+    let mut receiver = sender
+        .get_receiver::<ServerToClientMsg>()
+        .context("read session probe")?;
+    sender
+        .send_client_msg(ClientToServerMsg::ConnStatus)
+        .context("send session probe")?;
+    anyhow::ensure!(matches!(receiver.recv_server_msg(), IpcRecv::Msg(ServerToClientMsg::Connected { .. }, _)), "session did not answer through the socket; check SSH Unix-socket forwarding permissions and server responsiveness");
+    Ok(())
+}
+
+pub fn connect(
+    host: &str,
+    name: &str,
+    create: bool,
+    cancelled: &AtomicBool,
+) -> Result<HostForward> {
+    ssh::validate_ssh_host(host)?;
+    validate_name(name)?;
+    let mut args = vec![
+        "yinz".to_owned(),
+        "remote-session".to_owned(),
+        "--client-version".to_owned(),
+        VERSION.to_owned(),
+        "--contract-version".to_owned(),
+        CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+    ];
+    if create {
+        args.push("--create".to_owned());
+    }
+    args.extend(["--".to_owned(), name.to_owned()]);
+    let remote_command = args
+        .iter()
+        .map(|s| ssh::shell_argument(s))
+        .collect::<Result<Vec<_>>>()?
+        .join(" ");
+    let options = SshOptions::default();
+    let output = ssh::bootstrap_output(
+        Command::new("ssh")
+            .args(ssh::ssh_forward_args(&options))
+            .args(["-T", "--", host, &remote_command]),
+        Duration::from_secs(60),
+        Some(cancelled),
+    )
+    .with_context(|| format!("run remote session bootstrap on {host}"))?;
+    anyhow::ensure!(output.status.success(), "SSH bootstrap on {host} failed ({}). Check key/agent authentication and that compatible Yinz is on the remote PATH: {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
+    let endpoint = parse_endpoint(&output.stdout, name)
+        .with_context(|| format!("read endpoint from {host}"))?;
+    let socket = client_socket(&YINZ_SOCK_DIR)?;
+    let mut forward = HostForward::start(
+        host,
+        &options,
+        &socket,
+        endpoint
+            .socket
+            .to_str()
+            .context("remote socket is not UTF-8")?,
+        Some(cancelled),
+    )?;
+    ssh::check_cancelled(Some(cancelled))?;
+    let probed = probe(forward.socket());
+    ssh::check_cancelled(Some(cancelled))?;
+    if let Err(error) = probed {
+        bail!(
+            "remote session {name:?} on {host} is unreachable through SSH: {error:#}. {}",
+            forward.diagnostics()?
+        );
+    }
+    Ok(forward)
+}
+
+pub fn client_socket(session_directory: &Path) -> Result<PathBuf> {
+    let directory = session_directory
+        .parent()
+        .context("session socket directory has no parent")?
+        .join("client");
+    yinz_runtime::shared::ensure_secure_dir(&directory)?;
+    let directory = directory
+        .canonicalize()
+        .context("resolve client tunnel directory")?;
+    Ok(directory.join(format!(
+        "{}.sock",
+        &uuid::Uuid::new_v4().simple().to_string()[..24]
+    )))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SessionList {
+    pub yinz_version: String,
+    pub contract_version: usize,
+    sessions: Vec<(SessionName, Duration, yinz_cli::sessions::SessionListing)>,
+}
+
+pub fn discover(
+    host: &str,
+    cancelled: &AtomicBool,
+) -> Result<Vec<yinz_cli::session_picker::PickerRow>> {
+    ssh::validate_ssh_host(host)?;
+    let args = [
+        "yinz",
+        "remote-sessions",
+        "--client-version",
+        VERSION,
+        "--contract-version",
+        &CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+    ];
+    let command = args
+        .iter()
+        .map(|arg| ssh::shell_argument(arg))
+        .collect::<Result<Vec<_>>>()?
+        .join(" ");
+    let output = ssh::bootstrap_output(
+        Command::new("ssh")
+            .args(ssh::ssh_forward_args(&SshOptions::default()))
+            .args(["-T", "--", host, &command]),
+        Duration::from_secs(10),
+        Some(cancelled),
+    )
+    .with_context(|| format!("discover sessions on {host}"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "SSH discovery failed ({})",
+        output.status
+    );
+    parse_sessions(host, &output.stdout)
+}
+
+pub fn parse_sessions(
+    host: &str,
+    bytes: &[u8],
+) -> Result<Vec<yinz_cli::session_picker::PickerRow>> {
+    use yinz_cli::session_picker::{Destination, PickerRow};
+    let response: SessionList = serde_json::from_slice(bytes).context("decode remote sessions")?;
+    check_versions(&response.yinz_version, response.contract_version)?;
+    response
+        .sessions
+        .into_iter()
+        .filter(|(_, _, listing)| *listing != yinz_cli::sessions::SessionListing::Exited)
+        .map(|(name, age, listing)| {
+            validate_name(name.as_str())?;
+            Ok(PickerRow {
+                label: format!("{host} / {name}"),
+                destination: Some(Destination::Remote {
+                    host: host.to_owned(),
+                    name,
+                }),
+                age,
+                listing,
+                current: false,
+                status: None,
+            })
+        })
+        .collect()
+}
+
+// Fatal terminal exits skip destructors, so keep weak references to every owned tunnel.
+type ForwardSlot = std::sync::Arc<std::sync::Mutex<Option<HostForward>>>;
+static FORWARDS: std::sync::Mutex<Vec<std::sync::Weak<std::sync::Mutex<Option<HostForward>>>>> =
+    std::sync::Mutex::new(Vec::new());
+static CLIENT_FORWARD: std::sync::Mutex<Option<ClientForward>> = std::sync::Mutex::new(None);
+pub(crate) struct ClientForward {
+    _forward: ForwardSlot,
+    socket: PathBuf,
+}
+impl ClientForward {
+    pub(crate) fn socket(&self) -> &Path {
+        &self.socket
+    }
+}
+extern "C" fn cleanup_forwards() {
+    for forward in FORWARDS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+    {
+        forward
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+    }
+}
+pub(crate) fn own_forward(forward: HostForward) -> ClientForward {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        unsafe { nix::libc::atexit(cleanup_forwards) };
+    });
+    let socket = forward.socket().to_owned();
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(forward)));
+    let mut forwards = FORWARDS.lock().unwrap_or_else(|error| error.into_inner());
+    forwards.retain(|forward| forward.strong_count() > 0);
+    forwards.push(std::sync::Arc::downgrade(&slot));
+    ClientForward {
+        _forward: slot,
+        socket,
+    }
+}
+pub(crate) fn set_owned_forward(forward: Option<ClientForward>) {
+    *CLIENT_FORWARD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = forward;
+}
+pub fn set_forward(forward: Option<HostForward>) {
+    set_owned_forward(forward.map(own_forward));
+}

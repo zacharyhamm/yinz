@@ -10,6 +10,7 @@ use yinz_test_support::Watched;
 #[derive(Default)]
 struct Output {
     bytes: Vec<u8>,
+    screen: String,
     status: Option<ExitStatus>,
 }
 struct Client {
@@ -47,8 +48,15 @@ impl Client {
         if args.contains(&"--create") && !args.contains(&"--remote") {
             let layout = root.path().join("local.kdl");
             std::fs::write(&layout, r#"layout { pane command="/bin/sh" { args "-c" "printf 'LOCAL_READY\\n'; exec /bin/sh"; }; }"#).unwrap();
-            std::fs::write(&config, format!("show_startup_tips false\nload_plugins clear-defaults=true\ndefault_layout {:?}\n", layout)).unwrap();
+            std::fs::write(&config, format!("show_startup_tips false\nload_plugins clear-defaults=true {{ \"session-palette\"; }}\ndefault_layout {:?}\n", layout)).unwrap();
         }
+        let builtins = root.path().join("data/yinz/plugins/builtins");
+        std::fs::create_dir_all(&builtins).unwrap();
+        std::fs::copy(
+            repo_root().join("yinz-steel-builtins/assets/plugins/session-palette.scm"),
+            builtins.join("session-palette.scm"),
+        )
+        .unwrap();
         let pty = nix::pty::openpty(
             Some(&nix::pty::Winsize {
                 ws_row: 30,
@@ -139,6 +147,31 @@ read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
         let stopping = stop.clone();
         let observed_child = child.clone();
         let reader = std::thread::spawn(move || {
+            use yinz_panes::{pane::Pane, panes::TerminalPane};
+            let mut size = yinz_types::pane_size::PaneGeom::default();
+            size.rows.set_inner(30);
+            size.cols.set_inner(100);
+            let mut terminal = TerminalPane::new(
+                yinz_types::internal_ids::TerminalId::new(0),
+                size,
+                Default::default(),
+                0,
+                String::new(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                None,
+                None,
+                false,
+                true,
+                true,
+                true,
+                false,
+                None,
+            );
             use std::os::fd::AsFd;
             let mut bytes = [0; 65536];
             while !stopping.load(Ordering::Acquire) {
@@ -150,7 +183,16 @@ read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
                 loop {
                     match read.read(&mut bytes) {
                         Ok(0) => break,
-                        Ok(n) => recorded.lock().bytes.extend_from_slice(&bytes[..n]),
+                        Ok(n) => {
+                            terminal.handle_pty_bytes(bytes[..n].to_vec());
+                            while !terminal.drain_forwarded_queries().is_empty() {
+                                let pending = terminal.drain_pending_pty_input();
+                                terminal.handle_pty_bytes(pending);
+                            }
+                            let mut output = recorded.lock();
+                            output.bytes.extend_from_slice(&bytes[..n]);
+                            output.screen = terminal.dump_screen(false, None);
+                        },
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(_) => break,
                     }
@@ -232,6 +274,48 @@ read -r hold < "$YINZ_TEST_CLIENT_HOLD""#,
             "owned SSH forward survived client exit"
         );
         String::from_utf8_lossy(&self.output.lock().bytes).into_owned()
+    }
+    fn see_screen(&self, text: &str) {
+        self.output.wait_until_described(
+            text,
+            Duration::from_secs(45),
+            |out| {
+                assert!(out.status.is_none(), "client exited: {}", out.screen);
+                out.screen.contains(text).then_some(())
+            },
+            |out| out.screen.clone(),
+        );
+    }
+    fn switch_picker(&mut self, label: &str) {
+        self.output.lock().bytes.clear();
+        self.send(b"\x1b[112;7u");
+        self.send(b"Switch session");
+        self.see_screen("› Switch session");
+        self.output.lock().bytes.clear();
+        self.send(b"\r");
+        self.see_screen("Current session");
+        self.send(label.as_bytes());
+        let selected = format!("› {label}");
+        let already_selected = self.output.wait_until_described(
+            "filtered session rows",
+            Duration::from_secs(45),
+            |out| {
+                (out.screen.contains(&format!("> {label}"))
+                    && out.screen.contains(&format!("{label} —"))
+                    && out
+                        .screen
+                        .lines()
+                        .filter(|line| line.contains(" / ") && !line.contains("│>"))
+                        .all(|line| line.contains(label)))
+                .then(|| out.screen.contains(&selected))
+            },
+            |out| out.screen.clone(),
+        );
+        if !already_selected {
+            self.send(b"\x1b[B");
+        }
+        self.see_screen(&selected);
+        self.output.lock().bytes.clear();
     }
     fn detach(&self) {
         let pid = std::fs::read_to_string(self.root.path().join("pid"))
@@ -527,4 +611,78 @@ fn remote_client_remembers_host_and_picker_discovers_and_attaches() {
     local.marker("RETURNED_LOCAL");
     local.detach();
     session.alive();
+}
+
+#[test]
+#[ignore = "requires Docker SSH fixture"]
+fn attached_palette_switches_machines_with_identical_names_and_survives_failed_handoff() {
+    let session = Session::new();
+    let mut remote = Client::start(HOST, &session.0, true);
+    remote.see(&session.0);
+    remote.marker("DESTINATION");
+    remote.detach();
+    let second = Session::new();
+    let alternate_host = format!("test@{HOST}");
+    let mut another = Client::start_args(
+        &["--remote", &alternate_host, &second.0, "--create"],
+        Some(&remote.cache),
+        None,
+    );
+    another.see(&second.0);
+    another.marker("SECOND");
+    another.detach();
+    let mut local = Client::start_args(&["--create", &session.0], Some(&remote.cache), None);
+    local.see("LOCAL_READY");
+    local.marker("SOURCE");
+    let label = format!("{HOST} / {}", session.0);
+    local.switch_picker(&label);
+    proxy_set_enabled(false);
+    local.send(b"\r");
+    local.see("SSH");
+    proxy_set_enabled(true);
+    local.send(b"\x1b[112;7u");
+    local.marker("AFTER_FAILURE");
+    local.switch_picker(&label);
+    local.send(b"\r");
+    local.see("YINZ_CLIENT_DESTINATION");
+    local.marker("ON_REMOTE");
+    // Both a same-host session change and a different remembered SSH endpoint use the coordinator.
+    local.switch_picker(&format!("{HOST} / {}", second.0));
+    local.send(b"\r");
+    local.see("YINZ_CLIENT_SECOND");
+    local.marker("SAME_HOST");
+    local.switch_picker(&format!("{alternate_host} / {}", session.0));
+    local.send(b"\r");
+    local.see("YINZ_CLIENT_ON_REMOTE");
+    local.marker("OTHER_ENDPOINT");
+    local.switch_picker(&format!("Local / {}", session.0));
+    local.send(b"\r");
+    local.see("YINZ_CLIENT_AFTER_FAILURE");
+    local.marker("BACK_LOCAL");
+    local.detach();
+    session.alive();
+}
+
+#[test]
+#[ignore = "requires Docker SSH fixture"]
+fn attached_palette_resurrects_a_saved_session_on_the_current_remote_host() {
+    let source = Session::new();
+    let saved = Session::new();
+    let mut original = Client::start(HOST, &saved.0, true);
+    original.see(&saved.0);
+    original.marker("BEFORE_SAVE");
+    saved.action(&["save-session"]);
+    original.detach();
+    remote_exec(&["yinz", "kill-session", &saved.0]);
+    let mut client = Client::start(HOST, &source.0, true);
+    client.see(&source.0);
+    client.marker("SOURCE");
+    client.switch_picker(&format!("{HOST} / {}", saved.0));
+    client.see_screen("Saved");
+    client.send(b"\r");
+    client.see_screen(&format!("({})", saved.0));
+    client.marker("RESURRECTED");
+    client.detach();
+    source.alive();
+    saved.alive();
 }

@@ -223,6 +223,12 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
             nested_reannounce.stop();
             let (input_sender, _input_receiver) = channels::unbounded();
             let outcome = ClientLoop {
+                sessions: &mut crate::session_switch::Sessions::new(
+                    None,
+                    "test".into(),
+                    &Default::default(),
+                    &mut Default::default(),
+                ),
                 remote_host: None,
                 os_input: &os_input,
                 command_is_executing: &mut CommandIsExecuting::new(),

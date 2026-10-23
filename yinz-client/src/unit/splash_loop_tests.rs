@@ -109,6 +109,12 @@ fn run(
     let nested = NestedReannounce::spawn(Box::new(FakeClientOsApi::new()), "splash-test".into());
     nested.stop();
     ClientLoop {
+        sessions: &mut crate::session_switch::Sessions::new(
+            None,
+            "test".into(),
+            &Default::default(),
+            &mut Default::default(),
+        ),
         remote_host: None,
         os_input: os,
         command_is_executing: &mut CommandIsExecuting::new(),

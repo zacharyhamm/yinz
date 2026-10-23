@@ -607,7 +607,28 @@ procedures include `"onCancel"` (register a callback and return its removal
 procedure), `"close"`, `"suspend"` (boolean argument), and `"cancelled"` (query).
 Use cancellation callbacks to release obsolete searches when the query changes.
 
+`GetSessionInventory` takes a request ID and requires `ReadApplicationState`.
+Reuse the ID while the picker is open. A new ID starts discovery on the acting
+client's machine. The reply contains `current_machine` and `entries`. Each entry
+contains `destination`, nullable `name`, `status`, `current`, and `saved`.
+Destinations are `"CurrentServer"`, `"Local"`, or `(hash "Remote" host)`.
+Only current-server entries include saved sessions. A null name identifies a
+host status row. `GetSessionList` keeps its server-local behavior.
+
+`SwitchSessionDestination` requires `ChangeApplicationState`. Send
+`(hash "Prepare" (hash "id" id "target" (hash "destination" destination
+"name" name "saved" #f)))`. Poll with `(hash "Status" id)` until the reply is
+`"Ready"`. Send `(hash "Commit" id)` to hand off, or `(hash "Cancel" id)` to stop.
+Cancellation also accepts an inventory ID. Preparation returns `"Pending"` and
+keeps the source attached. Errors leave the source attached and release the
+destination. Remote targets must be remembered hosts or the current connection.
+Use `"saved" #t` only for a saved session on `"CurrentServer"`.
+
 Return a view hash with `"type"` equal to `"text"`, `"actions"`, or `"form"`.
+Action views with a `"source"` can supply an `"onClose"` procedure. The SDK calls
+it with the original acting client when the view is released or dismissed.
+Use it to cancel inventory work that belongs to the view.
+
 Action and form views accept an optional `"description"` string. The palette
 wraps this text below the title or search field. Omit it for no description.
 Display text uses Markdown by default for native and plugin providers. This includes

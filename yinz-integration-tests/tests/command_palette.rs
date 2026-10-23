@@ -651,13 +651,15 @@ fn command_palette_switches_to_a_live_session() {
         .with_config("load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\ndisable_session_metadata false")
         .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
         .start();
-    source.expect_pty_spawn().output(PROMPT);
+    let source_pane = source.expect_pty_spawn();
+    source_pane.output(b"SOURCE_SESSION\r\n$ ");
     let mut destination = TestRunner::new(TERMINAL_SIZE)
         .skip_concurrency_slot()
         .with_config("load_plugins clear-defaults=true { \"yinz:session-palette\" { shared true; }; }\ndisable_session_metadata false")
         .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
         .start();
-    destination.expect_pty_spawn().output(PROMPT);
+    let destination_pane = destination.expect_pty_spawn();
+    destination_pane.output(b"DESTINATION_SESSION\r\n$ ");
 
     source.wait_until("source ready", |snapshot| snapshot.contains("$"));
     // Production servers each have their own process environment.
@@ -670,19 +672,25 @@ fn command_palette_switches_to_a_live_session() {
     });
     source.send_stdin(destination.session_name().as_bytes());
     source.wait_until("live session is offered", |snapshot| {
-        snapshot.contains(&format!("› {}", destination.session_name()))
+        snapshot.contains(&format!("› Local / {}", destination.session_name()))
             && snapshot.contains("Running")
             && !snapshot.contains("Loading")
     });
     source.send_stdin(&keys::ENTER);
-    let connection = source.take_session_switch();
-    assert_eq!(
-        connection.name.as_ref().map(|name| name.as_str()),
-        Some(destination.session_name())
-    );
-
+    source.wait_until("destination attached", |s| {
+        s.contains("DESTINATION_SESSION") && !s.contains("Esc Back")
+    });
+    source.send_stdin(b"destination input");
+    destination_pane.wait_for_stdin("input reached destination", |bytes| {
+        bytes == b"destination input"
+    });
+    // These in-process servers share one scanner, so the destination cannot offer a return trip.
+    yinz_session::sessions::kill_session(&yinz_types::internal_ids::SessionName::new(
+        source.session_name(),
+    ))
+    .unwrap();
     source.quit();
-    destination.quit();
+    destination.wait_for_exit();
 }
 
 #[test]
@@ -741,7 +749,7 @@ fn command_palette_detaches_only_its_client() {
 }
 
 #[test]
-fn command_palette_switches_to_an_exited_session() {
+fn command_palette_offers_saved_sessions_and_keeps_source_when_resurrection_fails() {
     use yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR;
     use yinz_runtime::session_checkpoint::write_checkpoint;
     std::fs::create_dir_all(&*YINZ_SESSION_INFO_CACHE_DIR).unwrap();
@@ -762,7 +770,8 @@ fn command_palette_switches_to_an_exited_session() {
         )
         .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
         .start();
-    source.expect_pty_spawn().output(PROMPT);
+    let pane = source.expect_pty_spawn();
+    pane.output(PROMPT);
     source.wait_until("source ready", |snapshot| snapshot.contains("$"));
     palette_query(&source, "Switch session…");
     source.wait_until("session picker ready", |s| {
@@ -770,16 +779,21 @@ fn command_palette_switches_to_an_exited_session() {
     });
     source.send_stdin(name.as_bytes());
     source.wait_until("exited session is offered", |snapshot| {
-        snapshot.contains(&format!("› {name}"))
+        snapshot.contains(&format!("› Local / {name}"))
             && snapshot.contains("Saved")
             && !snapshot.contains("Loading")
     });
     source.send_stdin(&keys::ENTER);
-    let connection = source.take_session_switch();
-    assert_eq!(
-        connection.name.as_ref().map(|name| name.as_str()),
-        Some(name)
-    );
+    // This in-process client's executable is the test runner, so it cannot bootstrap a server.
+    // Successful saved-session attachment is covered by the real SSH fixture.
+    source.wait_until("resurrection failure stays in the picker", |s| {
+        s.contains("resurrection failed")
+    });
+    source.send_stdin(DO);
+    source.send_stdin(b"still here");
+    pane.wait_for_stdin("failed resurrection preserves source input", |bytes| {
+        bytes == b"still here"
+    });
 
     source.quit();
 }

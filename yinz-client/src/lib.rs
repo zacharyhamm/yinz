@@ -93,6 +93,7 @@ pub(crate) enum ClientInstruction {
     Log(Vec<String>),
     LogError(Vec<String>),
     SwitchSession(SessionConnection),
+    SessionRequest(yinz_types::session_destination::Request),
     SetSynchronizedOutput(Option<SyncOutput>),
     UnblockCliPipeInput(()), // String -> pipe name
     CliPipeOutput((), ()),   // String -> pipe name, String -> output
@@ -120,6 +121,9 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::Connected { .. } => ClientInstruction::Connected,
             ServerToClientMsg::Log { lines } => ClientInstruction::Log(lines),
             ServerToClientMsg::LogError { lines } => ClientInstruction::LogError(lines),
+            ServerToClientMsg::SessionRequest(request) => {
+                ClientInstruction::SessionRequest(request)
+            },
             ServerToClientMsg::SwitchSession { connect_to_session } => {
                 ClientInstruction::SwitchSession(connect_to_session)
             },
@@ -167,7 +171,9 @@ impl From<&ClientInstruction> for ClientContext {
             ClientInstruction::Connected => ClientContext::Connected,
             ClientInstruction::Log(_) => ClientContext::Log,
             ClientInstruction::LogError(_) => ClientContext::LogError,
-            ClientInstruction::SwitchSession(..) => ClientContext::SwitchSession,
+            ClientInstruction::SwitchSession(..) | ClientInstruction::SessionRequest(..) => {
+                ClientContext::SwitchSession
+            },
             ClientInstruction::SetSynchronizedOutput(..) => ClientContext::SetSynchronisedOutput,
             ClientInstruction::UnblockCliPipeInput(..) => ClientContext::UnblockCliPipeInput,
             ClientInstruction::CliPipeOutput(..) => ClientContext::CliPipeOutput,
@@ -325,7 +331,8 @@ pub fn spawn_server(socket_path: &Path, debug: bool) -> io::Result<()> {
     spawn_server_with_termios(socket_path, debug, None)
 }
 
-fn spawn_server_with_termios(
+/// Spawn with a same-platform terminal snapshot; `Some(&None)` explicitly selects defaults.
+pub fn spawn_server_with_termios(
     socket_path: &Path,
     debug: bool,
     termios: Option<&Option<yinz_runtime::termios::WireTermios>>,
@@ -437,6 +444,129 @@ pub(crate) enum InputInstruction {
 
 #[allow(clippy::too_many_arguments)]
 pub fn start_client(
+    os_input: Box<dyn ClientOsApi>,
+    cli_args: CliArgs,
+    config: Config,          // saved to disk (or default?)
+    config_options: Options, // CLI options merged into (getting priority over) saved config options
+    info: ClientInfo,
+    tab_number_to_focus: Option<TabNumber>,
+    pane_id_to_focus: Option<yinz_types::pane_id::PaneId>,
+    is_a_reconnect: bool,
+    start_detached_and_exit: bool,
+) -> ClientOutcome {
+    let mut info = info;
+    let mut tab = tab_number_to_focus;
+    let mut pane = pane_id_to_focus;
+    let mut reconnect = is_a_reconnect;
+    let mut prepared = None;
+    let mut coordinated = false;
+    let mut cancellation = None;
+    let local_config = if is_a_reconnect {
+        Ok(session_switch::LocalConfig {
+            config: config.clone(),
+            options: config_options.clone(),
+        })
+    } else {
+        session_switch::LocalConfig::load(&cli_args)
+    };
+    let mut local_config = match local_config {
+        Ok(config) => config,
+        Err(error) => {
+            let exit_msg = format!("{error:#}");
+            ClientTeardown::new(
+                os_input.get_terminal_size().rows,
+                config_options.support_kitty_keyboard_protocol != Some(false),
+            )
+            .restore(&*os_input, &exit_msg);
+            return ClientOutcome {
+                exit_msg,
+                exit_status: 1,
+                reconnect_to_session: None,
+                prepared_connection: None,
+            };
+        },
+    };
+    loop {
+        let remote_host = match &info {
+            ClientInfo::Remote { host, .. } => Some(host.clone()),
+            _ => None,
+        };
+        let mut outcome = run_client(
+            os_input.clone(),
+            cli_args.clone(),
+            if coordinated {
+                local_config.config.clone()
+            } else {
+                config.clone()
+            },
+            if coordinated {
+                local_config.options.clone()
+            } else {
+                config_options.clone()
+            },
+            info,
+            tab,
+            pane,
+            reconnect,
+            start_detached_and_exit,
+            prepared.take(),
+            coordinated,
+            &mut local_config,
+            cancellation.take(),
+        );
+        if let Some(connection) = outcome.prepared_connection.take() {
+            info = match &connection.machine {
+                yinz_types::session_destination::Destination::Remote(host) => ClientInfo::Remote {
+                    host: host.clone(),
+                    name: SessionName::new(&connection.name),
+                    socket: PathBuf::new(),
+                    cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                },
+                _ => ClientInfo::Attach(
+                    SessionName::new(&connection.name),
+                    local_config.options.clone(),
+                ),
+            };
+            prepared = Some(connection);
+            coordinated = true;
+            tab = None;
+            pane = None;
+            reconnect = true;
+            continue;
+        }
+        // Startup callers retain their existing local create/layout behavior until a cross-machine handoff.
+        if !coordinated || outcome.reconnect_to_session.is_none() {
+            if coordinated {
+                remote_sessions::set_forward(None);
+            }
+            return outcome;
+        }
+        let target = outcome
+            .reconnect_to_session
+            .take()
+            .expect("reconnect target");
+        tab = target.tab_position;
+        pane = target.pane_id;
+        reconnect = true;
+        if remote_host.is_none() {
+            local_config.reload(&cli_args);
+        }
+        match session_switch::legacy_reconnect(
+            target,
+            remote_host,
+            &local_config.options,
+            &*os_input,
+        ) {
+            Ok((next, guard)) => {
+                info = next;
+                cancellation = guard;
+            },
+            Err(outcome) => return outcome,
+        }
+    }
+}
+
+fn run_client(
     mut os_input: Box<dyn ClientOsApi>,
     cli_args: CliArgs,
     config: Config,          // saved to disk (or default?)
@@ -446,6 +576,10 @@ pub fn start_client(
     pane_id_to_focus: Option<yinz_types::pane_id::PaneId>,
     is_a_reconnect: bool,
     start_detached_and_exit: bool,
+    mut prepared: Option<session_switch::PreparedConnection>,
+    coordinated: bool,
+    local_config: &mut session_switch::LocalConfig,
+    mut cancellation: Option<remote_sessions::StartupCancellation>,
 ) -> ClientOutcome {
     let is_remote = matches!(&info, ClientInfo::Remote { .. });
     let remote_host = match &info {
@@ -467,6 +601,7 @@ pub fn start_client(
             exit_msg: String::new(),
             exit_status: 0,
             reconnect_to_session: None,
+            prepared_connection: None,
         };
     }
     crate::terminal_escapes::reset_output_abandonment();
@@ -503,11 +638,18 @@ pub fn start_client(
         if let Some(guard) = startup_signal_guard.take() {
             guard.disarm();
         }
+        if coordinated {
+            terminal_teardown.restore(&*os_input, "Interrupted while starting up");
+        }
         return ClientOutcome {
             exit_msg: "Interrupted while starting up".to_owned(),
             exit_status: INTERRUPTED_EXIT_STATUS,
             reconnect_to_session: None,
+            prepared_connection: None,
         };
+    }
+    if startup_signal_guard.is_some() {
+        cancellation.take();
     }
     startup_stage("client.claim_terminal", || {
         claim_terminal(
@@ -536,26 +678,45 @@ pub fn start_client(
         full_screen_ws,
         terminal_teardown,
     );
-    let (first_msg, ipc_pipe) = startup_stage("client.first_message", || {
-        startup.first_message(
-            &mut os_input,
-            info,
-            crate::startup::AttachFocus {
-                tab_number: tab_number_to_focus,
-                pane: pane_id_to_focus,
-            },
-        )
-    });
+    let mut initial_messages = std::collections::VecDeque::new();
+    if let Some(mut connection) = prepared.take() {
+        envs::set_session_name(own_session_name.clone());
+        os_input.update_session_name(own_session_name.clone());
+        let receiver = connection.receiver.take().expect("prepared receiver");
+        if let Err(error) = os_input.install_session_connection(
+            connection.sender.take().expect("prepared sender"),
+            receiver,
+        ) {
+            ClientTeardown::exit_after_startup_error(startup.teardown, error.to_string());
+        }
+        remote_sessions::set_owned_forward(connection.forward.take());
+        // The host may have resized while SSH and attachment were being prepared.
+        os_input.send_to_server(ClientToServerMsg::TerminalResize {
+            new_size: full_screen_ws,
+        });
+        initial_messages = std::mem::take(&mut connection.buffered);
+    } else {
+        let (first_msg, ipc_pipe) = startup_stage("client.first_message", || {
+            startup.first_message(
+                &mut os_input,
+                info,
+                crate::startup::AttachFocus {
+                    tab_number: tab_number_to_focus,
+                    pane: pane_id_to_focus,
+                },
+            )
+        });
 
-    if let Err(e) = startup_stage("client.connect", || os_input.connect_to_server(&ipc_pipe)) {
-        // The terminal is already on the alternate screen with the kitty
-        // keyboard protocol pushed; a bare `exit` here would leave the shell
-        // there, with the message gone along with the screen it was printed on.
-        ClientTeardown::exit_after_startup_error(startup.teardown, e.to_string());
+        if let Err(e) = startup_stage("client.connect", || os_input.connect_to_server(&ipc_pipe)) {
+            // The terminal is already on the alternate screen with the kitty
+            // keyboard protocol pushed; a bare `exit` here would leave the shell
+            // there, with the message gone along with the screen it was printed on.
+            ClientTeardown::exit_after_startup_error(startup.teardown, e.to_string());
+        }
+        startup_stage("client.send_first_message", || {
+            os_input.send_to_server(first_msg)
+        });
     }
-    startup_stage("client.send_first_message", || {
-        os_input.send_to_server(first_msg)
-    });
 
     let mut command_is_executing = CommandIsExecuting::new();
 
@@ -719,10 +880,11 @@ pub fn start_client(
     let render_budget = std::sync::Arc::new(crate::render_budget::RenderBudget::new(
         crate::render_budget::RENDER_BUDGET_BYTES,
     ));
-    let router_thread = crate::router::spawn(
+    let router_thread = crate::router::spawn_with_initial(
         os_input.clone(),
         send_client_instructions,
         render_budget.clone(),
+        initial_messages,
     );
 
     let teardown = ClientTeardown::new(
@@ -743,7 +905,14 @@ pub fn start_client(
         "startup trace: stage=client.workers event=end elapsed_us={}; waiting for first render",
         workers_started.elapsed().as_micros()
     );
+    let mut sessions = session_switch::Sessions::new(
+        remote_host.clone(),
+        own_session_name.into_string(),
+        &cli_args,
+        local_config,
+    );
     let outcome = crate::client_loop::ClientLoop {
+        sessions: &mut sessions,
         remote_host: remote_host.as_deref(),
         os_input: &*os_input,
         command_is_executing: &mut command_is_executing,
@@ -770,13 +939,16 @@ pub fn start_client(
         say_bye(&*os_input);
     }
 
-    if outcome.reconnect_to_session.is_none() || is_remote {
+    if outcome.prepared_connection.is_none()
+        && (outcome.reconnect_to_session.is_none() || (is_remote && !coordinated))
+    {
         info!("{}", outcome.exit_msg);
         teardown.restore(&*os_input, &outcome.exit_msg);
     } else {
         write_seqs(&*os_input, &[CLEAR_SCREEN]);
     }
 
+    drop(sessions);
     let _ = send_input_instructions.send(InputInstruction::Exit);
 
     outcome
@@ -825,3 +997,7 @@ mod unit;
 pub mod store_client;
 
 pub mod wait_client;
+
+pub mod remote_sessions;
+pub mod session_discovery;
+mod session_switch;

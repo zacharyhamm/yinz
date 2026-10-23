@@ -33,7 +33,19 @@ pub(super) struct Palette {
 
 impl Palette {
     fn new(state: Value) -> Self {
+        let mut entries = state["live_sessions"].as_array().unwrap().iter().map(|session| json!({
+            "destination": "CurrentServer", "name": session["name"], "current": session["is_current_session"],
+            "saved": false, "status": if session["is_current_session"] == true { "Current session" } else { "Running" },
+        })).collect::<Vec<_>>();
+        entries.extend(state["resurrectable_sessions"].as_array().unwrap().iter().map(|saved| json!({
+            "destination": "CurrentServer", "name": saved[0], "current": false, "saved": true, "status": "Saved",
+        })));
         let replies = BTreeMap::from([
+            (
+                "GetSessionInventory".into(),
+                json!({"current_machine": "Local", "entries": entries}),
+            ),
+            ("SwitchSessionDestination".into(), json!("Ready")),
             ("GetSessionList".into(), state),
             ("SaveSession".into(), json!(true)),
             ("KillSessionsAndReply".into(), json!(true)),
@@ -278,25 +290,21 @@ fn session_palette_registers_all_actions_and_separates_live_from_saved() {
         actions
             .iter()
             .map(|action| (
-                action["label"].clone(),
+                json!(display_text(&action["label"])),
                 json!(display_text(&action["description"]))
             ))
             .collect::<Vec<_>>(),
         [
-            (
-                json!("current"),
-                json!("Current session · Tabs: 1 · Panes: 1 · Clients: 1")
-            ),
-            (
-                json!("other"),
-                json!("Running · Tabs: 1 · Panes: 1 · Clients: 1")
-            ),
-            (json!("saved"), json!("Saved · Created 20s ago"))
+            (json!("Local / current"), json!("Current session")),
+            (json!("Local / other"), json!("Running")),
+            (json!("Local / saved"), json!("Saved"))
         ]
     );
     h.execute(actions[2]["handle"].clone(), Value::Null)
         .unwrap();
-    assert!(h.issued(json!({"SwitchSession": {"name": "saved", "tab_position": null, "pane_id": null, "layout": null, "cwd": null}})));
+    assert!(h.host.lock().unwrap().commands.iter().any(|command| command
+        .pointer("/SwitchSessionDestination/Prepare/target")
+        == Some(&json!({"name":"saved","destination":"CurrentServer","saved":true}))));
 }
 
 #[test]
@@ -323,7 +331,7 @@ fn session_palette_pages_after_searching_full_inventory_and_preserves_query() {
         .unwrap();
     assert_eq!(next["view"]["initialQuery"], "session-1");
     let cleared = h.discover(next["view"]["source"].clone(), "");
-    assert_eq!(display_text(&cleared[0]["label"]), "session-000");
+    assert_eq!(display_text(&cleared[0]["label"]), "Local / session-000");
 }
 
 #[test]
@@ -710,4 +718,93 @@ fn display_text(value: &Value) -> String {
     .map(|line| line.text)
     .collect::<Vec<_>>()
     .join("\n")
+}
+
+#[test]
+fn session_palette_searches_hosts_and_keeps_distinct_names_during_incremental_discovery() {
+    let mut h = Palette::new(state());
+    let entries = json!([
+        {"destination":"CurrentServer","name":"same","status":"Current session","current":true,"saved":false},
+        {"destination":"Local","name":"same","status":"Running","current":false,"saved":false},
+        {"destination":{"Remote":"host-b"},"name":null,"status":"loading…","current":false,"saved":false}
+    ]);
+    h.stub(
+        "GetSessionInventory",
+        json!({"current_machine":{"Remote":"host-a"},"entries":entries}),
+    );
+    let view = h.open("switch-session");
+    let initial = h.discover(view["source"].clone(), "same");
+    assert_eq!(initial.len(), 2);
+    assert_ne!(initial[0]["id"], initial[1]["id"]);
+    assert_eq!(display_text(&initial[0]["label"]), "Local / same");
+    assert_eq!(display_text(&initial[1]["label"]), "host-a / same");
+    let loading = h.discover(view["source"].clone(), "host-b");
+    assert_eq!(loading.len(), 1);
+    assert_eq!(loading[0]["description"], "loading…");
+    let mut entries = entries.as_array().unwrap().clone();
+    entries[2]["name"] = json!("same");
+    entries[2]["status"] = json!("Running");
+    h.stub(
+        "GetSessionInventory",
+        json!({"current_machine":{"Remote":"host-a"},"entries":entries}),
+    );
+    let refreshed = h.discover(view["source"].clone(), "same");
+    assert_eq!(refreshed.len(), 3);
+    assert_eq!(refreshed[0]["id"], initial[0]["id"]);
+    let remote = h.discover(view["source"].clone(), "host-b same");
+    assert_eq!(remote.len(), 1);
+    h.execute(remote[0]["handle"].clone(), Value::Null).unwrap();
+    assert!(h.host.lock().unwrap().commands.iter().any(|command| command
+        .pointer("/SwitchSessionDestination/Prepare/target")
+        == Some(&json!({"name":"same","destination":{"Remote":"host-b"},"saved":false}))));
+}
+
+#[test]
+fn releasing_session_picker_cancels_its_client_inventory() {
+    let mut h = Palette::new(state());
+    let view = h.open("switch-session");
+    h.discover(view["source"].clone(), "");
+    let id = h
+        .host
+        .lock()
+        .unwrap()
+        .commands
+        .iter()
+        .rev()
+        .find_map(|command| command.get("GetSessionInventory").cloned())
+        .unwrap();
+    h.runtime
+        .palette(json!({"type":"release","handles":[view["source"]]}))
+        .unwrap();
+    assert!(h.issued(json!({"SwitchSessionDestination":{"Cancel":id}})));
+}
+
+#[test]
+fn failed_deferred_session_switch_reports_the_error_and_cancels_preparation() {
+    let mut h = Palette::new(state());
+    h.stub("SwitchSessionDestination", json!("Pending"));
+    h.host
+        .lock()
+        .unwrap()
+        .failures
+        .insert("SetTimeout".into(), "SSH unavailable".into());
+    let view = h.open("switch-session");
+    let rows = h.discover(view["source"].clone(), "other");
+    h.send(json!({"type":"execute", "handle":rows[0]["handle"], "values":null}));
+    h.runtime.invoke("yinz-async-poll", vec![]).unwrap();
+    let error = h.reply().unwrap_err();
+    assert!(error.contains("SSH unavailable"), "{error}");
+    assert!(!error.contains("Type Mismatch"), "{error}");
+    let host = h.host.lock().unwrap();
+    let id = host
+        .commands
+        .iter()
+        .find_map(|command| command.pointer("/SwitchSessionDestination/Prepare/id"))
+        .unwrap();
+    assert!(host
+        .commands
+        .contains(&json!({"SwitchSessionDestination":{"Cancel":id}})));
+    assert!(!host.commands.iter().any(|command| command
+        .pointer("/SwitchSessionDestination/Commit")
+        .is_some()));
 }

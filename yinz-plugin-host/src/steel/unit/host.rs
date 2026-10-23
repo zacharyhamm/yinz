@@ -72,6 +72,86 @@ fn lifecycle_uses_shared_subscriptions_commands_and_replies() {
 }
 
 #[test]
+fn failed_and_interrupted_generations_cancel_preparations_before_replacement() {
+    use crate::ClientId;
+    use yinz_bus::server_instruction::ServerInstruction;
+    use yinz_types::diagnostics::ErrorContext;
+    use yinz_types::session_destination::*;
+
+    for interrupted in [false, true] {
+        let (server, requests) = channels::unbounded::<(ServerInstruction, ErrorContext)>();
+        let server = SenderWithContext::new(server);
+        let worker = std::thread::spawn(move || {
+            let mut pending = std::collections::HashMap::new();
+            let mut retired_id = None;
+            for index in 0..6 {
+                let ServerInstruction::SessionRequest {
+                    client,
+                    request,
+                    reply,
+                } = requests.recv_timeout(Duration::from_secs(10)).unwrap().0
+                else {
+                    panic!("expected session request")
+                };
+                assert!([ClientId::new(2), ClientId::new(3)].contains(&client));
+                match request.request {
+                    ClientRequest::Switch(SwitchRequest::Prepare { id, .. }) => {
+                        if index == 4 {
+                            assert_ne!(Some(&id), retired_id.as_ref());
+                        } else {
+                            assert!(index < 2);
+                            retired_id = Some(id.clone());
+                        }
+                        assert!(pending.insert(client, id).is_none());
+                        reply.send(Ok(ClientReply::Pending)).unwrap();
+                    },
+                    ClientRequest::Switch(SwitchRequest::Cancel(id)) => {
+                        assert_eq!(pending.remove(&client), Some(id));
+                        let _ = reply.send(Ok(ClientReply::Complete));
+                    },
+                    _ => panic!("unexpected session operation"),
+                }
+            }
+            assert!(pending.is_empty());
+            assert!(requests.try_recv().is_err());
+        });
+        let prepare = |plugin: &mut SteelPlugin, client| {
+            plugin.env_mut().client_id = client;
+            crate::session_destinations::switch(
+                plugin.env_mut(),
+                SwitchRequest::Prepare {
+                    id: "picker".into(),
+                    target: SwitchTarget {
+                        destination: Destination::Local,
+                        name: "target".into(),
+                        saved: false,
+                    },
+                },
+            )
+            .unwrap();
+        };
+        let mut old = plugin("(define (render rows columns) \"old\")");
+        old.env_mut().senders.to_server = Some(server.clone());
+        prepare(&mut old, ClientId::new(2));
+        prepare(&mut old, ClientId::new(3));
+        old.env_mut().client_id = ClientId::new(4);
+        old.env()
+            .cancel_tripped
+            .store(interrupted, Ordering::Release);
+        old.dispose_with_cleanup(interrupted);
+        old.dispose_with_cleanup(interrupted);
+        assert!(old.env().session_preparations.is_empty());
+
+        let mut replacement = plugin("(define (render rows columns) \"replacement\")");
+        replacement.env_mut().senders.to_server = Some(server);
+        prepare(&mut replacement, ClientId::new(2));
+        assert_eq!(replacement.env().session_preparations.len(), 1);
+        replacement.dispose_with_cleanup(false);
+        worker.join().unwrap();
+    }
+}
+
+#[test]
 fn denied_commands_are_errors_and_host_state_survives_them() {
     let mut plugin = plugin(
         r#"

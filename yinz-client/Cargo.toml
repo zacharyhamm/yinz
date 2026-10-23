@@ -13,6 +13,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+yinz-process = { path = "../yinz-process" }
+yinz-session = { workspace = true }
 yinz-cli = { workspace = true }
 yinz-config = { workspace = true }
 yinz-ipc = { workspace = true }

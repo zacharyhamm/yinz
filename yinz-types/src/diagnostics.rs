@@ -556,6 +556,8 @@ pub enum ServerContext {
     Log,
     LogError,
     SwitchSession,
+    SessionRequest,
+    SessionReply,
     UnblockCliPipeInput,
     CliPipeOutput,
     EventUpdateToClient,

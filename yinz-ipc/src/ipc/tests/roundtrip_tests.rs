@@ -211,6 +211,28 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 }
 
 fn test_client_messages() {
+    use yinz_types::session_destination::*;
+    for result in [
+        Ok(ClientReply::Pending),
+        Ok(ClientReply::Ready),
+        Ok(ClientReply::Complete),
+        Err("unreachable host".into()),
+        Ok(ClientReply::Inventory(Inventory {
+            current_machine: Destination::Remote("host-a".into()),
+            entries: vec![Entry {
+                destination: Destination::Local,
+                name: Some("same".into()),
+                status: "Running".into(),
+                current: false,
+                saved: false,
+            }],
+        })),
+    ] {
+        test_client_roundtrip!(ClientToServerMsg::SessionReply(Reply {
+            token: "client-token".into(),
+            result
+        }));
+    }
     use yinz_types::agent::control::AgentRequest;
     use {yinz_types::agent::report::AgentReport, yinz_types::agent::report::AgentReportState};
     let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
@@ -4711,6 +4733,27 @@ fn test_client_messages() {
 }
 
 fn test_server_messages() {
+    use yinz_types::session_destination::*;
+    for request in [
+        ClientRequest::Inventory("opening".into()),
+        ClientRequest::CancelAll,
+        ClientRequest::Switch(SwitchRequest::Prepare {
+            id: "switch".into(),
+            target: SwitchTarget {
+                destination: Destination::Remote("host-b".into()),
+                name: "same".into(),
+                saved: false,
+            },
+        }),
+        ClientRequest::Switch(SwitchRequest::Status("switch".into())),
+        ClientRequest::Switch(SwitchRequest::Cancel("switch".into())),
+        ClientRequest::Switch(SwitchRequest::Commit("switch".into())),
+    ] {
+        test_server_roundtrip!(ServerToClientMsg::SessionRequest(Request {
+            token: "client-token".into(),
+            request
+        }));
+    }
     use yinz_types::agent::control::{AgentOutcome, AgentResponse, AgentStatus};
     let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
     let status = AgentStatus {

@@ -443,6 +443,12 @@ pub enum Command {
         contract_version: usize,
         #[clap(long)]
         create: bool,
+        #[clap(long, hide = true)]
+        configuration_options: Option<String>,
+        #[clap(long, hide = true)]
+        client_termios: Option<String>,
+        #[clap(long, hide = true)]
+        terminal_window_size: Option<String>,
         session_name: String,
     },
     /// Evaluate Steel Scheme in a running session, interactively, from stdin, or with --eval.
@@ -2676,6 +2682,42 @@ mod tests {
             assert_eq!(cli.max_panes, Some(limit));
         }
         assert_eq!(try_parse_cli(["yinz"]).unwrap().max_panes, None);
+    }
+
+    #[test]
+    fn remote_bootstrap_accepts_startup_state_and_defaults_to_omitted_flags() {
+        for explicit in [false, true] {
+            let mut args = vec!["yinz"];
+            if explicit {
+                args.extend(["--max-panes", "3", "--debug"]);
+            }
+            args.extend([
+                "remote-session",
+                "--create",
+                "--client-version",
+                "test",
+                "--contract-version",
+                "1",
+            ]);
+            let size = r#"{"rows":60,"cols":120}"#;
+            if explicit {
+                args.extend(["--terminal-window-size", size]);
+            }
+            args.extend(["--", "saved session"]);
+            let cli = try_parse_cli(args).unwrap();
+            assert_eq!(cli.max_panes, explicit.then_some(3));
+            assert_eq!(cli.debug, explicit);
+            let Some(Command::RemoteSession {
+                terminal_window_size,
+                session_name,
+                ..
+            }) = cli.command
+            else {
+                panic!("expected remote session bootstrap");
+            };
+            assert_eq!(terminal_window_size.as_deref(), explicit.then_some(size));
+            assert_eq!(session_name, "saved session");
+        }
     }
 
     #[test]

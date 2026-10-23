@@ -3512,26 +3512,29 @@ fn in_place_pane_with_close_replaced_pane_true_closes_original() {
 }
 
 #[test]
-fn reserving_a_suppressed_multipane_slot_does_not_evict_the_tabs_working_pane() {
-    let mut tab = create_new_tab(Size { rows: 20, cols: 80 }, ModeInfo::default());
-    tab.max_panes = Some(1);
-    let working = tab.get_all_pane_ids();
-    tab.new_floating_pane(
-        PaneId::Terminal(TerminalId::new(99)),
-        None,
-        None,
-        true,
-        false,
-        None,
-        None,
-    )
-    .unwrap();
-    assert!(working.iter().all(|id| tab.has_pane_with_pid(id)));
-    assert!(
-        tab.get_pane_info(PaneId::Terminal(TerminalId::new(99)))
-            .unwrap()
-            .is_suppressed
-    );
+fn reserving_a_suppressed_pane_does_not_evict_the_tabs_working_pane() {
+    for placement in [
+        NewPanePlacement::default(),
+        NewPanePlacement::Tiled {
+            direction: None,
+            borderless: None,
+        },
+        NewPanePlacement::Floating(None),
+        NewPanePlacement::Stacked {
+            pane_id_to_stack_under: None,
+            borderless: None,
+        },
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+    ] {
+        let mut tab = create_new_tab(Size { rows: 20, cols: 80 }, ModeInfo::default());
+        tab.max_panes = Some(1);
+        let working = tab.get_all_pane_ids();
+        let pid = PaneId::Terminal(TerminalId::new(99));
+        tab.new_pane(pid, None, None, true, false, placement, None, None)
+            .unwrap();
+        assert!(working.iter().all(|id| tab.has_pane_with_pid(id)));
+        assert!(tab.get_pane_info(pid).unwrap().is_suppressed);
+    }
 }
 
 #[test]

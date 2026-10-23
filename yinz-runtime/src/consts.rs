@@ -17,7 +17,7 @@ pub static DEBUG_MODE: OnceLock<bool> = OnceLock::new();
 pub const SYSTEM_DEFAULT_CONFIG_DIR: &str = "/etc/yinz";
 pub const SYSTEM_DEFAULT_DATA_DIR_PREFIX: &str = system_default_data_dir();
 
-pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 1;
+pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 2;
 /// Maximum protobuf frame length, excluding its four-byte length prefix. `yinz_ipc` re-exports
 /// it for the socket transport; the plugin compilation worker bounds its requests and responses
 /// with it without linking that transport.

@@ -65,3 +65,5 @@ pub mod pick;
 pub mod configuration;
 
 pub mod project_provider;
+
+pub mod session_destination;

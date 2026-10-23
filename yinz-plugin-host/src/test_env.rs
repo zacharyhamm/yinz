@@ -62,6 +62,7 @@ pub(crate) fn test_env() -> PluginEnv {
         intercepting_key_presses: false,
         cancel_tripped: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: None,
+        session_preparations: Default::default(),
         workers: None,
     }
 }

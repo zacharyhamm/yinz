@@ -94,6 +94,261 @@ struct Client {
     output: Watched<Option<Output>>,
 }
 
+#[test]
+fn local_resurrection_preserves_terminal_settings_geometry_pane_limit_and_debug() {
+    use nix::sys::termios::{tcgetattr, LocalFlags};
+    use yinz_types::session_destination::{
+        ClientReply, ClientRequest, Destination, Request, SwitchRequest, SwitchTarget,
+    };
+
+    let session = Session::new();
+    session.remote_layout();
+    fs::write(
+        session.0.path().join("remote.kdl"),
+        "layout { pane name=\"fixed\" size=30; pane; }",
+    )
+    .unwrap();
+    let output = session
+        .remote_bootstrap(true)
+        .args(["--terminal-window-size", r#"{"rows":60,"cols":120}"#])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    session.wait_for_panes(false);
+    session.success(&["--session", NAME, "action", "save-session"]);
+    session.success(&["kill-session", NAME]);
+
+    let listener = yinz_ipc::consts::ipc_bind(&session.socket().with_file_name("source")).unwrap();
+    let pty = nix::pty::openpty(
+        Some(&nix::pty::Winsize {
+            ws_row: 60,
+            ws_col: 120,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }),
+        None,
+    )
+    .unwrap();
+    let slave = fs::File::from(pty.slave);
+    assert!(Command::new("stty")
+        .args(["intr", "^X"])
+        .stdin(slave.try_clone().unwrap())
+        .status()
+        .unwrap()
+        .success());
+    let original = tcgetattr(&slave).unwrap();
+    let mut command = session.command();
+    command
+        .args(["--max-panes", "2", "--debug", "attach", "source"])
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave.try_clone().unwrap());
+    // Detach from the test runner's terminal so size queries use this PTY.
+    unsafe {
+        command.pre_exec(|| {
+            nix::unistd::setsid()
+                .map(|_| ())
+                .map_err(std::io::Error::from)
+        });
+    }
+    let child = command.spawn().unwrap();
+    let client = Client {
+        pid: Pid::from_raw(child.id() as i32),
+        output: Watched::new(None),
+    };
+    let completed = client.output.clone();
+    let waiter = std::thread::spawn(move || {
+        let output = child.wait_with_output().unwrap();
+        *completed.lock() = Some(output);
+    });
+    let (mut sender, mut receiver) = loop {
+        let stream = listener.accept().unwrap();
+        stream.set_recv_timeout(Some(default_timeout())).unwrap();
+        let mut sender = IpcSenderWithContext::<ServerToClientMsg>::new(stream);
+        let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+        match receiver.recv_client_msg() {
+            IpcRecv::Msg(ClientToServerMsg::ConnStatus, _) => {
+                sender
+                    .send_server_msg(ServerToClientMsg::Connected {
+                        warp_companions: false,
+                        warp_held_terminals: false,
+                    })
+                    .unwrap();
+            },
+            IpcRecv::Msg(ClientToServerMsg::AttachClient { .. }, _) => break (sender, receiver),
+            _ => panic!("expected source probe or attachment"),
+        }
+    };
+    sender
+        .send_server_msg(ServerToClientMsg::Render {
+            content: "source ready".into(),
+        })
+        .unwrap();
+    let mut request = |request| {
+        sender
+            .send_server_msg(ServerToClientMsg::SessionRequest(Request {
+                token: "termios".into(),
+                request: ClientRequest::Switch(request),
+            }))
+            .unwrap();
+        loop {
+            match receiver.recv_client_msg() {
+                IpcRecv::Msg(ClientToServerMsg::SessionReply(reply), _) => {
+                    return reply.result.unwrap()
+                },
+                IpcRecv::Msg(_, _) => {},
+                _ => panic!("client disconnected during resurrection"),
+            }
+        }
+    };
+    assert_eq!(
+        request(SwitchRequest::Prepare {
+            id: "termios".into(),
+            target: SwitchTarget {
+                destination: Destination::CurrentServer,
+                name: NAME.into(),
+                saved: true
+            },
+        }),
+        ClientReply::Pending
+    );
+    assert!(!tcgetattr(&slave)
+        .unwrap()
+        .local_flags
+        .intersects(LocalFlags::ICANON | LocalFlags::ISIG));
+    let deadline = std::time::Instant::now() + default_timeout();
+    while request(SwitchRequest::Status("termios".into())) == ClientReply::Pending {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "local resurrection did not finish"
+        );
+    }
+    assert_eq!(
+        request(SwitchRequest::Cancel("termios".into())),
+        ClientReply::Complete
+    );
+    sender
+        .send_server_msg(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        })
+        .unwrap();
+    client
+        .output
+        .wait_until("source client exit", default_timeout(), |out| {
+            out.as_ref()
+                .map(|out| assert!(out.status.success(), "{out:?}"))
+        });
+    waiter.join().unwrap();
+    let restored = tcgetattr(&slave).unwrap();
+    assert_eq!(restored.control_chars, original.control_chars);
+    assert_eq!(
+        restored.local_flags - LocalFlags::PENDIN,
+        original.local_flags - LocalFlags::PENDIN
+    );
+
+    session.wait_for_panes(false);
+    let fifo = session.0.path().join("termios");
+    nix::unistd::mkfifo(
+        &fifo,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .unwrap();
+    let settings = Watched::new(None);
+    let recorded = settings.clone();
+    let path = fifo.clone();
+    let reader = std::thread::spawn(move || {
+        let settings = fs::read_to_string(path).unwrap();
+        *recorded.lock() = Some(settings);
+    });
+    let panes = session.success(&["--session", NAME, "action", "list-panes", "--json"]);
+    let panes: serde_json::Value = serde_json::from_slice(&panes.stdout).unwrap();
+    let panes: Vec<_> = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|pane| pane["is_plugin"] == false)
+        .collect();
+    assert_eq!(panes.len(), 2, "{panes:?}");
+    assert_eq!(
+        panes.iter().find(|pane| pane["title"] == "fixed").unwrap()["pane_rows"],
+        30
+    );
+    assert_eq!(
+        panes
+            .iter()
+            .map(|pane| pane["pane_rows"].as_u64().unwrap())
+            .sum::<u64>(),
+        60
+    );
+    assert!(panes.iter().all(|pane| pane["pane_columns"] == 120));
+    if let Some(pid) = server_pid(&session) {
+        let args = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+        assert!(args.split(|byte| *byte == 0).any(|arg| arg == b"--debug"));
+    }
+    let pane_id = panes
+        .iter()
+        .find(|pane| pane["is_plugin"] == false)
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap()
+        .to_string();
+    session.success(&[
+        "--session",
+        NAME,
+        "action",
+        "write-chars",
+        "--pane-id",
+        &pane_id,
+        &format!("stty -a > '{}'\n", fifo.display()),
+    ]);
+    let actual = settings.wait_until(
+        "resurrected pane terminal settings",
+        default_timeout(),
+        Clone::clone,
+    );
+    reader.join().unwrap();
+    assert!(actual.contains("intr = ^X"), "{actual}");
+    for flag in ["icanon", "isig", "echo", "icrnl", "opost"] {
+        assert!(
+            actual
+                .split_whitespace()
+                .any(|word| word.trim_end_matches(';') == flag),
+            "missing {flag}: {actual}"
+        );
+    }
+    let raw_log = session.0.path().join(format!(
+        "tmp/yinz-{}/yinz-log/yinz-{pane_id}.log",
+        nix::unistd::Uid::current()
+    ));
+    let output = Watched::new(String::new());
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let deadline = std::time::Instant::now() + default_timeout();
+            while std::time::Instant::now() < deadline {
+                let text = fs::read_to_string(&raw_log).unwrap_or_default();
+                let done = text.contains("stty -a");
+                *output.lock() = text;
+                if done {
+                    return;
+                }
+            }
+        });
+        output.wait_until("raw PTY debug output", default_timeout(), |text| {
+            text.contains("stty -a").then_some(())
+        });
+    });
+    session.success(&["--session", NAME, "action", "new-pane", "--name", "added"]);
+    let panes = session.success(&["--session", NAME, "action", "list-panes", "--json"]);
+    let panes: serde_json::Value = serde_json::from_slice(&panes.stdout).unwrap();
+    let panes: Vec<_> = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|pane| pane["is_plugin"] == false)
+        .collect();
+    assert_eq!(panes.len(), 2, "{panes:?}");
+    assert!(panes.iter().any(|pane| pane["title"] == "added"));
+}
+
 impl Drop for Client {
     fn drop(&mut self) {
         if self.output.lock().is_none() {
