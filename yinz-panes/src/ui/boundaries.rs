@@ -487,7 +487,6 @@ pub struct Boundaries {
     pub boundary_characters: HashMap<Coordinates, BoundarySymbol>,
 }
 
-#[allow(clippy::if_same_then_else)]
 impl Boundaries {
     pub fn new(viewport: Viewport) -> Self {
         Boundaries {
@@ -576,23 +575,22 @@ impl Boundaries {
             let last_row_coordinates = self.rect_right_boundary_row_end(rect);
             for row in first_row_coordinates..last_row_coordinates {
                 let coordinates = Coordinates::new(boundary_x_coords, row);
-                let symbol_to_add = if row == first_row_coordinates && pane_is_stacked {
-                    BoundarySymbol::new(boundary_type::VERTICAL_LEFT).color(color, chrome_colors)
-                } else if row == first_row_coordinates && row != self.viewport.y {
-                    if pane_is_stacked {
+                let symbol_to_add =
+                    if row == first_row_coordinates && row != self.viewport.y && pane_is_stacked {
                         BoundarySymbol::new(boundary_type::VERTICAL_LEFT)
                             .color(color, chrome_colors)
-                    } else {
+                    } else if row == first_row_coordinates
+                        && (row != self.viewport.y || pane_is_stacked)
+                    {
                         BoundarySymbol::new(boundary_type::TOP_RIGHT).color(color, chrome_colors)
-                    }
-                } else if row == last_row_coordinates - 1
-                    && row != self.viewport.y + self.viewport.rows - 1
-                    && content_offset.bottom > 0
-                {
-                    BoundarySymbol::new(boundary_type::BOTTOM_RIGHT).color(color, chrome_colors)
-                } else {
-                    BoundarySymbol::new(boundary_type::VERTICAL).color(color, chrome_colors)
-                };
+                    } else if row == last_row_coordinates - 1
+                        && row != self.viewport.y + self.viewport.rows - 1
+                        && content_offset.bottom > 0
+                    {
+                        BoundarySymbol::new(boundary_type::BOTTOM_RIGHT).color(color, chrome_colors)
+                    } else {
+                        BoundarySymbol::new(boundary_type::VERTICAL).color(color, chrome_colors)
+                    };
                 let next_symbol = self
                     .boundary_characters
                     .remove(&coordinates)
