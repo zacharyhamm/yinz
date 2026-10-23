@@ -2759,6 +2759,82 @@ fn dragging_a_selection_past_the_edge_scrolls_further_the_further_it_goes() {
 }
 
 #[test]
+fn stacked_pane_right_boundaries_stop_at_viewport_top() {
+    use crate::ui::boundaries::Boundaries;
+    use yinz_types::pane_size::{Dimension, Viewport};
+
+    for (x, y) in [(0, 0), (4, 3)] {
+        let viewport = Viewport {
+            x,
+            y,
+            cols: 100,
+            rows: 30,
+        };
+        for (expanded, expected_edges) in [
+            (None, ["││││┘", "┐││││┘"]),
+            (Some(0), ["┐│││┤┤┘", "┐┤│││┤┤┘"]),
+            (Some(1), ["┐┤│││┤┘", "┐┤┤│││┤┘"]),
+            (Some(2), ["┐┤┤│││┘", "┐┤┤┤│││┘"]),
+        ] {
+            for (y_offset, expected_edge) in [0, 3].into_iter().zip(expected_edges) {
+                let mut boundaries = Boundaries::new(viewport);
+                let mut pane_y = y + y_offset;
+                let pane_count = if expanded.is_some() { 3 } else { 1 };
+                for index in 0..pane_count {
+                    let collapsed = expanded.is_some_and(|expanded| index != expanded);
+                    let under = expanded.is_some_and(|expanded| index > expanded);
+                    let mut pane = agent_pane();
+                    let mut geom = pane.current_geom();
+                    geom.x = x + 2;
+                    geom.y = pane_y;
+                    geom.cols.set_inner(10);
+                    geom.stacked = expanded.map(|_| 0);
+                    if collapsed {
+                        geom.rows = Dimension::fixed(1);
+                    } else {
+                        geom.rows.set_inner(5);
+                    }
+                    pane.set_geom(geom);
+                    pane.set_content_offset(Offset {
+                        top: usize::from(expanded.is_some() && !collapsed),
+                        bottom: 1,
+                        right: 1,
+                        left: 0,
+                    });
+                    boundaries.add_rect(
+                        &pane,
+                        None,
+                        None,
+                        index == 0,
+                        index == pane_count - 1,
+                        under,
+                    );
+                    pane_y += geom.rows.as_usize();
+                }
+                let mut right_edge: Vec<_> = boundaries
+                    .render(None)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|chunk| chunk.x == x + 11)
+                    .map(|chunk| (chunk.y, chunk.terminal_characters[0].character))
+                    .collect();
+                right_edge.sort_unstable();
+                let first_row = y + y_offset.saturating_sub(1);
+                let expected: Vec<_> = expected_edge
+                    .chars()
+                    .enumerate()
+                    .map(|(row, glyph)| (first_row + row, glyph))
+                    .collect();
+                assert_eq!(
+                    right_edge, expected,
+                    "{viewport:?}, {expanded:?}, {y_offset}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn frame_and_boundary_backgrounds_match_terminal_themes_and_ignore_application_overrides() {
     use crate::panes::terminal_character::AnsiCode;
     use crate::ui::boundaries::Boundaries;
