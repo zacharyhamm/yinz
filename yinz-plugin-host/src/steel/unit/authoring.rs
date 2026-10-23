@@ -112,6 +112,162 @@ fn source_analysis_infers_literal_grants_and_reports_data_mistakes() {
 }
 
 #[test]
+fn source_analysis_reports_cond_permissions_and_load_warnings() {
+    let report = check(
+        Path::new("example.scm"),
+        r#"(define (load config)
+  (cond
+    [(yinz-wait-for-permissions '("PluginData"))
+     (cond
+       [(yinz-command "GetPaneId") =>
+        (lambda (_) (yinz-command (hash "RequestPluginPermissions" '("ReadFiles"))))])]
+    [else (yinz-command "DataFetch")]))"#,
+        PluginCheckMode::Semantic,
+        None,
+    );
+    assert!(report.diagnostics.is_empty(), "{report:?}");
+    assert_eq!(
+        report.permissions,
+        [PermissionType::PluginData, PermissionType::ReadFiles]
+    );
+    assert_eq!(
+        report
+            .outline
+            .iter()
+            .filter(|entry| entry.kind == OutlineKind::Permission)
+            .map(|entry| (entry.line, entry.text.as_str()))
+            .collect::<Vec<_>>(),
+        [(3, r#"["PluginData"]"#), (6, r#"["ReadFiles"]"#)]
+    );
+    assert_eq!(
+        report.warnings,
+        ["line 7: load must wait for PermissionRequestResult before accessing the data store"]
+    );
+    let report = check(
+        Path::new("example.scm"),
+        r#"(define (cond value) value)
+(define (load config)
+  (cond (yinz-command (hash "RequestPluginPermissions" '("PluginData"))))
+  (cond (yinz-command "DataFetch")))"#,
+        PluginCheckMode::Semantic,
+        None,
+    );
+    assert!(report.diagnostics.is_empty(), "{report:?}");
+    assert_eq!(report.permissions, [PermissionType::PluginData]);
+    assert_eq!(
+        report.warnings,
+        ["line 4: load must wait for PermissionRequestResult before accessing the data store"]
+    );
+}
+
+#[test]
+fn source_analysis_warns_for_direct_data_access_in_both_load_forms() {
+    for definition in ["(load config)", "load (lambda (config)"] {
+        let close = if definition.starts_with('(') {
+            ")"
+        } else {
+            "))"
+        };
+        let source = format!(
+            r#"(define {definition}
+  (yinz-wait-for-permissions '("PluginData"))
+  (yinz-command "DataFetch"){close}"#
+        );
+        let report = check(
+            Path::new("example.scm"),
+            &source,
+            PluginCheckMode::Semantic,
+            None,
+        );
+        assert!(report.diagnostics.is_empty(), "{report:?}");
+        assert_eq!(report.permissions, [PermissionType::PluginData]);
+        assert_eq!(report.warnings, ["line 3: load must wait for PermissionRequestResult before accessing the data store"]);
+    }
+}
+
+#[test]
+fn source_analysis_distinguishes_deferred_callbacks_from_eager_arguments() {
+    for helper in ["yinz-then", "yinz-catch"] {
+        for (value, warnings) in [
+            (r#"(yinz-wait-for-permissions '("PluginData"))"#, vec![]),
+            (
+                r#"(begin (yinz-wait-for-permissions '("PluginData")) #t)"#,
+                vec!["line 4: load must wait for PermissionRequestResult before accessing the data store"],
+            ),
+            (
+                r#"(begin (yinz-command "DataFetch") (yinz-wait-for-permissions '("PluginData")))"#,
+                vec!["line 2: load must wait for PermissionRequestResult before accessing the data store"],
+            ),
+        ] {
+            let source = format!(
+                r#"(define load (lambda (config)
+  ({helper} {value}
+    (lambda (_)
+      (yinz-command (hash "DataCatalog" (hash "namespace" json-null)))))))"#
+            );
+            let report = check(
+                Path::new("example.scm"),
+                &source,
+                PluginCheckMode::Semantic,
+                None,
+            );
+            assert!(report.diagnostics.is_empty(), "{report:?}");
+            assert_eq!(report.permissions, [PermissionType::PluginData]);
+            assert_eq!(report.warnings, warnings, "{helper}: {value}");
+        }
+        let settled = format!(
+            r#"(define (load config)
+  (yinz-command (hash "RequestPluginPermissions" '("PluginData")))
+  ({helper} #t
+    (lambda (_)
+      (yinz-command (hash "DataCatalog" (hash "namespace" json-null))))))"#
+        );
+        let report = check(
+            Path::new("example.scm"),
+            &settled,
+            PluginCheckMode::Semantic,
+            None,
+        );
+        assert!(report.diagnostics.is_empty(), "{report:?}");
+        assert_eq!(report.permissions, [PermissionType::PluginData]);
+        assert_eq!(
+            report.warnings,
+            ["line 5: load must wait for PermissionRequestResult before accessing the data store"],
+            "{helper}"
+        );
+    }
+}
+
+#[test]
+fn source_analysis_warns_when_unrelated_permission_is_awaited() {
+    for helper in ["yinz-then", "yinz-catch"] {
+        let source = format!(
+            r#"(define (load config)
+  ({helper} (yinz-wait-for-permissions '("ReadFiles"))
+    (lambda (_)
+      (yinz-command (hash "RequestPluginPermissions" '("PluginData")))
+      (yinz-command (hash "DataCatalog" (hash "namespace" json-null))))))"#
+        );
+        let report = check(
+            Path::new("example.scm"),
+            &source,
+            PluginCheckMode::Semantic,
+            None,
+        );
+        assert!(report.diagnostics.is_empty(), "{report:?}");
+        assert_eq!(
+            report.permissions,
+            [PermissionType::ReadFiles, PermissionType::PluginData]
+        );
+        assert_eq!(
+            report.warnings,
+            ["line 5: load must wait for PermissionRequestResult before accessing the data store"],
+            "{helper}"
+        );
+    }
+}
+
+#[test]
 fn checks_follow_confined_imports_without_evaluating_dependencies() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("main.scm");
