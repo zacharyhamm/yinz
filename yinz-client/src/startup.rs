@@ -95,7 +95,7 @@ impl<'a> StartupContext<'a> {
         })
     }
 
-    fn build_cli_assets(
+    pub(crate) fn build_cli_assets(
         &self,
         options: &Options,
         layout: Option<LayoutInfo>,

@@ -140,7 +140,12 @@ fn home_fallback_control_path_fits_macos_with_ssh_rename_margin() {
         .expect("no quoted ControlPath option");
     assert_eq!(
         path.parent().unwrap(),
-        Path::new("/Users/zacharyhamm/.yinz/run/cv1/r")
+        Path::new("/Users/zacharyhamm/.yinz/run")
+            .join(format!(
+                "cv{}",
+                yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION
+            ))
+            .join("r")
     );
     assert_eq!(path.file_stem().unwrap().len(), 16);
     assert_eq!(path.extension().unwrap(), "ctl");

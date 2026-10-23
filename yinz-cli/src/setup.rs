@@ -142,6 +142,17 @@ pub fn load_config(args: &CliArgs) -> Result<Config, ConfigError> {
 }
 
 impl Setup {
+    /// Load terminal configuration and CLI overrides without reading a session layout.
+    pub fn config_without_layout(cli_args: &CliArgs) -> Result<(Config, Options), ConfigError> {
+        let mut config = load_config(cli_args)?;
+        let options = yinz_config::config::apply_themes(
+            &mut config,
+            merge_attach_command_options(cli_args.options(), cli_args),
+            cli_args.config_dir.clone(),
+        )?;
+        Ok((config, options))
+    }
+
     /// Entrypoint from main
     /// Merges options from the config file and the command line options
     /// into `[Options]`, the command line options superseding the layout
@@ -156,16 +167,7 @@ impl Setup {
         // note that this can potentially exit the process
         Setup::handle_setup_commands(cli_args);
         let config = startup_stage("cli.config", || load_config(cli_args))?;
-        let cli_config_options: Option<Options> =
-            if let Some(Command::Options(options)) = cli_args.command.clone() {
-                Some((*options).into())
-            } else {
-                None
-            };
-
-        // the attach CLI command can also have its own Options, we need to merge them if they
-        // exist
-        let cli_config_options = merge_attach_command_options(cli_config_options, cli_args);
+        let cli_config_options = merge_attach_command_options(cli_args.options(), cli_args);
 
         let mut config_without_layout = config.clone();
         let (layout_info, mut config) = startup_stage("cli.layout", || {

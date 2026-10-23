@@ -289,6 +289,8 @@ enum CommandName {
   RestartAgentPane = 313;
   OpenPluginPaneInPlaceOfPaneId = 314;
   ResolveProject = 315;
+  GetSessionInventory = 316;
+  SwitchSessionDestination = 317;
 }
 
 message PluginCommand {
@@ -301,6 +303,8 @@ message PluginCommand {
   reserved 108, 109, 110, 164, 165, 167, 173, 187;
   CommandName name = 1;
   oneof payload {
+    string get_session_inventory_payload = 259;
+    string switch_session_destination_payload = 260;
     string get_plugin_ids_for_url_payload = 243;
     ResolveNotificationPayload resolve_notification_payload = 242;
     string pane_tabs_payload = 236;
@@ -2077,3 +2081,5 @@ message GetCellPixelSizeResponse {
 }
 
 message RestartAgentPaneResponse { string json = 1; }
+
+message SessionDestinationResponse { string json = 1; }

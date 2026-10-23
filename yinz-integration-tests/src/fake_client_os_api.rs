@@ -21,6 +21,7 @@ type ServerSpawner = Box<dyn FnOnce(PathBuf) + Send>;
 
 fn server_message_name(msg: &ServerToClientMsg) -> String {
     match msg {
+        ServerToClientMsg::SessionRequest(_) => "SessionRequest",
         ServerToClientMsg::AgentControl(_) => "AgentControl",
         ServerToClientMsg::DataResponse { .. } => "DataResponse",
         ServerToClientMsg::PluginResponse { .. } => "PluginResponse",
@@ -53,8 +54,12 @@ pub struct FakeClientOsApi {
     client_screen: ClientScreen,
     size: Arc<Mutex<Size>>,
     stdin_rx: crossbeam::channel::Receiver<Vec<u8>>,
+    stdin_buffer: Arc<Mutex<Option<Vec<u8>>>>,
+    connection_generation: Arc<std::sync::atomic::AtomicUsize>,
+    generation: usize,
     cli_stdin: Option<String>,
     signal_rx: crossbeam::channel::Receiver<SignalEvent>,
+    signal_buffer: Arc<Mutex<Option<SignalEvent>>>,
     send_instructions_to_server: Arc<Mutex<Option<IpcSenderWithContext<ClientToServerMsg>>>>,
     receive_instructions_from_server: Arc<Mutex<Option<IpcReceiverWithContext<ServerToClientMsg>>>>,
     session_name: Arc<Mutex<Option<String>>>,
@@ -69,8 +74,12 @@ impl Clone for FakeClientOsApi {
             client_screen: self.client_screen.clone(),
             size: self.size.clone(),
             stdin_rx: self.stdin_rx.clone(),
+            stdin_buffer: self.stdin_buffer.clone(),
+            connection_generation: self.connection_generation.clone(),
+            generation: self.generation,
             cli_stdin: self.cli_stdin.clone(),
             signal_rx: self.signal_rx.clone(),
+            signal_buffer: self.signal_buffer.clone(),
             send_instructions_to_server: self.send_instructions_to_server.clone(),
             receive_instructions_from_server: self.receive_instructions_from_server.clone(),
             session_name: self.session_name.clone(),
@@ -124,6 +133,12 @@ impl FakeClientHandle {
 }
 
 impl FakeClientOsApi {
+    fn is_current_connection(&self) -> bool {
+        self.generation
+            == self
+                .connection_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+    }
     pub fn new(
         initial_size: Size,
         server_spawner: Option<ServerSpawner>,
@@ -146,8 +161,12 @@ impl FakeClientOsApi {
             client_screen: client_screen.clone(),
             size: size.clone(),
             stdin_rx,
+            stdin_buffer: Default::default(),
+            connection_generation: Default::default(),
+            generation: 0,
             cli_stdin: None,
             signal_rx,
+            signal_buffer: Default::default(),
             send_instructions_to_server: Arc::new(Mutex::new(None)),
             receive_instructions_from_server: Arc::new(Mutex::new(None)),
             session_name: Arc::new(Mutex::new(None)),
@@ -210,15 +229,39 @@ impl StdioAccess for FakeClientOsApi {
         self.cli_stdin.is_none()
     }
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-        self.stdin_rx.recv().map_err(|_| "fake client stdin closed")
+        let mut pending = self.stdin_buffer.lock().unwrap();
+        if !self.is_current_connection() {
+            return Err("session ended");
+        }
+        let bytes = match pending.take() {
+            Some(bytes) => bytes,
+            None => self
+                .stdin_rx
+                .recv()
+                .map_err(|_| "fake client stdin closed")?,
+        };
+        if !self.is_current_connection() {
+            *pending = Some(bytes);
+            Err("session ended")
+        } else {
+            Ok(bytes)
+        }
     }
 }
 
 impl ServerConnection for FakeClientOsApi {
     fn update_session_name(&mut self, new_session_name: yinz_types::internal_ids::SessionName) {
-        *self.session_name.lock().unwrap() = Some(new_session_name.to_string());
+        let mut session_name = self.session_name.lock().unwrap();
+        *session_name = Some(new_session_name.to_string());
+        self.generation = self
+            .connection_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1;
     }
     fn send_to_server(&self, msg: ClientToServerMsg) {
+        if !self.is_current_connection() {
+            return;
+        }
         match self.send_instructions_to_server.lock().unwrap().as_mut() {
             Some(ipc_sender) => {
                 let _ = ipc_sender.send_client_msg(msg);
@@ -270,6 +313,15 @@ impl ServerConnection for FakeClientOsApi {
         }
         received
     }
+    fn install_session_connection(
+        &self,
+        sender: IpcSenderWithContext<ClientToServerMsg>,
+        receiver: IpcReceiverWithContext<ServerToClientMsg>,
+    ) -> std::io::Result<()> {
+        *self.send_instructions_to_server.lock().unwrap() = Some(sender);
+        *self.receive_instructions_from_server.lock().unwrap() = Some(receiver);
+        Ok(())
+    }
     fn connect_to_server(&self, path: &Path) -> Result<(), ConnectToServerError> {
         // Bounded for the same reason as the real one, and doubly so here: a
         // test whose server never binds should fail with a message naming the
@@ -299,13 +351,33 @@ impl ServerConnection for FakeClientOsApi {
 impl SignalSource for FakeClientOsApi {
     fn handle_signals(&self, sigwinch_cb: Box<dyn Fn()>, quit_cb: Box<dyn Fn()>) {
         loop {
-            match self.signal_rx.recv() {
-                Ok(SignalEvent::Resize) => sigwinch_cb(),
-                Ok(SignalEvent::Quit) => {
+            let mut pending = self.signal_buffer.lock().unwrap();
+            if !self.is_current_connection() {
+                break;
+            }
+            let event = match pending.take() {
+                Some(event) => event,
+                None => match self
+                    .signal_rx
+                    .recv_timeout(std::time::Duration::from_millis(100))
+                {
+                    Ok(event) => event,
+                    Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+                },
+            };
+            // Keep handoff from invalidating a callback between its check and send_to_server.
+            let _session_name = self.session_name.lock().unwrap();
+            if !self.is_current_connection() {
+                *pending = Some(event);
+                break;
+            }
+            match event {
+                SignalEvent::Resize => sigwinch_cb(),
+                SignalEvent::Quit => {
                     quit_cb();
                     break;
                 },
-                Err(_) => break,
             }
         }
     }
@@ -315,6 +387,9 @@ impl SignalSource for FakeClientOsApi {
 }
 
 impl ClientOsApi for FakeClientOsApi {
+    fn original_termios(&self) -> Option<yinz_runtime::termios::WireTermios> {
+        None
+    }
     fn box_clone(&self) -> Box<dyn ClientOsApi> {
         Box::new(self.clone())
     }
@@ -322,3 +397,7 @@ impl ClientOsApi for FakeClientOsApi {
         false
     }
 }
+
+#[cfg(test)]
+#[path = "unit/fake_client_os_api.rs"]
+mod tests;

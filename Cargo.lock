@@ -4658,7 +4658,9 @@ dependencies = [
  "yinz-config",
  "yinz-ipc",
  "yinz-key-codec",
+ "yinz-process",
  "yinz-runtime",
+ "yinz-session",
  "yinz-test-support",
  "yinz-types",
 ]

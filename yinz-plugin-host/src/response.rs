@@ -347,6 +347,14 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 None => value(r.client_ids),
             },
         ),
+        CommandType::GetSessionInventory | CommandType::SwitchSessionDestination => decode(bytes)
+            .and_then(
+            |r: yinz_plugin_api::generated_api::api::plugin_command::SessionDestinationResponse| {
+                let reply: Result<serde_json::Value, String> =
+                    serde_json::from_str(&r.json).context("decode session destination response")?;
+                value(reply.map_err(anyhow::Error::msg)?)
+            },
+        ),
         CommandType::GetSessionList => {
             decode(bytes).and_then(|r: ProtobufGetSessionListResponse| {
                 match GetSessionListResponse::try_from(r).map_err(|e| anyhow!("{}", e))? {

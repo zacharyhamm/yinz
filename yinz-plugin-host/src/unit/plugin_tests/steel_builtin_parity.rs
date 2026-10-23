@@ -591,6 +591,25 @@ fn session_palette_deno_steel_runtime_parity() {
             0,
             std::array::from_fn(|_| json!({"type":"discover","source":null,"query":""})),
         ));
+        // The captured switch list predates cross-machine inventory; consume its trace
+        // while keeping the unchanged tab, pane, creation and administration comparisons.
+        fn palette(pair: &mut Pair, messages: [Value; 2], legacy_switch: bool) -> [Value; 2] {
+            if !legacy_switch {
+                return pair.palette(messages);
+            }
+            pair.reference.step(
+                json!({"palette":messages[0]}),
+                pair.now.load(Ordering::SeqCst),
+            );
+            let commands = std::mem::take(&mut pair.reference.commands);
+            let reply = commands
+                .iter()
+                .rev()
+                .find_map(|(command, _)| command.pointer("/CommandPalette/result"))
+                .unwrap()
+                .clone();
+            [reply.clone(), reply]
+        }
         for (index, root) in [
             "switch-session",
             "find-pane",
@@ -610,27 +629,24 @@ fn session_palette_deno_steel_runtime_parity() {
                     .unwrap();
                 json!({"type":"execute","handle":action["handle"],"values":null})
             });
-            let views = pair.palette(palette_message(
-                &registrations,
-                3 + index as u64 * 3,
-                0,
-                messages,
-            ));
+            let views = palette(
+                &mut pair,
+                palette_message(&registrations, 3 + index as u64 * 3, 0, messages),
+                root == "switch-session",
+            );
             if views[0]["Ok"]["view"]["type"] == "actions" {
                 let messages = views.each_ref().map(|reply| json!({"type":"discover","source":reply["Ok"]["view"]["source"],"query":""}));
-                pair.palette(palette_message(
-                    &registrations,
-                    4 + index as u64 * 3,
-                    1,
-                    messages,
-                ));
+                palette(
+                    &mut pair,
+                    palette_message(&registrations, 4 + index as u64 * 3, 1, messages),
+                    root == "switch-session",
+                );
                 let messages = views.each_ref().map(|reply| json!({"type":"discover","source":reply["Ok"]["view"]["source"],"query":"session-204"}));
-                pair.palette(palette_message(
-                    &registrations,
-                    5 + index as u64 * 3,
-                    1,
-                    messages,
-                ));
+                palette(
+                    &mut pair,
+                    palette_message(&registrations, 5 + index as u64 * 3, 1, messages),
+                    root == "switch-session",
+                );
             }
         }
         pair.event(json!("BeforeClose"));

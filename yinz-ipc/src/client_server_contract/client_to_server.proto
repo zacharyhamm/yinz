@@ -6,6 +6,7 @@ import "common_types.proto";
 message ClientToServerMsg {
   reserved 14, 15, 21, 26;
   oneof message {
+    string session_reply_json = 37;
     string agent_control_json = 33;
     DataRequestMsg data_request = 34;
     DataRequestMsg plugin_request = 36;

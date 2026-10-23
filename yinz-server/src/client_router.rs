@@ -424,6 +424,9 @@ pub(crate) fn route_thread_main(
                         return Ok(false);
                     };
                     match instruction {
+                        ClientToServerMsg::SessionReply(reply) => {
+                            to_server.send(ServerInstruction::SessionReply(client_id, reply)).context("route client session reply")?;
+                        },
                         ClientToServerMsg::AgentControl(request) => {
                             use yinz_types::agent::control::{AgentOutcome, AgentResponse};
                             if matches!(&request, yinz_types::agent::control::AgentRequest::Spawn { .. } | yinz_types::agent::control::AgentRequest::SpawnNewProject { .. } | yinz_types::agent::control::AgentRequest::List { project: Some(_) }) {

@@ -7,6 +7,7 @@ use std::{
     fmt::{Display, Error, Formatter},
     io::{self, Read, Write},
     marker::PhantomData,
+    time::Instant,
 };
 use yinz_runtime::errors::prelude::*;
 use yinz_types::data::ClientId;
@@ -46,9 +47,12 @@ pub trait IpcStream: Read + Write + Send + 'static {
     ///
     /// A read that runs out of time fails with `WouldBlock` (Linux) or
     /// `TimedOut` (elsewhere), which `classify_read_error` reports as
-    /// [`IpcRecv::Idle`] if no frame bytes arrived. A deadline that cuts a frame
-    /// short makes the receiver terminal, since its next boundary is unknown.
+    /// [`IpcRecv::Idle`]. Partial headers and payloads stay in the receiver and
+    /// resume on the next read, including after the timeout is removed.
     fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()>;
+
+    /// Bound every write with `timeout`, or remove the bound with `None`.
+    fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()>;
 }
 
 impl IpcStream for LocalSocketStream {
@@ -60,6 +64,11 @@ impl IpcStream for LocalSocketStream {
     fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
         use interprocess::local_socket::traits::Stream as _;
         self.set_recv_timeout(timeout)
+    }
+
+    fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        use interprocess::local_socket::traits::Stream as _;
+        self.set_send_timeout(timeout)
     }
 }
 
@@ -135,6 +144,7 @@ pub struct EventSubscription {
     strum_macros::VariantNames,
 )]
 pub enum ClientToServerMsg {
+    SessionReply(yinz_types::session_destination::Reply),
     AgentControl(yinz_types::agent::control::AgentRequest),
     PluginRequest {
         request_id: String,
@@ -255,6 +265,7 @@ pub enum ClientToServerMsg {
     strum_macros::VariantNames,
 )]
 pub enum ServerToClientMsg {
+    SessionRequest(yinz_types::session_destination::Request),
     AgentControl(yinz_types::agent::control::AgentResponse),
     PluginResponse {
         request_id: String,
@@ -424,6 +435,11 @@ impl<T: Serialize> IpcSenderWithContext<T> {
         }
     }
 
+    /// Bound every following write with `timeout`, or lift the bound with `None`.
+    pub fn set_send_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        self.sender.set_write_timeout(timeout)
+    }
+
     pub fn send_client_msg(&mut self, msg: ClientToServerMsg) -> Result<()> {
         let proto_msg: ProtoClientToServerMsg = msg.try_into()?;
         self.send_message(&proto_msg)
@@ -472,9 +488,10 @@ pub enum IpcRecv<T> {
     Eof,
     /// A frame arrived but could not be read as a message. Possibly survivable.
     Malformed,
-    /// Nothing has arrived yet. A blocking socket with no deadline never says
-    /// this — it waits — so this comes from non-blocking transports, test
-    /// doubles, and sockets carrying a receive timeout (see `assert_socket` in
+    /// No complete frame has arrived yet; partial bytes are retained.
+    /// A blocking socket with no deadline never says this — it waits — so this
+    /// comes from non-blocking transports, test doubles, and sockets carrying
+    /// a receive timeout (see `assert_socket` in
     /// `sessions.rs`, which probes a possibly-wedged server). Without a name for
     /// it "nothing yet" gets counted as "garbage", which is the conflation this
     /// enum exists to stop.
@@ -498,13 +515,11 @@ impl<T> IpcRecv<T> {
 /// Decide whether a failed read means "the peer hung up" or "that frame was bad".
 ///
 /// Only a complete frame with an invalid protobuf can be skipped safely.
-/// Transport and framing failures are terminal: the unread bytes are not
-/// necessarily the start of another frame.
+/// Timeouts preserve the partial frame; other transport and framing failures
+/// are terminal.
 fn classify_read_error<T>(e: anyhow::Error, msg_type: &str) -> IpcRecv<T> {
     if let Some(io_err) = e.downcast_ref::<io::Error>() {
-        // A receive timeout expiring is not a bad frame: nothing arrived at all,
-        // and the stream is still open and still in sync. Linux reports it as
-        // `WouldBlock`, other platforms as `TimedOut`.
+        // Timeouts preserve partial frames: `WouldBlock` on Linux, `TimedOut` elsewhere.
         if matches!(
             io_err.kind(),
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
@@ -525,6 +540,7 @@ fn classify_read_error<T>(e: anyhow::Error, msg_type: &str) -> IpcRecv<T> {
 /// Receives messages on a stream socket, along with an [`ErrorContext`].
 pub struct IpcReceiverWithContext<T> {
     receiver: io::BufReader<Box<dyn IpcStream>>,
+    frame: IncomingFrame,
     closed: bool,
     _phantom: PhantomData<T>,
 }
@@ -535,16 +551,13 @@ where
 {
     /// Returns a receiver to the given [LocalSocketStream](interprocess::local_socket::LocalSocketStream).
     pub fn new(receiver: LocalSocketStream) -> Self {
-        Self {
-            receiver: io::BufReader::new(Box::new(receiver)),
-            closed: false,
-            _phantom: PhantomData,
-        }
+        Self::from_boxed(Box::new(receiver))
     }
 
     fn from_boxed(receiver: Box<dyn IpcStream>) -> Self {
         Self {
             receiver: io::BufReader::new(receiver),
+            frame: IncomingFrame::default(),
             closed: false,
             _phantom: PhantomData,
         }
@@ -562,7 +575,10 @@ where
         if self.closed {
             return IpcRecv::Eof;
         }
-        match read_protobuf_message::<ProtoClientToServerMsg>(&mut self.receiver) {
+        match self
+            .frame
+            .read_message::<ProtoClientToServerMsg>(|bytes| self.receiver.read(bytes))
+        {
             Ok(proto_msg) => match proto_msg.try_into() {
                 Ok(rust_msg) => IpcRecv::Msg(rust_msg, ErrorContext::default()),
                 Err(e) => {
@@ -579,10 +595,32 @@ where
     }
 
     pub fn recv_server_msg(&mut self) -> IpcRecv<ServerToClientMsg> {
+        self.recv_server_msg_with_deadline(None)
+    }
+
+    /// Receive until an absolute deadline, retaining any partial frame on expiry.
+    /// This replaces the socket's read timeout; call `set_recv_timeout` to reset it afterwards.
+    pub fn recv_server_msg_until(&mut self, deadline: Instant) -> IpcRecv<ServerToClientMsg> {
+        self.recv_server_msg_with_deadline(Some(deadline))
+    }
+
+    fn recv_server_msg_with_deadline(
+        &mut self,
+        deadline: Option<Instant>,
+    ) -> IpcRecv<ServerToClientMsg> {
         if self.closed {
             return IpcRecv::Eof;
         }
-        match read_protobuf_message::<ProtoServerToClientMsg>(&mut self.receiver) {
+        match self.frame.read_message::<ProtoServerToClientMsg>(|bytes| {
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                self.receiver.get_ref().set_read_timeout(Some(remaining))?;
+            }
+            self.receiver.read(bytes)
+        }) {
             Ok(proto_msg) => match proto_msg.try_into() {
                 Ok(rust_msg) => IpcRecv::Msg(rust_msg, ErrorContext::default()),
                 Err(e) => {
@@ -622,33 +660,55 @@ pub use crate::MAX_IPC_FRAME_LEN;
 pub(crate) fn read_protobuf_message_for_test(
     reader: &mut impl Read,
 ) -> Result<ProtoClientToServerMsg> {
-    read_protobuf_message(reader)
+    IncomingFrame::default().read_message(|bytes| reader.read(bytes))
 }
 
-fn read_protobuf_message<T: Message + Default>(reader: &mut impl Read) -> Result<T> {
-    // Read length-prefixed protobuf message
-    let mut len_bytes = [0u8; 4];
-    // An idle read is retryable only before the first byte of a frame. Once
-    // that byte arrives, a failed read must never restart inside its payload.
-    reader.read_exact(&mut len_bytes[..1])?;
-    reader
-        .read_exact(&mut len_bytes[1..])
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    let len = u32::from_le_bytes(len_bytes) as usize;
-    if len > MAX_IPC_FRAME_LEN {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("refusing a {len} byte IPC frame, over the {MAX_IPC_FRAME_LEN} byte limit"),
-        )
-        .into());
+#[derive(Default)]
+struct IncomingFrame {
+    length: [u8; 4],
+    length_read: usize,
+    payload: Vec<u8>,
+    payload_read: usize,
+}
+
+impl IncomingFrame {
+    fn read_message<T: Message + Default>(
+        &mut self,
+        mut read: impl FnMut(&mut [u8]) -> io::Result<usize>,
+    ) -> Result<T> {
+        read_partial(&mut read, &mut self.length, &mut self.length_read)
+            .context("read IPC frame length")?;
+        let len = u32::from_le_bytes(self.length) as usize;
+        if len > MAX_IPC_FRAME_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("refusing a {len} byte IPC frame, over the {MAX_IPC_FRAME_LEN} byte limit"),
+            )
+            .into());
+        }
+        self.payload.resize(len, 0);
+        read_partial(&mut read, &mut self.payload, &mut self.payload_read)
+            .context("read IPC frame payload")?;
+        let message = T::decode(&self.payload[..]).context("decode IPC frame");
+        *self = Self::default();
+        message
     }
+}
 
-    let mut buf = vec![0u8; len];
-    reader
-        .read_exact(&mut buf)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    T::decode(&buf[..]).map_err(Into::into)
+fn read_partial(
+    reader: &mut impl FnMut(&mut [u8]) -> io::Result<usize>,
+    bytes: &mut [u8],
+    read: &mut usize,
+) -> io::Result<()> {
+    while *read < bytes.len() {
+        match reader(&mut bytes[*read..]) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => *read += n,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 /// Refuse a frame over [`MAX_IPC_FRAME_LEN`] before any of it is written.

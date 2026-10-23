@@ -217,3 +217,37 @@ fn deferred_form_completion_serializes_callbacks_and_errors_stay_in_the_palette(
         .update(json!({"CustomMessage":["alive",""]}))
         .unwrap();
 }
+
+#[test]
+fn source_cleanup_retains_the_acting_client_and_runs_once() {
+    let mut h = Harness::new(
+        r#"
+      (define cleaned '())
+      (define (load config)
+        (yinz-palette-register "cleanup" "Cleanup" (list
+          (hash "id" "open" "label" "Open" "run" (lambda (_ context)
+            (hash "type" "actions" "title" "Inventory"
+              "source" (lambda (query context) '())
+              "onClose" (lambda () (set! cleaned (cons %async-client cleaned)))))))))
+    "#,
+    );
+    h.runtime.load(json!({})).unwrap();
+    let registration = registered(&h);
+    send(
+        &mut h,
+        2,
+        json!({"type":"discover","source":null,"query":"","scope":scope(registration.clone(),1)}),
+    );
+    let handle = replies(&h)[0]["result"]["Ok"]["actions"][0]["handle"].clone();
+    send(
+        &mut h,
+        2,
+        json!({"type":"execute","handle":handle,"values":null,"scope":scope(registration,2)}),
+    );
+    let source = replies(&h).last().unwrap()["result"]["Ok"]["view"]["source"].clone();
+    send(&mut h, 3, json!({"type":"release","handles":[source]}));
+    assert_eq!(h.value("cleaned"), json!([]));
+    send(&mut h, 2, json!({"type":"release","handles":[source]}));
+    send(&mut h, 2, json!({"type":"dismiss","opening":1}));
+    assert_eq!(h.value("cleaned"), json!([2]));
+}

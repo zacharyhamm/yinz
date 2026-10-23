@@ -494,6 +494,7 @@ impl SteelPlugin {
         self.watcher.abort();
         self.interrupt.interrupt();
         self.env_mut().filesystem_watcher.take();
+        crate::session_destinations::cancel_preparations(self.env_mut());
         self.env().clear_agent_providers();
         self.env().clear_data_watches(self.generation);
         self.env()

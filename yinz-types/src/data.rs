@@ -3158,6 +3158,8 @@ pub enum PluginCommand {
         context: BTreeMap<String, String>,
     },
     GetSessionList,
+    GetSessionInventory(String),
+    SwitchSessionDestination(crate::session_destination::SwitchRequest),
     GetDisconnectTargets,
     KillSessionsAndReply(Vec<SessionName>), // one or more session names; sends a response back
     DeleteDeadSessionAndReply(SessionName), // session name; sends a response back

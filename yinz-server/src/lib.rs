@@ -1607,6 +1607,7 @@ pub fn start_server_impl(
     // from "the session was closed" after the fact.
     let exit_reason: &str;
     let mut kill_session = false;
+    let mut session_requests = std::collections::HashMap::new();
     let mut kill_completion_client = None;
     let mut kill_progress_client = None;
     // Until a first client has initialised the session, the wait is bounded by
@@ -2369,6 +2370,41 @@ pub fn start_server_impl(
                     session_data
                 );
             },
+            ServerInstruction::SessionRequest {
+                client,
+                request,
+                reply,
+            } => {
+                session_requests.retain(
+                    |_,
+                     (_, at): &mut (
+                        std::sync::mpsc::Sender<
+                            Result<yinz_types::session_destination::ClientReply, String>,
+                        >,
+                        std::time::Instant,
+                    )| at.elapsed() < std::time::Duration::from_secs(5),
+                );
+                if is_attached(client, &session_state).unwrap_or(false) {
+                    session_requests.insert(
+                        (client, request.token.clone()),
+                        (reply, std::time::Instant::now()),
+                    );
+                    send_to_client!(
+                        client,
+                        os_input,
+                        ServerToClientMsg::SessionRequest(request),
+                        session_state,
+                        session_data
+                    );
+                } else {
+                    let _ = reply.send(Err("The requesting client is no longer attached".into()));
+                }
+            },
+            ServerInstruction::SessionReply(client, reply) => {
+                if let Some((sender, _)) = session_requests.remove(&(client, reply.token)) {
+                    let _ = sender.send(reply.result);
+                }
+            },
             ServerInstruction::SwitchSession(mut connect_to_session, client_id, completion_tx) => {
                 let current_session_name = envs::get_session_name();
                 if connect_to_session.name == current_session_name.ok() {
@@ -2417,6 +2453,20 @@ pub fn start_server_impl(
                 .non_fatal();
             },
             ServerInstruction::SetCommandPaletteOpen(client_id, open) => {
+                if !open {
+                    send_to_client!(
+                        client_id,
+                        os_input,
+                        ServerToClientMsg::SessionRequest(
+                            yinz_types::session_destination::Request {
+                                token: String::new(),
+                                request: yinz_types::session_destination::ClientRequest::CancelAll,
+                            }
+                        ),
+                        session_state,
+                        session_data
+                    );
+                }
                 if is_attached(client_id, &session_state)
                     .to_log()
                     .unwrap_or(false)

@@ -2326,6 +2326,10 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             context: context(tc),
         },
         CommandType::GetDisconnectTargets => PluginCommand::GetDisconnectTargets,
+        CommandType::GetSessionInventory => PluginCommand::GetSessionInventory("inventory".into()),
+        CommandType::SwitchSessionDestination => PluginCommand::SwitchSessionDestination(
+            yinz_types::session_destination::SwitchRequest::Status("switch".into()),
+        ),
         CommandType::GetSessionList => PluginCommand::GetSessionList,
         CommandType::KillSessionsAndReply => PluginCommand::KillSessionsAndReply(
             up_to(tc, 3, strings).into_iter().map(Into::into).collect(),

@@ -534,7 +534,20 @@ fn remote_bootstrap_missing_existing_create_and_resurrection() {
     let panes = session.success(&["--session", NAME, "action", "list-panes", "--json"]);
     assert!(String::from_utf8_lossy(&panes.stdout)
         .contains(session.0.path().join("home").to_str().unwrap()));
+    let panes: serde_json::Value = serde_json::from_slice(&panes.stdout).unwrap();
+    let pane = panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["is_plugin"] == false)
+        .unwrap();
+    assert_eq!(pane["pane_rows"], 24);
+    assert_eq!(pane["pane_columns"], 80);
     let pid = server_pid(&session);
+    if let Some(pid) = pid {
+        let args = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+        assert!(!args.split(|byte| *byte == 0).any(|arg| arg == b"--debug"));
+    }
     session.remote_endpoint(false);
     session.remote_endpoint(true);
     assert_eq!(pid, server_pid(&session));
@@ -549,6 +562,260 @@ fn remote_bootstrap_missing_existing_create_and_resurrection() {
     session.remote_endpoint(true);
     session.wait_for_panes(false);
     assert!(session.checkpoint().contains("pane"));
+    for _ in 0..2 {
+        session.success(&["--session", NAME, "action", "new-pane"]);
+    }
+    let panes = session.success(&["--session", NAME, "action", "list-panes", "--json"]);
+    let panes: serde_json::Value = serde_json::from_slice(&panes.stdout).unwrap();
+    assert_eq!(
+        panes
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|pane| pane["is_plugin"] == false)
+            .count(),
+        3,
+        "{panes}"
+    );
+    let log_dir = session
+        .0
+        .path()
+        .join(format!("tmp/yinz-{}/yinz-log", nix::unistd::Uid::current()));
+    assert!(!fs::read_dir(log_dir).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("yinz-")
+    }));
+}
+
+#[test]
+fn remote_bootstrap_resurrects_without_loading_the_default_layout() {
+    for invalid in [false, true] {
+        let session = Session::new();
+        session.remote_layout();
+        let layout = session.0.path().join("remote.kdl");
+        if invalid {
+            fs::write(&layout, "layout { invalid").unwrap();
+        } else {
+            fs::remove_file(&layout).unwrap();
+        }
+        let out = session.remote_bootstrap(true).output().unwrap();
+        assert!(!out.status.success(), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("load remote configuration and layout"),
+            "{out:?}"
+        );
+        assert!(!session.socket().exists());
+
+        session.success(&[
+            "--layout-string",
+            "layout { pane name=\"saved checkpoint\"; }",
+            "attach",
+            "--create-background",
+            NAME,
+        ]);
+        session.wait_for_panes(false);
+        session.success(&["--session", NAME, "action", "save-session"]);
+        session.success(&["kill-session", NAME]);
+        session.remote_endpoint(true);
+        session.wait_for_panes(false);
+        let panes = session.success(&["--session", NAME, "action", "list-panes", "--json"]);
+        assert!(String::from_utf8_lossy(&panes.stdout).contains("saved checkpoint"));
+        session.success(&["kill-session", NAME]);
+
+        write_checkpoint(
+            &session.folder(),
+            "metadata",
+            &("layout { invalid".into(), Default::default()),
+        )
+        .unwrap();
+        let out = session.remote_bootstrap(true).output().unwrap();
+        assert!(!out.status.success(), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("read remote session checkpoint"),
+            "{out:?}"
+        );
+        assert!(!session.socket().exists());
+    }
+}
+
+#[test]
+fn local_bootstrap_preserves_selected_paths_options_and_checkpoint_layout() {
+    let session = Session::new();
+    let config = session.0.path().join("selected config.kdl");
+    let config_dir = session.0.path().join("selected config directory");
+    let data_dir = session.0.path().join("selected data directory");
+    yinz_steel_builtins::install(&yinz_steel_builtins::asset_dir(), &data_dir).unwrap();
+    fs::create_dir_all(config_dir.join("layouts")).unwrap();
+    fs::write(
+        &config,
+        "detachable_panes false\nload_plugins clear-defaults=true\ndefault_layout \"selected\"\nscroll_buffer_size 1000\n",
+    )
+    .unwrap();
+    let layout = config_dir.join("layouts/selected.kdl");
+    fs::write(&layout, "layout { pane name=\"selected configuration\"; }").unwrap();
+    for resurrect in [false, true] {
+        let out = session
+            .command()
+            .arg("--config")
+            .arg(&config)
+            .arg("--config-dir")
+            .arg(&config_dir)
+            .arg("--data-dir")
+            .arg(&data_dir)
+            .args([
+                "remote-session",
+                "--create",
+                "--client-version",
+                yinz_runtime::consts::VERSION,
+                "--contract-version",
+                &yinz_runtime::consts::CLIENT_SERVER_CONTRACT_VERSION.to_string(),
+                "--configuration-options",
+                &serde_json::to_string(&yinz_types::input::options::Options {
+                    scroll_buffer_size: Some(32),
+                    ..Default::default()
+                })
+                .unwrap(),
+                "--",
+                NAME,
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        session.wait_for_panes(false);
+        let panes = session.success(&["--session", NAME, "action", "list-panes", "--json"]);
+        let panes = String::from_utf8(panes.stdout).unwrap();
+        assert!(
+            panes.contains("selected configuration"),
+            "resurrect={resurrect}: {panes}"
+        );
+        let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
+        let pane_id = panes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pane| pane["is_plugin"] == false)
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap()
+            .to_string();
+        session.success(&["--session", NAME, "data", "catalog"]);
+        assert!(data_dir.join("plugin-data.db").is_file());
+        assert!(data_dir.join("host-id").is_file());
+        let marker = format!("buffer-complete-{resurrect}");
+        session.success(&[
+            "--session", NAME, "action", "write-chars", "--pane-id", &pane_id,
+            &format!("i=0; while [ \"$i\" -lt 200 ]; do printf 'buffer-line-%03d\\n' \"$i\"; i=$((i+1)); done; printf '{marker}\\n'\n"),
+        ]);
+        let screen = yinz_test_support::Watched::new(String::new());
+        let timeout = Duration::from_secs(30);
+        let complete = |text: &str| text.lines().any(|line| line.trim() == marker);
+        let dump = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let deadline = std::time::Instant::now() + timeout;
+                while std::time::Instant::now() < deadline {
+                    let out = session
+                        .command()
+                        .args([
+                            "--session",
+                            NAME,
+                            "action",
+                            "dump-screen",
+                            "--full",
+                            "--pane-id",
+                            &pane_id,
+                        ])
+                        .output()
+                        .unwrap();
+                    assert!(out.status.success(), "{out:?}");
+                    let text = String::from_utf8(out.stdout).unwrap();
+                    let done = complete(&text);
+                    *screen.lock() = text;
+                    if done {
+                        return;
+                    }
+                }
+            });
+            screen.wait_until("scrollback output", timeout, |text| {
+                complete(text).then(|| text.clone())
+            })
+        });
+        assert!(dump.contains("buffer-line-199"), "{dump}");
+        // The process-wide scrollback limit is fixed at server initialization.
+        assert!(
+            !dump.contains("buffer-line-000"),
+            "resurrect={resurrect}: {dump}"
+        );
+        session.success(&["--session", NAME, "action", "save-session"]);
+        session.success(&["kill-session", NAME]);
+        fs::write(&layout, "layout { pane name=\"changed default\"; }").unwrap();
+    }
+}
+
+#[test]
+fn bootstrap_rejects_malformed_configuration_options_before_startup() {
+    for json in ["{", r#"{"scroll_buffer_size":"invalid"}"#, "null"] {
+        let session = Session::new();
+        fs::remove_dir(session.socket().parent().unwrap()).unwrap();
+        let out = session
+            .remote_bootstrap(true)
+            .args(["--configuration-options", json])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("decode configuration options"),
+            "{out:?}"
+        );
+        assert!(!session.socket().parent().unwrap().exists());
+        assert!(!session.folder().exists());
+    }
+}
+
+#[test]
+fn bootstrap_rejects_malformed_terminal_settings_before_startup() {
+    for json in ["{", "{}", "42", r#"{"iflag":"invalid"}"#] {
+        let session = Session::new();
+        fs::remove_dir(session.socket().parent().unwrap()).unwrap();
+        let out = session
+            .remote_bootstrap(true)
+            .args(["--client-termios", json])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("decode client terminal settings"),
+            "{out:?}"
+        );
+        assert!(!session.socket().parent().unwrap().exists());
+        assert!(!session.folder().exists());
+    }
+}
+
+#[test]
+fn bootstrap_rejects_malformed_terminal_window_size_before_startup() {
+    for json in ["{", "{}", "null", r#"{"rows":"invalid","cols":120}"#] {
+        let session = Session::new();
+        fs::remove_dir(session.socket().parent().unwrap()).unwrap();
+        let out = session
+            .remote_bootstrap(true)
+            .args(["--terminal-window-size", json])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("decode terminal window size"),
+            "{out:?}"
+        );
+        assert!(!session.socket().parent().unwrap().exists());
+        assert!(!session.folder().exists());
+        assert!(fs::read_dir(session.0.path().join("tmp"))
+            .unwrap()
+            .next()
+            .is_none());
+    }
 }
 
 #[test]

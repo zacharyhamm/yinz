@@ -68,21 +68,52 @@ impl SlowWarnings {
 
 /// Spawn the router thread. It runs until the server says `Exit` or the
 /// socket gives up, and the caller joins it during shutdown.
+#[cfg(test)]
 pub(crate) fn spawn(
     os_input: Box<dyn ClientOsApi>,
     send_client_instructions: SenderWithContext<ClientInstruction>,
     render_budget: Arc<RenderBudget>,
 ) -> thread::JoinHandle<()> {
+    spawn_with_initial(
+        os_input,
+        send_client_instructions,
+        render_budget,
+        Default::default(),
+    )
+}
+
+pub(crate) fn spawn_with_initial(
+    os_input: Box<dyn ClientOsApi>,
+    send_client_instructions: SenderWithContext<ClientInstruction>,
+    render_budget: Arc<RenderBudget>,
+    initial: std::collections::VecDeque<(ServerToClientMsg, ErrorContext)>,
+) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("router".to_string())
-        .spawn(move || route(os_input, send_client_instructions, &render_budget))
+        .spawn(move || {
+            route_with_initial(os_input, send_client_instructions, &render_budget, initial)
+        })
         .unwrap()
 }
 
+#[cfg(test)]
 pub(crate) fn route(
     os_input: Box<dyn ClientOsApi>,
     send_client_instructions: SenderWithContext<ClientInstruction>,
     render_budget: &RenderBudget,
+) {
+    route_with_initial(
+        os_input,
+        send_client_instructions,
+        render_budget,
+        Default::default(),
+    );
+}
+fn route_with_initial(
+    os_input: Box<dyn ClientOsApi>,
+    send_client_instructions: SenderWithContext<ClientInstruction>,
+    render_budget: &RenderBudget,
+    mut initial: std::collections::VecDeque<(ServerToClientMsg, ErrorContext)>,
 ) {
     let mut consecutive_malformed_messages_received = 0;
     let started_at = Instant::now();
@@ -95,7 +126,11 @@ pub(crate) fn route(
         std::process::id()
     );
     loop {
-        match os_input.recv_from_server() {
+        match initial
+            .pop_front()
+            .map(|(message, context)| IpcRecv::Msg(message, context))
+            .unwrap_or_else(|| os_input.recv_from_server())
+        {
             IpcRecv::Msg(instruction, err_ctx) => {
                 consecutive_malformed_messages_received = 0;
                 let tracing_first_message = waiting_for_first_message;

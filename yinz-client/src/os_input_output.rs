@@ -97,8 +97,18 @@ pub struct ClientOsInputOutput {
     send_instructions_to_server: Arc<Mutex<Option<IpcSenderWithContext<ClientToServerMsg>>>>,
     receive_instructions_from_server: Arc<Mutex<Option<IpcReceiverWithContext<ServerToClientMsg>>>>,
     reading_from_stdin: Arc<Mutex<Option<Vec<u8>>>>,
-    session_name: Arc<Mutex<Option<SessionName>>>,
+    connection_generation: Arc<std::sync::atomic::AtomicUsize>,
+    generation: usize,
     orig_termios: Option<yinz_runtime::termios::WireTermios>,
+}
+
+impl ClientOsInputOutput {
+    fn is_current_connection(&self) -> bool {
+        self.generation
+            == self
+                .connection_generation
+                .load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 impl std::fmt::Debug for ClientOsInputOutput {
@@ -260,6 +270,15 @@ pub trait ServerConnection {
     /// a client that spins on that gives the user a hang with nothing on screen
     /// to explain it.
     fn connect_to_server(&self, path: &Path) -> Result<(), ConnectToServerError>;
+    fn install_session_connection(
+        &self,
+        _sender: IpcSenderWithContext<ClientToServerMsg>,
+        _receiver: IpcReceiverWithContext<ServerToClientMsg>,
+    ) -> io::Result<()> {
+        Err(io::Error::other(
+            "This client cannot switch destination connections",
+        ))
+    }
     fn update_session_name(&mut self, new_session_name: SessionName);
     fn spawn_server(&self, socket_path: &Path, debug: bool) -> Result<(), std::io::Error> {
         crate::spawn_server(socket_path, debug)
@@ -294,6 +313,8 @@ pub trait ClientOsApi:
 {
     /// Returns a [`Box`] pointer to this [`ClientOsApi`] struct.
     fn box_clone(&self) -> Box<dyn ClientOsApi>;
+    /// Terminal settings captured before the client entered raw mode.
+    fn original_termios(&self) -> Option<yinz_runtime::termios::WireTermios>;
     fn should_install_panic_hook(&self) -> bool {
         true
     }
@@ -337,20 +358,11 @@ impl TtyControl for ClientOsInputOutput {
 
 impl StdioAccess for ClientOsInputOutput {
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-        let session_name_at_calltime = { self.session_name.lock().unwrap().clone() };
-        // here we wait for a lock in case another thread is holding stdin
-        // this can happen for example when switching sessions, the old thread will only be
-        // released once it sees input over STDIN
-        //
-        // when this happens, we detect in the other thread that our session is ended (by comparing
-        // the session name at the beginning of the call and the one after we read from STDIN), and
-        // so place what we read from STDIN inside a buffer (the "reading_from_stdin" on our state)
-        // and release the lock
-        //
-        // then, another thread will see there's something in the buffer immediately as it acquires
-        // the lock (without having to wait for STDIN itself) forward this buffer and proceed to
-        // wait for the "real" STDIN net time it is called
+        // Readers from an old connection leave bytes for the new reader, even for equal names.
         let mut buffered_bytes = self.reading_from_stdin.lock().unwrap();
+        if !self.is_current_connection() {
+            return Err("Session ended");
+        }
         match buffered_bytes.take() {
             Some(buffered_bytes) => Ok(buffered_bytes),
             None => {
@@ -361,11 +373,7 @@ impl StdioAccess for ClientOsInputOutput {
                 let read_bytes = Vec::from(buffer);
                 stdin.consume(length);
 
-                let session_name_after_reading_from_stdin =
-                    { self.session_name.lock().unwrap().clone() };
-                if session_name_at_calltime.is_some()
-                    && session_name_at_calltime != session_name_after_reading_from_stdin
-                {
+                if !self.is_current_connection() {
                     *buffered_bytes = Some(read_bytes);
                     Err("Session ended")
                 } else {
@@ -403,11 +411,17 @@ impl ServerConnection for ClientOsInputOutput {
         crate::spawn_server_with_termios(socket_path, debug, Some(&self.orig_termios))
     }
 
-    fn update_session_name(&mut self, new_session_name: SessionName) {
-        *self.session_name.lock().unwrap() = Some(new_session_name);
+    fn update_session_name(&mut self, _new_session_name: SessionName) {
+        self.generation = self
+            .connection_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1;
     }
 
     fn send_to_server(&self, msg: ClientToServerMsg) {
+        if !self.is_current_connection() {
+            return;
+        }
         let startup_message = match &msg {
             ClientToServerMsg::AttachClient { .. } => Some("AttachClient"),
             ClientToServerMsg::FirstClientConnected { .. } => Some("FirstClientConnected"),
@@ -456,6 +470,21 @@ impl ServerConnection for ClientOsInputOutput {
             .unwrap()
             .recv_server_msg()
     }
+    fn install_session_connection(
+        &self,
+        sender: IpcSenderWithContext<ClientToServerMsg>,
+        receiver: IpcReceiverWithContext<ServerToClientMsg>,
+    ) -> io::Result<()> {
+        *self
+            .send_instructions_to_server
+            .lock()
+            .map_err(|_| io::Error::other("client sender lock poisoned"))? = Some(sender);
+        *self
+            .receive_instructions_from_server
+            .lock()
+            .map_err(|_| io::Error::other("client receiver lock poisoned"))? = Some(receiver);
+        Ok(())
+    }
     fn connect_to_server(&self, path: &Path) -> Result<(), ConnectToServerError> {
         let socket = connect_with_deadline(
             path,
@@ -479,6 +508,9 @@ impl SignalSource for ClientOsInputOutput {
         let mut sigwinch_cb_timestamp = time::Instant::now();
         let signals = BlockingSignalIterator::new().unwrap();
         for event in signals {
+            if !self.is_current_connection() {
+                break;
+            }
             match event {
                 SignalEvent::Resize => {
                     // throttle sigwinch_cb calls, reduce excessive renders while resizing
@@ -505,6 +537,9 @@ impl ClientOsApi for ClientOsInputOutput {
     fn box_clone(&self) -> Box<dyn ClientOsApi> {
         Box::new((*self).clone())
     }
+    fn original_termios(&self) -> Option<yinz_runtime::termios::WireTermios> {
+        self.orig_termios.clone()
+    }
 }
 
 impl Clone for Box<dyn ClientOsApi> {
@@ -519,7 +554,8 @@ pub fn get_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> {
         send_instructions_to_server: Arc::new(Mutex::new(None)),
         receive_instructions_from_server: Arc::new(Mutex::new(None)),
         reading_from_stdin,
-        session_name: Arc::new(Mutex::new(None)),
+        connection_generation: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        generation: 0,
         orig_termios: nix::sys::termios::tcgetattr(io::stdin())
             .ok()
             .as_ref()

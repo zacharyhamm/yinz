@@ -2914,8 +2914,10 @@ impl Tab {
         borderless: Option<bool>,
     ) -> Result<()> {
         let err_context = || format!("failed to create new pane with id {pid:?}");
-        self.close_down_to_max_terminals()
-            .with_context(err_context)?;
+        if !start_suppressed {
+            self.close_down_to_max_terminals()
+                .with_context(err_context)?;
+        }
         let mut new_pane =
             self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
 
@@ -2976,8 +2978,10 @@ impl Tab {
         if should_focus_pane {
             self.hide_floating_panes();
         }
-        self.close_down_to_max_terminals()
-            .with_context(err_context)?;
+        if !start_suppressed {
+            self.close_down_to_max_terminals()
+                .with_context(err_context)?;
+        }
         let mut new_pane =
             self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
 
@@ -3254,7 +3258,9 @@ impl Tab {
         blocking_notification: Option<NotificationEnd>,
     ) -> Result<()> {
         placement.validate().map_err(|error| anyhow!(error))?;
-        self.close_down_to_max_terminals()?;
+        if !start_suppressed {
+            self.close_down_to_max_terminals()?;
+        }
         let new_pane =
             self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
         let awaiting_placement = run_awaits_placement(new_pane.invoked_with());
@@ -3351,8 +3357,10 @@ impl Tab {
         if should_focus_pane {
             self.hide_floating_panes();
         }
-        self.close_down_to_max_terminals()
-            .with_context(err_context)?;
+        if !start_suppressed {
+            self.close_down_to_max_terminals()
+                .with_context(err_context)?;
+        }
         let mut new_pane =
             self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
 

@@ -36,8 +36,9 @@
       ((equal? (car wanted) (car remaining)) (loop (cdr wanted) (cdr remaining)))
       (else (loop wanted (cdr remaining))))))
 
-(define (list-results title collect page previous-query)
+(define (list-results title collect page previous-query . cleanup)
   (hash "type" "actions" "title" (yinz-markdown-escape title) "initialQuery" previous-query
+    "onClose" (if (null? cleanup) #f (car cleanup))
     "source"
     (lambda (query context)
       (define all (filter (lambda (item)
@@ -50,10 +51,10 @@
       (append items
         (if (> offset 0)
           (list (action "page:previous" "Previous results…"
-              (defer (lambda () (list-results title collect (- (quotient offset 98) 1) query))))) '())
+              (defer (lambda () (apply list-results title collect (- (quotient offset 98) 1) query cleanup))))) '())
         (if (< (+ offset 98) (length all))
           (list (action "page:next" "More results…"
-              (defer (lambda () (list-results title collect (+ (quotient offset 98) 1) query))))) '())))))
+              (defer (lambda () (apply list-results title collect (+ (quotient offset 98) 1) query cleanup))))) '())))))
 
 (define (validate-name name optional?)
   (unless (and optional? (equal? name ""))
@@ -175,6 +176,53 @@
               (string-append context " · " (pane-status pane))))
           (filter available-pane? (sort (panes-in session tab) pane-before?)))))
     (by-position (hash-ref session "tabs"))))
+
+(define next-session-request 0)
+(define (session-request-id)
+  (set! next-session-request (+ next-session-request 1))
+  (number->string next-session-request))
+(define (switch-destination entry values context)
+  (if (hash-ref entry "current") (complete "Already attached to this session")
+    (let ((id (session-request-id)))
+      (define (send operation) (command "SwitchSessionDestination" operation))
+      (define cancel (lambda () (send (hash "Cancel" id))))
+      (define remove-cancel ((hash-ref context "onCancel") cancel))
+      (define (poll status)
+        (cond (((hash-ref context "cancelled")) #f)
+          ((equal? status "Ready")
+            (send (hash "Commit" id)) (remove-cancel) (complete "Session switch requested"))
+          ((equal? status "Pending")
+            (yinz-then (yinz-sleep 100) (lambda (_) (poll (send (hash "Status" id))))))
+          (else (error "Unexpected session switch result"))))
+      (with-handler (lambda (failure) (cancel) (remove-cancel) (raise-error failure))
+        (yinz-catch
+          (poll (send (hash "Prepare" (hash "id" id "target"
+                  (hash "destination" (hash-ref entry "destination") "name" (hash-ref entry "name") "saved" (hash-ref entry "saved"))))))
+          (lambda (failure) (cancel) (remove-cancel) (if (string? failure) (error failure) (raise-error failure))))))))
+(define (session-destinations-across-machines)
+  (define id (session-request-id))
+  (list-results "Switch session"
+    (lambda ()
+      (define inventory (command "GetSessionInventory" id))
+      (define (machine entry)
+        (define destination (hash-ref entry "destination"))
+        (if (equal? destination "CurrentServer") (hash-ref inventory "current_machine") destination))
+      (define (label entry)
+        (define destination (machine entry))
+        (define host (if (hash? destination) (hash-ref destination "Remote") "Local"))
+        (string-append (clean host) (if (present? (hash-ref entry "name"))
+            (string-append " / " (clean (hash-ref entry "name"))) "")))
+      (map (lambda (entry)
+          (define name (hash-ref entry "name"))
+          (define status (hash-ref entry "status"))
+          (display-description
+            (describe (action (yinz-json-string (list (machine entry) name))
+                (label entry)
+                (if (present? name) (lambda (values context) (switch-destination entry values context))
+                  (lambda (values context) (error status))))
+              (if (hash-ref entry "current") "Running Current session" status)) status))
+        (sorted (hash-ref inventory "entries") label string<?))) 0 ""
+    (lambda () (command "SwitchSessionDestination" (hash "Cancel" id)))))
 
 (define (destinations kind)
   (list-results
@@ -298,7 +346,7 @@
 
 (define root-actions
   (list
-    (action "switch-session" "Switch session…" (defer (lambda () (destinations "session"))))
+    (action "switch-session" "Switch session…" (defer session-destinations-across-machines))
     (hash-insert (action "find-tab" "Find tab…" (defer (lambda () (destinations "tab")))) "aliases" '("switch tab"))
     (hash-insert (action "find-pane" "Find pane…" (defer (lambda () (destinations "pane")))) "aliases" '("focus pane"))
     (action "new-session" "New session…" (defer new-session))

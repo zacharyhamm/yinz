@@ -17,6 +17,13 @@ use yinz_types::pane_size::Size;
 /// Instructions related to server-side application
 #[derive(Debug, Clone, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum ServerInstruction {
+    SessionRequest {
+        client: ClientId,
+        request: yinz_types::session_destination::Request,
+        reply:
+            std::sync::mpsc::Sender<Result<yinz_types::session_destination::ClientReply, String>>,
+    },
+    SessionReply(ClientId, yinz_types::session_destination::Reply),
     FirstClientConnected(CliAssets, ClientId),
     Render(Option<HashMap<ClientId, String>>),
     UnblockInputThread,

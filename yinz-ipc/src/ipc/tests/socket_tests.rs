@@ -36,6 +36,10 @@ impl IpcStream for FlushFailingStream {
     fn set_read_timeout(&self, _timeout: Option<std::time::Duration>) -> std::io::Result<()> {
         Ok(())
     }
+
+    fn set_write_timeout(&self, _timeout: Option<std::time::Duration>) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
 }
 
 fn flush_failing_sender<T: serde::Serialize>() -> IpcSenderWithContext<T> {
@@ -65,6 +69,9 @@ fn splitting_an_ipc_connection_reports_descriptor_exhaustion() {
             Err(std::io::Error::from_raw_os_error(libc::EMFILE))
         }
         fn set_read_timeout(&self, _: Option<std::time::Duration>) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn set_write_timeout(&self, _: Option<std::time::Duration>) -> std::io::Result<()> {
             Ok(())
         }
     }
@@ -118,6 +125,13 @@ fn connect_stream(name: &IpcName) -> interprocess::local_socket::Stream {
 
 #[test]
 fn send_apis_propagate_flush_failures() {
+    assert_eq!(
+        flush_failing_sender::<ClientToServerMsg>()
+            .set_send_timeout(None)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::Unsupported
+    );
     let errors = [
         flush_failing_sender::<ClientToServerMsg>()
             .send_client_msg(ClientToServerMsg::ConnStatus)
@@ -173,6 +187,9 @@ fn a_partial_write_permanently_closes_the_sender_without_retrying_on_drop() {
             Ok(Box::new(Self(self.0.clone())))
         }
         fn set_read_timeout(&self, _: Option<std::time::Duration>) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn set_write_timeout(&self, _: Option<std::time::Duration>) -> std::io::Result<()> {
             Ok(())
         }
     }
@@ -601,7 +618,126 @@ fn a_rejected_length_cannot_turn_its_payload_into_another_message() {
 }
 
 #[test]
-fn a_timeout_inside_a_frame_is_terminal_in_both_directions() {
+fn fragmented_frames_resume_across_timeouts_in_both_directions() {
+    use crate::client_server_contract::client_server_contract::{
+        ClientToServerMsg as ProtoClient, ServerToClientMsg as ProtoServer,
+    };
+    use prost::Message;
+    use std::io::Write;
+
+    for server_message in [false, true] {
+        let payload = if server_message {
+            ProtoServer::from(ServerToClientMsg::Render {
+                content: "fragmented render".into(),
+            })
+            .encode_to_vec()
+        } else {
+            ProtoClient::try_from(ClientToServerMsg::Paste("fragmented paste".into()))
+                .unwrap()
+                .encode_to_vec()
+        };
+        let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+        frame.extend(payload);
+        let (_guard, name) = new_ipc();
+        let listener = bind_listener(&name);
+        let mut peer = connect_stream(&name);
+        let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
+            IpcReceiverWithContext::new(listener.accept().unwrap());
+        receiver
+            .set_recv_timeout(Some(std::time::Duration::from_millis(10)))
+            .unwrap();
+        let mut start = 0;
+        for end in [1, 2, 3, 4, 5, frame.len() - 1] {
+            peer.write_all(&frame[start..end]).unwrap();
+            for _ in 0..2 {
+                if server_message {
+                    assert!(matches!(receiver.recv_server_msg(), IpcRecv::Idle));
+                } else {
+                    assert!(matches!(receiver.recv_client_msg(), IpcRecv::Idle));
+                }
+            }
+            start = end;
+        }
+        receiver.set_recv_timeout(None).unwrap();
+        peer.write_all(&frame[start..]).unwrap();
+        peer.write_all(&frame).unwrap();
+        for _ in 0..2 {
+            if server_message {
+                assert!(
+                    matches!(receiver.recv_server_msg(), IpcRecv::Msg(ServerToClientMsg::Render { content }, _) if content == "fragmented render")
+                );
+            } else {
+                assert!(
+                    matches!(receiver.recv_client_msg(), IpcRecv::Msg(ClientToServerMsg::Paste(content), _) if content == "fragmented paste")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn server_frame_deadline_is_not_renewed_by_incoming_chunks() {
+    use crate::client_server_contract::client_server_contract::ServerToClientMsg as ProtoServer;
+    use prost::Message;
+    use std::{
+        io::Write,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    let content = "fragmented render".repeat(100);
+    let payload = ProtoServer::from(ServerToClientMsg::Render {
+        content: content.clone(),
+    })
+    .encode_to_vec();
+    let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+    frame.extend(payload);
+    for split in [1, 5] {
+        let (_guard, name) = new_ipc();
+        let listener = bind_listener(&name);
+        let mut peer = connect_stream(&name);
+        let mut receiver =
+            IpcReceiverWithContext::<ServerToClientMsg>::new(listener.accept().unwrap());
+        peer.write_all(&frame[..split]).unwrap();
+        assert!(matches!(
+            receiver.recv_server_msg_until(Instant::now()),
+            IpcRecv::Idle
+        ));
+
+        let frame = frame.clone();
+        let (finish, finished) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let mut sent = split;
+            // Timing is under test: chunks arrive inside the per-read timeout for up to one second.
+            for _ in 0..100 {
+                if finished.recv_timeout(Duration::from_millis(10)).is_ok() {
+                    break;
+                }
+                peer.write_all(&frame[sent..sent + 1]).unwrap();
+                sent += 1;
+            }
+            peer.write_all(&frame[sent..]).unwrap();
+        });
+        let started = Instant::now();
+        let result = receiver.recv_server_msg_until(started + Duration::from_millis(100));
+        let elapsed = started.elapsed();
+        let _ = finish.send(());
+        writer.join().unwrap();
+        assert!(matches!(result, IpcRecv::Idle));
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "deadline took {elapsed:?}"
+        );
+        receiver.set_recv_timeout(None).unwrap();
+        assert!(matches!(receiver.recv_server_msg(), IpcRecv::Msg(
+            ServerToClientMsg::Render { content: received }, _
+        ) if received == content));
+        assert!(receiver.recv_server_msg().is_eof());
+    }
+}
+
+#[test]
+fn eof_inside_a_frame_is_terminal_in_both_directions() {
     use std::io::Write;
 
     for server_message in [false, true] {
@@ -609,28 +745,17 @@ fn a_timeout_inside_a_frame_is_terminal_in_both_directions() {
             let (_guard, name) = new_ipc();
             let listener = bind_listener(&name);
             let mut peer = connect_stream(&name);
-            let stream = listener.incoming().next().unwrap().expect("accept failed");
             let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
-                IpcReceiverWithContext::new(stream);
-            receiver
-                .set_recv_timeout(Some(std::time::Duration::from_millis(10)))
-                .unwrap();
+                IpcReceiverWithContext::new(listener.accept().unwrap());
             peer.write_all(partial).unwrap();
+            drop(peer);
             if server_message {
                 assert!(receiver.recv_server_msg().is_eof());
             } else {
                 assert!(receiver.recv_client_msg().is_eof());
             }
-            let mut sender: IpcSenderWithContext<ServerToClientMsg> =
-                IpcSenderWithContext::new(peer);
-            sender
-                .send_server_msg(ServerToClientMsg::Connected {
-                    warp_companions: false,
-                    warp_held_terminals: false,
-                })
-                .unwrap();
             assert!(receiver.recv_client_msg().is_eof());
-            assert!(crate::ipc::recv_protobuf_server_to_client(&mut receiver).is_none());
+            assert!(receiver.recv_server_msg().is_eof());
         }
     }
 }

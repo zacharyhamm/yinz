@@ -83,6 +83,11 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
 
     fn try_from(msg: ClientToServerMsg) -> Result<Self> {
         let message = match msg {
+            ClientToServerMsg::SessionReply(reply) => {
+                client_to_server_msg::Message::SessionReplyJson(
+                    serde_json::to_string(&reply).context("encode session reply")?,
+                )
+            },
             ClientToServerMsg::AgentControl(request) => {
                 client_to_server_msg::Message::AgentControlJson(
                     serde_json::to_string(&request).context("encode agent request")?,
@@ -294,6 +299,11 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             Some(client_to_server_msg::Message::AgentControlJson(json)) => {
                 Ok(ClientToServerMsg::AgentControl(
                     serde_json::from_str(&json).context("decode agent request")?,
+                ))
+            },
+            Some(client_to_server_msg::Message::SessionReplyJson(json)) => {
+                Ok(ClientToServerMsg::SessionReply(
+                    serde_json::from_str(&json).context("decode session reply")?,
                 ))
             },
             Some(client_to_server_msg::Message::PluginRequest(msg)) => {
@@ -516,6 +526,12 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
 impl From<ServerToClientMsg> for ProtoServerToClientMsg {
     fn from(msg: ServerToClientMsg) -> Self {
         let message = match msg {
+            ServerToClientMsg::SessionRequest(request) => {
+                server_to_client_msg::Message::SessionRequestJson(
+                    serde_json::to_string(&request)
+                        .expect("session request contains only serializable fields"),
+                )
+            },
             ServerToClientMsg::PluginResponse { request_id, result } => {
                 let (data_json, error) = match result {
                     Ok(data) => (
@@ -682,6 +698,11 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
             Some(server_to_client_msg::Message::AgentControlJson(json)) => {
                 Ok(ServerToClientMsg::AgentControl(
                     serde_json::from_str(&json).context("decode agent response")?,
+                ))
+            },
+            Some(server_to_client_msg::Message::SessionRequestJson(json)) => {
+                Ok(ServerToClientMsg::SessionRequest(
+                    serde_json::from_str(&json).context("decode session request")?,
                 ))
             },
             Some(server_to_client_msg::Message::PluginResponse(msg)) => {

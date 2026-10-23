@@ -1043,6 +1043,12 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::WatchFilesystem => env.watch_filesystem(),
             PluginCommand::GetDisconnectTargets => get_disconnect_targets(env),
             PluginCommand::GetSessionList => get_session_list(env),
+            PluginCommand::GetSessionInventory(id) => {
+                crate::session_destinations::inventory(env, id)?
+            },
+            PluginCommand::SwitchSessionDestination(request) => {
+                crate::session_destinations::switch(env, request)?
+            },
             PluginCommand::DumpSessionLayout { tab_index } => dump_session_layout(env, tab_index),
             PluginCommand::CloseSelf => close_self(env),
             PluginCommand::Reconfigure(new_config, write_config_to_disk) => {
@@ -7958,11 +7964,13 @@ fn get_disconnect_targets(env: &mut PluginEnv) {
         .non_fatal();
 }
 
-fn get_session_list(env: &mut PluginEnv) {
+pub(crate) fn session_list_snapshot(
+    env: &PluginEnv,
+) -> Result<yinz_types::data::SessionListSnapshot> {
     use yinz_bus::background_jobs::{scan_session_list_default_dirs, session_scan_state};
-    use {yinz_types::data::GetSessionListResponse, yinz_types::data::SessionListSnapshot};
+    use yinz_types::data::SessionListSnapshot;
 
-    let response = match session_scan_state() {
+    match session_scan_state() {
         Some(state) => {
             let (session_name, mut current, plugin_list) = {
                 let name = state.current_session_name.lock().unwrap().clone();
@@ -7999,11 +8007,17 @@ fn get_session_list(env: &mut PluginEnv) {
                 live_sessions: live_sessions_map.into_values().collect(),
                 resurrectable_sessions: resurrectable_sessions_map.into_iter().collect(),
             };
-            GetSessionListResponse::Ok(snapshot)
+            Ok(snapshot)
         },
-        None => GetSessionListResponse::Err("Session-scan state not initialized".to_string()),
-    };
+        None => Err(anyhow!("Session-scan state not initialized")),
+    }
+}
 
+fn get_session_list(env: &mut PluginEnv) {
+    let response = match session_list_snapshot(env) {
+        Ok(snapshot) => yinz_types::data::GetSessionListResponse::Ok(snapshot),
+        Err(error) => yinz_types::data::GetSessionListResponse::Err(format!("{error:#}")),
+    };
     let protobuf_response = ProtobufGetSessionListResponse::from(response);
     write_response(env, &protobuf_response.encode_to_vec())
         .with_context(|| "failed to write get_session_list response".to_string())
@@ -9291,6 +9305,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::RenamePluginPane
         | CommandType::SetPaneTitlePrefix
         | CommandType::SetPaneSubtitle
+        | CommandType::SwitchSessionDestination
         | CommandType::SwitchSession
         | CommandType::DeleteDeadSession
         | CommandType::DeleteAllDeadSessions
@@ -9377,6 +9392,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::GetPaneInfo
         | CommandType::GetTabInfo
         | CommandType::GetDisconnectTargets
+        | CommandType::GetSessionInventory
         | CommandType::GetSessionList
         | CommandType::ListNotifications
         | CommandType::ListOrphanedPanes
